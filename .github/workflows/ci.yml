@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+# A newer push to a PR branch cancels its older run; runs on main always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  claim-bot:
+    name: claim bot tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/claim
+      - run: node --test scripts/claim/*.test.js
+
+  # The Rust jobs switch themselves on once the workspace exists (milestone M0, docs/plan.md §8).
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: toolchain
+        if: hashFiles('Cargo.toml') != ''
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup target add wasm32-unknown-unknown
+      - name: fmt
+        if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
+        run: cargo fmt --all --check
+      - name: clippy
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: tests
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test --workspace
+      - name: layers and wasm
+        if: hashFiles('xtask/Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
+        run: cargo xtask layers && cargo xtask wasm
