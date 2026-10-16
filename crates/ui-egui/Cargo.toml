@@ -1,0 +1,22 @@
+[package]
+name = "nodecraft-ui-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: the egui shell: canvas widget, node cards, panels and theme tokens"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-engine = { workspace = true }
+egui = { workspace = true, features = ["default_fonts"] }
+eframe = { workspace = true, features = ["wgpu", "accesskit"] }
+craft-ui = { workspace = true }
+craft-quit = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true }

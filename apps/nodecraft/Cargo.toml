@@ -1,0 +1,25 @@
+[package]
+name = "nodecraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: a native node-based canvas for generative media"
+build = "build.rs"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-engine = { workspace = true }
+nodecraft-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["wgpu", "accesskit", "wayland", "x11", "persistence"] }
+egui = { workspace = true }
+craft-quit = { workspace = true }
+log = { workspace = true }
+
+[build-dependencies]
+# Icon + VERSIONINFO for nodecraft.exe; build.rs only uses it when targeting Windows.
+winresource = "0.1"

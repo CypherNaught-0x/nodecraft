@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- NodeCraft app icon (original artwork, CC0-1.0; ATTRIBUTION.md). Full-bleed 512 tile;
+       packaging/icons.sh pads it for macOS and crops it for Windows/Linux. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b1b1f"/>
+      <stop offset="1" stop-color="#08080a"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7ee2b1"/>
+      <stop offset="1" stop-color="#2fa36c"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g fill="#3a3a41">
+    <circle cx="96" cy="96" r="5"/><circle cx="176" cy="96" r="5"/><circle cx="256" cy="96" r="5"/><circle cx="336" cy="96" r="5"/><circle cx="416" cy="96" r="5"/>
+    <circle cx="96" cy="416" r="5"/><circle cx="176" cy="416" r="5"/><circle cx="256" cy="416" r="5"/><circle cx="336" cy="416" r="5"/><circle cx="416" cy="416" r="5"/>
+  </g>
+  <!-- noodles -->
+  <g fill="none" stroke="#d9d9de" stroke-width="14" stroke-linecap="round">
+    <path d="M186 178 C 250 178, 250 256, 300 256"/>
+    <path d="M186 334 C 250 334, 250 256, 300 256"/>
+  </g>
+  <!-- source cards -->
+  <rect x="78" y="134" width="108" height="88" rx="22" fill="#26262c" stroke="#55555e" stroke-width="6"/>
+  <rect x="78" y="290" width="108" height="88" rx="22" fill="#26262c" stroke="#55555e" stroke-width="6"/>
+  <!-- result card -->
+  <rect x="300" y="176" width="140" height="160" rx="28" fill="url(#glow)"/>
+  <circle cx="186" cy="178" r="15" fill="#08080a" stroke="#d9d9de" stroke-width="8"/>
+  <circle cx="186" cy="334" r="15" fill="#08080a" stroke="#d9d9de" stroke-width="8"/>
+</svg>
