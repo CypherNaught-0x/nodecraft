@@ -29,8 +29,10 @@
   before it starts.
 - **ComfyUI first-class.** Import any ComfyUI workflow as a node with typed ports, follow live
   progress, and switch Image/Video nodes between cloud models and local ComfyUI without
-  rewiring. First cloud providers: OpenAI Images, Google Imagen and Veo, ByteDance Seedream and
-  Seedance, Kling, plus any OpenAI-compatible or Anthropic LLM endpoint.
+  rewiring. It covers image, video, audio and 3D workflows, locally or on Comfy Cloud.
+- **Providers:** fal.ai and Replicate; OpenAI Images; Google Imagen, Gemini image, Veo and TTS;
+  ElevenLabs; ByteDance Seedream and Seedance; Kling; Tripo AI and Meshy for 3D; and any
+  OpenAI-compatible, Anthropic or LiteLLM endpoint. More are tracked as `future` issues.
 - **Explicit, cost-aware runs.** Runs go in dependency order, with variations, per-node
   generation history, stale badges when an upstream result changes, a queue, and budgets.
 - **Deterministic actions.** Colour grading, blur, crop, aspect ratio, split into grid, and video
@@ -61,6 +63,13 @@
 
 See [`docs/plan.md`](docs/plan.md) for the feature catalogue, architecture, repository
 conventions and roadmap.
+
+## Downloads
+
+Releases are published on [GitHub Releases](../../releases). Each release includes desktop
+installers for macOS, Windows and Linux; `nodecraft-cli`, with the integrated MCP server
+(`nodecraft-cli mcp`); and a WebAssembly build that runs in the browser. Nothing has been
+released yet.
 
 ## Contributing
 
