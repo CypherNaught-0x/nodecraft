@@ -140,10 +140,21 @@ pub fn text_input_focused(ctx: &egui::Context) -> bool {
 /// ⌘- zoom around the centre.
 ///
 /// `background` is the response of the canvas-filling background widget.
-pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasView, home: Pos2, prefs: &CanvasSettings, allow_scroll_pan: bool) {
+///
+/// `primary_pans` is false while a primary drag on the background is a box select instead.
+pub fn navigate(
+    ui: &egui::Ui,
+    background: &egui::Response,
+    view: &mut CanvasView,
+    home: Pos2,
+    prefs: &CanvasSettings,
+    allow_scroll_pan: bool,
+    primary_pans: bool,
+) {
     let viewport = background.rect;
     let origin = viewport.min;
-    let panning = [egui::PointerButton::Primary, egui::PointerButton::Middle, egui::PointerButton::Secondary].into_iter().any(|b| background.dragged_by(b));
+    let panning = (primary_pans && background.dragged_by(egui::PointerButton::Primary))
+        || [egui::PointerButton::Middle, egui::PointerButton::Secondary].into_iter().any(|b| background.dragged_by(b));
     if panning {
         view.pan_by(background.drag_delta());
     }

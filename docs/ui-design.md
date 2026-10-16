@@ -23,7 +23,8 @@ same structure with the values inverted.
 | `card_stroke` / `_hover` / `_selected` | `#343439` / `#5a5a61` / `#e6e6ea` | `#d4d4d9` / `#a0a0a8` / `#18181b` | card border by state |
 | `text` / `text_muted` | `#e8e8ec` / `#8a8a93` | `#18181b` / `#6b6b74` | body text / labels and hints |
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
-| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome |
+| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
+| `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9. Cards are 320 points wide, at least 220 high, with 64 points per
@@ -42,12 +43,20 @@ selected border more visible than the resting one, in both themes.
 | ⌘/Ctrl + `=` / `-` | zoom about the centre by 1.25× |
 | ⌘/Ctrl + `0`, or click the zoom badge | 100%, centred on the cards |
 | Drag a card background | move through `node.move`, one undo step per gesture; click selects it |
+| Click a card / Shift-click | select only it / add or remove it from the selection |
+| Shift-drag empty canvas | box select: cards the box touches join the selection (live while dragging); Escape cancels the box |
+| Click empty canvas, or Escape outside text fields | clear the selection (Escape closes an open menu or cancels a box select first) |
+| ⌘/Ctrl+A outside text fields | select every node on the canvas |
+| Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
 | Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
 | ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
 
 egui's own keyboard UI zoom is turned off so these keys zoom the canvas only. Canvas keyboard
-shortcuts yield to focused text fields. Invalid parameter drafts stay visible until corrected or
+shortcuts yield to focused text fields. Selection is shell view state: it never changes the document
+or the undo history, and ids of removed nodes drop out of it. Grabbing or right-clicking a card
+that is already selected keeps the rest of the selection; dragging still moves only the grabbed card
+(moving a group is a separate change). Invalid parameter drafts stay visible until corrected or
 cancelled; changing another field does not discard them. Slider drags preview locally and commit
 once on release. Titles default to the first nonempty prompt/text line, or the kind label, and are
 clipped to 64 Unicode characters. Unknown node kinds retain their title and show an unavailable
