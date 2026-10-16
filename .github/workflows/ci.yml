@@ -37,7 +37,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-24.04
+            nextest-target: x86_64-unknown-linux-gnu
+            nextest-sha256: 223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc
+          - os: windows-latest
+            nextest-target: x86_64-pc-windows-msvc
+            nextest-sha256: bef17504bed9d4994cf860c122e84a90d613b92e6d89584fa9e28bd53ad42e15
+          - os: macos-latest
+            # nextest ships one universal macOS archive for both Intel and Apple Silicon.
+            nextest-target: universal-apple-darwin
+            nextest-sha256: 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -53,6 +63,26 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: hashFiles('Cargo.toml') != ''
+      - name: Install pinned nextest (verify before extracting)
+        if: hashFiles('Cargo.toml') != ''
+        shell: pwsh
+        env:
+          NEXTEST_VERSION: 0.9.148
+          NEXTEST_TARGET: ${{ matrix.nextest-target }}
+          NEXTEST_SHA256: ${{ matrix.nextest-sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'nextest.tar.gz'
+          $bin = Join-Path $env:RUNNER_TEMP 'nextest-bin'
+          $name = "cargo-nextest-$env:NEXTEST_VERSION-$env:NEXTEST_TARGET.tar.gz"
+          $url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$env:NEXTEST_VERSION/$name"
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -cne $env:NEXTEST_SHA256) { throw "nextest checksum mismatch: expected $env:NEXTEST_SHA256, got $actual" }
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          tar -xzf $archive -C $bin
+          if ($LASTEXITCODE -ne 0) { throw 'nextest archive extraction failed' }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: fmt
         if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
         run: cargo fmt --all --check
@@ -61,7 +91,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: tests
         if: hashFiles('Cargo.toml') != ''
-        run: cargo test --workspace
+        run: cargo nextest run --workspace --profile ci
+      - name: doctests
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test --doc --workspace
       - name: layers and wasm
         if: hashFiles('xtask/Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
         run: cargo xtask layers && cargo xtask wasm

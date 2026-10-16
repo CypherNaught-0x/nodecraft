@@ -27,6 +27,13 @@ node --test scripts/claim/*.test.js  # the claim bot
 UI behaviour is tested headless with `egui_kittest` (see `crates/ui-egui/src/app.rs`): the tests
 drive pointer and key events through the real canvas and check the resulting view and card state.
 
+GitHub CI runs `cargo nextest run --workspace --profile ci` and then `cargo test --doc --workspace`
+on Linux, Windows and macOS. The workflow pins nextest and verifies each release archive against
+a checked-in SHA-256 before extracting it. When updating nextest, update the version and all three
+checksums together from the `.sha256` files published beside the archives on the
+[official nextest release](https://github.com/nextest-rs/nextest/releases). `cargo xtask ci` continues to use `cargo test`
+so local checks do not require nextest.
+
 ## xtask
 
 | Command | Does |
