@@ -22,6 +22,10 @@ a choice a later contributor might otherwise undo.
   feature does not compile on macOS.
 - **Canvas navigation:** scroll pans and pinch/⌘-scroll zooms (trackpad-first, like the reference
   products); see `ui-design.md`.
-- **Releases:** the shared Craft release workflow with `has-web: false` until `apps/nodecraft-web` (#99)
-  exists (plan §7: the browser bundle ships from M5). Flip it to `true` in the PR that adds the web
-  app.
+- **Releases:** our own `release.yml`, modelled on the shared Craft release workflow, because the
+  shared one fails on the `release` branch without Apple and Windows signing secrets and we have
+  none yet (#100). Ours signs when secrets exist and otherwise ships unsigned builds with
+  first-launch instructions (`docs/install.md`). It is written from scratch (craft-common-actions
+  has no licence file, so its text isn't copied). Targets: macOS universal, Windows x64/arm64,
+  Linux x86_64/aarch64 + Flatpak; the web job comes with `apps/nodecraft-web` (#99). Switch back
+  to the shared workflow once signing is in place, if it is still the better fit.

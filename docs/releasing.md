@@ -1,10 +1,11 @@
 # Releasing
 
-Releases are GitHub releases built by the shared Craft workflow
-(`storytold/craft-common-actions/.github/workflows/release.yml@main`), called from
-[`.github/workflows/release.yml`](../.github/workflows/release.yml). It runs this repository's
-`packaging/` scripts on every platform and drafts a release `NodeCraft vX.Y.Z` with all artifacts
-and `SHA256SUMS.txt`.
+Releases are GitHub releases built by [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+It follows the layout of the shared Craft release workflow
+(`storytold/craft-common-actions`) but is our own, so that **missing signing secrets don't block a
+release**: it runs this repository's `packaging/` scripts on every platform and drafts a release
+`NodeCraft vX.Y.Z` with all artifacts, `SHA256SUMS.txt`, and `packaging/release-notes.md` (how to
+open unsigned builds) above the generated changelog.
 
 ## Cutting a release
 
@@ -17,30 +18,32 @@ A test build without signing: Actions › Release › Run workflow, on any branc
 
 ## Signing
 
-On the `release` branch the shared workflow **fails** unless the signing secrets are set in the
-repository's `release` environment:
+Signing is optional. Each secret below, set in the repository's `release` environment, switches
+on its step; without them the scripts print a warning and the release still builds:
 
-- macOS: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
-  `APPLE_ID`, `APPLE_PASSWORD` (app-specific), `APPLE_TEAM_ID`.
-- Windows: `WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD`, or the Azure Trusted Signing set
-  (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`,
-  `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`).
+- macOS (Developer ID signing + notarization): `APPLE_CERTIFICATE` (base64 .p12),
+  `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific),
+  `APPLE_TEAM_ID`. Without them the app is ad-hoc signed and not notarized.
+- Windows (Authenticode): `WINDOWS_CERTIFICATE` + `WINDOWS_CERTIFICATE_PASSWORD`, or the Azure
+  Trusted Signing set (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
+  `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`). Without them the MSI
+  and executables are unsigned.
 
-Manual runs on other branches build ad-hoc/unsigned artifacts with a warning.
+Unsigned builds show a first-launch warning; [`install.md`](install.md) explains how users get past
+it, and every release's notes link there. When signing lands (#100), drop the warning from
+`packaging/release-notes.md` and `install.md`.
 
 ## Artifacts
 
 | Platform | Built by | Files |
 |---|---|---|
 | macOS universal | `packaging/macos/package.sh --arch universal` | `nodecraft-<v>-macos-universal.dmg`, `nodecraft-cli-<v>-macos-universal.zip` |
-| Windows x64, x86, arm64 | `packaging/windows/package.ps1 -Arch <arch>` | `.msi`, `-portable.zip` (both binaries) |
+| Windows x64, arm64 | `packaging/windows/package.ps1 -Arch <arch>` | `.msi`, `-portable.zip` (both binaries) |
 | Linux x86_64, aarch64 | `packaging/linux/package.sh` | `.AppImage` (+ `.zsync`), `.deb`, `.rpm`, `.tar.gz` |
 | Linux Flatpak | `packaging/linux/flatpak-bundle.sh` (repackages the tarball) | `.flatpak` |
-| FreeBSD x86_64 | the shared workflow's generic build | `.tar.gz` |
 
-Turned off in `release.yml`: the web bundle (`has-web`, until `apps/nodecraft-web` exists) and
-Linux riscv64 (`has-riscv64`; not a NodeCraft target, and `packaging/linux/package.sh` has no
-cross-build support).
+Not built yet: the web bundle (add a `web` job with the web app, #99). Not targets: Windows x86,
+Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps).
 
 ## Local packaging
 

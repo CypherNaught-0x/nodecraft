@@ -207,5 +207,6 @@ that drive real pointer and key events through the canvas.
 | Build, test, run | `docs/development.md` |
 | Theme tokens, canvas interaction | `docs/ui-design.md` |
 | Cutting a release, signing, packaging | `docs/releasing.md` |
+| Installing (incl. unsigned builds) | `docs/install.md` |
 | Status | `ROADMAP.md` (update it when a milestone task lands) |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |

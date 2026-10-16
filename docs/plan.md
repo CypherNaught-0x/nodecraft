@@ -556,7 +556,7 @@ NodeCraft/
 ├─ .github/workflows/    ci.yml (claim-bot tests; fmt, clippy -D warnings, tests on
 │                        Linux/Windows/macOS, xtask layers/wasm once the workspace exists),
 │                        claim.yml (/claim bot + daily sweep), release.yml (§5.1)
-├─ packaging/            per-OS and web packaging scripts used by the shared release workflow
+├─ packaging/            per-OS and web packaging scripts used by `.github/workflows/release.yml`
 ├─ .github/              pull_request_template.md, ISSUE_TEMPLATE/
 ├─ scripts/claim/        claim bot logic + node:test suite (adapted from SolidCraft)
 ├─ AGENTS.md             orientation for agents, pointing at CONTRIBUTING.md and docs/
@@ -618,13 +618,10 @@ Testing strategy:
 
 ### 5.1 Releases and distribution
 
-All builds are distributed as **GitHub releases**, built the same way as the other Craft apps.
-`.github/workflows/release.yml` calls the shared reusable workflow
-`storytold/craft-common-actions/.github/workflows/release.yml@main` with
-`app-name: nodecraft` and `app-title: NodeCraft`; `has-web` turns on once `apps/nodecraft-web` exists
-(docs/decisions.md). It needs the per-app
-`packaging/` scripts that workflow expects (`packaging/env.sh`, `packaging/{macos,windows,linux,web}/…`,
-modelled on PhotoCraft's).
+All builds are distributed as **GitHub releases**. `.github/workflows/release.yml` follows the
+shared Craft release workflow (`storytold/craft-common-actions`) but is NodeCraft's own, so that
+releases don't depend on signing secrets (docs/decisions.md). It runs the per-app `packaging/`
+scripts (`packaging/env.sh`, `packaging/{macos,windows,linux}/…`, modelled on PhotoCraft's).
 
 - **Flow:** bump `[workspace.package] version` with `cargo xtask version set X.Y.Z`, merge
   `main` into the `release` branch, and the workflow builds a **draft** release `NodeCraft vX.Y.Z`
@@ -635,7 +632,7 @@ modelled on PhotoCraft's).
   | Platform | Desktop app | CLI (includes the MCP server) |
   |---|---|---|
   | macOS (universal) | `nodecraft-<v>-macos-universal.dmg` | `nodecraft-cli-<v>-macos-universal.zip` |
-  | Windows x64 (+ arm64 later) | `.msi` + portable `.zip` | in the same packages |
+  | Windows x64, arm64 | `.msi` + portable `.zip` | in the same packages |
   | Linux x86_64 / aarch64 | `.AppImage`, `.deb`, `.rpm`, `.tar.gz`, Flatpak | in the same packages |
   | Web | `nodecraft-web-<v>.zip`: static site from `apps/nodecraft-web` (trunk + wasm-bindgen, size-optimised `wasm-release` profile, split into parts under host size caps) | n/a |
 
@@ -643,9 +640,9 @@ modelled on PhotoCraft's).
   policy allows it, otherwise through a user-configured LiteLLM or ComfyUI endpoint. Keys live in
   browser storage for that origin only, and the UI says so. Projects open and save via the File
   System Access API, with download/upload as the fallback.
-- **Signing:** the shared workflow **requires** macOS notarisation and Windows signing secrets on
-  the `release` branch and fails without them. Manual runs on other branches build unsigned
-  artifacts with a `::warning::` (docs/releasing.md).
+- **Signing:** optional. With the secrets set, macOS builds are notarised and Windows builds
+  signed; without them the release still builds (ad-hoc/unsigned, with a `::warning::`) and its
+  notes link `docs/install.md`, which walks users past Gatekeeper and SmartScreen.
 - **Version info:** `nodecraft --version`, `nodecraft-cli --version` and *Help › About* report
   version, commit and build date (`NODECRAFT_BUILD_SHA`, `NODECRAFT_BUILD_DATE`).
 
@@ -666,14 +663,13 @@ modelled on PhotoCraft's).
 | Video | FFmpeg sidecar behind a feature | Only realistic route to broad codec support today; keeps core pure Rust |
 | Custom actions | LLM-written WGSL with declared params | Sandboxed by construction, GPU fast, parameters become sliders |
 | Persistence | Local `.ncraft` + content-addressed assets | Offline, portable, dedupes variations; cloud sync is an add-on |
-| Distribution | GitHub releases through the shared Craft release workflow: desktop installers, CLI with integrated MCP server, wasm web bundle | Same pipeline and artifact names as the other Craft apps |
+| Distribution | GitHub releases from our own workflow modelled on the shared Craft one: desktop installers, CLI with integrated MCP server, wasm web bundle | Same artifact names as the other Craft apps; releases don't wait for signing |
 | Collaboration | Single-user first; changesets now, CRDT sync in M10 | Zero cost now, avoids a rewrite later |
 
 Still open:
 
-1. **Signing certificates:** Apple Developer ID and a Windows code-signing route. The shared
-   release workflow refuses to build on the `release` branch without them, so they are needed
-   before the first published release; until then only manual, unsigned test runs work.
+1. **Signing certificates:** Apple Developer ID and a Windows code-signing route (#100). Until
+   they exist, releases ship unsigned with first-launch instructions (docs/install.md).
 
 ---
 

@@ -79,8 +79,9 @@ orientation for contributors and coding agents.
 
 Releases are published on [GitHub Releases](../../releases). Each release includes desktop
 installers for macOS, Windows and Linux; `nodecraft-cli`, with the integrated MCP server
-(`nodecraft-cli mcp`); and a WebAssembly build that runs in the browser. Nothing has been
-released yet.
+(`nodecraft-cli mcp`); and, later, a WebAssembly build that runs in the browser. Nothing has
+been released yet. The macOS and Windows builds aren't code-signed yet, so the first launch
+shows a warning; [`docs/install.md`](docs/install.md) shows how to open them.
 
 ## Contributing
 

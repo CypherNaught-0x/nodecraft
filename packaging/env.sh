@@ -6,7 +6,7 @@
 #   VERSION                 [workspace.package] version from Cargo.toml (override: NODECRAFT_VERSION)
 #   DIST                    output directory for release artifacts (default: $ROOT/dist/release)
 #   NODECRAFT_BUILD_SHA     git commit baked into the binaries (crates/engine/src/build_info.rs);
-#                           falls back to BUILD_SHA (the shared release workflow), then git
+#                           falls back to BUILD_SHA (set by the shared Craft workflow), then git
 #   NODECRAFT_BUILD_DATE    UTC build date, YYYY-MM-DD; falls back to BUILD_DATE, then today
 #   CARGO_TARGET_DIR        cargo's target dir (default: $ROOT/target)
 
@@ -33,8 +33,8 @@ DIST="${DIST:-$ROOT/dist/release}"
 mkdir -p "$DIST"
 export DIST
 
-# The shared Craft release workflow sets BUILD_SHA and BUILD_DATE for apps it has no
-# app-specific variables for (Windows, Linux); macOS falls back to git and today.
+# Our release workflow sets NODECRAFT_BUILD_SHA/DATE; the shared Craft workflow sets only
+# BUILD_SHA/BUILD_DATE on some platforms. Otherwise fall back to git and today.
 NODECRAFT_BUILD_SHA="${NODECRAFT_BUILD_SHA:-${BUILD_SHA:-}}"
 if [ -z "$NODECRAFT_BUILD_SHA" ]; then
   NODECRAFT_BUILD_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"

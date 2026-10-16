@@ -51,7 +51,7 @@ $Dist = if ($env:DIST) { $env:DIST } else { Join-Path $Root 'dist\release' }
 $TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $Root 'target' }
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
-# The shared Craft release workflow sets BUILD_SHA and BUILD_DATE; fall back to git and today.
+# The release workflow sets NODECRAFT_BUILD_*; the shared Craft workflow sets BUILD_*; else git and today.
 if (-not $env:NODECRAFT_BUILD_SHA) { $env:NODECRAFT_BUILD_SHA = if ($env:BUILD_SHA) { $env:BUILD_SHA } else { (git -C $Root rev-parse HEAD 2>$null) } }
 if (-not $env:NODECRAFT_BUILD_DATE) { $env:NODECRAFT_BUILD_DATE = if ($env:BUILD_DATE) { $env:BUILD_DATE } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') } }
 
