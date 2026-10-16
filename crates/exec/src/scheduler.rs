@@ -564,10 +564,13 @@ impl Scheduler {
     /// dependencies afterwards.
     pub fn forget_finished(&mut self) {
         self.jobs.retain(|_, j| !j.state.is_finished());
-        // Remaining jobs must not point at forgotten ones: an id may be reused by a new job.
+        // Remaining jobs must not point at forgotten ones: an id may be reused by a new job. An
+        // unfinished job's finished inputs are all Done (a failed one would have skipped it), so
+        // dropping them from `deps` loses nothing.
         let live: HashSet<JobId> = self.jobs.keys().copied().collect();
         for job in self.jobs.values_mut() {
             job.dependents.retain(|d| live.contains(d));
+            job.spec.deps.retain(|d| live.contains(d));
         }
     }
 
@@ -903,6 +906,20 @@ mod tests {
         assert_eq!(ids(&s.start_ready(0)), [4]);
         s.report(JobId(4), Outcome::Done, 0).unwrap();
         assert_eq!(ids(&s.start_ready(0)), [2], "runs only after its own input");
+    }
+
+    #[test]
+    fn reusing_the_id_of_a_forgotten_done_input_is_safe() {
+        let mut s = sched();
+        s.add(vec![job(1, &[], "a"), job(3, &[], "b"), job(2, &[1, 3], "c")]).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [1, 3]);
+        s.report(JobId(1), Outcome::Done, 0).unwrap();
+        s.forget_finished();
+        s.add(vec![job(1, &[], "a")]).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [1]);
+        s.report(JobId(1), Outcome::Failed { error: "unrelated".into(), transient: false }, 0).unwrap();
+        s.report(JobId(3), Outcome::Done, 0).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [2], "both real inputs are done; the new job 1 is unrelated");
     }
 
     /// 100k independent jobs through the driver's loop shape: must stay roughly linear.

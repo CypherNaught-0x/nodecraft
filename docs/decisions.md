@@ -24,6 +24,7 @@ a choice a later contributor might otherwise undo.
   keep running. A failure reported after a cancel request counts as a cancellation (no retry); work
   that finished despite the request counts as done. A panicking runner fails its job instead of
   stalling the queue.
+
 ## 2026-10-17 · ComfyUI protocol layer (#9, part 1)
 
 - **`comfy` is sans-IO.** It builds requests (`Server`) and parses replies and WebSocket
