@@ -35,6 +35,17 @@ a choice a later contributor might otherwise undo.
   memory-budgeted LRU (`ThumbnailCache`). The cache isn't thread-safe; its owner decides where
   thumbnails are made.
 
+## 2026-10-16 · Core types (#50)
+
+- **Entity IDs are typed UUIDs supplied by the caller.** The pure-data layer has no random
+  number generator or platform dependency. Serialized UUID strings also work as JSON map keys.
+- **Money uses integer millionths plus a currency code.** Arithmetic is checked and rejects
+  mixed currencies. The amount is a decimal string on the wire, avoiding loss in browser JSON
+  clients above the exact-integer range of floating-point numbers.
+- **Asset hashes and MIME values validate on deserialization.** Media metadata uses optional
+  integers; resource limits belong to the decoder consuming those measurements. `Value` keeps
+  nested lists, so project readers must retain their decoder recursion and input-size limits.
+
 ## 2026-10-16 · M0 skeleton
 
 - **Layer numbering follows the plan (L0–L5), not PhotoCraft's L0–L7.** The rule "only the shell

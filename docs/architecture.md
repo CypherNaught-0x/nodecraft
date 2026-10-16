@@ -61,6 +61,23 @@ Further rules checked by `cargo xtask layers`:
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
 - **`testkit` is a dev-dependency only.**
 
+## Core data types
+
+`nodecraft-types` exposes distinct UUID-backed IDs for document entities. IDs are supplied by
+callers as bytes (platform code owns randomness) and serialize as UUID strings, including map
+keys. `Modality` and `PortType` describe ports; `Value` is a tagged text, media or nested-list
+value. Keep decoder recursion limits and file-size limits enabled when reading projects.
+
+`AssetRef` carries a 32-byte BLAKE3 digest (hex on the wire), a validated concrete MIME value and
+optional integer media metadata. Metadata is descriptive, never permission to allocate an
+unbounded image or buffer. `Money` stores non-negative millionths of a named currency, with
+checked arithmetic and explicit errors for overflow, underflow and mixed currencies. Micros
+serialize as decimal strings so browser JSON clients preserve every bit. Currency validation
+checks the three-uppercase-letter syntax, not membership in a currency registry.
+
+`Error` carries a stable `ErrorKind` and a public-safe message. Higher-layer errors can retain
+internal causes, but must scrub secrets before constructing this shared payload.
+
 ## wasm
 
 Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`
