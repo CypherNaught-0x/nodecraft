@@ -85,7 +85,7 @@ pub(crate) fn value(root: &Value) -> Result<(), Error> {
                     return Err(invalid("value exceeds text limit"));
                 }
             }
-            Value::Media(_) => {}
+            Value::Media(_) | Value::Bool(_) | Value::Integer(_) | Value::Unsigned(_) | Value::Number(_) => {}
             Value::List(items) => {
                 if seen.saturating_add(pending.len()).saturating_add(items.len()) > MAX_VALUE_ITEMS {
                     return Err(invalid("value exceeds item limit"));

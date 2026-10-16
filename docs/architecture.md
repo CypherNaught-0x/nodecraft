@@ -78,6 +78,30 @@ checks the three-uppercase-letter syntax, not membership in a currency registry.
 `Error` carries a stable `ErrorKind` and a public-safe message. Higher-layer errors can retain
 internal causes, but must scrub secrets before constructing this shared payload.
 
+## Node kinds and parameter schemas
+
+`nodes::Registry::builtins()` registers Text, Image, Video and Audio sources under stable IDs
+`source.text`, `source.image`, `source.video` and `source.audio`. A `NodeDescriptor` declares its
+category, named typed ports, parameter schema and quick-add shortcut. `instantiate` builds
+detached graph data with defaults; commands insert it through changesets. Registry registration
+checks descriptor validity, unique IDs and shortcut collisions. `compatible(inputs)` uses each
+kind's `mode` predicate for the Turn-into picker; sources accept only an empty input set.
+
+`NodeKind::plan` returns pure `JobSpec` data. A source job emits its existing text or asset on
+`out`, without decoding, I/O, model selection or payment. Planning validates stored kind/ports
+and schema values. An unconfigured media source can exist on the canvas but returns an error
+when planned. The source graph fixture verifies each output and graph serialization/undo.
+Actual graph-card rendering and generated controls are wired by the canvas issues.
+
+The shared `ParamSchema` lives in `types` and is re-exported by `nodes`, allowing the model
+catalog to reuse it without a same-layer dependency. Its controls describe text, choice, toggle,
+slider, integer, colour, model, seed and asset fields. `resolve(values, ready)` validates supplied
+values, fills defaults and returns visible parameter names; missing required visible fields are
+errors when `ready` is true. Conditions reference earlier fields and respect hidden controllers.
+All supplied values, including hidden fields, must remain type-valid and within aggregate limits.
+Boolean, finite floating-point and exact signed/unsigned integer `Value` variants store scalar
+parameters without string coercion; only full-width integer wire encodings use decimal strings.
+
 ## Document edits
 
 `nodecraft-graph` stores projects, canvases, nodes, typed ports and ordered edges. Stored maps
