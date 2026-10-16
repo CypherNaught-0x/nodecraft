@@ -14,7 +14,15 @@ commands:
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args =
+        match std::env::args_os().skip(1).enumerate().map(|(index, arg)| arg.into_string().map_err(|_| index.saturating_add(1))).collect::<Result<Vec<_>, _>>()
+        {
+            Ok(args) => args,
+            Err(index) => {
+                eprintln!("error: argument {index} must be valid UTF-8");
+                return ExitCode::FAILURE;
+            }
+        };
     match args.first().map(String::as_str) {
         Some("--version" | "-V" | "version") => {
             println!("nodecraft-cli {}", nodecraft_engine::build_info::long_version());

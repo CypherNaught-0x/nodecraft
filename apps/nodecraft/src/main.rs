@@ -12,7 +12,9 @@ use std::process::ExitCode;
 const APP_ID: &str = "io.github.cyphernaught0x.nodecraft";
 
 fn main() -> ExitCode {
-    if std::env::args().skip(1).any(|a| a == "--version" || a == "-V") {
+    // Desktop launchers can pass non-UTF-8 file names. Ignore unhandled arguments; future file
+    // opening must retain OS paths rather than requiring UTF-8 before creating the window.
+    if std::env::args_os().skip(1).any(|a| a == "--version" || a == "-V") {
         println!("nodecraft {}", nodecraft_engine::build_info::long_version());
         return ExitCode::SUCCESS;
     }
