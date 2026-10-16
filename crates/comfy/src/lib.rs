@@ -29,5 +29,5 @@ pub use object_info::{InputKind, InputSpec, MAX_OBJECT_INFO_BYTES, NodeCatalog, 
 pub use prompt::{PromptRequest, Queued, parse_prompt_response};
 pub use server::{Body, FileRef, Method, Request, Server, UploadKind, parse_upload_response};
 pub use status::{Device, HistoryEntry, QueueState, SystemStats};
-pub use workflow::{ApiNode, ApiWorkflow, CheckReport, InputProblem, InputValue, MAX_NODES, MAX_WORKFLOW_BYTES};
+pub use workflow::{ApiNode, ApiWorkflow, CheckReport, Conversion, InputProblem, InputValue, MAX_NODES, MAX_WORKFLOW_BYTES};
 pub use ws::{MAX_WS_MESSAGE_BYTES, Outcome, PreviewFormat, PromptProgress, WsEvent, files_in, parse_binary, parse_text};

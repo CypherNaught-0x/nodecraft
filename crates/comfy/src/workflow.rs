@@ -21,7 +21,7 @@ pub const MAX_NODES: usize = 10_000;
 const MAX_LINK_HOPS: usize = 256;
 
 /// Node types the ComfyUI editor shows but the server never executes.
-const FRONTEND_ONLY: &[&str] = &["Note", "MarkdownNote", "Reroute", "PrimitiveNode"];
+const FRONTEND_ONLY: &[&str] = &["Note", "MarkdownNote", "Reroute", "PrimitiveNode", "SetNode", "GetNode"];
 
 /// The value of one input in an API workflow.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,15 +85,9 @@ pub(crate) fn id_order(a: &str, b: &str) -> std::cmp::Ordering {
 
 impl ApiWorkflow {
     /// Reads a workflow file in either format. The UI format needs the server's `catalog`.
+    /// See [`ApiWorkflow::convert`] to also get seed control modes and conversion warnings.
     pub fn parse(bytes: &[u8], catalog: Option<&NodeCatalog>) -> Result<Self, ComfyError> {
-        let v: Value = crate::error::parse_json("workflow", bytes, MAX_WORKFLOW_BYTES)?;
-        if v.get("nodes").is_some_and(Value::is_array) {
-            let catalog = catalog.ok_or_else(|| {
-                ComfyError::InvalidWorkflow("this is a ComfyUI editor (UI) workflow; connect to a server to convert it, or export it in API format".into())
-            })?;
-            return from_ui(&v, catalog);
-        }
-        Self::from_api_json(v)
+        Self::convert(bytes, catalog).map(|c| c.workflow)
     }
 
     fn from_api_json(v: Value) -> Result<Self, ComfyError> {
@@ -243,6 +237,19 @@ pub struct InputProblem {
 
 // ---- UI format -------------------------------------------------------------------------------
 
+/// The result of reading a workflow file: the API workflow plus what the UI format carried that
+/// the API format doesn't.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Conversion {
+    pub workflow: ApiWorkflow,
+    /// "Control after generate" modes (`fixed`, `randomize`, …) by (node, input), so the Workflow
+    /// node can keep randomising seeds per run.
+    pub controls: BTreeMap<(String, String), String>,
+    /// Things worth a look after import: widget values that didn't line up with the server's
+    /// inputs, unknown unconnected nodes that were ignored.
+    pub warnings: Vec<String>,
+}
+
 struct UiNode {
     id: String,
     class: String,
@@ -250,6 +257,7 @@ struct UiNode {
     title: Option<String>,
     inputs: Vec<UiInput>,
     output_types: Vec<String>,
+    has_output_links: bool,
     widgets: Value,
 }
 
@@ -282,7 +290,9 @@ fn parse_ui_node(v: &Value) -> Option<UiNode> {
         .and_then(Value::as_array)
         .map(|a| a.iter().map(|i| UiInput { name: str_of(i, "name"), kind: str_of(i, "type"), link: i.get("link").and_then(Value::as_i64) }).collect())
         .unwrap_or_default();
-    let output_types = v.get("outputs").and_then(Value::as_array).map(|a| a.iter().map(|o| str_of(o, "type")).collect()).unwrap_or_default();
+    let outputs = v.get("outputs").and_then(Value::as_array);
+    let output_types = outputs.map(|a| a.iter().map(|o| str_of(o, "type")).collect()).unwrap_or_default();
+    let has_output_links = outputs.is_some_and(|a| a.iter().any(|o| o.get("links").and_then(Value::as_array).is_some_and(|l| !l.is_empty())));
     Some(UiNode {
         id,
         class,
@@ -290,6 +300,7 @@ fn parse_ui_node(v: &Value) -> Option<UiNode> {
         title: v.get("title").and_then(Value::as_str).map(str::to_owned),
         inputs,
         output_types,
+        has_output_links,
         widgets: v.get("widgets_values").cloned().unwrap_or(Value::Null),
     })
 }
@@ -300,8 +311,25 @@ const MODE_BYPASS: i64 = 4;
 
 /// Values of the editor's "control after generate" widget, saved after seed widgets.
 const SEED_CONTROLS: &[&str] = &["fixed", "increment", "decrement", "randomize"];
+/// Values the editor saves for an upload button, after a loader's required widgets.
+const UPLOAD_MARKERS: &[&str] = &["image", "video", "audio", "upload"];
 
-fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> {
+impl ApiWorkflow {
+    /// Reads a workflow file in either format, keeping what the UI format adds (seed control
+    /// modes) and warnings about the conversion. The UI format needs the server's `catalog`.
+    pub fn convert(bytes: &[u8], catalog: Option<&NodeCatalog>) -> Result<Conversion, ComfyError> {
+        let v: Value = crate::error::parse_json("workflow", bytes, MAX_WORKFLOW_BYTES)?;
+        if v.get("nodes").is_some_and(Value::is_array) {
+            let catalog = catalog.ok_or_else(|| {
+                ComfyError::InvalidWorkflow("this is a ComfyUI editor (UI) workflow; connect to a server to convert it, or export it in API format".into())
+            })?;
+            return from_ui(&v, catalog);
+        }
+        Ok(Conversion { workflow: Self::from_api_json(v)?, ..Conversion::default() })
+    }
+}
+
+fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
     let raw_nodes = v.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default();
     if raw_nodes.len() > MAX_NODES {
         return Err(ComfyError::InvalidWorkflow(format!("{} nodes is more than the {MAX_NODES}-node limit", raw_nodes.len())));
@@ -312,11 +340,16 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> 
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|s| s.get("id").and_then(Value::as_str)).map(str::to_owned).collect())
         .unwrap_or_default();
+    let group_nodes = v.get("extra").and_then(|e| e.get("groupNodes")).and_then(Value::as_object);
     let mut nodes: HashMap<String, UiNode> = HashMap::new();
     for raw in &raw_nodes {
         let node = parse_ui_node(raw).ok_or_else(|| ComfyError::InvalidWorkflow("a node has no id or type".into()))?;
         if subgraphs.contains(&node.class) {
             return Err(ComfyError::InvalidWorkflow("subgraphs aren't supported yet; unpack them in ComfyUI and export again".into()));
+        }
+        let group_name = node.class.strip_prefix("workflow>").or_else(|| node.class.strip_prefix("workflow/"));
+        if group_name.is_some_and(|g| group_nodes.is_none_or(|gn| gn.contains_key(g))) {
+            return Err(ComfyError::InvalidWorkflow("group nodes aren't supported yet; convert them back to nodes in ComfyUI and export again".into()));
         }
         nodes.insert(node.id.clone(), node);
     }
@@ -332,6 +365,10 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> 
             links.insert(id, (origin, u32::try_from(slot).unwrap_or(u32::MAX)));
         }
     }
+    // Frontend "set/get" variable nodes (KJNodes): a GetNode reads the SetNode with its name.
+    let first_widget = |n: &UiNode| n.widgets.as_array().and_then(|a| a.first()).and_then(Value::as_str).map(str::to_owned);
+    let setters: HashMap<String, i64> =
+        nodes.values().filter(|n| n.class == "SetNode").filter_map(|n| Some((first_widget(n)?, n.inputs.first()?.link?))).collect();
 
     let resolve = |link: i64| -> Option<Source> {
         let mut current = link;
@@ -342,16 +379,20 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> 
             }
             let (origin_id, slot) = links.get(&current)?;
             let origin = nodes.get(origin_id)?;
-            if origin.class == "Reroute" {
+            if origin.class == "Reroute" || origin.class == "SetNode" {
                 current = origin.inputs.first()?.link?;
+            } else if origin.class == "GetNode" {
+                current = *setters.get(&first_widget(origin)?)?;
             } else if origin.class == "PrimitiveNode" {
                 return origin.widgets.as_array()?.first().cloned().map(Source::Value);
             } else if origin.mode == MODE_MUTED {
                 return None;
             } else if origin.mode == MODE_BYPASS {
-                // A bypassed node passes through its first input of the same type.
+                // A bypassed node passes through the input in the same slot when its type
+                // matches (positive→positive, negative→negative), else the first input of that type.
                 let ty = origin.output_types.get(*slot as usize)?;
-                current = origin.inputs.iter().find(|i| &i.kind == ty && i.link.is_some())?.link?;
+                let same_slot = origin.inputs.get(*slot as usize).filter(|i| &i.kind == ty && i.link.is_some());
+                current = same_slot.or_else(|| origin.inputs.iter().find(|i| &i.kind == ty && i.link.is_some()))?.link?;
             } else {
                 return Some(Source::Link { node: origin_id.clone(), output: *slot });
             }
@@ -359,36 +400,68 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> 
         None
     };
 
-    let mut out = BTreeMap::new();
+    let mut conversion = Conversion::default();
     let mut missing: Vec<String> = Vec::new();
     let mut ids: Vec<&String> = nodes.keys().collect();
     ids.sort_by(|a, b| id_order(a, b));
     for id in ids {
         let Some(node) = nodes.get(id) else { continue };
-        if node.mode == MODE_MUTED || node.mode == MODE_BYPASS {
+        if node.mode == MODE_MUTED || node.mode == MODE_BYPASS || matches!(node.class.as_str(), "SetNode" | "GetNode") {
             continue;
         }
         let Some(info) = catalog.get(&node.class) else {
-            if !FRONTEND_ONLY.contains(&node.class.as_str()) && !missing.contains(&node.class) {
-                missing.push(node.class.clone());
+            if FRONTEND_ONLY.contains(&node.class.as_str()) {
+                continue;
+            }
+            // An unknown node wired into the graph is a missing custom node; an unconnected one is
+            // most likely a frontend helper (group bypassers, bookmarks) and is left out.
+            let connected = node.has_output_links || node.inputs.iter().any(|i| i.link.is_some());
+            if connected {
+                if !missing.contains(&node.class) {
+                    missing.push(node.class.clone());
+                }
+            } else {
+                conversion.warnings.push(format!("ignored node {id} ({}): not on the server and not connected", node.class));
             }
             continue;
         };
         let mut inputs = BTreeMap::new();
-        let mut positional = node.widgets.as_array().map(|a| a.iter().peekable());
+        let saved = node.widgets.as_array();
+        let mut positional = saved.map(|a| a.iter().peekable());
+        let mut consumed = 0usize;
+        let has_upload = info.inputs.iter().any(|i| matches!(i.kind, InputKind::Combo { upload: Some(_), .. }));
+        let mut upload_marker_checked = false;
+        let skip_upload_marker = |values: &mut std::iter::Peekable<std::slice::Iter<'_, Value>>, consumed: &mut usize| {
+            if has_upload && values.peek().and_then(|v| v.as_str()).is_some_and(|s| UPLOAD_MARKERS.contains(&s)) {
+                values.next();
+                *consumed += 1;
+            }
+        };
         for spec in &info.inputs {
+            if !spec.required
+                && !upload_marker_checked
+                && let Some(values) = &mut positional
+            {
+                upload_marker_checked = true;
+                skip_upload_marker(values, &mut consumed);
+            }
             let linked = node.inputs.iter().find(|i| i.name == spec.name).and_then(|i| i.link).and_then(resolve);
             let mut widget_value = None;
             if spec.is_widget() {
                 match (&mut positional, &node.widgets) {
                     (Some(values), _) => {
                         widget_value = values.next().cloned();
-                        let control = values.peek().and_then(|v| v.as_str()).is_some_and(|s| SEED_CONTROLS.contains(&s));
+                        if widget_value.is_some() {
+                            consumed += 1;
+                        }
+                        let control = values.peek().and_then(|v| v.as_str()).filter(|s| SEED_CONTROLS.contains(s)).map(str::to_owned);
                         let is_int = matches!(spec.kind, InputKind::Int { .. });
-                        if (spec.control_after_generate || is_int) && control {
+                        if let Some(mode) = control
+                            && (spec.control_after_generate || is_int)
+                        {
                             values.next();
-                        } else if matches!(spec.kind, InputKind::Combo { image_upload: true, .. }) && values.peek().and_then(|v| v.as_str()) == Some("image") {
-                            values.next(); // the upload button's value
+                            consumed += 1;
+                            conversion.controls.insert((id.clone(), spec.name.clone()), mode);
                         }
                     }
                     (None, Value::Object(by_name)) => widget_value = by_name.get(&spec.name).cloned(),
@@ -404,6 +477,18 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> 
                 inputs.insert(spec.name.clone(), value);
             }
         }
+        if !upload_marker_checked && let Some(values) = &mut positional {
+            skip_upload_marker(values, &mut consumed);
+        }
+        if let Some(saved) = saved
+            && saved.len() != consumed
+        {
+            conversion.warnings.push(format!(
+                "node {id} ({}): {} saved widget values but {consumed} matched the server's inputs; check its settings",
+                node.class,
+                saved.len()
+            ));
+        }
         // Dynamic inputs some custom nodes add at runtime aren't in /object_info; keep their links.
         for input in &node.inputs {
             if !inputs.contains_key(&input.name)
@@ -413,15 +498,15 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<ApiWorkflow, ComfyError> 
                 inputs.insert(input.name.clone(), InputValue::Link { node, output });
             }
         }
-        out.insert(node.id.clone(), ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() });
+        conversion.workflow.nodes.insert(node.id.clone(), ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() });
     }
     if !missing.is_empty() {
         return Err(ComfyError::MissingNodes(missing));
     }
-    if out.is_empty() {
+    if conversion.workflow.nodes.is_empty() {
         return Err(ComfyError::InvalidWorkflow("the workflow has no nodes the server can run".into()));
     }
-    Ok(ApiWorkflow { nodes: out })
+    Ok(conversion)
 }
 
 #[cfg(test)]
@@ -590,6 +675,92 @@ mod tests {
                 false
             }
         }
+    }
+
+    /// A UI workflow around the fixture catalog: `nodes` and `links` JSON arrays.
+    fn ui(nodes: &str, links: &str) -> String {
+        format!(r#"{{"nodes":[{nodes}],"links":[{links}]}}"#)
+    }
+
+    const CKPT: &str = r#"{"id":1,"type":"CheckpointLoaderSimple","outputs":[{"type":"MODEL","links":[1]},{"type":"CLIP","links":[2,3]},{"type":"VAE","links":[]}],"widgets_values":["sd_xl_base_1.0.safetensors"]}"#;
+    const POS: &str = r#"{"id":2,"type":"CLIPTextEncode","inputs":[{"name":"clip","type":"CLIP","link":2}],"outputs":[{"type":"CONDITIONING","links":[4]}],"widgets_values":["pos"]}"#;
+    const NEG: &str = r#"{"id":3,"type":"CLIPTextEncode","inputs":[{"name":"clip","type":"CLIP","link":3}],"outputs":[{"type":"CONDITIONING","links":[5]}],"widgets_values":["neg"]}"#;
+
+    #[test]
+    fn bypassed_node_passes_each_slot_through() {
+        // A bypassed two-in/two-out conditioning node (like an advanced ControlNet apply) must
+        // keep positive on positive and negative on negative.
+        let bypassed = r#"{"id":4,"type":"SomeControlNetApply","mode":4,
+            "inputs":[{"name":"positive","type":"CONDITIONING","link":4},{"name":"negative","type":"CONDITIONING","link":5}],
+            "outputs":[{"type":"CONDITIONING","links":[6]},{"type":"CONDITIONING","links":[7]}]}"#;
+        let sampler = r#"{"id":5,"type":"KSampler","inputs":[{"name":"model","type":"MODEL","link":1},{"name":"positive","type":"CONDITIONING","link":6},{"name":"negative","type":"CONDITIONING","link":7}],
+            "outputs":[{"type":"LATENT","links":[]}],"widgets_values":[1,"fixed",20,7.0,"euler","normal",1.0]}"#;
+        let links = "[1,1,0,5,0,\"MODEL\"],[2,1,1,2,0,\"CLIP\"],[3,1,1,3,0,\"CLIP\"],[4,2,0,4,0,\"CONDITIONING\"],[5,3,0,4,1,\"CONDITIONING\"],[6,4,0,5,1,\"CONDITIONING\"],[7,4,1,5,2,\"CONDITIONING\"]";
+        let c = catalog();
+        let conv = ApiWorkflow::convert(ui(&[CKPT, POS, NEG, bypassed, sampler].join(","), links).as_bytes(), Some(&c)).unwrap();
+        let ks = &conv.workflow.nodes["5"].inputs;
+        assert_eq!(ks["positive"], InputValue::Link { node: "2".into(), output: 0 });
+        assert_eq!(ks["negative"], InputValue::Link { node: "3".into(), output: 0 });
+        assert_eq!(conv.controls.get(&("5".to_string(), "seed".to_string())).map(String::as_str), Some("fixed"));
+        assert!(conv.warnings.is_empty(), "{:?}", conv.warnings);
+    }
+
+    #[test]
+    fn object_links_set_get_variables_and_linked_widgets() {
+        let set = r#"{"id":10,"type":"SetNode","inputs":[{"name":"CONDITIONING","type":"CONDITIONING","link":11}],"outputs":[],"widgets_values":["cond"]}"#;
+        let get = r#"{"id":11,"type":"GetNode","outputs":[{"type":"CONDITIONING","links":[12]}],"widgets_values":["cond"]}"#;
+        let latent = r#"{"id":12,"type":"EmptyLatentImage","outputs":[{"type":"LATENT","links":[]}],"widgets_values":[512,512,1]}"#;
+        // `steps` converted to an input and fed from a real node's INT output (batch_size here, for the test).
+        let steps_src = r#"{"id":13,"type":"SomeIntNode","inputs":[],"outputs":[{"type":"INT","links":[14]}]}"#;
+        let sampler = r#"{"id":5,"type":"KSampler","inputs":[{"name":"positive","type":"CONDITIONING","link":12},{"name":"steps","type":"INT","link":14,"widget":{"name":"steps"}}],
+            "outputs":[{"type":"LATENT","links":[]}],"widgets_values":[1,"randomize",20,7.0,"euler","normal",1.0]}"#;
+        let links = r#"{"id":11,"origin_id":2,"origin_slot":0,"target_id":10,"target_slot":0,"type":"CONDITIONING"},
+                       {"id":12,"origin_id":11,"origin_slot":0,"target_id":5,"target_slot":1,"type":"CONDITIONING"},
+                       {"id":14,"origin_id":13,"origin_slot":0,"target_id":5,"target_slot":2,"type":"INT"},
+                       {"id":2,"origin_id":1,"origin_slot":1,"target_id":2,"target_slot":0,"type":"CLIP"}"#;
+        let c = catalog();
+        let err = ApiWorkflow::convert(ui(&[CKPT, POS, set, get, latent, steps_src, sampler].join(","), links).as_bytes(), Some(&c)).unwrap_err();
+        assert_eq!(err, ComfyError::MissingNodes(vec!["SomeIntNode".into()]), "a connected unknown node is a missing custom node");
+        let mut catalog_with_int = c.clone();
+        let (extra, _) = NodeCatalog::parse(br#"{"SomeIntNode":{"input":{},"output":["INT"]}}"#).unwrap();
+        catalog_with_int.extend(extra);
+        let conv = ApiWorkflow::convert(ui(&[CKPT, POS, set, get, latent, steps_src, sampler].join(","), links).as_bytes(), Some(&catalog_with_int)).unwrap();
+        let ks = &conv.workflow.nodes["5"].inputs;
+        assert_eq!(ks["positive"], InputValue::Link { node: "2".into(), output: 0 }, "GetNode resolves through SetNode");
+        assert_eq!(ks["steps"], InputValue::Link { node: "13".into(), output: 0 });
+        assert_eq!(ks["cfg"], InputValue::Value(json!(7.0)), "values after the converted widget stay aligned");
+        assert!(!conv.workflow.nodes.contains_key("10") && !conv.workflow.nodes.contains_key("11"));
+    }
+
+    #[test]
+    fn upload_marker_after_required_widgets_and_mismatch_warnings() {
+        let c = {
+            let (c, _) = NodeCatalog::parse(
+                br#"{"LoadThing":{"input":{"required":{"image":[["a.png"],{"image_upload":true}]},"optional":{"strength":["FLOAT",{"default":1.0}]}},"output":["IMAGE"]}}"#,
+            )
+            .unwrap();
+            c
+        };
+        let node = r#"{"id":1,"type":"LoadThing","outputs":[{"type":"IMAGE","links":[]}],"widgets_values":["cat.png","image",0.5]}"#;
+        let conv = ApiWorkflow::convert(ui(node, "").as_bytes(), Some(&c)).unwrap();
+        assert_eq!(conv.workflow.nodes["1"].inputs["strength"], InputValue::Value(json!(0.5)), "the upload marker is skipped");
+        assert!(conv.warnings.is_empty(), "{:?}", conv.warnings);
+
+        let extra = r#"{"id":1,"type":"LoadThing","outputs":[{"type":"IMAGE","links":[]}],"widgets_values":["cat.png","image",0.5,"surprise"]}"#;
+        let conv = ApiWorkflow::convert(ui(extra, "").as_bytes(), Some(&c)).unwrap();
+        assert_eq!(conv.warnings.len(), 1);
+        assert!(conv.warnings[0].contains("4 saved widget values but 3"), "{:?}", conv.warnings);
+    }
+
+    #[test]
+    fn group_nodes_and_unconnected_helpers() {
+        let c = catalog();
+        let group = r#"{"nodes":[{"id":1,"type":"workflow>MyGroup"}],"links":[],"extra":{"groupNodes":{"MyGroup":{}}}}"#;
+        assert!(ApiWorkflow::parse(group.as_bytes(), Some(&c)).unwrap_err().to_string().contains("group nodes"));
+        let helper = r#"{"id":9,"type":"Fast Groups Bypasser (rgthree)","inputs":[],"outputs":[]}"#;
+        let conv = ApiWorkflow::convert(ui(&[CKPT, helper].join(","), "").as_bytes(), Some(&c)).unwrap();
+        assert_eq!(conv.warnings.len(), 1);
+        assert!(conv.warnings[0].contains("not on the server and not connected"));
     }
 
     #[test]

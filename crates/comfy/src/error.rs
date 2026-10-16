@@ -7,6 +7,8 @@ use std::fmt;
 pub enum ComfyError {
     /// The server URL is not an `http`/`https` URL with a host.
     InvalidUrl(String),
+    /// A server setting other than the URL (such as the auth header) is not valid.
+    InvalidSetting(String),
     /// A response or file was larger than its cap.
     TooLarge { what: &'static str, size: usize, limit: usize },
     /// A response or file is not the JSON shape ComfyUI sends.
@@ -17,8 +19,9 @@ pub enum ComfyError {
     MissingNodes(Vec<String>),
     /// No such node or input in the workflow, or the value doesn't fit the input.
     InvalidInput { node: String, input: String, message: String },
-    /// The server refused a request.
-    Server { status: u16, message: String, node_errors: Vec<NodeError> },
+    /// The server refused a request. `kind` is the server's error type when it sent one, such as
+    /// `prompt_outputs_failed_validation` or `missing_node_type`.
+    Server { status: u16, kind: Option<String>, message: String, node_errors: Vec<NodeError> },
 }
 
 /// One problem the server reported for one node of a queued prompt.
@@ -27,6 +30,8 @@ pub struct NodeError {
     pub node: String,
     pub class_type: String,
     pub message: String,
+    /// The server's error type, such as `value_not_in_list`.
+    pub kind: Option<String>,
     /// The input the problem is about, when the server said.
     pub input: Option<String>,
 }
@@ -35,6 +40,7 @@ impl fmt::Display for ComfyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidUrl(m) => write!(f, "invalid ComfyUI server URL: {m}"),
+            Self::InvalidSetting(m) => write!(f, "invalid ComfyUI server setting: {m}"),
             Self::TooLarge { what, size, limit } => write!(f, "{what} is {size} bytes, more than the {limit}-byte limit"),
             Self::Malformed { what, message } => write!(f, "unexpected {what} from ComfyUI: {message}"),
             Self::InvalidWorkflow(m) => write!(f, "invalid ComfyUI workflow: {m}"),
@@ -42,7 +48,7 @@ impl fmt::Display for ComfyError {
                 write!(f, "the server is missing node types used by this workflow (install the custom nodes): {}", classes.join(", "))
             }
             Self::InvalidInput { node, input, message } => write!(f, "node {node}, input {input}: {message}"),
-            Self::Server { status, message, node_errors } => {
+            Self::Server { status, message, node_errors, .. } => {
                 write!(f, "ComfyUI refused the request ({status}): {message}")?;
                 for e in node_errors {
                     match &e.input {

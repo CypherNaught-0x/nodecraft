@@ -15,9 +15,11 @@ a choice a later contributor might otherwise undo.
   a small ordered JSON type in `comfy`). The workspace does not enable serde_json's
   `preserve_order`, which would change map ordering, and so hashing, in other crates.
 - **UI workflows are converted against a live server's catalog**: widget values are positional.
-  Seed "control after generate" values and the image-upload widget value are skipped; reroutes,
-  primitives and bypassed nodes are followed (bounded, cycle-safe); notes and muted nodes are
-  dropped. Subgraphs are refused with a clear message for now.
+  Seed "control after generate" values are kept as modes and the upload-button value is skipped;
+  reroutes, primitives, Set/Get variable nodes and bypassed nodes (slot by slot) are followed
+  (bounded, cycle-safe); notes and muted nodes are dropped. Widget counts that don't line up and
+  unknown unconnected nodes become warnings, not silent guesses. Subgraphs and group nodes are
+  refused with a clear message for now.
 - **Missing custom nodes and models are found before queueing** (`ApiWorkflow::check`), so the
   node shows an error card instead of a server error.
 

@@ -67,10 +67,12 @@ pub enum WsEvent {
     Success {
         prompt_id: String,
     },
-    /// A live preview image while sampling.
+    /// A live preview image while sampling. Newer servers say which prompt and node it is for.
     Preview {
         format: PreviewFormat,
         bytes: Vec<u8>,
+        prompt_id: Option<String>,
+        node: Option<String>,
     },
     /// A message type this version doesn't know; ignore it.
     Other {
@@ -121,8 +123,10 @@ pub fn parse_text(message: &str) -> Result<WsEvent, ComfyError> {
     })
 }
 
-/// Parses a binary message: a big-endian `u32` event type (1 = preview image), then for previews
-/// a `u32` image format (1 = JPEG, 2 = PNG) and the image bytes.
+/// Parses a binary message: a big-endian `u32` event type, then
+/// - 1 (preview image): a `u32` image format (1 = JPEG, 2 = PNG) and the image bytes;
+/// - 4 (preview with metadata): a `u32` metadata length, that much JSON (`prompt_id`, `node_id`,
+///   `image_type`) and the image bytes.
 pub fn parse_binary(message: &[u8]) -> Result<WsEvent, ComfyError> {
     if message.len() > MAX_WS_MESSAGE_BYTES {
         return Err(ComfyError::TooLarge { what: "WebSocket message", size: message.len(), limit: MAX_WS_MESSAGE_BYTES });
@@ -130,15 +134,29 @@ pub fn parse_binary(message: &[u8]) -> Result<WsEvent, ComfyError> {
     let word = |at: usize| message.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
     let malformed = || ComfyError::Malformed { what: "WebSocket message", message: "binary message too short".into() };
     let event = word(0).ok_or_else(malformed)?;
-    if event != 1 {
-        return Ok(WsEvent::Other { kind: format!("binary:{event}") });
+    match event {
+        1 => {
+            let format = match word(4).ok_or_else(malformed)? {
+                1 => PreviewFormat::Jpeg,
+                2 => PreviewFormat::Png,
+                other => PreviewFormat::Other(other),
+            };
+            Ok(WsEvent::Preview { format, bytes: message.get(8..).unwrap_or_default().to_vec(), prompt_id: None, node: None })
+        }
+        4 => {
+            let len = usize::try_from(word(4).ok_or_else(malformed)?).unwrap_or(usize::MAX);
+            let end = len.checked_add(8).filter(|e| *e <= message.len()).ok_or_else(malformed)?;
+            let meta: Value = message.get(8..end).and_then(|m| serde_json::from_slice(m).ok()).unwrap_or(Value::Null);
+            let text = |k: &str| meta.get(k).and_then(id_or_text);
+            let format = match meta.get("image_type").and_then(Value::as_str) {
+                Some("image/png") => PreviewFormat::Png,
+                Some("image/jpeg") => PreviewFormat::Jpeg,
+                _ => PreviewFormat::Other(0),
+            };
+            Ok(WsEvent::Preview { format, bytes: message.get(end..).unwrap_or_default().to_vec(), prompt_id: text("prompt_id"), node: text("node_id") })
+        }
+        other => Ok(WsEvent::Other { kind: format!("binary:{other}") }),
     }
-    let format = match word(4).ok_or_else(malformed)? {
-        1 => PreviewFormat::Jpeg,
-        2 => PreviewFormat::Png,
-        other => PreviewFormat::Other(other),
-    };
-    Ok(WsEvent::Preview { format, bytes: message.get(8..).unwrap_or_default().to_vec() })
 }
 
 /// Node ids arrive as strings; tolerate numbers.
@@ -154,11 +172,18 @@ fn id_or_text(v: &Value) -> Option<String> {
 /// `audio`, `video`, 3D outputs and whatever custom nodes use).
 pub fn files_in(output: &Value) -> Vec<FileRef> {
     let Some(map) = output.as_object() else { return Vec::new() };
+    let text = |item: &Value, k: &str| item.get(k).and_then(Value::as_str).map(str::to_owned);
     map.values()
         .filter_map(Value::as_array)
         .flatten()
-        .filter(|item| item.get("filename").is_some_and(Value::is_string))
-        .filter_map(|item| serde_json::from_value::<FileRef>(item.clone()).ok())
+        .filter_map(|item| {
+            // `subfolder` and `type` may be missing or null.
+            Some(FileRef {
+                filename: text(item, "filename")?,
+                subfolder: text(item, "subfolder").unwrap_or_default(),
+                kind: text(item, "type").unwrap_or_else(|| "output".into()),
+            })
+        })
         .collect()
 }
 
@@ -174,7 +199,7 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptProgress {
     prompt_id: String,
-    total_nodes: usize,
+    nodes: HashSet<String>,
     done: HashSet<String>,
     current: Option<String>,
     step: Option<(u64, u64)>,
@@ -184,9 +209,19 @@ pub struct PromptProgress {
 }
 
 impl PromptProgress {
-    /// Tracks `prompt_id`, which has `total_nodes` nodes in its workflow.
-    pub fn new(prompt_id: impl Into<String>, total_nodes: usize) -> Self {
-        Self { prompt_id: prompt_id.into(), total_nodes, done: HashSet::new(), current: None, step: None, started: false, outputs: Vec::new(), outcome: None }
+    /// Tracks `prompt_id`, whose workflow has the nodes `node_ids` (see [`crate::ApiWorkflow::ids`]).
+    /// Only those count towards progress: servers may also report cached or expanded nodes.
+    pub fn new<I: IntoIterator<Item = S>, S: Into<String>>(prompt_id: impl Into<String>, node_ids: I) -> Self {
+        Self {
+            prompt_id: prompt_id.into(),
+            nodes: node_ids.into_iter().map(Into::into).collect(),
+            done: HashSet::new(),
+            current: None,
+            step: None,
+            started: false,
+            outputs: Vec::new(),
+            outcome: None,
+        }
     }
 
     fn mine(&self, id: Option<&String>) -> bool {
@@ -255,7 +290,7 @@ impl PromptProgress {
         if matches!(self.outcome, Some(Outcome::Success)) {
             return 1.0;
         }
-        if self.total_nodes == 0 {
+        if self.nodes.is_empty() {
             return 0.0;
         }
         let step = match self.step {
@@ -263,7 +298,8 @@ impl PromptProgress {
             _ => 0.0,
         };
         let running = if self.current.is_some() { step } else { 0.0 };
-        let fraction = (self.done.len() as f64 + running) / self.total_nodes as f64;
+        let done = self.done.iter().filter(|n| self.nodes.contains(*n)).count();
+        let fraction = (done as f64 + running) / self.nodes.len() as f64;
         fraction.clamp(0.0, 1.0) as f32
     }
 
@@ -306,6 +342,7 @@ mod tests {
             r#"{"type":"executed","data":{"node":"9","prompt_id":"p","output":{"images":[{"filename":"NodeCraft_00001_.png","subfolder":"","type":"output"}],"text":["hi"]}}}"#,
         );
         let WsEvent::Executed { files, node, .. } = &executed else { panic!("{executed:?}") };
+        assert_eq!(files_in(&serde_json::json!({"images":[{"filename":"a.png","subfolder":null,"type":null}]})).len(), 1, "null fields");
         assert_eq!(node, "9");
         assert_eq!(files, &[FileRef { filename: "NodeCraft_00001_.png".into(), subfolder: String::new(), kind: "output".into() }]);
         assert_eq!(
@@ -340,17 +377,32 @@ mod tests {
     fn binary_previews() {
         let mut frame = vec![0, 0, 0, 1, 0, 0, 0, 2];
         frame.extend_from_slice(b"\x89PNG");
-        assert_eq!(parse_binary(&frame).unwrap(), WsEvent::Preview { format: PreviewFormat::Png, bytes: b"\x89PNG".to_vec() });
-        assert_eq!(parse_binary(&[0, 0, 0, 1, 0, 0, 0, 1]).unwrap(), WsEvent::Preview { format: PreviewFormat::Jpeg, bytes: vec![] });
+        assert_eq!(parse_binary(&frame).unwrap(), WsEvent::Preview { format: PreviewFormat::Png, bytes: b"\x89PNG".to_vec(), prompt_id: None, node: None });
+        assert_eq!(
+            parse_binary(&[0, 0, 0, 1, 0, 0, 0, 1]).unwrap(),
+            WsEvent::Preview { format: PreviewFormat::Jpeg, bytes: vec![], prompt_id: None, node: None }
+        );
         assert_eq!(parse_binary(&[0, 0, 0, 3, 9]).unwrap(), WsEvent::Other { kind: "binary:3".into() });
-        for short in [&[][..], &[0, 0, 0], &[0, 0, 0, 1, 0, 0]] {
+        for short in [&[][..], &[0, 0, 0], &[0, 0, 0, 1, 0, 0], &[0, 0, 0, 4, 0, 0, 0, 99, b'{']] {
             assert!(parse_binary(short).is_err());
         }
+        let meta = br#"{"prompt_id":"p","node_id":"3","display_node_id":"3","image_type":"image/png"}"#;
+        let mut frame = vec![0, 0, 0, 4];
+        frame.extend_from_slice(&u32::try_from(meta.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(meta);
+        frame.extend_from_slice(b"IMG");
+        assert_eq!(
+            parse_binary(&frame).unwrap(),
+            WsEvent::Preview { format: PreviewFormat::Png, bytes: b"IMG".to_vec(), prompt_id: Some("p".into()), node: Some("3".into()) }
+        );
+        let mut huge = vec![0, 0, 0, 4, 0xFF, 0xFF, 0xFF, 0xFF];
+        huge.extend_from_slice(b"x");
+        assert!(parse_binary(&huge).is_err());
     }
 
     #[test]
     fn tracks_one_prompt() {
-        let mut p = PromptProgress::new("p", 4);
+        let mut p = PromptProgress::new("p", ["3", "4", "8", "9"]);
         assert!(!p.apply(&ev(r#"{"type":"execution_start","data":{"prompt_id":"other"}}"#)));
         assert!(p.apply(&ev(r#"{"type":"execution_cached","data":{"nodes":["4"],"prompt_id":"p"}}"#)));
         assert!(p.started());
@@ -371,25 +423,27 @@ mod tests {
 
     #[test]
     fn errors_and_interrupts_end_a_prompt() {
-        let mut p = PromptProgress::new("p", 2);
+        let mut p = PromptProgress::new("p", ["1", "2"]);
         p.apply(&ev(r#"{"type":"execution_error","data":{"prompt_id":"p","node_id":"3","node_type":"KSampler","exception_message":"boom"}}"#));
         assert_eq!(p.outcome(), Some(&Outcome::Error { node: Some("3".into()), node_type: Some("KSampler".into()), message: "boom".into() }));
-        let mut p = PromptProgress::new("p", 2);
+        let mut p = PromptProgress::new("p", ["1", "2"]);
         p.apply(&ev(r#"{"type":"execution_interrupted","data":{"prompt_id":"p"}}"#));
         assert_eq!(p.outcome(), Some(&Outcome::Interrupted));
     }
 
     #[test]
     fn hostile_progress_numbers() {
-        let mut p = PromptProgress::new("p", 1);
+        let mut p = PromptProgress::new("p", ["1"]);
         p.apply(&WsEvent::Executing { prompt_id: Some("p".into()), node: Some("1".into()) });
         p.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some("1".into()), value: u64::MAX, max: 0 });
         assert_eq!(p.fraction(), 0.0);
         p.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some("1".into()), value: 50, max: 10 });
         assert_eq!(p.fraction(), 1.0);
-        assert_eq!(PromptProgress::new("p", 0).fraction(), 0.0);
-        let mut many = PromptProgress::new("p", 1);
-        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: (0..10).map(|n| n.to_string()).collect() });
-        assert_eq!(many.fraction(), 1.0, "clamped");
+        assert_eq!(PromptProgress::new("p", Vec::<String>::new()).fraction(), 0.0);
+        let mut many = PromptProgress::new("p", ["1", "2"]);
+        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: (0..10).map(|n| format!("x{n}")).collect() });
+        assert_eq!(many.fraction(), 0.0, "nodes outside the workflow don't count");
+        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: vec!["1".into()] });
+        assert_eq!(many.fraction(), 0.5);
     }
 }

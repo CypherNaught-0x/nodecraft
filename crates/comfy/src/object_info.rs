@@ -13,14 +13,24 @@ use crate::ordered::OValue;
 /// Cap on an `/object_info` reply. Large installs with many custom nodes send tens of MB.
 pub const MAX_OBJECT_INFO_BYTES: usize = 128 * 1024 * 1024;
 
+/// A kind of media file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Media {
+    Image,
+    Video,
+    Audio,
+    Mesh,
+}
+
 /// What kind of value an input takes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputKind {
+    /// Whole numbers; `i128` because seeds range over all of `u64`.
     Int {
-        default: Option<i64>,
-        min: Option<i64>,
-        max: Option<i64>,
-        step: Option<i64>,
+        default: Option<i128>,
+        min: Option<i128>,
+        max: Option<i128>,
+        step: Option<i128>,
     },
     Float {
         default: Option<f64>,
@@ -35,11 +45,12 @@ pub enum InputKind {
     Boolean {
         default: Option<bool>,
     },
-    /// One of a list of strings: samplers, schedulers, model files, input images.
+    /// One of a list of strings: samplers, schedulers, model files, input files. `upload` is set
+    /// for loaders whose file is uploaded first (`LoadImage`, `LoadVideo`, `LoadAudio`).
     Combo {
         options: Vec<String>,
         default: Option<String>,
-        image_upload: bool,
+        upload: Option<Media>,
     },
     /// Connection-only input of a ComfyUI type such as `MODEL`, `LATENT` or `IMAGE`.
     Link(String),
@@ -67,7 +78,7 @@ impl InputSpec {
     pub fn check(&self, value: &Value) -> Result<(), String> {
         match &self.kind {
             InputKind::Int { min, max, .. } => {
-                let n = value.as_i64().ok_or_else(|| format!("expected a whole number, got {value}"))?;
+                let n = whole_number(value).ok_or_else(|| format!("expected a whole number, got {value}"))?;
                 in_range(n, *min, *max)
             }
             InputKind::Float { min, max, .. } => {
@@ -76,14 +87,36 @@ impl InputSpec {
             }
             InputKind::String { .. } => value.is_string().then_some(()).ok_or_else(|| format!("expected text, got {value}")),
             InputKind::Boolean { .. } => value.is_boolean().then_some(()).ok_or_else(|| format!("expected true or false, got {value}")),
-            InputKind::Combo { options, image_upload, .. } => {
-                let s = value.as_str().ok_or_else(|| format!("expected one of the options, got {value}"))?;
-                // Uploaded images are named by the upload reply, so they need not be listed yet.
-                if *image_upload || options.iter().any(|o| o == s) { Ok(()) } else { Err(format!("{s:?} is not available on this server")) }
+            InputKind::Combo { options, upload, .. } => {
+                let text = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => return Err(format!("expected one of the options, got {value}")),
+                };
+                // Uploaded files are named by the upload reply, so they need not be listed yet; an
+                // empty list means the options are fetched elsewhere (remote combos).
+                if upload.is_some() || options.is_empty() || options.contains(&text) {
+                    Ok(())
+                } else {
+                    Err(format!("{text:?} is not available on this server"))
+                }
             }
             InputKind::Link(t) => Err(format!("{t} inputs take a connection, not a value")),
         }
     }
+}
+
+/// A whole number from JSON: any integer up to `u64::MAX`, or a float without a fraction (API
+/// JSON written from Python often has `1024.0`).
+pub(crate) fn whole_number(v: &Value) -> Option<i128> {
+    if let Some(n) = v.as_i64() {
+        return Some(i128::from(n));
+    }
+    if let Some(n) = v.as_u64() {
+        return Some(i128::from(n));
+    }
+    let f = v.as_f64()?;
+    (f.is_finite() && f.fract() == 0.0 && f.abs() < 1.8e19).then_some(f as i128)
 }
 
 fn in_range<T: PartialOrd + std::fmt::Display + Copy>(n: T, min: Option<T>, max: Option<T>) -> Result<(), String> {
@@ -119,6 +152,8 @@ pub struct NodeInfo {
     pub outputs: Vec<OutputSpec>,
     /// Output nodes (savers, previews) are what a prompt executes towards.
     pub output_node: bool,
+    /// A paid Comfy API node: running it costs credits.
+    pub api_node: bool,
 }
 
 impl NodeInfo {
@@ -152,6 +187,11 @@ impl NodeCatalog {
             }
         }
         Ok((Self { nodes }, skipped))
+    }
+
+    /// Adds (or replaces) node classes, e.g. from a second `/object_info` call.
+    pub fn extend(&mut self, other: NodeCatalog) {
+        self.nodes.extend(other.nodes);
     }
 
     pub fn get(&self, class_type: &str) -> Option<&NodeInfo> {
@@ -229,6 +269,7 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         inputs,
         outputs,
         output_node: obj.get("output_node").and_then(Value::as_bool).unwrap_or(false),
+        api_node: obj.get("api_node").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -237,7 +278,7 @@ fn parse_input(name: &str, spec: &Value, required: bool) -> Option<InputSpec> {
     let ty = parts.first()?;
     let empty = serde_json::Map::new();
     let opts = parts.get(1).and_then(Value::as_object).unwrap_or(&empty);
-    let i = |k: &str| opts.get(k).and_then(Value::as_i64);
+    let i = |k: &str| opts.get(k).and_then(whole_number);
     let f = |k: &str| opts.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
     let strings = |v: &Value| v.as_array().map(|a| a.iter().filter_map(scalar_text).collect::<Vec<_>>());
     let force_input = opts.get("forceInput").and_then(Value::as_bool).unwrap_or(false);
@@ -269,7 +310,10 @@ fn parse_input(name: &str, spec: &Value, required: bool) -> Option<InputSpec> {
 fn combo(options: Vec<String>, opts: &serde_json::Map<String, Value>) -> InputKind {
     InputKind::Combo {
         default: opts.get("default").and_then(scalar_text),
-        image_upload: opts.get("image_upload").and_then(Value::as_bool).unwrap_or(false),
+        upload: [("image_upload", Media::Image), ("video_upload", Media::Video), ("audio_upload", Media::Audio)]
+            .into_iter()
+            .find(|(flag, _)| opts.get(*flag).and_then(Value::as_bool).unwrap_or(false))
+            .map(|(_, media)| media),
         options,
     }
 }
@@ -303,7 +347,12 @@ mod tests {
         assert!(catalog.get("SaveImage").unwrap().output_node);
         assert_eq!(catalog.options("CheckpointLoaderSimple", "ckpt_name").unwrap(), ["sd_xl_base_1.0.safetensors", "flux1-dev.safetensors"]);
         let load = catalog.get("LoadImage").unwrap().input("image").unwrap();
-        assert!(matches!(load.kind, InputKind::Combo { image_upload: true, .. }));
+        assert!(matches!(load.kind, InputKind::Combo { upload: Some(Media::Image), .. }));
+        let seed = ks.input("seed").unwrap();
+        assert_eq!(seed.kind, InputKind::Int { default: Some(0), min: Some(0), max: Some(i128::from(u64::MAX)), step: None });
+        assert!(seed.check(&serde_json::json!(u64::MAX)).is_ok(), "seeds use all of u64");
+        assert!(ks.input("steps").unwrap().check(&serde_json::json!(30.0)).is_ok(), "integral floats are whole numbers");
+        assert!(ks.input("steps").unwrap().check(&serde_json::json!(30.5)).is_err());
         assert_eq!(catalog.get("CLIPTextEncode").unwrap().input("text").unwrap().kind, InputKind::String { default: None, multiline: true });
     }
 
@@ -324,11 +373,24 @@ mod tests {
         let json = r#"{"N":{"input":{"required":{"s":["COMBO",{"options":["x",1]}],"n":["INT",{"forceInput":true}]}},"output":["IMAGE"],"output_name":["out"],"output_is_list":[true]}}"#;
         let (c, _) = NodeCatalog::parse(json.as_bytes()).unwrap();
         let n = c.get("N").unwrap();
-        assert_eq!(n.input("s").unwrap().kind, InputKind::Combo { options: vec!["x".into(), "1".into()], default: None, image_upload: false });
+        assert_eq!(n.input("s").unwrap().kind, InputKind::Combo { options: vec!["x".into(), "1".into()], default: None, upload: None });
         assert_eq!(n.input("n").unwrap().kind, InputKind::Link("INT".into()));
         assert!(!n.input("n").unwrap().is_widget());
         assert_eq!(n.outputs, vec![OutputSpec { name: "out".into(), kind: "IMAGE".into(), is_list: true }]);
         assert_eq!(n.display_name, "N");
+    }
+
+    #[test]
+    fn upload_flags_api_nodes_and_numeric_combos() {
+        let json = r#"{"V":{"input":{"required":{"file":[["a.mp4"],{"video_upload":true}],"n":[[1,2,4],{}],"remote":["COMBO",{"options":[]}]}},"output":[],"api_node":true}}"#;
+        let (c, _) = NodeCatalog::parse(json.as_bytes()).unwrap();
+        let v = c.get("V").unwrap();
+        assert!(v.api_node);
+        assert!(matches!(v.input("file").unwrap().kind, InputKind::Combo { upload: Some(Media::Video), .. }));
+        assert!(v.input("file").unwrap().check(&serde_json::json!("just_uploaded.mp4")).is_ok());
+        assert!(v.input("n").unwrap().check(&serde_json::json!(2)).is_ok());
+        assert!(v.input("n").unwrap().check(&serde_json::json!(3)).is_err());
+        assert!(v.input("remote").unwrap().check(&serde_json::json!("anything")).is_ok());
     }
 
     #[test]

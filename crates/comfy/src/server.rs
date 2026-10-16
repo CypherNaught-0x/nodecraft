@@ -43,6 +43,10 @@ pub enum Body {
 }
 
 /// An HTTP request ready to send.
+///
+/// Transports must not follow redirects to another origin with these headers: reqwest strips
+/// `Authorization` on cross-host redirects but not custom names such as `X-API-Key`, so disable
+/// redirects or restrict them to the same origin.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     pub method: Method,
@@ -107,7 +111,7 @@ impl Server {
     pub fn new(url: &str) -> Result<Self, ComfyError> {
         let mut base = Url::parse(url.trim()).map_err(|e| ComfyError::InvalidUrl(e.to_string()))?;
         if !matches!(base.scheme(), "http" | "https") {
-            return Err(ComfyError::InvalidUrl(format!("scheme must be http or https, not {}", base.scheme())));
+            return Err(ComfyError::InvalidUrl(format!("scheme must be http or https, not {} (try http://{})", base.scheme(), url.trim())));
         }
         if base.host_str().is_none_or(str::is_empty) {
             return Err(ComfyError::InvalidUrl("no host".into()));
@@ -129,7 +133,7 @@ impl Server {
     pub fn with_auth_header(mut self, name: &str, value: &str) -> Result<Self, ComfyError> {
         let bad = |s: &str| s.is_empty() || s.chars().any(|c| c.is_control());
         if bad(name) || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)) || bad(value) {
-            return Err(ComfyError::InvalidUrl("auth header name or value is not valid".into()));
+            return Err(ComfyError::InvalidSetting("the auth header name or value is not valid".into()));
         }
         self.auth = Some((name.into(), value.into()));
         Ok(self)
@@ -178,9 +182,15 @@ impl Server {
         self.post_json("queue", &serde_json::json!({ "delete": prompt_ids }))
     }
 
-    /// `POST /interrupt`: stop the prompt that is running now.
-    pub fn interrupt(&self) -> Result<Request, ComfyError> {
-        self.post_json("interrupt", &serde_json::json!({}))
+    /// `POST /interrupt`. With `prompt_id`, newer servers stop only that prompt (and ignore the
+    /// request when another one is running), which is what a shared server needs; without it,
+    /// whatever is running stops.
+    pub fn interrupt(&self, prompt_id: Option<&str>) -> Result<Request, ComfyError> {
+        let body = match prompt_id {
+            Some(id) => serde_json::json!({ "prompt_id": id }),
+            None => serde_json::json!({}),
+        };
+        self.post_json("interrupt", &body)
     }
 
     /// `GET /history/{prompt_id}`. Parse with [`crate::HistoryEntry::parse`].
@@ -206,7 +216,7 @@ impl Server {
     /// The reply names the stored file; parse it with [`FileRef`] via [`parse_upload_response`].
     pub fn upload_image(&self, filename: &str, bytes: &[u8], kind: UploadKind, overwrite: bool) -> Result<Request, ComfyError> {
         let filename = sanitize_filename(filename)?;
-        let boundary = boundary_for(bytes);
+        let boundary = boundary_for(bytes)?;
         let mut body = Vec::with_capacity(bytes.len().saturating_add(512));
         let mut field = |name: &str, value: &str| {
             body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
@@ -233,7 +243,9 @@ impl Server {
         Ok(url)
     }
 
-    /// Headers the WebSocket handshake needs (the auth header, if any).
+    /// Headers the WebSocket handshake needs (the auth header, if any). Browsers can't set
+    /// headers on WebSockets, so the browser build needs a server that authenticates another way
+    /// (same-origin cookie or a token in the URL).
     pub fn websocket_headers(&self) -> Vec<(String, String)> {
         self.auth.iter().cloned().collect()
     }
@@ -259,24 +271,26 @@ pub fn parse_upload_response(bytes: &[u8]) -> Result<FileRef, ComfyError> {
 /// A file name safe to put in a multipart header: no path, no quotes or control characters.
 fn sanitize_filename(name: &str) -> Result<String, ComfyError> {
     let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
-    let clean: String = base.chars().filter(|c| !c.is_control() && *c != '"').collect();
+    let clean: String = base.chars().filter(|c| !c.is_control() && *c != '"').take(200).collect();
     let clean = clean.trim();
     if clean.is_empty() || clean == "." || clean == ".." {
         return Err(ComfyError::InvalidInput { node: "-".into(), input: "filename".into(), message: format!("{name:?} is not a usable file name") });
     }
-    Ok(clean.chars().take(200).collect())
+    Ok(clean.to_owned())
 }
 
-/// A multipart boundary that does not occur in `bytes`.
-fn boundary_for(bytes: &[u8]) -> String {
-    let mut n: u64 = 0x6e6f_6465_6372_6166; // "nodecraf"
-    loop {
+/// A multipart boundary that does not occur in `bytes`. Candidates are derived from the content,
+/// so a file can't be crafted to contain them in advance; the attempts are capped.
+fn boundary_for(bytes: &[u8]) -> Result<String, ComfyError> {
+    let mut n = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+    for _ in 0..8 {
         let boundary = format!("----NodeCraftBoundary{n:016x}");
         if !bytes.windows(boundary.len()).any(|w| w == boundary.as_bytes()) {
-            return boundary;
+            return Ok(boundary);
         }
-        n = n.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        n = n.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
     }
+    Err(ComfyError::InvalidInput { node: "-".into(), input: "upload".into(), message: "could not find a multipart boundary for this file".into() })
 }
 
 #[cfg(test)]
@@ -322,7 +336,8 @@ mod tests {
         assert_eq!(del.method, Method::Post);
         assert_eq!(del.body, Body::Json(br#"{"delete":["p1"]}"#.to_vec()));
         assert_eq!(del.content_type().as_deref(), Some("application/json"));
-        assert_eq!(s.interrupt().unwrap().url.as_str(), "http://127.0.0.1:8188/interrupt");
+        assert_eq!(s.interrupt(None).unwrap().url.as_str(), "http://127.0.0.1:8188/interrupt");
+        assert_eq!(s.interrupt(Some("p1")).unwrap().body, Body::Json(br#"{"prompt_id":"p1"}"#.to_vec()));
     }
 
     #[test]
@@ -342,9 +357,11 @@ mod tests {
 
     #[test]
     fn boundary_avoids_the_payload() {
-        let first = boundary_for(b"");
-        let tricky = format!("xx{first}yy");
-        assert_ne!(boundary_for(tricky.as_bytes()), first);
+        let b = boundary_for(b"payload").unwrap();
+        assert!(!b"payload".windows(b.len()).any(|w| w == b.as_bytes()));
+        let tricky = format!("xx{b}yy");
+        let other = boundary_for(tricky.as_bytes()).unwrap();
+        assert!(!tricky.contains(&other));
     }
 
     #[test]

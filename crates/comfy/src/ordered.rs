@@ -88,11 +88,16 @@ impl<'de> Deserialize<'de> for OValue {
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<OValue, A::Error> {
                 let mut entries: Vec<(String, OValue)> = Vec::new();
+                // Key -> position, so duplicate detection stays linear on huge objects.
+                let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                 while let Some((k, v)) = map.next_entry::<String, OValue>()? {
                     // Duplicate keys: the last one wins, as in serde_json, keeping the first position.
-                    match entries.iter_mut().find(|(key, _)| *key == k) {
+                    match index.get(&k).and_then(|i| entries.get_mut(*i)) {
                         Some(slot) => slot.1 = v,
-                        None => entries.push((k, v)),
+                        None => {
+                            index.insert(k.clone(), entries.len());
+                            entries.push((k, v));
+                        }
                     }
                 }
                 Ok(OValue::Object(entries))
@@ -113,5 +118,22 @@ mod tests {
         assert_eq!(v.get("b"), Some(&OValue::Number(2.into())));
         assert_eq!(v.to_value(), serde_json::json!({"a":[true,null,"x",1.5],"b":2}));
         assert!(serde_json::from_str::<OValue>(&"[".repeat(1000)).is_err(), "depth limit still applies");
+    }
+
+    #[test]
+    fn many_keys_parse_in_linear_time() {
+        // 200k keys took ~26 s with a linear duplicate scan; must be well under a second now.
+        let mut json = String::from("{");
+        for i in 0..200_000 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!("\"k{i}\":{i}"));
+        }
+        json.push('}');
+        let started = std::time::Instant::now();
+        let v: OValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(v.keys().len(), 200_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
     }
 }

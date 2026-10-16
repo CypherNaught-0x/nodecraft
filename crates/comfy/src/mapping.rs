@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
+pub use crate::object_info::Media;
 use crate::object_info::{InputKind, NodeCatalog};
 use crate::workflow::{ApiWorkflow, InputValue};
 
@@ -20,9 +21,9 @@ pub enum ExposedKind {
         multiline: bool,
     },
     Int {
-        min: Option<i64>,
-        max: Option<i64>,
-        step: Option<i64>,
+        min: Option<i128>,
+        max: Option<i128>,
+        step: Option<i128>,
     },
     Float {
         min: Option<f64>,
@@ -34,14 +35,6 @@ pub enum ExposedKind {
     Choice {
         options: Vec<String>,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Media {
-    Image,
-    Video,
-    Audio,
-    Mesh,
 }
 
 /// Why an input is interesting; the mapping editor uses it to order and pre-select inputs.
@@ -83,6 +76,13 @@ pub struct ExposedInput {
     pub kind: ExposedKind,
     /// The value in the workflow as imported.
     pub current: Option<Value>,
+    /// The server's default for the input.
+    pub default: Option<Value>,
+    pub required: bool,
+    pub tooltip: Option<String>,
+    /// The editor offers "control after generate" (fixed / randomize / …) for this input; the
+    /// imported mode is in [`crate::Conversion::controls`].
+    pub control_after_generate: bool,
 }
 
 /// An output the node produces.
@@ -121,7 +121,7 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Exposed {
                 None => None,
             };
             let media = match &spec.kind {
-                InputKind::Combo { image_upload: true, .. } => Some(loader_media(&node.class_type, &spec.name)),
+                InputKind::Combo { upload: Some(media), .. } => Some(*media),
                 _ => None,
             };
             let kind = match (&spec.kind, media) {
@@ -140,7 +140,28 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Exposed {
                 InputRole::Prompt | InputRole::NegativePrompt => node_label.clone(),
                 _ => format!("{node_label} · {}", spec.name),
             };
-            out.inputs.push(ExposedInput { node: id.into(), input: spec.name.clone(), label, role, kind, current });
+            let default = match &spec.kind {
+                InputKind::Int { default, .. } => {
+                    default.and_then(|d| i64::try_from(d).ok().map(Value::from).or_else(|| u64::try_from(d).ok().map(Value::from)))
+                }
+                InputKind::Float { default, .. } => default.and_then(|d| serde_json::Number::from_f64(d).map(Value::Number)),
+                InputKind::String { default, .. } => default.clone().map(Value::String),
+                InputKind::Boolean { default } => default.map(Value::Bool),
+                InputKind::Combo { default, .. } => default.clone().map(Value::String),
+                InputKind::Link(_) => None,
+            };
+            out.inputs.push(ExposedInput {
+                node: id.into(),
+                input: spec.name.clone(),
+                label,
+                role,
+                kind,
+                current,
+                default,
+                required: spec.required,
+                tooltip: spec.tooltip.clone(),
+                control_after_generate: spec.control_after_generate,
+            });
         }
     }
     out
@@ -183,20 +204,6 @@ fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
     }
 }
 
-fn loader_media(class: &str, input: &str) -> Media {
-    let c = class.to_ascii_lowercase();
-    let i = input.to_ascii_lowercase();
-    if c.contains("video") || i.contains("video") {
-        Media::Video
-    } else if c.contains("audio") || i.contains("audio") {
-        Media::Audio
-    } else if c.contains("3d") || c.contains("mesh") || c.contains("glb") {
-        Media::Mesh
-    } else {
-        Media::Image
-    }
-}
-
 fn output_media(class: &str) -> Option<Media> {
     let c = class.to_ascii_lowercase();
     if c.contains("video") || c.contains("animated") || c.contains("webm") {
@@ -233,6 +240,9 @@ mod tests {
         let neg = find("7", "text");
         assert_eq!((neg.role, neg.label.as_str()), (InputRole::NegativePrompt, "Negative prompt"));
         assert_eq!(find("3", "seed").role, InputRole::Seed);
+        assert!(find("3", "seed").control_after_generate);
+        assert_eq!(find("3", "steps").default, Some(serde_json::json!(20)));
+        assert!(find("3", "steps").required);
         assert_eq!(find("3", "steps").kind, ExposedKind::Int { min: Some(1), max: Some(10000), step: None });
         assert_eq!(find("3", "sampler_name").kind, ExposedKind::Choice { options: vec!["euler".into(), "euler_ancestral".into(), "dpmpp_2m".into()] });
         assert_eq!(find("4", "ckpt_name").role, InputRole::Checkpoint);
@@ -257,8 +267,6 @@ mod tests {
 
     #[test]
     fn media_kinds_from_class_names() {
-        assert_eq!(loader_media("VHS_LoadVideo", "video"), Media::Video);
-        assert_eq!(loader_media("LoadAudio", "audio"), Media::Audio);
         assert_eq!(output_media("VHS_VideoCombine"), Some(Media::Video));
         assert_eq!(output_media("SaveAudio"), Some(Media::Audio));
         assert_eq!(output_media("SaveGLB"), Some(Media::Mesh));

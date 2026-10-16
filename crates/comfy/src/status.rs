@@ -108,10 +108,14 @@ pub struct HistoryEntry {
     pub completed: bool,
     /// `success` or `error` as the server reports it.
     pub status: String,
+    /// The prompt was interrupted (the server reports that as an error too).
+    pub interrupted: bool,
     /// Output files by node, in numeric node order.
     pub outputs: Vec<(String, Vec<FileRef>)>,
     /// The error message when the prompt failed.
     pub error: Option<String>,
+    /// The node that failed, and its class.
+    pub error_node: Option<(String, String)>,
 }
 
 impl HistoryEntry {
@@ -127,19 +131,21 @@ impl HistoryEntry {
             .map(|o| o.iter().map(|(node, out)| (node.clone(), crate::ws::files_in(out))).collect())
             .unwrap_or_default();
         outputs.sort_by(|a, b| crate::workflow::id_order(&a.0, &b.0));
-        let error = status
-            .and_then(|s| s.get("messages"))
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|m| m.get(0).and_then(Value::as_str) == Some("execution_error"))
-            .and_then(|m| m.get(1)?.get("exception_message")?.as_str().map(|s| s.trim().to_owned()));
+        let messages: Vec<&Value> = status.and_then(|s| s.get("messages")).and_then(Value::as_array).into_iter().flatten().collect();
+        let message = |kind: &str| messages.iter().find(|m| m.get(0).and_then(Value::as_str) == Some(kind)).and_then(|m| m.get(1));
+        let failure = message("execution_error");
+        let error = failure.and_then(|d| d.get("exception_message")?.as_str().map(|s| s.trim().to_owned()));
+        let text = |d: &Value, k: &str| d.get(k).and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_u64().map(|n| n.to_string())));
+        let error_node = failure.and_then(|d| Some((text(d, "node_id")?, text(d, "node_type").unwrap_or_default())));
+        let interrupted = message("execution_interrupted").is_some();
         Ok(Some(Self {
             prompt_id: prompt_id.to_owned(),
             completed: status.and_then(|s| s.get("completed")).and_then(Value::as_bool).unwrap_or(false),
             status: status.and_then(|s| s.get("status_str")).and_then(Value::as_str).unwrap_or_default().to_owned(),
+            interrupted,
             outputs,
             error,
+            error_node,
         }))
     }
 }
@@ -191,6 +197,10 @@ mod tests {
         let h = HistoryEntry::parse(failed, "p2").unwrap().unwrap();
         assert!(!h.completed);
         assert_eq!(h.error.as_deref(), Some("CUDA out of memory"));
+        assert_eq!(h.error_node, Some(("3".into(), String::new())));
+        assert!(!h.interrupted);
+        let stopped = br#"{"p3":{"outputs":{},"status":{"status_str":"error","completed":false,"messages":[["execution_interrupted",{"prompt_id":"p3","node_id":"3","node_type":"KSampler"}]]}}}"#;
+        assert!(HistoryEntry::parse(stopped, "p3").unwrap().unwrap().interrupted);
         assert!(HistoryEntry::parse(b"[1]", "p").unwrap().is_none());
         assert!(HistoryEntry::parse(br#"{"p":{"outputs":5,"status":[]}}"#, "p").unwrap().is_some());
     }

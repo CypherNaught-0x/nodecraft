@@ -9,24 +9,44 @@ use crate::{ApiWorkflow, ComfyError};
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 
 /// A workflow to queue, addressed to one WebSocket client so its progress comes back to us.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PromptRequest {
     pub workflow: ApiWorkflow,
     /// The `clientId` the WebSocket was opened with ([`crate::Server::websocket_url`]).
     pub client_id: String,
-    /// Passed through as `extra_data` (e.g. `{"extra_pnginfo": …}`).
+    /// A prompt id chosen by the client (newer servers accept it). Choosing it lets progress
+    /// messages that arrive before the `/prompt` reply be matched, and makes a retried submit
+    /// recognisable: use the job's idempotency key.
+    pub prompt_id: Option<String>,
+    /// Passed through as `extra_data` (e.g. `{"extra_pnginfo": …}`; also where a Comfy account
+    /// key for paid API nodes goes, so it is never printed).
     pub extra_data: Map<String, Value>,
+}
+
+impl std::fmt::Debug for PromptRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys: Vec<&String> = self.extra_data.keys().collect();
+        f.debug_struct("PromptRequest")
+            .field("workflow", &self.workflow)
+            .field("client_id", &self.client_id)
+            .field("prompt_id", &self.prompt_id)
+            .field("extra_data_keys", &keys)
+            .finish()
+    }
 }
 
 impl PromptRequest {
     pub fn new(workflow: ApiWorkflow, client_id: impl Into<String>) -> Self {
-        Self { workflow, client_id: client_id.into(), extra_data: Map::new() }
+        Self { workflow, client_id: client_id.into(), prompt_id: None, extra_data: Map::new() }
     }
 
     pub fn to_json(&self) -> Value {
         let mut body = Map::new();
         body.insert("prompt".into(), self.workflow.to_json());
         body.insert("client_id".into(), Value::String(self.client_id.clone()));
+        if let Some(id) = &self.prompt_id {
+            body.insert("prompt_id".into(), Value::String(id.clone()));
+        }
         if !self.extra_data.is_empty() {
             body.insert("extra_data".into(), Value::Object(self.extra_data.clone()));
         }
@@ -54,7 +74,7 @@ pub fn parse_prompt_response(status: u16, bytes: &[u8]) -> Result<Queued, ComfyE
         Err(_) => {
             let text = String::from_utf8_lossy(bytes.get(..bytes.len().min(300)).unwrap_or_default()).trim().to_owned();
             let message = if text.is_empty() { "no details".into() } else { text };
-            return Err(ComfyError::Server { status, message, node_errors: Vec::new() });
+            return Err(ComfyError::Server { status, kind: None, message, node_errors: Vec::new() });
         }
     };
     let node_errors = parse_node_errors(v.get("node_errors"));
@@ -63,6 +83,7 @@ pub fn parse_prompt_response(status: u16, bytes: &[u8]) -> Result<Queued, ComfyE
         return Ok(Queued { prompt_id: prompt_id.to_owned(), number, node_errors });
     }
     let error = v.get("error");
+    let kind = error.and_then(|e| e.get("type")).and_then(Value::as_str).map(str::to_owned);
     let message = match error {
         Some(Value::String(s)) => s.clone(),
         Some(e) => {
@@ -75,7 +96,7 @@ pub fn parse_prompt_response(status: u16, bytes: &[u8]) -> Result<Queued, ComfyE
         None if ok => "the reply has no prompt_id".into(),
         None => "request refused".into(),
     };
-    Err(ComfyError::Server { status, message, node_errors })
+    Err(ComfyError::Server { status, kind, message, node_errors })
 }
 
 fn parse_node_errors(v: Option<&Value>) -> Vec<NodeError> {
@@ -93,6 +114,7 @@ fn parse_node_errors(v: Option<&Value>) -> Vec<NodeError> {
                 node: id.clone(),
                 class_type: class_type.clone(),
                 message: details.map_or_else(|| message.clone(), |d| format!("{message}: {d}")),
+                kind: e.get("type").and_then(Value::as_str).map(str::to_owned),
                 input: e.get("extra_info").and_then(|x| x.get("input_name")).and_then(Value::as_str).map(str::to_owned),
             });
         }
@@ -115,6 +137,10 @@ mod tests {
         assert!(body.get("extra_data").is_none());
         req.extra_data.insert("k".into(), Value::Bool(true));
         assert_eq!(req.to_json()["extra_data"]["k"], true);
+        req.extra_data.insert("api_key_comfy_org".into(), Value::String("sk-secret".into()));
+        assert!(!format!("{req:?}").contains("sk-secret"));
+        req.prompt_id = Some("nodecraft:run:7".into());
+        assert_eq!(req.to_json()["prompt_id"], "nodecraft:run:7");
         let http = crate::Server::new("http://h:8188").unwrap().prompt(&req).unwrap();
         assert_eq!(http.url.as_str(), "http://h:8188/prompt");
     }
@@ -131,8 +157,10 @@ mod tests {
           "node_errors":{"10":{"errors":[{"type":"value_not_in_list","message":"Value not in list","details":"ckpt_name: 'x' not in [...]","extra_info":{"input_name":"ckpt_name"}}],"dependent_outputs":["9"],"class_type":"CheckpointLoaderSimple"},
                          "3":{"errors":[{"type":"value_smaller_than_min","message":"Value 0 smaller than min of 1","details":"","extra_info":{"input_name":"steps"}}],"class_type":"KSampler"}}}"#;
         let err = parse_prompt_response(400, reply).unwrap_err();
-        let ComfyError::Server { status, message, node_errors } = &err else { panic!("{err:?}") };
+        let ComfyError::Server { status, kind, message, node_errors } = &err else { panic!("{err:?}") };
         assert_eq!(*status, 400);
+        assert_eq!(kind.as_deref(), Some("prompt_outputs_failed_validation"));
+        assert_eq!(node_errors[1].kind.as_deref(), Some("value_not_in_list"));
         assert_eq!(message, "Prompt outputs failed validation");
         assert_eq!(node_errors.len(), 2);
         assert_eq!(node_errors[0].node, "3", "numeric id order");
