@@ -45,6 +45,7 @@ pub fn validate(v: &str) -> Result<(), String> {
         None => (v, None),
     };
     let nums: Vec<&str> = core.split('.').collect();
+    // parse::<u64>() accepts a leading '+', but Cargo version components must be ASCII digits.
     if nums.len() != 3
         || nums.iter().any(|n| n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) || (n.len() > 1 && n.starts_with('0')) || n.parse::<u64>().is_err())
     {

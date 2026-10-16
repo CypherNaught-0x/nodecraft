@@ -21,13 +21,15 @@ commands:
 ";
 
 fn main() -> ExitCode {
-    let args = match std::env::args_os().skip(1).map(|arg| arg.into_string()).collect::<Result<Vec<_>, _>>() {
-        Ok(args) => args,
-        Err(_) => {
-            eprintln!("error: command-line arguments must be valid UTF-8");
-            return ExitCode::FAILURE;
-        }
-    };
+    let args =
+        match std::env::args_os().skip(1).enumerate().map(|(index, arg)| arg.into_string().map_err(|_| index.saturating_add(1))).collect::<Result<Vec<_>, _>>()
+        {
+            Ok(args) => args,
+            Err(index) => {
+                eprintln!("error: argument {index} must be valid UTF-8");
+                return ExitCode::FAILURE;
+            }
+        };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
         Some("layers") => cmd_layers(),
