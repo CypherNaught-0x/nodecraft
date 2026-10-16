@@ -1,0 +1,261 @@
+//! App settings: `config.toml` through `craft-settings`.
+//!
+//! The folder is chosen by `craft-settings` (first match wins): an explicit override, the
+//! `NODECRAFT_CONFIG_DIR` variable (empty means in-memory only), a `portable.txt` next to the
+//! executable (settings go in `config/` beside it; the Windows portable zip ships one), then the
+//! platform folder (`~/.config/nodecraft`, `~/Library/Application Support/nodecraft`,
+//! `%APPDATA%\nodecraft`). Opening never fails: a damaged file is moved aside and defaults are
+//! used, a bad section falls back to its defaults, and the [`LoadReport`] says what happened.
+//! Hand edits, comments and unknown keys survive saves.
+//!
+//! Values read from the file are hostile like any other input: use the accessor methods (such as
+//! [`CanvasSettings::zoom_speed`]), which clamp them, rather than the raw fields.
+//!
+//! The store is native only (the browser build keeps settings in memory for now, with defaults).
+
+use serde::{Deserialize, Serialize};
+
+pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
+#[cfg(not(target_arch = "wasm32"))]
+pub use craft_settings::{Location, OpenOptions};
+
+/// The settings store for NodeCraft (native only).
+#[cfg(not(target_arch = "wasm32"))]
+pub type SettingsStore = craft_settings::SettingsStore<NodeCraftSettings>;
+
+/// Everything in `config.toml`. Every struct has `#[serde(default)]`, so missing keys fall back to
+/// their defaults and a newer file still loads in an older build.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NodeCraftSettings {
+    pub appearance: AppearanceSettings,
+    pub canvas: CanvasSettings,
+}
+
+impl craft_settings::Settings for NodeCraftSettings {
+    const APP_ID: &'static str = "nodecraft";
+    const SCHEMA_VERSION: u32 = 1;
+    const PORTABLE_MARKERS: &'static [&'static str] = &["portable.txt"];
+
+    fn migrate(from: u32, doc: &mut DocumentMut) -> Result<(), MigrateError> {
+        // Version 1 is the first schema; add a step here (`from == 1` → 2) when a key is renamed
+        // or reshaped, and a test with a version-1 file.
+        let _ = (from, doc);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceSettings {
+    pub theme: Theme,
+}
+
+/// Colour theme of the whole app.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// What a plain scroll (mouse wheel, two-finger trackpad swipe) does on the canvas.
+/// Pinch and ⌘/Ctrl-scroll always zoom.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollAction {
+    /// Scroll pans the canvas (trackpad-first, the default).
+    #[default]
+    Pan,
+    /// Vertical scroll zooms around the pointer (mouse-wheel users); horizontal scroll still pans.
+    Zoom,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CanvasSettings {
+    pub scroll: ScrollAction,
+    /// Multiplier on pinch, ⌘-scroll and scroll-to-zoom speed. Read it through
+    /// [`CanvasSettings::zoom_speed`], which clamps it.
+    pub zoom_speed: f32,
+}
+
+impl Default for CanvasSettings {
+    fn default() -> Self {
+        Self { scroll: ScrollAction::default(), zoom_speed: 1.0 }
+    }
+}
+
+impl CanvasSettings {
+    pub const MIN_ZOOM_SPEED: f32 = 0.25;
+    pub const MAX_ZOOM_SPEED: f32 = 4.0;
+
+    /// The zoom speed from the file, clamped to a usable range; 1.0 if it is not a number.
+    pub fn zoom_speed(&self) -> f32 {
+        if self.zoom_speed.is_finite() { self.zoom_speed.clamp(Self::MIN_ZOOM_SPEED, Self::MAX_ZOOM_SPEED) } else { 1.0 }
+    }
+}
+
+/// Opens the settings for `location`. Never fails; problems are in the report.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open(location: Location) -> (SettingsStore, LoadReport) {
+    SettingsStore::open(location)
+}
+
+/// One line per problem in `report`, for the log and a notice to the user. Empty when all is well.
+pub fn describe_problems(report: &LoadReport) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(moved) = &report.broken_moved_to {
+        out.push(format!("settings file was damaged and moved to {}; using defaults", moved.display()));
+    }
+    for e in &report.section_errors {
+        out.push(format!("settings section [{}] was invalid and reset to defaults: {}", e.section, e.message));
+    }
+    if let Some(why) = &report.read_only {
+        out.push(format!("settings will not be saved: {why}"));
+    }
+    out
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use craft_settings::Source;
+    use std::path::Path;
+
+    fn open_in(dir: &Path) -> (SettingsStore, LoadReport) {
+        open(Location::Dir(dir.to_path_buf()))
+    }
+
+    fn write_config(dir: &Path, text: &str) {
+        std::fs::write(dir.join("config.toml"), text).unwrap();
+    }
+
+    #[test]
+    fn first_run_uses_defaults_and_writes_the_file_on_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, report) = open_in(dir.path());
+        assert_eq!(report.source, Source::Defaults);
+        assert!(describe_problems(&report).is_empty());
+        assert_eq!(store.get(), &NodeCraftSettings::default());
+        store.flush().unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("schema_version = 1"), "{text}");
+        assert!(text.contains("theme = \"dark\""), "{text}");
+        assert!(text.contains("scroll = \"pan\""), "{text}");
+    }
+
+    #[test]
+    fn changes_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, _) = open_in(dir.path());
+        assert!(store.update(|s| {
+            s.appearance.theme = Theme::Light;
+            s.canvas.scroll = ScrollAction::Zoom;
+            s.canvas.zoom_speed = 2.0;
+        }));
+        store.flush().unwrap();
+        let (again, report) = open_in(dir.path());
+        assert_eq!(report.source, Source::File);
+        assert_eq!(again.get().appearance.theme, Theme::Light);
+        assert_eq!(again.get().canvas.scroll, ScrollAction::Zoom);
+        assert_eq!(again.get().canvas.zoom_speed(), 2.0);
+    }
+
+    #[test]
+    fn hand_edits_and_unknown_keys_survive_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 1\n# my comment\n[appearance]\ntheme = \"light\"\nfuture_key = 3\n\n[plugins]\nx = true\n");
+        let (mut store, report) = open_in(dir.path());
+        assert!(describe_problems(&report).is_empty(), "{report:?}");
+        assert_eq!(store.get().appearance.theme, Theme::Light);
+        store.update(|s| s.canvas.scroll = ScrollAction::Zoom);
+        store.flush().unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        for kept in ["# my comment", "future_key = 3", "[plugins]", "scroll = \"zoom\""] {
+            assert!(text.contains(kept), "{kept} missing from:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_damaged_file_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "this is [[[ not toml");
+        let (store, report) = open_in(dir.path());
+        assert_eq!(store.get(), &NodeCraftSettings::default());
+        let moved = report.broken_moved_to.clone().expect("damaged file moved aside");
+        assert!(moved.exists());
+        let problems = describe_problems(&report);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("damaged"), "{problems:?}");
+    }
+
+    #[test]
+    fn a_bad_section_falls_back_without_losing_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 1\n[appearance]\ntheme = \"purple\"\n[canvas]\nscroll = \"zoom\"\n");
+        let (store, report) = open_in(dir.path());
+        assert_eq!(store.get().appearance.theme, Theme::Dark);
+        assert_eq!(store.get().canvas.scroll, ScrollAction::Zoom);
+        assert_eq!(report.section_errors.len(), 1);
+        assert!(describe_problems(&report)[0].contains("[appearance]"));
+    }
+
+    #[test]
+    fn hostile_zoom_speed_is_clamped() {
+        let speed = |v: f32| CanvasSettings { zoom_speed: v, ..CanvasSettings::default() }.zoom_speed();
+        assert_eq!(speed(1.5), 1.5);
+        assert_eq!(speed(1e9), CanvasSettings::MAX_ZOOM_SPEED);
+        assert_eq!(speed(-3.0), CanvasSettings::MIN_ZOOM_SPEED);
+        assert_eq!(speed(0.0), CanvasSettings::MIN_ZOOM_SPEED);
+        assert_eq!(speed(f32::NAN), 1.0);
+        assert_eq!(speed(f32::INFINITY), 1.0);
+
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 1\n[canvas]\nzoom_speed = nan\n");
+        let (store, _) = open_in(dir.path());
+        assert_eq!(store.get().canvas.zoom_speed(), 1.0);
+    }
+
+    #[test]
+    fn a_newer_schema_is_read_but_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 99\n[appearance]\ntheme = \"light\"\n");
+        let (mut store, report) = open_in(dir.path());
+        assert_eq!(store.get().appearance.theme, Theme::Light);
+        assert!(report.read_only.is_some(), "a file from a newer build is not overwritten: {report:?}");
+        assert!(store.flush().is_err());
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.starts_with("schema_version = 99"));
+    }
+
+    #[test]
+    fn portable_marker_puts_settings_beside_the_executable() {
+        let exe = tempfile::tempdir().unwrap();
+        std::fs::write(exe.path().join("portable.txt"), "").unwrap();
+        let probe =
+            craft_settings::Probe { env: Box::new(|_| None), exe_dir: Some(exe.path().to_path_buf()), platform_config_dir: Some(exe.path().join("platform")) };
+        let (store, report) = SettingsStore::open_with(OpenOptions::new(Location::Auto).probe(probe));
+        assert_eq!(store.dir(), Some(exe.path().join("config").as_path()), "{report:?}");
+    }
+
+    #[test]
+    fn config_dir_variable_and_isolation() {
+        let target = tempfile::tempdir().unwrap();
+        let t = target.path().to_path_buf();
+        let probe = craft_settings::Probe {
+            env: Box::new(move |name| (name == "NODECRAFT_CONFIG_DIR").then(|| t.clone().into_os_string())),
+            exe_dir: None,
+            platform_config_dir: None,
+        };
+        let (store, _) = SettingsStore::open_with(OpenOptions::new(Location::Auto).probe(probe));
+        assert_eq!(store.dir(), Some(target.path()));
+
+        let probe =
+            craft_settings::Probe { env: Box::new(|name| (name == "NODECRAFT_CONFIG_DIR").then(Default::default)), exe_dir: None, platform_config_dir: None };
+        let (store, _) = SettingsStore::open_with(OpenOptions::new(Location::Auto).probe(probe));
+        assert!(!store.is_persistent(), "an empty NODECRAFT_CONFIG_DIR keeps settings in memory");
+    }
+}

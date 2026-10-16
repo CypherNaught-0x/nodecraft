@@ -36,7 +36,12 @@ fn main() -> ExitCode {
             if let Err(e) = craft_quit::install_app_menu(&cc.egui_ctx, "NodeCraft") {
                 log::warn!("macOS app menu not installed, ⌘Q quits without asking: {e}");
             }
-            Ok(Box::new(nodecraft_ui_egui::NodeCraftApp::new(&cc.egui_ctx)))
+            let (store, report) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Auto);
+            log::info!("settings: {} ({})", store.path().map_or_else(|| "in memory".into(), |p| p.display().to_string()), report.rule);
+            for problem in nodecraft_engine::settings::describe_problems(&report) {
+                log::warn!("{problem}");
+            }
+            Ok(Box::new(nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)))
         }),
     );
     match result {

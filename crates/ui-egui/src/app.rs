@@ -1,6 +1,7 @@
 //! The eframe app: the canvas with its cards, and the overlays floating above it.
 
 use egui::{Pos2, Rect, Sense, Vec2};
+use nodecraft_engine::settings::{CanvasSettings, NodeCraftSettings, Theme};
 
 use crate::canvas::{self, CanvasView};
 use crate::card::{self, StubCard};
@@ -11,19 +12,45 @@ pub struct NodeCraftApp {
     pub view: CanvasView,
     pub cards: Vec<StubCard>,
     pub selected: Option<u64>,
+    /// Canvas preferences from the settings (scroll behaviour, zoom speed).
+    pub canvas_prefs: CanvasSettings,
     /// The canvas rect of the last frame, in screen points.
     pub viewport: Rect,
     /// The first frame centres the cards; later frames keep the user's view.
     centred: bool,
+    /// Where settings are saved; `None` in tests and the browser build.
+    #[cfg(not(target_arch = "wasm32"))]
+    store: Option<nodecraft_engine::settings::SettingsStore>,
 }
 
 impl NodeCraftApp {
     pub fn new(ctx: &egui::Context) -> Self {
-        let app = Self::headless();
+        let mut app = Self::headless();
+        app.apply_settings(&NodeCraftSettings::default());
         theme::apply(ctx, app.theme);
         // ⌘= / ⌘- / ⌘0 zoom the canvas, not the whole UI.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app
+    }
+
+    /// The app with settings from `store`, which it saves while running and flushes on exit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Self {
+        let mut app = Self::headless();
+        app.apply_settings(store.get());
+        app.store = Some(store);
+        theme::apply(ctx, app.theme);
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        app
+    }
+
+    /// Takes the values the shell uses from `settings`.
+    pub fn apply_settings(&mut self, settings: &NodeCraftSettings) {
+        self.theme = match settings.appearance.theme {
+            Theme::Dark => ThemeKind::Dark,
+            Theme::Light => ThemeKind::Light,
+        };
+        self.canvas_prefs = settings.canvas.clone();
     }
 
     /// The app state without touching an egui context (tests).
@@ -34,7 +61,17 @@ impl NodeCraftApp {
             body: "A stub node card. Drag it around; drag the canvas to pan, pinch or ⌘-scroll to zoom, ⌘0 to reset.".into(),
             rect: Rect::from_min_size(Pos2::new(-160.0, -110.0), Vec2::new(320.0, 220.0)),
         };
-        Self { theme: ThemeKind::default(), view: CanvasView::default(), cards: vec![card], selected: None, viewport: Rect::NOTHING, centred: false }
+        Self {
+            theme: ThemeKind::default(),
+            view: CanvasView::default(),
+            cards: vec![card],
+            selected: None,
+            canvas_prefs: CanvasSettings::default(),
+            viewport: Rect::NOTHING,
+            centred: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            store: None,
+        }
     }
 
     /// World point the view centres on at startup and on ⌘0: the middle of all cards.
@@ -53,7 +90,7 @@ impl NodeCraftApp {
         }
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         let home = self.home();
-        canvas::navigate(ui, &background, &mut self.view, home);
+        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs);
         if background.clicked() {
             self.selected = None;
         }
@@ -107,12 +144,31 @@ impl NodeCraftApp {
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            let tick = store.tick(std::time::Instant::now());
+            if let nodecraft_engine::settings::SaveStatus::Failed(e) = &tick.status {
+                log::warn!("settings not saved, will retry: {e}");
+            }
+            if let Some(deadline) = tick.next_deadline {
+                ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
+            }
+        }
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+
+    fn on_exit(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store
+            && let Err(e) = store.flush()
+        {
+            log::warn!("settings not saved on exit: {e}");
+        }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
