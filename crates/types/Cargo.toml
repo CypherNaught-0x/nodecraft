@@ -11,3 +11,10 @@ description = "NodeCraft: ids, modalities, port types, values, hashes, money and
 workspace = true
 
 [dependencies]
+serde.workspace = true
+uuid.workspace = true
+mime.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+proptest.workspace = true
