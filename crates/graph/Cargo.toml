@@ -13,3 +13,8 @@ workspace = true
 [dependencies]
 nodecraft-types = { workspace = true }
 nodecraft-media = { workspace = true }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+proptest = "1"

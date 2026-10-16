@@ -78,6 +78,30 @@ checks the three-uppercase-letter syntax, not membership in a currency registry.
 `Error` carries a stable `ErrorKind` and a public-safe message. Higher-layer errors can retain
 internal causes, but must scrub secrets before constructing this shared payload.
 
+## Document edits
+
+`nodecraft-graph` stores projects, canvases, nodes, typed ports and ordered edges. Stored maps
+are read-only to callers. Detached nodes and annotation stubs are data; use `Change` or
+`Changeset` to add or modify them. Node replacement also covers history and active-generation
+changes until generation-specific commands arrive.
+
+Changesets are ordered transactions. Every step must produce a valid graph; a bad step returns
+an error without changing the live project. Apply returns a serializable inverse, and applying
+that inverse returns redo. Node removal captures incident edges in one restore operation, so
+undo preserves IDs and input order without expanding past the operation limit.
+
+Validation checks references, map keys, entity identity, port modalities/cardinality, input
+ordering and DAG structure. Cycle detection and value validation are iterative. Recursive
+values are checked before cloning, with depth/item/text limits; positions must be finite and
+within ±10 million world units. Project deserialization validates structural invariants too.
+File/control readers still must bound input bytes and retain decoder recursion limits before
+allocating document data. Current entity and payload limits live in `graph/src/validate.rs`.
+
+The first implementation stages a document clone and validates each step to make atomicity and
+undo explicit. Scalar edits and deletions use targeted invariant checks, so moving a selection
+does not repeatedly scan the whole graph. Structural additions/replacements use full validation.
+Further large-batch optimization can preserve the same transaction API and property tests.
+
 ## wasm
 
 Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`
