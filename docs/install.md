@@ -49,7 +49,8 @@ zip (`…-portable.zip`, no installation: unzip and run `nodecraft.exe`).
    protected your PC*. Click **More info**, check that the app is NodeCraft, then click **Run
    anyway**. You only see this once per file.
 3. The installer adds NodeCraft to the Start menu; the portable zip runs from wherever you unpacked
-   it.
+   it. The portable zip includes a `portable.txt`: while it sits next to `nodecraft.exe`, settings
+   are kept in a `config` folder beside it instead of `%APPDATA%\nodecraft`.
 
 **Smart App Control** (Windows 11): if it is turned on, Windows blocks unsigned apps outright and
 offers no *Run anyway*. Until signed builds exist, the only way around it is turning Smart App
@@ -73,3 +74,29 @@ Use the `aarch64` files on ARM machines.
 ## Building from source
 
 See [`development.md`](development.md): `cargo run --release -p nodecraft`.
+
+## Settings
+
+NodeCraft keeps its settings in `config.toml`, which you can edit by hand (comments and unknown
+keys are kept):
+
+| Platform | Folder |
+|---|---|
+| macOS | `~/Library/Application Support/nodecraft` |
+| Windows | `%APPDATA%\nodecraft` (portable zip: `config\` next to `nodecraft.exe`) |
+| Linux | `$XDG_CONFIG_HOME/nodecraft` (usually `~/.config/nodecraft`); Flatpak: `~/.var/app/io.github.cyphernaught0x.nodecraft/config/nodecraft` |
+
+Set `NODECRAFT_CONFIG_DIR` to use another folder, or to an empty value to keep settings in memory
+only. A `portable.txt` next to the executable (next to `NodeCraft.app` on macOS) turns on portable
+mode on any platform. A damaged file is renamed aside and the defaults are used; an invalid value
+resets its section to the defaults, and the next save writes them over it.
+
+```toml
+schema_version = 1    # written by NodeCraft; leave it as it is
+[appearance]
+theme = "dark"        # or "light"
+
+[canvas]
+scroll = "pan"        # "zoom": the mouse wheel zooms, horizontal scroll still pans
+zoom_speed = 1.0      # 0.25 to 4
+```

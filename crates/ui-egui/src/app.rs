@@ -1,6 +1,7 @@
 //! The eframe app: the canvas with its cards, and the overlays floating above it.
 
 use egui::{Pos2, Rect, Sense, Vec2};
+use nodecraft_engine::settings::{CanvasSettings, NodeCraftSettings, Theme};
 
 use crate::canvas::{self, CanvasView};
 use crate::card::{self, StubCard};
@@ -11,19 +12,44 @@ pub struct NodeCraftApp {
     pub view: CanvasView,
     pub cards: Vec<StubCard>,
     pub selected: Option<u64>,
+    /// Canvas preferences from the settings (scroll behaviour, zoom speed).
+    pub canvas_prefs: CanvasSettings,
     /// The canvas rect of the last frame, in screen points.
     pub viewport: Rect,
     /// The first frame centres the cards; later frames keep the user's view.
     centred: bool,
+    /// Where settings are saved; `None` in tests and the browser build.
+    #[cfg(not(target_arch = "wasm32"))]
+    store: Option<nodecraft_engine::settings::SettingsStore>,
 }
 
 impl NodeCraftApp {
     pub fn new(ctx: &egui::Context) -> Self {
-        let app = Self::headless();
-        theme::apply(ctx, app.theme);
+        let mut app = Self::headless();
+        app.apply_settings(ctx, &NodeCraftSettings::default());
         // ⌘= / ⌘- / ⌘0 zoom the canvas, not the whole UI.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app
+    }
+
+    /// The app with settings from `store`, which it saves while running and flushes on exit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Self {
+        let settings = store.get().clone();
+        let mut app = Self::new(ctx);
+        app.apply_settings(ctx, &settings);
+        app.store = Some(store);
+        app
+    }
+
+    /// Takes the values the shell uses from `settings` and restyles `ctx` for the theme.
+    pub fn apply_settings(&mut self, ctx: &egui::Context, settings: &NodeCraftSettings) {
+        self.theme = match settings.appearance.theme {
+            Theme::Dark => ThemeKind::Dark,
+            Theme::Light => ThemeKind::Light,
+        };
+        self.canvas_prefs = settings.canvas.clone();
+        theme::apply(ctx, self.theme);
     }
 
     /// The app state without touching an egui context (tests).
@@ -34,7 +60,17 @@ impl NodeCraftApp {
             body: "A stub node card. Drag it around; drag the canvas to pan, pinch or ⌘-scroll to zoom, ⌘0 to reset.".into(),
             rect: Rect::from_min_size(Pos2::new(-160.0, -110.0), Vec2::new(320.0, 220.0)),
         };
-        Self { theme: ThemeKind::default(), view: CanvasView::default(), cards: vec![card], selected: None, viewport: Rect::NOTHING, centred: false }
+        Self {
+            theme: ThemeKind::default(),
+            view: CanvasView::default(),
+            cards: vec![card],
+            selected: None,
+            canvas_prefs: CanvasSettings::default(),
+            viewport: Rect::NOTHING,
+            centred: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            store: None,
+        }
     }
 
     /// World point the view centres on at startup and on ⌘0: the middle of all cards.
@@ -53,7 +89,7 @@ impl NodeCraftApp {
         }
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         let home = self.home();
-        canvas::navigate(ui, &background, &mut self.view, home);
+        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs);
         if background.clicked() {
             self.selected = None;
         }
@@ -107,12 +143,36 @@ impl NodeCraftApp {
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            let tick = store.tick(std::time::Instant::now());
+            if let nodecraft_engine::settings::SaveStatus::Failed(e) = &tick.status {
+                log::warn!("settings not saved, will retry: {e}");
+            }
+            for moved in store.take_moved_aside() {
+                log::warn!("settings file was damaged and moved to {}", moved.display());
+            }
+            if let Some(deadline) = tick.next_deadline {
+                ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
+            }
+        }
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+
+    fn on_exit(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        // A read-only store (newer schema, unwritable folder) was reported at startup.
+        if let Some(store) = &mut self.store
+            && !store.is_read_only()
+            && let Err(e) = store.flush()
+        {
+            log::warn!("settings not saved on exit: {e}");
+        }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -185,6 +245,33 @@ mod tests {
         assert_eq!(app.cards[0].rect, NodeCraftApp::headless().cards[0].rect);
         assert!((app.view.pan - pan - Vec2::new(30.0, 20.0)).length() < 1.0, "{:?}", app.view.pan - pan);
         assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn mouse_wheel_zooms_when_scroll_is_set_to_zoom() {
+        let wheel = |h: &mut Harness<'static, NodeCraftApp>| {
+            h.hover_at(Pos2::new(200.0, 200.0));
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, 60.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..30 {
+                h.run();
+            }
+        };
+        let mut h = harness();
+        wheel(&mut h);
+        assert_eq!(h.state().view.zoom, 1.0, "by default the wheel pans");
+
+        let mut h = harness();
+        h.state_mut().canvas_prefs.scroll = nodecraft_engine::settings::ScrollAction::Zoom;
+        let pan = h.state().view.pan;
+        wheel(&mut h);
+        let app = h.state();
+        assert!(app.view.zoom > 1.2, "wheel up zooms in: {}", app.view.zoom);
+        assert_ne!(app.view.pan, pan, "zoom keeps the point under the pointer fixed");
     }
 
     #[test]

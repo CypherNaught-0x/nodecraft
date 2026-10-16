@@ -15,3 +15,8 @@ nodecraft-exec = { workspace = true }
 nodecraft-providers = { workspace = true }
 nodecraft-gpu = { workspace = true }
 nodecraft-format = { workspace = true }
+craft-settings = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

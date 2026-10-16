@@ -83,7 +83,7 @@ From [storytold/craft-libs](https://github.com/storytold/craft-libs), pinned to 
 |---|---|---|
 | `craft-ui` | widget palette and theme helpers, icon catalogs, tabs, docking | `ui-egui` |
 | `craft-quit` | platform-correct quit and close (macOS app menu, close requests) | `ui-egui`, `apps/nodecraft` |
-| `craft-settings` | settings file, platform folders, portable mode, recovery | `engine` (M1) |
+| `craft-settings` | settings file, platform folders, portable mode, recovery | `engine::settings` |
 | `craft-atomic` | crash-safe saves | `format` (M1) |
 | `craft-pdf` | PDF rendering and text extraction | `media`/`nodes` (M8) |
 

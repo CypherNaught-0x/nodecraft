@@ -5,6 +5,8 @@
 
 use egui::{Pos2, Rect, Vec2};
 
+use nodecraft_engine::settings::{CanvasSettings, ScrollAction};
+
 use crate::theme::Tokens;
 
 pub const MIN_ZOOM: f32 = 0.1;
@@ -15,6 +17,9 @@ pub const KEY_ZOOM_STEP: f32 = 1.25;
 pub const MIN_DOT_SPACING: f32 = 12.0;
 /// Upper bound on dots painted per frame, whatever the window size.
 pub const MAX_DOTS: usize = 120_000;
+/// With scroll-to-zoom, scrolling this many points doubles (or halves) the zoom at zoom speed 1:
+/// 200·ln 2, the same rate as egui's ⌘-scroll zoom, so both feel alike.
+pub const SCROLL_POINTS_PER_DOUBLING: f32 = 138.6;
 
 /// Pan and zoom of a canvas. Pure data: no egui state.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,12 +111,31 @@ pub fn paint_grid(painter: &egui::Painter, viewport: Rect, view: &CanvasView, t:
     }
 }
 
+/// The zoom factor and pan for one frame's scroll and pinch input, under the user's preferences.
+/// `scroll` is the frame's scroll delta in points and `pinch` egui's zoom delta (pinch and
+/// ⌘/Ctrl-scroll). Returns `(zoom factor, pan delta)`.
+pub fn scroll_to_view_change(scroll: Vec2, pinch: f32, prefs: &CanvasSettings) -> (f32, Vec2) {
+    let speed = prefs.zoom_speed();
+    let mut zoom = if pinch.is_finite() && pinch > 0.0 { pinch.powf(speed) } else { 1.0 };
+    let pan = match prefs.scroll {
+        ScrollAction::Pan => scroll,
+        ScrollAction::Zoom => {
+            if scroll.y.is_finite() {
+                zoom *= (scroll.y * speed / SCROLL_POINTS_PER_DOUBLING).exp2();
+            }
+            Vec2::new(scroll.x, 0.0)
+        }
+    };
+    (zoom, pan)
+}
+
 /// Background navigation for one frame: drag with the primary button on empty canvas, or with the
-/// middle or secondary button anywhere, pans; scroll (two-finger trackpad, wheel) pans; pinch or ⌘/Ctrl-scroll
-/// zooms around the pointer; ⌘0 resets, ⌘= and ⌘- zoom around the centre.
+/// middle or secondary button anywhere, pans; scroll (two-finger trackpad, wheel) pans, or zooms
+/// with [`ScrollAction::Zoom`]; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0 resets, ⌘= and
+/// ⌘- zoom around the centre.
 ///
 /// `background` is the response of the canvas-filling background widget.
-pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasView, home: Pos2) {
+pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasView, home: Pos2, prefs: &CanvasSettings) {
     let viewport = background.rect;
     let origin = viewport.min;
     let panning = [egui::PointerButton::Primary, egui::PointerButton::Middle, egui::PointerButton::Secondary].into_iter().any(|b| background.dragged_by(b));
@@ -131,7 +155,8 @@ pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasVie
     });
     let hovered = background.contains_pointer();
     if hovered {
-        view.pan_by(scroll);
+        let (zoom, pan) = scroll_to_view_change(scroll, zoom, prefs);
+        view.pan_by(pan);
         if zoom != 1.0
             && let Some(p) = pointer
         {
@@ -200,6 +225,31 @@ mod tests {
         v.reset(viewport, Pos2::new(100.0, 50.0));
         assert_eq!(v.zoom, 1.0);
         assert!(close(v.to_screen(O, Pos2::new(100.0, 50.0)), viewport.center()));
+    }
+
+    #[test]
+    fn scroll_pans_or_zooms_by_preference() {
+        let pan = CanvasSettings::default();
+        assert_eq!(scroll_to_view_change(Vec2::new(3.0, -40.0), 1.0, &pan), (1.0, Vec2::new(3.0, -40.0)));
+
+        let zoom = CanvasSettings { scroll: ScrollAction::Zoom, ..CanvasSettings::default() };
+        let (f, p) = scroll_to_view_change(Vec2::new(3.0, SCROLL_POINTS_PER_DOUBLING), 1.0, &zoom);
+        assert!((f - 2.0).abs() < 1e-5, "{f}");
+        assert_eq!(p, Vec2::new(3.0, 0.0), "horizontal scroll still pans");
+        let (f, _) = scroll_to_view_change(Vec2::new(0.0, -SCROLL_POINTS_PER_DOUBLING), 1.0, &zoom);
+        assert!((f - 0.5).abs() < 1e-5, "{f}");
+    }
+
+    #[test]
+    fn zoom_speed_scales_pinch_and_ignores_hostile_input() {
+        let fast = CanvasSettings { zoom_speed: 2.0, ..CanvasSettings::default() };
+        let (f, _) = scroll_to_view_change(Vec2::ZERO, 1.5, &fast);
+        assert!((f - 2.25).abs() < 1e-5, "{f}");
+        let zoom = CanvasSettings { scroll: ScrollAction::Zoom, zoom_speed: f32::NAN };
+        for (scroll, pinch) in [(Vec2::new(0.0, f32::NAN), 1.0), (Vec2::ZERO, f32::NAN), (Vec2::ZERO, -1.0), (Vec2::ZERO, 0.0)] {
+            let (f, _) = scroll_to_view_change(scroll, pinch, &zoom);
+            assert_eq!(f, 1.0, "{scroll:?} {pinch}");
+        }
     }
 
     #[test]

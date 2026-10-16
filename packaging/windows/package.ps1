@@ -156,6 +156,9 @@ foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUT
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }
 }
+# portable.txt next to the exe keeps settings in config\ beside it instead of %APPDATA%
+# (craft-settings portable mode; crates/engine/src/settings.rs).
+Set-Content -Path (Join-Path $Portable 'portable.txt') -Value 'NodeCraft keeps its settings in the config folder next to nodecraft.exe while this file exists.'
 $Zip = Join-Path $Dist "nodecraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
