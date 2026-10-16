@@ -172,6 +172,11 @@ that drive real pointer and key events through the canvas.
 
 ## Landing changes
 
+- **Sub-agent review before every PR, including drafts.** Have a sub-agent review the existing
+  commits on the branch and the newly added code against the intended base before creating the
+  PR. Give the reviewer the issue, acceptance criteria and validation results. Resolve actionable
+  findings, have fixes reviewed again, and record the reviewed commit range and outcome in the PR.
+  Review does not replace the quality gates above.
 - **One topic per commit and per PR.** Commits are small, with a clear subject line; a commit
   that fixes an issue says `Fixes #N`.
 - Changes land through **pull requests** and GitHub CI (Linux, Windows, macOS). The owner may push
