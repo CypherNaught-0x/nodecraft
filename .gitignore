@@ -3,8 +3,8 @@
 target/
 /dist
 
-# Research material and reference captures (never committed)
-/references
+# Research material, reference screenshots and captures (never committed)
+/dev_assets
 
 # Local working notes, dev log, secrets
 plan/

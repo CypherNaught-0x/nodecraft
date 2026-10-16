@@ -568,7 +568,7 @@ NodeCraft/
 ├─ crates/ apps/ xtask/  as in §4.1
 ├─ assets/               icons (original, licensed), catalog data
 ├─ LICENSE-MIT, LICENSE-APACHE, NOTICE, ATTRIBUTION.md
-└─ (gitignored) references/  plan/  log/  target/
+└─ (gitignored) dev_assets/  plan/  log/  target/
 ```
 
 Workspace-wide settings to copy:
