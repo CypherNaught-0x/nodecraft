@@ -1,7 +1,7 @@
-use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, ErrorKind, FieldId, NodeId, TagId, Value};
+use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, ErrorKind, FieldId, GenerationId, NodeId, TagId, Value};
 use serde::{Deserialize, Serialize};
 
-use crate::{Canvas, Comment, Edge, Field, Node, Position, Project, Tag, validate};
+use crate::{Canvas, Comment, Edge, Field, Generation, Node, Position, Project, Tag, validate};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -53,6 +53,24 @@ pub enum Change {
         id: NodeId,
         name: String,
         value: Option<Value>,
+    },
+    /// Insert at a stable history index; undo of removal restores the original ordering.
+    AddGeneration {
+        canvas: CanvasId,
+        id: NodeId,
+        index: usize,
+        generation: Generation,
+    },
+    /// Clear or switch the active generation before removing it.
+    RemoveGeneration {
+        canvas: CanvasId,
+        id: NodeId,
+        generation: GenerationId,
+    },
+    SetActiveGeneration {
+        canvas: CanvasId,
+        id: NodeId,
+        generation: Option<GenerationId>,
     },
     Connect {
         canvas: CanvasId,
@@ -106,37 +124,74 @@ impl Changeset {
 
     /// Check the same ordered operations as apply without changing the original document.
     pub fn validate(&self, project: &Project) -> Result<(), Error> {
-        self.prepare(project).map(|_| ())
+        Self::prepare(&self.changes, project).map(|_| ())
     }
 
     /// Either commit all changes and return their inverse, or leave the document untouched.
     pub fn apply(&self, project: &mut Project) -> Result<Self, Error> {
-        let (updated, inverse) = self.prepare(project)?;
+        let (updated, inverse) = Self::prepare(&self.changes, project)?;
         *project = updated;
         Ok(inverse)
     }
 
-    fn prepare(&self, project: &Project) -> Result<(Project, Self), Error> {
-        if self.changes.len() > validate::MAX_CHANGES {
+    fn prepare(changes: &[Change], project: &Project) -> Result<(Project, Self), Error> {
+        Self::prepare_with_budget(changes, project, validate::MAX_CHANGESET_BYTES)
+    }
+
+    fn prepare_with_budget(changes: &[Change], project: &Project, byte_limit: usize) -> Result<(Project, Self), Error> {
+        if changes.len() > validate::MAX_CHANGES {
             return Err(validate::invalid("changeset exceeds operation limit"));
         }
+        // Project construction/deserialization and this sole mutation path establish validity.
         // Check arbitrary programmatic payloads before cloning any recursive data.
-        project.validate()?;
-        for change in &self.changes {
+        for change in changes {
             change.validate_payload()?;
         }
+        changes_byte_budget(changes, byte_limit)?;
         let mut draft = project.clone();
         let mut inverse = Vec::new();
-        for change in &self.changes {
-            let undo = change.apply_one(&mut draft)?;
-            // Preserve step validity without rescanning the graph for scalar edits or deletion.
-            change.validate_effect(&draft)?;
-            inverse.push(undo);
+        for change in changes {
+            inverse.push(change.apply_one(&mut draft)?);
+            change.validate_counts(&draft)?;
         }
+        // Structural relationships (including DAG/order/tag/field constraints) are checked
+        // once, after the complete batch. No intermediate document is published.
         draft.validate()?;
         inverse.reverse();
-        Ok((draft, Self::new(inverse)))
+        let inverse = Self::new(inverse);
+        // A successful edit must always return a replayable, bounded undo payload.
+        for change in &inverse.changes {
+            change.validate_payload()?;
+        }
+        changes_byte_budget(&inverse.changes, byte_limit)?;
+        Ok((draft, inverse))
     }
+}
+
+// Undoing AddNode produces RemoveNode; redoing that removal produces RestoreNode. Charge
+// the canonical restore form up front so its extra `edges: []` cannot make undo fail at
+// the byte boundary. Every other operation's replay shape is stable after inversion.
+fn changes_byte_budget(changes: &[Change], limit: usize) -> Result<(), Error> {
+    struct BudgetChange<'a>(&'a Change);
+    impl Serialize for BudgetChange<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if let Change::AddNode { canvas, node } = self.0 {
+                #[derive(Serialize)]
+                struct Restore<'a> {
+                    r#type: &'static str,
+                    canvas: &'a CanvasId,
+                    node: &'a Node,
+                    edges: &'a [Edge],
+                }
+                Restore { r#type: "restore_node", canvas, node, edges: &[] }.serialize(serializer)
+            } else {
+                self.0.serialize(serializer)
+            }
+        }
+    }
+    // Only borrowed wrappers are allocated; recursive caller-owned values are never cloned.
+    let canonical: Vec<_> = changes.iter().map(BudgetChange).collect();
+    validate::byte_budget(&canonical, limit)
 }
 
 fn missing() -> Error {
@@ -154,13 +209,13 @@ fn node_mut(project: &mut Project, canvas: CanvasId, id: NodeId) -> Result<&mut 
 
 impl Change {
     pub fn validate(&self, project: &Project) -> Result<(), Error> {
-        self.validate_payload()?;
-        Changeset::new(vec![self.clone()]).validate(project)
+        Changeset::prepare(std::slice::from_ref(self), project).map(|_| ())
     }
 
     pub fn apply(&self, project: &mut Project) -> Result<Changeset, Error> {
-        self.validate_payload()?;
-        Changeset::new(vec![self.clone()]).apply(project)
+        let (updated, inverse) = Changeset::prepare(std::slice::from_ref(self), project)?;
+        *project = updated;
+        Ok(inverse)
     }
 
     fn validate_payload(&self) -> Result<(), Error> {
@@ -169,7 +224,7 @@ impl Change {
             Self::AddNode { node, .. } | Self::SetNode { node, .. } => validate::node(node),
             Self::RestoreNode { node, edges, .. } => {
                 validate::node(node)?;
-                if edges.len() > 50_000 {
+                if edges.len() > validate::MAX_EDGES {
                     return Err(validate::invalid("restored node exceeds edge limit"));
                 }
                 for edge in edges {
@@ -181,6 +236,7 @@ impl Change {
                 }
                 Ok(())
             }
+            Self::AddGeneration { generation, .. } => validate::generation(generation),
             Self::MoveNode { pos, .. } => validate::position(*pos),
             Self::SetProjectTitle { title } | Self::SetCanvasTitle { title, .. } | Self::SetNodeTitle { title, .. } => validate::text(title, 4096),
             Self::SetParam { name, value, .. } => {
@@ -207,23 +263,23 @@ impl Change {
         }
     }
 
-    fn validate_effect(&self, project: &Project) -> Result<(), Error> {
-        match self {
-            // Payload checks already validate the new scalar. Deletions remove all incident
-            // edges, so they cannot introduce a cycle, duplicate, or dangling reference.
-            Self::SetProjectTitle { .. }
-            | Self::SetCanvasTitle { .. }
-            | Self::SetNodeTitle { .. }
-            | Self::MoveNode { .. }
-            | Self::Disconnect { .. }
-            | Self::RemoveNode { .. }
-            | Self::RemoveCanvas { .. } => Ok(()),
-            Self::SetParam { canvas, id, .. } => {
-                let node = project.canvases.get(canvas).and_then(|canvas| canvas.nodes.get(id)).ok_or_else(missing)?;
-                if node.params.len() > 256 { Err(validate::invalid("node exceeds parameter limit")) } else { Ok(()) }
-            }
-            _ => project.validate(),
+    fn validate_counts(&self, project: &Project) -> Result<(), Error> {
+        if project.canvases.len() > validate::MAX_CANVASES {
+            return Err(validate::invalid("project exceeds canvas limit"));
         }
+        // O(number of canvases), independent of node/edge/history payload size.
+        let mut counts = [0usize; 5];
+        for canvas in project.canvases.values() {
+            for (count, len) in counts.iter_mut().zip([canvas.nodes.len(), canvas.edges.len(), canvas.fields.len(), canvas.tags.len(), canvas.comments.len()]) {
+                *count = count.saturating_add(len);
+            }
+        }
+        for (count, max) in counts.into_iter().zip([validate::MAX_NODES, validate::MAX_EDGES, validate::MAX_NODES, validate::MAX_NODES, validate::MAX_NODES]) {
+            if count > max {
+                return Err(validate::invalid("project exceeds entity limits"));
+            }
+        }
+        Ok(())
     }
 
     fn apply_one(&self, project: &mut Project) -> Result<Self, Error> {
@@ -269,11 +325,19 @@ impl Change {
                 if target.nodes.contains_key(&node.id) {
                     return Err(duplicate());
                 }
-                target.nodes.insert(node.id, node.clone());
+                let mut ids = std::collections::BTreeSet::new();
                 for edge in edges {
-                    if target.edges.contains_key(&edge.id) {
+                    if target.edges.contains_key(&edge.id) || !ids.insert(edge.id) {
                         return Err(duplicate());
                     }
+                    for endpoint in [&edge.from, &edge.to] {
+                        if endpoint.node != node.id && !target.nodes.contains_key(&endpoint.node) {
+                            return Err(missing());
+                        }
+                    }
+                }
+                target.nodes.insert(node.id, node.clone());
+                for edge in edges {
                     target.edges.insert(edge.id, edge.clone());
                 }
                 Self::RemoveNode { canvas: *canvas, id: node.id }
@@ -298,8 +362,37 @@ impl Change {
                 };
                 Self::SetParam { canvas: *canvas, id: *id, name: name.clone(), value: old }
             }
+            Self::AddGeneration { canvas, id, index, generation } => {
+                let target = node_mut(project, *canvas, *id)?;
+                if *index > target.history.len() || target.history.len() >= 1024 {
+                    return Err(validate::invalid("generation index or history length exceeds limits"));
+                }
+                if target.history.iter().any(|entry| entry.id == generation.id) {
+                    return Err(duplicate());
+                }
+                target.history.insert(*index, generation.clone());
+                Self::RemoveGeneration { canvas: *canvas, id: *id, generation: generation.id }
+            }
+            Self::RemoveGeneration { canvas, id, generation } => {
+                let target = node_mut(project, *canvas, *id)?;
+                if target.active == Some(*generation) {
+                    return Err(validate::invalid("switch or clear the active generation before removing it"));
+                }
+                let index = target.history.iter().position(|entry| entry.id == *generation).ok_or_else(missing)?;
+                // The index was found in this unchanged vector, so removal is bounded.
+                let generation = target.history.remove(index);
+                Self::AddGeneration { canvas: *canvas, id: *id, index, generation }
+            }
+            Self::SetActiveGeneration { canvas, id, generation } => {
+                let target = node_mut(project, *canvas, *id)?;
+                if generation.is_some_and(|id| !target.history.iter().any(|entry| entry.id == id)) {
+                    return Err(missing());
+                }
+                Self::SetActiveGeneration { canvas: *canvas, id: *id, generation: std::mem::replace(&mut target.active, *generation) }
+            }
             Self::Connect { canvas, edge } => {
                 let target = canvas_mut(project, *canvas)?;
+                require_endpoints(target, edge)?;
                 if target.edges.contains_key(&edge.id) {
                     return Err(duplicate());
                 }
@@ -308,7 +401,9 @@ impl Change {
             }
             Self::Disconnect { canvas, id } => Self::Connect { canvas: *canvas, edge: canvas_mut(project, *canvas)?.edges.remove(id).ok_or_else(missing)? },
             Self::SetEdge { canvas, edge } => {
-                let target = canvas_mut(project, *canvas)?.edges.get_mut(&edge.id).ok_or_else(missing)?;
+                let target = canvas_mut(project, *canvas)?;
+                require_endpoints(target, edge)?;
+                let target = target.edges.get_mut(&edge.id).ok_or_else(missing)?;
                 Self::SetEdge { canvas: *canvas, edge: std::mem::replace(target, edge.clone()) }
             }
             Self::PutField { canvas, field } => match canvas_mut(project, *canvas)?.fields.insert(field.id, field.clone()) {
@@ -330,5 +425,65 @@ impl Change {
             }
         };
         Ok(inverse)
+    }
+}
+
+// New edges may temporarily violate ordering/type/DAG constraints, but their nodes must
+// already exist. This makes node-removal inverses independent of preceding edge operations.
+fn require_endpoints(canvas: &Canvas, edge: &Edge) -> Result<(), Error> {
+    if canvas.nodes.contains_key(&edge.from.node) && canvas.nodes.contains_key(&edge.to.node) { Ok(()) } else { Err(missing()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nodecraft_types::ProjectId;
+
+    #[test]
+    fn structural_batch_validates_the_complete_project_once() {
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Test").unwrap();
+        let canvas = CanvasId::from_bytes([1; 16]);
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        let changes =
+            Changeset::new((1u128..=1000).map(|n| Change::AddNode { canvas, node: Node::new(NodeId::from_bytes(n.to_be_bytes()), "test.text") }).collect());
+        validate::PROJECT_VALIDATIONS.with(|count| count.set(0));
+        let undo = changes.apply(&mut project).unwrap();
+        assert_eq!(validate::PROJECT_VALIDATIONS.with(|count| count.get()), 1);
+        validate::PROJECT_VALIDATIONS.with(|count| count.set(0));
+        undo.apply(&mut project).unwrap();
+        assert_eq!(validate::PROJECT_VALIDATIONS.with(|count| count.get()), 1);
+    }
+
+    #[test]
+    fn a_small_edit_with_an_oversized_inverse_is_rejected_before_commit() {
+        let project = Project::new(ProjectId::from_bytes([0; 16]), "x".repeat(4096)).unwrap();
+        let before = project.clone();
+        let change = Change::SetProjectTitle { title: "small".into() };
+        assert!(Changeset::prepare_with_budget(std::slice::from_ref(&change), &project, 1024).is_err());
+        assert_eq!(project, before);
+        let (mut after, undo) = Changeset::prepare_with_budget(std::slice::from_ref(&change), &project, 8192).unwrap();
+        undo.apply(&mut after).unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn node_addition_reserves_the_larger_restore_form_at_the_byte_boundary() {
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Test").unwrap();
+        let canvas = CanvasId::from_bytes([1; 16]);
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        let mut node = Node::new(NodeId::from_bytes([2; 16]), "test.text");
+        node.title = "\"\n☃".repeat(20);
+        let add = Change::AddNode { canvas, node: node.clone() };
+        let restore = Change::RestoreNode { canvas, node, edges: vec![] };
+        let add_size = serde_json::to_vec(&[&add]).unwrap().len();
+        let replay_size = serde_json::to_vec(&[restore]).unwrap().len();
+        assert!(replay_size > add_size);
+        assert!(Changeset::prepare_with_budget(std::slice::from_ref(&add), &project, add_size).is_err());
+        assert!(Changeset::prepare_with_budget(std::slice::from_ref(&add), &project, replay_size - 1).is_err());
+        let (after, undo) = Changeset::prepare_with_budget(&[add], &project, replay_size).unwrap();
+        let (restored, redo) = Changeset::prepare_with_budget(&undo.changes, &after, replay_size).unwrap();
+        assert_eq!(restored, project);
+        let (redone, _) = Changeset::prepare_with_budget(&redo.changes, &restored, replay_size).unwrap();
+        assert_eq!(redone, after);
     }
 }

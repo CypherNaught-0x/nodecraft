@@ -35,6 +35,7 @@ pub struct Edge {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Generation {
     pub id: GenerationId,
+    #[serde(default)]
     pub outputs: Vec<Value>,
 }
 
@@ -43,11 +44,17 @@ pub struct Generation {
 pub struct Node {
     pub id: NodeId,
     pub kind: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub pos: Position,
+    #[serde(default)]
     pub params: BTreeMap<String, Value>,
+    #[serde(default)]
     pub inputs: Vec<Port>,
+    #[serde(default)]
     pub outputs: Vec<Port>,
+    #[serde(default)]
     pub history: Vec<Generation>,
     pub active: Option<GenerationId>,
     pub tag: Option<TagId>,
@@ -75,12 +82,14 @@ impl Node {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Field {
     pub id: FieldId,
+    #[serde(default)]
     pub title: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
     pub id: TagId,
+    #[serde(default)]
     pub title: String,
 }
 
@@ -88,17 +97,24 @@ pub struct Tag {
 pub struct Comment {
     pub id: CommentId,
     pub text: String,
+    #[serde(default)]
     pub pos: Position,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Canvas {
     pub(crate) id: CanvasId,
+    #[serde(default)]
     pub(crate) title: String,
+    #[serde(default)]
     pub(crate) nodes: BTreeMap<NodeId, Node>,
+    #[serde(default)]
     pub(crate) edges: BTreeMap<EdgeId, Edge>,
+    #[serde(default)]
     pub(crate) fields: BTreeMap<FieldId, Field>,
+    #[serde(default)]
     pub(crate) comments: BTreeMap<CommentId, Comment>,
+    #[serde(default)]
     pub(crate) tags: BTreeMap<TagId, Tag>,
 }
 
@@ -151,7 +167,9 @@ pub struct Project {
 #[derive(Deserialize)]
 struct ProjectData {
     id: ProjectId,
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     canvases: BTreeMap<CanvasId, Canvas>,
 }
 

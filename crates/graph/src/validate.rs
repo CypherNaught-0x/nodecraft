@@ -2,16 +2,55 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use nodecraft_types::{Error, ErrorKind, Value};
 
-use crate::{Canvas, Node, Position, Project};
+use crate::{Canvas, Generation, Node, Position, Project};
 
 pub const MAX_CHANGES: usize = 10_000;
 pub const MAX_VALUE_DEPTH: usize = 32;
 pub const MAX_VALUE_ITEMS: usize = 4096;
-const MAX_CANVASES: usize = 64;
-const MAX_NODES: usize = 10_000;
-const MAX_EDGES: usize = 50_000;
+pub const MAX_NODE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_CHANGESET_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PROJECT_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_CANVASES: usize = 64;
+pub(crate) const MAX_NODES: usize = 10_000;
+pub(crate) const MAX_EDGES: usize = 50_000;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_PORTS: usize = 256;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROJECT_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count JSON bytes without allocating a serialized copy. Call only after recursive values
+/// have passed depth/item validation. The same cap applies to forward and inverse payloads.
+pub(crate) fn byte_budget(value: &impl serde::Serialize, limit: usize) -> Result<(), Error> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.checked_sub(bytes.len()).ok_or_else(|| std::io::Error::other("document byte limit"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Counter(limit), value).map_err(|_| invalid("serialized data exceeds byte limit"))
+}
+
+pub(crate) fn generation(generation: &Generation) -> Result<(), Error> {
+    generation_values(generation)?;
+    byte_budget(generation, MAX_NODE_BYTES)
+}
+
+fn generation_values(generation: &Generation) -> Result<(), Error> {
+    if generation.outputs.len() > 256 {
+        return Err(invalid("generation exceeds output limit"));
+    }
+    for output in &generation.outputs {
+        value(output)?;
+    }
+    Ok(())
+}
 
 pub(crate) fn invalid(message: &str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -92,21 +131,20 @@ pub(crate) fn node(node: &Node) -> Result<(), Error> {
         if !generations.insert(generation.id) {
             return Err(invalid("duplicate generation id"));
         }
-        if generation.outputs.len() > 256 {
-            return Err(invalid("generation exceeds output limit"));
-        }
-        for output in &generation.outputs {
-            value(output)?;
-        }
+        // The enclosing node byte budget includes every history entry; do not serialize
+        // each entry again just to enforce a redundant per-generation byte budget.
+        generation_values(generation)?;
     }
     if node.active.is_some_and(|id| !generations.contains(&id)) {
         return Err(invalid("active generation is missing from history"));
     }
-    Ok(())
+    byte_budget(node, MAX_NODE_BYTES)
 }
 
 impl Project {
     pub fn validate(&self) -> Result<(), Error> {
+        #[cfg(test)]
+        PROJECT_VALIDATIONS.with(|count| count.set(count.get().saturating_add(1)));
         text(&self.title, 4096)?;
         if self.canvases.len() > MAX_CANVASES {
             return Err(invalid("project exceeds canvas limit"));
@@ -156,7 +194,7 @@ impl Project {
                 return Err(invalid("project exceeds entity limits"));
             }
         }
-        Ok(())
+        byte_budget(self, MAX_PROJECT_BYTES)
     }
 }
 
