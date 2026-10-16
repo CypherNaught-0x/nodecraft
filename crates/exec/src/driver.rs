@@ -108,7 +108,31 @@ impl Future for Cancelled {
 
 enum Command {
     Add(Vec<JobSpec>, oneshot::Sender<Result<(), SchedulerError>>),
+    Requeue(Vec<JobId>, oneshot::Sender<Result<(), SchedulerError>>),
     Cancel(CancelScope),
+    Pause(bool),
+}
+
+/// Sends a job's outcome exactly once. If the task is dropped before it finishes (runtime
+/// shutdown, a dropped browser task), the drop reports a failure so the job never hangs as
+/// running.
+struct Reporter {
+    job: JobId,
+    tx: Option<mpsc::UnboundedSender<(JobId, Outcome)>>,
+}
+
+impl Reporter {
+    fn send(&mut self, outcome: Outcome) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.unbounded_send((self.job, outcome));
+        }
+    }
+}
+
+impl Drop for Reporter {
+    fn drop(&mut self) {
+        self.send(Outcome::Failed { error: "the job was stopped before it finished".into(), transient: false });
+    }
 }
 
 /// The driver has stopped (all handles dropped and the queue drained, or the driver was dropped).
@@ -139,6 +163,18 @@ impl Handle {
     pub fn cancel(&self, scope: CancelScope) -> Result<(), DriverGone> {
         self.0.unbounded_send(Command::Cancel(scope)).map_err(|_| DriverGone)
     }
+
+    /// Retries failed, cancelled or skipped jobs (see [`Scheduler::requeue`]).
+    pub async fn requeue(&self, jobs: Vec<JobId>) -> Result<Result<(), SchedulerError>, DriverGone> {
+        let (tx, rx) = oneshot::channel();
+        self.0.unbounded_send(Command::Requeue(jobs, tx)).map_err(|_| DriverGone)?;
+        rx.await.map_err(|_| DriverGone)
+    }
+
+    /// Stops or resumes starting jobs (budget reached, user pause); running jobs carry on.
+    pub fn set_paused(&self, paused: bool) -> Result<(), DriverGone> {
+        self.0.unbounded_send(Command::Pause(paused)).map_err(|_| DriverGone)
+    }
 }
 
 /// A driver ready to run: spawn [`Driver::run`] on the runtime and keep the [`Handle`].
@@ -165,20 +201,22 @@ impl Driver {
             for start in scheduler.start_ready(runtime.now_ms()) {
                 let token = CancelToken::default();
                 tokens.insert(start.job, token.clone());
-                let job = start.job;
-                let work = runner.run(start, token);
-                let tx = done_tx.clone();
+                let mut reporter = Reporter { job: start.job, tx: Some(done_tx.clone()) };
+                let runner = Arc::clone(&runner);
                 runtime.spawn(Box::pin(async move {
-                    // A panicking runner must not stall the queue: report it as a failure.
-                    let outcome = AssertUnwindSafe(work)
-                        .catch_unwind()
-                        .await
-                        .unwrap_or_else(|_| Outcome::Failed { error: "the job crashed (internal error)".into(), transient: false });
-                    let _ = tx.unbounded_send((job, outcome));
+                    // A panicking runner (while building its future or while running it) must not
+                    // stall the queue: report it as a failure.
+                    let crashed = || Outcome::Failed { error: "the job crashed (internal error)".into(), transient: false };
+                    let outcome = match std::panic::catch_unwind(AssertUnwindSafe(|| runner.run(start, token))) {
+                        Ok(work) => AssertUnwindSafe(work).catch_unwind().await.unwrap_or_else(|_| crashed()),
+                        Err(_) => crashed(),
+                    };
+                    reporter.send(outcome);
                 }));
             }
             for event in scheduler.drain_events() {
-                on_event(event);
+                // A panicking listener loses its event, not the queue.
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| on_event(event)));
             }
             if !open && scheduler.is_idle() {
                 return scheduler;
@@ -199,6 +237,10 @@ impl Driver {
                     Some(Command::Add(jobs, reply)) => {
                         let _ = reply.send(scheduler.add(jobs));
                     }
+                    Some(Command::Requeue(jobs, reply)) => {
+                        let _ = reply.send(scheduler.requeue(&jobs));
+                    }
+                    Some(Command::Pause(paused)) => scheduler.set_paused(paused),
                     Some(Command::Cancel(scope)) => {
                         for job in scheduler.cancel(scope) {
                             if let Some(token) = tokens.get(&job) {
@@ -214,12 +256,30 @@ impl Driver {
     }
 }
 
+// The tests use a thread pool, which needs `Send` futures: native only.
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use crate::scheduler::{Lane, Limits, RetryPolicy};
     use futures::executor::{ThreadPool, block_on};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    /// Lets the other futures in a `join!` (the driver) run before continuing.
+    async fn yield_now() {
+        let mut yielded = false;
+        futures::future::poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+        std::thread::yield_now();
+    }
 
     /// Real threads, virtual time: `sleep` advances the clock and returns at once.
     struct TestRuntime {
@@ -280,7 +340,13 @@ mod tests {
     }
 
     fn spec(id: u64, deps: &[u64]) -> JobSpec {
-        JobSpec { id: JobId(id), deps: deps.iter().map(|d| JobId(*d)).collect(), lane: Lane::new("p"), retry: RetryPolicy::default() }
+        JobSpec {
+            id: JobId(id),
+            deps: deps.iter().map(|d| JobId(*d)).collect(),
+            lane: Lane::new("p"),
+            retry: RetryPolicy::default(),
+            idempotency_key: format!("nodecraft:test:{id}"),
+        }
     }
 
     #[test]
@@ -290,7 +356,7 @@ mod tests {
         runner.fails.insert(2, 2);
         let runner = Arc::new(runner);
         let limits = Limits { global: 2, default_per_lane: 2, per_lane: HashMap::new() };
-        let (driver, handle) = driver(Scheduler::new("run", limits));
+        let (driver, handle) = driver(Scheduler::new(limits));
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&events);
         let jobs: Arc<dyn JobRunner> = Arc::new(Arc::clone(&runner));
@@ -322,16 +388,18 @@ mod tests {
     fn cancel_reaches_running_jobs() {
         let rt = runtime();
         let runner = Arc::new(Scripted { hang: vec![1], ..Scripted::default() });
-        let (driver, handle) = driver(Scheduler::new("run", Limits::default()));
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
         let jobs: Arc<dyn JobRunner> = Arc::new(Arc::clone(&runner));
         let task = driver.run(jobs, rt, |_| {});
         let scheduler = block_on(async {
             let control = async {
                 assert_eq!(handle.add(vec![spec(1, &[]), spec(2, &[1])]).await, Ok(Ok(())));
                 // Wait until the job is running, then cancel everything.
+                let mut spins = 0u64;
                 while runner.attempts.lock().unwrap().is_empty() {
-                    futures::future::ready(()).await;
-                    std::thread::yield_now();
+                    spins += 1;
+                    assert!(spins < 50_000_000, "the job never started");
+                    yield_now().await;
                 }
                 handle.cancel(CancelScope::All).unwrap();
                 drop(handle);
@@ -346,7 +414,7 @@ mod tests {
     fn a_panicking_runner_fails_the_job_without_stalling() {
         let rt = runtime();
         let runner = Arc::new(Scripted { panic_on: vec![1], ..Scripted::default() });
-        let (driver, handle) = driver(Scheduler::new("run", Limits::default()));
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
         let jobs: Arc<dyn JobRunner> = Arc::new(Arc::clone(&runner));
         let task = driver.run(jobs, rt, |_| {});
         let scheduler = block_on(async {
@@ -364,9 +432,100 @@ mod tests {
         assert_eq!(scheduler.state(JobId(3)), Some(&crate::scheduler::JobState::Done));
     }
 
+    /// A runtime that drops what it's given: the job must still end, not hang as running.
+    struct DroppingRuntime;
+
+    impl Runtime for DroppingRuntime {
+        fn spawn(&self, task: TaskFuture<()>) {
+            drop(task);
+        }
+        fn sleep(&self, _ms: u64) -> TaskFuture<()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn dropped_tasks_fail_instead_of_hanging() {
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
+        let jobs: Arc<dyn JobRunner> = Arc::new(Arc::new(Scripted::default()));
+        let task = driver.run(jobs, Arc::new(DroppingRuntime), |_| {});
+        let scheduler = block_on(async {
+            let control = async {
+                let r = handle.add(vec![spec(1, &[])]).await;
+                drop(handle);
+                r
+            };
+            futures::join!(control, task).1
+        });
+        assert!(matches!(scheduler.state(JobId(1)), Some(crate::scheduler::JobState::Failed { .. })));
+    }
+
+    struct PanicsWhileBuilding;
+
+    impl JobRunner for PanicsWhileBuilding {
+        fn run(&self, _start: Start, _cancel: CancelToken) -> TaskFuture<Outcome> {
+            panic!("bug before the future exists")
+        }
+    }
+
+    #[test]
+    fn a_runner_panicking_before_its_future_exists_fails_the_job() {
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
+        let task = driver.run(Arc::new(PanicsWhileBuilding), runtime(), |_| panic!("a listener bug"));
+        let scheduler = block_on(async {
+            let control = async {
+                let r = handle.add(vec![spec(1, &[])]).await;
+                drop(handle);
+                r
+            };
+            futures::join!(control, task).1
+        });
+        assert!(matches!(scheduler.state(JobId(1)), Some(crate::scheduler::JobState::Failed { .. })));
+    }
+
+    #[test]
+    fn pause_and_requeue_through_the_handle() {
+        let rt = runtime();
+        let runner = Arc::new(Scripted { panic_on: vec![1], ..Scripted::default() });
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
+        let jobs: Arc<dyn JobRunner> = Arc::new(Arc::clone(&runner));
+        let task = driver.run(jobs, rt, |_| {});
+        let scheduler = block_on(async {
+            let control = async {
+                handle.set_paused(true).unwrap();
+                assert_eq!(handle.add(vec![spec(1, &[]), spec(2, &[])]).await, Ok(Ok(())));
+                assert!(runner.attempts.lock().unwrap().is_empty(), "paused: nothing starts");
+                handle.set_paused(false).unwrap();
+                let mut spins = 0u64;
+                while runner.attempts.lock().unwrap().len() < 2 {
+                    spins += 1;
+                    assert!(spins < 50_000_000, "jobs never started");
+                    yield_now().await;
+                }
+                // Job 1 panicked; once it has failed, requeue it (it fails again, which is fine).
+                let mut tries = 0;
+                loop {
+                    tries += 1;
+                    assert!(tries < 1_000_000, "job 1 never failed");
+                    if handle.requeue(vec![JobId(1)]).await == Ok(Ok(())) {
+                        break;
+                    }
+                    yield_now().await;
+                }
+                drop(handle);
+            };
+            futures::join!(control, task).1
+        });
+        assert_eq!(runner.attempts.lock().unwrap().iter().filter(|a| a.0 == 1).count(), 2, "requeued once");
+        assert!(scheduler.is_idle());
+    }
+
     #[test]
     fn bad_additions_are_reported_through_the_handle() {
-        let (driver, handle) = driver(Scheduler::new("run", Limits::default()));
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
         let jobs: Arc<dyn JobRunner> = Arc::new(Arc::new(Scripted::default()));
         let task = driver.run(jobs, runtime(), |_| {});
         block_on(async {

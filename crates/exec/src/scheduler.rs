@@ -6,7 +6,7 @@
 //! failed, and cancels cooperatively. [`crate::driver`] runs it on an async runtime; tests drive
 //! it directly with a fake clock.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 
 /// Cap on jobs held by one scheduler (a batch of batches must not exhaust memory).
@@ -81,6 +81,10 @@ pub struct JobSpec {
     pub deps: Vec<JobId>,
     pub lane: Lane,
     pub retry: RetryPolicy,
+    /// Sent to the provider with every attempt so a retry never charges twice. The planner makes
+    /// it unique per run and job (`nodecraft:<run uuid>:<job>`); keep it ASCII and under 64
+    /// characters, which every provider accepts.
+    pub idempotency_key: String,
 }
 
 /// Concurrency limits.
@@ -187,12 +191,27 @@ pub enum Event {
 #[non_exhaustive]
 pub enum SchedulerError {
     DuplicateJob(JobId),
-    UnknownDependency { job: JobId, dep: JobId },
+    UnknownDependency {
+        job: JobId,
+        dep: JobId,
+    },
     Cycle(JobId),
-    TooManyJobs { limit: usize },
-    TooManyDeps { job: JobId, limit: usize },
+    TooManyJobs {
+        limit: usize,
+    },
+    TooManyDeps {
+        job: JobId,
+        limit: usize,
+    },
     UnknownJob(JobId),
     NotRunning(JobId),
+    /// Only failed, cancelled and skipped jobs can be requeued.
+    NotFinished(JobId),
+    /// A requeued job's input failed too; requeue it in the same call.
+    InputNotRequeued {
+        job: JobId,
+        dep: JobId,
+    },
 }
 
 impl fmt::Display for SchedulerError {
@@ -205,6 +224,8 @@ impl fmt::Display for SchedulerError {
             Self::TooManyDeps { job, limit } => write!(f, "{job} has more than {limit} dependencies"),
             Self::UnknownJob(j) => write!(f, "{j} isn't scheduled"),
             Self::NotRunning(j) => write!(f, "{j} isn't running"),
+            Self::NotFinished(j) => write!(f, "{j} hasn't failed, so it can't be retried"),
+            Self::InputNotRequeued { job, dep } => write!(f, "{job} needs {dep}, which failed too; retry both"),
         }
     }
 }
@@ -245,27 +266,35 @@ impl Summary {
 /// See the module docs.
 #[derive(Debug)]
 pub struct Scheduler {
-    run_id: String,
     limits: Limits,
     jobs: HashMap<JobId, Job>,
-    /// Ready jobs by addition order.
-    ready: BTreeMap<u64, JobId>,
+    /// Ready jobs per lane, by addition order. Lanes are few (one per provider or server), so
+    /// starting a job looks at each lane's head only: no scan over all jobs.
+    ready: HashMap<Lane, BTreeMap<u64, JobId>>,
+    /// Jobs in backoff by the time they become ready.
+    backoff: BTreeSet<(u64, u64, JobId)>,
     running_total: usize,
     running_per_lane: HashMap<Lane, usize>,
+    unfinished: usize,
+    paused: bool,
     next_seq: u64,
     events: VecDeque<Event>,
 }
 
+/// Longest backoff between attempts, whatever the policy says.
+pub const MAX_RETRY_DELAY_MS: u64 = 60 * 60 * 1000;
+
 impl Scheduler {
-    /// `run_id` makes idempotency keys unique per run: use a fresh UUID per user run.
-    pub fn new(run_id: impl Into<String>, limits: Limits) -> Self {
+    pub fn new(limits: Limits) -> Self {
         Self {
-            run_id: run_id.into(),
             limits: Limits { global: limits.global.max(1), ..limits },
             jobs: HashMap::new(),
-            ready: BTreeMap::new(),
+            ready: HashMap::new(),
+            backoff: BTreeSet::new(),
             running_total: 0,
             running_per_lane: HashMap::new(),
+            unfinished: 0,
+            paused: false,
             next_seq: 0,
             events: VecDeque::new(),
         }
@@ -291,35 +320,7 @@ impl Scheduler {
                 return Err(SchedulerError::UnknownDependency { job: s.id, dep: *dep });
             }
         }
-        // Existing jobs can't depend on new ones, so a cycle can only run through the new jobs:
-        // Kahn's algorithm over the new subgraph.
-        let mut indegree: HashMap<JobId, usize> = HashMap::new();
-        let mut users: HashMap<JobId, Vec<JobId>> = HashMap::new();
-        for s in &specs {
-            let deps: HashSet<&JobId> = s.deps.iter().filter(|d| new_ids.contains(d)).collect();
-            indegree.insert(s.id, deps.len());
-            for d in deps {
-                users.entry(*d).or_default().push(s.id);
-            }
-        }
-        let mut queue: Vec<JobId> = specs.iter().map(|s| s.id).filter(|id| indegree.get(id) == Some(&0)).collect();
-        queue.reverse();
-        let mut topo: Vec<JobId> = Vec::with_capacity(specs.len());
-        while let Some(id) = queue.pop() {
-            topo.push(id);
-            for u in users.get(&id).into_iter().flatten() {
-                if let Some(n) = indegree.get_mut(u) {
-                    *n = n.saturating_sub(1);
-                    if *n == 0 {
-                        queue.push(*u);
-                    }
-                }
-            }
-        }
-        if topo.len() != specs.len() {
-            let stuck = indegree.iter().filter(|(_, n)| **n > 0).map(|(id, _)| *id).min().unwrap_or(JobId(0));
-            return Err(SchedulerError::Cycle(stuck));
-        }
+        let topo = topological(&specs, &new_ids)?;
 
         // Valid. Insert in the given order (that order decides who starts first) …
         for spec in specs {
@@ -341,12 +342,12 @@ impl Scheduler {
                 }
             }
             self.jobs.insert(id, Job { spec, state: JobState::Waiting, seq, attempts: 0, pending_deps: pending, dependents: Vec::new() });
+            self.unfinished += 1;
             self.events.push_back(Event::Queued { job: id });
         }
         // … wire dependencies between new jobs …
         for id in &topo {
-            let deps: Vec<JobId> = self.jobs.get(id).map(|j| j.spec.deps.clone()).unwrap_or_default();
-            let mut deps: Vec<JobId> = deps.into_iter().filter(|d| new_ids.contains(d)).collect();
+            let mut deps: Vec<JobId> = self.jobs.get(id).map(|j| j.spec.deps.iter().copied().filter(|d| new_ids.contains(d)).collect()).unwrap_or_default();
             deps.sort_unstable();
             deps.dedup();
             for d in deps {
@@ -357,61 +358,66 @@ impl Scheduler {
         }
         // … then, in dependency order, skip jobs whose input already failed and release the rest.
         for id in topo {
-            let Some(job) = self.jobs.get(&id) else { continue };
-            if job.state != JobState::Waiting {
-                continue;
-            }
-            let pending = job.pending_deps;
-            let blocked = job.spec.deps.iter().find(|d| self.jobs.get(d).is_some_and(|dj| dj.state.is_finished() && dj.state != JobState::Done)).copied();
-            if let Some(b) = blocked {
-                self.finish_skipped(id, b);
-            } else if pending == 0 {
-                self.make_ready(id);
-            }
+            self.settle(id);
         }
         Ok(())
     }
 
-    fn make_ready(&mut self, id: JobId) {
-        if let Some(job) = self.jobs.get_mut(&id) {
-            job.state = JobState::Ready;
-            self.ready.insert(job.seq, id);
+    /// For a waiting job: skip it if an input finished unsuccessfully, make it ready if all are done.
+    fn settle(&mut self, id: JobId) {
+        let Some(job) = self.jobs.get(&id) else { return };
+        if job.state != JobState::Waiting {
+            return;
+        }
+        let pending = job.pending_deps;
+        let blocked = job.spec.deps.iter().find(|d| self.jobs.get(d).is_some_and(|dj| dj.state.is_finished() && dj.state != JobState::Done)).copied();
+        if let Some(b) = blocked {
+            self.finish(id, JobState::Skipped { because: b });
+        } else if pending == 0 {
+            self.set_state(id, JobState::Ready);
         }
     }
 
-    /// Starts every job that can start at `now_ms`, in the order they were added, within the
-    /// limits. Jobs on a full lane don't hold up jobs on other lanes.
+    /// Stops (`true`) or resumes starting jobs; running ones carry on. The budget check pauses the
+    /// queue when spending reaches a cap.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Starts every job that can start at `now_ms`, oldest first, within the limits. A full lane
+    /// doesn't hold up jobs on other lanes.
     pub fn start_ready(&mut self, now_ms: u64) -> Vec<Start> {
-        // Backoffs that have elapsed become ready again.
-        let due: Vec<JobId> =
-            self.jobs.iter().filter(|(_, j)| matches!(j.state, JobState::Backoff { until_ms, .. } if until_ms <= now_ms)).map(|(id, _)| *id).collect();
-        for id in due {
-            if let Some(job) = self.jobs.get_mut(&id) {
-                job.state = JobState::Ready;
-                self.ready.insert(job.seq, id);
-            }
-        }
-        let mut started = Vec::new();
-        let candidates: Vec<(u64, JobId)> = self.ready.iter().map(|(s, id)| (*s, *id)).collect();
-        for (seq, id) in candidates {
-            if self.running_total >= self.limits.global {
+        while let Some(&(until, _, id)) = self.backoff.first() {
+            if until > now_ms {
                 break;
             }
-            let Some(job) = self.jobs.get(&id) else { continue };
-            let lane = job.spec.lane.clone();
-            let on_lane = self.running_per_lane.get(&lane).copied().unwrap_or(0);
-            if on_lane >= self.limits.lane(&lane) {
-                continue;
-            }
-            self.ready.remove(&seq);
-            let Some(job) = self.jobs.get_mut(&id) else { continue };
+            self.set_state(id, JobState::Ready);
+        }
+        let mut started = Vec::new();
+        if self.paused {
+            return started;
+        }
+        while self.running_total < self.limits.global {
+            // The oldest head among lanes with a free slot.
+            let pick = self
+                .ready
+                .iter()
+                .filter(|(lane, q)| !q.is_empty() && self.running_per_lane.get(*lane).copied().unwrap_or(0) < self.limits.lane(lane))
+                .filter_map(|(_, q)| q.first_key_value().map(|(seq, id)| (*seq, *id)))
+                .min();
+            let Some((_, id)) = pick else { break };
+            let Some(job) = self.jobs.get_mut(&id) else { break };
             job.attempts = job.attempts.saturating_add(1);
             let attempt = job.attempts;
-            job.state = JobState::Running { attempt, cancel_requested: false };
-            self.running_total += 1;
-            *self.running_per_lane.entry(lane.clone()).or_insert(0) += 1;
+            let lane = job.spec.lane.clone();
+            let idempotency_key = job.spec.idempotency_key.clone();
+            self.set_state(id, JobState::Running { attempt, cancel_requested: false });
             self.events.push_back(Event::Started { job: id, attempt });
-            started.push(Start { job: id, lane, attempt, idempotency_key: format!("nodecraft:{}:{}", self.run_id, id.0) });
+            started.push(Start { job: id, lane, attempt, idempotency_key });
         }
         started
     }
@@ -422,53 +428,42 @@ impl Scheduler {
         let JobState::Running { attempt, cancel_requested } = job.state else {
             return Err(SchedulerError::NotRunning(id));
         };
-        let lane = job.spec.lane.clone();
         let retry = job.spec.retry;
-        self.running_total = self.running_total.saturating_sub(1);
-        if let Some(n) = self.running_per_lane.get_mut(&lane) {
-            *n = n.saturating_sub(1);
-        }
         match outcome {
             Outcome::Done => {
-                self.set_state(id, JobState::Done);
-                self.events.push_back(Event::Done { job: id });
+                self.finish(id, JobState::Done);
                 let dependents = self.jobs.get(&id).map(|j| j.dependents.clone()).unwrap_or_default();
                 for d in dependents {
-                    let now_ready = match self.jobs.get_mut(&d) {
-                        Some(dj) if dj.state == JobState::Waiting => {
-                            dj.pending_deps = dj.pending_deps.saturating_sub(1);
-                            dj.pending_deps == 0
-                        }
-                        _ => false,
-                    };
-                    if now_ready {
-                        self.make_ready(d);
+                    if let Some(dj) = self.jobs.get_mut(&d)
+                        && dj.state == JobState::Waiting
+                    {
+                        dj.pending_deps = dj.pending_deps.saturating_sub(1);
+                        self.settle(d);
                     }
                 }
             }
-            Outcome::Cancelled => self.finish_cancelled(id),
-            Outcome::Failed { .. } if cancel_requested => self.finish_cancelled(id),
+            Outcome::Cancelled => self.finish(id, JobState::Cancelled),
+            Outcome::Failed { .. } if cancel_requested => self.finish(id, JobState::Cancelled),
             Outcome::Failed { error, transient } => {
                 if transient && attempt < retry.max_attempts.max(1) {
                     let next_attempt = attempt.saturating_add(1);
-                    let delay_ms = retry.delay_ms(next_attempt, splitmix(id.0) ^ hash_str(&self.run_id));
+                    let seed = self.jobs.get(&id).map_or(0, |j| hash_str(&j.spec.idempotency_key));
+                    let delay_ms = retry.delay_ms(next_attempt, seed).min(MAX_RETRY_DELAY_MS);
                     self.set_state(id, JobState::Backoff { until_ms: now_ms.saturating_add(delay_ms), attempt: next_attempt });
                     self.events.push_back(Event::Retrying { job: id, next_attempt, delay_ms, error });
                 } else {
-                    self.set_state(id, JobState::Failed { error: error.clone() });
-                    self.events.push_back(Event::Failed { job: id, error });
-                    self.skip_downstream(id);
+                    self.finish(id, JobState::Failed { error });
                 }
             }
         }
         Ok(())
     }
 
-    /// Cancels jobs. Jobs that haven't started are cancelled at once (with everything downstream);
-    /// the returned running jobs must be told to stop, and are cancelled when they report back.
+    /// Cancels jobs and everything downstream of them. Jobs that haven't started are cancelled at
+    /// once; the returned running jobs must be told to stop, and end when they report back.
     pub fn cancel(&mut self, scope: CancelScope) -> Vec<JobId> {
         let roots: Vec<JobId> = match scope {
-            CancelScope::All => self.jobs.keys().copied().collect(),
+            CancelScope::All => self.jobs.iter().filter(|(_, j)| !j.state.is_finished()).map(|(id, _)| *id).collect(),
             CancelScope::Jobs(ids) => ids.into_iter().filter(|id| self.jobs.contains_key(id)).collect(),
         };
         // Everything downstream of the roots, iteratively (no recursion on hostile graphs).
@@ -485,6 +480,8 @@ impl Scheduler {
             }
         }
         targets.sort_by_key(|id| self.jobs.get(id).map_or(u64::MAX, |j| j.seq));
+        // Every target is cancelled by the user, so all of them are labelled Cancelled (none
+        // Skipped); their downstream is in the target set already.
         let mut running = Vec::new();
         for id in targets {
             let Some(job) = self.jobs.get_mut(&id) else { continue };
@@ -496,21 +493,77 @@ impl Scheduler {
                     }
                 }
                 s if s.is_finished() => {}
-                _ => self.finish_cancelled(id),
+                _ => {
+                    // No downstream propagation: the downstream is in `targets` and gets
+                    // Cancelled itself rather than Skipped.
+                    self.set_state(id, JobState::Cancelled);
+                    self.events.push_back(Event::Cancelled { job: id });
+                }
             }
         }
         running
     }
 
+    /// Puts failed, cancelled and skipped jobs back in the queue (the queue panel's "retry"),
+    /// with fresh attempts. Their inputs must be done, unfinished, or requeued in the same call.
+    pub fn requeue(&mut self, ids: &[JobId]) -> Result<(), SchedulerError> {
+        let targets: HashSet<JobId> = ids.iter().copied().collect();
+        for id in &targets {
+            let job = self.jobs.get(id).ok_or(SchedulerError::UnknownJob(*id))?;
+            if !job.state.is_finished() || job.state == JobState::Done {
+                return Err(SchedulerError::NotFinished(*id));
+            }
+            if let Some(dep) =
+                job.spec.deps.iter().find(|d| !targets.contains(d) && self.jobs.get(d).is_some_and(|dj| dj.state.is_finished() && dj.state != JobState::Done))
+            {
+                return Err(SchedulerError::InputNotRequeued { job: *id, dep: *dep });
+            }
+        }
+        let mut order: Vec<JobId> = targets.iter().copied().collect();
+        order.sort_by_key(|id| self.jobs.get(id).map_or(u64::MAX, |j| j.seq));
+        for id in &order {
+            if let Some(job) = self.jobs.get_mut(id) {
+                job.state = JobState::Waiting;
+                job.attempts = 0;
+                self.unfinished += 1;
+                self.events.push_back(Event::Queued { job: *id });
+            }
+        }
+        for id in &order {
+            let deps: Vec<JobId> = self.jobs.get(id).map(|j| j.spec.deps.clone()).unwrap_or_default();
+            let mut pending = 0;
+            let mut unique = deps;
+            unique.sort_unstable();
+            unique.dedup();
+            for d in unique {
+                if let Some(dep) = self.jobs.get_mut(&d)
+                    && dep.state != JobState::Done
+                {
+                    pending += 1;
+                    if !dep.dependents.contains(id) {
+                        dep.dependents.push(*id);
+                    }
+                }
+            }
+            if let Some(job) = self.jobs.get_mut(id) {
+                job.pending_deps = pending;
+            }
+        }
+        for id in order {
+            self.settle(id);
+        }
+        Ok(())
+    }
+
+    /// Drops finished jobs from memory (a long session's queue). Their ids can't be named as
+    /// dependencies afterwards.
+    pub fn forget_finished(&mut self) {
+        self.jobs.retain(|_, j| !j.state.is_finished());
+    }
+
     /// The earliest time a job in backoff becomes ready; wake the driver then.
     pub fn next_wakeup_ms(&self) -> Option<u64> {
-        self.jobs
-            .values()
-            .filter_map(|j| match j.state {
-                JobState::Backoff { until_ms, .. } => Some(until_ms),
-                _ => None,
-            })
-            .min()
+        if self.paused { None } else { self.backoff.first().map(|(until, _, _)| *until) }
     }
 
     /// Events since the last call, oldest first.
@@ -541,31 +594,75 @@ impl Scheduler {
 
     /// True when no job is waiting, ready, backing off or running.
     pub fn is_idle(&self) -> bool {
-        self.running_total == 0 && self.jobs.values().all(|j| j.state.is_finished())
+        self.unfinished == 0
     }
 
+    /// Moves a job to `state`, keeping the ready queues, backoff set and counters in step. The
+    /// only place job states change.
     fn set_state(&mut self, id: JobId, state: JobState) {
-        if let Some(j) = self.jobs.get_mut(&id) {
-            if j.state == JobState::Ready {
-                self.ready.remove(&j.seq);
+        let Some(job) = self.jobs.get_mut(&id) else { return };
+        let lane = job.spec.lane.clone();
+        match job.state {
+            JobState::Ready => {
+                if let Some(q) = self.ready.get_mut(&lane) {
+                    q.remove(&job.seq);
+                    if q.is_empty() {
+                        self.ready.remove(&lane);
+                    }
+                }
             }
-            j.state = state;
+            JobState::Backoff { until_ms, .. } => {
+                self.backoff.remove(&(until_ms, job.seq, id));
+            }
+            JobState::Running { .. } => {
+                self.running_total = self.running_total.saturating_sub(1);
+                if let Some(n) = self.running_per_lane.get_mut(&lane) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.running_per_lane.remove(&lane);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let was_finished = job.state.is_finished();
+        match state {
+            JobState::Ready => {
+                self.ready.entry(lane).or_default().insert(job.seq, id);
+            }
+            JobState::Backoff { until_ms, .. } => {
+                self.backoff.insert((until_ms, job.seq, id));
+            }
+            JobState::Running { .. } => {
+                self.running_total += 1;
+                *self.running_per_lane.entry(lane).or_insert(0) += 1;
+            }
+            _ => {}
+        }
+        if state.is_finished() && !was_finished {
+            self.unfinished = self.unfinished.saturating_sub(1);
+        }
+        job.state = state;
+    }
+
+    /// Ends a job with a final state, emits its event, and skips what can no longer run.
+    fn finish(&mut self, id: JobId, state: JobState) {
+        let event = match &state {
+            JobState::Done => Event::Done { job: id },
+            JobState::Failed { error } => Event::Failed { job: id, error: error.clone() },
+            JobState::Cancelled => Event::Cancelled { job: id },
+            JobState::Skipped { because } => Event::Skipped { job: id, because: *because },
+            _ => return,
+        };
+        let successful = state == JobState::Done;
+        self.set_state(id, state);
+        self.events.push_back(event);
+        if !successful {
+            self.skip_downstream(id);
         }
     }
 
-    fn finish_cancelled(&mut self, id: JobId) {
-        self.set_state(id, JobState::Cancelled);
-        self.events.push_back(Event::Cancelled { job: id });
-        self.skip_downstream(id);
-    }
-
-    fn finish_skipped(&mut self, id: JobId, because: JobId) {
-        self.set_state(id, JobState::Skipped { because });
-        self.events.push_back(Event::Skipped { job: id, because });
-        self.skip_downstream(id);
-    }
-
-    /// Marks every unfinished job downstream of `id` as skipped, iteratively.
+    /// Marks every waiting job downstream of `id` as skipped, iteratively.
     fn skip_downstream(&mut self, id: JobId) {
         let mut stack: Vec<(JobId, JobId)> = self.jobs.get(&id).map(|j| j.dependents.iter().map(|d| (*d, id)).collect()).unwrap_or_default();
         while let Some((d, because)) = stack.pop() {
@@ -582,6 +679,39 @@ impl Scheduler {
     }
 }
 
+/// Kahn's algorithm over the new jobs (existing jobs can't depend on new ones, so a cycle can
+/// only run through them). Returns them in dependency order.
+fn topological(specs: &[JobSpec], new_ids: &HashSet<JobId>) -> Result<Vec<JobId>, SchedulerError> {
+    let mut indegree: HashMap<JobId, usize> = HashMap::new();
+    let mut users: HashMap<JobId, Vec<JobId>> = HashMap::new();
+    for s in specs {
+        let deps: HashSet<&JobId> = s.deps.iter().filter(|d| new_ids.contains(d)).collect();
+        indegree.insert(s.id, deps.len());
+        for d in deps {
+            users.entry(*d).or_default().push(s.id);
+        }
+    }
+    let mut queue: Vec<JobId> = specs.iter().map(|s| s.id).filter(|id| indegree.get(id) == Some(&0)).collect();
+    queue.reverse();
+    let mut topo = Vec::with_capacity(specs.len());
+    while let Some(id) = queue.pop() {
+        topo.push(id);
+        for u in users.get(&id).into_iter().flatten() {
+            if let Some(n) = indegree.get_mut(u) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    queue.push(*u);
+                }
+            }
+        }
+    }
+    if topo.len() != specs.len() {
+        let stuck = indegree.iter().filter(|(_, n)| **n > 0).map(|(id, _)| *id).min().unwrap_or(JobId(0));
+        return Err(SchedulerError::Cycle(stuck));
+    }
+    Ok(topo)
+}
+
 fn hash_str(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
@@ -591,7 +721,13 @@ mod tests {
     use super::*;
 
     fn job(id: u64, deps: &[u64], lane: &str) -> JobSpec {
-        JobSpec { id: JobId(id), deps: deps.iter().map(|d| JobId(*d)).collect(), lane: Lane::new(lane), retry: RetryPolicy::NEVER }
+        JobSpec {
+            id: JobId(id),
+            deps: deps.iter().map(|d| JobId(*d)).collect(),
+            lane: Lane::new(lane),
+            retry: RetryPolicy::NEVER,
+            idempotency_key: format!("nodecraft:run1:{id}"),
+        }
     }
 
     fn ids(starts: &[Start]) -> Vec<u64> {
@@ -599,7 +735,7 @@ mod tests {
     }
 
     fn sched() -> Scheduler {
-        Scheduler::new("run1", Limits::default())
+        Scheduler::new(Limits::default())
     }
 
     #[test]
@@ -625,7 +761,7 @@ mod tests {
     fn concurrency_limits_and_no_head_of_line_blocking() {
         let mut limits = Limits { global: 3, default_per_lane: 2, per_lane: HashMap::new() };
         limits.per_lane.insert(Lane::new("slow"), 1);
-        let mut s = Scheduler::new("r", limits);
+        let mut s = Scheduler::new(limits);
         s.add(vec![job(1, &[], "slow"), job(2, &[], "slow"), job(3, &[], "fast"), job(4, &[], "fast"), job(5, &[], "fast")]).unwrap();
         // slow takes one, the second slow job waits, fast fills the rest up to the global limit.
         assert_eq!(ids(&s.start_ready(0)), [1, 3, 4]);
@@ -693,6 +829,74 @@ mod tests {
         assert_eq!(s.state(JobId(4)), Some(&JobState::Cancelled));
         assert!(s.is_idle());
         assert!(s.cancel(CancelScope::Jobs(vec![JobId(99)])).is_empty());
+    }
+
+    #[test]
+    fn cancel_all_labels_every_job_cancelled_whatever_the_order() {
+        for specs in [vec![job(1, &[], "a"), job(2, &[1], "a")], vec![job(2, &[1], "a"), job(1, &[], "a")]] {
+            let mut s = sched();
+            s.add(specs).unwrap();
+            assert!(s.cancel(CancelScope::All).is_empty());
+            assert_eq!(s.state(JobId(1)), Some(&JobState::Cancelled));
+            assert_eq!(s.state(JobId(2)), Some(&JobState::Cancelled));
+        }
+    }
+
+    #[test]
+    fn requeue_failed_and_skipped_jobs() {
+        let mut s = sched();
+        s.add(vec![job(1, &[], "a"), job(2, &[1], "a"), job(3, &[], "a")]).unwrap();
+        s.start_ready(0);
+        s.report(JobId(1), Outcome::Failed { error: "x".into(), transient: false }, 0).unwrap();
+        s.report(JobId(3), Outcome::Done, 0).unwrap();
+        assert_eq!(s.requeue(&[JobId(2)]), Err(SchedulerError::InputNotRequeued { job: JobId(2), dep: JobId(1) }));
+        assert_eq!(s.requeue(&[JobId(3)]), Err(SchedulerError::NotFinished(JobId(3))), "done jobs aren't retried");
+        s.requeue(&[JobId(2), JobId(1)]).unwrap();
+        assert_eq!(s.state(JobId(2)), Some(&JobState::Waiting));
+        let st = s.start_ready(0);
+        assert_eq!((ids(&st), st[0].attempt), (vec![1], 1), "fresh attempts");
+        s.report(JobId(1), Outcome::Done, 0).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [2]);
+        s.report(JobId(2), Outcome::Done, 0).unwrap();
+        assert!(s.is_idle());
+    }
+
+    #[test]
+    fn pause_and_forget() {
+        let mut s = sched();
+        s.add(vec![job(1, &[], "a"), job(2, &[], "a")]).unwrap();
+        s.set_paused(true);
+        assert!(s.start_ready(0).is_empty());
+        s.set_paused(false);
+        assert_eq!(ids(&s.start_ready(0)), [1, 2]);
+        s.report(JobId(1), Outcome::Done, 0).unwrap();
+        s.forget_finished();
+        assert_eq!(s.state(JobId(1)), None);
+        assert!(s.state(JobId(2)).is_some());
+        assert!(matches!(s.add(vec![job(3, &[1], "a")]), Err(SchedulerError::UnknownDependency { .. })));
+    }
+
+    /// 100k independent jobs through the driver's loop shape: must stay roughly linear.
+    #[test]
+    fn scales_to_many_jobs() {
+        let n = 100_000u64;
+        let mut s = sched();
+        s.add((0..n).map(|i| job(i, &[], if i % 2 == 0 { "a" } else { "b" })).collect()).unwrap();
+        let started_at = std::time::Instant::now();
+        let mut running = Vec::new();
+        let mut done = 0;
+        while !s.is_idle() {
+            running.extend(s.start_ready(0));
+            let _ = s.next_wakeup_ms();
+            if let Some(r) = running.pop() {
+                s.report(r.job, Outcome::Done, 0).unwrap();
+                done += 1;
+            }
+            s.drain_events();
+        }
+        assert_eq!(done, n);
+        // Generous for debug builds on slow CI; the quadratic version took minutes.
+        assert!(started_at.elapsed() < std::time::Duration::from_secs(30), "{:?}", started_at.elapsed());
     }
 
     #[test]
@@ -773,16 +977,19 @@ mod tests {
                 .map(|i| {
                     let deps: Vec<JobId> = (0..i).filter(|_| rnd(5) == 0).map(JobId).collect();
                     let retry = RetryPolicy { max_attempts: 1 + rnd(3) as u32, base_delay_ms: rnd(50), max_delay_ms: 100 };
-                    JobSpec { id: JobId(i), deps, lane: Lane::new(lanes[rnd(3) as usize]), retry }
+                    JobSpec { id: JobId(i), deps, lane: Lane::new(lanes[rnd(3) as usize]), retry, idempotency_key: format!("k{i}") }
                 })
                 .collect();
-            let mut s = Scheduler::new("r", limits.clone());
-            s.add(specs.clone()).unwrap();
+            let mut s = Scheduler::new(limits.clone());
+            // Half the jobs up front, the rest while the first ones run.
+            let split = specs.len() / 2;
+            s.add(specs[..split].to_vec()).unwrap();
+            let mut late = Some(specs[split..].to_vec());
             let mut now = 0u64;
             let mut running: Vec<Start> = Vec::new();
             let mut keys: HashMap<JobId, String> = HashMap::new();
             let mut steps = 0;
-            while !s.is_idle() {
+            while !s.is_idle() || late.is_some() {
                 steps += 1;
                 assert!(steps < 10_000, "no progress");
                 for st in s.start_ready(now) {
@@ -798,17 +1005,28 @@ mod tests {
                     let on = running.iter().filter(|r| r.lane.0 == lane).count();
                     assert!(on <= limits.lane(&Lane::new(lane)), "lane {lane}: {on}");
                 }
-                match rnd(10) {
+                if steps == 3
+                    && let Some(rest) = late.take()
+                {
+                    s.add(rest).unwrap();
+                }
+                match rnd(12) {
                     0 => {
                         let target = JobId(rnd(n));
                         for id in s.cancel(CancelScope::Jobs(vec![target])) {
                             assert!(running.iter().any(|r| r.job == id));
                         }
                     }
+                    1 if rnd(10) == 0 => {
+                        for id in s.cancel(CancelScope::All) {
+                            assert!(running.iter().any(|r| r.job == id));
+                        }
+                    }
                     _ if !running.is_empty() => {
                         let r = running.swap_remove(rnd(running.len() as u64) as usize);
-                        let outcome = match rnd(4) {
+                        let outcome = match rnd(6) {
                             0 => Outcome::Failed { error: "x".into(), transient: rnd(2) == 0 },
+                            1 => Outcome::Cancelled,
                             _ => Outcome::Done,
                         };
                         s.report(r.job, outcome, now).unwrap();
@@ -817,6 +1035,7 @@ mod tests {
                 }
             }
             assert!(running.is_empty());
+            assert_eq!(s.summary().unfinished(), 0, "the idle counter agrees with the states");
             // Every job ended exactly once; skipped jobs have an unsuccessful dependency.
             let events = s.drain_events();
             for spec in &specs {

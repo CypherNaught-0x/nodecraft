@@ -12,8 +12,12 @@ a choice a later contributor might otherwise undo.
 - **Runtime-agnostic driver** (`exec::driver`): the apps implement `Runtime` (spawn, sleep,
   monotonic clock) with tokio or wasm-bindgen-futures; `exec` depends only on `futures`. Futures
   are `Send` on native and not in the browser (`TaskFuture`, `MaybeSendSync`).
-- **Idempotency keys are `nodecraft:<run id>:<job id>`**, the same on every attempt, so a provider
-  retry after a lost reply never creates or charges for a second generation.
+- **One scheduler per session, keys per job.** The planner gives every job an idempotency key
+  (`nodecraft:<run uuid>:<job>`), used on every attempt so a provider retry after a lost reply
+  never creates or charges for a second generation; limits apply across all runs. Finished jobs
+  can be forgotten, failed ones requeued, and the queue paused (the budget gate).
+- **No scans over all jobs:** ready jobs are queued per lane and backoffs kept in time order, so
+  starting, finishing and waking are cheap with 100k jobs.
 - **Backoff** doubles from the job's base delay up to its cap, with deterministic jitter of up to
   −25 % so a failed batch doesn't retry in lockstep.
 - **Failure and cancellation propagate downstream as `Skipped`/`Cancelled`**; independent branches
