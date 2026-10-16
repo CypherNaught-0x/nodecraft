@@ -11,3 +11,5 @@ description = "NodeCraft: media sniffing, decode/encode, thumbnails and metadata
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
