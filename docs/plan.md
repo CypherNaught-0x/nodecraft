@@ -1,6 +1,6 @@
 # NodeCraft plan
 
-> **Status:** draft 1 · **Date:** 2026-10-16 · **Scope:** product feature set, architecture,
+> **Status:** draft 2 (owner decisions folded in) · **Date:** 2026-10-16 · **Scope:** product feature set, architecture,
 > repository setup and roadmap for NodeCraft, a native node-based canvas for generative media.
 
 NodeCraft is a node-based infinite canvas where text, image, video, audio, 3D and document nodes
@@ -107,6 +107,7 @@ Legend: **M#** = roadmap milestone where it lands (§7).
 | **Video** | text→video, image(s)→video (first/last/reference frames), audio→video | Duration, resolution, audio on/off; playback with scrubber |
 | **Audio** | text→speech, sound effects, music; voice options | Waveform preview, playback |
 | **3D** | text→3D, image→3D, 3D→3D (remesh, retexture, segment) | Orbit viewer; **capture photo**, **record turntable/orbit video**, **view sheet** (4/8/16 views); export GLB/OBJ |
+| **ComfyUI Workflow** | Whatever the imported workflow does | Ports and parameters generated from the workflow's mapped inputs/outputs; runs on any configured ComfyUI server (§2.5.1) |
 
 **Source and structure nodes:**
 
@@ -218,11 +219,52 @@ lacks: staleness tracking, optional caching, and live deterministic nodes.
   visible notice.
 - **Auto select model:** a rule-based (and later agent-assisted) choice from the intent, inputs,
   quality/effort, and budget.
-- **Provider adapters:** aggregators first (fal.ai, Replicate) because they cover most image,
-  video, audio and 3D models with one API; then direct OpenAI, Google (Gemini/Imagen/Veo),
-  Anthropic, ElevenLabs; **local backends** (ComfyUI API, Ollama, any OpenAI-compatible server)
-  so NodeCraft also works with no cloud at all.
 - **Bring your own keys,** stored in the OS keychain, never in project files.
+
+**First provider set (decided 2026-10-16).** These adapters ship with M3; others follow as data
+plus a thin adapter.
+
+| Provider | Models / endpoints | Modes | Notes |
+|---|---|---|---|
+| **ComfyUI** (first-class, see §2.5.1) | Any local or remote ComfyUI server | Whatever the workflow does: image, video, audio, 3D, text | Free and offline; no cloud account needed |
+| **OpenAI Images** | GPT Image family | text→image, image(s)→image edit, mask inpaint | Sizes, quality, background transparency, N |
+| **Google** (Gemini API, Vertex AI later) | **Imagen** (generate, edit), **Veo** (video) | text→image; text→video, image→video (first/last frame), audio on/off | Long-running operations polled |
+| **ByteDance** (BytePlus ModelArk) | **Seedream** (image), **Seedance** (video) | text→image, multi-reference image edit; text/image→video, reference mode | Async task API |
+| **Kling** | Kling video (and image) models | text→video, image→video (start/end frame), multi-image reference, lip sync later | JWT-signed requests; async task API |
+| **LLM endpoints** | **OpenAI-compatible Chat Completions** (OpenAI, Ollama, LM Studio, vLLM, OpenRouter …) and **Anthropic Messages** | text→text, image→text (vision), streaming | Powers Text nodes, prompt helpers, auto-select and the agent; one base-URL + key setting covers most servers |
+
+Each adapter lives in `crates/providers/src/<provider>/` behind its own Cargo feature. Its
+models live in the catalog data, so new models from the same vendor need no code.
+
+#### 2.5.1 ComfyUI as a first-class citizen
+
+ComfyUI is the main local engine, not just one more HTTP endpoint:
+
+- **Servers panel:** add local or remote servers (URL, optional auth header). Health check,
+  queue length, GPU/VRAM from `/system_stats`. A server can be marked as the default local
+  backend.
+- **Workflow node:** import a ComfyUI workflow (API-format JSON, or the UI format converted
+  through the server's `/object_info`). NodeCraft finds the exposable inputs (`LoadImage`,
+  `LoadVideo`/`LoadAudio`, text encoders, seeds, steps, CFG, sampler, checkpoint/LoRA pickers)
+  and outputs (`SaveImage`, `PreviewImage`, video/audio save nodes). It turns them into typed
+  ports and a generated parameter schema, with enums filled from `/object_info`. You pick which
+  widgets to expose, and their names and order, in a small mapping editor. The mapping is saved
+  with the node.
+- **Catalog entries backed by ComfyUI:** a catalog model can name a ComfyUI workflow template
+  instead of a cloud API (e.g. "Flux Dev (local)"). It then shows up in the normal Image/Video
+  node model picker, and Image nodes can switch between cloud and local without rewiring.
+- **Execution:** upload inputs (`/upload/image`, and so on), `POST /prompt` with a client id,
+  live progress and previews over the WebSocket (`progress`, `executing`, `executed`), fetch
+  outputs via `/view` into the asset store, and cancel through `/interrupt` or a queue delete.
+  The planner honours per-server concurrency, and batch items queue as separate prompts.
+- **Model awareness:** list checkpoints, LoRAs, VAEs and ControlNets from the server for pickers.
+  Show a clear error card (not a crash) when a workflow references missing custom nodes or
+  models.
+- **Round trip:** "Open in ComfyUI" exports the mapped workflow with current inputs baked in.
+  Techniques can contain ComfyUI workflow nodes and run headless from the CLI against any
+  server.
+- **Later:** inline individual ComfyUI nodes as NodeCraft nodes (generated from `/object_info`)
+  for people who want to wire Comfy graphs directly on the canvas.
 
 ### 2.6 In-canvas agent
 
@@ -287,6 +329,8 @@ crates/
   types        L0  ids, Modality, PortType, Value, Hash, Money, error base (pure data, serde)
   media        L0  standalone: sniffing, decode/encode, thumbnails, metadata (image; video/audio
                     probes behind features); no workspace deps
+  comfy        L1  ComfyUI client and workflow model: servers, /object_info, API/UI workflow
+                    import, port mapping, upload, prompt queue, WebSocket progress, outputs
   graph        L1  document model: Project, Canvas, Node, Edge, Field, Comment, Tag, Element,
                     Generation, TechniqueDef; Changeset (apply/invert/validate)
   nodes        L2  NodeKind trait + registry, built-in node descriptors and param schemas
@@ -294,8 +338,9 @@ crates/
   actions      L2  deterministic image/video/text actions (CPU reference, rayon)
   exec         L3  planner (routers, batches, techniques → job DAG), scheduler, queue,
                     cancellation, staleness, cost quotes, budgets; async-runtime agnostic
-  providers    L3  Provider trait + adapters (fal, replicate, openai, google, anthropic,
-                    elevenlabs, comfyui, ollama) each behind a feature
+  providers    L3  Provider trait + adapters (comfyui, openai-images, google [imagen, veo],
+                    bytedance [seedream, seedance], kling, llm [openai-compatible, anthropic]),
+                    each behind a feature
   gpu          L3  wgpu actions, custom WGSL actions, 3D preview renderer
   format       L3  .ncraft project files, content-addressed asset store, atomic saves, migrations
   engine       L4  Session, command registry, undo stack, event bus, settings, library
@@ -314,7 +359,9 @@ xtask/             layers | wasm | ci | catalog-check | snapshots
 flowchart BT
   types --> graph
   media --> graph
+  types --> comfy
   graph --> nodes & catalog & actions
+  comfy --> nodes & providers
   nodes --> exec
   catalog --> exec & providers
   actions --> exec & gpu
@@ -408,17 +455,19 @@ browser. HTTP via `reqwest` (works on both).
 - **Audio:** `symphonia` decode, `rodio`/`cpal` playback, waveform thumbnails.
 - **3D:** `gltf` import/export (+ OBJ), wgpu viewer as an egui paint callback, offscreen render
   for photo/turntable/sheet capture.
-- **PDF:** page render and text extraction behind a `pdf` feature (pure-Rust option preferred,
-  pdfium as fallback).
+- **PDF:** page rendering and text extraction through `craft-pdf` (pure Rust, from craft-libs;
+  features `read`/`raster`), behind a `pdf` feature.
 - **Text layout in Layer Editor:** `parley`/`cosmic-text` with user-uploaded fonts.
 
 ### 4.6 Storage
 
 - **Project file `.ncraft`:** a zip (stored, not deflated, for media) with `project.json`
   (versioned schema, `#[serde(default)]` for forward compatibility) and `assets/<blake3>`;
-  atomic save (temp + rename) and an append-only changeset journal for crash recovery.
+  crash-safe saves through `craft-atomic` (same-directory staging, fsync) and an append-only
+  changeset journal for crash recovery.
 - **Global library** (app data dir): History index, Elements, Techniques, custom actions, model
-  catalog cache, settings. Secrets in the OS keychain (`keyring`).
+  catalog cache. Settings in `config.toml` through `craft-settings` (platform folders, portable
+  mode, recovery of a damaged file, migrations). Secrets in the OS keychain (`keyring`).
 - **Large projects:** assets stay on disk and are loaded lazily; the document only holds refs.
 
 ### 4.7 UI (egui)
@@ -432,6 +481,10 @@ browser. HTTP via `reqwest` (works on both).
   (single or bulk), bottom queue, agent sidebar, full-screen editors (Layer, Timeline, Mask, 3D).
 - **Theme tokens** (colours, radii, spacing, modality colours) in one place; dark default matching
   the references, light theme supported.
+- **Shared Craft UI pieces:** `craft-ui` for SVG icon catalogs, icon buttons, tabs, pane controls,
+  docking and theme helpers; `craft-quit` for platform-correct quit and close handling (macOS
+  app menu, unsaved-work prompt hook). They are used only in `ui-egui` and the apps, so the
+  layering rule holds.
 - **UI state is serde data** so the control channel can read and drive it; visual tests render
   offscreen with `egui_kittest` and compare snapshots.
 
@@ -454,22 +507,41 @@ NodeCraft/
 ├─ clippy.toml           allow unwrap/expect/panic/indexing in tests only
 ├─ .cargo/config.toml    alias xtask = "run -p xtask --"
 ├─ .config/nextest.toml  ci profile
-├─ .github/workflows/    ci.yml (fmt, clippy -D warnings, tests on Linux/Windows/macOS,
-│                        xtask layers, xtask wasm), release.yml later
-├─ AGENTS.md             orientation, golden rules, "add a command / node kind" checklists
+├─ .github/workflows/    ci.yml (claim-bot tests; fmt, clippy -D warnings, tests on
+│                        Linux/Windows/macOS, xtask layers/wasm once the workspace exists),
+│                        claim.yml (/claim bot + daily sweep), release.yml later
+├─ .github/              pull_request_template.md, ISSUE_TEMPLATE/
+├─ scripts/claim/        claim bot logic + node:test suite (adapted from SolidCraft)
+├─ AGENTS.md             orientation for agents, pointing at CONTRIBUTING.md and docs/
+├─ CONTRIBUTING.md       claiming issues, non-negotiable rules, tests, checklists
 ├─ README.md
 ├─ ROADMAP.md            one-page status
-├─ docs/                 plan.md (this file), architecture.md, development.md, contributing.md,
-│                        decisions.md, ui-design.md, node-catalog.md, providers.md
+├─ docs/                 plan.md (this file), architecture.md, development.md, decisions.md,
+│                        ui-design.md, node-catalog.md, providers.md
 ├─ crates/ apps/ xtask/  as in §4.1
 ├─ assets/               icons (original, licensed), catalog data
-├─ LICENSE-*, ATTRIBUTION.md
+├─ LICENSE-MIT, LICENSE-APACHE, NOTICE, ATTRIBUTION.md
 └─ (gitignored) references/  plan/  log/  target/
 ```
 
 Workspace-wide settings to copy:
 
 ```toml
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+egui = { version = "0.36", default-features = false }   # the version craft-ui builds against
+eframe = { version = "0.36", default-features = false }
+# craft-libs, pinned by immutable rev (bump deliberately, one PR per bump)
+craft-ui       = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["serde"] }
+craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+craft-atomic   = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+craft-quit     = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["menu"] }
+craft-pdf      = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["raster"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
@@ -507,21 +579,20 @@ Testing strategy:
 | Node canvas | Own widget | Rich media cards, prompt overlays, editors-in-node and LOD exceed form-style node libs |
 | Run semantics | Explicit runs for generative nodes, live for deterministic ones, stale badges | Generations cost money and are non-deterministic; actions are free and should feel instant |
 | Model integration | Catalog as data + thin provider adapters | Models change monthly; adding one must not need a release |
-| Default providers | Aggregator first, direct + local next | Broadest coverage quickly; local keeps offline use real |
+| First providers | ComfyUI (first-class), OpenAI Images, Google Imagen + Veo, ByteDance Seedream + Seedance, Kling, OpenAI-compatible + Anthropic LLM endpoints | Owner's choice: local-first via ComfyUI plus the leading image/video vendors directly, no aggregator lock-in |
+| Licence | MIT OR Apache-2.0 | Same as the Craft suite and craft-libs |
+| Shared libraries | craft-libs (`craft-ui`, `craft-settings`, `craft-atomic`, `craft-quit`, `craft-pdf`), pinned by rev | Shared look and behaviour with the Craft apps; fixes land upstream once |
+| Multi-user work | `/claim` bot + draft-PR claims (CONTRIBUTING.md) | Lets several people and agents pick issues without collisions |
 | Video | FFmpeg sidecar behind a feature | Only realistic route to broad codec support today; keeps core pure Rust |
 | Custom actions | LLM-written WGSL with declared params | Sandboxed by construction, GPU fast, parameters become sliders |
 | Persistence | Local `.ncraft` + content-addressed assets | Offline, portable, dedupes variations; cloud sync is an add-on |
-| Collaboration | Changesets now, CRDT later | Zero cost now, avoids a rewrite later |
+| Collaboration | Single-user first; changesets now, CRDT sync in M10 | Zero cost now, avoids a rewrite later |
 
-Open questions for the owner:
+Still open:
 
-1. **License:** MIT OR Apache-2.0 (like PhotoCraft) or something else?
-2. **First provider set:** which accounts/keys exist (fal.ai, Replicate, OpenAI, Google, Anthropic,
-   ElevenLabs), and is local ComfyUI a must-have for M3?
-3. **Collaboration priority:** single-user local tool first (assumed), or multiplayer early?
-4. **Shared crates:** reuse `storytold/craft-libs` (craft-ui) like PhotoCraft does, or stay
-   independent?
-5. **Distribution:** signed installers per OS from M8, or source-only until 1.0?
+1. **Distribution:** signed installers per OS from M8, or source-only until 1.0?
+2. **Audio and 3D providers:** none chosen yet (ComfyUI workflows cover both locally); pick cloud
+   vendors before M7/M8.
 
 ---
 
@@ -534,11 +605,11 @@ Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) a
 | 0 | **Skeleton** | Workspace, lints, xtask layers/wasm, CI, AGENTS.md, empty crates, eframe window | `cargo run` opens a themed empty canvas on all three OSes |
 | 1 | **Canvas core** | Graph model + changesets + undo, command registry, canvas widget (pan/zoom/select/noodles/minimap), source nodes via drag-drop/paste, "Turn into" picker, shortcuts, `.ncraft` save/load | Build and save a 200-node graph at 60 fps; undo everything |
 | 2 | **Organise** | Fields, tags, comments, search, auto-format, bulk panel, router node, input ordering | Workshop "organise" patterns work |
-| 3 | **Generation** | `exec` planner/scheduler, queue, status, history strip, variations, cost quotes, budgets, catalog, mock provider, first real adapters (aggregator + one LLM), keychain | Combine → branch → prompt-helper workflows run end to end |
+| 3 | **Generation** | `exec` planner/scheduler, queue, status, history strip, variations, cost quotes, budgets, catalog, mock provider, keychain; **ComfyUI** (servers panel, workflow node, WebSocket progress), **LLM endpoints** (OpenAI-compatible + Anthropic), **OpenAI Images**, **Google Imagen**, **Seedream** | Combine → branch → prompt-helper workflows run end to end, both on cloud models and fully offline on ComfyUI + Ollama |
 | 4 | **Actions** | Image + text actions (CPU), live recompute, split into grid, GPU path, custom WGSL actions | Colour grade/blur/crop chains preview live |
 | 5 | **Batch & Techniques** | Batch node (cross/zip, CSV, split), Technique Builder, technique node, app mode, library, templates; CLI `run`/`batch`/`quote` | Publish a technique and run it from canvas, app mode and CLI with identical results |
 | 6 | **Media editors** | Layer Editor (layers, transform, text, shapes, fonts), Mask/Inpaint, remove background/upscale tools, Elements | Composite → re-render and Element workflows |
-| 7 | **Video & audio** | Video/audio nodes, playback, FFmpeg sidecar, video actions, Timeline editor | Four clips stitched with fades and audio, rendered |
+| 7 | **Video & audio** | Video/audio nodes, playback, FFmpeg sidecar, video actions, Timeline editor; **Veo**, **Seedance**, **Kling** adapters; ComfyUI video/audio workflows | Four clips stitched with fades and audio, rendered |
 | 8 | **3D & documents** | 3D node + viewer, photo/turntable/sheet capture, GLB/OBJ export; PDF node | Image → 3D → sheet → Element |
 | 9 | **Agent & automation** | Agent sidebar (assist/auto), control channel, MCP server (commands + techniques), `serve` | Agent builds and runs a 5-node workflow from one sentence within budget |
 | 10 | **Share & collaborate** | Browser build, CRDT sync, presence, shared comments, share links, decks | Two users edit one canvas live |
@@ -552,7 +623,12 @@ Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) a
 - [ ] Crates from §4.1 as empty libraries with the deny-panic header; apps `nodecraft` and
       `nodecraft-cli`
 - [ ] `xtask layers` (table of crate → layer, fails on violations) and `xtask wasm`
-- [ ] `ci.yml`: fmt, clippy `-D warnings`, nextest on Linux/Windows/macOS, layers, wasm
+- [x] `ci.yml` (claim-bot tests now; Rust jobs switch on when `Cargo.toml` lands), `claim.yml`,
+      PR and issue templates, `CONTRIBUTING.md`, licences
+- [ ] Switch CI to nextest once there are enough test binaries to matter
+- [ ] craft-libs dependencies pinned in `[workspace.dependencies]` (§5)
 - [ ] `AGENTS.md`, `docs/architecture.md` (from §4), `docs/decisions.md`, `ROADMAP.md`
+- [ ] GitHub labels: `area:*` (CONTRIBUTING.md), `in progress` (created by the bot on first use),
+      `good first issue`; one issue per M0/M1 task so contributors can `/claim` them
 - [ ] `ui-design.md` with theme tokens taken from the reference look (dark, dot grid, radii)
 - [ ] eframe app with the dot-grid canvas, pan/zoom, and a stub node card

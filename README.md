@@ -9,6 +9,7 @@
 <p align="center">
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
+  <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
   <img alt="Status: planning" src="https://img.shields.io/badge/status-planning-d69e2e?style=flat-square">
 </p>
 
@@ -25,7 +26,11 @@
   from left to right.
 - **Any model, one node per modality.** The model is a parameter: search for compatible models,
   swap without rewiring, auto-select, or run several models side by side. Each run shows its cost
-  before it starts. Cloud providers and local backends (ComfyUI, Ollama) both work.
+  before it starts.
+- **ComfyUI first-class.** Import any ComfyUI workflow as a node with typed ports, follow live
+  progress, and switch Image/Video nodes between cloud models and local ComfyUI without
+  rewiring. First cloud providers: OpenAI Images, Google Imagen and Veo, ByteDance Seedream and
+  Seedance, Kling, plus any OpenAI-compatible or Anthropic LLM endpoint.
 - **Explicit, cost-aware runs.** Runs go in dependency order, with variations, per-node
   generation history, stale badges when an upstream result changes, a queue, and budgets.
 - **Deterministic actions.** Colour grading, blur, crop, aspect ratio, split into grid, and video
@@ -51,9 +56,17 @@
   automation and future live collaboration all use that one path.
 - Built never to crash: no `unsafe`, and no `unwrap`/`panic` outside tests. Every command is
   fuzz-tested with hostile parameters.
+- Shares UI, settings, atomic-save, quit and PDF libraries with the other Craft apps through
+  [craft-libs](https://github.com/storytold/craft-libs).
 
 See [`docs/plan.md`](docs/plan.md) for the feature catalogue, architecture, repository
 conventions and roadmap.
+
+## Contributing
+
+Pick an issue and comment `/claim`. A bot assigns it to you, and you open a draft PR within
+72 hours. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the claim rules, the non-negotiable code rules
+and checklists for adding commands, node kinds and providers.
 
 ## Status and roadmap
 
@@ -68,4 +81,4 @@ conventions and roadmap.
 
 ## License
 
-To be decided. The current plan is MIT OR Apache-2.0.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
