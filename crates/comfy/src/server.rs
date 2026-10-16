@@ -111,7 +111,8 @@ impl Server {
     pub fn new(url: &str) -> Result<Self, ComfyError> {
         let mut base = Url::parse(url.trim()).map_err(|e| ComfyError::InvalidUrl(e.to_string()))?;
         if !matches!(base.scheme(), "http" | "https") {
-            return Err(ComfyError::InvalidUrl(format!("scheme must be http or https, not {} (try http://{})", base.scheme(), url.trim())));
+            // Don't echo the input: a URL with credentials would put them in the error.
+            return Err(ComfyError::InvalidUrl("it must start with http:// or https://".into()));
         }
         if base.host_str().is_none_or(str::is_empty) {
             return Err(ComfyError::InvalidUrl("no host".into()));

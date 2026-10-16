@@ -268,8 +268,12 @@ struct UiInput {
 }
 
 enum Source {
-    Link { node: String, output: u32 },
-    Value(Value),
+    Link {
+        node: String,
+        output: u32,
+    },
+    /// A value from a PrimitiveNode, with its own "control after generate" mode.
+    Value(Value, Option<String>),
 }
 
 /// ComfyUI writes ids as numbers; newer files may use strings.
@@ -384,7 +388,9 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
             } else if origin.class == "GetNode" {
                 current = *setters.get(&first_widget(origin)?)?;
             } else if origin.class == "PrimitiveNode" {
-                return origin.widgets.as_array()?.first().cloned().map(Source::Value);
+                let widgets = origin.widgets.as_array()?;
+                let mode = widgets.get(1).and_then(Value::as_str).filter(|s| SEED_CONTROLS.contains(s)).map(str::to_owned);
+                return widgets.first().cloned().map(|v| Source::Value(v, mode));
             } else if origin.mode == MODE_MUTED {
                 return None;
             } else if origin.mode == MODE_BYPASS {
@@ -447,6 +453,7 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
             }
             let linked = node.inputs.iter().find(|i| i.name == spec.name).and_then(|i| i.link).and_then(resolve);
             let mut widget_value = None;
+            let mut own_mode = None;
             if spec.is_widget() {
                 match (&mut positional, &node.widgets) {
                     (Some(values), _) => {
@@ -461,18 +468,23 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                         {
                             values.next();
                             consumed += 1;
-                            conversion.controls.insert((id.clone(), spec.name.clone()), mode);
+                            own_mode = Some(mode);
                         }
                     }
                     (None, Value::Object(by_name)) => widget_value = by_name.get(&spec.name).cloned(),
                     _ => {}
                 }
             }
-            let value = match linked {
-                Some(Source::Link { node, output }) => Some(InputValue::Link { node, output }),
-                Some(Source::Value(v)) => Some(InputValue::Value(v)),
-                None => widget_value.map(InputValue::Value),
+            // The editor's seed mode belongs to whatever supplies the value: a primitive's own mode,
+            // none for a live connection, else the node's saved one.
+            let (value, mode) = match linked {
+                Some(Source::Link { node, output }) => (Some(InputValue::Link { node, output }), None),
+                Some(Source::Value(v, mode)) => (Some(InputValue::Value(v)), mode),
+                None => (widget_value.map(InputValue::Value), own_mode),
             };
+            if let Some(mode) = mode {
+                conversion.controls.insert((id.clone(), spec.name.clone()), mode);
+            }
             if let Some(value) = value {
                 inputs.insert(spec.name.clone(), value);
             }
@@ -543,6 +555,8 @@ mod tests {
             assert_eq!(ui.nodes[id].class_type, api.nodes[id].class_type);
         }
         assert_eq!(ui.ids(), api.ids(), "notes, reroutes, primitives, muted and bypassed nodes are dropped");
+        let conv = ApiWorkflow::convert(fixtures::UI_WORKFLOW.as_bytes(), Some(&c)).unwrap();
+        assert_eq!(conv.controls.get(&("3".to_string(), "seed".to_string())).map(String::as_str), Some("fixed"), "the primitive's mode, not the stale one");
         assert!(ui.check(&c).is_ok(), "{:?}", ui.check(&c));
     }
 
