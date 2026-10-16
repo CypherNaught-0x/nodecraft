@@ -2,6 +2,7 @@
 use crate::{
     canvas::{self, CanvasView},
     card::{self, EditTarget, EditorState, Intent},
+    selection::{self, Selection},
     theme::{self, ThemeKind},
 };
 use egui::{Pos2, Rect, Sense, Vec2};
@@ -103,12 +104,27 @@ struct Drag {
     pos: nodecraft_graph::Position,
 }
 
+/// A Shift-drag box select in progress: its world-space start and the selection it adds to.
+/// Escape cancels it; a cancelled box keeps suppressing primary-drag panning until release.
+struct Marquee {
+    start: Pos2,
+    base: BTreeSet<NodeId>,
+    cancelled: bool,
+}
+
+/// Selection queries offered by a card's context menu.
+enum SelectQuery {
+    Upstream,
+    Downstream,
+    Kind(String),
+}
+
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
     pub view: CanvasView,
     pub session: Session,
     pub canvas: CanvasId,
-    pub selected: Option<NodeId>,
+    pub selection: Selection,
     pub canvas_prefs: CanvasSettings,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
@@ -116,6 +132,9 @@ pub struct NodeCraftApp {
     pub notice: Option<String>,
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
+    marquee: Option<Marquee>,
+    /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
+    text_focused: bool,
     schemas: BTreeMap<NodeId, CachedSchema>,
     cache_clock: u64,
     next_gesture: u64,
@@ -170,7 +189,7 @@ impl NodeCraftApp {
             view: CanvasView::default(),
             session,
             canvas,
-            selected: None,
+            selection: Selection::default(),
             canvas_prefs: CanvasSettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
@@ -178,6 +197,8 @@ impl NodeCraftApp {
             notice: None,
             editors: BTreeMap::new(),
             drag: None,
+            marquee: None,
+            text_focused: false,
             schemas: BTreeMap::new(),
             cache_clock: 0,
             next_gesture: 0,
@@ -204,6 +225,7 @@ impl NodeCraftApp {
             self.view.reset(viewport, self.home());
             self.centred = true;
         }
+        let selected_before = self.selection.clone();
         if !canvas::text_input_focused(ui.ctx()) {
             let command = ui.input_mut(|input| {
                 self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
@@ -222,8 +244,30 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
+            let (select_all, escape) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::COMMAND, egui::Key::A), i.key_pressed(egui::Key::Escape)));
+            if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
+                self.selection.replace(canvas.nodes().keys().copied().collect());
+            }
+            // Escape closes an open menu or leaves a text field first, then cancels a box
+            // select, then clears.
+            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) {
+                match &mut self.marquee {
+                    Some(marquee) if !marquee.cancelled => {
+                        marquee.cancelled = true;
+                        self.selection.replace(marquee.base.clone());
+                    }
+                    _ => self.selection.clear(),
+                }
+            }
         }
+        let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
+        if background.drag_started_by(egui::PointerButton::Primary)
+            && shift
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        {
+            self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.nodes().clone(), cancelled: false });
+        }
         let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
             self.session.document().canvases().get(&self.canvas).is_some_and(|c| {
                 c.nodes().values().any(|node| {
@@ -234,20 +278,24 @@ impl NodeCraftApp {
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
-        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan);
-        if background.clicked() {
-            self.selected = None;
+        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+        if background.clicked() && !shift {
+            self.selection.clear();
         }
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
         canvas::paint_grid(&painter, viewport, &self.view, t);
         let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
+        let mut query = None;
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
             self.schemas.retain(|id, _| canvas.nodes().contains_key(id));
-            let selected = self.selected;
-            for node in canvas.nodes().values().filter(|node| Some(node.id) != selected).chain(canvas.nodes().values().filter(|node| Some(node.id) == selected))
+            self.selection.retain_existing(canvas);
+            // Selected cards draw last, on top.
+            let selected = self.selection.clone();
+            for node in
+                canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
                 // Cull conservatively before resolving potentially large instance schemas.
                 let position = self.drag.as_ref().filter(|drag| drag.id == node.id).map_or(node.pos, |drag| drag.pos);
@@ -271,13 +319,38 @@ impl NodeCraftApp {
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
                     },
                     editor,
-                    self.selected == Some(node.id),
+                    self.selection.contains(node.id),
                     t,
                 ) {
                     let r = result.response;
-                    if r.clicked() || r.drag_started_by(egui::PointerButton::Primary) {
-                        self.selected = Some(node.id);
+                    if r.clicked() {
+                        if shift {
+                            self.selection.toggle(node.id);
+                        } else {
+                            self.selection.only(node.id);
+                        }
+                    } else if (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
+                        && !self.selection.contains(node.id)
+                    {
+                        // Grabbing or right-clicking a selected card keeps the rest of the selection.
+                        if shift {
+                            self.selection.add(node.id);
+                        } else {
+                            self.selection.only(node.id);
+                        }
                     }
+                    r.context_menu(|ui| {
+                        if ui.button("Select upstream").clicked() {
+                            query = Some(SelectQuery::Upstream);
+                        }
+                        if ui.button("Select downstream").clicked() {
+                            query = Some(SelectQuery::Downstream);
+                        }
+                        let label = descriptor.map_or(node.kind.as_str(), |d| d.label.as_str());
+                        if ui.button(format!("Select all {label} nodes")).clicked() {
+                            query = Some(SelectQuery::Kind(node.kind.clone()));
+                        }
+                    });
                     if r.drag_started_by(egui::PointerButton::Primary) {
                         if let Some(serial) = self.next_gesture.checked_add(1) {
                             self.next_gesture = serial;
@@ -293,6 +366,39 @@ impl NodeCraftApp {
                     intents.extend(result.intents.into_iter().map(|intent| (node.id, intent)));
                 }
             }
+            match query {
+                Some(SelectQuery::Upstream) => self.selection.replace(selection::upstream(canvas, self.selection.nodes())),
+                Some(SelectQuery::Downstream) => self.selection.replace(selection::downstream(canvas, self.selection.nodes())),
+                Some(SelectQuery::Kind(kind)) => self.selection.replace(selection::of_kind(canvas, &kind)),
+                None => {}
+            }
+            if let Some(marquee) = &mut self.marquee
+                && !marquee.cancelled
+                && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+            {
+                // Nodes removed mid-drag (e.g. by undo) must not come back from the base.
+                marquee.base.retain(|id| canvas.nodes().contains_key(id));
+                let world = Rect::from_two_pos(marquee.start, self.view.to_world(viewport.min, pointer));
+                let schemas = &self.schemas;
+                let mut nodes = marquee.base.clone();
+                nodes
+                    .extend(selection::in_box(canvas, world, |node| card::world_rect(node, schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()), t)));
+                self.selection.replace(nodes);
+                // Above the card layers, which are drawn over the background painter.
+                ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("marquee"))).with_clip_rect(viewport).rect(
+                    self.view.rect_to_screen(viewport.min, world),
+                    0.0,
+                    t.marquee_fill,
+                    egui::Stroke::new(1.0, t.accent),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        } else {
+            self.selection.clear();
+        }
+        // Cards were painted before this frame's selection changes; show them without waiting for input.
+        if self.selection != selected_before {
+            ui.ctx().request_repaint();
         }
         for (id, intent) in intents {
             let (command, params, editing) = match intent {
@@ -334,6 +440,9 @@ impl NodeCraftApp {
         {
             self.notice = Some(error.message);
         }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.marquee = None;
+        }
         self.view.pan_by(pan);
         let hidden_draft_notice = self
             .editors
@@ -354,6 +463,7 @@ impl NodeCraftApp {
                 });
         }
         self.zoom_badge(ui, viewport);
+        self.text_focused = canvas::text_input_focused(ui.ctx());
     }
     /// Bottom-right zoom percentage; clicking it resets the view.
     fn zoom_badge(&mut self, ui: &mut egui::Ui, viewport: Rect) {
