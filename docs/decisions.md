@@ -4,6 +4,21 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-16 · media: sniffing, decode, thumbnails (#56)
+
+- **Formats are sniffed from bytes, never from file names**, and the sniffed MIME type picks the
+  decoder (`ImageReader::set_format`), so a mislabelled file can't reach a different decoder.
+- **`image` without default features**, decoding PNG, JPEG, GIF, WebP, BMP and TIFF. No `rayon`
+  (wasm) and no AVIF/HEIC decode yet: those are sniffed and reported as unsupported. Animated GIF
+  and WebP decode to their first frame.
+- **Every decode is capped** (`media::Limits`: 256 MiB input, 16384 px per side, 1 GiB decoder
+  allocations by default), and the caps are checked from the header before pixels are allocated.
+- **`media::ContentHash` is BLAKE3**, matching the asset store's `assets/<blake3>` names. `media`
+  can't depend on `types`, so `types`' hash type should convert from its `[u8; 32]`.
+- **Thumbnails are RGBA8 with straight alpha**, cached by (content hash, max edge) in a
+  memory-budgeted LRU (`ThumbnailCache`). The cache isn't thread-safe; its owner decides where
+  thumbnails are made.
+
 ## 2026-10-16 · M0 skeleton
 
 - **Layer numbering follows the plan (L0–L5), not PhotoCraft's L0–L7.** The rule "only the shell
