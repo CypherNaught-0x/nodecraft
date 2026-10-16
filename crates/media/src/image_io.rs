@@ -2,6 +2,7 @@
 
 use std::io::Cursor;
 
+use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 
 use crate::{MediaError, MediaKind, sniff};
@@ -49,7 +50,9 @@ pub enum ColorModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageMeta {
     pub mime: &'static str,
+    /// Width as displayed, after the file's EXIF orientation is applied.
     pub width: u32,
+    /// Height as displayed, after the file's EXIF orientation is applied.
     pub height: u32,
     /// The colour layout stored in the file.
     pub color: ColorModel,
@@ -59,20 +62,26 @@ pub struct ImageMeta {
 }
 
 /// Reads an image's format, size and colour layout from its header, without decoding the pixels.
+///
+/// Fails with [`MediaError::LimitExceeded`] for an image [`decode_image`] would refuse.
 pub fn probe_image(bytes: &[u8], limits: &Limits) -> Result<ImageMeta, MediaError> {
-    let (mime, decoder) = open(bytes, limits)?;
-    Ok(meta_of(mime, &decoder))
+    let (meta, _, _) = open(bytes, limits)?;
+    Ok(meta)
 }
 
-/// Decodes an image (the first frame of an animation) within `limits`.
+/// Decodes an image (the first frame of an animation) within `limits`, upright: the file's EXIF
+/// orientation is applied.
 pub fn decode_image(bytes: &[u8], limits: &Limits) -> Result<(ImageMeta, DynamicImage), MediaError> {
-    let (mime, decoder) = open(bytes, limits)?;
-    let meta = meta_of(mime, &decoder);
-    let image = DynamicImage::from_decoder(decoder)?;
+    let (meta, orientation, decoder) = open(bytes, limits)?;
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
     Ok((meta, image))
 }
 
-fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(&'static str, impl ImageDecoder + 'a), MediaError> {
+/// Sniffs, checks the caps and reads the header. The decoders only check width and height
+/// themselves (and most ignore `max_alloc`), so the decoded size, plus the copy a rotation makes,
+/// is reserved against `max_alloc` here before any pixels are allocated.
+fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(ImageMeta, Orientation, impl ImageDecoder + 'a), MediaError> {
     let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     if size > limits.max_input_bytes {
         return Err(MediaError::TooLarge { size, limit: limits.max_input_bytes });
@@ -82,12 +91,23 @@ fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(&'static str, impl Imag
     let mut reader = ImageReader::new(Cursor::new(bytes));
     reader.set_format(format);
     reader.limits(limits.for_decoder());
-    let decoder = reader.into_decoder()?;
+    let mut decoder = reader.into_decoder()?;
     let (w, h) = decoder.dimensions();
     if w == 0 || h == 0 {
         return Err(MediaError::Decode(format!("image has no pixels ({w}×{h})")));
     }
-    Ok((sniffed.mime, decoder))
+    // A damaged EXIF block is not worth refusing the image for; show it as stored.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut budget = limits.for_decoder();
+    budget.reserve(decoder.total_bytes())?;
+    if orientation != Orientation::NoTransforms {
+        budget.reserve(decoder.total_bytes())?;
+    }
+    let mut meta = meta_of(sniffed.mime, &decoder);
+    if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
+        std::mem::swap(&mut meta.width, &mut meta.height);
+    }
+    Ok((meta, orientation, decoder))
 }
 
 /// The formats this build decodes. The sniffed MIME type picks the decoder, never a file name.
@@ -212,6 +232,55 @@ pub(crate) mod tests {
         assert!(matches!(decode_image(&bytes, &Limits::default()), Err(MediaError::LimitExceeded(_))));
         let roomy = Limits { max_width: u32::MAX, max_height: u32::MAX, ..Limits::default() };
         assert!(decode_image(&bytes, &roomy).is_err());
+    }
+
+    #[test]
+    fn allocation_cap_applies_to_every_format() {
+        let rgba = DynamicImage::ImageRgba8(ImageBuffer::from_fn(1024, 1024, |x, y| Rgba([x as u8, y as u8, 3, 255])));
+        let tight = Limits { max_alloc: 1024 * 1024, ..Limits::default() };
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Gif, ImageFormat::WebP, ImageFormat::Bmp, ImageFormat::Tiff] {
+            let source = if format == ImageFormat::Jpeg { DynamicImage::ImageRgb8(rgba.to_rgb8()) } else { rgba.clone() };
+            let bytes = encode(source, format);
+            assert!(matches!(decode_image(&bytes, &tight), Err(MediaError::LimitExceeded(_))), "{format:?}");
+            assert!(matches!(probe_image(&bytes, &tight), Err(MediaError::LimitExceeded(_))), "{format:?}");
+            assert!(decode_image(&bytes, &Limits::default()).is_ok(), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn bmp_header_claiming_a_huge_image_is_refused_before_allocating() {
+        // A 54-byte BMP header for 16000×16000 at 32 bpp (1 GB of pixels) with no pixel data.
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&54u32.to_le_bytes()); // file size (a lie)
+        bmp.extend_from_slice(&[0; 4]);
+        bmp.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
+        bmp.extend_from_slice(&40u32.to_le_bytes()); // BITMAPINFOHEADER
+        bmp.extend_from_slice(&16_000i32.to_le_bytes());
+        bmp.extend_from_slice(&16_000i32.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&32u16.to_le_bytes());
+        bmp.extend_from_slice(&[0; 24]);
+        let limits = Limits { max_alloc: 64 * 1024 * 1024, ..Limits::default() };
+        assert!(matches!(decode_image(&bmp, &limits), Err(MediaError::LimitExceeded(_))));
+    }
+
+    #[test]
+    fn exif_orientation_is_applied() {
+        // A 4×2 JPEG tagged "rotate 90° clockwise" (EXIF orientation 6) decodes as 2×4.
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 2, |x, _| Rgb([x as u8 * 60, 0, 0])));
+        let plain = encode(img, ImageFormat::Jpeg);
+        let mut exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x01".to_vec();
+        exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+        let len = u16::try_from(exif.len() + 2).unwrap();
+        let mut tagged = plain[..2].to_vec();
+        tagged.extend_from_slice(&[0xFF, 0xE1]);
+        tagged.extend_from_slice(&len.to_be_bytes());
+        tagged.extend_from_slice(&exif);
+        tagged.extend_from_slice(&plain[2..]);
+        let meta = probe_image(&tagged, &Limits::default()).unwrap();
+        assert_eq!((meta.width, meta.height), (2, 4));
+        let (_, decoded) = decode_image(&tagged, &Limits::default()).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (2, 4));
     }
 
     #[test]

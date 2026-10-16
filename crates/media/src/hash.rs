@@ -10,6 +10,11 @@ impl ContentHash {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// Parses the 64-character hex form (either case), as used in asset store file names.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        blake3::Hash::from_hex(hex).ok().map(|h| Self(*h.as_bytes()))
+    }
+
     /// Lowercase hex, 64 characters.
     pub fn to_hex(&self) -> String {
         blake3::Hash::from_bytes(self.0).to_hex().to_string()
@@ -38,5 +43,15 @@ mod tests {
         assert_eq!(ContentHash::of(b"").to_hex(), "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
         assert_ne!(ContentHash::of(b"a"), ContentHash::of(b"b"));
         assert_eq!(ContentHash::of(b"a").to_string().len(), 64);
+    }
+
+    #[test]
+    fn hex_round_trip_and_bad_input() {
+        let h = ContentHash::of(b"cat");
+        assert_eq!(ContentHash::from_hex(&h.to_hex()), Some(h));
+        assert_eq!(ContentHash::from_hex(&h.to_hex().to_uppercase()), Some(h));
+        for bad in ["", "abc", &"g".repeat(64), &"a".repeat(65), "é".repeat(32).as_str()] {
+            assert_eq!(ContentHash::from_hex(bad), None, "{bad}");
+        }
     }
 }

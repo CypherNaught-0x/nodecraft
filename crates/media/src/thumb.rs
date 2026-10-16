@@ -7,16 +7,42 @@ use image::DynamicImage;
 
 use crate::{ContentHash, Limits, MediaError, decode_image};
 
-/// A small RGBA8 (straight alpha) preview of an image, ready to upload as a texture.
+/// A small RGBA8 (straight alpha) preview of an image, ready to upload as a texture. Always holds
+/// exactly `width * height * 4` bytes, which texture uploads rely on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thumbnail {
-    pub width: u32,
-    pub height: u32,
-    /// `width * height * 4` bytes, row-major.
-    pub rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
 }
 
 impl Thumbnail {
+    /// A thumbnail from row-major RGBA8 pixels; fails unless `rgba` is `width * height * 4` bytes.
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, MediaError> {
+        let expected = u64::from(width).checked_mul(u64::from(height)).and_then(|n| n.checked_mul(4));
+        if expected != u64::try_from(rgba.len()).ok() {
+            return Err(MediaError::InvalidParameter("thumbnail pixels don't match its size"));
+        }
+        Ok(Self { width, height, rgba })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// `width * height * 4` bytes, row-major, straight alpha.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    pub fn into_rgba(self) -> Vec<u8> {
+        self.rgba
+    }
+
     /// Memory the pixels take, used for the cache budget.
     pub fn byte_size(&self) -> usize {
         self.rgba.len()
@@ -93,6 +119,9 @@ impl ThumbnailCache {
     }
 
     /// The thumbnail of encoded image `bytes`, hashing them and decoding only on a miss.
+    ///
+    /// Failures are not cached: a caller that asks every frame should remember which media
+    /// failed rather than decode a broken file over and over.
     pub fn thumbnail_for(&mut self, bytes: &[u8], max_edge: u32, limits: &Limits) -> Result<Arc<Thumbnail>, MediaError> {
         let hash = ContentHash::of(bytes);
         self.get_or_insert_with(&hash, max_edge, || {
@@ -212,6 +241,14 @@ mod tests {
         assert!(cache.get(&key(4), 1).is_none() && cache.len() == 2);
         cache.clear();
         assert!(cache.is_empty() && cache.used_bytes() == 0);
+    }
+
+    #[test]
+    fn thumbnail_size_is_checked() {
+        assert!(Thumbnail::new(2, 3, vec![0; 24]).is_ok());
+        assert!(Thumbnail::new(2, 3, vec![0; 23]).is_err());
+        assert!(Thumbnail::new(u32::MAX, u32::MAX, Vec::new()).is_err());
+        assert!(Thumbnail::new(0, 5, Vec::new()).is_ok());
     }
 
     #[test]

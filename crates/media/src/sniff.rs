@@ -29,13 +29,20 @@ impl Sniffed {
 const SNIFF_WINDOW: usize = 1024;
 
 /// Detects the format of `bytes` from its signature. Returns `None` for empty input and for
-/// binary data NodeCraft doesn't know. Valid UTF-8 without control characters is `text/plain`.
+/// binary data NodeCraft doesn't know. Valid UTF-8 without control characters is `text/plain`;
+/// text with a UTF-16 byte-order mark is `text/plain; charset=utf-16le` (or `be`).
 pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
     use MediaKind::*;
     let head = bytes.get(..bytes.len().min(SNIFF_WINDOW)).unwrap_or(bytes);
     let at = |offset: usize, magic: &[u8]| offset.checked_add(magic.len()).and_then(|end| head.get(offset..end)).is_some_and(|s| s == magic);
 
-    let found = if at(0, b"\x89PNG\r\n\x1a\n") {
+    let u32_le = |offset: usize| head.get(offset..offset.checked_add(4)?).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+
+    let found = if at(0, b"\xFF\xFE") {
+        Sniffed::new("text/plain; charset=utf-16le", Text)
+    } else if at(0, b"\xFE\xFF") {
+        Sniffed::new("text/plain; charset=utf-16be", Text)
+    } else if at(0, b"\x89PNG\r\n\x1a\n") {
         Sniffed::new("image/png", Image)
     } else if at(0, b"\xFF\xD8\xFF") {
         Sniffed::new("image/jpeg", Image)
@@ -45,9 +52,11 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
         Sniffed::new("image/webp", Image)
     } else if at(0, b"RIFF") && at(8, b"WAVE") {
         Sniffed::new("audio/wav", Audio)
-    } else if at(0, b"II*\0") || at(0, b"MM\0*") {
+    } else if at(0, b"II*\0") || at(0, b"MM\0*") || at(0, b"II+\0") || at(0, b"MM\0+") {
         Sniffed::new("image/tiff", Image)
-    } else if at(0, b"BM") && head.len() >= 26 {
+    } else if at(0, b"BM") && at(6, b"\0\0\0\0") && u32_le(14).is_some_and(|dib| matches!(dib, 12 | 40 | 52 | 56 | 64 | 108 | 124)) {
+        // The reserved field must be zero and the DIB header size a known one, so prose that
+        // happens to start with "BM" stays text.
         Sniffed::new("image/bmp", Image)
     } else if at(4, b"ftyp") {
         sniff_iso_bmff(head)
@@ -57,7 +66,7 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
         Sniffed::new("audio/ogg", Audio)
     } else if at(0, b"fLaC") {
         Sniffed::new("audio/flac", Audio)
-    } else if at(0, b"ID3") {
+    } else if at(0, b"ID3") && head.get(3).is_some_and(|v| (2..=4).contains(v)) && head.get(6..10).is_some_and(|size| size.iter().all(|b| b & 0x80 == 0)) {
         Sniffed::new("audio/mpeg", Audio)
     } else if let Some(audio) = sniff_mpeg_frame(head) {
         audio
@@ -73,29 +82,44 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
     Some(found)
 }
 
-/// ISO base media files (MP4, MOV, AVIF, HEIC) share the `ftyp` box; its major brand tells them apart.
+/// ISO base media files (MP4, MOV, AVIF, HEIF) share the `ftyp` box. Its major brand, then its
+/// compatible brands, tell them apart: an AVIF file may have the generic `mif1` as major brand.
 fn sniff_iso_bmff(head: &[u8]) -> Sniffed {
     use MediaKind::*;
-    match head.get(8..12) {
-        Some(b"avif" | b"avis") => Sniffed::new("image/avif", Image),
-        Some(b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" | b"msf1") => Sniffed::new("image/heic", Image),
+    let box_end = head.get(0..4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_be_bytes);
+    let box_end = usize::try_from(box_end).unwrap_or(usize::MAX).min(head.len());
+    let major = head.get(8..12);
+    let compatible = head.get(16..box_end).unwrap_or_default().as_chunks::<4>().0.iter().map(|c| c.as_slice());
+    let brands: Vec<&[u8]> = major.into_iter().chain(compatible).collect();
+    let any = |set: &[&[u8]]| brands.iter().any(|b| set.contains(b));
+    if any(&[b"avif", b"avis"]) {
+        return Sniffed::new("image/avif", Image);
+    }
+    if any(&[b"heic", b"heix", b"heim", b"heis"]) {
+        return Sniffed::new("image/heic", Image);
+    }
+    match major {
+        Some(b"mif1" | b"msf1") => Sniffed::new("image/heif", Image),
         Some(b"qt  ") => Sniffed::new("video/quicktime", Video),
         Some(b"M4A " | b"M4B ") => Sniffed::new("audio/mp4", Audio),
         _ => Sniffed::new("video/mp4", Video),
     }
 }
 
-/// A bare MPEG audio frame header (MP3 without ID3 tags) or an ADTS AAC header.
+/// A bare MPEG audio frame header (MP3 without ID3 tags) or an ADTS AAC header. Four header
+/// bytes are checked, including the bitrate and sample-rate fields, to keep false positives rare.
 fn sniff_mpeg_frame(head: &[u8]) -> Option<Sniffed> {
-    let (&b0, &b1) = (head.first()?, head.get(1)?);
+    let (&b0, &b1, &b2) = (head.first()?, head.get(1)?, head.get(2)?);
+    head.get(3)?;
     if b0 != 0xFF || b1 & 0xE0 != 0xE0 {
         return None;
     }
     let layer = (b1 >> 1) & 0b11;
     let version = (b1 >> 3) & 0b11;
     if layer == 0 && b1 & 0xF0 == 0xF0 {
-        Some(Sniffed::new("audio/aac", MediaKind::Audio))
-    } else if layer != 0 && version != 0b01 {
+        // ADTS: sampling-frequency index 0..=12 are defined.
+        ((b2 >> 2) & 0x0F <= 12).then_some(Sniffed::new("audio/aac", MediaKind::Audio))
+    } else if layer != 0 && version != 0b01 && !matches!(b2 >> 4, 0 | 0x0F) && (b2 >> 2) & 0b11 != 0b11 {
         Some(Sniffed::new("audio/mpeg", MediaKind::Audio))
     } else {
         None
@@ -141,9 +165,15 @@ mod tests {
         assert_eq!(mime(b"MM\0*\0\0\0\x08"), Some("image/tiff"));
         let mut bmp = b"BM".to_vec();
         bmp.resize(54, 0);
+        bmp[14] = 40;
         assert_eq!(mime(&bmp), Some("image/bmp"));
         assert_eq!(mime(b"\0\0\0\x1cftypavif\0\0\0\0"), Some("image/avif"));
         assert_eq!(mime(b"\0\0\0\x18ftypheic\0\0\0\0"), Some("image/heic"));
+        assert_eq!(mime(b"\0\0\0\x18ftypmif1\0\0\0\0avif"), Some("image/avif"), "AVIF by compatible brand");
+        assert_eq!(mime(b"\0\0\0\x18ftypmif1\0\0\0\0heic"), Some("image/heic"));
+        assert_eq!(mime(b"\0\0\0\x10ftypmif1\0\0\0\0"), Some("image/heif"));
+        assert_eq!(mime(b"\0\0\0\x10ftypmif1\0\0\0\0avif"), Some("image/heif"), "brands past the box end are ignored");
+        assert_eq!(mime(b"II+\0\x08\0\0\0"), Some("image/tiff"), "BigTIFF");
     }
 
     #[test]
@@ -156,7 +186,7 @@ mod tests {
         assert_eq!(mime(b"RIFF\x24\0\0\0WAVEfmt "), Some("audio/wav"));
         assert_eq!(mime(b"OggS\0\x02"), Some("audio/ogg"));
         assert_eq!(mime(b"fLaC\0\0\0\x22"), Some("audio/flac"));
-        assert_eq!(mime(b"ID3\x04\0\0"), Some("audio/mpeg"));
+        assert_eq!(mime(b"ID3\x04\0\0\0\0\x01\x7f"), Some("audio/mpeg"));
         assert_eq!(mime(b"\xFF\xFB\x90\x64"), Some("audio/mpeg"));
         assert_eq!(mime(b"\xFF\xF1\x50\x80"), Some("audio/aac"));
         assert_eq!(mime(b"%PDF-1.7\n"), Some("application/pdf"));
@@ -174,6 +204,18 @@ mod tests {
         let mut long = "a".repeat(SNIFF_WINDOW - 1).into_bytes();
         long.extend_from_slice("é and more".as_bytes());
         assert_eq!(mime(&long), Some("text/plain"));
+    }
+
+    #[test]
+    fn prose_that_starts_like_a_signature_stays_text() {
+        assert_eq!(mime(b"BMX bikes are great for tricks, really"), Some("text/plain"));
+        assert_eq!(mime(b"ID3 tags are metadata"), Some("text/plain"));
+        assert_eq!(mime(b"ID3\x04\0\0\0\0\x01"), None, "short ID3 header is not audio");
+        assert_eq!(mime(b"\xFF\xFEH\0i\0"), Some("text/plain; charset=utf-16le"));
+        assert_eq!(mime(b"\xFE\xFF\0H\0i"), Some("text/plain; charset=utf-16be"));
+        assert_eq!(mime(b"\xFF\xFF\xFF\xFF"), None, "bitrate index 15 is invalid");
+        assert_eq!(mime(b"\xFF\xFB\x0C\x64"), None, "sample-rate index 3 is invalid");
+        assert_eq!(mime(b"\xFF\xFB\x90"), None, "a frame header is four bytes");
     }
 
     #[test]

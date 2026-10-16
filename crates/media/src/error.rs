@@ -1,7 +1,9 @@
 use std::fmt;
 
 /// Everything that can go wrong reading media. Messages are safe to show to a person.
+/// More variants will come with audio, video and 3D, so match with a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MediaError {
     /// The input is larger than the configured cap.
     TooLarge { size: u64, limit: u64 },
