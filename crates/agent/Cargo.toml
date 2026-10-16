@@ -1,0 +1,14 @@
+[package]
+name = "nodecraft-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: the in-canvas agent: an LLM tool loop over engine commands"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-engine = { workspace = true }

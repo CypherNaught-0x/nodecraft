@@ -42,9 +42,17 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Linux system dependencies (egui/winit)
+        if: hashFiles('Cargo.toml') != '' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
       - name: toolchain
         if: hashFiles('Cargo.toml') != ''
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: hashFiles('Cargo.toml') != ''
       - name: fmt
         if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
         run: cargo fmt --all --check

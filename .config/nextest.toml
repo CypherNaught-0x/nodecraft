@@ -1,0 +1,11 @@
+# cargo-nextest (https://nexte.st). Optional locally; `cargo test` keeps working.
+#
+#   cargo nextest run --workspace        # all tests except doctests
+#   cargo test --doc --workspace         # nextest does not run doctests
+
+# CI (`--profile ci`). Stops at the first failure so a red PR frees its runner, fails a test that
+# hangs instead of letting it hold the runner, and repeats every failure at the end of the log.
+[profile.ci]
+fail-fast = true
+slow-timeout = { period = "60s", terminate-after = 10 }
+failure-output = "immediate-final"

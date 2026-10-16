@@ -1,0 +1,14 @@
+[package]
+name = "nodecraft-actions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: deterministic image, video and text actions (CPU reference)"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-graph = { workspace = true }

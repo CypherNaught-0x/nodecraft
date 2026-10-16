@@ -1,0 +1,15 @@
+[package]
+name = "nodecraft-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: document model and invertible changesets"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-types = { workspace = true }
+nodecraft-media = { workspace = true }

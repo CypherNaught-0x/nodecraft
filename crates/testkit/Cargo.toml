@@ -1,0 +1,15 @@
+[package]
+name = "nodecraft-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "NodeCraft: test fixtures, the mock provider and snapshot helpers"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-engine = { workspace = true }

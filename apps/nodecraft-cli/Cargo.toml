@@ -1,0 +1,15 @@
+[package]
+name = "nodecraft-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft headless CLI: run graphs and techniques, inspect projects, MCP server"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-engine = { workspace = true }

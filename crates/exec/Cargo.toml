@@ -1,0 +1,16 @@
+[package]
+name = "nodecraft-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: run planner, scheduler, queue, cancellation and cost quotes"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-nodes = { workspace = true }
+nodecraft-catalog = { workspace = true }
+nodecraft-actions = { workspace = true }

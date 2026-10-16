@@ -1,0 +1,15 @@
+[package]
+name = "nodecraft-nodes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: node kinds, their registry and parameter schemas"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-graph = { workspace = true }
+nodecraft-comfy = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "nodecraft-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: ids, modalities, port types, values, hashes, money and the error base (pure data)"
+
+[lints]
+workspace = true
+
+[dependencies]

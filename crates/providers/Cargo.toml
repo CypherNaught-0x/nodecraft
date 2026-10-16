@@ -1,0 +1,15 @@
+[package]
+name = "nodecraft-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: the Provider trait and adapters to model services"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-catalog = { workspace = true }
+nodecraft-comfy = { workspace = true }

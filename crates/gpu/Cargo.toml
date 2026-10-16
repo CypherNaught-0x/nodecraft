@@ -1,0 +1,14 @@
+[package]
+name = "nodecraft-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: wgpu actions, custom WGSL actions and the 3D preview renderer"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-actions = { workspace = true }

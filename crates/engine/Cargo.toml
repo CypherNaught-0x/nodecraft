@@ -1,0 +1,17 @@
+[package]
+name = "nodecraft-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: session, command registry, undo stack, event bus and settings"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-exec = { workspace = true }
+nodecraft-providers = { workspace = true }
+nodecraft-gpu = { workspace = true }
+nodecraft-format = { workspace = true }
