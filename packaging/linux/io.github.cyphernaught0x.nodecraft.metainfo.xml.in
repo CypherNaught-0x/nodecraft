@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata (software centres, Flathub). Template: package.sh and the Flatpak
+     manifest substitute @VERSION@ and @DATE@ from Cargo.toml and the build date. -->
+<component type="desktop-application">
+  <id>io.github.cyphernaught0x.nodecraft</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>NodeCraft</name>
+  <summary>Node-based canvas for generative media</summary>
+  <developer id="io.github.cyphernaught0x">
+    <name>The NodeCraft contributors</name>
+  </developer>
+  <description>
+    <p>
+      NodeCraft is an open-source, native, node-based infinite canvas where text, image,
+      video, audio, 3D and document nodes connect to AI models and deterministic tools, so a
+      creative process can be seen, branched, repeated and packaged as a reusable tool.
+    </p>
+    <ul>
+      <li>Local ComfyUI workflows and cloud model providers on one canvas</li>
+      <li>Cost shown before every run, per-node generation history</li>
+      <li>Local project files with content-addressed assets; works offline</li>
+      <li>Every action is a command, scriptable from a CLI and an MCP server</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.cyphernaught0x.nodecraft.desktop</launchable>
+  <icon type="stock">io.github.cyphernaught0x.nodecraft</icon>
+  <!-- Only url types known to appstream 0.15 (Ubuntu 22.04, where CI validates): no vcs-browser. -->
+  <url type="homepage">https://github.com/CypherNaught-0x/nodecraft</url>
+  <url type="bugtracker">https://github.com/CypherNaught-0x/nodecraft/issues</url>
+  <categories>
+    <category>Graphics</category>
+    <category>AudioVideo</category>
+  </categories>
+  <keywords>
+    <keyword>node editor</keyword>
+    <keyword>generative</keyword>
+    <keyword>comfyui</keyword>
+  </keywords>
+  <branding>
+    <color type="primary" scheme_preference="light">#d8f3e6</color>
+    <color type="primary" scheme_preference="dark">#0e3b26</color>
+  </branding>
+  <requires>
+    <display_length compare="ge">640</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <provides>
+    <binary>nodecraft</binary>
+    <mediatype>application/x-nodecraft</mediatype>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=NodeCraft
+GenericName=Generative Media Canvas
+Comment=Wire text, image, video, audio and 3D into AI models on a node canvas
+Exec=nodecraft %F
+TryExec=nodecraft
+Icon=io.github.cyphernaught0x.nodecraft
+Terminal=false
+# The native runner does not complete desktop startup-notification handshakes.
+StartupNotify=false
+StartupWMClass=io.github.cyphernaught0x.nodecraft
+Categories=Graphics;2DGraphics;AudioVideo;
+Keywords=node;canvas;generative;ai;image;video;workflow;comfyui;
+MimeType=application/x-nodecraft;
+# AppRun registers the desktop entry and icons itself; tell external AppImage integrators
+# (AppImageLauncher, appimaged) not to add a duplicate.
+X-AppImage-Integrate=false

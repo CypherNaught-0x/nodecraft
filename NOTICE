@@ -11,6 +11,6 @@ per-file list (author, source, license) is in ATTRIBUTION.md.
 scripts/claim/ — adapted from SolidCraft (https://github.com/bherbruck/solidcraft),
 Copyright (c) 2026 SolidCraft contributors, MIT OR Apache-2.0.
 
-xtask/, crates/engine/src/build_info.rs, apps/nodecraft/build.rs — adapted from
+xtask/, packaging/, crates/engine/src/build_info.rs, apps/nodecraft/build.rs — adapted from
 PhotoCraft (https://github.com/storytold/photocraft), Copyright (c) the PhotoCraft authors,
 MIT OR Apache-2.0.

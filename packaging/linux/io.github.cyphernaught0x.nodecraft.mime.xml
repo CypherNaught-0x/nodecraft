@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- shared-mime-info definition of the NodeCraft project file.
+     Installed to /usr/share/mime/packages/ (update-mime-database runs on install). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-nodecraft">
+    <comment>NodeCraft project</comment>
+    <icon name="io.github.cyphernaught0x.nodecraft"/>
+    <glob pattern="*.ncraft"/>
+  </mime-type>
+</mime-info>
