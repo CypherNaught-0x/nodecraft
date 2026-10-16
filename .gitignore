@@ -1,0 +1,21 @@
+# Build output
+/target
+target/
+/dist
+
+# Research material and reference captures (never committed)
+/references
+
+# Local working notes, dev log, secrets
+plan/
+/log
+/secrets
+/temp
+.env
+*.log
+
+# Editors / OS
+*~
+.DS_Store
+.idea/
+.vscode/
