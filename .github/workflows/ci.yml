@@ -45,6 +45,7 @@ jobs:
             nextest-target: x86_64-pc-windows-msvc
             nextest-sha256: bef17504bed9d4994cf860c122e84a90d613b92e6d89584fa9e28bd53ad42e15
           - os: macos-latest
+            # nextest ships one universal macOS archive for both Intel and Apple Silicon.
             nextest-target: universal-apple-darwin
             nextest-sha256: 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b
     runs-on: ${{ matrix.os }}
@@ -75,9 +76,9 @@ jobs:
           $bin = Join-Path $env:RUNNER_TEMP 'nextest-bin'
           $name = "cargo-nextest-$env:NEXTEST_VERSION-$env:NEXTEST_TARGET.tar.gz"
           $url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$env:NEXTEST_VERSION/$name"
-          Invoke-WebRequest -Uri $url -OutFile $archive
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
           $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -cne $env:NEXTEST_SHA256) { throw 'nextest archive checksum mismatch' }
+          if ($actual -cne $env:NEXTEST_SHA256) { throw "nextest checksum mismatch: expected $env:NEXTEST_SHA256, got $actual" }
           New-Item -ItemType Directory -Force -Path $bin | Out-Null
           tar -xzf $archive -C $bin
           if ($LASTEXITCODE -ne 0) { throw 'nextest archive extraction failed' }
