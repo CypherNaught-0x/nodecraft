@@ -12,9 +12,9 @@ workspace = true
 
 [dependencies]
 serde.workspace = true
-uuid = { version = "1", default-features = false, features = ["serde"] }
-mime = "0.3"
+uuid.workspace = true
+mime.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
-proptest = "1"
+proptest.workspace = true

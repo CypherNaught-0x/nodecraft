@@ -13,5 +13,5 @@ mod value;
 pub use asset::{AssetRef, Blake3, MediaMeta, Mime};
 pub use error::{Error, ErrorKind};
 pub use ids::*;
-pub use money::{Currency, Money};
+pub use money::{Currency, Money, Rounding};
 pub use value::{Modality, PortType, Value};

@@ -4,7 +4,7 @@ use crate::{Error, ErrorKind};
 
 /// A BLAKE3 digest, encoded as 64 lowercase hexadecimal characters in project files.
 /// This type holds a digest; hashing media belongs to the asset store.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Blake3([u8; 32]);
 
@@ -57,7 +57,14 @@ impl std::fmt::Display for Blake3 {
     }
 }
 
+impl std::fmt::Debug for Blake3 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Blake3({self})")
+    }
+}
+
 /// A validated MIME value, including optional parameters (for example a text charset).
+/// Equality preserves parameter spelling/spacing. Use `essence()` to compare media types.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Mime(String);
@@ -65,6 +72,11 @@ pub struct Mime(String);
 impl Mime {
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Lowercase type/subtype without parameters, suitable for selecting a decoder.
+    pub fn essence(&self) -> &str {
+        self.0.split(';').next().unwrap_or_default().trim_end()
     }
 }
 
@@ -100,11 +112,17 @@ impl From<Mime> for String {
 /// cap dimensions, durations and allocation sizes before decoding hostile assets.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub page_count: Option<u32>,
 }
 
@@ -150,5 +168,15 @@ mod tests {
         assert!("text/plain; charset=utf-8".parse::<Mime>().is_ok());
         let json = serde_json::json!({"hash": "00".repeat(32), "mime": "image/png"});
         assert_eq!(serde_json::from_value::<AssetRef>(json).unwrap().meta, MediaMeta::default());
+    }
+
+    #[test]
+    fn mime_essence_ignores_parameter_spelling_and_empty_metadata_is_compact() {
+        for value in ["TEXT/PLAIN", "text/plain;charset=utf-8", "text/plain; charset=\"utf-8\"", "text/plain; charset=UTF-8"] {
+            assert_eq!(value.parse::<Mime>().unwrap().essence(), "text/plain");
+        }
+        assert_eq!(serde_json::to_string(&MediaMeta::default()).unwrap(), "{}");
+        let hash = Blake3::from_bytes([0xab; 32]);
+        assert_eq!(format!("{hash:?}"), format!("Blake3({})", "ab".repeat(32)));
     }
 }

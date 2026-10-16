@@ -17,6 +17,7 @@ pub enum Modality {
 pub struct PortType {
     pub modality: Modality,
     /// Whether this port accepts a list rather than one value.
+    #[serde(default)]
     pub many: bool,
 }
 
@@ -67,5 +68,7 @@ mod tests {
         for json in ["null", "{}", "{\"type\":\"unknown\"}", "{\"type\":\"list\",\"value\":42}"] {
             assert!(serde_json::from_str::<Value>(json).is_err());
         }
+        assert!(serde_json::from_str::<Modality>(r#""future_modality""#).is_err());
+        assert_eq!(serde_json::from_str::<PortType>(r#"{"modality":"text"}"#).unwrap(), PortType { modality: Modality::Text, many: false });
     }
 }

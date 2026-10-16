@@ -44,9 +44,30 @@ pub struct Money {
     pub micros: u64,
 }
 
+/// Rounding applied once, after multiplying a rate by the total usage.
+/// Use `Up` for conservative budget quotes so non-zero fractional costs never become free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rounding {
+    Down,
+    Up,
+}
+
 impl Money {
     pub const fn new(currency: Currency, micros: u64) -> Self {
         Self { currency, micros }
+    }
+
+    pub const fn zero(currency: Currency) -> Self {
+        Self::new(currency, 0)
+    }
+
+    pub fn checked_sum(currency: Currency, amounts: impl IntoIterator<Item = Self>) -> Result<Self, Error> {
+        amounts.into_iter().try_fold(Self::zero(currency), Self::checked_add)
+    }
+
+    pub fn checked_cmp(self, other: Self) -> Result<std::cmp::Ordering, Error> {
+        self.same_currency(other)?;
+        Ok(self.micros.cmp(&other.micros))
     }
 
     pub fn checked_add(self, other: Self) -> Result<Self, Error> {
@@ -62,7 +83,7 @@ impl Money {
         self.micros
             .checked_sub(other.micros)
             .map(|micros| Self::new(self.currency, micros))
-            .ok_or_else(|| Error::new(ErrorKind::Overflow, "money subtraction would be negative"))
+            .ok_or_else(|| Error::new(ErrorKind::Underflow, "money subtraction would be negative"))
     }
 
     pub fn checked_mul(self, count: u64) -> Result<Self, Error> {
@@ -72,8 +93,30 @@ impl Money {
             .ok_or_else(|| Error::new(ErrorKind::Overflow, "money multiplication overflow"))
     }
 
+    /// Scale an aggregate rate without first rounding its fractional per-unit price.
+    /// For $0.075 per million tokens, use `Money::new(Currency::USD, 75_000)` and
+    /// multiply by `(total_tokens, 1_000_000, Rounding::Up)` when quoting a budget.
+    /// The intermediate product uses u128; only the final amount must fit u64.
+    pub fn checked_mul_ratio(self, numerator: u64, denominator: u64, rounding: Rounding) -> Result<Self, Error> {
+        if denominator == 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "money ratio denominator must be non-zero"));
+        }
+        let product = u128::from(self.micros) * u128::from(numerator);
+        let denominator = u128::from(denominator);
+        let quotient = product / denominator;
+        let micros = if rounding == Rounding::Up && product % denominator != 0 { quotient + 1 } else { quotient };
+        let micros = u64::try_from(micros).map_err(|_| Error::new(ErrorKind::Overflow, "money ratio multiplication overflow"))?;
+        Ok(Self::new(self.currency, micros))
+    }
+
     fn same_currency(self, other: Self) -> Result<(), Error> {
         if self.currency == other.currency { Ok(()) } else { Err(Error::new(ErrorKind::CurrencyMismatch, "money arithmetic requires matching currencies")) }
+    }
+}
+
+impl std::fmt::Display for Money {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}.{:06}", self.currency, self.micros / 1_000_000, self.micros % 1_000_000)
     }
 }
 
@@ -123,6 +166,39 @@ mod tests {
         assert_eq!(usd.checked_add(eur).unwrap_err().kind, ErrorKind::CurrencyMismatch);
         assert_eq!(usd.checked_sub(eur).unwrap_err().kind, ErrorKind::CurrencyMismatch);
         assert!(Money::new(Currency::USD, u64::MAX).checked_add(usd).is_err());
-        assert!(usd.checked_sub(Money::new(Currency::USD, 2)).is_err());
+        assert_eq!(usd.checked_sub(Money::new(Currency::USD, 2)).unwrap_err().kind, ErrorKind::Underflow);
+    }
+
+    #[test]
+    fn aggregate_token_quotes_round_once_and_check_bounds() {
+        let rate = Money::new(Currency::USD, 75_000);
+        assert_eq!(rate.checked_mul_ratio(1, 1_000_000, Rounding::Down).unwrap().micros, 0);
+        assert_eq!(rate.checked_mul_ratio(1, 1_000_000, Rounding::Up).unwrap().micros, 1);
+        assert_eq!(rate.checked_mul_ratio(1_000_000, 1_000_000, Rounding::Up).unwrap(), rate);
+        assert_eq!(rate.checked_mul_ratio(20, 1_000_000, Rounding::Up).unwrap().micros, 2);
+        assert_eq!(rate.checked_mul_ratio(0, 1, Rounding::Up).unwrap(), Money::zero(Currency::USD));
+        assert_eq!(rate.checked_mul_ratio(1, 0, Rounding::Up).unwrap_err().kind, ErrorKind::InvalidInput);
+        let max = Money::new(Currency::USD, u64::MAX);
+        assert_eq!(max.checked_mul_ratio(u64::MAX, u64::MAX, Rounding::Up).unwrap(), max);
+        assert_eq!(max.checked_mul_ratio(2, 1, Rounding::Down).unwrap_err().kind, ErrorKind::Overflow);
+        // The rounded-up result, not just the quotient, must fit u64.
+        let half = Money::new(Currency::USD, 1_u64 << 63);
+        assert_eq!(half.checked_mul_ratio(u64::MAX, 1_u64 << 63, Rounding::Up).unwrap(), max);
+        let near_max = Money::new(Currency::USD, u64::MAX - 1);
+        assert_eq!(near_max.checked_mul_ratio(u64::MAX - 1, u64::MAX - 2, Rounding::Down).unwrap(), max);
+        assert_eq!(near_max.checked_mul_ratio(u64::MAX - 1, u64::MAX - 2, Rounding::Up).unwrap_err().kind, ErrorKind::Overflow);
+    }
+
+    #[test]
+    fn budget_helpers_require_matching_currencies() {
+        let usd = Money::new(Currency::USD, 5);
+        let eur = Money::new(Currency::EUR, 5);
+        assert_eq!(Money::checked_sum(Currency::USD, []).unwrap(), Money::zero(Currency::USD));
+        assert_eq!(Money::checked_sum(Currency::USD, [usd, usd]).unwrap().micros, 10);
+        assert_eq!(Money::checked_sum(Currency::USD, [eur]).unwrap_err().kind, ErrorKind::CurrencyMismatch);
+        assert!(Money::checked_sum(Currency::USD, [Money::new(Currency::USD, u64::MAX), usd]).is_err());
+        assert_eq!(usd.checked_cmp(eur).unwrap_err().kind, ErrorKind::CurrencyMismatch);
+        assert_eq!(usd.checked_cmp(Money::zero(Currency::USD)).unwrap(), std::cmp::Ordering::Greater);
+        assert_eq!(Money::new(Currency::USD, 1_075_001).to_string(), "USD 1.075001");
     }
 }

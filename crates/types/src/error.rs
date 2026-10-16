@@ -10,6 +10,7 @@ pub enum ErrorKind {
     NotFound,
     Conflict,
     Overflow,
+    Underflow,
     CurrencyMismatch,
     Authentication,
     Network,
@@ -18,6 +19,9 @@ pub enum ErrorKind {
     Budget,
     ContentBlocked,
     Internal,
+    /// A newer peer supplied a category this build does not recognize; retain its message.
+    #[serde(other)]
+    Unknown,
 }
 
 /// An actionable error. Callers must use public-safe messages, never keys or raw responses.
@@ -40,3 +44,16 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn newer_error_kinds_preserve_the_actionable_message() {
+        let error: Error = serde_json::from_str(r#"{"kind":"new_provider_error","message":"Retry after updating the provider configuration"}"#).unwrap();
+        assert_eq!(error.kind, ErrorKind::Unknown);
+        assert_eq!(error.to_string(), "Retry after updating the provider configuration");
+        assert_eq!(serde_json::from_str::<Error>(&serde_json::to_string(&error).unwrap()).unwrap(), error);
+    }
+}
