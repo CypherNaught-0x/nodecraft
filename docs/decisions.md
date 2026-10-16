@@ -4,6 +4,23 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Provider foundation (#141)
+
+- **`Provider` is dyn-compatible** (boxed futures, `Send` on native only) so the engine can hold
+  a registry of `Box<dyn Provider>`; no `async-trait` dependency.
+- **`exec` and `providers` don't know each other** (same layer). The engine implements
+  `exec::driver::JobRunner` with `providers::run_to_completion`, wrapping exec's `CancelToken`
+  and the runtime as `providers::CancelSignal` / `Sleep`.
+- **Polling never resubmits.** Transient poll errors are retried in place; only the scheduler
+  retries a whole job, under the same idempotency key. `JobHandle` is serialisable so a job that
+  is already paid for can be resumed after a restart.
+- **HTTP through an `Http` trait** so adapters are tested against fixtures. The reqwest transport
+  sends only `NodeCraft/<version>` as User-Agent, caps reply sizes while streaming, follows
+  redirects only within the same origin (custom auth headers would otherwise leak), and keeps
+  header values and URL queries out of `Debug` output and errors.
+- **reqwest 0.13 with rustls** (aws-lc-rs provider) on desktop; the browser build uses `fetch`.
+- **Downloads are sniffed** with `media::sniff`: an error page served as 200 is refused rather
+  than stored as an image.
 ## 2026-10-17 · Plugin system plan (#154)
 
 - **Plan before runtime.** [The plugin RFC](plugins-rfc.md) accepts data-only packages as the first
