@@ -621,7 +621,8 @@ Testing strategy:
 All builds are distributed as **GitHub releases**, built the same way as the other Craft apps.
 `.github/workflows/release.yml` calls the shared reusable workflow
 `storytold/craft-common-actions/.github/workflows/release.yml@main` with
-`app-name: nodecraft`, `app-title: NodeCraft` and `has-web: true`. It needs the per-app
+`app-name: nodecraft` and `app-title: NodeCraft`; `has-web` turns on once `apps/nodecraft-web` exists
+(docs/decisions.md). It needs the per-app
 `packaging/` scripts that workflow expects (`packaging/env.sh`, `packaging/{macos,windows,linux,web}/…`,
 modelled on PhotoCraft's).
 
@@ -642,8 +643,9 @@ modelled on PhotoCraft's).
   policy allows it, otherwise through a user-configured LiteLLM or ComfyUI endpoint. Keys live in
   browser storage for that origin only, and the UI says so. Projects open and save via the File
   System Access API, with download/upload as the fallback.
-- **Signing:** macOS notarisation and Windows signing secrets are optional. Missing secrets
-  produce unsigned artifacts with a `::warning::`, never a failed release.
+- **Signing:** the shared workflow **requires** macOS notarisation and Windows signing secrets on
+  the `release` branch and fails without them. Manual runs on other branches build unsigned
+  artifacts with a `::warning::` (docs/releasing.md).
 - **Version info:** `nodecraft --version`, `nodecraft-cli --version` and *Help › About* report
   version, commit and build date (`NODECRAFT_BUILD_SHA`, `NODECRAFT_BUILD_DATE`).
 
@@ -669,8 +671,9 @@ modelled on PhotoCraft's).
 
 Still open:
 
-1. **Signing certificates:** Apple Developer ID and a Windows code-signing route. Until they
-   exist, releases are unsigned (with warnings in the release job).
+1. **Signing certificates:** Apple Developer ID and a Windows code-signing route. The shared
+   release workflow refuses to build on the `release` branch without them, so they are needed
+   before the first published release; until then only manual, unsigned test runs work.
 
 ---
 
@@ -696,18 +699,18 @@ Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) a
 
 ## 8. First steps (M0 checklist)
 
-- [ ] `Cargo.toml` workspace with the settings in §5; `rustfmt.toml`, `clippy.toml`,
+- [x] `Cargo.toml` workspace with the settings in §5; `rustfmt.toml`, `clippy.toml`,
       `.cargo/config.toml`, `.config/nextest.toml`
-- [ ] Crates from §4.1 as empty libraries with the deny-panic header; apps `nodecraft` and
+- [x] Crates from §4.1 as empty libraries with the deny-panic header; apps `nodecraft` and
       `nodecraft-cli`
-- [ ] `xtask layers` (table of crate → layer, fails on violations) and `xtask wasm`
+- [x] `xtask layers` (table of crate → layer, fails on violations) and `xtask wasm`
 - [x] `ci.yml` (claim-bot tests now; Rust jobs switch on when `Cargo.toml` lands), `claim.yml`,
       PR and issue templates, `CONTRIBUTING.md`, licences
 - [ ] Switch CI to nextest once there are enough test binaries to matter
-- [ ] craft-libs dependencies pinned in `[workspace.dependencies]` (§5)
-- [ ] `AGENTS.md`, `docs/architecture.md` (from §4), `docs/decisions.md`, `ROADMAP.md`
-- [ ] `release.yml` calling the shared Craft release workflow, `packaging/` scripts, `xtask version`
-- [ ] GitHub labels: `area:*` (CONTRIBUTING.md), `in progress` (created by the bot on first use),
+- [x] craft-libs dependencies pinned in `[workspace.dependencies]` (§5)
+- [x] `AGENTS.md`, `docs/architecture.md` (from §4), `docs/decisions.md`, `ROADMAP.md`
+- [x] `release.yml` calling the shared Craft release workflow, `packaging/` scripts, `xtask version`
+- [x] GitHub labels: `area:*` (CONTRIBUTING.md), `in progress` (created by the bot on first use),
       `good first issue`; one issue per M0/M1 task so contributors can `/claim` them
-- [ ] `ui-design.md` with theme tokens taken from the reference look (dark, dot grid, radii)
-- [ ] eframe app with the dot-grid canvas, pan/zoom, and a stub node card
+- [x] `ui-design.md` with theme tokens taken from the reference look (dark, dot grid, radii)
+- [x] eframe app with the dot-grid canvas, pan/zoom, and a stub node card

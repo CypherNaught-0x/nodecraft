@@ -10,14 +10,15 @@
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: planning" src="https://img.shields.io/badge/status-planning-d69e2e?style=flat-square">
+  <img alt="Status: M0 skeleton" src="https://img.shields.io/badge/status-M0%20skeleton-d69e2e?style=flat-square">
 </p>
 
 ---
 
 > [!NOTE]
-> NodeCraft is at the planning stage. No code has landed yet; the full plan lives in
-> [`docs/plan.md`](docs/plan.md).
+> NodeCraft is at milestone M0: the workspace, CI and release pipeline exist, and the app opens
+> an empty themed canvas. The full plan lives in [`docs/plan.md`](docs/plan.md), the status in
+> [`ROADMAP.md`](ROADMAP.md).
 
 ## What it will be
 
@@ -63,6 +64,16 @@
 
 See [`docs/plan.md`](docs/plan.md) for the feature catalogue, architecture, repository
 conventions and roadmap.
+
+## Build from source
+
+```sh
+cargo run -p nodecraft          # the desktop app
+cargo xtask ci                  # fmt, clippy, tests, layering and wasm checks
+```
+
+[`docs/development.md`](docs/development.md) has the details; [`AGENTS.md`](AGENTS.md) is the
+orientation for contributors and coding agents.
 
 ## Downloads
 

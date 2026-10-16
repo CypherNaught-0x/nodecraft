@@ -5,9 +5,9 @@ Rust. This page covers how to claim work, the rules every change follows, and st
 checklists for the most common kinds of change.
 
 > [!NOTE]
-> NodeCraft is at the planning stage (milestone M0). Paths below such as `crates/engine` are the
-> layout from [`docs/plan.md`](docs/plan.md) §4.1. They appear as M0 lands. Until then, the most
-> useful contributions are M0 tasks (§8 of the plan) and feedback on the plan itself.
+> NodeCraft is at milestone M0. The crates from [`docs/plan.md`](docs/plan.md) §4.1 exist but are
+> mostly empty; some paths below (such as `crates/engine/src/<area>_cmds.rs`) appear in M1. Start
+> with [`AGENTS.md`](AGENTS.md), then pick an open issue from the `M0` or `M1` milestone.
 
 ## Claiming an issue
 
