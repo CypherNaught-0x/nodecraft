@@ -108,7 +108,8 @@ impl Future for Cancelled {
 
 enum Command {
     Add(Vec<JobSpec>, oneshot::Sender<Result<(), SchedulerError>>),
-    Requeue(Vec<JobId>, oneshot::Sender<Result<(), SchedulerError>>),
+    Requeue(Vec<(JobId, String)>, oneshot::Sender<Result<(), SchedulerError>>),
+    Forget,
     Cancel(CancelScope),
     Pause(bool),
 }
@@ -164,11 +165,18 @@ impl Handle {
         self.0.unbounded_send(Command::Cancel(scope)).map_err(|_| DriverGone)
     }
 
-    /// Retries failed, cancelled or skipped jobs (see [`Scheduler::requeue`]).
-    pub async fn requeue(&self, jobs: Vec<JobId>) -> Result<Result<(), SchedulerError>, DriverGone> {
+    /// Retries failed, cancelled or skipped jobs under new idempotency keys (see
+    /// [`Scheduler::requeue`]).
+    pub async fn requeue(&self, jobs: Vec<(JobId, String)>) -> Result<Result<(), SchedulerError>, DriverGone> {
         let (tx, rx) = oneshot::channel();
         self.0.unbounded_send(Command::Requeue(jobs, tx)).map_err(|_| DriverGone)?;
         rx.await.map_err(|_| DriverGone)
+    }
+
+    /// Drops finished jobs from the queue (call when the queue panel is cleared, or periodically
+    /// in a long session).
+    pub fn forget_finished(&self) -> Result<(), DriverGone> {
+        self.0.unbounded_send(Command::Forget).map_err(|_| DriverGone)
     }
 
     /// Stops or resumes starting jobs (budget reached, user pause); running jobs carry on.
@@ -241,6 +249,7 @@ impl Driver {
                         let _ = reply.send(scheduler.requeue(&jobs));
                     }
                     Some(Command::Pause(paused)) => scheduler.set_paused(paused),
+                    Some(Command::Forget) => scheduler.forget_finished(),
                     Some(Command::Cancel(scope)) => {
                         for job in scheduler.cancel(scope) {
                             if let Some(token) = tokens.get(&job) {
@@ -510,7 +519,7 @@ mod tests {
                 loop {
                     tries += 1;
                     assert!(tries < 1_000_000, "job 1 never failed");
-                    if handle.requeue(vec![JobId(1)]).await == Ok(Ok(())) {
+                    if handle.requeue(vec![(JobId(1), "nodecraft:test:1:retry".into())]).await == Ok(Ok(())) {
                         break;
                     }
                     yield_now().await;
@@ -519,8 +528,16 @@ mod tests {
             };
             futures::join!(control, task).1
         });
-        assert_eq!(runner.attempts.lock().unwrap().iter().filter(|a| a.0 == 1).count(), 2, "requeued once");
+        let attempts = runner.attempts.lock().unwrap().clone();
+        let keys: Vec<&str> = attempts.iter().filter(|a| a.0 == 1).map(|a| a.2.as_str()).collect();
+        assert_eq!(keys, ["nodecraft:test:1", "nodecraft:test:1:retry"], "requeued once, under a new key");
+        handle_forget_compiles();
         assert!(scheduler.is_idle());
+    }
+
+    fn handle_forget_compiles() {
+        let (_driver, handle) = driver(Scheduler::new(Limits::default()));
+        assert_eq!(handle.forget_finished(), Ok(()));
     }
 
     #[test]

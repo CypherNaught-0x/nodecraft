@@ -391,10 +391,9 @@ impl Scheduler {
     /// Starts every job that can start at `now_ms`, oldest first, within the limits. A full lane
     /// doesn't hold up jobs on other lanes.
     pub fn start_ready(&mut self, now_ms: u64) -> Vec<Start> {
-        while let Some(&(until, _, id)) = self.backoff.first() {
-            if until > now_ms {
-                break;
-            }
+        while self.backoff.first().is_some_and(|(until, _, _)| *until <= now_ms) {
+            // Popping first guarantees progress even if the job were missing.
+            let Some((_, _, id)) = self.backoff.pop_first() else { break };
             self.set_state(id, JobState::Ready);
         }
         let mut started = Vec::new();
@@ -505,9 +504,12 @@ impl Scheduler {
     }
 
     /// Puts failed, cancelled and skipped jobs back in the queue (the queue panel's "retry"),
-    /// with fresh attempts. Their inputs must be done, unfinished, or requeued in the same call.
-    pub fn requeue(&mut self, ids: &[JobId]) -> Result<(), SchedulerError> {
-        let targets: HashSet<JobId> = ids.iter().copied().collect();
+    /// with fresh attempts and a **new idempotency key** each, so the provider starts a new
+    /// generation instead of replaying the failed one. Their inputs must be done, unfinished, or
+    /// requeued in the same call (pass skipped downstream jobs along with the failed one).
+    pub fn requeue(&mut self, jobs: &[(JobId, String)]) -> Result<(), SchedulerError> {
+        let targets: HashSet<JobId> = jobs.iter().map(|(id, _)| *id).collect();
+        let keys: HashMap<JobId, &String> = jobs.iter().map(|(id, k)| (*id, k)).collect();
         for id in &targets {
             let job = self.jobs.get(id).ok_or(SchedulerError::UnknownJob(*id))?;
             if !job.state.is_finished() || job.state == JobState::Done {
@@ -525,6 +527,9 @@ impl Scheduler {
             if let Some(job) = self.jobs.get_mut(id) {
                 job.state = JobState::Waiting;
                 job.attempts = 0;
+                if let Some(key) = keys.get(id) {
+                    job.spec.idempotency_key = (*key).clone();
+                }
                 self.unfinished += 1;
                 self.events.push_back(Event::Queued { job: *id });
             }
@@ -559,6 +564,11 @@ impl Scheduler {
     /// dependencies afterwards.
     pub fn forget_finished(&mut self) {
         self.jobs.retain(|_, j| !j.state.is_finished());
+        // Remaining jobs must not point at forgotten ones: an id may be reused by a new job.
+        let live: HashSet<JobId> = self.jobs.keys().copied().collect();
+        for job in self.jobs.values_mut() {
+            job.dependents.retain(|d| live.contains(d));
+        }
     }
 
     /// The earliest time a job in backoff becomes ready; wake the driver then.
@@ -849,12 +859,14 @@ mod tests {
         s.start_ready(0);
         s.report(JobId(1), Outcome::Failed { error: "x".into(), transient: false }, 0).unwrap();
         s.report(JobId(3), Outcome::Done, 0).unwrap();
-        assert_eq!(s.requeue(&[JobId(2)]), Err(SchedulerError::InputNotRequeued { job: JobId(2), dep: JobId(1) }));
-        assert_eq!(s.requeue(&[JobId(3)]), Err(SchedulerError::NotFinished(JobId(3))), "done jobs aren't retried");
-        s.requeue(&[JobId(2), JobId(1)]).unwrap();
+        let k = |id: u64| (JobId(id), format!("nodecraft:run1:{id}:retry1"));
+        assert_eq!(s.requeue(&[k(2)]), Err(SchedulerError::InputNotRequeued { job: JobId(2), dep: JobId(1) }));
+        assert_eq!(s.requeue(&[k(3)]), Err(SchedulerError::NotFinished(JobId(3))), "done jobs aren't retried");
+        s.requeue(&[k(2), k(1)]).unwrap();
         assert_eq!(s.state(JobId(2)), Some(&JobState::Waiting));
         let st = s.start_ready(0);
         assert_eq!((ids(&st), st[0].attempt), (vec![1], 1), "fresh attempts");
+        assert_eq!(st[0].idempotency_key, "nodecraft:run1:1:retry1", "a new key, so the provider starts afresh");
         s.report(JobId(1), Outcome::Done, 0).unwrap();
         assert_eq!(ids(&s.start_ready(0)), [2]);
         s.report(JobId(2), Outcome::Done, 0).unwrap();
@@ -874,6 +886,23 @@ mod tests {
         assert_eq!(s.state(JobId(1)), None);
         assert!(s.state(JobId(2)).is_some());
         assert!(matches!(s.add(vec![job(3, &[1], "a")]), Err(SchedulerError::UnknownDependency { .. })));
+    }
+
+    #[test]
+    fn reusing_a_forgotten_id_is_safe() {
+        let mut s = sched();
+        s.add(vec![job(1, &[], "a"), job(3, &[], "b"), job(2, &[1], "a")]).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [1, 3]);
+        s.cancel(CancelScope::Jobs(vec![JobId(2)]));
+        s.forget_finished();
+        s.add(vec![job(4, &[], "c"), job(2, &[4], "a")]).unwrap();
+        // The old upstream (1) finishing or failing must not touch the new job 2.
+        s.report(JobId(1), Outcome::Failed { error: "x".into(), transient: false }, 0).unwrap();
+        assert_eq!(s.state(JobId(2)), Some(&JobState::Waiting));
+        s.report(JobId(3), Outcome::Done, 0).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [4]);
+        s.report(JobId(4), Outcome::Done, 0).unwrap();
+        assert_eq!(ids(&s.start_ready(0)), [2], "runs only after its own input");
     }
 
     /// 100k independent jobs through the driver's loop shape: must stay roughly linear.
