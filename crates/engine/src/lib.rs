@@ -6,4 +6,9 @@
 
 pub mod build_info;
 pub mod jobs;
+pub mod commands;
+pub mod graph_cmds;
+pub mod session;
 pub mod settings;
+
+pub use session::{DocChanged, Session};
