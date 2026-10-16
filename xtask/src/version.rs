@@ -45,11 +45,18 @@ pub fn validate(v: &str) -> Result<(), String> {
         None => (v, None),
     };
     let nums: Vec<&str> = core.split('.').collect();
-    if nums.len() != 3 || nums.iter().any(|n| n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) || (n.len() > 1 && n.starts_with('0'))) {
+    if nums.len() != 3
+        || nums.iter().any(|n| n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) || (n.len() > 1 && n.starts_with('0')) || n.parse::<u64>().is_err())
+    {
         return bad();
     }
     if let Some(p) = pre
-        && (p.is_empty() || p.split('.').any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')))
+        && (p.is_empty()
+            || p.split('.').any(|id| {
+                id.is_empty()
+                    || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    || (id.len() > 1 && id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit()))
+            }))
     {
         return bad();
     }
@@ -148,5 +155,30 @@ mod tests {
     fn the_real_manifest_has_a_valid_version() {
         let text = std::fs::read_to_string(crate::root().join("Cargo.toml")).unwrap();
         validate(&read(&text).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn rejects_versions_cargo_cannot_parse() {
+        for version in ["1.0.0-01", "1.0.0-rc.01", "18446744073709551616.0.0", "0.18446744073709551616.0", "0.0.18446744073709551616"] {
+            assert!(replace(MANIFEST, version).is_err(), "accepted {version}");
+        }
+        for version in ["1.0.0-0", "1.0.0-01a", "18446744073709551615.0.0"] {
+            assert!(validate(version).is_ok(), "rejected {version}");
+        }
+    }
+
+    #[test]
+    fn invalid_version_leaves_manifest_and_lock_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = root.path().join("Cargo.toml");
+        let lock = root.path().join("Cargo.lock");
+        std::fs::write(&manifest, MANIFEST).unwrap();
+        std::fs::write(&lock, "unchanged lock").unwrap();
+        for version in ["1.0.0-01", "1.0.0-rc.01", "18446744073709551616.0.0"] {
+            assert!(run(root.path(), &["set", version]).is_err());
+            assert_eq!(std::fs::read_to_string(&manifest).unwrap(), MANIFEST);
+            assert_eq!(std::fs::read_to_string(&lock).unwrap(), "unchanged lock");
+            assert!(!root.path().join("target").exists());
+        }
     }
 }

@@ -4031,6 +4031,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
