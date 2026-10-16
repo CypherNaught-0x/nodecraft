@@ -132,6 +132,26 @@ hover and selection highlights. Everything that changes the document will be an 
 (from M1). In M0 the canvas shows a stub card from plain shell data (`card::StubCard`); M1 replaces
 it with `graph` nodes rendered by the same card painter.
 
+`engine::Session` now owns a validated `Project`, its command registry, undo/redo stacks and
+revision notifications. Frontends call `enabled(id, &params)` for a disabled reason and
+`dispatch(id, &params)` for a JSON result. `registry().specs()` exposes stable IDs, labels,
+shortcuts and typed parameter documentation. Initial commands live in `graph_cmds::specs()`:
+`node.add`, `node.remove`, `node.move`, `edge.connect`, `edge.disconnect`, `edit.undo` and
+`edit.redo`. IDs in parameters are caller-supplied; node creation currently accepts detached
+graph data until the node-kind registry supplies templates. Handlers inspect an immutable
+context and return changesets; they cannot directly mutate the live document.
+
+Dispatch bounds JSON nesting, item count and text bytes before recursive deserialization.
+It stages graph edits and their inverse before publication. Native panic unwinding returns an
+internal error while preserving document/history/events; abort-only targets still depend on
+validation. History limits and explicit drag tokens are specified in `decisions.md`. Each
+subscriber calls `events_since(cursor)` and advances its own cursor to the last notification;
+an expired cursor requires reading the current document and revision again. These notifications
+are an invalidation log, not a persistence or collaboration journal. Granular generation edits
+use the same command effect path: undo retains only the affected entry or active selection,
+and both the inverse and the canonical redo must fit the engine history budget before dispatch
+publishes any document, history or event change.
+
 ## Shared Craft libraries
 
 From [storytold/craft-libs](https://github.com/storytold/craft-libs), pinned to one immutable

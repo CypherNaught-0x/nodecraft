@@ -2021,8 +2021,11 @@ dependencies = [
  "nodecraft-exec",
  "nodecraft-format",
  "nodecraft-gpu",
+ "nodecraft-graph",
  "nodecraft-providers",
+ "nodecraft-types",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

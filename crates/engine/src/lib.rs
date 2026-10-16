@@ -5,4 +5,9 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 pub mod build_info;
+pub mod commands;
+pub mod graph_cmds;
+pub mod session;
 pub mod settings;
+
+pub use session::{DocChanged, Session};
