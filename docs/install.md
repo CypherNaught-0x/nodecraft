@@ -84,13 +84,15 @@ keys are kept):
 |---|---|
 | macOS | `~/Library/Application Support/nodecraft` |
 | Windows | `%APPDATA%\nodecraft` (portable zip: `config\` next to `nodecraft.exe`) |
-| Linux | `~/.config/nodecraft` |
+| Linux | `$XDG_CONFIG_HOME/nodecraft` (usually `~/.config/nodecraft`); Flatpak: `~/.var/app/io.github.cyphernaught0x.nodecraft/config/nodecraft` |
 
 Set `NODECRAFT_CONFIG_DIR` to use another folder, or to an empty value to keep settings in memory
 only. A `portable.txt` next to the executable (next to `NodeCraft.app` on macOS) turns on portable
-mode on any platform. A damaged file is renamed aside and the defaults are used.
+mode on any platform. A damaged file is renamed aside and the defaults are used; an invalid value
+resets its section to the defaults, and the next save writes them over it.
 
 ```toml
+schema_version = 1    # written by NodeCraft; leave it as it is
 [appearance]
 theme = "dark"        # or "light"
 

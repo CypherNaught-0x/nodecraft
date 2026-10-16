@@ -26,8 +26,7 @@ pub struct NodeCraftApp {
 impl NodeCraftApp {
     pub fn new(ctx: &egui::Context) -> Self {
         let mut app = Self::headless();
-        app.apply_settings(&NodeCraftSettings::default());
-        theme::apply(ctx, app.theme);
+        app.apply_settings(ctx, &NodeCraftSettings::default());
         // ⌘= / ⌘- / ⌘0 zoom the canvas, not the whole UI.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app
@@ -36,21 +35,21 @@ impl NodeCraftApp {
     /// The app with settings from `store`, which it saves while running and flushes on exit.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Self {
-        let mut app = Self::headless();
-        app.apply_settings(store.get());
+        let settings = store.get().clone();
+        let mut app = Self::new(ctx);
+        app.apply_settings(ctx, &settings);
         app.store = Some(store);
-        theme::apply(ctx, app.theme);
-        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app
     }
 
-    /// Takes the values the shell uses from `settings`.
-    pub fn apply_settings(&mut self, settings: &NodeCraftSettings) {
+    /// Takes the values the shell uses from `settings` and restyles `ctx` for the theme.
+    pub fn apply_settings(&mut self, ctx: &egui::Context, settings: &NodeCraftSettings) {
         self.theme = match settings.appearance.theme {
             Theme::Dark => ThemeKind::Dark,
             Theme::Light => ThemeKind::Light,
         };
         self.canvas_prefs = settings.canvas.clone();
+        theme::apply(ctx, self.theme);
     }
 
     /// The app state without touching an egui context (tests).
@@ -150,6 +149,9 @@ impl eframe::App for NodeCraftApp {
             if let nodecraft_engine::settings::SaveStatus::Failed(e) = &tick.status {
                 log::warn!("settings not saved, will retry: {e}");
             }
+            for moved in store.take_moved_aside() {
+                log::warn!("settings file was damaged and moved to {}", moved.display());
+            }
             if let Some(deadline) = tick.next_deadline {
                 ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
             }
@@ -164,7 +166,9 @@ impl eframe::App for NodeCraftApp {
 
     fn on_exit(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
+        // A read-only store (newer schema, unwritable folder) was reported at startup.
         if let Some(store) = &mut self.store
+            && !store.is_read_only()
             && let Err(e) = store.flush()
         {
             log::warn!("settings not saved on exit: {e}");
@@ -241,6 +245,33 @@ mod tests {
         assert_eq!(app.cards[0].rect, NodeCraftApp::headless().cards[0].rect);
         assert!((app.view.pan - pan - Vec2::new(30.0, 20.0)).length() < 1.0, "{:?}", app.view.pan - pan);
         assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn mouse_wheel_zooms_when_scroll_is_set_to_zoom() {
+        let wheel = |h: &mut Harness<'static, NodeCraftApp>| {
+            h.hover_at(Pos2::new(200.0, 200.0));
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, 60.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..30 {
+                h.run();
+            }
+        };
+        let mut h = harness();
+        wheel(&mut h);
+        assert_eq!(h.state().view.zoom, 1.0, "by default the wheel pans");
+
+        let mut h = harness();
+        h.state_mut().canvas_prefs.scroll = nodecraft_engine::settings::ScrollAction::Zoom;
+        let pan = h.state().view.pan;
+        wheel(&mut h);
+        let app = h.state();
+        assert!(app.view.zoom > 1.2, "wheel up zooms in: {}", app.view.zoom);
+        assert_ne!(app.view.pan, pan, "zoom keeps the point under the pointer fixed");
     }
 
     #[test]

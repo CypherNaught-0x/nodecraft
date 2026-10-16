@@ -110,7 +110,8 @@ pub fn describe_problems(report: &LoadReport) -> Vec<String> {
         out.push(format!("settings file was damaged and moved to {}; using defaults", moved.display()));
     }
     for e in &report.section_errors {
-        out.push(format!("settings section [{}] was invalid and reset to defaults: {}", e.section, e.message));
+        let message = e.message.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push(format!("settings section [{}] was invalid and reset to defaults: {message}", e.section));
     }
     if let Some(why) = &report.read_only {
         out.push(format!("settings will not be saved: {why}"));
@@ -200,7 +201,9 @@ mod tests {
         assert_eq!(store.get().appearance.theme, Theme::Dark);
         assert_eq!(store.get().canvas.scroll, ScrollAction::Zoom);
         assert_eq!(report.section_errors.len(), 1);
-        assert!(describe_problems(&report)[0].contains("[appearance]"));
+        let problems = describe_problems(&report);
+        assert!(problems[0].contains("[appearance]"));
+        assert!(!problems[0].contains('\n'), "one line per problem: {problems:?}");
     }
 
     #[test]

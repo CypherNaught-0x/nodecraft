@@ -17,8 +17,9 @@ pub const KEY_ZOOM_STEP: f32 = 1.25;
 pub const MIN_DOT_SPACING: f32 = 12.0;
 /// Upper bound on dots painted per frame, whatever the window size.
 pub const MAX_DOTS: usize = 120_000;
-/// With scroll-to-zoom, scrolling this many points doubles (or halves) the zoom at zoom speed 1.
-pub const SCROLL_POINTS_PER_DOUBLING: f32 = 240.0;
+/// With scroll-to-zoom, scrolling this many points doubles (or halves) the zoom at zoom speed 1:
+/// 200·ln 2, the same rate as egui's ⌘-scroll zoom, so both feel alike.
+pub const SCROLL_POINTS_PER_DOUBLING: f32 = 138.6;
 
 /// Pan and zoom of a canvas. Pure data: no egui state.
 #[derive(Clone, Copy, Debug, PartialEq)]
