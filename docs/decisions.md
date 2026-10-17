@@ -11,10 +11,14 @@ a choice a later contributor might otherwise undo.
   `types::Money`, compared with `checked_cmp` so currencies never mix.
 - **Reserve before start, settle at the end.** A job's estimate is reserved before it is
   submitted, so jobs running in parallel can't together overshoot a cap; a job that would break a
-  cap fails with a clear, non-retried error and never reaches the provider. A job that ran is
-  charged its actual cost, or its estimate when the provider reports none (until #195); one that
-  failed after reaching the provider is charged its estimate, since it may have been billed; one
-  that never reached it is released.
+  cap fails with a clear, non-retried `budget: ` error and never reaches the provider. A job that
+  ran is charged its actual cost, or its estimate when the provider reports none (until #195).
+- **Charge whatever may have been billed.** A job that may have reached the provider (it got a
+  handle, or its submit was lost to a timeout, network or server error) keeps its reservation
+  while it can still be retried or resumed, and is charged its estimate, logged as `unresolved`,
+  `cancelled` or `failed`, once it settles. A job the provider certainly rejected (bad key,
+  invalid input) is released. A job resumed after a restart is adopted: charged even if it now
+  breaks a cap, since the spend already happened.
 - **Unpriced jobs** are refused while any cap is set, unless the user allows them.
 - **Quotes** price a whole run up front and name the first cap it would break.
 - **The usage log exports as RFC 4180 CSV**, with formula-like cells prefixed by `'`.

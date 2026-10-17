@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use nodecraft_exec::budget::Ledger;
+use nodecraft_exec::budget::{Ledger, REFUSAL_PREFIX, Settled};
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{JobId, Outcome, Start};
 use nodecraft_providers::{BoxFuture, CancelSignal, Clock, ErrorKind, JobHandle, Output, Provider, ProviderError, ProviderJob, RunLimits, RunUpdate};
@@ -35,6 +35,9 @@ struct State {
     jobs: HashMap<JobId, QueuedJob>,
     /// Handles of jobs the provider accepted, by idempotency key, so retries resume them.
     handles: HashMap<String, JobHandle>,
+    /// Jobs that reached the provider, or whose submit had an uncertain outcome: if they end
+    /// without a reported cost, their estimate is charged (they may have been billed).
+    maybe_billed: std::collections::HashSet<JobId>,
 }
 
 /// See the module docs.
@@ -78,8 +81,33 @@ impl ProviderRunner {
         self.lock().handles.insert(idempotency_key, handle);
     }
 
-    /// Drops a finished job's registration and handle (call when the scheduler forgets it).
+    /// Closes a job's budget account when the scheduler is done with it (it failed for good, was
+    /// cancelled, or ran out of retries): a job that may have been billed is charged its
+    /// estimate, otherwise its reservation is released. Call it for every job the scheduler
+    /// reports finished; [`ProviderRunner::forget`] calls it too.
+    pub fn settle(&self, id: JobId) {
+        let (maybe_billed, provider, model) = {
+            let mut s = self.lock();
+            let billed = s.maybe_billed.remove(&id);
+            let (provider, model) = s.jobs.get(&id).map_or((String::new(), String::new()), |q| (q.provider.id().to_owned(), q.job.model.clone()));
+            (billed, provider, model)
+        };
+        if let Some(b) = &self.budget {
+            let mut ledger = b.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+            if ledger.is_reserved(id) {
+                if maybe_billed {
+                    let _ = ledger.commit(id, None, Settled::Unresolved, &provider, &model, (b.wall_clock_ms)());
+                } else {
+                    ledger.release(id);
+                }
+            }
+        }
+    }
+
+    /// Drops a finished job's registration and handle (call when the scheduler forgets it), after
+    /// settling its budget account.
     pub fn forget(&self, id: JobId) {
+        self.settle(id);
         let mut s = self.lock();
         if let Some(q) = s.jobs.remove(&id) {
             s.handles.remove(&q.job.idempotency_key);
@@ -152,12 +180,18 @@ impl JobRunner for ProviderRunner {
                     f(&mut b.ledger.lock().unwrap_or_else(PoisonError::into_inner));
                 }
             };
-            if handle.is_none()
-                && let Some(b) = &budget
-            {
-                let reserved = b.ledger.lock().unwrap_or_else(PoisonError::into_inner).reserve(job_id, queued.estimate);
-                if let Err(e) = reserved {
-                    return Outcome::Failed { error: format!("not started: {e}"), transient: false };
+            if let Some(b) = &budget {
+                let mut l = b.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+                if l.is_reserved(job_id) {
+                    // A retry after an uncertain submit, or a resume: the reservation stands.
+                } else if handle.is_some() {
+                    // Resumed after a restart: the job runs on the provider already, so its money is
+                    // committed whatever the caps say now.
+                    let _ = l.adopt(job_id, queued.estimate);
+                    drop(l);
+                    lock().maybe_billed.insert(job_id);
+                } else if let Err(e) = l.reserve(job_id, queued.estimate) {
+                    return Outcome::Failed { error: format!("{REFUSAL_PREFIX}not started: {e}"), transient: false };
                 }
             }
             let provider_id = queued.provider.id().to_owned();
@@ -167,7 +201,9 @@ impl JobRunner for ProviderRunner {
             let key = start.idempotency_key.clone();
             let record = |update: RunUpdate| {
                 if let RunUpdate::Submitted(h) = &update {
-                    lock().handles.insert(key.clone(), h.clone());
+                    let mut s = lock();
+                    s.handles.insert(key.clone(), h.clone());
+                    s.maybe_billed.insert(job_id);
                 }
                 on_update(job_id, update);
             };
@@ -181,10 +217,11 @@ impl JobRunner for ProviderRunner {
                         let mut s = lock();
                         s.handles.remove(&start.idempotency_key);
                         s.jobs.remove(&job_id);
+                        s.maybe_billed.remove(&job_id);
                     }
                     // Providers don't report actual cost yet (#195): the estimate is charged.
                     ledger(&mut |l| {
-                        let _ = l.commit(job_id, None, &provider_id, &model, now());
+                        let _ = l.commit(job_id, None, Settled::Done, &provider_id, &model, now());
                     });
                     on_output(job_id, outputs);
                     Outcome::Done
@@ -195,17 +232,35 @@ impl JobRunner for ProviderRunner {
                         // Nothing to resume: never accepted, ended by the provider, or over for good.
                         lock().handles.remove(&start.idempotency_key);
                     }
-                    match (&failure.handle, over) {
-                        // Never reached the provider: nothing was billed.
-                        (None, _) => ledger(&mut |l| {
+                    // A submit that was cancelled midway, timed out or lost its connection may have
+                    // been accepted (and billed) by the provider: treat it as possibly billed.
+                    let uncertain = failure.handle.is_none()
+                        && matches!(failure.error.kind, ErrorKind::Cancelled | ErrorKind::Timeout | ErrorKind::Network | ErrorKind::Server);
+                    if uncertain {
+                        lock().maybe_billed.insert(job_id);
+                    }
+                    let maybe_billed = lock().maybe_billed.contains(&job_id);
+                    let settled = match failure.error.kind {
+                        ErrorKind::Cancelled => Settled::Cancelled,
+                        _ if uncertain => Settled::Unresolved,
+                        _ => Settled::Failed,
+                    };
+                    let final_attempt = over && !(uncertain && failure.is_transient());
+                    match (maybe_billed, final_attempt) {
+                        // Certainly never reached the provider: nothing was billed.
+                        (false, _) => ledger(&mut |l| {
                             l.release(job_id);
                         }),
-                        // Reached it and over: it may have been billed, so the estimate is charged.
-                        (Some(_), true) => ledger(&mut |l| {
-                            let _ = l.commit(job_id, None, &provider_id, &model, now());
-                        }),
-                        // Will be resumed: the reservation stays.
-                        (Some(_), false) => {}
+                        // May have been billed and won't be retried here: charge the estimate.
+                        (true, true) => {
+                            lock().maybe_billed.remove(&job_id);
+                            ledger(&mut |l| {
+                                let _ = l.commit(job_id, None, settled, &provider_id, &model, now());
+                            });
+                        }
+                        // Will be resumed or retried under the same reservation; `settle` closes it
+                        // if the scheduler gives up instead.
+                        (true, false) => {}
                     }
                     outcome(&failure.error)
                 }
@@ -347,12 +402,99 @@ mod tests {
         runner.register(JobId(2), QueuedJob { provider: provider.clone(), job, estimate: Some(usd(600_000)) });
         let second = Start { job: JobId(2), lane: Lane::new("flaky"), attempt: 1, idempotency_key: "nodecraft:r:2".into() };
         let refused = block_on(runner.run(second, CancelToken::default()));
-        assert!(matches!(&refused, Outcome::Failed { transient: false, error } if error.contains("over its cap")), "{refused:?}");
+        assert!(
+            matches!(&refused, Outcome::Failed { transient: false, error } if nodecraft_exec::budget::is_budget_refusal(error) && error.contains("over its cap")),
+            "{refused:?}"
+        );
         assert_eq!(provider.submits.load(Ordering::SeqCst), 1, "the refused job never reached the provider");
         let l = ledger.lock().unwrap();
         assert_eq!(l.session_spent(), usd(600_000));
-        assert_eq!(l.log().len(), 1);
-        assert_eq!((l.log()[0].provider.as_str(), l.log()[0].model.as_str(), l.log()[0].at_ms), ("flaky", "flux", 42));
+        let rows: Vec<_> = l.log().collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].provider.as_str(), rows[0].model.as_str(), rows[0].at_ms), ("flaky", "flux", 42));
+    }
+
+    /// Submit always fails with this kind (no handle is ever issued).
+    struct SubmitFails(ErrorKind);
+
+    impl Provider for SubmitFails {
+        fn id(&self) -> &str {
+            "fails"
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            let kind = self.0;
+            Box::pin(async move { Err(ProviderError::new(kind, "submit failed")) })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            Box::pin(async { Err(ProviderError::new(ErrorKind::NotFound, "none")) })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn budgeted(cap: u64) -> (ProviderRunner, Arc<Mutex<Ledger>>) {
+        use nodecraft_exec::budget::BudgetLimits;
+        use nodecraft_types::Currency;
+        let usd = |m| Money::new(Currency::USD, m);
+        let ledger = Arc::new(Mutex::new(Ledger::new(Currency::USD, BudgetLimits { per_session: Some(usd(cap)), ..BudgetLimits::default() }, usd(0)).unwrap()));
+        let runner = ProviderRunner::new(
+            Arc::new(InstantRuntime(AtomicU64::new(0))),
+            RunLimits { max_poll_errors: 1, ..RunLimits::default() },
+            Arc::new(|_, _| {}),
+            Arc::new(|_, _| {}),
+        )
+        .with_budget(Budget { ledger: Arc::clone(&ledger), wall_clock_ms: Arc::new(|| 7) });
+        (runner, ledger)
+    }
+
+    fn priced(provider: Arc<dyn Provider>, micros: u64) -> QueuedJob {
+        let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
+        QueuedJob { provider, job, estimate: Some(Money::new(nodecraft_types::Currency::USD, micros)) }
+    }
+
+    #[test]
+    fn a_job_resumed_after_a_restart_is_charged() {
+        let (runner, ledger) = budgeted(100_000);
+        let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
+        runner.register(JobId(1), priced(provider.clone(), 900_000));
+        runner.restore_handle("nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        assert_eq!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Done, "already paid for: not refused by the cap");
+        assert_eq!(provider.submits.load(Ordering::SeqCst), 0, "resumed, not resubmitted");
+        let l = ledger.lock().unwrap();
+        assert_eq!(l.session_spent().micros, 900_000);
+        assert_eq!(l.log().count(), 1);
+    }
+
+    #[test]
+    fn a_job_out_of_retries_is_charged_when_settled() {
+        let (runner, ledger) = budgeted(1_000_000);
+        // Polls keep failing: a transient failure with a handle, which the scheduler then gives up on.
+        let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 100 });
+        runner.register(JobId(1), priced(provider, 400_000));
+        assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        assert!(ledger.lock().unwrap().is_reserved(JobId(1)), "kept for a resume");
+        runner.forget(JobId(1));
+        let l = ledger.lock().unwrap();
+        assert!(!l.is_reserved(JobId(1)), "no leak");
+        assert_eq!(l.session_spent().micros, 400_000, "it reached the provider: charged");
+    }
+
+    #[test]
+    fn uncertain_submits_are_charged_and_certain_ones_released() {
+        let (runner, ledger) = budgeted(1_000_000);
+        runner.register(JobId(1), priced(Arc::new(SubmitFails(ErrorKind::Auth)), 300_000));
+        assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+        assert_eq!(ledger.lock().unwrap().session_committed().unwrap().micros, 0, "a rejected key never reached a model: released");
+
+        let second = Start { job: JobId(2), lane: Lane::new("fails"), attempt: 1, idempotency_key: "nodecraft:r:2".into() };
+        runner.register(JobId(2), priced(Arc::new(SubmitFails(ErrorKind::Network)), 300_000));
+        assert!(matches!(block_on(runner.run(second, CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        assert!(ledger.lock().unwrap().is_reserved(JobId(2)), "a lost submit may have been accepted: still held");
+        runner.settle(JobId(2));
+        let l = ledger.lock().unwrap();
+        assert_eq!(l.session_spent().micros, 300_000);
+        assert_eq!(l.log().last().map(|r| r.outcome), Some(Settled::Unresolved));
     }
 
     #[test]
