@@ -1,0 +1,201 @@
+{
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "comments": {},
+      "edges": {
+        "64646464-6464-6464-6464-646464646464": {
+          "from": {
+            "node": "01010101-0101-0101-0101-010101010101",
+            "port": "out"
+          },
+          "id": "64646464-6464-6464-6464-646464646464",
+          "order": 0,
+          "to": {
+            "node": "03030303-0303-0303-0303-030303030303",
+            "port": "in"
+          }
+        },
+        "65656565-6565-6565-6565-656565656565": {
+          "from": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "out"
+          },
+          "id": "65656565-6565-6565-6565-656565656565",
+          "order": 1,
+          "to": {
+            "node": "03030303-0303-0303-0303-030303030303",
+            "port": "in"
+          }
+        },
+        "66666666-6666-6666-6666-666666666666": {
+          "from": {
+            "node": "03030303-0303-0303-0303-030303030303",
+            "port": "out"
+          },
+          "id": "66666666-6666-6666-6666-666666666666",
+          "order": 0,
+          "to": {
+            "node": "04040404-0404-0404-0404-040404040404",
+            "port": "in"
+          }
+        }
+      },
+      "fields": {},
+      "id": "01010101-0101-0101-0101-010101010101",
+      "nodes": {
+        "01010101-0101-0101-0101-010101010101": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "01010101-0101-0101-0101-010101010101",
+          "inputs": [],
+          "kind": "source.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "an owl"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Subject"
+        },
+        "02020202-0202-0202-0202-020202020202": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "02020202-0202-0202-0202-020202020202",
+          "inputs": [],
+          "kind": "source.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "at dusk"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Mood"
+        },
+        "03030303-0303-0303-0303-030303030303": {
+          "active": null,
+          "config": {
+            "modality": {
+              "type": "text",
+              "value": "text"
+            }
+          },
+          "field": null,
+          "history": [],
+          "id": "03030303-0303-0303-0303-030303030303",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "structure.router",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {},
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Hub"
+        },
+        "04040404-0404-0404-0404-040404040404": {
+          "active": "e8a1679c-b0be-1fbd-f4be-6b090a87160e",
+          "field": null,
+          "history": [
+            {
+              "id": "e8a1679c-b0be-1fbd-f4be-6b090a87160e",
+              "input_hash": "6461a8995f9e72461ff83114d346c4dd30f6690460141898990b0c1e384dfb3c",
+              "outputs": [
+                {
+                  "type": "text",
+                  "value": "mock-text: an owl / at dusk #0a9c4410"
+                }
+              ]
+            }
+          ],
+          "id": "04040404-0404-0404-0404-040404040404",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-text"
+            },
+            "style": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Writer"
+        }
+      },
+      "tags": {},
+      "title": "Canvas"
+    }
+  },
+  "id": "02020202-0202-0202-0202-020202020202",
+  "title": "Golden"
+}

@@ -1,5 +1,5 @@
 use nodecraft_graph::{Node, Port};
-use nodecraft_types::{Error, ErrorKind, NodeId, ParamSchema, ParamValues, PortType, Value};
+use nodecraft_types::{Error, ErrorKind, Modality, NodeId, ParamSchema, ParamValues, PortType, Value};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -122,11 +122,44 @@ pub struct PlanCtx<'a> {
 }
 
 /// Pure job descriptions consumed by the run planner. Source jobs emit existing values/assets;
-/// they perform no decoding, filesystem access or paid provider calls.
+/// they perform no decoding, filesystem access or paid provider calls. Generate jobs call a model
+/// through a provider adapter (#79): the host looks the provider up by id, sends it the model,
+/// parameters and role-tagged inputs, and maps what it returns onto `output`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobSpec {
-    Source { node: NodeId, output: String, value: Value },
+    Source {
+        node: NodeId,
+        output: String,
+        value: Value,
+    },
+    Generate {
+        node: NodeId,
+        /// Where results go: each result goes to the first port whose modality it has (several
+        /// results on one port make a list output's items). A result no port takes fails the job.
+        outputs: Vec<GenerateOutput>,
+        /// The provider adapter's id (`fal`, `comfyui`, `mock`); also the scheduler lane.
+        provider: String,
+        /// The provider's model id (from the catalog).
+        model: String,
+        /// The model's parameters, as the node resolved them.
+        params: ParamValues,
+        inputs: Vec<GenerateInput>,
+    },
+}
+
+/// An output port a model call fills, and the modality of results it takes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerateOutput {
+    pub port: String,
+    pub modality: Modality,
+}
+
+/// One input to a model call, in a role such as `prompt`, `system` or `image`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerateInput {
+    pub role: String,
+    pub value: Value,
 }
 
 /// A proposed explicit schema migration. Apply `node` with graph's SetNode only after showing

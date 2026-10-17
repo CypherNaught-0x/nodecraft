@@ -1,0 +1,178 @@
+{
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "comments": {},
+      "edges": {
+        "64646464-6464-6464-6464-646464646464": {
+          "from": {
+            "node": "01010101-0101-0101-0101-010101010101",
+            "port": "out"
+          },
+          "id": "64646464-6464-6464-6464-646464646464",
+          "order": 0,
+          "to": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "in"
+          }
+        },
+        "65656565-6565-6565-6565-656565656565": {
+          "from": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "out"
+          },
+          "id": "65656565-6565-6565-6565-656565656565",
+          "order": 0,
+          "to": {
+            "node": "03030303-0303-0303-0303-030303030303",
+            "port": "in"
+          }
+        }
+      },
+      "fields": {},
+      "id": "01010101-0101-0101-0101-010101010101",
+      "nodes": {
+        "01010101-0101-0101-0101-010101010101": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "01010101-0101-0101-0101-010101010101",
+          "inputs": [],
+          "kind": "source.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "a fox in the snow"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Idea"
+        },
+        "02020202-0202-0202-0202-020202020202": {
+          "active": "47f83ab3-d1da-b99a-deec-603c5fe1986a",
+          "field": null,
+          "history": [
+            {
+              "id": "47f83ab3-d1da-b99a-deec-603c5fe1986a",
+              "input_hash": "d76f5804a44b003135ca0586afd7762baf291902837fc59d846e43a03f501c75",
+              "outputs": [
+                {
+                  "type": "text",
+                  "value": "mock-text: a fox in the snow #8486ca86"
+                }
+              ]
+            }
+          ],
+          "id": "02020202-0202-0202-0202-020202020202",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-text"
+            },
+            "style": {
+              "type": "text",
+              "value": "ink"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Writer"
+        },
+        "03030303-0303-0303-0303-030303030303": {
+          "active": "13d314c3-4491-78a7-3385-6d9b02e55bea",
+          "field": null,
+          "history": [
+            {
+              "id": "13d314c3-4491-78a7-3385-6d9b02e55bea",
+              "input_hash": "69dec7de657e1eee900850418524181fdccebbe345f6da7d3ba8cc33b01daa0f",
+              "outputs": [
+                {
+                  "type": "media",
+                  "value": {
+                    "hash": "1f85c7d926c8164d9cea32aa65e65a4b84fe5afde48ab15705dff9e04577cb90",
+                    "meta": {},
+                    "mime": "image/png"
+                  }
+                }
+              ]
+            }
+          ],
+          "id": "03030303-0303-0303-0303-030303030303",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.image",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "image"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-image"
+            },
+            "style": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Painter"
+        }
+      },
+      "tags": {},
+      "title": "Canvas"
+    }
+  },
+  "id": "02020202-0202-0202-0202-020202020202",
+  "title": "Golden"
+}

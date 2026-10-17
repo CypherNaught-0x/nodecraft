@@ -591,6 +591,8 @@ impl Run {
 fn lane(work: &JobSpec) -> Lane {
     match work {
         JobSpec::Source { .. } => Lane::new(LOCAL_LANE),
+        // One lane per provider, so the scheduler's per-provider limits apply.
+        JobSpec::Generate { provider, .. } => Lane::new(provider.as_str()),
     }
 }
 
@@ -629,6 +631,7 @@ impl crate::driver::JobRunner for SourceRunner {
                     outputs.lock().unwrap_or_else(PoisonError::into_inner).insert(start.job, vec![(output, value)]);
                     Outcome::Done
                 }
+                Some(JobSpec::Generate { .. }) => Outcome::Failed { error: format!("{} needs a provider runner", start.job), transient: false },
                 None => Outcome::Failed { error: format!("{} has no work registered", start.job), transient: false },
             }
         })

@@ -1,0 +1,152 @@
+{
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "comments": {},
+      "edges": {
+        "64646464-6464-6464-6464-646464646464": {
+          "from": {
+            "node": "01010101-0101-0101-0101-010101010101",
+            "port": "out"
+          },
+          "id": "64646464-6464-6464-6464-646464646464",
+          "order": 0,
+          "to": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "in"
+          }
+        },
+        "65656565-6565-6565-6565-656565656565": {
+          "from": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "out"
+          },
+          "id": "65656565-6565-6565-6565-656565656565",
+          "order": 0,
+          "to": {
+            "node": "03030303-0303-0303-0303-030303030303",
+            "port": "in"
+          }
+        }
+      },
+      "fields": {},
+      "id": "01010101-0101-0101-0101-010101010101",
+      "nodes": {
+        "01010101-0101-0101-0101-010101010101": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "01010101-0101-0101-0101-010101010101",
+          "inputs": [],
+          "kind": "source.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "a fox"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Idea"
+        },
+        "02020202-0202-0202-0202-020202020202": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "02020202-0202-0202-0202-020202020202",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-text"
+            },
+            "style": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Writer"
+        },
+        "03030303-0303-0303-0303-030303030303": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "03030303-0303-0303-0303-030303030303",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.image",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "image"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-image"
+            },
+            "style": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Painter"
+        }
+      },
+      "tags": {},
+      "title": "Canvas"
+    }
+  },
+  "id": "02020202-0202-0202-0202-020202020202",
+  "title": "Golden"
+}

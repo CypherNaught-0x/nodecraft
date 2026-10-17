@@ -10,6 +10,7 @@ mod command_schemas;
 pub mod commands;
 pub mod create_cmds;
 pub mod edge_cmds;
+pub mod generate;
 pub mod graph_cmds;
 pub mod jobs;
 pub mod keys_cmds;

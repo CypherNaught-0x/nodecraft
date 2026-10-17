@@ -124,7 +124,7 @@ fn drive(run: &mut Run, kinds: &Registry, first: Progress, fail: &BTreeSet<NodeI
     let mut queue = first.jobs;
     while let Some(job) = queue.pop() {
         all.push(job.clone());
-        let JobSpec::Source { node, output, value } = run.work(job.id).unwrap().clone();
+        let Some(JobSpec::Source { node, output, value }) = run.work(job.id).cloned() else { panic!("only source jobs in these tests") };
         let progress = if fail.contains(&node) { run.job_failed(job.id, "provider said no") } else { run.job_done(kinds, job.id, vec![(output, value)]) };
         queue.extend(progress.jobs);
         finished.extend(progress.finished);
@@ -797,4 +797,57 @@ fn runtime_size_preflight_matches_all_values_and_has_depth_bounded_scratch() {
         assert_eq!(run.copied_input_bytes.get(), 0);
         assert!(run.preflight_stack_peak.get() <= nodecraft_graph::MAX_VALUE_DEPTH + 1);
     }
+}
+
+/// Text in, text out, through one model call on provider `mock`.
+struct Calls(NodeDescriptor);
+impl NodeKind for Calls {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("calls").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        let outputs = vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Text }];
+        Ok(vec![JobSpec::Generate { node: ctx.node.id, outputs, provider: "mock".into(), model: "m".into(), params: Default::default(), inputs: vec![] }])
+    }
+}
+
+#[test]
+fn model_calls_get_their_provider_lane_and_the_source_runner_refuses_them() {
+    use crate::driver::JobRunner;
+    let mut kinds = kinds();
+    let calls = NodeDescriptor {
+        id: "test.calls".into(),
+        label: "Calls".into(),
+        category: Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: LIST }],
+        outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+        params: ParamSchema::default(),
+        quick_add: None,
+    };
+    kinds.register(Box::new(Calls(calls))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([5; 16]), "Calls").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut p).unwrap();
+    let text =
+        kinds.get("source.text").unwrap().descriptor().instantiate(id(1), &[("text".to_owned(), Value::Text("x".into()))].into_iter().collect()).unwrap();
+    let node = kinds.get("test.calls").unwrap().descriptor().instantiate(id(2), &Default::default()).unwrap();
+    let wire =
+        Edge { id: EdgeId::from_bytes([6; 16]), from: Endpoint { node: id(1), port: "out".into() }, to: Endpoint { node: id(2), port: "in".into() }, order: 0 };
+    Changeset::new(vec![Change::AddNode { canvas: C, node: text }, Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge: wire }])
+        .apply(&mut p)
+        .unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let Planned::Ready(plan) = crate::planner::plan(canvas, &kinds, &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new()).unwrap() else {
+        panic!()
+    };
+    let (run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let job = first.jobs.first().unwrap();
+    assert_eq!(job.lane, Lane::new("mock"));
+    let runner = SourceRunner::default();
+    runner.register(job.id, run.work(job.id).unwrap().clone());
+    let start = Start { job: job.id, lane: job.lane.clone(), attempt: 1, idempotency_key: job.idempotency_key.clone() };
+    let outcome = futures::executor::block_on(runner.run(start, crate::driver::CancelToken::default()));
+    assert!(matches!(outcome, Outcome::Failed { transient: false, .. }), "{outcome:?}");
 }
