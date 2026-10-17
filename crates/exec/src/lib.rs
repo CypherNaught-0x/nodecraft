@@ -7,4 +7,5 @@
 mod payload;
 
 pub mod driver;
+pub mod planner;
 pub mod scheduler;
