@@ -16,7 +16,9 @@ usage: cargo xtask <command>
 commands:
   layers          enforce the crate dependency layering (docs/architecture.md)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
-  ci              fmt --check, clippy -D warnings, test, layers, wasm (stops at first failure)
+  catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
+  ci              fmt --check, clippy -D warnings, test, layers, wasm (stops at first failure;
+                  `test` includes catalog-check)
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
 ";
@@ -33,12 +35,13 @@ fn main() -> ExitCode {
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
-        Some(command @ ("layers" | "wasm" | "ci" | "version")) => root().and_then(|root| {
+        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "version")) => root().and_then(|root| {
             eprintln!("xtask workspace: {}", root.display());
             match command {
                 "layers" => cmd_layers(&root),
                 "wasm" => cmd_wasm(&root),
                 "ci" => cmd_ci(&root),
+                "catalog-check" => cmd_catalog_check(&root),
                 _ => version::run(&root, &rest),
             }
         }),
@@ -134,6 +137,15 @@ fn cmd_wasm(root: &Path) -> Result<(), String> {
     run(c, &format!("cargo check --target wasm32-unknown-unknown ({} crates)", set.len()))?;
     println!("\nwasm32-unknown-unknown check: ok for {}", set.join(", "));
     Ok(())
+}
+
+/// Every catalog file parses, validates, merges without duplicate ids, and is embedded. The
+/// check itself is `crates/catalog/tests/catalog_files.rs`, so xtask stays std-only and the
+/// same check runs in `cargo test`.
+fn cmd_catalog_check(root: &Path) -> Result<(), String> {
+    let mut c = cargo(root);
+    c.args(["test", "-p", "nodecraft-catalog", "--test", "catalog_files", "--", "--nocapture"]);
+    run(c, "cargo test -p nodecraft-catalog --test catalog_files")
 }
 
 fn cmd_ci(root: &Path) -> Result<(), String> {

@@ -154,6 +154,7 @@ are enough. Also run, when they apply:
 cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands
 node --test scripts/claim/*.test.js                             # touched the claim bot
 packaging/icons.sh                                              # edited assets/app-icon/nodecraft.svg
+cargo xtask catalog-check                                       # edited assets/catalog
 ```
 
 Every change comes with tests: property tests for changesets and the planner, golden graphs run

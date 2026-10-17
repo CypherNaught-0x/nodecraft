@@ -1,0 +1,190 @@
+//! Pricing rules and quotes. Prices are written as decimal strings (`"0.04 USD"`) and held as
+//! exact micros, so a quote never rounds through floating point.
+use nodecraft_types::{Currency, Error, ErrorKind, Money, ParamValues, Rounding, Value};
+use serde::{Deserialize, Deserializer};
+
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+}
+
+/// A price parsed from `"<amount> <CUR>"`: up to six decimals, a three-letter currency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Price(pub Money);
+
+impl std::str::FromStr for Price {
+    type Err = Error;
+    fn from_str(text: &str) -> Result<Self, Error> {
+        let bad = || invalid("a price is written as \"<amount> <currency>\", e.g. \"0.04 USD\"");
+        let (amount, currency) = text.trim().split_once(' ').ok_or_else(bad)?;
+        let currency = Currency::try_from(currency.trim().to_owned()).map_err(|_| bad())?;
+        let (whole, fraction) = match amount.split_once('.') {
+            Some((_, "")) => return Err(bad()),
+            Some((whole, fraction)) => (whole, fraction),
+            None => (amount, ""),
+        };
+        if whole.is_empty() || fraction.len() > 6 || !whole.bytes().chain(fraction.bytes()).all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        let whole: u64 = whole.parse().map_err(|_| bad())?;
+        // Pad the fraction to micros: "04" → 40000.
+        let micros_fraction: u64 = format!("{fraction:0<6}").parse().map_err(|_| bad())?;
+        let micros = whole.checked_mul(1_000_000).and_then(|w| w.checked_add(micros_fraction)).ok_or_else(|| invalid("price is too large"))?;
+        Ok(Self(Money::new(currency, micros)))
+    }
+}
+
+impl<'de> Deserialize<'de> for Price {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(|error: Error| serde::de::Error::custom(error.message))
+    }
+}
+
+/// What a per-unit price counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    Image,
+    Second,
+    Megapixel,
+    /// Priced per 1000; usage-based (LLM tokens), so without a `count` the quote waits for
+    /// the run.
+    ThousandTokens,
+    ThousandCharacters,
+}
+
+impl Unit {
+    /// How many counted units one priced unit covers.
+    fn per(self) -> u64 {
+        match self {
+            Self::ThousandTokens | Self::ThousandCharacters => 1000,
+            Self::Image | Self::Second | Self::Megapixel => 1,
+        }
+    }
+    pub fn usage_based(self) -> bool {
+        self.per() > 1
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Pricing {
+    /// Local or included models.
+    Free,
+    /// One price per job.
+    PerCall { price: Price },
+    /// `price` per unit. The unit count is the value of parameter `count` (e.g. `num_images`,
+    /// `duration`) after schema defaults, or `default_count` when the model has no such
+    /// parameter value. `count` must be the only parameter that scales the cost.
+    PerUnit {
+        unit: Unit,
+        price: Price,
+        #[serde(default)]
+        count: Option<String>,
+        #[serde(default)]
+        default_count: Option<u64>,
+    },
+}
+
+impl Pricing {
+    pub fn currency(&self) -> Option<Currency> {
+        match self {
+            Self::Free => None,
+            Self::PerCall { price } | Self::PerUnit { price, .. } => Some(price.0.currency),
+        }
+    }
+
+    /// The price of one job given its **resolved** parameters (schema defaults applied; use
+    /// [`crate::ModelDescriptor::quote`]), rounded up, or `None` when it depends on usage the
+    /// run hasn't measured yet. Free models quote zero in `fallback`.
+    pub(crate) fn quote(&self, params: &ParamValues, fallback: Currency) -> Result<Option<Money>, Error> {
+        match self {
+            Self::Free => Ok(Some(Money::zero(fallback))),
+            Self::PerCall { price } => Ok(Some(price.0)),
+            Self::PerUnit { unit, price, count, default_count } => {
+                let value = count.as_ref().and_then(|name| params.get(name));
+                let per = unit.per();
+                match (value, default_count) {
+                    (None, Some(n)) => price.0.checked_mul_ratio(*n, per, Rounding::Up).map(Some),
+                    (None, None) if unit.usage_based() => Ok(None),
+                    (None, None) => Err(invalid("this model's price needs a count")),
+                    (Some(Value::Unsigned(n)), _) => price.0.checked_mul_ratio(n.0, per, Rounding::Up).map(Some),
+                    (Some(Value::Integer(n)), _) => {
+                        let n = u64::try_from(n.0).map_err(|_| invalid("a price count can't be negative"))?;
+                        price.0.checked_mul_ratio(n, per, Rounding::Up).map(Some)
+                    }
+                    (Some(Value::Number(n)), _) => {
+                        let micros = n.get() * 1_000_000.0;
+                        // Strictly below 2^64, so `ceil` then `as u64` can't saturate.
+                        if !(micros.is_finite() && (0.0..18_446_744_073_709_551_616.0).contains(&micros)) {
+                            return Err(invalid("a price count is out of range"));
+                        }
+                        let denominator = per.checked_mul(1_000_000).ok_or_else(|| invalid("a price count is out of range"))?;
+                        price.0.checked_mul_ratio(micros.ceil() as u64, denominator, Rounding::Up).map(Some)
+                    }
+                    (Some(_), _) => Err(invalid("a price count parameter must be a number")),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nodecraft_types::{Integer, Number, Unsigned};
+
+    fn usd(micros: u64) -> Money {
+        Money::new(Currency::USD, micros)
+    }
+
+    #[test]
+    fn prices_parse_exactly_and_reject_junk() {
+        assert_eq!("0.04 USD".parse::<Price>().unwrap().0, usd(40_000));
+        assert_eq!("12 EUR".parse::<Price>().unwrap().0, Money::new(Currency::EUR, 12_000_000));
+        assert_eq!("0.000001 USD".parse::<Price>().unwrap().0, usd(1));
+        for bad in
+            ["", "0.04", "USD 0.04", ".5 USD", "1. USD", "1.0000001 USD", "-1 USD", "1e3 USD", "1,5 USD", "0.04 usd", "99999999999999999999 USD", "٣ USD"]
+        {
+            assert!(bad.parse::<Price>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn quotes_count_units_and_round_up() {
+        let price = "0.05 USD".parse::<Price>().unwrap();
+        let per_second = Pricing::PerUnit { unit: Unit::Second, price, count: Some("duration".into()), default_count: Some(5) };
+        let mut params = ParamValues::new();
+        assert_eq!(per_second.quote(&params, Currency::USD).unwrap(), Some(usd(250_000)));
+        params.insert("duration".into(), Value::Number(Number::new(2.5).unwrap()));
+        assert_eq!(per_second.quote(&params, Currency::USD).unwrap(), Some(usd(125_000)));
+        params.insert("duration".into(), Value::Number(Number::new(0.0000001).unwrap()));
+        // A sliver of a unit still costs at least one micro.
+        assert_eq!(per_second.quote(&params, Currency::USD).unwrap(), Some(usd(1)));
+        params.insert("duration".into(), Value::Unsigned(Unsigned(3)));
+        assert_eq!(per_second.quote(&params, Currency::USD).unwrap(), Some(usd(150_000)));
+        params.insert("duration".into(), Value::Integer(Integer(-1)));
+        assert!(per_second.quote(&params, Currency::USD).is_err());
+        params.insert("duration".into(), Value::Unsigned(Unsigned(u64::MAX)));
+        assert_eq!(per_second.quote(&params, Currency::USD).unwrap_err().kind, ErrorKind::Overflow);
+        params.insert("duration".into(), Value::Number(Number::new(2e13).unwrap()));
+        assert!(per_second.quote(&params, Currency::USD).is_err());
+        params.insert("duration".into(), Value::Text("long".into()));
+        assert!(per_second.quote(&params, Currency::USD).is_err());
+    }
+
+    #[test]
+    fn thousand_units_divide_their_count() {
+        let price = "0.002 USD".parse::<Price>().unwrap();
+        let tokens = Pricing::PerUnit { unit: Unit::ThousandTokens, price, count: Some("max_tokens".into()), default_count: None };
+        let mut params = ParamValues::new();
+        // Usage-based without a count: quoted at run time.
+        assert_eq!(tokens.quote(&params, Currency::USD).unwrap(), None);
+        params.insert("max_tokens".into(), Value::Unsigned(Unsigned(4096)));
+        // 4.096 thousand × 0.002 = 0.008192, rounded up to the micro.
+        assert_eq!(tokens.quote(&params, Currency::USD).unwrap(), Some(usd(8_192)));
+        params.insert("max_tokens".into(), Value::Unsigned(Unsigned(1)));
+        assert_eq!(tokens.quote(&params, Currency::USD).unwrap(), Some(usd(2)));
+        assert_eq!(Pricing::Free.quote(&ParamValues::new(), Currency::EUR).unwrap(), Some(Money::zero(Currency::EUR)));
+    }
+}

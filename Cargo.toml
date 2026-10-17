@@ -46,6 +46,8 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_path_to_error = "0.1"
+# Catalog data files; parsing only (no writer), and no std-only extras so wasm builds.
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 url = "2"
 reqwest = { version = "0.13", default-features = false, features = ["http2"] }
 tokio = { version = "1", default-features = false }

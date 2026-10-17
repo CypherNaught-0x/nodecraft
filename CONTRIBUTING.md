@@ -160,7 +160,9 @@ node --test scripts/claim/*.test.js                     # if you touched the cla
 
 1. **A new model on an existing provider is data.** Add an entry to the model catalog: id,
    modes and input roles, parameter schema, resolutions, aspect ratios, durations, pricing rule,
-   latency hint, quality tier and a one-line description. Run `cargo xtask catalog-check`.
+   latency hint, quality tier and a one-line description, in `assets/catalog/<provider>.toml`
+   (format: `docs/catalog.md`; say in the PR where the prices came from). Run
+   `cargo xtask catalog-check`.
 2. **A new provider** is a module in `crates/providers/src/<provider>/` behind its own Cargo
    feature. It implements `Provider` (`submit`, `poll`, `cancel`), maps errors onto the shared
    error kinds (blocked content, unsupported input, busy, timeout, budget, auth, network), uses
