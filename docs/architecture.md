@@ -66,7 +66,7 @@ Further rules checked by `cargo xtask layers`:
 
 `nodecraft-types` exposes distinct UUID-backed IDs for document entities. IDs are supplied by
 callers as bytes (platform code owns randomness) and serialize as UUID strings, including map
-keys. `Modality` and `PortType` describe ports; `Value` is a tagged text, media or nested-list
+keys. `Modality` and `PortType` describe ports; `Value` is a tagged scalar, text, media or nested-list
 value. Keep decoder recursion limits and file-size limits enabled when reading projects.
 
 `AssetRef` carries a 32-byte BLAKE3 digest (hex on the wire), a validated concrete MIME value and
@@ -78,6 +78,74 @@ checks the three-uppercase-letter syntax, not membership in a currency registry.
 
 `Error` carries a stable `ErrorKind` and a public-safe message. Higher-layer errors can retain
 internal causes, but must scrub secrets before constructing this shared payload.
+
+## Node kinds and parameter schemas
+
+`nodes::Registry::builtins()` registers Text, Image, Video and Audio sources under stable IDs
+`source.text`, `source.image`, `source.video` and `source.audio`. A `NodeDescriptor` declares its
+category, named typed ports, parameter schema and quick-add shortcut. `instantiate` builds
+detached graph data with defaults; commands insert it through changesets. Registry registration
+checks descriptor validity, unique IDs and shortcut collisions. `compatible(inputs)` uses each
+kind's `mode` predicate for the Turn-into picker; sources accept only an empty input set.
+
+`NodeKind::plan` returns pure `JobSpec` data. A source job emits its existing text or asset on
+`out`, without decoding, I/O, model selection or payment. Planning validates stored kind/ports
+and schema values. An unconfigured media source can exist on the canvas but returns an error
+when planned. The source graph fixture verifies each output and graph serialization/undo.
+Actual graph-card rendering and generated controls are wired by the canvas issues.
+
+The shared `ParamSchema` lives in `types` and is re-exported by `nodes`, allowing the model
+catalog to reuse it without a same-layer dependency. Its controls describe text, choice, toggle,
+slider, integer, colour, model, seed and asset fields. `resolve(values, ready)` validates supplied
+values, fills defaults and returns visible parameter names; missing required visible fields are
+errors when `ready` is true. Conditions reference earlier fields and respect hidden controllers.
+All supplied values, including hidden fields, must remain type-valid and within aggregate limits.
+Boolean, finite floating-point and exact signed/unsigned integer `Value` variants store scalar
+parameters without string coercion; only full-width integer wire encodings use decimal strings.
+
+### Instance schemas, configuration and migration
+
+`descriptor()` is static palette metadata. UI, MCP and planners resolve a stored node with
+`NodeKind::resolve_instance(node)` and validate its ports/parameters with `validate_instance`.
+The default `instance` hook borrows the static descriptor; workflow/Technique kinds can return
+owned descriptors derived from config. The checked wrapper validates graph payload limits before
+invoking the hook and validates the resulting descriptor before callers clone controls/ports.
+`instantiate_instance` follows the same path for creation. `instance_mode(node, inputs)` lets
+dynamic kinds inspect configuration; `mode(inputs)` remains palette compatibility for static kinds.
+Dynamic implementations must bound parsing of their own config (including JSON decoder limits)
+and preserve the kind ID. Registry injection means these APIs work with custom kinds in tests.
+
+`Node.config` is a defaulted map of typed Values, separate from editable model parameters. Use
+stable owner namespaces and explicit version keys, for example `comfy.workflow.version` plus
+`comfy.workflow.v1.mapping`. Kinds own the typed interpretation; graph only enforces map, key,
+value/depth and aggregate byte limits. Structured provider data can be a bounded encoded Text
+payload with decoder limits, or typed scalar/list entries. Preserve unrecognized config entries
+when rewriting a node. Configuration edits use the existing `SetNode` changeset, so serialization,
+undo and restore retain them without a second mutation path.
+
+Stale parameters are rejected with a bounded key name and migration guidance; values are never
+included in errors. A kind can implement `migrate` for its versioned config/schema. Callers use
+`prepare_migration` to validate the original and proposed node, show its warnings and explicitly
+apply the proposed node through `SetNode`. A failed migration leaves the saved document intact.
+Never silently discard unknown overrides/config or apply migrations during pure planning.
+
+Schema descriptions are optional tooltips for generated UI and MCP. Choice controls allow up to
+16,384 options with 4,096-byte values/labels, within a 1 MiB aggregate schema text budget that
+also includes names, labels, descriptions, defaults and conditions. Resolve validates each control
+once per schema pass; it does not rescan control definitions for every supplied/default value.
+Float and signed/unsigned integer controls support absent bounds. Integer steps are exact,
+positive increments anchored at the explicit minimum, or zero when unbounded. Signed differences
+use i128 so full-width ranges cannot overflow. Seeds accept an optional unsigned maximum.
+Unbounded numeric fields need an editable numeric UI rather than an invented finite slider range;
+UI code must preserve integer values without an f64 conversion. Float slider steps remain hints.
+
+`ResolvedParams.values` retains all valid overrides for editing and persistence; adapters and
+planners must use `visible_values()` or `into_visible_values()` so hidden fields are not sent.
+Visibility currently supports equality against an earlier field. Choice values deliberately use
+Text identifiers; numeric enums require explicit conversion by the owning adapter. Exact integer
+MCP/CLI schemas must describe the tagged Value with a canonical decimal string, not JSON numbers.
+Source card snapshots are added by canvas issue #57; this crate's golden graph tests cover pure
+planning independently of rendering.
 
 ## Document edits
 

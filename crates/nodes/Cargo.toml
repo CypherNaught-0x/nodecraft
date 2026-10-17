@@ -13,3 +13,8 @@ workspace = true
 [dependencies]
 nodecraft-graph = { workspace = true }
 nodecraft-comfy = { workspace = true }
+nodecraft-types.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

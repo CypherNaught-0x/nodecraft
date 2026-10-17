@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::AssetRef;
+use crate::{AssetRef, Integer, Number, Unsigned};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +26,10 @@ pub struct PortType {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Value {
+    Bool(bool),
+    Integer(Integer),
+    Unsigned(Unsigned),
+    Number(Number),
     Text(String),
     Media(AssetRef),
     List(Vec<Value>),

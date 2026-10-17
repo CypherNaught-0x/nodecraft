@@ -85,7 +85,7 @@ pub(crate) fn value(root: &Value) -> Result<(), Error> {
                     return Err(invalid("value exceeds text limit"));
                 }
             }
-            Value::Media(_) => {}
+            Value::Media(_) | Value::Bool(_) | Value::Integer(_) | Value::Unsigned(_) | Value::Number(_) => {}
             Value::List(items) => {
                 if seen.saturating_add(pending.len()).saturating_add(items.len()) > MAX_VALUE_ITEMS {
                     return Err(invalid("value exceeds item limit"));
@@ -104,10 +104,10 @@ pub(crate) fn node(node: &Node) -> Result<(), Error> {
     }
     text(&node.title, 4096)?;
     position(node.pos)?;
-    if node.params.len() > 256 || node.history.len() > 1024 {
+    if node.params.len() > 256 || node.config.len() > 256 || node.history.len() > 1024 {
         return Err(invalid("node exceeds parameter or history limits"));
     }
-    for (name, param) in &node.params {
+    for (name, param) in node.params.iter().chain(node.config.iter()) {
         text(name, 256)?;
         if name.is_empty() {
             return Err(invalid("parameter name must not be empty"));
