@@ -53,6 +53,7 @@ tempfile = "3"
 uuid = { version = "1", default-features = false, features = ["serde"] }
 mime = "0.3"
 proptest = "1"
+regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

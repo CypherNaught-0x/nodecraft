@@ -6,3 +6,5 @@
 
 /// Bounded deterministic CPU image operations.
 pub mod image;
+/// Bounded deterministic CPU text operations; no document mutation.
+pub mod text;
