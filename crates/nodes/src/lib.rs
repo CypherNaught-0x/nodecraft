@@ -8,6 +8,7 @@ pub mod audio;
 mod descriptor;
 pub mod image;
 mod registry;
+pub mod router;
 mod source;
 pub mod text;
 pub mod video;
