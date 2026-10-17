@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_json};
 
-/// Enough to undo building a 1,000-node graph (about 3,000 steps, #65); the byte budget below is
-/// what bounds memory.
+/// Step ceiling, subject to the byte budget below. The UI regression proves a 200-node graph
+/// built with 599 create/edit/move steps undoes to its original document (#65).
 pub const MAX_HISTORY_STEPS: usize = 4096;
 pub const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 256;

@@ -1945,3 +1945,135 @@ fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
 }
+
+fn changing_height_harness(tall: bool) -> Harness<'static, NodeCraftApp> {
+    struct Height(NodeDescriptor, NodeDescriptor);
+    impl NodeKind for Height {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn instance<'a>(&'a self, node: &Node) -> Result<std::borrow::Cow<'a, NodeDescriptor>, Error> {
+            Ok(std::borrow::Cow::Borrowed(if node.title == "Tall" { &self.1 } else { &self.0 }))
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+    }
+    let descriptor = |count| NodeDescriptor {
+        id: "test.height".into(),
+        label: "Height".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        quick_add: None,
+        params: ParamSchema { params: (0..count).map(|n| spec(&format!("p{n}"), ParamControl::Toggle, Value::Bool(false))).collect() },
+    };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Public height regression").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut node = Node::new(NodeId::from_bytes([3; 16]), "test.height");
+    node.title = if tall { "Tall" } else { "Short" }.into();
+    node.pos = nodecraft_graph::Position { x: 60.0, y: 80.0 };
+    Change::AddNode { canvas, node }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Height(descriptor(1), descriptor(6)))).unwrap();
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap())
+}
+
+fn first_frame_hover(was_tall: bool) {
+    let mut h = changing_height_harness(was_tall);
+    h.run();
+    let canvas = h.state().canvas;
+    let id = NodeId::from_bytes([3; 16]);
+    let old_revision = h.state().session.revision();
+    // Choose a point inside only the tall body, away from the minimap and controls.
+    let pointer = h.state().view.to_screen(h.state().viewport.min, Pos2::new(70.0, 350.0));
+    let short_height = h.state().theme.tokens().card_min_height;
+    assert!(350.0 > 80.0 + short_height, "pointer must be outside the short body");
+    h.hover_at(pointer);
+    h.step(); // Kittest processes queued events as separate frames: position before the edit.
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id,"title":if was_tall {"Short"} else {"Tall"}})).unwrap();
+    assert_eq!(h.state().schemas.get(&id).unwrap().revision, old_revision);
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let undo = h.state().session.can_undo();
+    let redo = h.state().session.can_redo();
+    let events = h.state().session.events_since(0).unwrap();
+    let pan = h.state().view.pan;
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: Vec2::new(0.0, 40.0),
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step(); // Deliberately the first frame: running to quiescence hides stale hover ownership.
+    assert_eq!(h.state().view.pan != pan, was_tall, "shrunk card permits canvas pan; grown card owns scroll");
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.can_undo(), undo);
+    assert_eq!(h.state().session.can_redo(), redo);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+}
+#[test]
+fn first_frame_hover_after_growth() {
+    first_frame_hover(false);
+}
+#[test]
+fn first_frame_hover_after_shrink() {
+    first_frame_hover(true);
+}
+
+#[test]
+fn last_shared_descriptor_removal_and_replacement_release_accounting() {
+    let mut h = changing_height_harness(false);
+    h.run();
+    let id = NodeId::from_bytes([3; 16]);
+    let first = h.state().schemas.get(&id).unwrap();
+    let descriptor = Arc::clone(&first.descriptor);
+    let bytes = first.descriptor_bytes;
+    let identity = first.borrowed_identity.unwrap();
+    let entry = |descriptor: Arc<NodeDescriptor>, identity, descriptor_bytes| CachedSchema {
+        descriptor,
+        visible: BTreeSet::new(),
+        borrowed_identity: Some(identity),
+        descriptor_bytes,
+        revision: 0,
+        last_used: 0,
+    };
+    let other = NodeId::from_bytes([4; 16]);
+    let mut cache = SchemaCache::default();
+    cache.insert(id, entry(Arc::clone(&descriptor), identity, bytes));
+    cache.insert(other, entry(Arc::clone(&descriptor), identity, bytes));
+    assert_eq!(cache_bytes(&cache), 512 + bytes);
+    cache.remove(&id);
+    assert_eq!(cache_bytes(&cache), 256 + bytes);
+    assert_eq!(cache.shared.get(&identity).unwrap().2, 1);
+    cache.remove(&other);
+    assert_eq!(cache_bytes(&cache), 0);
+    assert!(cache.shared.is_empty());
+    cache.insert(id, entry(Arc::clone(&descriptor), identity, bytes));
+    cache.insert(id, entry(Arc::clone(&descriptor), identity, bytes));
+    assert_eq!(cache_bytes(&cache), 256 + bytes);
+    assert_eq!(cache.shared.get(&identity).unwrap().2, 1);
+    let mut replacement = (*descriptor).clone();
+    replacement.label = "Different descriptor".into();
+    let different = Arc::new(replacement);
+    let different_bytes = descriptor_bytes(&different).unwrap();
+    let new_identity = Arc::as_ptr(&different) as usize;
+    assert_ne!(identity, new_identity);
+    cache.insert(id, entry(Arc::clone(&different), new_identity, different_bytes));
+    assert!(!cache.shared.contains_key(&identity));
+    assert!(Arc::ptr_eq(&cache.get(&id).unwrap().descriptor, &different));
+    assert_eq!(cache_bytes(&cache), 256 + different_bytes);
+    cache.remove(&id);
+    assert_eq!(cache_bytes(&cache), 0);
+    assert!(cache.shared.is_empty());
+}

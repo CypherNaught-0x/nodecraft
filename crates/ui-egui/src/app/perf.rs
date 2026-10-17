@@ -9,7 +9,8 @@
 //!
 //! It times the CPU side of a frame as kittest runs it: the egui pass (including AccessKit, which
 //! eframe only runs with assistive tech on) plus tessellation, at 1 and 2 pixels per point. It does
-//! not include windowing, texture uploads or GPU work.
+//! not include windowing, texture uploads or GPU work. Selection, palette and clipboard
+//! interactions are not benchmark workloads; their correctness tests do not measure frame time.
 use super::*;
 use egui_kittest::Harness;
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
