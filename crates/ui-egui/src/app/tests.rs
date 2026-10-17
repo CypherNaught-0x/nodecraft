@@ -1945,3 +1945,75 @@ fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
 }
+
+#[test]
+fn an_open_palette_keeps_search_shortcut_ownership_after_tab() {
+    let mut h = harness();
+    double_click(&mut h, Pos2::new(560.0, 650.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    h.key_press(egui::Key::Tab);
+    h.run();
+    assert!(!canvas::text_input_focused(&h.ctx), "fixture must focus a palette row rather than its query");
+    let document = h.state().session.document().clone();
+    let view = h.state().view;
+    let selection = h.state().selection.clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(!h.state().search.open, "search must not steal the open palette's input");
+    assert!(h.state().palette.is_some());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().view, view);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().palette.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open, "normal search resumes after the palette closes");
+}
+
+#[test]
+fn clipboard_paste_belongs_to_search_input_then_returns_to_canvas_after_close() {
+    let mut h = harness();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open);
+    h.get_by_role_and_label(Role::TextInput, "Search canvas").click();
+    h.run();
+    assert!(canvas::text_input_focused(&h.ctx));
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    let selection = h.state().selection.clone();
+    let view = h.state().view;
+    h.event(egui::Event::Paste("clipboard query sentinel".into()));
+    h.run();
+    assert_eq!(h.state().search.draft, "clipboard query sentinel");
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().view, view);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().search.open);
+    h.hover_at(Pos2::new(800.0, 650.0));
+    h.event(egui::Event::Paste("canvas payload after search".into()));
+    h.run();
+    let texts = nodes_of(&h, "source.text");
+    assert_eq!(texts.len(), 2);
+    assert!(texts.iter().any(|node| node.params.get("text") == Some(&Value::Text("canvas payload after search".into()))));
+    assert_eq!(h.state().session.revision(), revision + 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &document);
+}
