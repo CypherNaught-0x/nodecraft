@@ -43,6 +43,7 @@ pub const MAX_NEW_IDS: usize = 100;
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
     "node.add",
+    "node.create",
     "node.remove",
     "node.move",
     "node.title",
