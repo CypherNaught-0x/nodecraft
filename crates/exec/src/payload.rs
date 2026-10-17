@@ -1,5 +1,5 @@
 //! Hard incoming allocation policy, separate from logical retained scheduler budgets.
-use crate::scheduler::{JobSpec, MAX_JOBS, SchedulerError, StorageLimits};
+use crate::scheduler::{JobId, JobSpec, MAX_JOBS, SchedulerError, StorageLimits};
 
 /// Normal push-built vectors grow geometrically. Allow finite slack independently of lower
 /// retained limits; this is a bound on incoming owned buffers, not process memory.
@@ -32,6 +32,25 @@ pub(crate) fn add(specs: &[JobSpec]) -> Result<(), SchedulerError> {
             .ok_or(SchedulerError::InputCapacityBudget)?;
         bounded_capacity(dependencies, hard.dependencies)?;
         bounded_capacity(metadata, hard.metadata_bytes)?;
+    }
+    Ok(())
+}
+
+/// Worst-case owned buffers under this policy; target layouts, not measured native sizes.
+/// These fixed compile-time ceilings fit usize on native and wasm32; no allocation uses them.
+pub(crate) const ADD_BYTES: usize = CAPACITY_FACTOR
+    * (MAX_JOBS * std::mem::size_of::<JobSpec>() + StorageLimits::HARD.dependencies * std::mem::size_of::<JobId>() + StorageLimits::HARD.metadata_bytes);
+pub(crate) const REQUEUE_BYTES: usize = CAPACITY_FACTOR * (MAX_JOBS * std::mem::size_of::<(JobId, String)>() + StorageLimits::HARD.metadata_bytes);
+pub(crate) const CANCEL_BYTES: usize = CAPACITY_FACTOR * MAX_JOBS * std::mem::size_of::<JobId>();
+
+/// The owned driver input keeps capacity until consumed. The direct borrowed scheduler API
+/// instead charges logical key lengths, since it never retains these caller buffers.
+pub(crate) fn requeue(jobs: &[(JobId, String)]) -> Result<(), SchedulerError> {
+    let mut metadata = 0usize;
+    for (_, key) in jobs {
+        bounded_capacity(key.capacity(), StorageLimits::HARD.key_bytes)?;
+        metadata = metadata.checked_add(key.capacity()).ok_or(SchedulerError::InputCapacityBudget)?;
+        bounded_capacity(metadata, StorageLimits::HARD.metadata_bytes)?;
     }
     Ok(())
 }
