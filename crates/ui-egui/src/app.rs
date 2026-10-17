@@ -842,6 +842,12 @@ impl NodeCraftApp {
     }
 }
 fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
+    consume_shortcut_with_policy(input, shortcut, false)
+}
+fn consume_navigation_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
+    consume_shortcut_with_policy(input, shortcut, true)
+}
+fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, navigation: bool) -> bool {
     let mut modifiers = egui::Modifiers::NONE;
     let mut key = None;
     for part in shortcut.split('+') {
@@ -859,7 +865,7 @@ fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
         }
     }
     key.is_some_and(|key| {
-        if !matches!(key, egui::Key::Num1 | egui::Key::Num2 | egui::Key::M) {
+        if !navigation {
             return input.consume_key(modifiers, key);
         }
         let digit = matches!(key, egui::Key::Num1 | egui::Key::Num2);

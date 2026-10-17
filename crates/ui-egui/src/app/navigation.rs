@@ -9,27 +9,45 @@ fn navigation_id(id: &str) -> bool {
     matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
 }
 impl NodeCraftApp {
-    fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
+    fn navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let t = self.theme.tokens();
-        let fit = matches!(id, "canvas.fit_all" | "canvas.fit_selection");
-        let viewport = if fit { self.navigation.usable(self.viewport, t) } else { self.viewport };
-        let padding = if fit { t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius } else { 0.0 };
-        let own_pan = id == "canvas.pan_to" && self.navigation.pointer_owned;
+        let viewport = self.navigation.usable(self.viewport, t);
+        let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
+        let fit_available = canvas::valid_rect(viewport) && viewport.width() > 2.0 * padding && viewport.height() > 2.0 * padding;
+        let viewport_available = canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0;
         let blocked = egui::Popup::is_any_open(ctx)
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.wiring.is_some()
             || self.drag.is_some()
-            || self.marquee.is_some()
-            || (!own_pan && (ctx.dragged_id().is_some() || self.navigation.drag.is_some()));
-        NavigationContext {
+            || self.marquee.is_some();
+        let dragging = ctx.dragged_id().is_some() || self.navigation.drag.is_some();
+        let fit_all = self.navigation.geometry.bounds(None, t).is_some();
+        let fit_selection = self.navigation.geometry.bounds(Some(&self.selection), t).is_some();
+        std::array::from_fn(|index| NavigationContext {
             canvas: self.canvas,
-            viewport_available: canvas::valid_rect(viewport) && viewport.width() > 2.0 * padding && viewport.height() > 2.0 * padding,
-            blocked,
-            fit_all: self.navigation.geometry.bounds(None, t).is_some(),
-            fit_selection: self.navigation.geometry.bounds(Some(&self.selection), t).is_some(),
+            viewport_available: if index < 2 { fit_available } else { viewport_available },
+            blocked: blocked || (dragging && !(index == 3 && self.navigation.pointer_owned)),
+            fit_all,
+            fit_selection,
+        })
+    }
+    fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
+        let [all, selected, toggle, pan] = self.navigation_contexts(ctx);
+        match id {
+            "canvas.fit_all" => all,
+            "canvas.fit_selection" => selected,
+            "canvas.minimap_toggle" => toggle,
+            _ => pan,
         }
+    }
+
+    fn navigation_enabled_with_context(&mut self, context: NavigationContext, id: &str, params: &Json) -> Result<(), Error> {
+        let previous = self.session.swap_resource(Some(context));
+        let result = self.session.enabled(id, params);
+        self.session.swap_resource(previous);
+        result
     }
     /// The supported programmatic enabled query for a live canvas. Headless Session calls have
     /// no scoped live-view capability and return Unsupported instead of using stale snapshots.
@@ -38,10 +56,7 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
         let context = self.navigation_context(ctx, id);
-        let previous = self.session.swap_resource(Some(context));
-        let result = self.session.enabled(id, params);
-        self.session.swap_resource(previous);
-        result
+        self.navigation_enabled_with_context(context, id, params)
     }
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
     /// then apply the acknowledged intent immediately to shell view state. No dialogs/history.
@@ -94,10 +109,11 @@ impl NodeCraftApp {
     pub(super) fn navigation_overlay(&mut self, ui: &mut egui::Ui) -> bool {
         // Decide ownership/availability before consuming any key. An editor, popup,
         // unavailable fit or active canvas gesture must retain the original event.
-        let all = self.navigation_enabled(ui.ctx(), "canvas.fit_all", &json!({})).is_ok();
-        let selected = self.navigation_enabled(ui.ctx(), "canvas.fit_selection", &json!({})).is_ok();
-        let toggle = self.navigation_enabled(ui.ctx(), "canvas.minimap_toggle", &json!({})).is_ok();
-        let pan = self.navigation_enabled(ui.ctx(), "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
+        let [all_context, selected_context, toggle_context, pan_context] = self.navigation_contexts(ui.ctx());
+        let all = self.navigation_enabled_with_context(all_context, "canvas.fit_all", &json!({})).is_ok();
+        let selected = self.navigation_enabled_with_context(selected_context, "canvas.fit_selection", &json!({})).is_ok();
+        let toggle = self.navigation_enabled_with_context(toggle_context, "canvas.minimap_toggle", &json!({})).is_ok();
+        let pan = self.navigation_enabled_with_context(pan_context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
         let specs: Vec<_> = self.session.registry().specs().filter(|spec| navigation_id(spec.id)).copied().collect();
         for spec in specs {
             let enabled = match spec.id {
@@ -108,7 +124,7 @@ impl NodeCraftApp {
             };
             if enabled
                 && ui.input_mut(|input| {
-                    spec.shortcut.into_iter().chain(spec.alternate_shortcuts.iter().copied()).any(|shortcut| consume_shortcut(input, shortcut))
+                    spec.shortcut.into_iter().chain(spec.alternate_shortcuts.iter().copied()).any(|shortcut| consume_navigation_shortcut(input, shortcut))
                 })
             {
                 if let Err(error) = self.dispatch_navigation(ui.ctx(), spec.id, &json!({})) {
@@ -184,6 +200,47 @@ mod tests {
     }
     fn native_key(logical: egui::Key, physical: Option<egui::Key>, modifiers: egui::Modifiers) -> egui::Event {
         egui::Event::Key { key: logical, physical_key: physical, pressed: true, repeat: false, modifiers }
+    }
+    #[test]
+    fn generic_shortcuts_keep_logical_matching_while_navigation_is_exact() {
+        for (shortcut, key) in [("Ctrl+M", egui::Key::M), ("Ctrl+1", egui::Key::Num1), ("Ctrl+2", egui::Key::Num2)] {
+            let ctx = egui::Context::default();
+            let raw = egui::RawInput { events: vec![native_key(key, Some(key), egui::Modifiers::CTRL | egui::Modifiers::SHIFT)], ..Default::default() };
+            let mut output = ctx.run_ui(raw, |ui| {
+                ui.input_mut(|input| {
+                    assert!(!consume_navigation_shortcut(input, shortcut), "navigation rejects extra Shift");
+                    assert!(consume_shortcut(input, shortcut), "ordinary shortcuts retain egui logical modifier matching");
+                })
+            });
+            output.textures_delta.clear();
+        }
+    }
+    #[test]
+    fn batched_navigation_capabilities_match_fresh_queries_and_restore_resource() {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        for small in [false, true] {
+            for pointer_owned in [false, true] {
+                h.state_mut().viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, if small { 40.0 } else { 700.0 }));
+                h.state_mut().navigation.pointer_owned = pointer_owned;
+                ctx.set_dragged_id(egui::Id::new("capability-test"));
+                let contexts = h.state_mut().navigation_contexts(&ctx);
+                for (context, (id, params)) in contexts.into_iter().zip([
+                    ("canvas.fit_all", json!({})),
+                    ("canvas.fit_selection", json!({})),
+                    ("canvas.minimap_toggle", json!({})),
+                    ("canvas.pan_to", json!({"x":0,"y":0})),
+                ]) {
+                    let blocked = context.blocked;
+                    assert_eq!(blocked, !pointer_owned || id != "canvas.pan_to");
+                    let batch = h.state_mut().navigation_enabled_with_context(context, id, &params);
+                    let fresh = h.state_mut().navigation_enabled(&ctx, id, &params);
+                    assert_eq!(batch.is_ok(), fresh.is_ok());
+                    assert!(h.state_mut().session.swap_resource::<NavigationContext>(None).is_none());
+                }
+                ctx.stop_dragging();
+            }
+        }
     }
     #[test]
     fn native_shaped_shifted_digits_and_fallback_fit_once_with_exact_modifiers() {

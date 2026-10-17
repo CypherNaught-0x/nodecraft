@@ -13,6 +13,7 @@ const MAX_OPTION_TEXT: usize = 4096;
 #[cfg(test)]
 thread_local! {
     static SCHEMA_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CHOICE_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static CHOICE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -253,8 +254,8 @@ impl ParamSchema {
     /// Missing optional values remain absent. Required, visible values are enforced only when
     /// `ready` is true, so an unconfigured source can still be placed on the canvas.
     pub fn resolve(&self, supplied: &ParamValues, ready: bool) -> Result<ResolvedParams, Error> {
-        let validated = self.validated()?;
-        let borrowed = validated.resolve_borrowed(supplied, ready)?;
+        self.validate()?;
+        let borrowed = self.resolve_checked(supplied, ready, None)?;
         Ok(ResolvedParams { values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(), visible: borrowed.visible })
     }
 
@@ -266,17 +267,21 @@ impl ParamSchema {
             .params
             .iter()
             .filter_map(|spec| match &spec.control {
-                ParamControl::Choice { options } => Some((
-                    spec.name.as_str(),
-                    options
-                        .iter()
-                        .map(|option| {
-                            #[cfg(test)]
-                            CHOICE_VISITS.with(|count| count.set(count.get() + 1));
-                            option.value.as_str()
-                        })
-                        .collect(),
-                )),
+                ParamControl::Choice { options } => {
+                    #[cfg(test)]
+                    CHOICE_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
+                    Some((
+                        spec.name.as_str(),
+                        options
+                            .iter()
+                            .map(|option| {
+                                #[cfg(test)]
+                                CHOICE_VISITS.with(|count| count.set(count.get() + 1));
+                                option.value.as_str()
+                            })
+                            .collect(),
+                    ))
+                }
                 _ => None,
             })
             .collect();
@@ -298,7 +303,19 @@ impl ValidatedParamSchema<'_> {
     /// Uses the same value checks and effective-byte budget as `ParamSchema::resolve`, without
     /// rescanning choice controls or copying large defaults for each instance.
     pub fn resolve_borrowed<'a>(&'a self, supplied: &'a ParamValues, ready: bool) -> Result<BorrowedResolvedParams<'a>, Error> {
-        let schema = self.schema;
+        self.schema.resolve_checked(supplied, ready, Some(&self.choices))
+    }
+}
+impl ParamSchema {
+    // Both entry points use identical admission and visibility semantics. Only reusable proofs
+    // pay for Choice indexes; a one-shot caller checks membership directly in its control.
+    fn resolve_checked<'a>(
+        &'a self,
+        supplied: &'a ParamValues,
+        ready: bool,
+        choices: Option<&BTreeMap<&str, BTreeSet<&str>>>,
+    ) -> Result<BorrowedResolvedParams<'a>, Error> {
+        let schema = self;
         if supplied.len() > MAX_PARAMS {
             return Err(invalid("parameter values exceed count limit"));
         }
@@ -311,7 +328,7 @@ impl ValidatedParamSchema<'_> {
                     invalid("unknown parameter; migrate this node to the current schema")
                 }
             })?;
-            if let Some(options) = self.choices.get(key.as_str()) {
+            if let Some(options) = choices.and_then(|choices| choices.get(key.as_str())) {
                 if !matches!(value, Value::Text(text) if options.contains(text.as_str())) {
                     return Err(invalid("parameter value does not match its control type or bounds"));
                 }
@@ -364,6 +381,52 @@ mod borrowing_tests {
     use super::*;
     fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
         ParamSpec { name: name.into(), label: name.into(), description: None, control, required: false, default: Some(default), visible_if: None }
+    }
+    #[test]
+    fn one_shot_resolution_matches_reusable_proof_without_building_indexes() {
+        let mut schema = ParamSchema {
+            params: vec![
+                spec(
+                    "choice",
+                    ParamControl::Choice { options: (0..1024).map(|n| Choice { value: n.to_string(), label: n.to_string() }).collect() },
+                    Value::Text("0".into()),
+                ),
+                spec("toggle", ParamControl::Toggle, Value::Bool(false)),
+                spec("detail", ParamControl::Text { multiline: true, max_bytes: MAX_TEXT }, Value::Text("default".into())),
+            ],
+        };
+        let detail = schema.params.last_mut().unwrap();
+        detail.required = true;
+        detail.visible_if = Some(VisibleIf { parameter: "toggle".into(), equals: Value::Bool(true) });
+        let cases = [
+            ParamValues::new(),
+            ParamValues::from([("choice".into(), Value::Text("1023".into())), ("toggle".into(), Value::Bool(true))]),
+            ParamValues::from([("choice".into(), Value::Text("missing".into()))]),
+            ParamValues::from([("detail".into(), Value::Bool(false))]),
+            ParamValues::from([("unknown".into(), Value::Bool(true))]),
+            ParamValues::from([("detail".into(), Value::Text("x".repeat(MAX_TEXT)))]),
+        ];
+        CHOICE_INDEX_BUILDS.with(|count| count.set(0));
+        let ordinary: Vec<_> = cases.iter().flat_map(|values| [false, true].map(|ready| schema.resolve(values, ready))).collect();
+        assert_eq!(CHOICE_INDEX_BUILDS.with(|count| count.get()), 0, "one-shot resolution must not construct reusable membership indexes");
+        let proof = schema.validated().unwrap();
+        assert_eq!(CHOICE_INDEX_BUILDS.with(|count| count.get()), 1);
+        for (actual, (values, ready)) in ordinary.iter().zip(cases.iter().flat_map(|values| [false, true].map(move |ready| (values, ready)))) {
+            match (actual, proof.resolve_borrowed(values, ready)) {
+                (Ok(owned), Ok(borrowed)) => {
+                    assert_eq!(owned.visible, borrowed.visible);
+                    assert_eq!(owned.values, borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect());
+                }
+                (Err(a), Err(b)) => {
+                    assert_eq!(a.kind, b.kind);
+                    assert_eq!(a.message, b.message);
+                }
+                _ => panic!("owned and borrowed admission differ"),
+            }
+        }
+        assert_eq!(CHOICE_INDEX_BUILDS.with(|count| count.get()), 1, "reusing the proof must not rebuild indexes");
+        schema.params.last_mut().unwrap().default = None;
+        assert!(schema.resolve(&ParamValues::from([("toggle".into(), Value::Bool(true))]), true).is_err());
     }
     #[test]
     fn shared_large_defaults_and_choice_controls_are_scanned_once_and_never_copied() {
