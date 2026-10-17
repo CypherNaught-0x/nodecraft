@@ -207,30 +207,17 @@ struct SearchBudget {
 }
 impl SearchBudget {
     fn new(pattern: &str, case_sensitive: bool, input_len: usize) -> Result<Self, TextError> {
-        use regex_syntax::hir::HirKind;
         let hir = regex_syntax::ParserBuilder::new()
             .nest_limit(64)
             .case_insensitive(!case_sensitive)
             .build()
             .parse(pattern)
             .map_err(|_| TextError::InvalidPattern)?;
-        let root = uncapture(&hir);
-        let lookahead = hir.properties().maximum_len().or_else(|| {
-            if let HirKind::Repetition(rep) = root.kind() {
-                // Only a top-level repeated single atom: no trailing failure or alternative
-                // can keep searching a suffix after a short successful match (a+b|a).
-                match uncapture(&rep.sub).kind() {
-                    HirKind::Class(_) => Some(4),
-                    HirKind::Literal(lit) if std::str::from_utf8(&lit.0).ok().is_some_and(|s| s.chars().count() == 1) => Some(4),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        });
+        let bound = hir.properties().maximum_len().map(|width| (width, 1)).or_else(|| sequence_bound(&hir));
+        let lookahead = bound.map(|(width, _)| width);
         let mut budget = Self { used: 0, lookahead };
         if lookahead.is_some() {
-            charge(&mut budget.used, input_len.saturating_add(1).saturating_mul(2), MAX_SEARCH_BYTES)?;
+            charge(&mut budget.used, input_len.saturating_add(1).saturating_mul(2).saturating_mul(bound.map_or(1, |(_, scans)| scans)), MAX_SEARCH_BYTES)?;
         }
         Ok(budget)
     }
@@ -247,6 +234,96 @@ fn uncapture(mut hir: &regex_syntax::hir::Hir) -> &regex_syntax::hir::Hir {
         hir = &cap.sub;
     }
     hir
+}
+// Flat greedy runs only: each pair needs a mandatory delimiter outside both alphabets.
+// A run cannot cross that delimiter, so a later run cannot make the preceding run rescan
+// its input on another iterator call. Fixed prefixes/suffixes add only their bounded width.
+fn sequence_bound(hir: &regex_syntax::hir::Hir) -> Option<(usize, usize)> {
+    // Preserve the existing lazy single-atom shortcut: a lazy run returns its
+    // minimum immediately, or advances monotonically while searching for that minimum.
+    if let regex_syntax::hir::HirKind::Repetition(rep) = uncapture(hir).kind()
+        && !rep.greedy
+    {
+        match uncapture(&rep.sub).kind() {
+            regex_syntax::hir::HirKind::Class(_) => return Some((4, 1)),
+            regex_syntax::hir::HirKind::Literal(lit) if std::str::from_utf8(&lit.0).ok().is_some_and(|s| s.chars().count() == 1) => return Some((4, 1)),
+            _ => {}
+        }
+    }
+    struct Atom {
+        ranges: Vec<(u32, u32)>,
+        repeated: bool,
+    }
+    fn flatten(hir: &regex_syntax::hir::Hir, out: &mut Vec<Atom>) -> Option<()> {
+        use regex_syntax::hir::{Class, HirKind};
+        match uncapture(hir).kind() {
+            HirKind::Empty => {}
+            HirKind::Concat(parts) => {
+                for part in parts {
+                    flatten(part, out)?;
+                }
+            }
+            HirKind::Literal(lit) => {
+                for ch in std::str::from_utf8(&lit.0).ok()?.chars() {
+                    out.push(Atom { ranges: vec![(u32::from(ch), u32::from(ch))], repeated: false });
+                }
+            }
+            HirKind::Class(class) => {
+                let ranges = match class {
+                    Class::Unicode(c) => c.ranges().iter().map(|r| (u32::from(r.start()), u32::from(r.end()))).collect(),
+                    Class::Bytes(c) => c.ranges().iter().map(|r| (u32::from(r.start()), u32::from(r.end()))).collect(),
+                };
+                out.push(Atom { ranges, repeated: false });
+            }
+            HirKind::Repetition(rep) if rep.max.is_none() && rep.greedy => {
+                let before = out.len();
+                flatten(&rep.sub, out)?;
+                if out.len() != before.checked_add(1)? {
+                    return None;
+                }
+                let atom = out.get_mut(before)?;
+                if atom.repeated {
+                    return None;
+                }
+                atom.repeated = true;
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    fn disjoint(a: &Atom, b: &Atom) -> bool {
+        // HIR ranges are sorted. Merge-scan instead of a cross product for large
+        // Unicode classes; classification itself must remain bounded by syntax size.
+        let mut left = a.ranges.iter();
+        let mut right = b.ranges.iter();
+        let mut x = left.next();
+        let mut y = right.next();
+        while let (Some((a0, a1)), Some((b0, b1))) = (x, y) {
+            if a1 < b0 {
+                x = left.next();
+            } else if b1 < a0 {
+                y = right.next();
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+    let mut atoms = Vec::new();
+    flatten(hir, &mut atoms)?;
+    let mut previous: Option<usize> = None;
+    for (index, atom) in atoms.iter().enumerate().filter(|(_, atom)| atom.repeated) {
+        if let Some(prior) = previous {
+            let prior_atom = atoms.get(prior)?;
+            if !atoms.get(prior.saturating_add(1)..index)?.iter().any(|delimiter| disjoint(prior_atom, delimiter) && disjoint(atom, delimiter)) {
+                return None;
+            }
+        }
+        previous = Some(index);
+    }
+    // At most one scan per run per search, including failed fixed suffixes. Multiplying
+    // the width by atom count also pays for fixed-prefix retries and UTF-8 context.
+    Some((atoms.len().checked_mul(4)?, atoms.len().checked_add(1)?))
 }
 fn compile(pattern: &str, case_sensitive: bool) -> Result<Regex, TextError> {
     if pattern.len() > MAX_PATTERN_BYTES {
@@ -376,7 +453,6 @@ pub fn replace(input: &str, options: &ReplaceOptions, limits: Limits) -> Result<
     let mut previous = 0usize;
     let mut searched = 0usize;
     let mut matches = re.captures_iter(input);
-    let mut index = 0usize;
     let mut replacement_work = 0usize;
     loop {
         if let Some(search) = &mut search {
@@ -385,12 +461,6 @@ pub fn replace(input: &str, options: &ReplaceOptions, limits: Limits) -> Result<
         let Some(caps) = matches.next() else {
             break;
         };
-        if captures {
-            if index >= limits.items {
-                return Err(TextError::ItemLimit);
-            }
-            index = index.saturating_add(1);
-        }
         let found = caps.get(0).ok_or(TextError::InvalidPattern)?;
         searched = found.end();
         append(&mut out, input.get(previous..found.start()).ok_or(TextError::InvalidPattern)?, limits)?;
@@ -528,4 +598,42 @@ pub fn fill_template(template: &str, fields: &BTreeMap<String, String>, limits: 
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod search_budget_tests {
+    use super::*;
+
+    #[test]
+    fn sequence_policy_uses_folded_unicode_alphabets_and_rejects_unproved_shapes() {
+        for (pattern, sensitive, admitted) in [
+            (r"\p{L}*,\p{L}*", true, true),
+            (r"\p{L}*é\p{L}*", true, false),
+            ("A*aA*", true, true),
+            ("A*aA*", false, false),
+            ("K*kK*", true, true),
+            ("K*kK*", false, false),
+            ("a*a*", true, false),
+            ("a*b*", true, false),
+            ("(a+)+", true, false),
+            ("(?:ab)+", true, false),
+            ("a{1,2}b+", true, false),
+            (r"a+\b", true, false),
+            ("a+?b", true, false),
+            ("(a+?)", true, true),
+        ] {
+            let budget = SearchBudget::new(pattern, sensitive, 100).unwrap();
+            assert_eq!(budget.lookahead.is_some(), admitted, "{pattern}, case_sensitive={sensitive}");
+        }
+    }
+
+    #[test]
+    fn documented_precharge_and_per_search_formulas_match_exactly() {
+        for (pattern, initial, step) in [("a", 22, 18), ("a+?", 22, 24), ("a+", 44, 24), (r"\s*,\s*", 88, 40), ("a*a*", 0, 22)] {
+            let mut budget = SearchBudget::new(pattern, true, 10).unwrap();
+            assert_eq!(budget.used, initial, "{pattern}");
+            budget.next(10, 0).unwrap();
+            assert_eq!(budget.used, initial + step, "{pattern}");
+        }
+    }
 }

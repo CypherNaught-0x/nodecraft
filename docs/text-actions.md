@@ -169,9 +169,9 @@ graph mutation/undo are owned by #162/#88 and are not implemented or claimed her
 ## Limits and errors
 
 Hard ceilings: 1 MiB aggregate UTF-8 input bytes (including options/field keys and values), 4 MiB
-output bytes, 16,384 parts/regex candidates/concat inputs, 1,024 template fields and insertions.
+output bytes, 16,384 parts/concat inputs, 1,024 template fields and insertions.
 Literal replacement has no match-count ceiling: bounded input/output and fixed literal matching
-bound its work. Regex candidates are the boundary-qualified matches.
+bound its work. Regex replacement has no item limit; output bytes and replacement work remain bounded.
 `Limits` can only lower byte and item ceilings, including to zero. Persisted split `max_parts`
 is independently restricted to 1..=16,384 and intersects the host item ceiling; out-of-range
 values return `InvalidMaxParts` before processing. All appends and part copies
@@ -180,19 +180,38 @@ check budgets first; errors return no partial result. Regex pattern bytes are ca
 256 KiB. Rust `regex` uses a finite-automata engine without backtracking; unsupported lookaround
 and backreferences are errors.
 
-Regex work uses syntax-derived bounds (HIR from `regex-syntax`, with the same case flags):
-- A finite maximum match width B charges twice the input bytes once for all forward progress,
-  then `2*(B+8)` before each iterator search for bounded lookahead and UTF-8 assertion context.
-- A top-level repetition of a single character class or single Unicode scalar, optionally wrapped
-  in captures, uses B=4 for lookahead accounting. It cannot fail a suffix after a short match:
-  there is no following expression or alternative. This includes ordinary `\s+` and `a+`, but
-  not `a+b|a`, `(ab)+` or `.*suffix`. Greedy consumption and skipped input advance monotonically;
-  lazy/empty suppression also advances. All forward bytes are charged once.
-- Other unbounded patterns retain twice-the-remaining-suffix charging before each search, including
-  the iterator's possible second search to suppress an adjacent empty match. This protects
-  patterns such as `a+b|a` or `.*[^A-Z]|[A-Z]` without pretending returned match length measures
-  actual search. Total charged search bytes are capped at 64 MiB; conservative rejection remains
-  possible for this deliberately restricted fallback class.
+Regex work uses syntax-derived bounds (HIR from `regex-syntax`, with the same case flags).
+Let `N` be the input byte length. Each admitted shortcut precharges forward progress once,
+then charges lookahead before every iterator search, including its final unsuccessful search:
+
+- Finite maximum match width `B`: precharge `2*(N+1)`; each search costs `2*(B+8)`.
+- A top-level lazy repetition of one character class or Unicode scalar, optionally captured:
+  precharge `2*(N+1)`; each search costs `2*(4+8)`. There is no trailing expression or
+  alternative that can force scanning a long suffix before returning a short match.
+- Flat sequences of fixed character atoms and greedy unbounded repetitions of single atoms:
+  after captures/concatenations are flattened and literals expanded into Unicode scalars, let
+  `A` count all atoms (each repeated atom counts once). Precharge `2*(N+1)*(A+1)`; each
+  search costs `2*(4*A+8)`. Every neighboring pair of repetitions requires a mandatory fixed
+  character class between them disjoint from **both** repetition alphabets. The full delimiter
+  class must be disjoint, using the case-folded HIR alphabets. This admits ordinary `a+`,
+  `,\s*`, `\s*,\s*`, `v(\d+)` and `\n\s*\n`.
+
+For the flat grammar, a greedy run stops at the first character outside its alphabet. A
+successful fixed suffix either starts at that boundary or takes a bounded number of final
+characters from the run; a successful match therefore consumes the scanned run apart from
+bounded suffix lookahead. Mandatory outside delimiters separate neighboring runs, preventing
+later repetitions from repeatedly scanning earlier runs. The atom-count factor conservatively
+covers all runs and fixed-prefix retries. Lazy single-atom matches and empty-match suppression
+advance monotonically. Captures and offsets always retain full-haystack iterator semantics.
+
+Other unbounded patterns precharge nothing and cost `2*(N-previous_end+1)` before each search.
+This includes unbounded alternatives, assertions within unbounded sequences, nested or finite
+repetitions within unbounded sequences, multi-character repeated groups, and neighboring repeats
+without a delimiter outside both alphabets. Examples include `a+b|a`, `.*[^A-Z]|[A-Z]`,
+`(ab)+`, `a*a*` and `a*?suffix`. The factor two covers the iterator's possible second search to
+suppress an adjacent empty match. Finite-width expressions take the first shortcut regardless
+of their internal shape. Total charged search bytes are capped at 64 MiB; conservative rejection
+remains possible for fallback patterns, without treating returned match length as actual search.
 
 Replacement syntax is parsed/resolved once into at most 16,384 borrowed tokens before searching;
 unknown capture references resolve to empty once. Expansion charges each token visit against

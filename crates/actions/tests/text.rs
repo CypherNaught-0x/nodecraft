@@ -261,3 +261,29 @@ fn schema_required_null_and_unknown_field_policies_match_wire() {
         assert!(serde_json::from_value::<TextRequest>(request).is_err());
     }
 }
+
+#[test]
+fn ordinary_regex_sequences_accept_near_ceiling_documents() {
+    for (pattern, unit) in [(r",\s*", "entry, "), (r"\s*,\s*", "entry , "), (r"v(\d+)", "v123456 "), (r"\n\s*\n", "paragraph\n \n")] {
+        let count = 8192;
+        let padding = "x".repeat((MAX_INPUT_BYTES - pattern.len() - 1 - unit.len() * count) / count);
+        let input = format!("{padding}{unit}").repeat(count);
+        assert!(input.len() > 900_000);
+        let reference = regex::Regex::new(pattern).unwrap();
+        assert_eq!(split(&input, &SplitMode::Regex(pattern.into()), l()).unwrap(), reference.split(&input).collect::<Vec<_>>());
+        assert_eq!(replace(&input, &rep(MatchMode::Regex(pattern.into()), "$1"), l()).unwrap(), reference.replace_all(&input, "$1"));
+    }
+    let input = "a ".repeat(100_000);
+    assert_eq!(replace(&input, &rep(MatchMode::Regex(r"\s+".into()), ""), Limits { items: 0, ..l() }).unwrap(), "a".repeat(100_000));
+    for pattern in ["a+b|a", "a*a*b|a", "(?:a+)+b|a"] {
+        assert_eq!(replace(&"a".repeat(16384), &rep(MatchMode::Regex(pattern.into()), ""), l()), Err(TextError::WorkLimit));
+    }
+}
+
+#[test]
+fn replacement_step_limit_has_an_exact_boundary_without_an_item_limit() {
+    let options = rep(MatchMode::Regex("a".into()), "$0$0");
+    let exact = "a".repeat(MAX_REPLACEMENT_STEPS / 2);
+    assert_eq!(replace(&exact, &options, Limits { items: 0, ..l() }).unwrap().len(), MAX_REPLACEMENT_STEPS);
+    assert_eq!(replace(&(exact + "a"), &options, l()), Err(TextError::WorkLimit));
+}
