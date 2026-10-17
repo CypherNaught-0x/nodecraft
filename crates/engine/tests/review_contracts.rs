@@ -96,7 +96,7 @@ fn safe_decode_errors_identify_field_and_category_without_echoing_values_or_keys
 fn caller_generation_history_and_invalid_noop_gestures_are_rejected() {
     let mut session = Session::new(project()).unwrap();
     let mut candidate = node(3);
-    candidate.history.push(nodecraft_graph::Generation { id: nodecraft_types::GenerationId::from_bytes([4; 16]), outputs: vec![] });
+    candidate.history.push(nodecraft_graph::Generation { id: nodecraft_types::GenerationId::from_bytes([4; 16]), outputs: vec![], input_hash: None });
     assert!(session.dispatch("node.add", &json!({"canvas":canvas(),"node":candidate})).is_err());
     assert!(session.dispatch("node.move", &move_params(1, 0, "")).is_err());
     assert_eq!(session.revision(), 0);

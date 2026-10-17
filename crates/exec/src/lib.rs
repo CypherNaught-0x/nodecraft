@@ -10,3 +10,4 @@ pub mod cost;
 pub mod driver;
 pub mod planner;
 pub mod scheduler;
+pub mod staleness;

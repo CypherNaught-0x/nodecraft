@@ -65,7 +65,7 @@ fn of_kind(n: u8, kind: &str, result: Option<Value>) -> Node {
     let mut node = kinds().get(kind).unwrap().descriptor().instantiate(id(n), &BTreeMap::new()).unwrap();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![result] });
+        node.history.push(Generation { id: generation, outputs: vec![result], input_hash: None });
         node.active = Some(generation);
     }
     node
@@ -101,7 +101,7 @@ fn relay(n: u8, result: Option<&str>) -> Node {
     let mut node = kinds().get("test.relay").unwrap().descriptor().instantiate(id(n), &BTreeMap::new()).unwrap();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())] });
+        node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())], input_hash: None });
         node.active = Some(generation);
     }
     node
@@ -539,7 +539,7 @@ fn an_unusable_active_result_is_rerun_not_waited_on() {
     // schedules 2 again instead of blocking 3 on a result it can't use.
     let mut stale_layout = relay(2, None);
     let generation = GenerationId::from_bytes([2; 16]);
-    stale_layout.history.push(Generation { id: generation, outputs: vec![] });
+    stale_layout.history.push(Generation { id: generation, outputs: vec![], input_hash: None });
     stale_layout.active = Some(generation);
     let p = project(vec![text(1, "a"), stale_layout, relay(3, None)], &[(1, 2), (2, 3)]);
     let canvas = p.canvases().get(&C).unwrap();

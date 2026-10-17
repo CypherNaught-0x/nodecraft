@@ -1,0 +1,69 @@
+//! Staleness queries (#75): which results no longer match their inputs. Read-only: no document
+//! change and no undo step. Needs the node-kind registry as a host resource (to resolve which
+//! parameters shape a result); without it the command is unsupported.
+use crate::commands::{CommandSpec, Context, Effect, params};
+use nodecraft_types::{CanvasId, Error, ErrorKind};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StaleParams {
+    canvas: CanvasId,
+}
+
+fn stale(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    let p: StaleParams = params(value)?;
+    let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    let kinds = c.resources.require::<nodecraft_nodes::Registry>()?;
+    let nodes: Vec<_> = nodecraft_exec::staleness::stale(canvas, kinds).into_iter().collect();
+    Ok(Effect::None { result: json!({ "nodes": nodes }) })
+}
+
+fn enabled_stale(c: &Context<'_>, value: &Value) -> Result<(), Error> {
+    stale(c, value).map(|_| ())
+}
+
+fn stale_schema() -> Value {
+    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["canvas"], "properties": {"canvas": {"type": "string", "format": "uuid"}}})
+}
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![CommandSpec {
+        id: "canvas.stale",
+        label: "List stale results",
+        shortcut: None,
+        alternate_shortcuts: &[],
+        input_schema: stale_schema,
+        params_doc: "{canvas: CanvasId} -> {nodes: [NodeId]}; nodes whose active result no longer matches its inputs, or was built on a stale upstream result. Read-only.",
+        enabled: enabled_stale,
+        run: stale,
+    }]
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Session;
+    use nodecraft_graph::{Canvas, Change, Project};
+    use nodecraft_types::{CanvasId, ErrorKind, ProjectId};
+    use serde_json::json;
+
+    #[test]
+    fn lists_stale_nodes_read_only_and_needs_the_registry() {
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Stale").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        let params = json!({"canvas": canvas});
+        let mut bare = Session::new(project.clone()).unwrap();
+        assert_eq!(bare.dispatch("canvas.stale", &params).unwrap_err().kind, ErrorKind::Unsupported);
+        let mut resources = crate::commands::Resources::default();
+        resources.insert(nodecraft_nodes::Registry::builtins().unwrap());
+        let mut session = Session::new(project).unwrap().with_resources(resources);
+        let revision = session.revision();
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
+        assert_eq!(session.revision(), revision);
+        assert!(!session.can_undo());
+        assert_eq!(session.dispatch("canvas.stale", &json!({"canvas": CanvasId::from_bytes([9; 16])})).unwrap_err().kind, ErrorKind::NotFound);
+    }
+}
