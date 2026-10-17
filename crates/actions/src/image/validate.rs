@@ -189,6 +189,19 @@ pub(super) fn admit(req: &ImageRequest, p: &Plan, input: u64, l: ImageLimits) ->
     if count > l.outputs || mul(bytes, u64::from(count))? > l.output_bytes {
         return Err(E::OutputLimit);
     }
+    let (work, scratch) = cost(req, p, bytes)?;
+    if work > l.work {
+        return Err(E::WorkLimit);
+    }
+    // Account input retention, output, all kernel scratch and collection/Arc metadata together.
+    let output = if matches!(req, ImageRequest::Duplicate { .. }) { u64::from(count) * 64 } else { bytes };
+    if add(add(input, output)?, scratch)? > l.working_bytes {
+        return Err(E::ScratchLimit);
+    }
+    Ok(())
+}
+
+pub(super) fn cost(req: &ImageRequest, p: &Plan, bytes: u64) -> Result<(u64, u64), E> {
     let pixels = bytes / 4;
     let mut work = pixels;
     let mut scratch = 4096;
@@ -208,13 +221,5 @@ pub(super) fn admit(req: &ImageRequest, p: &Plan, input: u64, l: ImageLimits) ->
         }
         _ => {}
     }
-    if work > l.work {
-        return Err(E::WorkLimit);
-    }
-    // Account input retention, output, all kernel scratch and collection/Arc metadata together.
-    let output = if matches!(req, ImageRequest::Duplicate { .. }) { u64::from(count) * 64 } else { bytes };
-    if add(add(input, output)?, scratch)? > l.working_bytes {
-        return Err(E::ScratchLimit);
-    }
-    Ok(())
+    Ok((work, scratch))
 }

@@ -2727,7 +2727,10 @@ dependencies = [
 name = "nodecraft-gpu"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "nodecraft-actions",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]
