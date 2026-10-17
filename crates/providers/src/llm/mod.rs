@@ -289,9 +289,17 @@ impl LlmClient {
         };
         // A stream carries ~200–250 bytes of framing per token: size the cap from the reply length,
         // so a long, already-billed reply isn't cut off by a cap meant for whole replies.
-        let tokens = u64::from(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).max(1));
+        // With no limit sent (OpenAI-style default), the server may write up to the model's maximum.
+        let sent_limit = match self.endpoint.dialect {
+            Dialect::Anthropic => Some(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
+            Dialect::OpenAi => req.max_tokens,
+        };
         let (cap, timeout) = if stream {
-            (usize::try_from(tokens.saturating_mul(400)).unwrap_or(usize::MAX).clamp(MAX_REPLY_BYTES, MAX_STREAM_BYTES), STREAM_TIMEOUT_MS)
+            let cap = match sent_limit {
+                Some(tokens) => usize::try_from(u64::from(tokens.max(1)).saturating_mul(400)).unwrap_or(usize::MAX).clamp(MAX_REPLY_BYTES, MAX_STREAM_BYTES),
+                None => MAX_STREAM_BYTES,
+            };
+            (cap, STREAM_TIMEOUT_MS)
         } else {
             (MAX_REPLY_BYTES, CHAT_TIMEOUT_MS)
         };
@@ -352,18 +360,20 @@ impl LlmClient {
         let head = self.http.send_streaming(request, &mut sink).await;
         drop(sink);
         // A server may close right after the last event without a blank line.
-        if failure.is_none()
-            && head.as_ref().is_ok_and(|h| h.is_success())
-            && let Some(last) = parser.finish()
-        {
-            let flushed = match dialect {
-                Dialect::OpenAi => openai::stream_event(&last, &mut state),
-                Dialect::Anthropic => anthropic::stream_event(&last, &mut state),
-            };
-            match flushed {
-                Ok(Some(text)) => on_text(&text),
-                Ok(None) => {}
-                Err(e) => failure = Some(e),
+        if failure.is_none() && head.as_ref().is_ok_and(|h| h.is_success()) {
+            for last in parser.finish() {
+                let flushed = match dialect {
+                    Dialect::OpenAi => openai::stream_event(&last, &mut state),
+                    Dialect::Anthropic => anthropic::stream_event(&last, &mut state),
+                };
+                match flushed {
+                    Ok(Some(text)) => on_text(&text),
+                    Ok(None) => {}
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
+                }
             }
         }
         if let Some(e) = failure {

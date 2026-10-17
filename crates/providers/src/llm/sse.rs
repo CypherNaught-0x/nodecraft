@@ -58,12 +58,17 @@ impl SseParser {
         Ok(out)
     }
 
-    /// Flushes an event the stream ended without a blank line after.
-    pub fn finish(&mut self) -> Option<SseEvent> {
+    /// Flushes what the stream ended with: an event completed by the final line break and/or one
+    /// left without a blank line after it.
+    pub fn finish(&mut self) -> Vec<SseEvent> {
+        let mut out = Vec::new();
         if !self.buffer.is_empty() {
-            let _ = self.feed(b"\n");
+            out.extend(self.feed(b"\n").unwrap_or_default());
         }
-        (!self.data.is_empty()).then(|| SseEvent { event: self.event.take(), data: std::mem::take(&mut self.data).join("\n") })
+        if !self.data.is_empty() {
+            out.push(SseEvent { event: self.event.take(), data: std::mem::take(&mut self.data).join("\n") });
+        }
+        out
     }
 }
 
@@ -94,7 +99,10 @@ mod tests {
     fn unterminated_tail_and_caps() {
         let mut p = SseParser::new();
         assert!(p.feed(b"data: last").unwrap().is_empty());
-        assert_eq!(p.finish(), Some(SseEvent { event: None, data: "last".into() }));
+        assert_eq!(p.finish(), vec![SseEvent { event: None, data: "last".into() }]);
+        let mut p = SseParser::new();
+        assert!(p.feed(b"data: a\r\n\r").unwrap().is_empty());
+        assert_eq!(p.finish(), vec![SseEvent { event: None, data: "a".into() }], "a lone trailing CR still ends the event");
         let mut p = SseParser::new();
         assert!(p.feed(&vec![b'x'; MAX_EVENT_BYTES + 1]).is_err());
     }

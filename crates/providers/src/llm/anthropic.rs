@@ -15,7 +15,9 @@ pub(super) const VERSION: &str = "2023-06-01";
 /// Claude models that reject sampling parameters (`temperature`, `top_p`): the 5-series and later.
 pub(super) fn rejects_sampling(model: &str) -> bool {
     let m = model.rsplit('/').next().unwrap_or(model);
-    ["claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable", "claude-mythos"].iter().any(|p| m.starts_with(p))
+    ["claude-opus-5", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-5", "claude-fable", "claude-mythos"]
+        .iter()
+        .any(|p| m.starts_with(p))
 }
 /// The default model for Anthropic text nodes.
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
