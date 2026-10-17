@@ -87,6 +87,18 @@ fn template(id: &str) -> (Session, Value) {
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
+    if matches!(id, "tag.put" | "tag.remove" | "node.tag_set") {
+        let tag = nodecraft_types::TagId::from_bytes([9; 16]);
+        nodecraft_graph::Changeset::new(vec![
+            nodecraft_graph::Change::PutTag { canvas: canvas(), tag: nodecraft_graph::Tag { id: tag, title: "Before".into(), color: None } },
+            nodecraft_graph::Change::SetNodeTags {
+                canvas: canvas(),
+                assignments: vec![nodecraft_graph::NodeTagAssignment { node: node_id(1), tag: Some(tag) }],
+            },
+        ])
+        .apply(&mut document)
+        .unwrap();
+    }
     let root = nodecraft_types::CommentId::from_bytes([10; 16]);
     let reply = nodecraft_types::CommentId::from_bytes([11; 16]);
     if id.starts_with("comment.") {
@@ -141,8 +153,25 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if id.starts_with("canvas.tag_filter_") {
+        session.swap_resource(Some(nodecraft_engine::tag_filter_cmds::TagFilterContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            open: true,
+            active: true,
+            scanning: false,
+            matches: 1,
+        }));
+        session.register_host_service(nodecraft_engine::tag_filter_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
+        "tag.put" => json!({"canvas":canvas(),"tag":{"id":nodecraft_types::TagId::from_bytes([9;16]),"title":"After","color":"blue"}}),
+        "tag.remove" => json!({"canvas":canvas(),"tag":nodecraft_types::TagId::from_bytes([9;16])}),
+        "node.tag_set" => json!({"canvas":canvas(),"nodes":[node_id(1)],"tag":null}),
+        "canvas.tag_filter_open" | "canvas.tag_filter_close" | "canvas.tag_filter_next" | "canvas.tag_filter_previous" => json!({}),
+        "canvas.tag_filter_set" => json!({"tags":[],"untagged":true}),
         "comment.create" => json!({"canvas":canvas(),"id":nodecraft_types::CommentId::from_bytes([20;16]),"text":"New","pos":{"x":1,"y":2}}),
         "comment.edit" => json!({"canvas":canvas(),"id":root,"text":"Edited"}),
         "comment.reply" => json!({"canvas":canvas(),"id":root,"reply":nodecraft_types::CommentId::from_bytes([12;16]),"text":"New reply"}),
@@ -202,7 +231,22 @@ fn typed_template_panic_hunt() {
                 cases.push(missing);
             }
         }
-        for path in ["/pos/x", "/pos/y", "/node/id", "/node/kind", "/node/pos/x", "/edge/from/node", "/edge/from/port", "/edge/to/node", "/edge/order"] {
+        for path in [
+            "/pos/x",
+            "/pos/y",
+            "/node/id",
+            "/node/kind",
+            "/node/pos/x",
+            "/edge/from/node",
+            "/edge/from/port",
+            "/edge/to/node",
+            "/edge/order",
+            "/tag/id",
+            "/tag/title",
+            "/tag/color",
+            "/nodes/0",
+            "/tags/0",
+        ] {
             if valid.pointer(path).is_some() {
                 for raw in [Value::Null, json!("secret-do-not-echo"), json!(1e100), json!([])] {
                     let mut mutated = valid.clone();

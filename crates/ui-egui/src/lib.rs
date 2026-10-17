@@ -11,6 +11,7 @@ pub mod comments;
 pub mod navigation;
 pub mod search;
 pub mod selection;
+pub mod tags;
 pub mod theme;
 
 pub use app::NodeCraftApp;

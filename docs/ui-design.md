@@ -203,3 +203,6 @@ programmatic callers can supply columns. Dependency order ranks the whole DAG, i
 through unselected nodes, then places selected ranks in left-to-right columns. It does not move
 unselected obstacles or promise optimal edge crossings. Reapplication with unchanged selection,
 zoom, logical extents and topology is a no-op, including at large legal coordinates.
+### Colour tags
+
+Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).

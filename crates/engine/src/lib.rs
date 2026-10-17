@@ -19,5 +19,7 @@ pub mod jobs;
 mod persistence;
 pub mod session;
 pub mod settings;
+pub mod tag_cmds;
+pub mod tag_filter_cmds;
 
 pub use session::{DocChanged, Session};

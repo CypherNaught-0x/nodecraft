@@ -43,6 +43,11 @@ pub struct Tokens {
     pub comments_height: f32,
     pub comment_marker_size: f32,
     pub comments_button_width: f32,
+    pub tag_colors: [Color32; 8],
+    pub tag_marker_width: f32,
+    pub tag_panel_width: f32,
+    pub tag_panel_height: f32,
+    pub tag_row_height: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
@@ -100,6 +105,20 @@ pub const DARK: Tokens = Tokens {
     comments_height: 500.0,
     comment_marker_size: 30.0,
     comments_button_width: 110.0,
+    tag_colors: [
+        Color32::from_rgb(238, 112, 122),
+        Color32::from_rgb(235, 162, 94),
+        Color32::from_rgb(224, 201, 102),
+        Color32::from_rgb(126, 199, 131),
+        Color32::from_rgb(96, 198, 190),
+        Color32::from_rgb(118, 170, 240),
+        Color32::from_rgb(181, 145, 230),
+        Color32::from_rgb(225, 142, 194),
+    ],
+    tag_marker_width: 5.0,
+    tag_panel_width: 280.0,
+    tag_panel_height: 320.0,
+    tag_row_height: 24.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
@@ -148,6 +167,16 @@ pub const LIGHT: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0x18, 0x18, 0x1b),
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
+    tag_colors: [
+        Color32::from_rgb(163, 45, 59),
+        Color32::from_rgb(151, 79, 20),
+        Color32::from_rgb(123, 102, 14),
+        Color32::from_rgb(36, 118, 45),
+        Color32::from_rgb(18, 111, 104),
+        Color32::from_rgb(43, 94, 164),
+        Color32::from_rgb(109, 63, 161),
+        Color32::from_rgb(154, 53, 120),
+    ],
     ..DARK
 };
 
@@ -186,6 +215,12 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
 /// Install the theme on a context. Call once at startup and on theme change.
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.set_visuals(visuals(kind));
+}
+
+impl Tokens {
+    pub fn tag_color(&self, color: Option<&str>) -> Color32 {
+        crate::tags::PALETTE.iter().position(|(id, _)| Some(*id) == color).and_then(|i| self.tag_colors.get(i)).copied().unwrap_or(self.text_muted)
+    }
 }
 
 #[cfg(test)]
