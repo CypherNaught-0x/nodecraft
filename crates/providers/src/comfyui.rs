@@ -192,44 +192,51 @@ impl ComfyProvider {
 
     /// Builds the workflow to queue. Value overrides are applied and the whole workflow is checked
     /// against the server *before* anything is uploaded; then media inputs are uploaded and set.
-    async fn prepare(&self, job: &ProviderJob, catalog: &NodeCatalog) -> Result<ApiWorkflow, ProviderError> {
-        let raw = job.params.get("workflow").ok_or_else(|| ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow"))?;
-        let bytes = serde_json::to_vec(raw).map_err(|e| ProviderError::new(ErrorKind::UnsupportedInput, e.to_string()))?;
-        let mut workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(comfy_error)?;
+    /// Errors that a fresher catalog could fix (missing nodes, values not available) are marked
+    /// `true`, so the caller refetches `/object_info` only for those.
+    async fn prepare(&self, job: &ProviderJob, catalog: &NodeCatalog) -> Result<ApiWorkflow, (ProviderError, bool)> {
+        let plain = |e: ProviderError| (e, false);
+        let from_catalog = |e: ComfyError| {
+            let stale = matches!(e, ComfyError::MissingNodes(_) | ComfyError::InvalidInput { .. } | ComfyError::InvalidWorkflow(_));
+            (comfy_error(e), stale)
+        };
+        let raw = job.params.get("workflow").ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow")))?;
+        let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
+        let mut workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(from_catalog)?;
         let empty = Map::new();
         let values = job.params.get("values").and_then(Value::as_object).unwrap_or(&empty);
         for (target, value) in values {
-            let (node, input) = split_target(target)?;
-            workflow.set_input(catalog, node, input, value.clone()).map_err(comfy_error)?;
+            let (node, input) = split_target(target).map_err(plain)?;
+            workflow.set_input(catalog, node, input, value.clone()).map_err(from_catalog)?;
         }
         // Every media input must target an upload input of a node in the workflow.
         let mut uploads = Vec::new();
         for input in &job.inputs {
             let JobInput::Media { role, bytes, .. } = input else { continue };
-            let (node, name) = split_target(role)?;
+            let (node, name) = split_target(role).map_err(plain)?;
             let class = workflow
                 .nodes
                 .get(node)
                 .map(|n| n.class_type.clone())
-                .ok_or_else(|| ProviderError::new(ErrorKind::UnsupportedInput, format!("no node {node} in the workflow")))?;
+                .ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, format!("no node {node} in the workflow"))))?;
             let is_upload = catalog.get(&class).and_then(|i| i.input(name)).is_some_and(|spec| matches!(spec.kind, InputKind::Combo { upload: Some(_), .. }));
             if !is_upload {
-                return Err(ProviderError::new(ErrorKind::UnsupportedInput, format!("{node}.{name} is not a file input")));
+                return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, format!("{node}.{name} is not a file input"))));
             }
             uploads.push((node, name, bytes));
         }
-        workflow.check(catalog).into_result().map_err(comfy_error)?;
+        workflow.check(catalog).into_result().map_err(from_catalog)?;
         for (node, name, bytes) in uploads {
-            let checked = crate::check_media(bytes, None)?;
+            let checked = crate::check_media(bytes, None).map_err(plain)?;
             let ext = checked.mime.rsplit('/').next().unwrap_or("bin").split(['+', ';']).next().unwrap_or("bin");
             // Named by content: a name collision means identical bytes, so overwriting is harmless
             // and repeated uploads of the same input dedupe.
             let filename = format!("nodecraft-{}.{ext}", checked.hash.to_hex());
-            let upload = self.server.upload_image(&filename, bytes, UploadKind::Input, true).map_err(comfy_error)?;
-            let reply = self.send_ok(upload, 64 * 1024).await?;
-            let stored = comfy::parse_upload_response(&reply.body).map_err(comfy_error)?;
+            let upload = self.server.upload_image(&filename, bytes, UploadKind::Input, true).map_err(|e| plain(comfy_error(e)))?;
+            let reply = self.send_ok(upload, 64 * 1024).await.map_err(plain)?;
+            let stored = comfy::parse_upload_response(&reply.body).map_err(|e| plain(comfy_error(e)))?;
             let name_on_server = if stored.subfolder.is_empty() { stored.filename } else { format!("{}/{}", stored.subfolder, stored.filename) };
-            workflow.set_input(catalog, node, name, Value::String(name_on_server)).map_err(comfy_error)?;
+            workflow.set_input(catalog, node, name, Value::String(name_on_server)).map_err(|e| plain(comfy_error(e)))?;
         }
         Ok(workflow)
     }
@@ -251,8 +258,8 @@ impl ComfyProvider {
         QueueState::parse(&response.body).map_err(comfy_error)
     }
 
-    /// Where a prompt is. The queue is read before the history, and history once more when the
-    /// prompt is in neither: a run that finishes between the reads is never mistaken for lost.
+    /// Where a prompt is. The queue is read before the history: a prompt leaves the queue only once
+    /// it is in history, so a run finishing between the two reads is found there, never lost.
     async fn locate(&self, prompt_id: &str) -> Result<Known, ProviderError> {
         let queue = self.queue_state().await?;
         if queue.running.iter().any(|p| p == prompt_id) {
@@ -276,6 +283,7 @@ impl ComfyProvider {
             ));
         }
         let mut outputs = Vec::new();
+        let mut skipped = Vec::new();
         let mut total = 0usize;
         for file in files {
             let remaining = self.max_total_output_bytes.saturating_sub(total);
@@ -300,22 +308,30 @@ impl ComfyProvider {
                         format!("{} came back as a text page, not a file (check the server's auth)", file.filename),
                     ));
                 }
-                _ => {}
+                _ => skipped.push(file.filename.clone()),
             }
+        }
+        if outputs.is_empty() {
+            let names: Vec<String> = skipped.iter().take(5).cloned().collect();
+            return Err(ProviderError::new(ErrorKind::JobFailed, format!("the workflow saved no files NodeCraft can use (skipped: {})", names.join(", "))));
         }
         Ok(outputs)
     }
 
     /// Picks the prompt id for a submit: an id the server already has queued, running or finished
     /// successfully is reused (no second run); one whose prompt failed moves on to a new attempt.
+    /// The queue is read once (it can be large); history is checked per attempt id.
     async fn choose_prompt_id(&self, key: &str) -> Result<(String, bool), ProviderError> {
+        let queue = self.queue_state().await?;
         for attempt in 0..MAX_ATTEMPT_IDS {
             let id = prompt_id_for(&self.salt, key, attempt);
-            match self.locate(&id).await? {
-                Known::Unknown => return Ok((id, false)),
-                Known::Pending(_) | Known::Running => return Ok((id, true)),
-                Known::Finished(entry) if entry.completed && entry.error.is_none() && !entry.interrupted => return Ok((id, true)),
-                Known::Finished(_) => {}
+            if queue.contains(&id) {
+                return Ok((id, true));
+            }
+            match self.history(&id).await? {
+                None => return Ok((id, false)),
+                Some(entry) if entry.completed && entry.error.is_none() && !entry.interrupted => return Ok((id, true)),
+                Some(_) => {}
             }
         }
         Err(ProviderError::new(ErrorKind::UnsupportedInput, "this job failed on the server too many times"))
@@ -346,11 +362,15 @@ fn finished(entry: &HistoryEntry) -> Result<Vec<FileRef>, ProviderError> {
     }
     if let Some(error) = &entry.error {
         let at = entry.error_node.as_ref().map(|(id, class)| format!(" (node {id} {class})")).unwrap_or_default();
-        return Err(ProviderError::new(ErrorKind::Server, format!("{error}{at}")));
+        // Out of memory is worth retrying once the GPU frees up; other workflow errors would just
+        // fail (and maybe cost) again.
+        let lower = error.to_ascii_lowercase();
+        let kind = if lower.contains("out of memory") || lower.contains("oom") { ErrorKind::Server } else { ErrorKind::JobFailed };
+        return Err(ProviderError::new(kind, format!("{error}{at}")));
     }
     if !entry.completed {
         let status = if entry.status.is_empty() { "unknown".to_owned() } else { entry.status.clone() };
-        return Err(ProviderError::new(ErrorKind::Server, format!("the prompt ended without completing (status: {status})")));
+        return Err(ProviderError::new(ErrorKind::JobFailed, format!("the prompt ended without completing (status: {status})")));
     }
     let files: Vec<FileRef> = entry.outputs.iter().flat_map(|(_, files)| files.iter().filter(|f| f.kind == "output").cloned()).collect();
     if files.is_empty() {
@@ -374,12 +394,12 @@ impl Provider for ComfyProvider {
             let workflow = match self.prepare(job, &catalog).await {
                 Ok(w) => w,
                 // Maybe nodes or models were installed since the catalog was fetched: refetch once.
-                Err(e) if e.kind == ErrorKind::UnsupportedInput => {
+                Err((_, true)) => {
                     self.invalidate_catalog();
                     catalog = self.catalog().await?;
-                    self.prepare(job, &catalog).await?
+                    self.prepare(job, &catalog).await.map_err(|(e, _)| e)?
                 }
-                Err(e) => return Err(e),
+                Err((e, false)) => return Err(e),
             };
             let mut request = PromptRequest::new(workflow, self.client_id.clone());
             request.prompt_id = Some(prompt_id.clone());
@@ -582,6 +602,7 @@ mod tests {
         let mut j = job();
         j.inputs = vec![JobInput::Media { role: "2.text".into(), mime: "image/png".into(), bytes: Arc::from(&b"\x89PNG\r\n\x1a\n"[..]) }];
         assert!(block_on(p.submit(&j)).unwrap_err().message.contains("not a file input"));
+        assert_eq!(server.object_info_calls.load(Ordering::SeqCst), 2, "errors a catalog can't fix don't refetch it");
         let mut j = job();
         j.params.insert("values".into(), serde_json::json!({"nodot": 1}));
         assert!(block_on(p.submit(&j)).unwrap_err().message.contains("<node>.<input>"));
@@ -632,6 +653,12 @@ mod tests {
             r#"{"abc":{"outputs":{},"status":{"status_str":"error","completed":false,"messages":[["execution_error",{"node_id":"3","node_type":"KSampler","exception_message":"CUDA out of memory"}]]}}}"#,
         );
         assert!(e.message.contains("CUDA") && e.message.contains("KSampler"), "{e}");
+        assert!(e.is_transient(), "out of memory may pass once the GPU frees up");
+        let e = fail(
+            r#"{"abc":{"outputs":{},"status":{"status_str":"error","completed":false,"messages":[["execution_error",{"node_id":"4","exception_message":"Value not in list: ckpt_name"}]]}}}"#,
+        );
+        assert_eq!(e.kind, ErrorKind::JobFailed);
+        assert!(!e.is_transient(), "a workflow error isn't rerun (and paid for) automatically");
         let e = fail(r#"{"abc":{"outputs":{},"status":{"status_str":"error","completed":false,"messages":[]}}}"#);
         assert!(e.message.contains("status: error"), "{e}");
         let e = fail(r#"{"abc":{"outputs":{},"status":{"status_str":"error","completed":false,"messages":[["execution_interrupted",{}]]}}}"#);
@@ -646,7 +673,8 @@ mod tests {
         let p = provider(server.clone()).with_output_limits(1024, 20);
         *server.view.lock().unwrap() = b"\x00\x01latent-bytes".to_vec();
         let files = [FileRef { filename: "x.latent".into(), subfolder: String::new(), kind: "output".into() }];
-        assert!(block_on(p.download(&files)).unwrap().is_empty(), "unknown types are skipped, not fatal");
+        let e = block_on(p.download(&files)).unwrap_err();
+        assert!(e.message.contains("x.latent") && e.kind == ErrorKind::JobFailed, "all skipped is a clear failure: {e}");
         *server.view.lock().unwrap() = b"<html>Please sign in</html>".to_vec();
         let png = [FileRef { filename: "x.png".into(), subfolder: String::new(), kind: "output".into() }];
         assert_eq!(block_on(p.download(&png)).unwrap_err().kind, ErrorKind::Malformed);

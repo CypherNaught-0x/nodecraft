@@ -12,8 +12,10 @@ a choice a later contributor might otherwise undo.
 - **A submit checks the server first** (queue, then history): a queued, running or successful
   prompt is reused, so a retried submit never queues twice; a failed one moves to a new attempt
   id. Servers that ignore client-chosen ids lose this check.
-- **The queue is read before the history**, and the history again when a prompt is in neither, so
-  a run finishing between reads isn't reported as lost.
+- **The queue is read before the history:** a prompt leaves the queue only once it is in history,
+  so a run finishing between the reads isn't reported as lost.
+- **Workflow errors aren't retried automatically** (`ErrorKind::JobFailed`): running a failing
+  workflow again would usually fail the same way and may cost; out-of-memory stays retryable.
 - **Checks before uploads:** value overrides and `check()` against `/object_info` run before any
   input is uploaded; uploads are named by content hash, so overwriting is harmless.
 - **Only `output` files are results;** a preview-only workflow fails with a clear message. Unknown
