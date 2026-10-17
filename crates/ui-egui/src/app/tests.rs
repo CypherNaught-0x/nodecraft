@@ -2,7 +2,7 @@ use super::*;
 use egui_kittest::Harness;
 use std::collections::BTreeSet;
 
-fn harness() -> Harness<'static, NodeCraftApp> {
+pub(super) fn harness() -> Harness<'static, NodeCraftApp> {
     Harness::builder()
         .with_step_dt(1.0 / 60.0)
         .with_max_steps(120)
