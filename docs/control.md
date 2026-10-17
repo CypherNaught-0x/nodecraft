@@ -57,6 +57,20 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 - The app answers 16 requests per frame.
 - Up to 4 screenshots can be pending, each at most 64 MiB of PNG.
 
-The issue also asks for a stdio transport. The desktop app has no stdin worth reading, and
-headless stdio automation is `nodecraft-cli mcp`. A stdio control mode is a follow-up (see
-`docs/decisions.md`).
+## Headless stdio
+
+`nodecraft-cli control` serves the same methods against a new empty in-memory project on
+stdin/stdout. Its parent process is trusted: no token, token file, socket or keychain service is
+created. `hello` with empty params is optional and reports the same app/version/protocol; TCP
+still requires its token handshake. This is headless control, not a bridge to a running app.
+
+Requests are processed one at a time. Only newline-delimited JSON replies go to stdout;
+diagnostics go to stderr. The shared 4 MiB request limit applies. Blank lines are ignored.
+Malformed JSON, invalid UTF-8 and oversized lines return `invalid_input` with a null id, discard
+that line, and recover at the next line. EOF processes a final unterminated line and exits
+successfully; input/output failure exits nonzero with a diagnostic. There is no socket idle or
+handshake timeout on trusted pipes; the parent controls pipe lifetime and must read replies.
+
+Screenshots and live-only canvas navigation return `unsupported` because no window exists.
+Human-only and paid command restrictions remain shared with MCP/TCP. Graph edits use the same
+validation, revisions and undo. `nodecraft-cli mcp` remains the separate MCP stdio protocol.
