@@ -501,3 +501,48 @@ fn the_whole_plan_has_a_byte_budget() {
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &all, &BTreeSet::new()).unwrap() else { panic!() };
     assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::Invalid(m), .. }] if m.contains("this run")));
 }
+
+#[test]
+fn nested_list_fan_out_is_charged_before_it_is_copied() {
+    // A stored list output holding one list of 4,093 empty texts (within the document's item
+    // limit), wired 4,096 times into a list input: tiny as text, ~16.7M values once expanded.
+    let inner = Value::List(vec![Value::Text(String::new()); 4093]);
+    let mut p = project(vec![of_kind(1, "test.split", Some(Value::List(vec![inner]))), relay(2, None)], &[]);
+    let changes = (0..4096u16).map(|e| wire(e, (1, "items"), (2, "in"), u32::from(e))).collect();
+    nodecraft_graph::Changeset::new(changes).apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let start = std::time::Instant::now();
+    let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[2]), &BTreeSet::new()).unwrap() else { panic!("must be blocked") };
+    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::Invalid(m), .. }] if m.contains("too large")), "{blockers:?}");
+    // Refused before materialising the expansion (which would take seconds and ~0.5 GB).
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn fan_in_from_another_step_has_the_same_item_cap() {
+    // 1 (text) → 2 (relay) ⇉ 3 (relay) over more noodles than a list may hold; both relays run.
+    let mut p = project(vec![text(1, "a"), relay(2, None), relay(3, None)], &[]);
+    let mut changes = vec![wire(60000, (1, "out"), (2, "in"), 0)];
+    let count = u16::try_from(MAX_LIST_ITEMS + 1).unwrap();
+    changes.extend((0..count).map(|e| wire(e, (2, "out"), (3, "in"), u32::from(e))));
+    nodecraft_graph::Changeset::new(changes).apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[2, 3]), &BTreeSet::new()).unwrap() else {
+        panic!("must be blocked")
+    };
+    assert!(blockers.iter().any(|b| b.node == id(3) && matches!(&b.reason, Reason::Invalid(m) if m.contains("items"))), "{blockers:?}");
+}
+
+#[test]
+fn an_unusable_active_result_is_rerun_not_waited_on() {
+    // Relay 2's active generation recorded no outputs (a different port layout): with-upstream
+    // schedules 2 again instead of blocking 3 on a result it can't use.
+    let mut stale_layout = relay(2, None);
+    let generation = GenerationId::from_bytes([2; 16]);
+    stale_layout.history.push(Generation { id: generation, outputs: vec![] });
+    stale_layout.active = Some(generation);
+    let p = project(vec![text(1, "a"), stale_layout, relay(3, None)], &[(1, 2), (2, 3)]);
+    let canvas = p.canvases().get(&C).unwrap();
+    let plan = ready(plan_run(canvas, &kinds(), &RunMode::WithUpstream, &ids(&[3]), &BTreeSet::new()).unwrap());
+    assert_eq!(order(&plan), vec![id(2), id(3)]);
+}

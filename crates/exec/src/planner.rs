@@ -187,8 +187,8 @@ pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTree
 }
 
 /// Values already resolved for an upstream `(node, output port)`, with whether that output is a
-/// list.
-type Cache = BTreeMap<(NodeId, String), Result<(Value, bool), Reason>>;
+/// list and the value's size (measured once, so the budget is checked before any copy).
+type Cache = BTreeMap<(NodeId, String), Result<(Value, bool, usize), Reason>>;
 
 /// Edges indexed by target, once per plan.
 struct Graph<'a> {
@@ -227,7 +227,7 @@ impl<'a> Graph<'a> {
         while let Some(id) = stack.pop() {
             for up in self.upstream(id) {
                 let Some(node) = self.canvas.nodes().get(&up) else { continue };
-                let needs_run = !self.is_source(node) && (stale.contains(&up) || active_outputs(node).is_none());
+                let needs_run = !self.is_source(node) && (stale.contains(&up) || usable_outputs(node).is_none());
                 if needs_run && run.insert(up) {
                     stack.push(up);
                 }
@@ -297,35 +297,42 @@ impl<'a> Graph<'a> {
                     after.insert(*up);
                     let list = upstream.and_then(|u| u.outputs.iter().find(|p| p.name == *up_port)).is_some_and(|p| p.port_type.many);
                     from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list });
-                    continue;
-                }
-                let resolved = cache.entry((*up, (*up_port).to_owned())).or_insert_with(|| self.resolve(*up, up_port)).clone();
-                match resolved {
-                    Ok((value, list)) => {
-                        let size = value_bytes(&value);
-                        bytes = bytes.saturating_add(size);
-                        *plan_bytes = plan_bytes.saturating_add(size);
-                        if bytes > MAX_STEP_INPUT_BYTES || *plan_bytes > MAX_PLAN_INPUT_BYTES {
-                            let why = if bytes > MAX_STEP_INPUT_BYTES {
-                                "its inputs are too large to run in one step"
-                            } else {
-                                "the inputs of this run are too large to plan at once"
-                            };
-                            blockers.push(blocker(Some(&port.name), None, Reason::Invalid(why.into())));
-                            return Err(blockers);
+                } else {
+                    let resolved = cache.entry((*up, (*up_port).to_owned())).or_insert_with(|| {
+                        self.resolve(*up, up_port).map(|(value, list)| {
+                            let size = value_bytes(&value);
+                            (value, list, size)
+                        })
+                    });
+                    match resolved {
+                        Ok((value, list, size)) => {
+                            let (list, size) = (*list, *size);
+                            bytes = bytes.saturating_add(size);
+                            *plan_bytes = plan_bytes.saturating_add(size);
+                            if bytes > MAX_STEP_INPUT_BYTES || *plan_bytes > MAX_PLAN_INPUT_BYTES {
+                                let why = if bytes > MAX_STEP_INPUT_BYTES {
+                                    "its inputs are too large to run in one step"
+                                } else {
+                                    "the inputs of this run are too large to plan at once"
+                                };
+                                blockers.push(blocker(Some(&port.name), None, Reason::Invalid(why.into())));
+                                return Err(blockers);
+                            }
+                            // Within budget: only now copy. A list output into a list input
+                            // contributes its items, not a nested list.
+                            match value {
+                                Value::List(items) if list && port.port_type.many => from.extend(items.iter().cloned().map(InputSource::Value)),
+                                value => from.push(InputSource::Value(value.clone())),
+                            }
                         }
-                        // A list output into a list input contributes its items, not a nested list.
-                        match value {
-                            Value::List(items) if list && port.port_type.many => from.extend(items.into_iter().map(InputSource::Value)),
-                            value => from.push(InputSource::Value(value)),
+                        Err(reason) => {
+                            if reported.insert((port.name.as_str(), *up)) {
+                                blockers.push(blocker(Some(&port.name), Some(*up), reason.clone()));
+                            }
                         }
                     }
-                    Err(reason) => {
-                        if reported.insert((port.name.as_str(), *up)) {
-                            blockers.push(blocker(Some(&port.name), Some(*up), reason));
-                        }
-                    }
                 }
+                // The same item cap for values and for outputs of other steps in this run.
                 if from.len() > MAX_LIST_ITEMS {
                     blockers.push(blocker(Some(&port.name), None, Reason::Invalid(format!("its {} input has more than {MAX_LIST_ITEMS} items", port.name))));
                     break;
@@ -373,8 +380,7 @@ impl<'a> Graph<'a> {
                 })
                 .ok_or(Reason::NoResult);
         }
-        // Results are positional; a result recorded for a different port layout is not used.
-        let outputs = active_outputs(node).filter(|outputs| outputs.len() == node.outputs.len()).ok_or(Reason::NoResult)?;
+        let outputs = usable_outputs(node).ok_or(Reason::NoResult)?;
         outputs.get(index).cloned().map(|value| (value, list)).ok_or(Reason::NoResult)
     }
 }
@@ -385,18 +391,27 @@ fn active_outputs(node: &Node) -> Option<&[Value]> {
     node.history.iter().find(|g| g.id == active).map(|g| g.outputs.as_slice())
 }
 
-/// Approximate in-memory size of a value, iteratively (lists can nest).
+/// The active outputs when they can be used: results are positional, so one recorded for a
+/// different port layout is not. The upstream walk and resolution share this, so a node whose
+/// result can't be used is re-run rather than waited on.
+fn usable_outputs(node: &Node) -> Option<&[Value]> {
+    active_outputs(node).filter(|outputs| outputs.len() == node.outputs.len())
+}
+
+/// Approximate in-memory size of a value, iteratively (lists can nest): every value, container
+/// or not, costs its own storage, plus its text or media metadata.
 fn value_bytes(value: &Value) -> usize {
     let mut total = 0usize;
     let mut stack = vec![value];
     while let Some(value) = stack.pop() {
-        total = total.saturating_add(match value {
+        total = total.saturating_add(std::mem::size_of::<Value>()).saturating_add(match value {
             Value::Text(text) => text.len(),
             Value::List(items) => {
                 stack.extend(items.iter());
                 0
             }
-            _ => 64,
+            Value::Media(asset) => asset.mime.as_str().len().saturating_add(64),
+            _ => 0,
         });
     }
     total
