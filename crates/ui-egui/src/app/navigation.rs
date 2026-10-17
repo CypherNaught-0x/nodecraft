@@ -19,6 +19,8 @@ impl NodeCraftApp {
             || canvas::text_input_focused(ctx)
             || self.drag.is_some()
             || self.marquee.is_some()
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
             || (!own_pan && (ctx.dragged_id().is_some() || self.navigation.drag.is_some()));
         NavigationContext {
             canvas: self.canvas,
@@ -127,7 +129,11 @@ impl NodeCraftApp {
                 toggle_enabled: toggle,
                 pan_enabled: pan,
                 preview,
-                canvas_gesture: self.drag.is_some() || self.marquee.is_some() || (ui.ctx().dragged_id().is_some() && !self.navigation.pointer_owned),
+                canvas_gesture: self.drag.is_some()
+                    || self.marquee.is_some()
+                    || self.comments.drag.is_some()
+                    || self.comments.gesture_cancelled
+                    || (ui.ctx().dragged_id().is_some() && !self.navigation.pointer_owned),
                 tokens: self.theme.tokens(),
             },
         );

@@ -135,6 +135,7 @@ impl Registry {
             .chain(crate::search_cmds::specs())
             .chain(crate::layout_cmds::specs())
             .chain(crate::file_cmds::specs())
+            .chain(crate::comment_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -192,8 +193,16 @@ impl<'a> JsonItems<'a> {
 /// Also protects callers that construct JSON values programmatically instead of using a
 /// text decoder. The iterator stack is bounded by nesting depth, not array width.
 pub(crate) fn validate_json(root: &Value) -> Result<(), Error> {
+    validate_json_limit(root, 1024 * 1024)
+}
+
+/// Input content retains its per-field limits; this small allowance holds IDs and field names.
+pub(crate) fn validate_input_json(root: &Value) -> Result<(), Error> {
+    validate_json_limit(root, 1024 * 1024 + 1024)
+}
+
+fn validate_json_limit(root: &Value, max_bytes: usize) -> Result<(), Error> {
     const MAX_ITEMS: usize = 16_384;
-    const MAX_BYTES: usize = 1024 * 1024;
     let mut stack = vec![JsonItems::Root(Some(root).into_iter())];
     let mut items = 0_usize;
     let mut bytes = 0_usize;
@@ -225,7 +234,7 @@ pub(crate) fn validate_json(root: &Value) -> Result<(), Error> {
             }
             _ => {}
         }
-        if bytes > MAX_BYTES {
+        if bytes > max_bytes {
             return Err(invalid("command JSON exceeds text limit"));
         }
     }
@@ -233,7 +242,7 @@ pub(crate) fn validate_json(root: &Value) -> Result<(), Error> {
 }
 
 pub(crate) fn params<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    validate_json(value)?;
+    validate_input_json(value)?;
     serde_path_to_error::deserialize(value).map_err(|error| {
         // Never echo raw serde diagnostics, enum variants or caller-controlled map keys.
         let diagnostic = error.inner().to_string();

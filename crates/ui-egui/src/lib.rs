@@ -7,6 +7,7 @@
 pub mod app;
 pub mod canvas;
 pub mod card;
+pub mod comments;
 pub mod navigation;
 pub mod search;
 pub mod selection;

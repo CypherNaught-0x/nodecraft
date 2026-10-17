@@ -144,6 +144,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
     card::world_rect(node, resolved.as_deref(), t)
 }
 
+mod comments;
 mod layout;
 mod navigation;
 mod search;
@@ -157,6 +158,8 @@ pub struct NodeCraftApp {
     pub canvas_prefs: CanvasSettings,
     pub navigation: Navigation,
     pub search: crate::search::Search,
+    pub comments: crate::comments::Discussions,
+    comments_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     search_focused: bool,
     search_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
@@ -243,6 +246,16 @@ impl NodeCraftApp {
             *slot = Some(request.clone());
             Ok(json!({"accepted":true}))
         })?;
+        let comments_mailbox = Rc::new(RefCell::new(None));
+        let mailbox = Rc::clone(&comments_mailbox);
+        session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, move |request| {
+            let mut slot = mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "discussions host is busy"))?;
+            if slot.is_some() {
+                return Err(Error::new(ErrorKind::Conflict, "discussion request is already pending"));
+            }
+            *slot = Some(request.clone());
+            Ok(json!({"accepted":true}))
+        })?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -252,6 +265,8 @@ impl NodeCraftApp {
             canvas_prefs: CanvasSettings::default(),
             navigation: Navigation::default(),
             search: crate::search::Search::default(),
+            comments: crate::comments::Discussions::default(),
+            comments_mailbox,
             search_focused: false,
             search_mailbox,
             navigation_mailbox,
@@ -286,6 +301,7 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
+        let comments_blocks = self.comments_overlay(ui);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         if !canvas::text_input_focused(ui.ctx()) {
@@ -323,7 +339,7 @@ impl NodeCraftApp {
             }
         }
         let layout_blocks = self.layout_overlay(ui);
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || layout_blocks;
+        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || layout_blocks || comments_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
         let canvas_blocks = overlay_blocks || egui::Popup::is_any_open(ui.ctx());
         let shift = ui.input(|i| i.modifiers.shift);
@@ -358,6 +374,7 @@ impl NodeCraftApp {
         let mut pan = Vec2::ZERO;
         let mut query = None;
         let mut layout_mode = None;
+        let mut comment_target = None;
         // The owning context menu may invoke layout; unrelated popups have no such route.
         let layout_context_ready = self.layout_base_available(ui.ctx());
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
@@ -418,6 +435,13 @@ impl NodeCraftApp {
                         r.context_menu(|ui| {
                             let owner = egui::Popup::context_menu(&r).get_id();
                             let owned = egui::Popup::is_id_open(ui.ctx(), owner);
+                            if ui
+                                .add_enabled(owned && !self.text_focused && !canvas::text_input_focused(ui.ctx()), egui::Button::new("Comment on this node"))
+                                .clicked()
+                            {
+                                comment_target = Some((node.id, owner));
+                                ui.close();
+                            }
                             ui.label("Format selection");
                             ui.add_enabled_ui(layout_context_ready && owned, |ui| {
                                 if ui.button("Grid").clicked() {
@@ -496,6 +520,9 @@ impl NodeCraftApp {
         }
         if let Some((mode, owner)) = layout_mode {
             self.apply_layout_menu(ui.ctx(), mode, owner);
+        }
+        if let Some((node, owner)) = comment_target {
+            self.compose_on_node(ui.ctx(), node, Some(owner));
         }
         for (id, intent) in intents {
             let (command, params, editing) = match intent {
@@ -581,6 +608,7 @@ fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
             "2" => key = Some(egui::Key::Num2),
             "M" => key = Some(egui::Key::M),
             "F" => key = Some(egui::Key::F),
+            "C" => key = Some(egui::Key::C),
             "Enter" => key = Some(egui::Key::Enter),
             "Escape" => key = Some(egui::Key::Escape),
             _ => return false,

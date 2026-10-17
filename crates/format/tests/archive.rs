@@ -247,6 +247,9 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
                     id: nodecraft_types::CommentId::from_bytes([n; 16]),
                     text: "x".repeat(1024 * 1024),
                     pos: Default::default(),
+                    node: None,
+                    replies: vec![],
+                    resolved: false,
                 },
             })
             .collect(),
@@ -272,8 +275,8 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
 }
 
 #[test]
-fn no_invented_legacy_migration_or_future_data_is_silently_loaded() {
-    for version in [0, 2, u32::MAX] {
+fn unsupported_versions_are_rejected_before_graph_decode() {
+    for version in [0, 3, u32::MAX] {
         let json = serde_json::to_vec(&json!({"version":version,"project":{"unknown":"future"}})).unwrap();
         assert_eq!(decode(&zip(&[("project.json", &json)])).unwrap_err().kind, ErrorKind::Unsupported);
     }

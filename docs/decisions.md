@@ -316,3 +316,24 @@ and edge-crossing optimization are outside this contract.
   checked; audio/video/document metadata needs later probes. Project hashes use types::Blake3,
   bridged to media::ContentHash at format. The bounded initial codec still needs a separately
   tracked file-backed/lazy asset implementation to meet plan 4.6 for large projects; see [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54.
+
+
+## 2026-10-17 · Local discussions, notes and format v2 (#68)
+
+- Keep legacy root text and add defaulted flat replies, resolved state and optional node-relative
+  anchors. Node deletion detaches discussions instead of deleting their content; undo stores only
+  pin IDs/offsets beside the restored node/edges.
+- Preserve valid-final transaction ordering. Structural batches with possible discussions certify
+  A→B→A→B and identical inverse spelling, preflighting actual redo under graph/history/journal
+  caps. One extra clone/two probe applications are an explicit bounded tradeoff; move-only edits
+  stay on their existing single-stage path.
+- Retain 8 draft allocations/2 MiB String capacity with exact held Session identity and revision.
+  Blur never saves; explicit Save/Cancel and document undo avoid retaining egui's 100 full-text
+  draft snapshots. Inactive previews are bounded; focused editing still has transient egui copies.
+- Notes use structure.note with no ports/jobs, not an executable source-text alias. Local-owner
+  editing has no fabricated account/ACL metadata; #121 owns future central sharing permissions.
+- Freeze Comments archive v2/NCRJ0002 with exact reviewed-v1 fixtures, original checkpoint-byte
+  recovery identities and atomic conversion before new appends. Scalar Values and Node.config
+  are v2 additions too. Later Tags/Fields integrate as v3 with lossless v1/v2 defaults; old headers
+  reject their actual reserved roles even when values are null/default, without rejecting harmless
+  unrelated extension objects. This avoids competing incompatible v2 writers.

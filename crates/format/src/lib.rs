@@ -7,7 +7,9 @@
 mod archive;
 mod assets;
 pub mod journal;
+mod legacy;
 pub mod storage;
+mod v2;
 
 pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, encode};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes};

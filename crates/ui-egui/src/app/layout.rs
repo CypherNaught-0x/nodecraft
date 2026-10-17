@@ -71,6 +71,8 @@ impl NodeCraftApp {
             || canvas::text_input_focused(ctx)
             || self.drag.is_some()
             || self.marquee.is_some()
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
             || ctx.dragged_id().is_some()
             || self.navigation.pointer_owned
             || self.navigation.drag.is_some()
