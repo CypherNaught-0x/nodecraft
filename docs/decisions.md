@@ -595,6 +595,13 @@ a choice a later contributor might otherwise undo.
 - **Each generation the provider failed is its own charge:** it is charged its estimate as
   `unresolved`, and the retry's fresh submission is charged under the key with `#2`, `#3`, … appended,
   so the usage log's once-per-key rule doesn't swallow it.
-- **Free jobs always fit** (as in `cost::check`), and a charge the log can't record leaves its
-  reservation held, so the money still counts against the caps. Jobs without an idempotency key
-  are refused.
+- **Reported costs are hostile input.** A cost in another currency than the estimate, or one
+  larger than any job could cost, is ignored, and the estimate is charged as `unresolved`. A
+  reported cost for a key already charged as `unresolved` settles that charge.
+- **Free jobs always fit** (as in `cost::check`). A job whose charge the log couldn't record is
+  refused before submit: no key, or a provider, model or key too long. A charge the log still
+  refuses is reported to the host (`Budget::on_error`) and keeps counting against the caps for
+  the session.
+- **Reservations live in memory.** After a crash, an interrupted submit that never got a handle
+  isn't charged. Persisting them, for example as `estimate` rows settled on restart, is a
+  follow-up.

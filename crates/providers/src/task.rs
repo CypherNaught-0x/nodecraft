@@ -50,8 +50,8 @@ pub struct RunFailure {
     /// The provider itself reported the job as failed: it is over, and resuming it would only
     /// read the same failure again, so a retry must submit afresh.
     pub finished: bool,
-    /// The submit was interrupted (cancelled midway, timed out, cut off, a server error) with no
-    /// handle back: the provider may have accepted, and billed, the job anyway.
+    /// The submit was interrupted (cancelled midway, timed out, cut off, a server error, a garbled
+    /// reply) with no handle back: the provider may have accepted, and billed, the job anyway.
     pub uncertain: bool,
 }
 
@@ -62,7 +62,18 @@ impl RunFailure {
 
     /// A submit that failed with `error`: uncertain unless the error says the provider refused it.
     fn submit_failed(error: ProviderError) -> Self {
-        let uncertain = matches!(error.kind, ErrorKind::Cancelled | ErrorKind::Timeout | ErrorKind::Network | ErrorKind::Server);
+        // A garbled reply, or one saying the job ran (failed or expired), may follow an accepted
+        // submission too.
+        let uncertain = matches!(
+            error.kind,
+            ErrorKind::Cancelled
+                | ErrorKind::Timeout
+                | ErrorKind::Network
+                | ErrorKind::Server
+                | ErrorKind::Malformed
+                | ErrorKind::JobFailed
+                | ErrorKind::Expired
+        );
         Self { error, handle: None, finished: false, uncertain }
     }
 
@@ -413,6 +424,9 @@ mod tests {
             (ErrorKind::Network, true),
             (ErrorKind::Timeout, true),
             (ErrorKind::Server, true),
+            (ErrorKind::Malformed, true),
+            (ErrorKind::JobFailed, true),
+            (ErrorKind::Expired, true),
             (ErrorKind::Auth, false),
             (ErrorKind::RateLimited, false),
             (ErrorKind::UnsupportedInput, false),

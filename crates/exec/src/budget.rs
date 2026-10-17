@@ -15,7 +15,7 @@
 //! Caps are in their own currency; an estimate in another currency can't be compared and is
 //! refused (as `cost::check` does). Spend is read from the usage log, which keeps evicted spend.
 
-use crate::cost::{Budgets, Charge, UsageEntry, UsageLog, format_money};
+use crate::cost::{Budgets, Charge, MAX_CHARGE_MICROS, MAX_TEXT, UsageEntry, UsageLog, format_money};
 use crate::scheduler::JobId;
 use nodecraft_types::{Currency, Error, ErrorKind, Money, NodeId};
 use std::collections::BTreeMap;
@@ -56,6 +56,8 @@ pub enum Refusal {
     AlreadyReserved(JobId),
     /// The job has no idempotency key, so its charge couldn't be told from a retry's.
     MissingKey,
+    /// The job's provider, model or key is too long for the usage log, so it couldn't be charged.
+    Unrecordable,
     /// The totals don't fit in the money type.
     Overflow,
 }
@@ -76,6 +78,7 @@ impl fmt::Display for Refusal {
             Self::Currency { cap, estimate } => write!(f, "the cap is in {}, but the price is in {}", String::from(*cap), String::from(*estimate)),
             Self::AlreadyReserved(job) => write!(f, "{job} already holds a budget reservation"),
             Self::MissingKey => f.write_str("the job has no idempotency key, so its charge can't be tracked"),
+            Self::Unrecordable => f.write_str("the job's provider, model or key is too long to record its charge"),
             Self::Overflow => f.write_str("the amounts are too large"),
         }
     }
@@ -103,7 +106,13 @@ pub struct Ledger {
     usage: UsageLog,
     reserved: BTreeMap<JobId, Reservation>,
     reserved_totals: BTreeMap<Currency, Money>,
+    /// Charges the usage log refused: they no longer hold a reservation but still count against
+    /// the caps for the rest of the session.
+    unrecorded: BTreeMap<Currency, Money>,
 }
+
+/// Room left in a usage key for the `#n` suffix of resubmissions.
+pub const KEY_SUFFIX_ROOM: usize = 12;
 
 fn add_to(map: &mut BTreeMap<Currency, Money>, amount: Money) -> Result<(), Refusal> {
     let total = map.entry(amount.currency).or_insert_with(|| Money::zero(amount.currency));
@@ -116,7 +125,15 @@ impl Ledger {
     /// project) and the user's caps. `allow_unpriced` lets jobs with no known price run while a
     /// cap is set (they could spend anything).
     pub fn new(budgets: Budgets, allow_unpriced: bool, session: impl Into<String>, usage: UsageLog) -> Self {
-        Self { budgets, allow_unpriced, session: session.into(), usage, reserved: BTreeMap::new(), reserved_totals: BTreeMap::new() }
+        Self {
+            budgets,
+            allow_unpriced,
+            session: session.into(),
+            usage,
+            reserved: BTreeMap::new(),
+            reserved_totals: BTreeMap::new(),
+            unrecorded: BTreeMap::new(),
+        }
     }
 
     /// Changes the caps (the user edited them). Reservations already made stand.
@@ -138,6 +155,21 @@ impl Ledger {
         &self.reserved_totals
     }
 
+    /// Charges the usage log refused this session, per currency (they still count).
+    pub fn unrecorded(&self) -> &BTreeMap<Currency, Money> {
+        &self.unrecorded
+    }
+
+    /// Whether a job's charge could be recorded: its provider, model and key (with room for a
+    /// resubmission suffix) and this ledger's session fit the usage log. Check before submitting.
+    pub fn recordable(&self, provider: &str, model: &str, idempotency_key: &str) -> Result<(), Refusal> {
+        if idempotency_key.is_empty() {
+            return Err(Refusal::MissingKey);
+        }
+        let too_long = [provider.len(), model.len(), self.session.len(), idempotency_key.len().saturating_add(KEY_SUFFIX_ROOM)].iter().any(|n| *n > MAX_TEXT);
+        if too_long { Err(Refusal::Unrecordable) } else { Ok(()) }
+    }
+
     fn any_cap(&self) -> bool {
         self.budgets.per_call.is_some() || self.budgets.session.is_some() || self.budgets.project.is_some()
     }
@@ -151,6 +183,10 @@ impl Ledger {
         if estimate.micros == 0 {
             return Ok(());
         }
+        // No job costs this much; the usage log would refuse the charge.
+        if estimate.micros > MAX_CHARGE_MICROS {
+            return Err(Refusal::Overflow);
+        }
         if let Some(cap) = self.budgets.per_call {
             if cap.currency != estimate.currency {
                 return Err(Refusal::Currency { cap: cap.currency, estimate: estimate.currency });
@@ -160,7 +196,14 @@ impl Ledger {
             }
         }
         let spent = self.usage.spent(&self.session);
-        let reserved = self.reserved_totals.get(&estimate.currency).copied().unwrap_or(Money::zero(estimate.currency));
+        let zero = Money::zero(estimate.currency);
+        let reserved = self
+            .reserved_totals
+            .get(&estimate.currency)
+            .copied()
+            .unwrap_or(zero)
+            .checked_add(self.unrecorded.get(&estimate.currency).copied().unwrap_or(zero))
+            .map_err(|_| Refusal::Overflow)?;
         for (cap, already, project) in [(self.budgets.session, &spent.session, false), (self.budgets.project, &spent.project, true)] {
             let Some(cap) = cap else { continue };
             if cap.currency != estimate.currency {
@@ -205,16 +248,27 @@ impl Ledger {
     /// Settles a job that ran or may have run: charges the provider's reported `actual` cost, or
     /// the estimate when it reported none, records it, and frees the reservation. Returns what
     /// was charged (`None` when nothing was known to charge). A retry or resume under the same
-    /// provider and idempotency key is charged once. If the charge can't be recorded (`Err`),
-    /// the reservation stays held, so the money still counts against the caps.
+    /// provider and idempotency key is charged once; a reported cost for a key charged as
+    /// unresolved before settles that charge.
+    ///
+    /// A reported cost is hostile input: one in another currency than the estimate, or larger
+    /// than any job could cost, is ignored and the estimate is charged as unresolved. If the
+    /// charge can't be recorded (`Err`), it still counts against the caps for the session
+    /// ([`Ledger::unrecorded`]).
     pub fn commit(&mut self, job: JobId, charge: Settlement<'_>) -> Result<Option<Money>, Error> {
         let reservation = self.reserved.get(&job).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, format!("{job} has no budget reservation")))?;
-        let (cost, status) = match (charge.actual, reservation.estimate) {
+        let actual = charge.actual.filter(|actual| actual.micros <= MAX_CHARGE_MICROS && reservation.estimate.is_none_or(|e| e.currency == actual.currency));
+        let (cost, status) = match (actual, reservation.estimate) {
             (Some(actual), _) => (actual, Charge::Actual),
+            (None, Some(estimate)) if charge.actual.is_some() => (estimate, Charge::Unresolved),
             (None, Some(estimate)) => (estimate, if charge.unresolved { Charge::Unresolved } else { Charge::Actual }),
             (None, None) => {
                 self.unreserve(job);
-                return Ok(None);
+                // An unpriced job whose reported cost can't be trusted: nothing sound to charge.
+                return match charge.actual {
+                    Some(_) => Err(Error::new(ErrorKind::InvalidInput, "the provider reported an implausible cost for an unpriced job")),
+                    None => Ok(None),
+                };
             }
         };
         let entry = UsageEntry {
@@ -227,9 +281,19 @@ impl Ledger {
             idempotency_key: charge.idempotency_key.to_owned(),
             status,
         };
-        let recorded = self.usage.record(entry)?;
         self.unreserve(job);
-        Ok(recorded.then_some(cost))
+        match self.usage.record(entry) {
+            Ok(true) => Ok(Some(cost)),
+            // Already charged under this key: a reported cost settles an unresolved charge.
+            Ok(false) if status == Charge::Actual && actual.is_some() => {
+                Ok(self.usage.settle(charge.provider, charge.idempotency_key, cost, Charge::Actual).is_ok().then_some(cost))
+            }
+            Ok(false) => Ok(None),
+            Err(error) => {
+                let _ = add_to(&mut self.unrecorded, cost);
+                Err(error)
+            }
+        }
     }
 
     /// Gives a job's reservation back without charging: it certainly never reached the provider.

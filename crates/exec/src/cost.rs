@@ -310,7 +310,7 @@ pub const MAX_CHARGE_MICROS: u64 = 1_000_000 * 1_000_000;
 /// Largest total a saved log may claim: room for a million maximal charges, far from overflow.
 pub const MAX_TOTAL_MICROS: u64 = MAX_CHARGE_MICROS * 1_000_000;
 /// Longest session id, provider, model or key text accepted.
-const MAX_TEXT: usize = 512;
+pub const MAX_TEXT: usize = 512;
 
 type Totals = BTreeMap<Currency, Money>;
 

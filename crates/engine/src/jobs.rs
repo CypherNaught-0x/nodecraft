@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use nodecraft_exec::budget::{Ledger, Refusal, Settlement};
+use nodecraft_exec::budget::{Ledger, Settlement};
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{Event, JobId, Outcome, Start};
 use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, JobHandle, Provider, ProviderError, ProviderJob, RunLimits, RunUpdate};
@@ -80,6 +80,8 @@ pub struct ProviderRunner {
 pub struct Budget {
     pub ledger: Arc<Mutex<Ledger>>,
     pub wall_clock_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Told when a charge couldn't be recorded (it still counts against the caps).
+    pub on_error: Arc<dyn Fn(JobId, nodecraft_types::Error) + Send + Sync>,
 }
 
 impl Budget {
@@ -101,9 +103,9 @@ impl Budget {
             node: account.node,
             at_ms: (self.wall_clock_ms)(),
         };
-        self.with(|ledger| {
-            let _ = ledger.commit(job, charge);
-        });
+        if let Err(error) = self.with(|ledger| ledger.commit(job, charge)) {
+            (self.on_error)(job, error);
+        }
     }
 
     /// Closes an account that won't be resumed: charged as unresolved if it may have been billed,
@@ -244,13 +246,19 @@ impl JobRunner for ProviderRunner {
             // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
             // step so `forget` finds the handle stored under it.
             queued.job.idempotency_key = start.idempotency_key.clone();
-            if let Some(registered) = lock().jobs.get_mut(&start.job) {
-                registered.job.idempotency_key = start.idempotency_key.clone();
+            {
+                let mut s = lock();
+                let old = s.jobs.get_mut(&start.job).map(|registered| std::mem::replace(&mut registered.job.idempotency_key, start.idempotency_key.clone()));
+                // Requeued under a new key: the old key's handle and counters are done with.
+                if let Some(old) = old.filter(|old| *old != start.idempotency_key) {
+                    s.handles.remove(&old);
+                    s.provider_failures.remove(&old);
+                }
             }
             let job_id = start.job;
             if let Some(budget) = &budget {
-                if start.idempotency_key.is_empty() {
-                    return Outcome::Failed { error: Refusal::MissingKey.job_error(), transient: false };
+                if let Err(refusal) = budget.with(|ledger| ledger.recordable(queued.provider.id(), &queued.job.model, &start.idempotency_key)) {
+                    return Outcome::Failed { error: refusal.job_error(), transient: false };
                 }
                 let key = usage_key(&start.idempotency_key, lock().provider_failures.get(&start.idempotency_key).copied().unwrap_or(0));
                 let held = lock().accounts.get(&job_id).cloned();
@@ -264,9 +272,6 @@ impl JobRunner for ProviderRunner {
                     let refused = budget.with(|ledger| match handle {
                         // Resumed after a restart: already running, so its money is committed.
                         Some(_) => ledger.adopt(job_id, queued.estimate).err(),
-                        // A reservation left by a charge that couldn't be recorded is taken over:
-                        // it already counts against the caps.
-                        None if ledger.is_reserved(job_id) => None,
                         None => ledger.reserve(job_id, queued.estimate).err(),
                     });
                     if let Some(refusal) = refused {
@@ -534,7 +539,7 @@ mod tests {
 
     fn budgeted(budgets: Budgets, limits: RunLimits) -> (ProviderRunner, Arc<Mutex<Ledger>>) {
         let ledger = Arc::new(Mutex::new(Ledger::new(budgets, false, "s1", UsageLog::default())));
-        let budget = Budget { ledger: Arc::clone(&ledger), wall_clock_ms: Arc::new(|| 1_700_000_000_000) };
+        let budget = Budget { ledger: Arc::clone(&ledger), wall_clock_ms: Arc::new(|| 1_700_000_000_000), on_error: Arc::new(|_, _| {}) };
         let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), limits, Arc::new(|_, _| {}), Arc::new(|_, _| {})).with_budget(budget);
         (runner, ledger)
     }
@@ -619,6 +624,7 @@ mod tests {
         let token = CancelToken::default();
         token.cancel();
         assert_eq!(block_on(runner.run(start(1), token)), Outcome::Cancelled);
+        assert!(!ledger.lock().unwrap().is_reserved(JobId(1)));
         runner.forget(JobId(1));
         assert!(charges(&ledger).is_empty());
     }
@@ -703,7 +709,7 @@ mod tests {
         use nodecraft_exec::scheduler::{JobSpec, Limits, RetryPolicy, Scheduler};
         let runtime = Arc::new(PoolRuntime(futures::executor::ThreadPool::new().unwrap(), AtomicU64::new(0)));
         let ledger = Arc::new(Mutex::new(Ledger::new(Budgets::default(), false, "s1", UsageLog::default())));
-        let budget = Budget { ledger: Arc::clone(&ledger), wall_clock_ms: Arc::new(|| 0) };
+        let budget = Budget { ledger: Arc::clone(&ledger), wall_clock_ms: Arc::new(|| 0), on_error: Arc::new(|_, _| {}) };
         let runner = Arc::new(ProviderRunner::new(runtime.clone(), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {})).with_budget(budget));
         let cut = Arc::new(OneShot { submits: AtomicU64::new(0), submit_error: Some(ErrorKind::Network), cost: None });
         queue(&runner, cut.clone(), Some(usd(30)));
@@ -717,5 +723,38 @@ mod tests {
         assert_eq!(cut.submits.load(Ordering::SeqCst), 2, "retried once under the same key");
         assert_eq!(charges(&ledger), vec![(usd(30), Charge::Unresolved)]);
         assert!(!ledger.lock().unwrap().is_reserved(JobId(1)));
+    }
+
+    #[test]
+    fn a_reported_cost_in_another_currency_charges_the_estimate_and_caps_hold() {
+        let (runner, ledger) = budgeted(Budgets { session: Some(usd(100)), ..Budgets::default() }, RunLimits::default());
+        let euros = Arc::new(OneShot { submits: AtomicU64::new(0), submit_error: None, cost: Some(Money::new(Currency::EUR, 90)) });
+        queue(&runner, euros.clone(), Some(usd(90)));
+        assert_eq!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Done);
+        assert_eq!(charges(&ledger), vec![(usd(90), Charge::Unresolved)]);
+        queue(&runner, euros.clone(), Some(usd(90)));
+        let again = Start { idempotency_key: "nodecraft:r:2".into(), ..start(1) };
+        assert!(matches!(block_on(runner.run(again, CancelToken::default())), Outcome::Failed { transient: false, .. }));
+        assert_eq!(euros.submits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_reported_zero_cost_is_charged_as_zero() {
+        let (runner, ledger) = budgeted(Budgets::default(), RunLimits::default());
+        let free = Arc::new(OneShot { submits: AtomicU64::new(0), submit_error: None, cost: Some(usd(0)) });
+        queue(&runner, free, Some(usd(90)));
+        assert_eq!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Done);
+        assert_eq!(charges(&ledger), vec![(usd(0), Charge::Actual)]);
+    }
+
+    #[test]
+    fn a_job_whose_charge_could_not_be_recorded_is_refused_before_submit() {
+        let (runner, _ledger) = budgeted(Budgets::default(), RunLimits::default());
+        let provider = Arc::new(OneShot { submits: AtomicU64::new(0), submit_error: None, cost: None });
+        queue(&runner, provider.clone(), Some(usd(1)));
+        let long = Start { idempotency_key: "k".repeat(600), ..start(1) };
+        let Outcome::Failed { error, transient: false } = block_on(runner.run(long, CancelToken::default())) else { panic!("not refused") };
+        assert!(is_refusal(&error), "{error}");
+        assert_eq!(provider.submits.load(Ordering::SeqCst), 0);
     }
 }
