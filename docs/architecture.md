@@ -378,3 +378,6 @@ explicit Save/Cancel, versioned migration and current format ownership are speci
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
+### Colour tag mutations and filtering
+
+The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.

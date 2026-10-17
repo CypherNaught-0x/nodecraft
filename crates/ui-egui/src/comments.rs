@@ -93,6 +93,21 @@ impl Discussions {
         self.editing = None;
         self.drafts.retain(|_, draft| draft.dirty || draft.error.is_some());
     }
+    pub(crate) fn reset_session_view(&mut self) {
+        self.close();
+        self.active = None;
+        self.message = None;
+        self.page = 0;
+        self.chunk = 0;
+        self.last_focus = None;
+        self.focus_pending = None;
+        self.drag = None;
+        self.gesture_cancelled = false;
+        self.session = None;
+        self.pins.clear();
+        self.marker_ids.clear();
+        self.stamp = None;
+    }
     /// A local-only allocator, checked against all live entity and retained draft IDs. No
     /// sharing identity/randomness contract is implied; collaborative allocation belongs to121.
     pub fn allocate(&mut self, project: &nodecraft_graph::Project) -> Result<[u8; 16], Error> {

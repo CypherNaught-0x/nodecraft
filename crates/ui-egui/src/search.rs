@@ -205,8 +205,15 @@ pub struct Search {
     after: Option<NodeId>,
     generation: u64,
     pending: Option<(u64, Direction)>,
+    navigation_cancelled: bool,
 }
 impl Search {
+    pub fn cancel_navigation(&mut self) {
+        self.navigation_cancelled = true;
+        self.pending = None;
+        self.frame_request = None;
+    }
+
     pub fn set_query(&mut self, query: &str) -> Result<(), Error> {
         if query.len() > MAX_QUERY_BYTES {
             return Err(Error::new(ErrorKind::InvalidInput, "search query exceeds 1024 UTF-8 bytes"));
@@ -216,6 +223,7 @@ impl Search {
         if self.query == query {
             return Ok(());
         }
+        self.navigation_cancelled = false;
         self.query = query.to_owned();
         self.pattern = Pattern::new(query);
         self.current = None;
@@ -241,6 +249,7 @@ impl Search {
         self.pending = None;
     }
     pub fn advance(&mut self, direction: Direction) {
+        self.navigation_cancelled = false;
         if self.scanning {
             self.pending = Some((self.generation, direction));
             return;
@@ -300,7 +309,7 @@ impl Search {
                         if generation == self.generation {
                             self.choose(direction);
                         }
-                    } else if self.current.is_none_or(|id| !self.results.contains(&id)) {
+                    } else if !self.navigation_cancelled && self.current.is_none_or(|id| !self.results.contains(&id)) {
                         self.choose(Direction::First);
                     }
                     return;
