@@ -427,6 +427,8 @@ impl NodeCraftApp {
             }
         }
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
+        // Taken before navigation too: a fit or pan from the overlay also moves the view.
+        let view_before = self.view;
         let overlay_blocks = self.navigation_overlay(ui);
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
@@ -447,7 +449,6 @@ impl NodeCraftApp {
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
-        let view_before = self.view;
         if !overlay_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
         }

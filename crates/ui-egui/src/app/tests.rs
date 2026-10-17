@@ -1728,3 +1728,22 @@ fn enter_right_after_typing_chooses_from_the_typed_query() {
     assert_eq!(nodes_of(&h, "source.text").len(), texts, "not the empty query's first row");
     assert!(h.state().palette.is_none());
 }
+
+#[test]
+fn a_fit_while_the_palette_is_open_closes_it() {
+    let mut h = harness();
+    // Away from the nodes, so a fit has to move the view.
+    h.state_mut().view.pan += Vec2::new(600.0, 400.0);
+    h.run();
+    double_click(&mut h, Pos2::new(560.0, 650.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    // Focus leaves the query (Tab), so the fit shortcut reaches navigation and moves the view.
+    h.key_press(egui::Key::Tab);
+    h.run();
+    let before = h.state().view;
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Num1);
+    h.run();
+    assert_ne!(h.state().view, before, "the fit moved the view");
+    assert!(h.state().palette.is_none(), "the palette's world point no longer matches the view");
+}

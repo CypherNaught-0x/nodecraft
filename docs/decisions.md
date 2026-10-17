@@ -4,7 +4,6 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
-
 ## 2026-10-17 · Control channel (#115)
 
 - **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.
@@ -616,7 +615,6 @@ a choice a later contributor might otherwise undo.
   still reports an oversize fan-in), and at most 4M entries in total; past that, resolution is
   refused. No recursion, so long router chains can't overflow the stack.
 
-
 ## 2026-10-17 · Router validation (#216)
 
 - **Resolution uses the installed registry.** Each router instance is validated once against
@@ -654,7 +652,6 @@ a choice a later contributor might otherwise undo.
 - Overview labels remain readable, controls appear only at readable scale, and named keyboard
   Rename actions complement double-click. Settings store lifecycle and scroll preferences remain
   intact in the graph-backed shell. Selection expansion remains owned by #58/PR144.
-
 
 ## 2026-10-17 · Staleness hashes content, within a budget (#213)
 
@@ -786,7 +783,6 @@ a choice a later contributor might otherwise undo.
   with no caps, reserves nothing. When it finishes, fresh or resumed, the cost the provider
   reported is recorded as `actual`, once per provider and key. A report the log refuses as
   implausibly large is left out rather than failing the finished job.
-
 
 ## 2026-10-17 · Quick-add and palette (#61)
 
