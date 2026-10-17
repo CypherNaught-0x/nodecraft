@@ -174,6 +174,11 @@ fn undo_after_save_and_closing_the_window_never_bring_the_key_back() {
     // Typed but not saved, then the panel is closed (toolbar toggle): forgotten.
     type_into(&mut h, "Key", KEY);
     assert_eq!(h.state().panel.key, KEY);
+    // Even after deleting what was typed, closing clears the undo history.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.key_press(egui::Key::Backspace);
+    h.run();
+    assert!(h.state().panel.key.is_empty());
     h.state_mut().panel.open = false;
     h.run();
     assert!(h.state().panel.key.is_empty());
@@ -258,4 +263,16 @@ fn keychain_errors_and_silence_become_retryable_failures() {
     assert!(!h.state().panel.is_waiting());
     assert!(matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("No answer")));
     assert!(h.query_by_label("Check").is_some(), "the row can be tried again");
+    // A request made and then left with the panel closed still times out.
+    let mut panel = KeysPanel { timeout_s: 1.0, ..KeysPanel::default() };
+    panel.pending.insert(9, (Account::new("fal").unwrap(), Op::Status, 0.0));
+    panel.tick(0.5);
+    assert!(panel.is_waiting());
+    panel.tick(2.0);
+    assert!(!panel.is_waiting());
+    // Its late answer is not this panel's any more.
+    let late = nodecraft_engine::secrets::KeyOutcome { id: 9, account: "fal".into(), result: Ok(serde_json::json!({"stored": true, "masked": "…"})) };
+    let (changes, others) = panel.receive(vec![late]);
+    assert!(changes.is_empty() && others.len() == 1);
+    assert!(matches!(&panel.rows()[0].1, KeyStatus::Failed(_)));
 }

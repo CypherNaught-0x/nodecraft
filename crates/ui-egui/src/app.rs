@@ -616,6 +616,7 @@ impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(results) = &self.key_results {
+            self.keys.tick(ctx.input(|i| i.time));
             let (changes, others) = self.keys.receive(results.drain());
             // Nothing else asks the keychain yet; answers to other requests are logged, not lost.
             for outcome in others {

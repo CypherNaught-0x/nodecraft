@@ -65,6 +65,8 @@ pub struct KeysPanel {
     pending: BTreeMap<u64, (Account, Op, f64)>,
     /// egui time of the current frame.
     now: f64,
+    /// Whether the panel was drawn last frame, to notice it closing.
+    was_open: bool,
     confirm_remove: Option<Account>,
     pub notice: Option<String>,
 }
@@ -80,6 +82,7 @@ impl Default for KeysPanel {
             key: String::new(),
             pending: BTreeMap::new(),
             now: 0.0,
+            was_open: false,
             confirm_remove: None,
             notice: None,
         }
@@ -187,13 +190,15 @@ impl KeysPanel {
         let mut changes = Vec::new();
         if !self.open {
             // Closed some other way (the toolbar button): still forget anything typed.
-            if !self.key.is_empty() {
+            if self.was_open {
                 self.forget_typed(ctx);
+                self.confirm_remove = None;
+                self.was_open = false;
             }
             return changes;
         }
-        self.now = ctx.input(|i| i.time);
-        self.expire();
+        self.was_open = true;
+        self.tick(ctx.input(|i| i.time));
         self.load(settings);
         let mut open = self.open;
         let frame =
@@ -292,6 +297,13 @@ impl KeysPanel {
             state.clear_undoer();
             state.store(ctx, Self::key_field());
         }
+    }
+
+    /// Advances the panel's clock to `now` (egui seconds) and fails requests the keychain never
+    /// answered, so they can be retried. The host calls it every frame, open or not.
+    pub fn tick(&mut self, now: f64) {
+        self.now = now;
+        self.expire();
     }
 
     /// Requests the keychain never answered become failures the user can retry.
