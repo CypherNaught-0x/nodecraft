@@ -100,6 +100,7 @@ fn template(id: &str) -> (Session, Value) {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
         }
+        "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),

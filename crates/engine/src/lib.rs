@@ -5,6 +5,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 pub mod build_info;
+pub mod clipboard_cmds;
 mod command_schemas;
 pub mod commands;
 pub mod create_cmds;
