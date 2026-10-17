@@ -17,6 +17,7 @@ impl NodeCraftApp {
         Rect::from_min_size(Pos2::new(self.viewport.max.x - width - t.navigation_margin, self.viewport.min.y + t.navigation_margin), Vec2::new(width, height))
     }
     fn search_context(&mut self, ctx: &egui::Context) -> SearchContext {
+        self.search.bind_session(&mut self.session);
         self.search.sync(self.session.document(), self.canvas, self.session.revision());
         let own_focus = ctx.memory(|m| m.focused()) == Some(self.search_input_id());
         let focused = canvas::text_input_focused(ctx);
@@ -95,7 +96,7 @@ impl NodeCraftApp {
             return;
         };
         self.selection.only(id);
-        self.navigation.geometry.refresh(&self.session, self.canvas, self.theme);
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let Some(body) = self.navigation.geometry.rects.get(&id).copied() else {
             self.notice = Some("Search result selected; its instance geometry is unavailable.".into());
             ctx.request_repaint();
@@ -108,10 +109,28 @@ impl NodeCraftApp {
         }
         let mut next = self.view;
         let bounds = crate::navigation::decorated(body, t);
-        if let Some(result) = next.fit(usable, bounds, t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius) {
+        let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
+        if let Some(result) = next.fit(usable, bounds, padding) {
             // CanvasView::fit uses its viewport's top-left as origin; the real canvas origin
             // stays unchanged when reserving a top strip for the search overlay.
             next.pan += usable.min - self.viewport.min;
+            if self.view.zoom.is_finite() && self.view.zoom >= canvas::MIN_ZOOM && self.view.zoom <= next.zoom {
+                // A fitting card only needs the smallest translation into the unobscured area.
+                let screen = self.view.rect_to_screen(self.viewport.min, bounds);
+                let target = usable.shrink(padding);
+                let shift = |min: f32, max: f32, low: f32, high: f32| {
+                    if min < low {
+                        low - min
+                    } else if max > high {
+                        high - max
+                    } else {
+                        0.0
+                    }
+                };
+                next = self.view;
+                next.pan +=
+                    Vec2::new(shift(screen.min.x, screen.max.x, target.min.x, target.max.x), shift(screen.min.y, screen.max.y, target.min.y, target.max.y));
+            }
             if next.pan.is_finite() {
                 self.view = next;
                 self.notice = result.clamped.then(|| "Search result centered at minimum zoom; complete containment is unavailable.".into());
@@ -123,7 +142,7 @@ impl NodeCraftApp {
     }
     pub(super) fn search_overlay(&mut self, ui: &mut egui::Ui) -> bool {
         let ctx = ui.ctx().clone();
-        if !egui::Popup::is_any_open(&ctx) {
+        if !self.search_context(&ctx).blocked {
             let open = ui.input_mut(|i| consume_shortcut(i, "Command+F") || consume_shortcut(i, "Ctrl+F"));
             if open && let Err(error) = self.dispatch_search(&ctx, "canvas.search_open", &json!({})) {
                 self.notice = Some(error.message);
@@ -151,7 +170,9 @@ impl NodeCraftApp {
                 ui.set_min_size(rect.size());
                 if !self.search.open {
                     if ui
-                        .add_enabled_ui(open_enabled, |ui| ui.put(rect, egui::Button::new("Search (⌘/Ctrl+F)")))
+                        .add_enabled_ui(open_enabled, |ui| {
+                            ui.put(rect, egui::Button::new(if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }))
+                        })
                         .inner
                         .on_hover_text("Finish any active node editor or gesture before opening canvas search.")
                         .clicked()
@@ -216,7 +237,12 @@ impl NodeCraftApp {
                 };
                 let status_rect =
                     Rect::from_min_size(Pos2::new(inner.min.x, row.bottom() + t.navigation_gap), Vec2::new(inner.width(), t.body_size + t.control_gap));
-                ui.put(status_rect, egui::Label::new(egui::RichText::new(status).size(t.body_size).color(t.text_muted)).halign(egui::Align::LEFT));
+                let response =
+                    ui.put(status_rect, egui::Label::new(egui::RichText::new(status).size(t.body_size).color(t.text_muted)).halign(egui::Align::LEFT));
+                ctx.accesskit_node_builder(response.id, |node| {
+                    node.set_live(egui::accesskit::Live::Polite);
+                    node.set_live_atomic();
+                });
             },
         );
         let mut query_ok = true;
@@ -235,7 +261,7 @@ impl NodeCraftApp {
         {
             self.notice = Some(error.message);
         }
-        self.navigation.geometry.refresh(&self.session, self.canvas, self.theme);
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let was_scanning = self.search.scanning;
         self.search.tick(self.session.document(), self.canvas, self.session.revision(), &self.navigation.geometry.labels);
         self.apply_search_frame(&ctx);
@@ -251,7 +277,10 @@ impl NodeCraftApp {
 mod tests {
     use super::*;
     use egui::accesskit::Role;
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
     fn app() -> NodeCraftApp {
         let base = NodeCraftApp::headless().unwrap();
         let canvas = base.canvas;
@@ -397,9 +426,14 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().selection.only(NodeId::from_bytes([3; 16]));
         let selection = h.state().selection.clone();
+        // Harness processes each modifier/key event as a frame. Select the draft first,
+        // then paste during the newly queued scan rather than after those input frames.
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run();
         h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"needle"})).unwrap();
         h.state_mut().dispatch_search(&ctx, "canvas.search_next", &json!({})).unwrap();
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        assert_eq!(h.state().selection, selection, "pending command must not select before a scan");
+        assert!(h.state().search.scanning);
         h.event(egui::Event::Text("é".repeat(513)));
         h.run();
         assert!(h.state().search.draft.len() > MAX_QUERY_BYTES);
@@ -488,7 +522,7 @@ mod tests {
         h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"unknown model tail"})).unwrap();
         h.run();
         assert_eq!(h.state().search.current, Some(NodeId::from_bytes([4; 16])));
-        assert!(h.state().notice.as_ref().unwrap().contains("geometry is unavailable"));
+        assert!(h.state().navigation.geometry.rects.contains_key(&NodeId::from_bytes([4; 16])));
         assert_eq!(h.state().session.revision(), 0);
         assert!(!h.state().session.can_undo());
     }
@@ -510,5 +544,138 @@ mod tests {
         }
         assert_eq!(h.state().session.revision(), 0);
         assert!(!h.state().session.can_undo());
+    }
+    #[test]
+    fn passive_title_edits_do_not_change_selection_or_camera() {
+        let mut h = harness();
+        open(&mut h);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"Card 4"})).unwrap();
+        h.run();
+        h.state_mut().selection.only(NodeId::from_bytes([3; 16]));
+        let selection = h.state().selection.clone();
+        let view = h.state().view;
+        let canvas = h.state().canvas;
+        for (id, title) in [(4, "absent"), (3, "Card 4"), (3, "still Card 4")] {
+            h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":NodeId::from_bytes([id;16]),"title":title})).unwrap();
+            let document = h.state().session.document().clone();
+            let revision = h.state().session.revision();
+            h.run();
+            assert_eq!(h.state().view, view);
+            assert_eq!(h.state().selection, selection);
+            assert!(h.state().search.frame_request.is_none());
+            assert!(h.state().search.current.is_none());
+            assert_eq!(h.state().session.document(), &document);
+            assert_eq!(h.state().session.revision(), revision);
+            assert!(h.state().session.can_undo());
+        }
+    }
+    #[test]
+    fn framing_preserves_zoom_and_only_pans_when_needed() {
+        let mut h = harness();
+        open(&mut h);
+        let ctx = h.ctx.clone();
+        h.state_mut().view.zoom = 0.25;
+        h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"needle"})).unwrap();
+        h.run();
+        assert_eq!(h.state().view.zoom, 0.25);
+        let view = h.state().view;
+        h.state_mut().dispatch_search(&ctx, "canvas.search_next", &json!({})).unwrap();
+        h.run();
+        assert_eq!(h.state().view, view);
+        assert_eq!(h.state().session.revision(), 0);
+        assert!(!h.state().session.can_undo());
+    }
+    #[test]
+    fn blocked_search_does_not_consume_shortcut_or_add_notice() {
+        for owner in 0..3 {
+            let retained = Rc::new(RefCell::new(false));
+            let observed = Rc::clone(&retained);
+            let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(
+                move |ui, app: &mut NodeCraftApp| {
+                    match owner {
+                        0 => egui::Popup::open_id(ui.ctx(), egui::Id::new("search_shortcut_owner")),
+                        1 => app.marquee = Some(Marquee { start: Pos2::ZERO, base: BTreeSet::new(), cancelled: false }),
+                        _ => app.text_focused = true,
+                    }
+                    app.viewport = ui.max_rect();
+                    app.search_overlay(ui);
+                    *observed.borrow_mut() |=
+                        ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::F, pressed: true, .. })));
+                },
+                app(),
+            );
+            let document = h.state().session.document().clone();
+            let view = h.state().view;
+            let selection = h.state().selection.clone();
+            h.event(egui::Event::Key {
+                key: egui::Key::F,
+                physical_key: Some(egui::Key::F),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+            h.run();
+            assert!(*retained.borrow());
+            assert!(!h.state().search.open);
+            assert!(h.state().notice.is_none());
+            assert_eq!(h.state().view, view);
+            assert_eq!(h.state().selection, selection);
+            assert_eq!(h.state().session.document(), &document);
+            assert_eq!(h.state().session.revision(), 0);
+            assert!(!h.state().session.can_undo());
+        }
+    }
+    #[test]
+    fn result_status_is_polite_and_stable_across_unchanged_frames() {
+        let mut h = harness();
+        open(&mut h);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"needle"})).unwrap();
+        h.run();
+        let status = h.get_by_label("1 of 1 matches");
+        assert_eq!(status.accesskit_node().live(), egui::accesskit::Live::Polite);
+        assert!(status.accesskit_node().is_live_atomic());
+        let id = status.accesskit_node().id();
+        h.run();
+        assert_eq!(h.get_by_label("1 of 1 matches").accesskit_node().id(), id);
+    }
+    #[test]
+    fn passive_deletion_and_edit_during_partial_scan_leave_view_and_history_alone() {
+        let mut h = harness();
+        open(&mut h);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"Card 4"})).unwrap();
+        h.run();
+        h.state_mut().selection.only(NodeId::from_bytes([3; 16]));
+        let selection = h.state().selection.clone();
+        let view = h.state().view;
+        let canvas = h.state().canvas;
+        h.state_mut().session.dispatch("node.remove", &json!({"canvas":canvas,"id":NodeId::from_bytes([4;16])})).unwrap();
+        let document = h.state().session.document().clone();
+        h.run();
+        assert!(h.state().search.current.is_none());
+        assert_eq!(h.state().view, view);
+        assert_eq!(h.state().selection, selection);
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), 1);
+        h.state_mut()
+            .session
+            .dispatch("node.param_set", &json!({"canvas":canvas,"id":NodeId::from_bytes([3;16]),"name":"text","value":Value::Text("x".repeat(900_000))}))
+            .unwrap();
+        h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"absent"})).unwrap();
+        h.step();
+        assert!(h.state().search.scanning);
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":NodeId::from_bytes([3;16]),"title":"absent"})).unwrap();
+        let document = h.state().session.document().clone();
+        let revision = h.state().session.revision();
+        h.run();
+        assert!(h.state().search.current.is_none());
+        assert_eq!(h.state().view, view);
+        assert_eq!(h.state().selection, selection);
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&NodeId::from_bytes([3; 16])].title, "Card 3");
     }
 }

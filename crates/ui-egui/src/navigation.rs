@@ -13,7 +13,7 @@ use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 // A private host resource, never serialized. Retaining its Arc in the cache keeps
 // the previous allocation alive, so a replacement Session cannot reuse its identity.
-struct SessionIdentity;
+pub(crate) struct SessionIdentity;
 #[derive(Default)]
 pub struct Geometry {
     key: Option<(ProjectId, CanvasId, u64, ThemeKind)>,
@@ -26,9 +26,13 @@ pub struct Geometry {
     validations: usize,
 }
 impl Geometry {
-    pub fn refresh(&mut self, session: &mut Session, canvas: CanvasId, theme: ThemeKind) {
+    pub(crate) fn identity(session: &mut Session) -> Arc<SessionIdentity> {
         let identity = session.swap_resource::<Arc<SessionIdentity>>(None).unwrap_or_else(|| Arc::new(SessionIdentity));
         session.swap_resource(Some(Arc::clone(&identity)));
+        identity
+    }
+    pub fn refresh(&mut self, session: &mut Session, canvas: CanvasId, theme: ThemeKind) {
+        let identity = Self::identity(session);
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
@@ -84,12 +88,21 @@ struct ValidatedDescriptors<'a> {
     #[cfg(test)]
     validations: usize,
 }
-fn instance_info<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<(Rect, String), Error> {
+fn instance_info<'a>(
+    session: &'a Session,
+    node: &nodecraft_graph::Node,
+    t: &Tokens,
+    validated: &mut ValidatedDescriptors<'a>,
+) -> Result<(Rect, String), Error> {
     node.validate_payload()?;
     // Match painting's bounded placeholder on every schema-resolution/admission failure.
     let placeholder = || {
         let rect = card::world_rect(node, None, t);
-        if valid_rect(rect) { Ok((rect, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() })) } else { Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable")) }
+        if valid_rect(rect) {
+            Ok((rect, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() }))
+        } else {
+            Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable"))
+        }
     };
     let Ok(kind) = session.kinds().get(&node.kind) else {
         return placeholder();
@@ -150,6 +163,10 @@ fn instance_info<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tok
         return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
     }
     Ok((rect, if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
+}
+#[cfg(test)]
+fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<Rect, Error> {
+    instance_info(session, node, t, validated).map(|(rect, _)| rect)
 }
 /// Includes the painted title/unsaved label, body and handles at ordinary zoom. Additional
 /// screen padding in fit accounts for minimum screen-sized text/handles at low zoom.

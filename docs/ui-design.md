@@ -149,14 +149,14 @@ matching currently means persisted textual identifiers/configuration. Catalog di
 unstored schema defaults are not indexed; catalog integration can add verified labels later.
 
 Matching is literal and case insensitive through Rust Unicode scalar lowercase expansion, including
-İ→i plus combining dot. It is not regex, locale-dependent matching, Unicode normalization or full
+İ→i plus combining dot and final sigma ς→σ. It is not regex, locale-dependent matching, Unicode normalization or full
 case folding (ß does not become ss). Each field is independent. Leading/trailing Unicode whitespace
 in the query is ignored; an empty query returns no matches and leaves selection alone. Queries
 above 1024 UTF-8 bytes are rejected with an error; a bounded editor draft permits displaying and
 correcting that error instead of accepting a silently truncated query.
 
-Scanning borrows text, keeps a UTF-8 cursor plus small KMP state, and charges at most 32 KiB of source
-text and 4096 structural/path work units per frame. Empty/nested values count too. A chunk boundary
+Scanning borrows text, keeps a UTF-8 cursor plus small KMP state, and charges at most 512 KiB of source
+text and 16384 structural/path work units per frame. Empty/nested values count too. A chunk boundary
 never loses a partial match. Results retain at most one NodeId per actual validated canvas node,
 ordered by NodeId, without a truncated result list or full-prompt lowercase copies. Revisions,
 canvas changes and queries restart the scan; unchanged idle frames do not scan. The existing
@@ -165,14 +165,17 @@ of label bytes under today's graph node cap, plus map overhead); descriptor vali
 copying, borrowed validation is shared and owned descriptors are not retained. Queries do no
 instance resolution. Startup/reset shares this cache.
 
-The overlay shows progress, match count, Previous, Next and Close search. Typing is accepted before
+The overlay shows progress, match count, Previous, Next and Close search. Its status is a polite
+AccessKit live region; unchanged frames retain unchanged accessibility data. Typing is accepted before
 Enter in the same frame. While incomplete, one generation-tagged next/previous request waits for
 the complete list; another request replaces it, so wrapping cannot use partial or old results.
 Query changes select/frame the first result after completion; document edits keep the current ID
-when it still matches. Next/previous wrap deterministically. Closing cancels deferred framing and
+when it still matches and clear it otherwise, without moving the camera or replacing selection.
+A document revision cancels pending navigation from the interrupted scan. Next/previous wrap deterministically. Closing cancels deferred framing and
 retains the query and document selection. No matches leave the previous selection unchanged.
 
-Framing uses actual instance card/title/handle bounds, reserves both overlays, selects the result
+Framing preserves zoom when the complete card fits, panning only as needed; otherwise it zooms out.
+It uses actual instance card/title/handle bounds, reserves both overlays, selects the result
 in view state and reports minimum-zoom or unavailable-geometry limitations. The search input alone
 has a focus exemption for framing. Opening yields to unrelated node editors so ⌘/Ctrl+F cannot
 blur-commit a dirty title/parameter. Popups and existing gestures retain ownership. Search Escape

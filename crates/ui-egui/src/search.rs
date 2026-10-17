@@ -5,8 +5,12 @@ use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 
 pub const MAX_QUERY_BYTES: usize = nodecraft_engine::search_cmds::MAX_QUERY_BYTES;
-pub const FRAME_BYTES: usize = 32 * 1024;
-pub const FRAME_VISITS: usize = 4096;
+pub const FRAME_BYTES: usize = 512 * 1024;
+pub const FRAME_VISITS: usize = 16384;
+const _: () = assert!(nodecraft_graph::MAX_VALUE_DEPTH * nodecraft_graph::MAX_VALUE_DEPTH + 4 < FRAME_VISITS);
+fn fold(ch: char) -> impl Iterator<Item = char> {
+    ch.to_lowercase().map(|ch| if ch == 'ς' { 'σ' } else { ch })
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     First,
@@ -25,7 +29,7 @@ struct Pattern {
 }
 impl Pattern {
     fn new(query: &str) -> Self {
-        let chars: Vec<_> = query.chars().flat_map(char::to_lowercase).collect();
+        let chars: Vec<_> = query.chars().flat_map(fold).collect();
         let mut prefix = vec![0; chars.len()];
         let mut matched = 0;
         for (index, ch) in chars.iter().enumerate().skip(1) {
@@ -42,7 +46,7 @@ impl Pattern {
         Self { chars, prefix }
     }
     fn feed(&self, matched: &mut usize, ch: char) -> bool {
-        for folded in ch.to_lowercase() {
+        for folded in fold(ch) {
             while *matched > 0 && self.chars.get(*matched) != Some(&folded) {
                 *matched = self.prefix.get(*matched - 1).copied().unwrap_or(0);
             }
@@ -205,8 +209,18 @@ pub struct Search {
     after: Option<NodeId>,
     generation: u64,
     pending: Option<(u64, Direction)>,
+    identity: Option<std::sync::Arc<crate::navigation::SessionIdentity>>,
 }
 impl Search {
+    pub(crate) fn bind_session(&mut self, session: &mut nodecraft_engine::Session) {
+        let identity = crate::navigation::Geometry::identity(session);
+        if self.identity.as_ref().is_some_and(|previous| !std::sync::Arc::ptr_eq(previous, &identity)) {
+            self.pending = None;
+            self.current = None;
+            self.restart();
+        }
+        self.identity = Some(identity);
+    }
     pub fn set_query(&mut self, query: &str) -> Result<(), Error> {
         if query.len() > MAX_QUERY_BYTES {
             return Err(Error::new(ErrorKind::InvalidInput, "search query exceeds 1024 UTF-8 bytes"));
@@ -272,6 +286,9 @@ impl Search {
         let identity = canvas.nodes().first_key_value().map_or(0, |(_, node)| std::ptr::from_ref(node) as usize);
         let stamp = (project.id(), canvas_id, revision, identity);
         if self.stamp != Some(stamp) {
+            if self.stamp.is_some() {
+                self.pending = None;
+            }
             self.restart();
             self.stamp = Some(stamp);
         }
@@ -301,7 +318,7 @@ impl Search {
                             self.choose(direction);
                         }
                     } else if self.current.is_none_or(|id| !self.results.contains(&id)) {
-                        self.choose(Direction::First);
+                        self.current = None;
                     }
                     return;
                 };
@@ -419,7 +436,7 @@ mod tests {
     #[test]
     fn changed_generation_cancels_old_navigation_and_removed_reused_ids_rescan() {
         let (mut p, c) = fixture();
-        add(&mut p, c, 3, "old", vec![("text", Value::Text("x".repeat(100_000) + " needle"))]);
+        add(&mut p, c, 3, "old", vec![("text", Value::Text("x".repeat(900_000) + " needle"))]);
         let mut s = Search { open: true, ..Search::default() };
         s.set_query("needle").unwrap();
         s.tick(&p, c, 0, &BTreeMap::new());
@@ -464,5 +481,78 @@ mod tests {
         assert!(fallback_label(&node));
         node.params.insert("text".into(), Value::Text("visible prompt".into()));
         assert!(!fallback_label(&node));
+    }
+    #[test]
+    fn folded_matches_agree_with_independent_contains_oracle_across_chunks() {
+        let oracle_fold = |text: &str| text.chars().flat_map(char::to_lowercase).map(|ch| if ch == 'ς' { 'σ' } else { ch }).collect::<String>();
+        for (query, source) in [("οδός", "ΟΔΟΣ"), ("ΟΔΟΣ", "οδός"), ("aab", "aaab"), ("abab", "abacabab"), ("i\u{307}i\u{307}b", "İİİb"), ("aab", "aaaa")]
+        {
+            let (mut p, c) = fixture();
+            let source = "x".repeat(FRAME_BYTES - 2) + source;
+            add(&mut p, c, 3, "", vec![("text", Value::Text(source.clone()))]);
+            let mut s = Search { open: true, ..Search::default() };
+            s.set_query(query).unwrap();
+            finish(&mut s, &p, c, 0, &BTreeMap::new());
+            assert_eq!(!s.results.is_empty(), oracle_fold(&source).contains(&oracle_fold(query)), "{query}");
+        }
+    }
+    #[test]
+    fn revision_rescans_never_choose_a_replacement_or_retain_stale_navigation() {
+        let (mut p, c) = fixture();
+        add(&mut p, c, 3, "needle", vec![]);
+        let mut s = Search { open: true, ..Search::default() };
+        s.set_query("needle").unwrap();
+        finish(&mut s, &p, c, 0, &BTreeMap::new());
+        assert!(s.frame_request.is_some());
+        Change::SetNodeTitle { canvas: c, id: NodeId::from_bytes([3; 16]), title: "absent".into() }.apply(&mut p).unwrap();
+        add(&mut p, c, 4, "needle", vec![]);
+        finish(&mut s, &p, c, 1, &BTreeMap::new());
+        assert_eq!(s.results, vec![NodeId::from_bytes([4; 16])]);
+        assert!(s.current.is_none());
+        assert!(s.frame_request.is_none());
+        s.advance(Direction::Next);
+        finish(&mut s, &p, c, 2, &BTreeMap::new());
+        assert_eq!(s.current, Some(NodeId::from_bytes([4; 16])));
+        assert!(s.frame_request.is_none());
+    }
+    #[test]
+    fn thousand_two_kib_fields_and_hostile_nested_unicode_have_bounded_throughput() {
+        let (mut p, c) = fixture();
+        for n in 0..1000_u128 {
+            let mut node = Node::new(NodeId::from_bytes(n.to_be_bytes()), "source.text");
+            node.params.insert("text".into(), Value::Text("x".repeat(2048)));
+            Change::AddNode { canvas: c, node }.apply(&mut p).unwrap();
+        }
+        let mut s = Search { open: true, ..Search::default() };
+        s.set_query("absent").unwrap();
+        let start = std::time::Instant::now();
+        let mut total = Work::default();
+        let mut frames = 0;
+        let mut longest = std::time::Duration::ZERO;
+        loop {
+            let frame_start = std::time::Instant::now();
+            s.tick(&p, c, 0, &BTreeMap::new());
+            longest = longest.max(frame_start.elapsed());
+            frames += 1;
+            assert!(s.last_work.bytes <= FRAME_BYTES && s.last_work.visits <= FRAME_VISITS);
+            total.bytes += s.last_work.bytes;
+            total.visits += s.last_work.visits;
+            if !s.scanning {
+                break;
+            }
+        }
+        eprintln!("1000x2KiB: {frames} frames, {} bytes, {} visits, {:?} total, {longest:?} largest frame", total.bytes, total.visits, start.elapsed());
+        assert_eq!(frames, 4);
+        assert_eq!(total.bytes, 2_048_000);
+        let (mut p, c) = fixture();
+        let mut value = Value::Text("İς".repeat(1000));
+        for _ in 0..nodecraft_graph::MAX_VALUE_DEPTH {
+            value = Value::List(vec![Value::List(vec![]), value]);
+        }
+        add(&mut p, c, 3, "", vec![("nested", value)]);
+        s.set_query("never").unwrap();
+        let frames = finish(&mut s, &p, c, 1, &BTreeMap::new());
+        eprintln!("depth32 Unicode: {frames} frames, final frame {} bytes / {} visits", s.last_work.bytes, s.last_work.visits);
+        assert!(s.results.is_empty());
     }
 }
