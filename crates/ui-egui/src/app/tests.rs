@@ -1027,12 +1027,13 @@ fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
     assert_eq!(geometry, painted);
     box_drag(&mut h, view.to_screen(origin, lower.min), view.to_screen(origin, lower.max), egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+}
 
 /// Screen position of node `n`'s single input or output port.
 fn port_point(h: &Harness<'static, NodeCraftApp>, n: u8, side: noodle::Side) -> Pos2 {
     let app = h.state();
     let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
-    let rect = card_rect(node, &app.schemas, app.session.kinds(), app.theme.tokens());
+    let rect = card_geometry(&app.painted, app.session.kinds(), node, app.theme.tokens());
     app.view.to_screen(app.viewport.min, noodle::anchor(rect, side, 0, 1))
 }
 fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
@@ -1305,4 +1306,34 @@ fn the_keys_button_opens_the_keys_panel() {
     h.get_by_label("Save").click();
     h.run();
     assert!(h.state().keys.notice.as_deref().is_some_and(|n| n.contains("unavailable")), "{:?}", h.state().keys.notice);
+}
+
+#[test]
+fn noodles_follow_a_card_while_it_is_dragged_and_commit_on_release() {
+    let mut h = chain_harness();
+    let canvas = h.state().canvas;
+    let pos = |h: &Harness<'static, NodeCraftApp>| h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&chain_id(2)).unwrap().pos;
+    let start = |h: &Harness<'static, NodeCraftApp>| {
+        let app = h.state();
+        let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
+        let curves = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens());
+        let edge = canvas.edges().values().find(|e| e.from.node == chain_id(2)).unwrap().id;
+        curves.iter().find(|(id, ..)| *id == edge).map(|(_, curve, _)| curve[0]).unwrap()
+    };
+    let (before_pos, before_start) = (pos(&h), start(&h));
+    let grab = card_point(&h, 2);
+    h.drag_at(grab);
+    h.run();
+    h.hover_at(grab + Vec2::new(30.0, 45.0));
+    h.run();
+    h.hover_at(grab + Vec2::new(60.0, 90.0));
+    h.run();
+    // Mid-drag: the document hasn't moved, but B's outgoing noodle starts where B is painted.
+    assert_eq!(pos(&h), before_pos);
+    let moved = start(&h) - before_start;
+    let zoom = h.state().view.zoom;
+    assert!((moved - Vec2::new(60.0, 90.0) / zoom).length() < 1.0, "{moved:?}");
+    h.drop_at(grab + Vec2::new(60.0, 90.0));
+    h.run();
+    assert!((pos(&h).x - before_pos.x - 60.0 / zoom).abs() < 1.0);
 }

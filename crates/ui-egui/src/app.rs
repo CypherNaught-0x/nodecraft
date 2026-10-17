@@ -124,15 +124,7 @@ struct Wiring {
 /// Screen points within which a click selects a noodle.
 const NOODLE_HIT: f32 = 6.0;
 
-/// A card's world rect, from its resolved instance schema when cached (cards on screen), else
-/// from the kind's static descriptor.
-fn card_rect(node: &Node, schemas: &BTreeMap<NodeId, CachedSchema>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Rect {
-    let descriptor = schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()).or_else(|| kinds.get(&node.kind).ok().map(|k| k.descriptor()));
-    card::world_rect(node, descriptor, t)
-}
-
-/// World-space curves of every edge whose endpoints and ports exist, with the source modality.
-fn curves(canvas: &Canvas, schemas: &BTreeMap<NodeId, CachedSchema>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
+fn curves(canvas: &Canvas, painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
     canvas
         .edges()
         .values()
@@ -140,8 +132,8 @@ fn curves(canvas: &Canvas, schemas: &BTreeMap<NodeId, CachedSchema>, kinds: &nod
             let from = canvas.nodes().get(&edge.from.node)?;
             let to = canvas.nodes().get(&edge.to.node)?;
             let port = from.outputs.iter().find(|p| p.name == edge.from.port)?;
-            let a = noodle::port_anchor(from, card_rect(from, schemas, kinds, t), Side::Output, &edge.from.port)?;
-            let b = noodle::port_anchor(to, card_rect(to, schemas, kinds, t), Side::Input, &edge.to.port)?;
+            let a = noodle::port_anchor(from, card_geometry(painted, kinds, from, t), Side::Output, &edge.from.port)?;
+            let b = noodle::port_anchor(to, card_geometry(painted, kinds, to, t), Side::Input, &edge.to.port)?;
             Some((edge.id, noodle::bezier(a, b), port.port_type.modality))
         })
         .collect()
@@ -405,50 +397,6 @@ impl NodeCraftApp {
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
             self.schemas.retain(|id, _| canvas.nodes().contains_key(id));
             self.selection.retain_existing(canvas);
-            let curves = curves(canvas, &self.schemas, kinds, t);
-            if background.clicked() {
-                let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
-                    let world = self.view.to_world(viewport.min, p);
-                    let reach = NOODLE_HIT / self.view.zoom;
-                    curves.iter().map(|(id, curve, _)| (*id, noodle::distance(curve, world))).filter(|(_, d)| *d <= reach).min_by(|a, b| a.1.total_cmp(&b.1))
-                });
-                match (hit, shift) {
-                    (Some((id, _)), true) => self.selection.toggle_edge(id),
-                    (Some((id, _)), false) => self.selection.only_edge(id),
-                    (None, false) => self.selection.clear(),
-                    (None, true) => {}
-                }
-            }
-            // A noodle whose source node or picked-up edge vanished mid-drag (Delete, undo) is dropped.
-            if self.wiring.as_ref().is_some_and(|w| !canvas.nodes().contains_key(&w.from.node) || w.moving.is_some_and(|id| !canvas.edges().contains_key(&id)))
-            {
-                self.wiring = None;
-            }
-            let moving = self.wiring.as_ref().and_then(|w| w.moving);
-            // Widened by the halo so noodles just outside the edge still paint their stroke.
-            let visible = self.view.visible_world(viewport).expand((t.wire_width_selected + t.wire_halo) / self.view.zoom);
-            for (id, curve, modality) in &curves {
-                // The curve lies inside its control points' hull; skip ones entirely off screen.
-                if Some(*id) == moving || !Rect::from_points(curve).intersects(visible) {
-                    continue;
-                }
-                let points = curve.map(|p| self.view.to_screen(viewport.min, p));
-                if self.selection.contains_edge(*id) {
-                    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                        points,
-                        false,
-                        egui::Color32::TRANSPARENT,
-                        egui::Stroke::new(t.wire_width_selected + t.wire_halo, t.card_stroke_selected),
-                    ));
-                }
-                let width = if self.selection.contains_edge(*id) { t.wire_width_selected } else { t.wire_width };
-                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                    points,
-                    false,
-                    egui::Color32::TRANSPARENT,
-                    egui::Stroke::new(width, t.wire(*modality)),
-                ));
-            }
             // Selected cards draw last, on top.
             let selected = self.selection.clone();
             self.painted.clear();
@@ -544,6 +492,52 @@ impl NodeCraftApp {
                     }
                     intents.extend(result.intents.into_iter().map(|intent| (node.id, intent)));
                 }
+            }
+            // Noodles follow this frame's painted cards (drag previews, resolved heights). They are
+            // painted on the canvas layer, which stays under the card layers.
+            let curves = curves(canvas, &self.painted, kinds, t);
+            if background.clicked() {
+                let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
+                    let world = self.view.to_world(viewport.min, p);
+                    let reach = NOODLE_HIT / self.view.zoom;
+                    curves.iter().map(|(id, curve, _)| (*id, noodle::distance(curve, world))).filter(|(_, d)| *d <= reach).min_by(|a, b| a.1.total_cmp(&b.1))
+                });
+                match (hit, shift) {
+                    (Some((id, _)), true) => self.selection.toggle_edge(id),
+                    (Some((id, _)), false) => self.selection.only_edge(id),
+                    (None, false) => self.selection.clear(),
+                    (None, true) => {}
+                }
+            }
+            // A noodle whose source node or picked-up edge vanished mid-drag (Delete, undo) is dropped.
+            if self.wiring.as_ref().is_some_and(|w| !canvas.nodes().contains_key(&w.from.node) || w.moving.is_some_and(|id| !canvas.edges().contains_key(&id)))
+            {
+                self.wiring = None;
+            }
+            let moving = self.wiring.as_ref().and_then(|w| w.moving);
+            // Widened by the halo so noodles just outside the edge still paint their stroke.
+            let visible = self.view.visible_world(viewport).expand((t.wire_width_selected + t.wire_halo) / self.view.zoom);
+            for (id, curve, modality) in &curves {
+                // The curve lies inside its control points' hull; skip ones entirely off screen.
+                if Some(*id) == moving || !Rect::from_points(curve).intersects(visible) {
+                    continue;
+                }
+                let points = curve.map(|p| self.view.to_screen(viewport.min, p));
+                if self.selection.contains_edge(*id) {
+                    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                        points,
+                        false,
+                        egui::Color32::TRANSPARENT,
+                        egui::Stroke::new(t.wire_width_selected + t.wire_halo, t.card_stroke_selected),
+                    ));
+                }
+                let width = if self.selection.contains_edge(*id) { t.wire_width_selected } else { t.wire_width };
+                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                    points,
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    egui::Stroke::new(width, t.wire(*modality)),
+                ));
             }
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -718,7 +712,7 @@ impl NodeCraftApp {
         let Some(start) = canvas
             .nodes()
             .get(&wiring.from.node)
-            .and_then(|source| noodle::port_anchor(source, card_rect(source, &self.schemas, kinds, t), Side::Output, &wiring.from.port))
+            .and_then(|source| noodle::port_anchor(source, card_geometry(&self.painted, kinds, source, t), Side::Output, &wiring.from.port))
         else {
             return (None, None);
         };
@@ -753,7 +747,7 @@ impl NodeCraftApp {
         // The nearest accepting input within reach wins; failing that, the nearest input explains why.
         let mut best: Option<(bool, f32, &Node, &nodecraft_graph::Port, Pos2)> = None;
         for node in canvas.nodes().values() {
-            let rect = card_rect(node, &self.schemas, kinds, t);
+            let rect = card_geometry(&self.painted, kinds, node, t);
             for (index, input) in node.inputs.iter().enumerate() {
                 let at = noodle::anchor(rect, Side::Input, index, node.inputs.len());
                 let ok = accepts(node, input).is_ok();

@@ -87,8 +87,9 @@ fn delete_schema() -> Value {
 }
 
 fn enabled_edit(context: &Context<'_>, value: &Value, run: fn(&Context<'_>, &Value) -> Result<Effect, Error>) -> Result<(), Error> {
+    // Full validation only when previewing; dispatch stages the changeset once itself.
     if let Effect::Edit { changes, .. } = run(context, value)? {
-        changes.validate(context.document)?;
+        context.preview_changes(&changes)?;
     }
     Ok(())
 }
