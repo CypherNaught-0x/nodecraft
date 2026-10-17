@@ -24,7 +24,8 @@ impl NodeCraftApp {
         SearchContext {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
-            blocked: egui::Popup::is_any_open(ctx)
+            blocked: self.palette.is_some()
+                || egui::Popup::is_any_open(ctx)
                 || (focused && !own_focus)
                 || (self.text_focused && !own_focus && !self.search_focused)
                 || self.drag.is_some()
@@ -595,7 +596,7 @@ mod tests {
                 move |ui, app: &mut NodeCraftApp| {
                     match owner {
                         0 => egui::Popup::open_id(ui.ctx(), egui::Id::new("search_shortcut_owner")),
-                        1 => app.marquee = Some(Marquee { start: Pos2::ZERO, base: BTreeSet::new(), cancelled: false }),
+                        1 => app.marquee = Some(Marquee { start: Pos2::ZERO, base: Selection::default(), cancelled: false }),
                         _ => app.text_focused = true,
                     }
                     app.viewport = ui.max_rect();

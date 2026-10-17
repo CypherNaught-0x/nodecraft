@@ -60,6 +60,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.fit_selection",
     "canvas.minimap_toggle",
     "canvas.pan_to",
+    "canvas.search_open",
+    "canvas.search_query",
+    "canvas.search_next",
+    "canvas.search_previous",
+    "canvas.search_close",
     "keys.status",
 ];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an

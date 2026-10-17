@@ -180,7 +180,19 @@ fn typed_template_panic_hunt() {
                 }
                 Ok(_) => {
                     successes += 1;
-                    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to" | "canvas.stale") {
+                    if matches!(
+                        id,
+                        "canvas.fit_all"
+                            | "canvas.fit_selection"
+                            | "canvas.minimap_toggle"
+                            | "canvas.pan_to"
+                            | "canvas.stale"
+                            | "canvas.search_open"
+                            | "canvas.search_query"
+                            | "canvas.search_next"
+                            | "canvas.search_previous"
+                            | "canvas.search_close"
+                    ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
                         assert_eq!(session.events_since(0).unwrap(), events);
