@@ -200,6 +200,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
 }
 
 mod navigation;
+mod search;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -209,6 +210,9 @@ pub struct NodeCraftApp {
     pub selection: Selection,
     pub canvas_prefs: CanvasSettings,
     pub navigation: Navigation,
+    pub search: crate::search::Search,
+    search_focused: bool,
+    search_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
@@ -311,6 +315,16 @@ impl NodeCraftApp {
             *slot = Some(request.clone());
             Ok(json!({"accepted":true}))
         })?;
+        let search_mailbox = Rc::new(RefCell::new(None));
+        let mailbox = Rc::clone(&search_mailbox);
+        session.register_host_service(nodecraft_engine::search_cmds::SERVICE, move |request| {
+            let mut slot = mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "search host is busy"))?;
+            if slot.is_some() {
+                return Err(Error::new(ErrorKind::Conflict, "search request is already pending"));
+            }
+            *slot = Some(request.clone());
+            Ok(json!({"accepted":true}))
+        })?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -319,6 +333,9 @@ impl NodeCraftApp {
             selection: Selection::default(),
             canvas_prefs: CanvasSettings::default(),
             navigation: Navigation::default(),
+            search: crate::search::Search::default(),
+            search_focused: false,
+            search_mailbox,
             navigation_mailbox,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
@@ -355,6 +372,7 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
+        let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() {
@@ -488,7 +506,7 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let overlay_blocks = self.navigation_overlay(ui);
+        let overlay_blocks = self.navigation_overlay(ui) || search_blocks;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !overlay_blocks
@@ -820,6 +838,7 @@ impl NodeCraftApp {
             }
         }
         self.navigation.finish_frame(ui.ctx());
+        self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.keys_button(ui, viewport);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
@@ -1109,6 +1128,9 @@ fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, na
             "1" => key = Some(egui::Key::Num1),
             "2" => key = Some(egui::Key::Num2),
             "M" => key = Some(egui::Key::M),
+            "F" => key = Some(egui::Key::F),
+            "Enter" => key = Some(egui::Key::Enter),
+            "Escape" => key = Some(egui::Key::Escape),
             _ => return false,
         }
     }

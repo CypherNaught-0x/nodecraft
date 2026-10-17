@@ -126,6 +126,7 @@ impl Registry {
             .chain(crate::navigation_cmds::specs())
             .chain(crate::create_cmds::specs())
             .chain(crate::clipboard_cmds::specs())
+            .chain(crate::search_cmds::specs())
         {
             registry.register(spec)?;
         }
