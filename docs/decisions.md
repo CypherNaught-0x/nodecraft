@@ -106,6 +106,17 @@ a choice a later contributor might otherwise undo.
   preview validation is deferred to the sole staged transaction. Each consumer holds a revision cursor into the last 256 `DocChanged`
   notifications; an expired cursor explicitly requires a document resync.
 
+## 2026-10-17 · Graph-backed canvas cards (#57)
+
+- **An empty stored title means automatic.** New descriptors leave titles empty. The shell derives
+  a bounded label from the prompt/text or kind label; edits and undo retain the original graph data.
+- **Schema edits are engine commands.** The session owns an injectable node-kind registry so the
+  canvas and programmatic callers validate against the same descriptors. Null resets an override;
+  missing values are malformed requests. Unknown kinds remain movable and renameable.
+- **Widget drafts are view state.** Text commits on blur/submit, sliders on release, and Escape
+  cancels text edits. Failed drafts survive changes to other fields. Card motion uses a unique
+  engine gesture token, preserving one undo step across pointer events at every zoom level.
+
 ## 2026-10-16 · Node kinds and shared parameter schemas (#53)
 
 - **Schema data lives in `types`, re-exported by `nodes`.** Both node kinds and catalog models
@@ -193,3 +204,17 @@ a choice a later contributor might otherwise undo.
   has no licence file, so its text isn't copied). Targets: macOS universal, Windows x64/arm64,
   Linux x86_64/aarch64 + Flatpak; the web job comes with `apps/nodecraft-web` (#99). Switch back
   to the shared workflow once signing is in place, if it is still the better fit.
+
+## 2026-10-17 · Bounded graph-card editing (#57, #145)
+
+- Full prompt data is retained; idle cards borrow values and lay out bounded previews. Full drafts
+  are lazy, and schema/visibility caches follow document revisions. Dirty/invalid drafts survive
+  unrelated undo/redo. Hidden dirty editors explicitly advertise unsaved data and offer discard.
+- A drag previews position in shell view state and dispatches one node.move on release. Typed
+  slider changes wait for Enter/blur; redundant numeric changes do not create history entries.
+- Escape cancellation remembers ownership across egui's focus transition (#145). A failing-before
+  event regression verifies the old has_focus-only condition committed; the fixed test preserves
+  graph and undo state through the following frame.
+- Overview labels remain readable, controls appear only at readable scale, and named keyboard
+  Rename actions complement double-click. Settings store lifecycle and scroll preferences remain
+  intact in the graph-backed shell. Selection expansion remains owned by #58/PR144.

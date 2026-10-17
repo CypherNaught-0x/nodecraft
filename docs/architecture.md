@@ -196,16 +196,19 @@ apps provide; network I/O uses `reqwest`, which works on both targets.
 ## The engine/UI seam
 
 The shell (`ui-egui`) holds only view state: pan and zoom (`canvas::CanvasView`), open panels,
-hover and selection highlights. Everything that changes the document will be an engine command
-(from M1). In M0 the canvas shows a stub card from plain shell data (`card::StubCard`); M1 replaces
-it with `graph` nodes rendered by the same card painter.
+hover, selection highlights and uncommitted editor drafts. Cards read the engine graph and
+node-kind descriptors directly. All accepted title, parameter and position edits dispatch commands;
+rendering never writes automatic titles into the document. Each card has a transformed egui layer
+so its schema widgets use world coordinates while pointer hit tests follow canvas pan/zoom.
 
-`engine::Session` now owns a validated `Project`, its command registry, undo/redo stacks and
+`engine::Session` now owns a validated `Project`, its command and node-kind registries, undo/redo stacks and
 revision notifications. Frontends call `enabled(id, &params)` for a disabled reason and
 `dispatch(id, &params)` for a JSON result. `registry().specs()` exposes stable IDs, labels,
 shortcuts, alternate bindings, machine-readable JSON Schema and typed parameter documentation. Initial commands live in `graph_cmds::specs()`:
 `node.add`, `node.remove`, `node.move`, `edge.connect`, `edge.disconnect`, `edit.undo` and
-`edit.redo`. IDs in parameters are caller-supplied; node creation currently accepts detached
+`edit.redo`. `node_cmds::specs()` adds `node.title` and `node.param_set`; the latter validates the
+proposed node against its registered schema, including hidden parameters. An explicit null removes
+an override and restores a schema default; an omitted value is rejected. IDs in parameters are caller-supplied; node creation currently accepts detached
 graph data until the node-kind registry supplies templates. Handlers inspect an immutable
 context and return effects; they cannot directly mutate the live document. Hosts may inject typed
 immutable resources for selection/settings snapshots or explicit capabilities; missing resources
@@ -256,3 +259,13 @@ From [storytold/craft-libs](https://github.com/storytold/craft-libs), pinned to 
 `nodecraft_engine::build_info` reports the workspace version plus the commit and build date baked
 in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging scripts and CI).
 `nodecraft --version` and `nodecraft-cli --version` print it.
+
+### Canvas instance consumption
+
+The graph-backed shell caches checked `NodeKind::resolve_instance` descriptors and validated
+visibility by session revision. It borrows node/default values on idle frames and creates full
+text drafts only for focused editors. Widget drafts and drag previews are view state; accepted
+edits still dispatch the shared commands. `node.param_set` validates the resolved instance's
+ports and proposed parameters before returning a SetParam changeset. Configuration remains
+untouched. Builtin command schemas include all current scalar Value variants and Node.config;
+null is the reset sentinel for a parameter, not a stored Value variant.

@@ -18,6 +18,7 @@ nodecraft-format = { workspace = true }
 craft-settings = { workspace = true }
 nodecraft-graph.workspace = true
 nodecraft-types.workspace = true
+nodecraft-nodes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true

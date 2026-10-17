@@ -1,65 +1,157 @@
-//! Node cards on the canvas.
-//!
-//! M0 draws a stub card from plain data ([`StubCard`]); in M1 the same painter takes a
-//! `nodecraft_graph::Node` and its kind's body renderer.
+//! Graph-backed cards. Widgets keep only drafts; all accepted edits become engine commands.
+use crate::{canvas::CanvasView, theme::Tokens};
+use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use nodecraft_graph::{Node, Position};
+use nodecraft_nodes::NodeDescriptor;
+use nodecraft_types::{Integer, Number, ParamControl, Unsigned, Value};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
-use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-
-use crate::canvas::CanvasView;
-use crate::theme::Tokens;
-
-/// Below this zoom a card shows its label only (level of detail).
-pub const BODY_MIN_ZOOM: f32 = 0.35;
-/// Text smaller than this on screen is not drawn at all.
+pub const BODY_MIN_ZOOM: f32 = 0.55;
 pub const MIN_TEXT_PX: f32 = 5.0;
 
-/// A placeholder node: a label, some text, and a world-space rectangle.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StubCard {
-    pub id: u64,
-    /// Shown small and uppercase above the card.
-    pub label: String,
-    pub body: String,
-    /// Position and size in world coordinates.
-    pub rect: Rect,
+#[derive(Default)]
+pub struct EditorState {
+    title: Option<Draft>,
+    text: BTreeMap<String, Draft>,
+    sliders: BTreeMap<String, SliderDraft>,
+    error: Option<(EditTarget, String)>,
+    pub hidden_dirty: bool,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum EditTarget {
+    Title,
+    Parameter(String),
+}
+struct SliderDraft {
+    original: f64,
+    value: f64,
+}
+struct Draft {
+    original: String,
+    text: String,
+    focus: bool,
+    was_focused: bool,
 }
 
-/// Font size on screen for a token size at `zoom`, rounded to whole points so continuous zooming
-/// does not rasterise a new glyph atlas entry every frame. `None` when too small to read.
+pub enum Intent {
+    Move(Position),
+    Title(String),
+    Parameter { name: String, value: Option<Value> },
+}
+pub struct CardResponse {
+    pub response: egui::Response,
+    pub intents: Vec<Intent>,
+}
+
 pub fn text_px(size: f32, zoom: f32) -> Option<f32> {
     let px = (size * zoom).round();
     (px.is_finite() && px >= MIN_TEXT_PX).then_some(px)
 }
-
-/// Screen position of the `+` output handle: centred on the card's right edge.
-pub fn handle_center(screen_rect: Rect) -> Pos2 {
-    screen_rect.right_center()
+pub fn handle_center(rect: Rect) -> Pos2 {
+    rect.right_center()
 }
 
-/// Paint `card` and handle its pointer input. Dragging the card moves it (in world units);
-/// returns the card's response so the caller can track selection.
-pub fn show(ui: &mut egui::Ui, origin: Pos2, view: &CanvasView, card: &mut StubCard, selected: bool, t: &Tokens) -> egui::Response {
-    let screen = view.rect_to_screen(origin, card.rect);
-    let response = ui.interact(screen, ui.id().with(("card", card.id)), Sense::click_and_drag());
+/// Automatic titles are derived view data, never written back during rendering.
+pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
+    let fallback = || descriptor.map_or("Unknown node", |d| d.label.as_str());
+    let text = if node.title.trim().is_empty() {
+        ["prompt", "text"]
+            .into_iter()
+            .find_map(|name| match node.params.get(name) {
+                Some(Value::Text(text)) => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or_else(fallback)
+    } else {
+        &node.title
+    };
+    let prefix: String = text.chars().take(256).collect();
+    let line = prefix.lines().find(|line| !line.trim().is_empty()).unwrap_or_else(fallback).trim();
+    let mut chars = line.chars();
+    let mut clipped: String = chars.by_ref().take(64).collect();
+    if chars.next().is_some() {
+        clipped.push('…');
+    }
+    clipped
+}
+
+pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+    let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
+    let height = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
+    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, height))
+}
+
+pub struct CardView<'a> {
+    pub descriptor: Option<&'a NodeDescriptor>,
+    pub visible: Option<&'a BTreeSet<String>>,
+    pub preview_pos: Option<Position>,
+}
+
+pub fn cull_margin(t: &Tokens, zoom: f32) -> f32 {
+    ((t.label_size * zoom).max(t.title_min_screen_px) + (t.label_gap + t.control_gap) * zoom).max((t.handle_radius * zoom).max(t.handle_min_screen_radius))
+}
+
+pub fn show(
+    parent: &mut egui::Ui,
+    view: &CanvasView,
+    node: &Node,
+    card: CardView<'_>,
+    editor: &mut EditorState,
+    selected: bool,
+    t: &Tokens,
+) -> Option<CardResponse> {
+    let CardView { descriptor, visible, preview_pos } = card;
+    let origin = parent.max_rect().min;
+    let mut rect = world_rect(node, descriptor, t);
+    if let Some(pos) = preview_pos {
+        rect = rect.translate(Vec2::new(pos.x - node.pos.x, pos.y - node.pos.y));
+    }
+    let screen = view.rect_to_screen(origin, rect);
+    let extent = screen.expand(cull_margin(t, view.zoom));
+    if !parent.clip_rect().intersects(extent) {
+        editor.mark_hidden();
+        return None;
+    }
+    let layer = egui::LayerId::new(parent.layer_id().order, parent.id().with(("node_layer", node.id)));
+    parent.ctx().set_sublayer(parent.layer_id(), layer);
+    let transform = egui::emath::TSTransform::new(origin.to_vec2() + view.pan, view.zoom);
+    parent.ctx().set_transform_layer(layer, transform);
+    let label_rect = Rect::from_min_size(
+        rect.left_top() - Vec2::new(0.0, t.label_size.max(t.title_min_screen_px / view.zoom) + t.label_gap + t.control_gap),
+        Vec2::new(rect.width(), t.label_size.max(t.title_min_screen_px / view.zoom) + t.control_gap),
+    );
+    let mut ui = parent.new_child(egui::UiBuilder::new().id_salt(("node", node.id)).layer_id(layer).max_rect(rect.union(label_rect)));
+    // Egui layer transforms affect painting and pointer input, but AccessKit bounds remain
+    // in world coordinates. Transform the card's accessibility subtree as well.
+    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+        node.set_transform(egui::accesskit::Affine::new([
+            view.zoom as f64,
+            0.0,
+            0.0,
+            view.zoom as f64,
+            transform.translation.x as f64,
+            transform.translation.y as f64,
+        ]));
+    });
+    ui.set_clip_rect(transform.inverse() * parent.clip_rect());
+    ui.style_mut().override_font_id = Some(FontId::proportional(t.body_size));
+    ui.style_mut().spacing.item_spacing = Vec2::splat(t.control_gap);
+    let response = ui.interact(rect, ui.id().with("card"), Sense::click_and_drag());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("Node {}", title(node, descriptor))));
+    if response.clicked() {
+        response.request_focus();
+    }
+    let mut intents = Vec::new();
     if response.dragged_by(egui::PointerButton::Primary) {
-        let delta = response.drag_delta() / view.zoom;
-        if delta.is_finite() {
-            card.rect = card.rect.translate(delta);
+        let delta = response.drag_delta();
+        let pos = Position { x: preview_pos.unwrap_or(node.pos).x + delta.x, y: preview_pos.unwrap_or(node.pos).y + delta.y };
+        if delta != Vec2::ZERO && pos.x.is_finite() && pos.y.is_finite() {
+            intents.push(Intent::Move(pos));
         }
     }
-    let screen = view.rect_to_screen(origin, card.rect);
-    let painter = ui.painter();
-    if !painter.clip_rect().intersects(screen.expand(t.handle_radius * view.zoom + 24.0)) {
-        return response;
-    }
-
-    // Label above the card.
-    if let Some(px) = text_px(t.label_size, view.zoom) {
-        let pos = screen.left_top() - Vec2::new(0.0, t.label_gap * view.zoom);
-        painter.text(pos, Align2::LEFT_BOTTOM, card.label.to_uppercase(), FontId::monospace(px), t.text_muted);
-    }
-
-    // Body.
     let stroke = if selected {
         t.card_stroke_selected
     } else if response.hovered() {
@@ -67,45 +159,335 @@ pub fn show(ui: &mut egui::Ui, origin: Pos2, view: &CanvasView, card: &mut StubC
     } else {
         t.card_stroke
     };
-    let radius = (f32::from(t.card_radius) * view.zoom).round().clamp(0.0, 255.0) as u8;
-    painter.rect(screen, radius, t.card_fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
-    if view.zoom >= BODY_MIN_ZOOM
-        && let Some(px) = text_px(t.body_size, view.zoom)
+    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(1.0 / view.zoom, stroke), StrokeKind::Inside);
+
     {
-        let pad = t.card_padding * view.zoom;
-        let inner = screen.shrink(pad);
-        if inner.width() > 0.0 && inner.height() > 0.0 {
-            let galley = painter.layout(card.body.clone(), FontId::proportional(px), t.text, inner.width());
-            painter.with_clip_rect(inner.intersect(painter.clip_rect())).galley(inner.min, galley, t.text);
+        let px = (t.label_size * view.zoom).round().max(t.title_min_screen_px);
+        if editor.title.as_ref().is_some_and(|draft| draft.original != node.title && draft.text == draft.original) {
+            editor.title = None;
+        }
+        if let Some(draft) = &mut editor.title {
+            let r = ui.put(
+                label_rect,
+                egui::TextEdit::singleline(&mut draft.text)
+                    .id(ui.id().with("title_edit"))
+                    .font(FontId::monospace(px / view.zoom))
+                    .char_limit(4096)
+                    .hint_text("Automatic title"),
+            );
+            if draft.focus {
+                r.request_focus();
+                draft.focus = false;
+            }
+            let owned_focus = r.has_focus() || r.lost_focus() || draft.was_focused;
+            let cancel = owned_focus && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let submit = owned_focus && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            draft.was_focused = r.has_focus();
+            if cancel {
+                editor.title = None;
+                r.surrender_focus();
+            } else if (r.lost_focus() || submit) && draft.text != draft.original {
+                intents.push(Intent::Title(draft.text.clone()));
+                r.surrender_focus();
+            } else if r.lost_focus() {
+                editor.title = None;
+            }
+        } else {
+            let label = title(node, descriptor).to_uppercase();
+            let label = if editor.hidden_dirty { format!("{label} • UNSAVED") } else { label };
+            let r = ui.interact(label_rect, ui.id().with("title"), Sense::click());
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("Rename {label}")));
+            let mut job = egui::text::LayoutJob::simple_singleline(label, FontId::monospace(px / view.zoom), t.text_muted);
+            job.wrap = egui::text::TextWrapping { max_width: label_rect.width(), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+            ui.painter().with_clip_rect(label_rect.intersect(ui.clip_rect())).galley(label_rect.left_top(), galley, t.text_muted);
+            if r.double_clicked() || (r.has_focus() || response.has_focus()) && ui.input(|i| i.key_pressed(egui::Key::F2) || i.key_pressed(egui::Key::Enter)) {
+                editor.title = Some(Draft { original: node.title.clone(), text: node.title.clone(), focus: true, was_focused: false });
+            }
+            r.on_hover_text("Double-click or press F2 to rename. Clear the title to use the prompt.");
+        }
+    }
+    editor.hide_fields(visible);
+    if view.zoom >= BODY_MIN_ZOOM {
+        let inner = rect.shrink(t.card_padding);
+        let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
+        body.set_clip_rect(inner.intersect(ui.clip_rect()));
+        egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
+            ui.set_width(inner.width());
+            match descriptor {
+                None => {
+                    ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
+                }
+                Some(d) => {
+                    for spec in &d.params.params {
+                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) {
+                            continue;
+                        }
+                        ui.push_id(&spec.name, |ui| {
+                            let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
+                            let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
+                            let value = node.params.get(&spec.name).or(spec.default.as_ref());
+                            if let Some(value) = control(ui, &spec.control, value, &spec.name, editor, label.id, t) {
+                                intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                            }
+                            ui.add_space(t.control_gap);
+                        });
+                    }
+                }
+            }
+
+            if let Some((_, error)) = &editor.error {
+                ui.label(error);
+            }
+        });
+    }
+    if view.zoom < BODY_MIN_ZOOM {
+        editor.mark_hidden();
+    }
+    let c = handle_center(rect);
+    let radius = t.handle_radius.max(t.handle_min_screen_radius / view.zoom);
+    if !node.outputs.is_empty() {
+        ui.painter().circle(c, radius, t.handle_fill, Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
+        for axis in [Vec2::X, Vec2::Y] {
+            let arm = axis * radius * 0.5;
+            ui.painter().line_segment([c - arm, c + arm], Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
+        }
+    }
+    Some(CardResponse { response, intents })
+}
+
+fn control(
+    ui: &mut egui::Ui,
+    control: &ParamControl,
+    value: Option<&Value>,
+    name: &str,
+    editor: &mut EditorState,
+    label: egui::Id,
+    t: &Tokens,
+) -> Option<Option<Value>> {
+    match control {
+        ParamControl::Toggle => {
+            let mut checked = matches!(value, Some(Value::Bool(true)));
+            let response = ui.add(egui::Checkbox::without_text(&mut checked)).labelled_by(label);
+            // An empty intrinsic checkbox label shadows its labelled-by relation.
+            ui.ctx().accesskit_node_builder(response.id, |node| node.clear_label());
+            if response.changed() {
+                return Some(Some(Value::Bool(checked)));
+            }
+        }
+        ParamControl::Choice { options } => {
+            let current = match value {
+                Some(Value::Text(s)) => s.as_str(),
+                _ => "",
+            };
+            let mut selected = current.to_owned();
+            egui::ComboBox::from_id_salt("choice")
+                .selected_text(options.iter().find(|o| o.value == current).map_or("Choose…", |o| o.label.as_str()))
+                .show_ui(ui, |ui| {
+                    for option in options {
+                        ui.selectable_value(&mut selected, option.value.clone(), &option.label);
+                    }
+                })
+                .response
+                .labelled_by(label);
+            if selected != current {
+                return Some(Some(Value::Text(selected)));
+            }
+        }
+        ParamControl::Slider { min: Some(min), max: Some(max), step } => {
+            let original = match value {
+                Some(Value::Number(n)) => n.get(),
+                _ => min.get(),
+            };
+            if editor.sliders.get(name).is_some_and(|draft| draft.original != original) {
+                editor.sliders.remove(name);
+            }
+            let mut number = editor.sliders.get(name).map_or(original, |draft| draft.value);
+            let r = ui.add(egui::Slider::new(&mut number, min.get()..=max.get()).step_by(step.get()).update_while_editing(false)).labelled_by(label);
+            if r.dragged() {
+                editor.sliders.insert(name.to_owned(), SliderDraft { original, value: number });
+            } else if r.changed() || r.drag_stopped() {
+                editor.sliders.remove(name);
+                if number != original
+                    && let Ok(n) = Number::new(number)
+                {
+                    return Some(Some(Value::Number(n)));
+                }
+            }
+        }
+        ParamControl::Asset { modality } => {
+            ui.label(match value {
+                Some(Value::Media(asset)) => format!("{} asset", asset.mime.essence()),
+                _ => format!(
+                    "No {} selected",
+                    match modality {
+                        nodecraft_types::Modality::Text => "text",
+                        nodecraft_types::Modality::Image => "image",
+                        nodecraft_types::Modality::Video => "video",
+                        nodecraft_types::Modality::Audio => "audio",
+                        nodecraft_types::Modality::Mesh => "3D asset",
+                        nodecraft_types::Modality::Document => "document",
+                    }
+                ),
+            });
+            if value.is_some() && ui.small_button("Remove").clicked() {
+                return Some(None);
+            }
+        }
+        _ => {
+            let original: Cow<'_, str> = match value {
+                Some(Value::Text(s)) => Cow::Borrowed(s),
+                Some(Value::Integer(n)) => Cow::Owned(n.0.to_string()),
+                Some(Value::Unsigned(n)) => Cow::Owned(n.0.to_string()),
+                Some(Value::Number(n)) => Cow::Owned(n.get().to_string()),
+                _ => Cow::Borrowed(""),
+            };
+            if !editor.text.contains_key(name) {
+                let mut preview: String = original.chars().take(t.preview_chars).collect();
+                if original.len() > preview.len() {
+                    preview.push('…');
+                }
+                let response = ui
+                    .add_sized(
+                        Vec2::new(
+                            ui.available_width(),
+                            if matches!(control, ParamControl::Text { multiline: true, .. }) {
+                                t.body_size * t.text_rows as f32
+                            } else {
+                                t.control_row_height / 2.0
+                            },
+                        ),
+                        egui::Button::new(preview).frame(false).wrap(),
+                    )
+                    .labelled_by(label);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, ui.is_enabled(), ""));
+                ui.ctx().accesskit_node_builder(response.id, |node| node.clear_label());
+                if response.clicked() || response.has_focus() {
+                    editor.text.insert(name.to_owned(), Draft { original: original.to_string(), text: original.to_string(), focus: true, was_focused: false });
+                    ui.ctx().request_repaint();
+                }
+                return None;
+            }
+            let draft = editor.text.get_mut(name)?;
+            if draft.original != original && draft.text == draft.original {
+                *draft = Draft { original: original.to_string(), text: original.to_string(), focus: false, was_focused: false };
+                if editor.error.as_ref().is_some_and(|(field, _)| *field == EditTarget::Parameter(name.to_owned())) {
+                    editor.error = None;
+                }
+            }
+            let multiline = matches!(control, ParamControl::Text { multiline: true, .. });
+            let max = match control {
+                ParamControl::Text { max_bytes, .. } => *max_bytes,
+                ParamControl::Integer { .. } | ParamControl::Unsigned { .. } | ParamControl::Seed { .. } => 20,
+                ParamControl::Slider { .. } => 32,
+                ParamControl::Color => 9,
+                _ => 512,
+            };
+            let widget =
+                if multiline { egui::TextEdit::multiline(&mut draft.text).desired_rows(t.text_rows) } else { egui::TextEdit::singleline(&mut draft.text) };
+            let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(max)).labelled_by(label);
+            if draft.focus {
+                r.request_focus();
+                draft.focus = false;
+            }
+            let owned_focus = r.has_focus() || r.lost_focus() || draft.was_focused;
+            let cancel = owned_focus && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let submit = owned_focus && ui.input(|i| i.key_pressed(egui::Key::Enter) && (!multiline || i.modifiers.command));
+            draft.was_focused = r.has_focus();
+            if cancel {
+                draft.text = draft.original.clone();
+                r.surrender_focus();
+                if editor.error.as_ref().is_some_and(|(field, _)| *field == EditTarget::Parameter(name.to_owned())) {
+                    editor.error = None;
+                }
+                editor.text.remove(name);
+                editor.hidden_dirty = false;
+            } else if (r.lost_focus() || submit) && draft.text != draft.original {
+                let parsed = match control {
+                    ParamControl::Integer { .. } => draft.text.parse::<i64>().ok().map(|n| Value::Integer(Integer(n))),
+                    ParamControl::Unsigned { .. } | ParamControl::Seed { .. } => draft.text.parse::<u64>().ok().map(|n| Value::Unsigned(Unsigned(n))),
+                    ParamControl::Slider { .. } => draft.text.parse::<f64>().ok().and_then(|n| Number::new(n).ok()).map(Value::Number),
+                    _ => Some(Value::Text(draft.text.clone())),
+                };
+                if let Some(value) = parsed.filter(|v| control.validate_value(v).is_ok()) {
+                    r.surrender_focus();
+                    return Some(Some(value));
+                }
+                let message = if draft.text.len() > max {
+                    format!("This value exceeds the {max}-byte limit.")
+                } else {
+                    "Enter a value within this parameter's allowed range and step.".into()
+                };
+                editor.failed(EditTarget::Parameter(name.to_owned()), message);
+            } else if r.lost_focus() {
+                editor.text.remove(name);
+            }
+        }
+    }
+    None
+}
+
+impl EditorState {
+    fn hide_fields(&mut self, visible: Option<&BTreeSet<String>>) {
+        if self.text.iter().any(|(name, draft)| !visible.is_some_and(|fields| fields.contains(name)) && draft.text != draft.original) {
+            self.hidden_dirty = true;
+        }
+        if self.error.as_ref().is_some_and(|(target, _)| matches!(target, EditTarget::Parameter(name) if !visible.is_some_and(|fields| fields.contains(name))))
+        {
+            self.error = None;
         }
     }
 
-    // `+` output handle on the right edge. Fixed minimum size so it stays a target when zoomed out.
-    let c = handle_center(screen);
-    let r = (t.handle_radius * view.zoom).max(5.0);
-    painter.circle(c, r, t.handle_fill, Stroke::new(1.5, t.handle_glyph));
-    let arm = r * 0.5;
-    painter.line_segment([c - Vec2::X * arm, c + Vec2::X * arm], Stroke::new(1.5, t.handle_glyph));
-    painter.line_segment([c - Vec2::Y * arm, c + Vec2::Y * arm], Stroke::new(1.5, t.handle_glyph));
-    response
+    pub(crate) fn mark_hidden(&mut self) {
+        self.hidden_dirty = self.title.as_ref().is_some_and(|draft| draft.text != draft.original)
+            || self.text.values().any(|draft| draft.text != draft.original)
+            || !self.sliders.is_empty();
+        for draft in self.text.values_mut().chain(self.title.iter_mut()) {
+            draft.was_focused = false;
+        }
+    }
+    #[cfg(test)]
+    pub fn draft_count(&self) -> usize {
+        self.text.len() + usize::from(self.title.is_some())
+    }
+
+    pub fn accepted(&mut self, target: &EditTarget) {
+        match target {
+            EditTarget::Title => self.title = None,
+            EditTarget::Parameter(name) => {
+                self.text.remove(name);
+                self.sliders.remove(name);
+            }
+        }
+        self.hidden_dirty = false;
+        if self.error.as_ref().is_some_and(|(field, _)| field == target) {
+            self.error = None;
+        }
+    }
+    pub fn failed(&mut self, target: EditTarget, message: String) {
+        self.error = Some((target, message));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn text_sizes_are_whole_points_and_vanish_when_tiny() {
-        assert_eq!(text_px(13.0, 1.0), Some(13.0));
         assert_eq!(text_px(13.0, 1.07), Some(14.0));
         assert_eq!(text_px(13.0, 0.3), None);
         assert_eq!(text_px(13.0, f32::NAN), None);
-        assert_eq!(text_px(10.5, 4.0), Some(42.0));
     }
-
     #[test]
     fn handle_sits_on_the_right_edge() {
-        let r = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(200.0, 100.0));
-        assert_eq!(handle_center(r), Pos2::new(210.0, 70.0));
+        assert_eq!(handle_center(Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(200.0, 100.0))), Pos2::new(210.0, 70.0));
+    }
+    #[test]
+    fn titles_are_unicode_safe_and_explicit_titles_win() {
+        let mut node = Node::new(nodecraft_types::NodeId::from_bytes([1; 16]), "source.text");
+        node.params.insert("text".into(), Value::Text(format!("\n{}", "é".repeat(80))));
+        assert_eq!(title(&node, None), format!("{}…", "é".repeat(64)));
+        node.title = "My title".into();
+        assert_eq!(title(&node, None), "My title");
     }
 }

@@ -2201,6 +2201,7 @@ dependencies = [
  "nodecraft-format",
  "nodecraft-gpu",
  "nodecraft-graph",
+ "nodecraft-nodes",
  "nodecraft-providers",
  "nodecraft-types",
  "serde",
@@ -2300,6 +2301,10 @@ dependencies = [
  "egui_kittest",
  "log",
  "nodecraft-engine",
+ "nodecraft-graph",
+ "nodecraft-nodes",
+ "nodecraft-types",
+ "serde_json",
 ]
 
 [[package]]

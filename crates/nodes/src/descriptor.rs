@@ -64,7 +64,7 @@ impl NodeDescriptor {
         self.validate()?;
         let values = self.params.resolve(supplied, false)?.values;
         let mut node = Node::new(id, &self.id);
-        node.title = self.label.clone();
+        // Empty means automatic title: the shell derives it from the prompt or this label.
         node.inputs = self.inputs.clone();
         node.outputs = self.outputs.clone();
         node.params = values;
@@ -169,7 +169,6 @@ pub trait NodeKind: Send + Sync {
         node.params = descriptor.params.resolve(supplied, false)?.values;
         node.inputs = descriptor.inputs.clone();
         node.outputs = descriptor.outputs.clone();
-        node.title = descriptor.label.clone();
         node.validate_payload()?;
         Ok(node)
     }

@@ -78,6 +78,7 @@ struct Prepared {
 pub struct Session {
     document: Project,
     registry: Registry,
+    kinds: nodecraft_nodes::Registry,
     resources: Resources,
     services: Services,
     undo: History,
@@ -93,10 +94,15 @@ impl Session {
     }
 
     pub fn with_registry(document: Project, registry: Registry) -> Result<Self, Error> {
+        Self::with_registries(document, registry, nodecraft_nodes::Registry::builtins()?)
+    }
+
+    pub fn with_registries(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry) -> Result<Self, Error> {
         document.validate()?;
         Ok(Self {
             document,
             registry,
+            kinds,
             resources: Resources::default(),
             services: Services::default(),
             undo: History::default(),
@@ -112,6 +118,9 @@ impl Session {
     }
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+    pub fn kinds(&self) -> &nodecraft_nodes::Registry {
+        &self.kinds
     }
     pub fn revision(&self) -> u64 {
         self.revision
@@ -134,7 +143,15 @@ impl Session {
     }
 
     fn context(&self, phase: Phase) -> Context<'_> {
-        Context { document: &self.document, can_undo: self.can_undo(), can_redo: self.can_redo(), resources: &self.resources, services: &self.services, phase }
+        Context {
+            document: &self.document,
+            kinds: &self.kinds,
+            can_undo: self.can_undo(),
+            can_redo: self.can_redo(),
+            resources: &self.resources,
+            services: &self.services,
+            phase,
+        }
     }
 
     /// Returns an actionable reason when disabled; never mutates the session.
