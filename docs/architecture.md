@@ -78,6 +78,47 @@ checks the three-uppercase-letter syntax, not membership in a currency registry.
 `Error` carries a stable `ErrorKind` and a public-safe message. Higher-layer errors can retain
 internal causes, but must scrub secrets before constructing this shared payload.
 
+## Document edits
+
+`nodecraft-graph` stores projects, canvases, nodes, typed ports and ordered edges. Stored maps
+are read-only to callers. Detached nodes and annotation stubs are data; use `Change` or
+`Changeset` to add or modify them. Indexed `AddGeneration`, `RemoveGeneration` and
+`SetActiveGeneration` edits record only the affected history entry or selection, without
+putting the entire node history in undo/autosave. Clear or switch an active entry before
+removing it; insertion indices preserve exact history order through undo.
+
+Changesets are ordered transactions. Payloads, referenced entity existence and count caps are
+checked while staging; final relationships (DAG, input order, field/tag references) are checked
+once after the entire batch. This permits swapping occupied input orders or replacing an
+in-use field in one transaction. New edges require their endpoint nodes to exist first.
+Snapshots carried by forward/inverse operations must themselves pass payload validation.
+Any error leaves the live document untouched. Apply returns a serializable inverse, and
+applying that inverse returns redo. Node removal captures incident edges in one restore
+operation, preserving IDs and input order without expanding past the operation limit.
+
+Validation checks references, map keys, entity identity, port modalities/cardinality, input
+ordering and DAG structure. Cycle detection and value validation are iterative. Recursive
+values are checked before cloning, with depth/item/text limits; positions must be finite and
+within ±10 million world units. Project deserialization validates structural invariants too.
+File/control readers still must bound input bytes and retain decoder recursion limits before
+allocating document data. Optional collections/title/position default when absent; IDs and
+node kinds remain required. The format layer must check its file/journal version before
+parsing graph data: unknown future fields/variants cannot safely be edited and saved by an
+older reader. Invalid snapshots return an error; recovery needs a separate raw-data path.
+
+Current limits in `graph/src/validate.rs` are part of that format contract: 8 MiB serialized
+JSON per node (including parameters/history), 64 MiB per changeset payload and its inverse,
+and 256 MiB per project, in addition to entity/depth/item caps. Byte counting streams to a
+bounded sink, without allocating an encoded copy. An edit whose undo exceeds its limit is
+rejected before commit. Node additions reserve the larger restore operation's JSON size so
+undo/redo cannot cross the cap merely by changing operation spelling. Format/container readers
+may impose stricter input limits.
+
+Transactions stage one document clone and validate the full result once; structural batches
+no longer validate every growing prefix. The clone still scales with existing document data,
+including history; eliminating that copy needs a separately reviewed undo-journal or overlay
+implementation. Validation-count regression coverage protects against quadratic rescanning.
+
 ## wasm
 
 Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`

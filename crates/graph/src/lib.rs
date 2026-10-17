@@ -3,3 +3,11 @@
 //! NodeCraft graph: document model and invertible changesets.
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
+
+mod changes;
+mod model;
+mod validate;
+
+pub use changes::{Change, Changeset};
+pub use model::{Canvas, Comment, Edge, Endpoint, Field, Generation, Node, Port, Position, Project, Tag};
+pub use validate::{MAX_CHANGES, MAX_CHANGESET_BYTES, MAX_NODE_BYTES, MAX_PROJECT_BYTES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS};
