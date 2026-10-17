@@ -297,10 +297,39 @@ fn malformed_envelopes() {
     let mut s = server();
     let r: Value = serde_json::from_str(&s.handle(r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#).unwrap()).unwrap();
     assert_eq!(r["error"]["code"], -32600);
+    let id = nodecraft_types::NodeId::from_bytes([8; 16]);
+    assert_eq!(call(&mut s, "command_run", json!({"id":"node.add","params":{"canvas":CANVAS,"node":{"id":id,"kind":"text"}}}))["isError"], false);
+    call(&mut s, "command_run", json!({"id":"node.title","params":{"canvas":CANVAS,"id":id,"title":"redo"}}));
+    call(&mut s, "command_run", json!({"id":"edit.undo"}));
+    let before = s.session().document().clone();
+    let revision = s.session().revision();
+    let history = (s.session().can_undo(), s.session().can_redo());
+    let events = s.session().events_since(0).unwrap();
+    let attempted = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"node.title","params":{"canvas":CANVAS,"id":id,"title":"INVALID_MARKER"}}}}).to_string();
+    let marker = attempted.find("INVALID_MARKER").unwrap();
+    let mut input = attempted.into_bytes();
+    input[marker] = 0xff; // Otherwise valid mutation, with invalid UTF-8 inside caller text.
+    input.push(b'\n');
+    input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n");
+    let mut reader = std::io::BufReader::with_capacity(7, input.as_slice());
     let mut out = Vec::new();
-    serve(&mut s, &mut &b"\xff\xfe\n"[..], &mut out);
-    let r: Value = serde_json::from_slice(out.split(|b| *b == b'\n').next().unwrap()).unwrap();
-    assert_eq!(r["error"]["code"], -32700, "invalid UTF-8 is a parse error");
+    assert!(matches!(serve(&mut s, &mut reader, &mut out), ServeEnd::Closed));
+    let replies: Vec<Value> = out.split(|b| *b == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[0]["error"]["code"], -32700, "invalid UTF-8 is a parse error before mutation");
+    assert_eq!(replies[1], json!({"jsonrpc":"2.0","id":3,"result":{}}), "following valid frame remains aligned");
+    assert_eq!(s.session().document(), &before);
+    assert_eq!(s.session().revision(), revision);
+    assert_eq!((s.session().can_undo(), s.session().can_redo()), history);
+    assert_eq!(s.session().events_since(0).unwrap(), events);
+    let valid = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"node.title","params":{"canvas":CANVAS,"id":id,"title":"valid after malformed frame"}}}}).to_string()+"\n";
+    let mut out = Vec::new();
+    assert!(matches!(serve(&mut s, &mut valid.as_bytes(), &mut out), ServeEnd::Closed));
+    let reply: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(reply["result"]["isError"], false);
+    assert_eq!(s.session().revision(), revision + 1);
+    call(&mut s, "command_run", json!({"id":"edit.undo"}));
+    assert_eq!(s.session().document(), &before);
 }
 
 #[test]

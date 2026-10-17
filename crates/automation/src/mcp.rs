@@ -13,6 +13,8 @@
 //! Every command is classified: [`AGENT_COMMANDS`] may be listed and run, [`HUMAN_ONLY`] never.
 //! An unclassified command stays hidden, and a test fails until it is classified.
 
+mod overview;
+
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 
@@ -27,8 +29,9 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26
 /// parameters; clients may escape non-ASCII text (`\uXXXX`, up to 6 bytes a character), so this
 /// leaves room for that while bounding the memory a parse can take.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-/// Rough cap on a `canvas_inspect` page's JSON. The reply carries it twice (structured and as
-/// text), so a page stays around 1 MiB on the wire.
+/// Exact encoded JSON cap for a project overview, including its envelope. Node/edge pages
+/// retain their rough payload budget. Tool results duplicate JSON as escaped text: this is
+/// not a final wire-size cap, and an overview reply can exceed 1 MiB on the wire.
 pub const PAGE_BUDGET_BYTES: usize = 512 * 1024;
 /// Nodes larger than this are summarised in pages; fetch them one at a time with `node`.
 pub const NODE_INLINE_BYTES: usize = 64 * 1024;
@@ -129,7 +132,7 @@ fn tools() -> Value {
         {
             "name": "canvas_inspect",
             "title": "Inspect the project",
-            "description": "Without arguments: the project and its canvases with node and edge counts. With `canvas`: a page of that canvas's nodes (sorted by id, from `offset`, at most `limit`, and cut short to keep the reply small; continue from `next_offset`) with the edges into them. Nodes too large for a page are summarised; read one in full with `canvas` and `node`.",
+            "description": "Without `canvas`: the project and a page of canvas summaries sorted by id, using `offset` and `limit`; includes `total`, `next_offset` and `revision`. Compare revisions and restart paging after edits. Overview structured JSON is at most 512 KiB; escaped text duplication adds wire bytes. With `canvas`: a page of that canvas's nodes (sorted by id, from `offset`, at most `limit`, and cut short to keep the reply small; continue from `next_offset`) with the edges into them. Nodes too large for a page are summarised; read one in full with `canvas` and `node`.",
             "inputSchema": object_schema(json!({
                 "canvas": {"type": "string", "description": "Canvas id (UUID)"},
                 "node": {"type": "string", "description": "Node id (UUID): return just this node, in full, with its edges paged by `edge_offset`"},
@@ -319,23 +322,29 @@ impl McpServer {
 
     fn canvas_inspect(&self, args: &Map<String, Value>) -> Result<Value, Error> {
         let project = self.session.document();
-        let Some(canvas) = args.get("canvas") else {
-            if args.contains_key("node") {
-                return Err(invalid("`node` needs its `canvas`"));
-            }
-            let canvases: Vec<Value> =
-                project.canvases().values().map(|c| json!({"id": c.id(), "title": c.title(), "nodes": c.nodes().len(), "edges": c.edges().len()})).collect();
-            return Ok(json!({"project": {"id": project.id(), "title": project.title()}, "canvases": canvases, "revision": self.session.revision()}));
-        };
-        let id: CanvasId = canvas.as_str().ok_or_else(|| invalid("`canvas` must be a canvas id string"))?.parse()?;
-        let canvas = project.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with that id"))?;
-        let revision = self.session.revision();
         let number = |key: &str, default: usize| -> Result<usize, Error> {
             match args.get(key) {
                 None => Ok(default),
                 Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| invalid(format!("`{key}` must be a non-negative integer"))),
             }
         };
+        let Some(canvas) = args.get("canvas") else {
+            if args.contains_key("node") {
+                return Err(invalid("`node` needs its `canvas`"));
+            }
+            if args.contains_key("edge_offset") {
+                return Err(invalid("`edge_offset` needs `canvas` and `node`"));
+            }
+            let offset = number("offset", 0)?;
+            let limit = number("limit", 100)?;
+            if !(1..=MAX_PAGE).contains(&limit) {
+                return Err(invalid(format!("`limit` must be 1–{MAX_PAGE}")));
+            }
+            return overview::page(project, offset, limit, self.session.revision(), PAGE_BUDGET_BYTES);
+        };
+        let id: CanvasId = canvas.as_str().ok_or_else(|| invalid("`canvas` must be a canvas id string"))?.parse()?;
+        let canvas = project.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with that id"))?;
+        let revision = self.session.revision();
         if let Some(node) = args.get("node") {
             let node: NodeId = node.as_str().ok_or_else(|| invalid("`node` must be a node id string"))?.parse()?;
             let node = canvas.nodes().get(&node).ok_or_else(|| Error::new(ErrorKind::NotFound, "no node with that id on this canvas"))?;
