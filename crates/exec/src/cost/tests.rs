@@ -893,3 +893,49 @@ fn folding_keeps_the_session_count_at_the_limit() {
     assert_eq!(log.sessions.len(), MAX_SESSIONS);
     assert!(log.sessions.contains_key("s3"));
 }
+
+#[test]
+fn saved_pending_charges_are_checked_on_load() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 1 {
+        log.record(estimate("s", &format!("k{n}"), 1)).unwrap();
+    }
+    assert_eq!(log.pending().map(|e| e.idempotency_key.as_str()).collect::<Vec<_>>(), vec!["k0"]);
+    let file: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert_eq!(file.pending.len(), 1);
+    // The same key twice within pending: refused.
+    // (At no cost, so only the duplicate guard can refuse it, not the totals check.)
+    let mut twice = file.clone();
+    twice.pending.push(UsageEntry { cost: usd(0), ..twice.pending[0].clone() });
+    assert!(UsageLog::try_from(twice).is_err());
+    assert!(UsageLog::try_from(file.clone()).is_ok());
+    // Settled, listed too, retired too, or too many: refused.
+    let mut settled = file.clone();
+    settled.pending[0].status = Charge::Actual;
+    assert!(UsageLog::try_from(settled).is_err());
+    let mut listed = file.clone();
+    listed.pending[0].idempotency_key = file.entries[0].idempotency_key.clone();
+    assert!(UsageLog::try_from(listed).is_err());
+    let mut retired = file.clone();
+    retired.retired.push(super::hex(&super::retired_id("t", &file.pending[0].idempotency_key)));
+    assert!(UsageLog::try_from(retired).is_err());
+    let mut many = file;
+    many.pending = (0..=MAX_PENDING).map(|n| estimate("s", &format!("p{n}"), 0)).collect();
+    assert!(UsageLog::try_from(many).is_err());
+}
+
+#[test]
+fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + MAX_PENDING + 1 {
+        log.record(estimate("s", &format!("k{n}"), 1)).unwrap();
+    }
+    let total = u64::try_from(MAX_USAGE_ENTRIES + MAX_PENDING + 1).unwrap();
+    // k0..k9999 are pending; the last one out found pending full: identity only.
+    let last_out = format!("k{MAX_PENDING}");
+    assert!(log.charge("t", "k0").is_some());
+    assert!(log.charge("t", &last_out).is_none());
+    assert_eq!(log.settle("t", &last_out, usd(0), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound);
+    assert!(!log.record(estimate("s", &last_out, 1)).unwrap(), "still the same charge");
+    assert_eq!(log.spent("s").project.get(&Currency::USD), Some(&usd(total)), "it still counts");
+}
