@@ -2,16 +2,17 @@
 use crate::{
     canvas::{self, CanvasView},
     card::{self, EditTarget, EditorState, Intent},
+    noodle::{self, Side},
     selection::{self, Selection},
-    theme::{self, ThemeKind},
+    theme::{self, ThemeKind, Tokens},
 };
 use egui::{Pos2, Rect, Sense, Vec2};
 use nodecraft_engine::{
     Session,
     settings::{CanvasSettings, NodeCraftSettings, Theme},
 };
-use nodecraft_graph::{Canvas, Change, Project};
-use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId, Value};
+use nodecraft_graph::{Canvas, Change, Endpoint, Node, Project};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, PortType, ProjectId, Value};
 use serde_json::json;
 use std::{
     borrow::Cow,
@@ -108,8 +109,34 @@ struct Drag {
 /// Escape cancels it; a cancelled box keeps suppressing primary-drag panning until release.
 struct Marquee {
     start: Pos2,
-    base: BTreeSet<NodeId>,
+    base: Selection,
     cancelled: bool,
+}
+
+/// A noodle being dragged from an output port, or picked up by its input end to reroute it.
+struct Wiring {
+    from: Endpoint,
+    port_type: PortType,
+    /// The existing edge being rerouted; dropping it on empty canvas disconnects it.
+    moving: Option<EdgeId>,
+}
+
+/// Screen points within which a click selects a noodle.
+const NOODLE_HIT: f32 = 6.0;
+
+fn curves(canvas: &Canvas, painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
+    canvas
+        .edges()
+        .values()
+        .filter_map(|edge| {
+            let from = canvas.nodes().get(&edge.from.node)?;
+            let to = canvas.nodes().get(&edge.to.node)?;
+            let port = from.outputs.iter().find(|p| p.name == edge.from.port)?;
+            let a = noodle::port_anchor(from, card_geometry(painted, kinds, from, t), Side::Output, &edge.from.port)?;
+            let b = noodle::port_anchor(to, card_geometry(painted, kinds, to, t), Side::Input, &edge.to.port)?;
+            Some((edge.id, noodle::bezier(a, b), port.port_type.modality))
+        })
+        .collect()
 }
 
 /// Selection queries offered by a card's context menu.
@@ -123,6 +150,13 @@ enum SelectQuery {
 /// kind's static descriptor.
 fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
     painted.get(&node.id).copied().unwrap_or_else(|| card::world_rect(node, kinds.get(&node.kind).ok().map(|kind| kind.descriptor()), t))
+}
+
+/// Cards a dragged noodle can drop on, with their world rects: only cards drawn this frame. A
+/// card that wasn't drawn has no place on screen to drop on, and its static size could put a
+/// phantom input inside the viewport.
+fn drop_targets<'a>(canvas: &'a Canvas, painted: &'a BTreeMap<NodeId, Rect>) -> impl Iterator<Item = (&'a Node, Rect)> + 'a {
+    painted.iter().filter_map(|(id, rect)| canvas.nodes().get(id).map(|node| (node, *rect)))
 }
 
 /// A card's world rect for box selection: as painted this frame, or for a card that wasn't drawn,
@@ -157,6 +191,7 @@ pub struct NodeCraftApp {
     /// World rects of the cards painted this frame. Geometry for selection (and noodles) comes
     /// from here, not the evictable schema cache, so it matches what is on screen.
     painted: BTreeMap<NodeId, Rect>,
+    wiring: Option<Wiring>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
     schemas: BTreeMap<NodeId, CachedSchema>,
@@ -251,6 +286,7 @@ impl NodeCraftApp {
             drag: None,
             marquee: None,
             painted: BTreeMap::new(),
+            wiring: None,
             text_focused: false,
             schemas: BTreeMap::new(),
             cache_clock: 0,
@@ -301,17 +337,37 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
-            let (select_all, escape) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::COMMAND, egui::Key::A), i.key_pressed(egui::Key::Escape)));
+            let (select_all, escape, delete) = ui.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
+                    i.key_pressed(egui::Key::Escape),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+                )
+            });
+            if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
+                // Drop ids an undo or canvas switch removed, so they don't fail the delete.
+                self.selection.retain_existing(canvas);
+            }
+            if delete && !self.text_focused && !self.selection.is_empty() {
+                let params = json!({"canvas": self.canvas, "nodes": self.selection.nodes(), "edges": self.selection.edges()});
+                match self.session.dispatch("canvas.delete", &params) {
+                    Ok(_) => {
+                        self.notice = None;
+                        self.selection.clear();
+                    }
+                    Err(error) => self.notice = Some(error.message),
+                }
+            }
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 self.selection.replace(canvas.nodes().keys().copied().collect());
             }
-            // Escape closes an open menu or leaves a text field first, then cancels a box
-            // select, then clears.
-            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) {
+            // Escape closes an open menu or leaves a text field first, then drops a noodle being
+            // dragged, then cancels a box select, then clears.
+            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) && self.wiring.take().is_none() {
                 match &mut self.marquee {
                     Some(marquee) if !marquee.cancelled => {
                         marquee.cancelled = true;
-                        self.selection.replace(marquee.base.clone());
+                        self.selection = marquee.base.clone();
                     }
                     _ => self.selection.clear(),
                 }
@@ -323,7 +379,7 @@ impl NodeCraftApp {
             && shift
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         {
-            self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.nodes().clone(), cancelled: false });
+            self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
         let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
             self.session.document().canvases().get(&self.canvas).is_some_and(|c| {
@@ -336,16 +392,15 @@ impl NodeCraftApp {
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
         canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
-        if background.clicked() && !shift {
-            self.selection.clear();
-        }
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
         canvas::paint_grid(&painter, viewport, &self.view, t);
         let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
         let mut query = None;
+        let mut wire_command = None;
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
+            let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
             self.schemas.retain(|id, _| canvas.nodes().contains_key(id));
             self.selection.retain_existing(canvas);
@@ -422,7 +477,82 @@ impl NodeCraftApp {
                     if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
                         pan += r.drag_delta() * self.view.zoom;
                     }
+                    for (side, port, r) in &result.ports {
+                        if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
+                            pan += r.drag_delta() * self.view.zoom;
+                        }
+                        if !r.drag_started_by(egui::PointerButton::Primary) {
+                            continue;
+                        }
+                        self.wiring = match side {
+                            Side::Output => node.outputs.iter().find(|p| p.name == *port).map(|p| Wiring {
+                                from: Endpoint { node: node.id, port: port.clone() },
+                                port_type: p.port_type,
+                                moving: None,
+                            }),
+                            // Grabbing a connected input picks up its last noodle to reroute it.
+                            Side::Input => noodle::into_port(canvas, &Endpoint { node: node.id, port: port.clone() }).last().and_then(|edge| {
+                                let source = canvas.nodes().get(&edge.from.node)?.outputs.iter().find(|p| p.name == edge.from.port)?;
+                                Some(Wiring { from: edge.from.clone(), port_type: source.port_type, moving: Some(edge.id) })
+                            }),
+                        };
+                    }
                     intents.extend(result.intents.into_iter().map(|intent| (node.id, intent)));
+                }
+            }
+            // Noodles follow this frame's painted cards (drag previews, resolved heights). They are
+            // painted on the canvas layer, which stays under the card layers.
+            let curves = curves(canvas, &self.painted, kinds, t);
+            if background.clicked() {
+                let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
+                    let world = self.view.to_world(viewport.min, p);
+                    let reach = NOODLE_HIT / self.view.zoom;
+                    curves.iter().map(|(id, curve, _)| (*id, noodle::distance(curve, world))).filter(|(_, d)| *d <= reach).min_by(|a, b| a.1.total_cmp(&b.1))
+                });
+                match (hit, shift) {
+                    (Some((id, _)), true) => self.selection.toggle_edge(id),
+                    (Some((id, _)), false) => self.selection.only_edge(id),
+                    (None, false) => self.selection.clear(),
+                    (None, true) => {}
+                }
+            }
+            // A noodle whose source node or picked-up edge vanished mid-drag (Delete, undo) is dropped.
+            if self.wiring.as_ref().is_some_and(|w| !canvas.nodes().contains_key(&w.from.node) || w.moving.is_some_and(|id| !canvas.edges().contains_key(&id)))
+            {
+                self.wiring = None;
+            }
+            let moving = self.wiring.as_ref().and_then(|w| w.moving);
+            // Widened by the halo so noodles just outside the edge still paint their stroke.
+            let visible = self.view.visible_world(viewport).expand((t.wire_width_selected + t.wire_halo) / self.view.zoom);
+            for (id, curve, modality) in &curves {
+                // The curve lies inside its control points' hull; skip ones entirely off screen.
+                if Some(*id) == moving || !Rect::from_points(curve).intersects(visible) {
+                    continue;
+                }
+                let points = curve.map(|p| self.view.to_screen(viewport.min, p));
+                if self.selection.contains_edge(*id) {
+                    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                        points,
+                        false,
+                        egui::Color32::TRANSPARENT,
+                        egui::Stroke::new(t.wire_width_selected + t.wire_halo, t.card_stroke_selected),
+                    ));
+                }
+                let width = if self.selection.contains_edge(*id) { t.wire_width_selected } else { t.wire_width };
+                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                    points,
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    egui::Stroke::new(width, t.wire(*modality)),
+                ));
+            }
+            if let Some(wiring) = &self.wiring
+                && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+            {
+                let (command, notice) = self.wire(ui, canvas, wiring, pointer, t);
+                wire_command = command;
+                if notice.is_some() {
+                    self.notice = notice;
                 }
             }
             match query {
@@ -435,13 +565,14 @@ impl NodeCraftApp {
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
-                // Nodes removed mid-drag (e.g. by undo) must not come back from the base.
-                marquee.base.retain(|id| canvas.nodes().contains_key(id));
+                // Ids removed mid-drag (e.g. by undo) must not come back from the base.
+                marquee.base.retain_existing(canvas);
                 let world = Rect::from_two_pos(marquee.start, self.view.to_world(viewport.min, pointer));
-                let mut nodes = marquee.base.clone();
-                let (painted, kinds) = (&self.painted, self.session.kinds());
-                nodes.extend(selection::in_box(canvas, world, |node| box_geometry(painted, kinds, node, world, t)));
-                self.selection.replace(nodes);
+                self.selection = marquee.base.clone();
+                self.selection.extend(
+                    selection::in_box(canvas, world, |node| box_geometry(&self.painted, kinds, node, world, t)),
+                    curves.iter().filter(|(_, curve, _)| noodle::touches(curve, world)).map(|(id, _, _)| *id),
+                );
                 // Above the card layers, which are drawn over the background painter.
                 ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("marquee"))).with_clip_rect(viewport).rect(
                     self.view.rect_to_screen(viewport.min, world),
@@ -457,6 +588,15 @@ impl NodeCraftApp {
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if self.selection != selected_before {
             ui.ctx().request_repaint();
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.wiring = None;
+        }
+        if let Some((command, params)) = wire_command {
+            match self.session.dispatch(command, &params) {
+                Ok(_) => self.notice = None,
+                Err(error) => self.notice = Some(error.message),
+            }
         }
         for (id, intent) in intents {
             let (command, params, editing) = match intent {
@@ -569,6 +709,103 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             store.update(|settings| apply(&mut settings.keys));
+        }
+    }
+    /// Paint the noodle being dragged and, once the pointer is released, choose the command it
+    /// becomes (and a notice when the drop target can't accept it).
+    fn wire(&self, ui: &egui::Ui, canvas: &Canvas, wiring: &Wiring, pointer: Pos2, t: &Tokens) -> (Option<(&'static str, serde_json::Value)>, Option<String>) {
+        let kinds = self.session.kinds();
+        let origin = self.viewport.min;
+        let Some(start) = canvas
+            .nodes()
+            .get(&wiring.from.node)
+            .and_then(|source| noodle::port_anchor(source, card_geometry(&self.painted, kinds, source, t), Side::Output, &wiring.from.port))
+        else {
+            return (None, None);
+        };
+        // Nodes that already feed the source: connecting into any of them would close a loop.
+        let feeding = selection::upstream(canvas, &[wiring.from.node].into_iter().collect());
+        // Inputs this output already feeds (other than the noodle being moved), built once so
+        // each candidate input is a set lookup rather than a scan of every edge.
+        let fed: std::collections::BTreeSet<(NodeId, &str)> =
+            canvas.edges().values().filter(|e| e.from == wiring.from && Some(e.id) != wiring.moving).map(|e| (e.to.node, e.to.port.as_str())).collect();
+        let accepts = |node: &Node, input: &nodecraft_graph::Port| -> Result<(), String> {
+            if node.id == wiring.from.node {
+                Err("A node can't connect to itself.".into())
+            } else if !noodle::compatible(wiring.port_type, input.port_type) {
+                Err(if wiring.port_type.modality == input.port_type.modality {
+                    "A list output needs a list input.".into()
+                } else {
+                    let mut from = noodle::modality_phrase(wiring.port_type.modality).chars();
+                    let from: String = from.next().map(|c| c.to_uppercase().chain(from).collect()).unwrap_or_default();
+                    format!("{from} output can't connect to {} input.", noodle::modality_phrase(input.port_type.modality))
+                })
+            } else if feeding.contains(&node.id) {
+                Err("That connection would create a loop.".into())
+            } else if fed.contains(&(node.id, input.name.as_str())) {
+                Err("These ports are already connected.".into())
+            } else {
+                Ok(())
+            }
+        };
+        let world = self.view.to_world(origin, pointer);
+        let reach = card::PORT_HIT / self.view.zoom + t.port_radius;
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("wiring"))).with_clip_rect(self.viewport);
+        // The nearest accepting input within reach wins; failing that, the nearest input explains why.
+        let mut best: Option<(bool, f32, &Node, &nodecraft_graph::Port, Pos2)> = None;
+        for (node, rect) in drop_targets(canvas, &self.painted) {
+            for (index, input) in node.inputs.iter().enumerate() {
+                let at = noodle::anchor(rect, Side::Input, index, node.inputs.len());
+                let ok = accepts(node, input).is_ok();
+                if ok {
+                    let ring = t.port_radius * self.view.zoom + t.drop_ring_gap;
+                    painter.circle_stroke(self.view.to_screen(origin, at), ring, egui::Stroke::new(t.drop_ring_width, t.wire(input.port_type.modality)));
+                }
+                let distance = at.distance(world);
+                if distance <= reach && best.is_none_or(|(best_ok, d, ..)| (ok && !best_ok) || (ok == best_ok && distance < d)) {
+                    best = Some((ok, distance, node, input, at));
+                }
+            }
+        }
+        let target = best.map(|(_, _, node, input, at)| (node, input, at));
+        let end = target.filter(|(node, input, _)| accepts(node, input).is_ok()).map_or(world, |(_, _, at)| at);
+        let points = noodle::bezier(start, end).map(|p| self.view.to_screen(origin, p));
+        let stroke = egui::Stroke::new(t.wire_width, t.wire(wiring.port_type.modality));
+        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, stroke));
+        if ui.input(|i| i.pointer.primary_down()) {
+            return (None, None);
+        }
+        let Some((node, input, _)) = target else {
+            // Dropping a picked-up noodle on empty canvas disconnects it.
+            return (wiring.moving.map(|id| ("edge.disconnect", json!({"canvas": self.canvas, "id": id}))), None);
+        };
+        if let Err(message) = accepts(node, input) {
+            return (None, Some(message));
+        }
+        let to = Endpoint { node: node.id, port: input.name.clone() };
+        let occupants: Vec<_> = noodle::into_port(canvas, &to).into_iter().filter(|e| Some(e.id) != wiring.moving).collect();
+        if wiring.moving.is_some_and(|id| canvas.edges().get(&id).is_some_and(|e| e.to == to)) {
+            return (None, None);
+        }
+        let mut replace: Vec<EdgeId> = wiring.moving.into_iter().collect();
+        let order = if input.port_type.many {
+            match noodle::next_order(canvas, &to, wiring.moving) {
+                Some(order) => order,
+                None => return (None, Some("This input can't take more connections.".into())),
+            }
+        } else {
+            // A single input swaps its current noodle for the new one, in the same undo step.
+            replace.extend(occupants.first().map(|e| e.id));
+            0
+        };
+        let Some(id) = wiring.moving.or_else(|| noodle::new_edge_id(self.session.document(), &wiring.from, &to, self.session.revision())) else {
+            return (None, Some("Couldn't allocate a connection id; try again.".into()));
+        };
+        let edge = json!({"id": id, "from": wiring.from, "to": to, "order": order});
+        if replace.is_empty() {
+            (Some(("edge.connect", json!({"canvas": self.canvas, "edge": edge}))), None)
+        } else {
+            (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None)
         }
     }
     /// Bottom-right zoom percentage; clicking it resets the view.

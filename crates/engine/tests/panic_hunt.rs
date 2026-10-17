@@ -31,7 +31,7 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value"] {
+        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges"] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
@@ -41,6 +41,10 @@ fn panic_hunt() {
         corpus.push(json!({"canvas":common::canvas(),"id":common::node_id(1),"name":"text","value":raw}));
         corpus.push(json!({"canvas":common::canvas(),"id":common::node_id(1),"title":raw}));
     }
+    // edge.rewire and canvas.delete: duplicate, missing and oversized id lists.
+    corpus.push(json!({"canvas":common::canvas(),"edge":common::edge(),"replace":[common::edge().id, common::edge().id]}));
+    corpus.push(json!({"canvas":common::canvas(),"nodes":[common::node_id(1), common::node_id(1)],"edges":[common::edge().id]}));
+    corpus.push(json!({"canvas":common::canvas(),"nodes":vec![common::node_id(9); 20_000]}));
     for id in ids {
         for params in &corpus {
             let before = session.document().clone();
@@ -82,6 +86,11 @@ fn template(id: &str) -> (Session, Value) {
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
         "canvas.stale" => json!({"canvas":canvas()}),
+        "edge.rewire" => {
+            let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
+            json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
+        }
+        "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();
             Value::Null

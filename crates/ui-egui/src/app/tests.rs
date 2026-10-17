@@ -730,8 +730,18 @@ fn chain_harness() -> Harness<'static, NodeCraftApp> {
         params: ParamSchema { params: vec![] },
         quick_add: None,
     };
+    let collect = NodeDescriptor {
+        id: "test.collect".into(),
+        label: "Collect".into(),
+        category: Category::Action,
+        inputs: vec![nodecraft_graph::Port { name: "items".into(), port_type: PortType { many: true, ..text } }],
+        outputs: vec![],
+        params: ParamSchema { params: vec![] },
+        quick_add: None,
+    };
     let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
     kinds.register(Box::new(TestKind(relay))).unwrap();
+    kinds.register(Box::new(TestKind(collect))).unwrap();
     let canvas = CanvasId::from_bytes([1; 16]);
     let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Chain").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
@@ -1019,6 +1029,195 @@ fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
     assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
 }
 
+/// Screen position of node `n`'s single input or output port.
+fn port_point(h: &Harness<'static, NodeCraftApp>, n: u8, side: noodle::Side) -> Pos2 {
+    let app = h.state();
+    let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
+    let rect = card_geometry(&app.painted, app.session.kinds(), node, app.theme.tokens());
+    app.view.to_screen(app.viewport.min, noodle::anchor(rect, side, 0, 1))
+}
+fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + (to - from) * 0.5);
+    h.run();
+    h.hover_at(to);
+    h.run();
+    h.drop_at(to);
+    h.run();
+}
+/// Edges as (from node, to node) pairs.
+fn links(h: &Harness<'static, NodeCraftApp>) -> BTreeSet<(NodeId, NodeId)> {
+    let app = h.state();
+    app.session.document().canvases().get(&app.canvas).unwrap().edges().values().map(|e| (e.from.node, e.to.node)).collect()
+}
+fn link(a: u8, b: u8) -> (NodeId, NodeId) {
+    (chain_id(a), chain_id(b))
+}
+
+#[test]
+fn dragging_an_output_fans_out_and_replaces_a_single_input_in_one_step() {
+    let mut h = chain_harness();
+    let before = h.state().session.document().clone();
+    let (from, to) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 3, noodle::Side::Input));
+    wire_drag(&mut h, from, to);
+    // A now feeds B and C; C's single input dropped B.
+    assert_eq!(links(&h), [link(1, 2), link(1, 3)].into_iter().collect());
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn invalid_drops_leave_the_document_alone_and_explain_why() {
+    let mut h = chain_harness();
+    let canvas = h.state().canvas;
+    let mut image = h.state().session.kinds().get("source.image").unwrap().descriptor().instantiate(chain_id(5), &BTreeMap::new()).unwrap();
+    image.pos = nodecraft_graph::Position { x: 400.0, y: 400.0 };
+    h.state_mut().session.dispatch("node.add", &json!({"canvas": canvas, "node": image})).unwrap();
+    h.run();
+    let before = h.state().session.document().clone();
+    for (a, b, message) in
+        [(5, 3, "An image output can't connect to a text input."), (3, 2, "That connection would create a loop."), (3, 3, "A node can't connect to itself.")]
+    {
+        let (from, to) = (port_point(&h, a, noodle::Side::Output), port_point(&h, b, noodle::Side::Input));
+        wire_drag(&mut h, from, to);
+        assert_eq!(h.state().session.document(), &before, "{a}->{b}");
+        assert_eq!(h.state().notice.as_deref(), Some(message));
+    }
+    // Dropping on empty canvas, or Escape mid-drag, does nothing.
+    let from = port_point(&h, 1, noodle::Side::Output);
+    wire_drag(&mut h, from, Pos2::new(900.0, 600.0));
+    let to = port_point(&h, 3, noodle::Side::Input);
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(to);
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(to);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn rerouting_an_input_end_moves_or_disconnects_the_noodle() {
+    let mut h = chain_harness();
+    let before = h.state().session.document().clone();
+    // Pick up A → B by B's input and drop it on C's input: A → C replaces B → C.
+    let (from, to) = (port_point(&h, 2, noodle::Side::Input), port_point(&h, 3, noodle::Side::Input));
+    wire_drag(&mut h, from, to);
+    assert_eq!(links(&h), [link(1, 3)].into_iter().collect());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // Dropping a picked-up end on empty canvas disconnects it.
+    let from = port_point(&h, 3, noodle::Side::Input);
+    wire_drag(&mut h, from, Pos2::new(900.0, 600.0));
+    assert_eq!(links(&h), [link(1, 2)].into_iter().collect());
+}
+
+#[test]
+fn noodles_are_clickable_box_selectable_and_deletable() {
+    let mut h = chain_harness();
+    // At 100% the gaps between cards are wider than the port handles' pointer slop.
+    h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
+    h.run();
+    let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
+    let edge = |h: &Harness<'static, NodeCraftApp>, from: u8| {
+        h.state().session.document().canvases().get(&h.state().canvas).unwrap().edges().values().find(|e| e.from.node == chain_id(from)).unwrap().id
+    };
+    let (ab, bc) = (edge(&h, 1), edge(&h, 2));
+    press(&mut h, a + (b - a) * 0.5, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.edges(), &[ab].into_iter().collect());
+    assert!(h.state().selection.nodes().is_empty());
+    let before = h.state().session.document().clone();
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(links(&h), [link(2, 3)].into_iter().collect());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // A box over the gap between B and C catches only their noodle; then delete C with it.
+    let (c_in, b_out) = (port_point(&h, 3, noodle::Side::Input), port_point(&h, 2, noodle::Side::Output));
+    let mid = b_out + (c_in - b_out) * 0.5;
+    box_drag(&mut h, mid - Vec2::splat(4.0), mid + Vec2::splat(4.0), egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.edges(), &[bc].into_iter().collect());
+    press_card(&mut h, 3, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    h.key_press(egui::Key::Backspace);
+    h.run();
+    assert_eq!(links(&h), [link(1, 2)].into_iter().collect());
+    assert!(!h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().contains_key(&chain_id(3)));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn list_inputs_collect_in_order_reject_duplicates_and_accept_reroutes() {
+    let mut h = chain_harness();
+    let canvas = h.state().canvas;
+    let mut collect = h.state().session.kinds().get("test.collect").unwrap().descriptor().instantiate(chain_id(6), &BTreeMap::new()).unwrap();
+    collect.pos = nodecraft_graph::Position { x: 800.0, y: 400.0 };
+    h.state_mut().session.dispatch("node.add", &json!({"canvas": canvas, "node": collect})).unwrap();
+    h.run();
+    let into = port_point(&h, 6, noodle::Side::Input);
+    for n in [1, 4] {
+        let from = port_point(&h, n, noodle::Side::Output);
+        wire_drag(&mut h, from, into);
+    }
+    let orders = |h: &Harness<'static, NodeCraftApp>| -> Vec<(NodeId, u32)> {
+        let edges = noodle::into_port(
+            h.state().session.document().canvases().get(&canvas).unwrap(),
+            &nodecraft_graph::Endpoint { node: chain_id(6), port: "items".into() },
+        );
+        edges.into_iter().map(|e| (e.from.node, e.order)).collect()
+    };
+    assert_eq!(orders(&h), vec![(chain_id(1), 0), (chain_id(4), 1)]);
+    // The same output twice into one list is refused.
+    let before = h.state().session.document().clone();
+    let from = port_point(&h, 1, noodle::Side::Output);
+    wire_drag(&mut h, from, into);
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().notice.as_deref(), Some("These ports are already connected."));
+    // Rerouting B → C onto the list appends it after the existing items.
+    let from = port_point(&h, 3, noodle::Side::Input);
+    wire_drag(&mut h, from, into);
+    assert_eq!(orders(&h), vec![(chain_id(1), 0), (chain_id(4), 1), (chain_id(2), 2)]);
+    assert!(!links(&h).contains(&link(2, 3)));
+}
+
+#[test]
+fn delete_keys_yield_to_text_fields() {
+    let mut h = harness();
+    let id = node(h.state()).id;
+    let rect = screen(h.state());
+    click(&mut h, rect.min + Vec2::splat(4.0));
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    for key in [egui::Key::Backspace, egui::Key::Delete] {
+        h.key_press(key);
+        h.run();
+    }
+    assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().contains_key(&id));
+    assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+    // Outside the text field the same key deletes the selected node, as one undo step.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    click(&mut h, rect.min + Vec2::splat(4.0));
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().is_empty());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().contains_key(&id));
+}
+
 #[test]
 fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
     use std::borrow::Cow;
@@ -1107,4 +1306,55 @@ fn the_keys_button_opens_the_keys_panel() {
     h.get_by_label("Save").click();
     h.run();
     assert!(h.state().keys.notice.as_deref().is_some_and(|n| n.contains("unavailable")), "{:?}", h.state().keys.notice);
+}
+
+#[test]
+fn noodles_follow_a_card_while_it_is_dragged_and_commit_on_release() {
+    let mut h = chain_harness();
+    let canvas = h.state().canvas;
+    let pos = |h: &Harness<'static, NodeCraftApp>| h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&chain_id(2)).unwrap().pos;
+    let start = |h: &Harness<'static, NodeCraftApp>| {
+        let app = h.state();
+        let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
+        let curves = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens());
+        let edge = canvas.edges().values().find(|e| e.from.node == chain_id(2)).unwrap().id;
+        curves.iter().find(|(id, ..)| *id == edge).map(|(_, curve, _)| curve[0]).unwrap()
+    };
+    let (before_pos, before_start) = (pos(&h), start(&h));
+    let grab = card_point(&h, 2);
+    h.drag_at(grab);
+    h.run();
+    h.hover_at(grab + Vec2::new(30.0, 45.0));
+    h.run();
+    h.hover_at(grab + Vec2::new(60.0, 90.0));
+    h.run();
+    // Mid-drag: the document hasn't moved, but B's outgoing noodle starts where B is painted.
+    assert_eq!(pos(&h), before_pos);
+    let moved = start(&h) - before_start;
+    let zoom = h.state().view.zoom;
+    assert!((moved - Vec2::new(60.0, 90.0) / zoom).length() < 1.0, "{moved:?}");
+    h.drop_at(grab + Vec2::new(60.0, 90.0));
+    h.run();
+    assert!((pos(&h).x - before_pos.x - 60.0 / zoom).abs() < 1.0);
+}
+
+#[test]
+fn only_cards_drawn_this_frame_are_noodle_drop_targets() {
+    // A card off screen isn't painted, so it can't take a drop wherever its static size would
+    // put its inputs.
+    let mut h = harness();
+    h.run();
+    let canvas_id = h.state().canvas;
+    let painted = h.state().painted.clone();
+    let doc = h.state().session.document().clone();
+    let canvas = doc.canvases().get(&canvas_id).unwrap();
+    assert!(canvas.nodes().len() > painted.len() || !painted.is_empty());
+    let targets: Vec<NodeId> = super::drop_targets(canvas, &painted).map(|(node, _)| node.id).collect();
+    assert_eq!(targets, painted.keys().copied().collect::<Vec<_>>());
+    // With nothing painted (every card culled), nothing can be dropped on.
+    assert_eq!(super::drop_targets(canvas, &BTreeMap::new()).count(), 0);
+    // A painted id whose node is gone is skipped.
+    let mut stale = painted.clone();
+    stale.insert(NodeId::from_bytes([0xee; 16]), Rect::from_min_size(Pos2::ZERO, Vec2::splat(10.0)));
+    assert_eq!(super::drop_targets(canvas, &stale).count(), painted.len());
 }

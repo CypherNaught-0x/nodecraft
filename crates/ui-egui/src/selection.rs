@@ -4,34 +4,53 @@
 //! including a cyclic one loaded from a hostile file.
 use egui::Rect;
 use nodecraft_graph::{Canvas, Node};
-use nodecraft_types::NodeId;
+use nodecraft_types::{EdgeId, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     nodes: BTreeSet<NodeId>,
+    edges: BTreeSet<EdgeId>,
 }
 
 impl Selection {
     pub fn contains(&self, id: NodeId) -> bool {
         self.nodes.contains(&id)
     }
-    pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+    pub fn contains_edge(&self, id: EdgeId) -> bool {
+        self.edges.contains(&id)
     }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty()
+    }
+    /// Selected nodes and edges together.
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.nodes.len().saturating_add(self.edges.len())
     }
     pub fn nodes(&self) -> &BTreeSet<NodeId> {
         &self.nodes
     }
+    pub fn edges(&self) -> &BTreeSet<EdgeId> {
+        &self.edges
+    }
     pub fn clear(&mut self) {
         self.nodes.clear();
+        self.edges.clear();
     }
     /// Plain click: this node and nothing else.
     pub fn only(&mut self, id: NodeId) {
-        self.nodes.clear();
+        self.clear();
         self.nodes.insert(id);
+    }
+    /// Plain click on a noodle: this edge and nothing else.
+    pub fn only_edge(&mut self, id: EdgeId) {
+        self.clear();
+        self.edges.insert(id);
+    }
+    pub fn toggle_edge(&mut self, id: EdgeId) {
+        if !self.edges.remove(&id) {
+            self.edges.insert(id);
+        }
     }
     /// Shift-click: add the node, or remove it if it was already selected.
     pub fn toggle(&mut self, id: NodeId) {
@@ -42,12 +61,20 @@ impl Selection {
     pub fn add(&mut self, id: NodeId) {
         self.nodes.insert(id);
     }
+    /// Select exactly these nodes (chain and kind queries select nodes only).
     pub fn replace(&mut self, nodes: BTreeSet<NodeId>) {
         self.nodes = nodes;
+        self.edges.clear();
     }
-    /// Drop ids whose nodes no longer exist (after undo, a remove, or a canvas switch).
+    /// Add to the selection (box select adds what it touches).
+    pub fn extend(&mut self, nodes: impl IntoIterator<Item = NodeId>, edges: impl IntoIterator<Item = EdgeId>) {
+        self.nodes.extend(nodes);
+        self.edges.extend(edges);
+    }
+    /// Drop ids that no longer exist (after undo, a remove, or a canvas switch).
     pub fn retain_existing(&mut self, canvas: &Canvas) {
         self.nodes.retain(|id| canvas.nodes().contains_key(id));
+        self.edges.retain(|id| canvas.edges().contains_key(id));
     }
 }
 

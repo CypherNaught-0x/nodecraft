@@ -46,6 +46,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.param_set",
     "edge.connect",
     "edge.disconnect",
+    "edge.rewire",
+    "canvas.delete",
     "edit.undo",
     "edit.redo",
     "canvas.stale",
