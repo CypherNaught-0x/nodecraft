@@ -86,7 +86,9 @@ a choice a later contributor might otherwise undo.
   keychain thread, and answered through `KeyResults::drain` under the `pending` id it
   returned. In the app, `keys.*` commands therefore answer `{pending: id}`. The host holds the
   single `KeyResults` and routes each outcome by id to whoever asked (the keys panel, the in-app
-  agent), and both queues are bounded. Headless hosts keep the synchronous service. Settings list the accounts that have
+  agent), and both queues are bounded. Each nonblocking drain returns at most 64 outcomes
+  (`KeyResults::MAX_BATCH`, the queue capacity), retaining later results in order for subsequent
+  calls even while the worker refills the queue. Headless hosts keep the synchronous service. Settings list the accounts that have
   keys (`[keys] accounts`, names only), so the keys panel never reads every key at startup.
 ## 2026-10-17 · ComfyUI provider (#9, part 2)
 
