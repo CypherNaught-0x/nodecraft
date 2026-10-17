@@ -634,9 +634,12 @@ a choice a later contributor might otherwise undo.
   still the same charge. The boundary is explicit: a retry of a charge more than
   `MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS` charges old counts again.
 - **Retained bytes are bounded.** Listed entries hold at most 32 MiB of text, and the oldest
-  leave first, as at the entry limit. With long fields that is about 16,000 entries. An open
-  estimate pushed off the list stays charged at its estimate, which is conservative. At most
-  1,024 sessions keep their own totals. The least recently charged one (never the one charging)
+  leave first, as at the entry limit. With long fields that is about 16,000 entries.
+- **Open charges stay settleable (#228).** An open charge (an estimate or an unresolved one)
+  pushed off the list is kept as *pending*, up to 10,000 of them and saved with the log. It can
+  still be settled, released or found with `charge`. Once settled, only its identity is kept.
+  Past the limit, it stays charged as it is, which is conservative. `settle` enforces the same
+  total ceiling as `record`. At most 1,024 sessions keep their own totals. The least recently charged one (never the one charging)
   folds into an "earlier sessions" total saved under the reserved empty name. Settling or
   releasing a folded session's entries adjusts that total, so the project total and the current
   session's stay exact and a saved log always reloads. A session id that charges again after

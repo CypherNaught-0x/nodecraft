@@ -500,8 +500,20 @@ fn settling_works_after_older_entries_leave_the_list() {
     let last = format!("k{}", MAX_USAGE_ENTRIES + 2);
     log.settle("fal", &last, usd(5), Charge::Actual).unwrap();
     assert_eq!(log.entries().last().map(|e| e.cost), Some(usd(5)));
-    assert_eq!(log.settle("fal", "k0", usd(5), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound, "dropped from the list");
-    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(u64::try_from(MAX_USAGE_ENTRIES + 2).unwrap() + 5)));
+    // k0 left the list while open: it is pending, so it still settles (#228), once.
+    assert_eq!(log.charge("fal", "k0").map(|e| e.status), Some(Charge::Estimate));
+    log.settle("fal", "k0", usd(5), Charge::Actual).unwrap();
+    assert_eq!(log.settle("fal", "k0", usd(5), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound, "settled and retired");
+    assert!(!log.record(charge("k0", 1, Charge::Actual)).unwrap(), "a retry is still the same charge");
+    // An unsettled pending estimate can be released.
+    log.release("fal", "k1").unwrap();
+    assert!(log.charge("fal", "k1").is_none());
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(u64::try_from(MAX_USAGE_ENTRIES + 3).unwrap() + 4 + 4 - 1)));
+    // Pending charges are saved and checked on load.
+    let json = serde_json::to_string(&log).unwrap();
+    let back: UsageLog = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, log);
+    assert_eq!(back.charge("fal", "k2").map(|e| e.status), Some(Charge::Estimate));
 }
 
 #[test]
@@ -800,4 +812,22 @@ fn a_step_that_runs_no_jobs_blocks_nothing() {
     assert!(quote.is_complete());
     let caps = Budgets { per_call: Some(usd(1)), session: Some(usd(1)), project: Some(usd(1)) };
     assert!(check(&quote, &caps, &Spent::default()).unwrap().is_final());
+}
+
+#[test]
+fn settling_respects_the_total_ceiling() {
+    let mut log = UsageLog::default();
+    // Fill the project close to its ceiling with maximal charges, then try to settle above it.
+    let full = MAX_TOTAL_MICROS / MAX_CHARGE_MICROS;
+    for n in 0..full - 1 {
+        log.record(UsageEntry { cost: usd(MAX_CHARGE_MICROS), ..entry("s", &format!("big{n}"), 0) }).unwrap();
+    }
+    log.record(UsageEntry { status: Charge::Estimate, ..entry("s", "last", 1) }).unwrap();
+    let before = log.clone();
+    assert!(log.settle("t", "last", usd(MAX_CHARGE_MICROS), Charge::Actual).is_ok());
+    let mut over = before.clone();
+    over.record(UsageEntry { status: Charge::Estimate, ..entry("s", "more", 1) }).unwrap();
+    let snapshot = over.clone();
+    assert_eq!(over.settle("t", "more", usd(MAX_CHARGE_MICROS), Charge::Actual).unwrap_err().kind, ErrorKind::Overflow);
+    assert_eq!(over, snapshot, "nothing changed");
 }

@@ -349,6 +349,10 @@ pub const MAX_LISTED_TEXT: usize = 32 * 1024 * 1024;
 /// Past this many, the oldest identity is forgotten: a retry of a charge more than
 /// `MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS` charges old counts again (the documented boundary).
 pub const MAX_RETIRED_KEYS: usize = 250_000;
+/// Open charges (estimates, unresolved) kept after they leave the list, so they can still be
+/// settled or released. Past this many, an open charge leaving the list stays charged as it is
+/// (the conservative outcome) and only its identity is kept.
+pub const MAX_PENDING: usize = 10_000;
 /// Most sessions with their own totals. Past it, the least recently charged session (never the
 /// one charging) folds into one "earlier sessions" total, saved under the empty name, which still
 /// counts for the project. A session id that charges again after being folded starts a fresh
@@ -374,6 +378,8 @@ pub struct UsageLog {
     /// Identities of charges that left the list, oldest first (see [`MAX_RETIRED_KEYS`]).
     retired: VecDeque<Retired>,
     retired_set: BTreeSet<Retired>,
+    /// Open charges that left the list, by `(provider, key)` (see [`MAX_PENDING`]).
+    pending: BTreeMap<(String, String), UsageEntry>,
     /// Text bytes of the listed entries (see [`MAX_LISTED_TEXT`]).
     text_bytes: usize,
     /// When each session last charged (a counter, not saved: rebuilt from the listed entries), so
@@ -448,7 +454,11 @@ fn unhex(text: &str) -> Option<Retired> {
 /// derived from the entries).
 impl PartialEq for UsageLog {
     fn eq(&self, other: &Self) -> bool {
-        self.entries == other.entries && self.project == other.project && self.sessions == other.sessions && self.retired == other.retired
+        self.entries == other.entries
+            && self.project == other.project
+            && self.sessions == other.sessions
+            && self.retired == other.retired
+            && self.pending == other.pending
     }
 }
 impl Eq for UsageLog {}
@@ -464,6 +474,15 @@ pub struct UsageLogFile {
     /// Identities (hex) of charges that left the list, oldest first.
     #[serde(default)]
     pub retired: Vec<String>,
+    /// Open charges that left the list.
+    #[serde(default)]
+    pub pending: Vec<UsageEntry>,
+}
+
+/// Where an open charge is.
+enum Location {
+    Listed(usize),
+    Pending,
 }
 
 fn add_to(map: &mut Totals, amount: Money) -> Result<(), Error> {
@@ -504,7 +523,7 @@ impl UsageLog {
     pub fn record(&mut self, entry: UsageEntry) -> Result<bool, Error> {
         check_entry(&entry)?;
         let key = (entry.provider.clone(), entry.idempotency_key.clone());
-        if self.keys.contains_key(&key) || self.retired_set.contains(&retired_id(&key.0, &key.1)) {
+        if self.keys.contains_key(&key) || self.pending.contains_key(&key) || self.retired_set.contains(&retired_id(&key.0, &key.1)) {
             return Ok(false);
         }
         // New totals first, so an overflow leaves the log as it was.
@@ -538,14 +557,24 @@ impl UsageLog {
         Ok(true)
     }
 
-    /// The oldest entry leaves the list; the totals already include it, and its identity is kept
-    /// so a late retry isn't charged again.
+    /// The oldest entry leaves the list; the totals already include it. An open charge is kept
+    /// pending (room permitting) so it can still settle; otherwise its identity is kept so a late
+    /// retry isn't charged again.
     fn retire_oldest(&mut self) {
         let Some(oldest) = self.entries.pop_front() else { return };
         self.text_bytes = self.text_bytes.saturating_sub(entry_text(&oldest));
         self.first_seq = self.first_seq.saturating_add(1);
-        let id = retired_id(&oldest.provider, &oldest.idempotency_key);
-        self.keys.remove(&(oldest.provider, oldest.idempotency_key));
+        let key = (oldest.provider.clone(), oldest.idempotency_key.clone());
+        self.keys.remove(&key);
+        if oldest.status != Charge::Actual && self.pending.len() < MAX_PENDING {
+            self.pending.insert(key, oldest);
+            return;
+        }
+        self.retire_identity(&key.0, &key.1);
+    }
+
+    fn retire_identity(&mut self, provider: &str, idempotency_key: &str) {
+        let id = retired_id(provider, idempotency_key);
         if self.retired_set.insert(id) {
             self.retired.push_back(id);
         }
@@ -583,17 +612,18 @@ impl UsageLog {
     }
 
     /// The listed, unsettled entry for a key and its index.
-    fn open_entry(&self, provider: &str, idempotency_key: &str) -> Result<(usize, &UsageEntry), Error> {
-        let seq = *self
-            .keys
-            .get(&(provider.to_owned(), idempotency_key.to_owned()))
-            .ok_or_else(|| Error::new(ErrorKind::NotFound, "no listed charge has that key (it may have been exported and dropped)"))?;
+    fn open_entry(&self, provider: &str, idempotency_key: &str) -> Result<(Location, &UsageEntry), Error> {
+        let key = (provider.to_owned(), idempotency_key.to_owned());
+        if let Some(entry) = self.pending.get(&key) {
+            return Ok((Location::Pending, entry));
+        }
+        let seq = *self.keys.get(&key).ok_or_else(|| Error::new(ErrorKind::NotFound, "no open charge has that key (it may have been exported and dropped)"))?;
         let index = usize::try_from(seq.saturating_sub(self.first_seq)).map_err(|_| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
         let entry = self.entries.get(index).ok_or_else(|| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
         if entry.status == Charge::Actual {
             return Err(Error::new(ErrorKind::Conflict, "that charge is already settled"));
         }
-        Ok((index, entry))
+        Ok((Location::Listed(index), entry))
     }
 
     /// Changes a recorded estimate's cost and status: it becomes the actual cost, or stays
@@ -609,21 +639,40 @@ impl UsageLog {
         if status == Charge::Estimate {
             return Err(Error::new(ErrorKind::InvalidInput, "settle to an actual or unresolved charge"));
         }
-        let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        let (location, entry) = self.open_entry(provider, idempotency_key)?;
         if cost.currency != entry.cost.currency {
             return Err(Error::new(ErrorKind::CurrencyMismatch, "a charge can't change currency when it settles"));
         }
         let mut project = self.project.clone();
         sub_from(&mut project, entry.cost)?;
         add_to(&mut project, cost)?;
+        // The same ceiling `record` and a saved log are held to.
+        if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
+            return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
+        }
         let mut sessions = touched_sessions(&self.sessions, &entry.session);
         take_from_session(&mut sessions, &entry.session, entry.cost)?;
         give_to_session(&mut sessions, &entry.session, cost)?;
         self.project = project;
         self.sessions.extend(sessions);
-        if let Some(entry) = self.entries.get_mut(index) {
-            entry.cost = cost;
-            entry.status = status;
+        match location {
+            Location::Listed(index) => {
+                if let Some(entry) = self.entries.get_mut(index) {
+                    entry.cost = cost;
+                    entry.status = status;
+                }
+            }
+            Location::Pending => {
+                let key = (provider.to_owned(), idempotency_key.to_owned());
+                if status == Charge::Actual {
+                    // Settled for good: off the list, so only its identity is kept.
+                    self.pending.remove(&key);
+                    self.retire_identity(provider, idempotency_key);
+                } else if let Some(entry) = self.pending.get_mut(&key) {
+                    entry.cost = cost;
+                    entry.status = status;
+                }
+            }
         }
         Ok(())
     }
@@ -632,7 +681,7 @@ impl UsageLog {
     /// invalid input), taking it out of the totals and freeing its key for a later attempt.
     /// Only an estimate can be released: an unresolved charge may have been billed.
     pub fn release(&mut self, provider: &str, idempotency_key: &str) -> Result<(), Error> {
-        let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        let (location, entry) = self.open_entry(provider, idempotency_key)?;
         if entry.status != Charge::Estimate {
             return Err(Error::new(ErrorKind::Conflict, "only an estimate can be released; this charge may have been billed"));
         }
@@ -642,6 +691,13 @@ impl UsageLog {
         take_from_session(&mut sessions, &entry.session, entry.cost)?;
         self.project = project;
         self.sessions.extend(sessions);
+        let index = match location {
+            Location::Listed(index) => index,
+            Location::Pending => {
+                self.pending.remove(&(provider.to_owned(), idempotency_key.to_owned()));
+                return Ok(());
+            }
+        };
         if let Some(removed) = self.entries.remove(index) {
             self.text_bytes = self.text_bytes.saturating_sub(entry_text(&removed));
         }
@@ -651,9 +707,13 @@ impl UsageLog {
         Ok(())
     }
 
-    /// The listed charge for `(provider, idempotency_key)`, if any.
+    /// The listed (or pending) charge for `(provider, idempotency_key)`, if any.
     pub fn charge(&self, provider: &str, idempotency_key: &str) -> Option<&UsageEntry> {
-        let seq = *self.keys.get(&(provider.to_owned(), idempotency_key.to_owned()))?;
+        let key = (provider.to_owned(), idempotency_key.to_owned());
+        if let Some(entry) = self.pending.get(&key) {
+            return Some(entry);
+        }
+        let seq = *self.keys.get(&key)?;
         self.entries.get(usize::try_from(seq.checked_sub(self.first_seq)?).ok()?)
     }
 
@@ -703,7 +763,13 @@ impl UsageLog {
 
 impl From<UsageLog> for UsageLogFile {
     fn from(log: UsageLog) -> Self {
-        Self { entries: log.entries.into(), project: log.project, sessions: log.sessions, retired: log.retired.iter().map(hex).collect() }
+        Self {
+            entries: log.entries.into(),
+            project: log.project,
+            sessions: log.sessions,
+            retired: log.retired.iter().map(hex).collect(),
+            pending: log.pending.into_values().collect(),
+        }
     }
 }
 
@@ -719,6 +785,9 @@ impl TryFrom<UsageLogFile> for UsageLog {
         }
         if file.retired.len() > MAX_RETIRED_KEYS {
             return Err(bad("too many retired charges"));
+        }
+        if file.pending.len() > MAX_PENDING {
+            return Err(bad("too many pending charges"));
         }
         if file.sessions.len() > MAX_SESSIONS {
             return Err(bad("too many sessions"));
@@ -747,6 +816,19 @@ impl TryFrom<UsageLogFile> for UsageLog {
             add_to(&mut listed, entry.cost)?;
             add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
         }
+        let mut pending = BTreeMap::new();
+        for entry in &file.pending {
+            check_entry(entry)?;
+            if entry.status == Charge::Actual {
+                return Err(bad("a pending charge is already settled"));
+            }
+            let key = (entry.provider.clone(), entry.idempotency_key.clone());
+            if keys.contains_key(&key) || pending.insert(key, entry.clone()).is_some() {
+                return Err(bad("an idempotency key appears twice"));
+            }
+            add_to(&mut listed, entry.cost)?;
+            add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
+        }
         let covers = |totals: Option<&Totals>, sums: &Totals| {
             sums.iter().all(|(currency, sum)| sum.micros == 0 || totals.and_then(|t| t.get(currency)).is_some_and(|t| t.micros >= sum.micros))
         };
@@ -768,7 +850,7 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if !covers(file.sessions.get(EARLIER_SESSIONS), &shortfall) {
             return Err(bad("a session's totals don't cover its charges"));
         }
-        if keys.keys().any(|(provider, key)| retired_set.contains(&retired_id(provider, key))) {
+        if keys.keys().chain(pending.keys()).any(|(provider, key)| retired_set.contains(&retired_id(provider, key))) {
             return Err(bad("a listed charge is also retired"));
         }
         if file.sessions.keys().any(|name| name.len() > MAX_TEXT) {
@@ -803,6 +885,7 @@ impl TryFrom<UsageLogFile> for UsageLog {
             sessions: file.sessions,
             retired,
             retired_set,
+            pending,
             text_bytes,
             session_clock,
             clock,
