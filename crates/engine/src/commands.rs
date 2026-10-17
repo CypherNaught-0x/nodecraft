@@ -65,6 +65,7 @@ pub enum Phase {
 
 pub struct Context<'a> {
     pub document: &'a Project,
+    pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
     pub can_redo: bool,
     pub resources: &'a Resources,
@@ -109,7 +110,7 @@ pub struct Registry {
 impl Registry {
     pub fn builtins() -> Result<Self, Error> {
         let mut registry = Self::default();
-        for spec in crate::graph_cmds::specs().into_iter().chain(crate::keys_cmds::specs()).chain(crate::stale_cmds::specs()) {
+        for spec in crate::graph_cmds::specs().into_iter().chain(crate::node_cmds::specs()).chain(crate::keys_cmds::specs()).chain(crate::stale_cmds::specs()) {
             registry.register(spec)?;
         }
         Ok(registry)

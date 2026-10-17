@@ -536,7 +536,9 @@ a choice a later contributor might otherwise undo.
   change to the recipe makes old hashes unknown rather than wrongly fresh.
 - **Stale is transitive:** a result is stale when its hash no longer matches *or* any upstream
   node is stale (it was built on out-of-date data). This is the set `planner::plan` expects, and
-  `canvas.stale` returns it (read-only; the node registry comes from the host as a resource).
+  `canvas.stale` returns it read-only, using the session's authoritative node-kind registry
+  from Context.kinds, shared with node editing and rendering. Session::new supplies builtins;
+  with_registries supplies custom kinds without a second registry in Resources.
 
 ## 2026-10-17 · Router node (#72)
 
@@ -570,3 +572,27 @@ a choice a later contributor might otherwise undo.
   results, not proof of freshness; callers needing that distinction use `input_hash`. Global
   resolution budget failures return errors from both `staleness::stale` and `canvas.stale`,
   without changing the document or undo history. This does not change hash bytes or versions.
+## 2026-10-17 · Graph-backed canvas cards (#57)
+
+- **An empty stored title means automatic.** New descriptors leave titles empty. The shell derives
+  a bounded label from the prompt/text or kind label; edits and undo retain the original graph data.
+- **Schema edits are engine commands.** The session owns an injectable node-kind registry so the
+  canvas and programmatic callers validate against the same descriptors. Null resets an override;
+  missing values are malformed requests. Unknown kinds remain movable and renameable.
+- **Widget drafts are view state.** Text commits on blur/submit, sliders on release, and Escape
+  cancels text edits. Failed drafts survive changes to other fields. Card motion uses a unique
+  engine gesture token, preserving one undo step across pointer events at every zoom level.
+
+## 2026-10-17 · Bounded graph-card editing (#57, #145)
+
+- Full prompt data is retained; idle cards borrow values and lay out bounded previews. Full drafts
+  are lazy, and schema/visibility caches follow document revisions. Dirty/invalid drafts survive
+  unrelated undo/redo. Hidden dirty editors explicitly advertise unsaved data and offer discard.
+- A drag previews position in shell view state and dispatches one node.move on release. Typed
+  slider changes wait for Enter/blur; redundant numeric changes do not create history entries.
+- Escape cancellation remembers ownership across egui's focus transition (#145). A failing-before
+  event regression verifies the old has_focus-only condition committed; the fixed test preserves
+  graph and undo state through the following frame.
+- Overview labels remain readable, controls appear only at readable scale, and named keyboard
+  Rename actions complement double-click. Settings store lifecycle and scroll preferences remain
+  intact in the graph-backed shell. Selection expansion remains owned by #58/PR144.

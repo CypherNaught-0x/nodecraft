@@ -50,6 +50,16 @@ pub struct Tokens {
     pub label_size: f32,
     pub body_size: f32,
     pub handle_radius: f32,
+    pub card_width: f32,
+    pub card_min_height: f32,
+    pub card_max_height: f32,
+    pub control_row_height: f32,
+    pub control_gap: f32,
+    pub title_min_screen_px: f32,
+    pub handle_min_screen_radius: f32,
+    pub handle_stroke: f32,
+    pub preview_chars: usize,
+    pub text_rows: usize,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -75,6 +85,16 @@ pub const DARK: Tokens = Tokens {
     label_size: 10.5,
     body_size: 13.0,
     handle_radius: 9.0,
+    card_width: 320.0,
+    card_min_height: 220.0,
+    card_max_height: 720.0,
+    control_row_height: 64.0,
+    control_gap: 6.0,
+    title_min_screen_px: 9.0,
+    handle_min_screen_radius: 5.0,
+    handle_stroke: 1.5,
+    preview_chars: 256,
+    text_rows: 6,
 };
 
 pub const LIGHT: Tokens = Tokens {

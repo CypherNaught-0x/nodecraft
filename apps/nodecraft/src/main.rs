@@ -41,7 +41,7 @@ fn main() -> ExitCode {
             for problem in nodecraft_engine::settings::describe_problems(&report) {
                 log::warn!("{problem}");
             }
-            Ok(Box::new(nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)))
+            Ok(Box::new(nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)?))
         }),
     );
     match result {

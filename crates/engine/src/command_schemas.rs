@@ -44,21 +44,42 @@ fn port() -> Value {
 pub fn add_schema() -> Value {
     let node = object(
         json!({"id":id(),"kind":{"type":"string","minLength":1,"maxLength":256},
-        "title":{"type":"string","maxLength":4096},"pos":position(),"params":{"type":"object","additionalProperties":{"$ref":"#/$defs/value"}},
+        "title":{"type":"string","maxLength":4096},"pos":position(),"params":{"type":"object","maxProperties":256,"additionalProperties":{"$ref":"#/$defs/value"}},
+        "config":{"type":"object","maxProperties":256,"additionalProperties":{"$ref":"#/$defs/value"}},
         "inputs":{"type":"array","maxItems":256,"items":port()},"outputs":{"type":"array","maxItems":256,"items":port()},
         "history":{"type":"array","maxItems":0},"active":{"type":"null"},
         "tag":{"type":["string","null"],"format":"uuid"},"field":{"type":["string","null"],"format":"uuid"}}),
         &["id", "kind"],
     );
     let mut schema = object(json!({"canvas":id(),"node":node}), &["canvas", "node"]);
-    let definitions = json!({"value":{"oneOf":[
+    let definitions = value_definitions();
+    if let Some(object) = schema.as_object_mut() {
+        object.insert("$defs".into(), definitions);
+    }
+    schema
+}
+fn value_definitions() -> Value {
+    json!({"value":{"oneOf":[
+        {"type":"object","required":["type","value"],"properties":{"type":{"const":"bool"},"value":{"type":"boolean"}},"additionalProperties":false},
+        {"type":"object","required":["type","value"],"properties":{"type":{"const":"number"},"value":{"type":"number"}},"additionalProperties":false},
+        {"type":"object","required":["type","value"],"properties":{"type":{"const":"integer"},"value":{"type":"string","pattern":"^(0|[1-9][0-9]*|-[1-9][0-9]*)$","maxLength":20,"description":"Canonical decimal i64 string"}},"additionalProperties":false},
+        {"type":"object","required":["type","value"],"properties":{"type":{"const":"unsigned"},"value":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20,"description":"Canonical decimal u64 string"}},"additionalProperties":false},
         {"type":"object","required":["type","value"],"properties":{"type":{"const":"text"},"value":{"type":"string","maxLength":1048576}},"additionalProperties":false},
         {"type":"object","required":["type","value"],"properties":{"type":{"const":"list"},"value":{"type":"array","maxItems":4096,"items":{"$ref":"#/$defs/value"}}},"additionalProperties":false},
         {"type":"object","required":["type","value"],"properties":{"type":{"const":"media"},"value":{"type":"object","required":["hash","mime"],"properties":{
             "hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"mime":{"type":"string"},"meta":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}
-    ]}});
+    ]}})
+}
+pub fn title_schema() -> Value {
+    object(json!({"canvas":id(),"id":id(),"title":{"type":"string","maxLength":4096}}), &["canvas", "id", "title"])
+}
+pub fn parameter_schema() -> Value {
+    let mut schema = object(
+        json!({"canvas":id(),"id":id(),"name":{"type":"string","minLength":1,"maxLength":128},"value":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/value"}]}}),
+        &["canvas", "id", "name", "value"],
+    );
     if let Some(object) = schema.as_object_mut() {
-        object.insert("$defs".into(), definitions);
+        object.insert("$defs".into(), value_definitions());
     }
     schema
 }

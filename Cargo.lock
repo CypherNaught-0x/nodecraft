@@ -2799,6 +2799,10 @@ dependencies = [
  "egui_kittest",
  "log",
  "nodecraft-engine",
+ "nodecraft-graph",
+ "nodecraft-nodes",
+ "nodecraft-types",
+ "serde_json",
 ]
 
 [[package]]

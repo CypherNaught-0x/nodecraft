@@ -98,6 +98,64 @@ fn commands_are_listed_and_run_like_the_ui() {
 }
 
 #[test]
+fn node_edits_use_shared_validation_and_undo_over_mcp() {
+    let mut s = server();
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let id = nodecraft_types::NodeId::from_bytes([8; 16]);
+    let node = kinds.get("source.text").unwrap().instantiate_instance(id, Default::default(), &Default::default()).unwrap();
+    let added = call(&mut s, "command_run", json!({"id":"node.add","params":{"canvas":CANVAS,"node":node}}));
+    assert_eq!(added["isError"], false, "{added}");
+    let original = s.session().document().clone();
+    let list = call(&mut s, "command_list", json!({"query":"node."}));
+    let commands = list["structuredContent"]["commands"].as_array().unwrap();
+    for command in ["node.title", "node.param_set"] {
+        let entry = commands.iter().find(|entry| entry["id"] == command).unwrap();
+        assert_eq!(entry["params_schema"], (s.session().registry().get(command).unwrap().input_schema)());
+    }
+    let inspect = call(&mut s, "canvas_inspect", json!({"canvas":CANVAS,"node":id}));
+    assert_eq!(inspect["structuredContent"]["node"]["title"], "", "automatic titles retain empty stored data");
+    for (command, params) in [
+        ("node.title", json!({"canvas":CANVAS,"id":id,"title":"Renamed"})),
+        ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"text","value":{"type":"text","value":"Edited prompt"}})),
+    ] {
+        let before = s.session().document().clone();
+        let revision = s.session().revision();
+        let edited = call(&mut s, "command_run", json!({"id":command,"params":params}));
+        assert_eq!(edited["isError"], false, "{edited}");
+        assert_eq!(s.session().revision(), revision + 1);
+        assert_ne!(s.session().document(), &before);
+        assert_eq!(call(&mut s, "command_run", json!({"id":"edit.undo"}))["isError"], false);
+        assert_eq!(s.session().document(), &before);
+        assert_eq!(call(&mut s, "command_run", json!({"id":"edit.redo"}))["isError"], false);
+        let inspected = call(&mut s, "canvas_inspect", json!({"canvas":CANVAS,"node":id}));
+        if command == "node.title" {
+            assert_eq!(inspected["structuredContent"]["node"]["title"], "Renamed");
+        } else {
+            assert_eq!(inspected["structuredContent"]["node"]["params"]["text"]["value"], "Edited prompt");
+        }
+        assert_eq!(call(&mut s, "command_run", json!({"id":"edit.undo"}))["isError"], false);
+    }
+    assert_eq!(s.session().document(), &original);
+    for (command, params) in [
+        ("node.title", json!({"canvas":CANVAS,"id":id,"title":"x".repeat(4097)})),
+        ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"text","value":{"type":"bool","value":true}})),
+        ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"unknown","value":null})),
+        ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"text"})),
+    ] {
+        let revision = s.session().revision();
+        let history = (s.session().can_undo(), s.session().can_redo());
+        assert!(s.session().enabled(command, &params).is_err());
+        let rejected = call(&mut s, "command_run", json!({"id":command,"params":params}));
+        assert_eq!(rejected["isError"], true, "{rejected}");
+        assert_eq!(s.session().document(), &original);
+        assert_eq!(s.session().revision(), revision);
+        assert_eq!((s.session().can_undo(), s.session().can_redo()), history);
+        assert!(s.session().events_since(revision).unwrap().is_empty());
+    }
+    assert_eq!(call(&mut s, "command_run", json!({"id":"edit.redo"}))["isError"], false, "rejected edits preserve redo");
+}
+
+#[test]
 fn tool_failures_are_results_the_model_can_read() {
     let mut s = server();
     for (args, says) in [

@@ -1,45 +1,141 @@
-//! The eframe app: the canvas with its cards, and the overlays floating above it.
-
+//! The shell owns view state; the engine owns all document data and mutations.
+use crate::{
+    canvas::{self, CanvasView},
+    card::{self, EditTarget, EditorState, Intent},
+    theme::{self, ThemeKind},
+};
 use egui::{Pos2, Rect, Sense, Vec2};
-use nodecraft_engine::settings::{CanvasSettings, NodeCraftSettings, Theme};
+use nodecraft_engine::{
+    Session,
+    settings::{CanvasSettings, NodeCraftSettings, Theme},
+};
+use nodecraft_graph::{Canvas, Change, Project};
+use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId, Value};
+use serde_json::json;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
-use crate::canvas::{self, CanvasView};
-use crate::card::{self, StubCard};
-use crate::theme::{self, ThemeKind};
+const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
+struct CachedSchema {
+    descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
+    visible: BTreeSet<String>,
+    descriptor_bytes: usize,
+    borrowed_identity: Option<usize>,
+    revision: u64,
+    last_used: u64,
+}
+
+fn cache_bytes(cache: &BTreeMap<NodeId, CachedSchema>) -> usize {
+    let mut shared = BTreeSet::new();
+    cache.values().fold(0usize, |total, entry| {
+        let bytes = if shared.insert(Arc::as_ptr(&entry.descriptor) as usize) { entry.descriptor_bytes } else { 0 };
+        // Include conservative per-entry/tree/string overhead, not just shared descriptor text.
+        total.saturating_add(bytes).saturating_add(256).saturating_add(entry.visible.iter().map(|name| name.len().saturating_add(96)).sum::<usize>())
+    })
+}
+fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> Option<usize> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            if self.0 > MAX_SCHEMA_CACHE_BYTES {
+                return Err(std::io::Error::other("view schema budget"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, descriptor).ok()?;
+    // Conservative heap accounting for Vec/String/enum/tree overhead beyond wire text.
+    counter.0.checked_mul(4).filter(|bytes| *bytes <= MAX_SCHEMA_CACHE_BYTES)
+}
+fn cached_schema<'a>(cache: &'a mut BTreeMap<NodeId, CachedSchema>, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
+    if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision()) {
+        if let Some(entry) = cache.get_mut(&node.id) {
+            entry.last_used = clock;
+        }
+        return cache.get(&node.id);
+    }
+    let descriptor = session.kinds().get(&node.kind).ok()?.resolve_instance(node).ok()?;
+    if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
+        return None;
+    }
+    let nodecraft_nodes::ResolvedParams { visible, .. } = descriptor.params.resolve(&node.params, false).ok()?;
+    let (descriptor, borrowed_identity, bytes) = match descriptor {
+        Cow::Borrowed(descriptor) => {
+            // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
+            // of one dynamic kind remain distinct; the registry outlives this view cache.
+            let identity = descriptor as *const nodecraft_nodes::NodeDescriptor as usize;
+            if let Some(shared) = cache.values().find(|entry| entry.borrowed_identity == Some(identity)) {
+                (Arc::clone(&shared.descriptor), Some(identity), shared.descriptor_bytes)
+            } else {
+                let bytes = descriptor_bytes(descriptor)?;
+                (Arc::new(descriptor.clone()), Some(identity), bytes)
+            }
+        }
+        Cow::Owned(descriptor) => {
+            let bytes = descriptor_bytes(&descriptor)?;
+            (Arc::new(descriptor), None, bytes)
+        }
+    };
+    cache.insert(node.id, CachedSchema { descriptor, visible, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock });
+    while cache_bytes(cache) > MAX_SCHEMA_CACHE_BYTES {
+        let oldest = cache.iter().filter(|(id, _)| **id != node.id).min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id);
+        if let Some(id) = oldest {
+            cache.remove(&id);
+        } else {
+            cache.remove(&node.id);
+            return None;
+        }
+    }
+    cache.get(&node.id)
+}
+
+struct Drag {
+    id: NodeId,
+    gesture: String,
+    pos: nodecraft_graph::Position,
+}
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
     pub view: CanvasView,
-    pub cards: Vec<StubCard>,
-    pub selected: Option<u64>,
-    /// Canvas preferences from the settings (scroll behaviour, zoom speed).
+    pub session: Session,
+    pub canvas: CanvasId,
+    pub selected: Option<NodeId>,
     pub canvas_prefs: CanvasSettings,
-    /// The canvas rect of the last frame, in screen points.
-    pub viewport: Rect,
-    /// The first frame centres the cards; later frames keep the user's view.
-    centred: bool,
-    /// Where settings are saved; `None` in tests and the browser build.
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
+    pub viewport: Rect,
+    pub notice: Option<String>,
+    editors: BTreeMap<NodeId, EditorState>,
+    drag: Option<Drag>,
+    schemas: BTreeMap<NodeId, CachedSchema>,
+    cache_clock: u64,
+    next_gesture: u64,
+    centred: bool,
 }
-
 impl NodeCraftApp {
-    pub fn new(ctx: &egui::Context) -> Self {
-        let mut app = Self::headless();
+    pub fn new(ctx: &egui::Context) -> Result<Self, Error> {
+        let mut app = Self::headless()?;
         app.apply_settings(ctx, &NodeCraftSettings::default());
-        // ⌘= / ⌘- / ⌘0 zoom the canvas, not the whole UI.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        app
+        Ok(app)
     }
-
     /// The app with settings from `store`, which it saves while running and flushes on exit.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Self {
+    pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Result<Self, Error> {
         let settings = store.get().clone();
-        let mut app = Self::new(ctx);
+        let mut app = Self::new(ctx)?;
         app.apply_settings(ctx, &settings);
         app.store = Some(store);
-        app
+        Ok(app)
     }
 
     /// Takes the values the shell uses from `settings` and restyles `ctx` for the theme.
@@ -52,34 +148,55 @@ impl NodeCraftApp {
         theme::apply(ctx, self.theme);
     }
 
-    /// The app state without touching an egui context (tests).
-    pub fn headless() -> Self {
-        let card = StubCard {
-            id: 1,
-            label: "Prompt".into(),
-            body: "A stub node card. Drag it around; drag the canvas to pan, pinch or ⌘-scroll to zoom, ⌘0 to reset.".into(),
-            rect: Rect::from_min_size(Pos2::new(-160.0, -110.0), Vec2::new(320.0, 220.0)),
-        };
-        Self {
+    pub fn headless() -> Result<Self, Error> {
+        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Untitled")?;
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document)?;
+        let mut values = BTreeMap::new();
+        values.insert("text".into(), Value::Text("A quiet forest at dawn, soft light through the trees.".into()));
+        let mut node = kinds.get("source.text")?.descriptor().instantiate(NodeId::from_bytes([3; 16]), &values)?;
+        node.pos = nodecraft_graph::Position { x: -160.0, y: -110.0 };
+        Change::AddNode { canvas, node }.apply(&mut document)?;
+        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?;
+        Self::from_session(session, canvas)
+    }
+    pub fn from_session(session: Session, canvas: CanvasId) -> Result<Self, Error> {
+        if !session.document().canvases().contains_key(&canvas) {
+            return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
+        }
+        Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
-            cards: vec![card],
+            session,
+            canvas,
             selected: None,
             canvas_prefs: CanvasSettings::default(),
-            viewport: Rect::NOTHING,
-            centred: false,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
-        }
+            viewport: Rect::NOTHING,
+            notice: None,
+            editors: BTreeMap::new(),
+            drag: None,
+            schemas: BTreeMap::new(),
+            cache_clock: 0,
+            next_gesture: 0,
+            centred: false,
+        })
     }
-
-    /// World point the view centres on at startup and on ⌘0: the middle of all cards.
     pub fn home(&self) -> Pos2 {
-        self.cards.iter().map(|c| c.rect).reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
+        self.session
+            .document()
+            .canvases()
+            .get(&self.canvas)
+            .into_iter()
+            .flat_map(|c| c.nodes().values())
+            .map(|node| card::world_rect(node, self.schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()), self.theme.tokens()))
+            .reduce(|a, b| a.union(b))
+            .map_or(Pos2::ZERO, |r| r.center())
     }
-
-    /// The whole UI inside `ui` (the window, or a test harness).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.cache_clock = self.cache_clock.saturating_add(1);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
@@ -87,35 +204,157 @@ impl NodeCraftApp {
             self.view.reset(viewport, self.home());
             self.centred = true;
         }
+        if !canvas::text_input_focused(ui.ctx()) {
+            let command = ui.input_mut(|input| {
+                self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
+                    spec.shortcut
+                        .into_iter()
+                        .chain(spec.alternate_shortcuts.iter().copied())
+                        .any(|shortcut| consume_shortcut(input, shortcut))
+                        .then_some(spec.id)
+                })
+            });
+            if let Some(command) = command {
+                if let Err(error) = self.session.dispatch(command, &json!({})) {
+                    self.notice = Some(error.message);
+                } else {
+                    self.notice = None;
+                    // Invalid drafts remain view state across unrelated undo/redo.
+                }
+            }
+        }
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
-        let home = self.home();
-        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs);
+        let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
+            self.session.document().canvases().get(&self.canvas).is_some_and(|c| {
+                c.nodes().values().any(|node| {
+                    let rect = card::world_rect(node, self.schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()), t);
+                    self.view.rect_to_screen(viewport.min, rect).contains(pointer)
+                })
+            })
+        });
+        let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
+        let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
+        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan);
         if background.clicked() {
             self.selected = None;
         }
-
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
         canvas::paint_grid(&painter, viewport, &self.view, t);
-
-        let origin = viewport.min;
+        let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
-        for c in &mut self.cards {
-            let selected = self.selected == Some(c.id);
-            let r = card::show(ui, origin, &self.view, c, selected, t);
-            if r.clicked() || r.drag_started_by(egui::PointerButton::Primary) {
-                self.selected = Some(c.id);
-            }
-            // Middle and right drags pan the canvas even when they start on a card.
-            if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
-                pan += r.drag_delta();
+        if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
+            self.editors.retain(|id, _| canvas.nodes().contains_key(id));
+            self.schemas.retain(|id, _| canvas.nodes().contains_key(id));
+            let selected = self.selected;
+            for node in canvas.nodes().values().filter(|node| Some(node.id) != selected).chain(canvas.nodes().values().filter(|node| Some(node.id) == selected))
+            {
+                // Cull conservatively before resolving potentially large instance schemas.
+                let position = self.drag.as_ref().filter(|drag| drag.id == node.id).map_or(node.pos, |drag| drag.pos);
+                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height));
+                if !self.view.rect_to_screen(viewport.min, bounds).expand(card::cull_margin(t, self.view.zoom)).intersects(viewport) {
+                    if let Some(editor) = self.editors.get_mut(&node.id) {
+                        editor.mark_hidden();
+                    }
+                    continue;
+                }
+                let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
+                let descriptor = schema.map(|cached| cached.descriptor.as_ref());
+                let editor = self.editors.entry(node.id).or_default();
+                if let Some(result) = card::show(
+                    ui,
+                    &self.view,
+                    node,
+                    card::CardView {
+                        descriptor,
+                        visible: schema.map(|cached| &cached.visible),
+                        preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
+                    },
+                    editor,
+                    self.selected == Some(node.id),
+                    t,
+                ) {
+                    let r = result.response;
+                    if r.clicked() || r.drag_started_by(egui::PointerButton::Primary) {
+                        self.selected = Some(node.id);
+                    }
+                    if r.drag_started_by(egui::PointerButton::Primary) {
+                        if let Some(serial) = self.next_gesture.checked_add(1) {
+                            self.next_gesture = serial;
+                            self.drag = Some(Drag { id: node.id, gesture: format!("canvas-drag-{serial}"), pos: node.pos });
+                        } else {
+                            self.notice = Some("Too many drag gestures; reopen the project to continue.".into());
+                            self.drag = None;
+                        }
+                    }
+                    if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
+                        pan += r.drag_delta() * self.view.zoom;
+                    }
+                    intents.extend(result.intents.into_iter().map(|intent| (node.id, intent)));
+                }
             }
         }
+        for (id, intent) in intents {
+            let (command, params, editing) = match intent {
+                Intent::Move(pos) => {
+                    if let Some(drag) = &mut self.drag
+                        && drag.id == id
+                    {
+                        drag.pos = pos;
+                    }
+                    continue;
+                }
+                Intent::Title(title) => ("node.title", json!({"canvas":self.canvas,"id":id,"title":title}), Some(EditTarget::Title)),
+                Intent::Parameter { name, value } => {
+                    ("node.param_set", json!({"canvas":self.canvas,"id":id,"name":name,"value":value}), Some(EditTarget::Parameter(name)))
+                }
+            };
+            match self.session.dispatch(command, &params) {
+                Ok(_) => {
+                    self.notice = None;
+                    if let Some(target) = editing
+                        && let Some(editor) = self.editors.get_mut(&id)
+                    {
+                        editor.accepted(&target);
+                    }
+                }
+                Err(error) => {
+                    self.notice = Some(error.message.clone());
+                    if let Some(target) = editing
+                        && let Some(editor) = self.editors.get_mut(&id)
+                    {
+                        editor.failed(target, error.message);
+                    }
+                }
+            }
+        }
+        if !ui.input(|i| i.pointer.primary_down())
+            && let Some(drag) = self.drag.take()
+            && let Err(error) = self.session.dispatch("node.move", &json!({"canvas":self.canvas,"id":drag.id,"pos":drag.pos,"gesture":drag.gesture}))
+        {
+            self.notice = Some(error.message);
+        }
         self.view.pan_by(pan);
-
+        let hidden_draft_notice = self
+            .editors
+            .values()
+            .any(|editor| editor.hidden_dirty)
+            .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
+        if let Some(notice) = self.notice.as_deref().or(hidden_draft_notice) {
+            egui::Area::new(ui.id().with("notice"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
+                        ui.label(notice);
+                        if hidden_draft_notice.is_some() && ui.button("Discard drafts").clicked() {
+                            self.editors.clear();
+                        }
+                    });
+                });
+        }
         self.zoom_badge(ui, viewport);
     }
-
     /// Bottom-right zoom percentage; clicking it resets the view.
     fn zoom_badge(&mut self, ui: &mut egui::Ui, viewport: Rect) {
         let t = self.theme.tokens();
@@ -140,6 +379,22 @@ impl NodeCraftApp {
         }
     }
 }
+fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
+    let mut modifiers = egui::Modifiers::NONE;
+    let mut key = None;
+    for part in shortcut.split('+') {
+        match part {
+            "Command" => modifiers |= egui::Modifiers::COMMAND,
+            "Ctrl" => modifiers |= egui::Modifiers::CTRL,
+            "Shift" => modifiers |= egui::Modifiers::SHIFT,
+            "Alt" => modifiers |= egui::Modifiers::ALT,
+            "Z" => key = Some(egui::Key::Z),
+            "Y" => key = Some(egui::Key::Y),
+            _ => return false,
+        }
+    }
+    key.is_some_and(|key| input.consume_key(modifiers, key))
+}
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -163,7 +418,6 @@ impl eframe::App for NodeCraftApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
-
     fn on_exit(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         // A read-only store (newer schema, unwritable folder) was reported at startup.
@@ -181,108 +435,4 @@ impl eframe::App for NodeCraftApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use egui_kittest::Harness;
-
-    fn harness() -> Harness<'static, NodeCraftApp> {
-        Harness::builder().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless())
-    }
-
-    #[test]
-    fn first_frame_centres_the_card_at_100_percent() {
-        let h = harness();
-        let app = h.state();
-        assert_eq!(app.view.zoom, 1.0);
-        let screen = app.view.rect_to_screen(app.viewport.min, app.cards[0].rect);
-        assert!((screen.center() - app.viewport.center()).length() < 1.0, "{screen:?} in {:?}", app.viewport);
-    }
-
-    #[test]
-    fn dragging_the_background_pans() {
-        let mut h = harness();
-        let pan = h.state().view.pan;
-        h.drag_at(Pos2::new(50.0, 50.0));
-        h.run();
-        h.hover_at(Pos2::new(150.0, 90.0));
-        h.run();
-        h.drop_at(Pos2::new(150.0, 90.0));
-        h.run();
-        let moved = h.state().view.pan - pan;
-        assert!((moved - Vec2::new(100.0, 40.0)).length() < 1.0, "{moved:?}");
-        assert_eq!(h.state().cards[0].rect, NodeCraftApp::headless().cards[0].rect);
-    }
-
-    #[test]
-    fn dragging_a_card_moves_and_selects_it() {
-        let mut h = harness();
-        let before = h.state().cards[0].rect;
-        h.drag_at(Pos2::new(500.0, 350.0));
-        h.run();
-        h.hover_at(Pos2::new(560.0, 330.0));
-        h.run();
-        h.drop_at(Pos2::new(560.0, 330.0));
-        h.run();
-        let app = h.state();
-        assert_eq!(app.selected, Some(1));
-        let moved = app.cards[0].rect.min - before.min;
-        assert!((moved - Vec2::new(60.0, -20.0)).length() < 1.0, "{moved:?}");
-    }
-
-    #[test]
-    fn right_drag_on_a_card_pans_instead_of_moving_it() {
-        let mut h = harness();
-        let pan = h.state().view.pan;
-        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
-        h.hover_at(Pos2::new(500.0, 350.0));
-        h.event(button(Pos2::new(500.0, 350.0), true));
-        h.run();
-        h.hover_at(Pos2::new(530.0, 370.0));
-        h.run();
-        h.event(button(Pos2::new(530.0, 370.0), false));
-        h.run();
-        let app = h.state();
-        assert_eq!(app.cards[0].rect, NodeCraftApp::headless().cards[0].rect);
-        assert!((app.view.pan - pan - Vec2::new(30.0, 20.0)).length() < 1.0, "{:?}", app.view.pan - pan);
-        assert_eq!(app.selected, None);
-    }
-
-    #[test]
-    fn mouse_wheel_zooms_when_scroll_is_set_to_zoom() {
-        let wheel = |h: &mut Harness<'static, NodeCraftApp>| {
-            h.hover_at(Pos2::new(200.0, 200.0));
-            h.event(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: Vec2::new(0.0, 60.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: egui::Modifiers::NONE,
-            });
-            for _ in 0..30 {
-                h.run();
-            }
-        };
-        let mut h = harness();
-        wheel(&mut h);
-        assert_eq!(h.state().view.zoom, 1.0, "by default the wheel pans");
-
-        let mut h = harness();
-        h.state_mut().canvas_prefs.scroll = nodecraft_engine::settings::ScrollAction::Zoom;
-        let pan = h.state().view.pan;
-        wheel(&mut h);
-        let app = h.state();
-        assert!(app.view.zoom > 1.2, "wheel up zooms in: {}", app.view.zoom);
-        assert_ne!(app.view.pan, pan, "zoom keeps the point under the pointer fixed");
-    }
-
-    #[test]
-    fn command_zero_resets_after_zooming() {
-        let mut h = harness();
-        h.hover_at(Pos2::new(200.0, 200.0));
-        h.event(egui::Event::Zoom(2.0));
-        h.run();
-        assert!((h.state().view.zoom - 2.0).abs() < 1e-3);
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
-        h.run();
-        assert_eq!(h.state().view.zoom, 1.0);
-    }
-}
+mod tests;

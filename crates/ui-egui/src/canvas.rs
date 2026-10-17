@@ -129,13 +129,18 @@ pub fn scroll_to_view_change(scroll: Vec2, pinch: f32, prefs: &CanvasSettings) -
     (zoom, pan)
 }
 
+/// Text editors own document/canvas keyboard shortcuts while focused.
+pub fn text_input_focused(ctx: &egui::Context) -> bool {
+    ctx.memory(|memory| memory.focused()).is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
+}
+
 /// Background navigation for one frame: drag with the primary button on empty canvas, or with the
 /// middle or secondary button anywhere, pans; scroll (two-finger trackpad, wheel) pans, or zooms
 /// with [`ScrollAction::Zoom`]; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0 resets, ⌘= and
 /// ⌘- zoom around the centre.
 ///
 /// `background` is the response of the canvas-filling background widget.
-pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasView, home: Pos2, prefs: &CanvasSettings) {
+pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasView, home: Pos2, prefs: &CanvasSettings, allow_scroll_pan: bool) {
     let viewport = background.rect;
     let origin = viewport.min;
     let panning = [egui::PointerButton::Primary, egui::PointerButton::Middle, egui::PointerButton::Secondary].into_iter().any(|b| background.dragged_by(b));
@@ -153,9 +158,9 @@ pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasVie
             i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Minus),
         )
     });
-    let hovered = background.contains_pointer();
+    let hovered = pointer.is_some_and(|p| viewport.contains(p));
     if hovered {
-        let (zoom, pan) = scroll_to_view_change(scroll, zoom, prefs);
+        let (zoom, pan) = scroll_to_view_change(if allow_scroll_pan { scroll } else { Vec2::ZERO }, zoom, prefs);
         view.pan_by(pan);
         if zoom != 1.0
             && let Some(p) = pointer
@@ -163,13 +168,14 @@ pub fn navigate(ui: &egui::Ui, background: &egui::Response, view: &mut CanvasVie
             view.zoom_at(origin, p, zoom);
         }
     }
-    if reset {
+    let keyboard_free = !text_input_focused(ui.ctx());
+    if reset && keyboard_free {
         view.reset(viewport, home);
     }
-    if zoom_in {
+    if zoom_in && keyboard_free {
         view.zoom_at(origin, viewport.center(), KEY_ZOOM_STEP);
     }
-    if zoom_out {
+    if zoom_out && keyboard_free {
         view.zoom_at(origin, viewport.center(), 1.0 / KEY_ZOOM_STEP);
     }
 }

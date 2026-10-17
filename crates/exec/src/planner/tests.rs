@@ -99,6 +99,8 @@ fn text(n: u8, content: &str) -> Node {
 }
 fn relay(n: u8, result: Option<&str>) -> Node {
     let mut node = kinds().get("test.relay").unwrap().descriptor().instantiate(id(n), &BTreeMap::new()).unwrap();
+    // Message tests use a named node; descriptors now leave automatic titles empty (#57).
+    node.title = "Relay".into();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
         node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())], input_hash: None });
@@ -151,6 +153,21 @@ fn run_selected_uses_upstream_results_and_plans_jobs_now() {
         step.jobs,
         Some(vec![JobSpec::Source { node: id(3), output: "out".into(), value: Value::List(vec![Value::List(vec![Value::Text("forest".into())])]) }])
     );
+}
+
+#[test]
+fn blocker_messages_fall_back_to_kind_for_automatic_titles() {
+    let automatic = kinds().get("test.relay").unwrap().descriptor().instantiate(id(1), &BTreeMap::new()).unwrap();
+    assert!(automatic.title.is_empty(), "automatic titles remain view-derived");
+    let mut unknown = automatic.clone();
+    unknown.id = id(2);
+    unknown.kind = "plugin.gone".into();
+    let p = project(vec![automatic, unknown], &[]);
+    let canvas = p.canvases().get(&C).unwrap();
+    let missing_result = Blocker { node: id(1), port: Some("in".into()), upstream: Some(id(2)), reason: Reason::NoResult };
+    assert_eq!(missing_result.message(canvas), "Can't run test.relay yet: its in input needs a result from plugin.gone.");
+    let missing_kind = Blocker { node: id(2), port: None, upstream: None, reason: Reason::UnknownKind };
+    assert_eq!(missing_kind.message(canvas), "Can't run plugin.gone: its node kind isn't available.");
 }
 
 #[test]
