@@ -15,11 +15,15 @@ pub enum MockOutput {
     Audio,
 }
 
-/// Where a mock model fails, if it does.
+/// Where a mock model fails, if it does. A model that finishes at submit (`polls: 0`) has no
+/// polls, so its `Poll` and `Job` failures happen at submit instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MockFailure {
-    /// The submit fails with this kind.
+    /// The submit is refused with this kind; nothing is billed.
     Submit(ErrorKind),
+    /// The provider accepts (and bills) the job, but the reply is lost: the submit fails with
+    /// this kind. A retry under the same key gets the job back without a second charge.
+    LostReply(ErrorKind),
     /// Every poll fails with this kind (a transient kind exercises poll retries).
     Poll(ErrorKind),
     /// The provider reports the job itself as failed.
@@ -52,6 +56,8 @@ struct State {
     accepted: BTreeMap<String, String>,
     /// Pending jobs by handle id: the request and the polls left.
     pending: BTreeMap<String, (ProviderJob, u32)>,
+    /// Results of jobs finished at submit, by key: a retry gets the original result.
+    finished: BTreeMap<String, Completed>,
     cancelled: Vec<String>,
     polls: u64,
 }
@@ -94,7 +100,7 @@ impl MockProvider {
         self.lock().accepted.len()
     }
 
-    /// Handles the host asked to cancel.
+    /// Handles the host asked to cancel; their jobs report `Cancelled` from then on.
     pub fn cancelled(&self) -> Vec<String> {
         self.lock().cancelled.clone()
     }
@@ -141,12 +147,15 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
             Output::Text(format!("{}: {} #{short}", job.model, prompt.join(" / ")))
         }
         media => {
-            let mime = match media {
-                MockOutput::Image => "image/x-nodecraft-mock",
-                MockOutput::Video => "video/x-nodecraft-mock",
-                _ => "audio/x-nodecraft-mock",
+            // A real format signature (PNG, WAV, MP4) followed by the digest, so hosts sniff and
+            // route it like real output; the claimed type is deliberately vague.
+            let (signature, mime): (&[u8], &str) = match media {
+                MockOutput::Image => (b"\x89PNG\r\n\x1a\n", "image/png"),
+                MockOutput::Video => (b"\x00\x00\x00\x10ftypisom\x00\x00\x02\x00", "video/mp4"),
+                _ => (b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav"),
             };
-            let mut bytes = b"NODECRAFT-MOCK ".to_vec();
+            let mut bytes = signature.to_vec();
+            bytes.extend_from_slice(b"NODECRAFT-MOCK ");
             bytes.extend_from_slice(digest.as_bytes());
             Output::Bytes { mime: mime.to_owned(), bytes: Arc::from(bytes) }
         }
@@ -166,15 +175,27 @@ impl Provider for MockProvider {
             let mut s = self.lock();
             s.requests.push(job.clone());
             let model = *self.models.get(&job.model).ok_or_else(|| ProviderError::new(ErrorKind::UnsupportedInput, "unknown model"))?;
-            if let Some(MockFailure::Submit(kind)) = model.fail {
-                return Err(ProviderError::new(kind, "mock submit failure"));
-            }
-            if model.polls == 0 {
-                s.accepted.entry(job.idempotency_key.clone()).or_insert_with(|| "sync".into());
-                return Ok(Submission::Finished(result(&model, job)));
+            match model.fail {
+                Some(MockFailure::Submit(kind)) => return Err(ProviderError::new(kind, "mock submit failure")),
+                Some(MockFailure::Poll(kind) | MockFailure::Job(kind)) if model.polls == 0 => return Err(ProviderError::new(kind, "mock failure")),
+                _ => {}
             }
             let next = s.accepted.len();
+            let first = !s.accepted.contains_key(&job.idempotency_key);
             let id = s.accepted.entry(job.idempotency_key.clone()).or_insert_with(|| format!("mock-{next}")).clone();
+            if first && let Some(MockFailure::LostReply(kind)) = model.fail {
+                // Accepted and billed, but the caller never hears so.
+                if model.polls > 0 {
+                    s.pending.insert(id, (job.clone(), model.polls));
+                } else {
+                    s.finished.insert(job.idempotency_key.clone(), result(&model, job));
+                }
+                return Err(ProviderError::new(kind, "mock reply lost"));
+            }
+            if model.polls == 0 {
+                let done = s.finished.entry(job.idempotency_key.clone()).or_insert_with(|| result(&model, job)).clone();
+                return Ok(Submission::Finished(done));
+            }
             s.pending.entry(id.clone()).or_insert_with(|| (job.clone(), model.polls));
             Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::Value::Null }))
         })();
@@ -185,10 +206,14 @@ impl Provider for MockProvider {
         let outcome = (|| {
             let mut s = self.lock();
             s.polls = s.polls.saturating_add(1);
+            if s.cancelled.contains(&handle.remote_id) {
+                return Ok(JobProgress::Failed(ProviderError::new(ErrorKind::Cancelled, "cancelled")));
+            }
             let (job, left) = s.pending.get_mut(&handle.remote_id).ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "unknown job"))?;
             let model = *self.models.get(&job.model).ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "unknown model"))?;
             match model.fail {
                 Some(MockFailure::Poll(kind)) => return Err(ProviderError::new(kind, "mock poll failure")),
+                // (A lost reply only affects the submit; polling works.)
                 Some(MockFailure::Job(kind)) => return Ok(JobProgress::Failed(ProviderError::new(kind, "mock job failure"))),
                 _ => {}
             }

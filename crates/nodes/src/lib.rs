@@ -13,7 +13,7 @@ mod source;
 pub mod text;
 pub mod video;
 
-pub use descriptor::{Category, GenerateInput, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
+pub use descriptor::{Category, GenerateInput, GenerateOutput, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
 pub use nodecraft_types::{Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, VisibleIf};
 pub use registry::Registry;
 pub use source::SourceKind;

@@ -4,10 +4,26 @@
       {
         "type": "media",
         "value": {
-          "hash": "08705acdb70129938a93aa10aca935cdf87b454a387cdd2858a374c44af8e73a",
+          "hash": "1f85c7d926c8164d9cea32aa65e65a4b84fe5afde48ab15705dff9e04577cb90",
           "meta": {},
-          "mime": "image/x-nodecraft-mock"
+          "mime": "image/png"
         }
+      }
+    ],
+    "requests": [
+      {
+        "inputs": [
+          {
+            "role": "prompt",
+            "text": "mock-text: a fox in the snow #8486ca86"
+          }
+        ],
+        "key": "nodecraft:60606060606060606060606060606060:2",
+        "model": "mock-image",
+        "params": {
+          "style": ""
+        },
+        "provider": "mock"
       }
     ],
     "stamped": true
@@ -17,6 +33,22 @@
       {
         "type": "text",
         "value": "mock-text: a fox in the snow #8486ca86"
+      }
+    ],
+    "requests": [
+      {
+        "inputs": [
+          {
+            "role": "prompt",
+            "text": "a fox in the snow"
+          }
+        ],
+        "key": "nodecraft:60606060606060606060606060606060:1",
+        "model": "mock-text",
+        "params": {
+          "style": "ink"
+        },
+        "provider": "mock"
       }
     ],
     "stamped": true

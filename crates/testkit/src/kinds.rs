@@ -3,13 +3,15 @@
 //! (a catalog model id) and a free-text `style` parameter, and plans one model call.
 
 use nodecraft_graph::Port;
-use nodecraft_nodes::{Category, GenerateInput, JobSpec, ModeId, NodeDescriptor, NodeKind, ParamControl, ParamSchema, ParamSpec, PlanCtx, Registry};
+use nodecraft_nodes::{
+    Category, GenerateInput, GenerateOutput, JobSpec, ModeId, NodeDescriptor, NodeKind, ParamControl, ParamSchema, ParamSpec, PlanCtx, Registry,
+};
 use nodecraft_types::{Error, ErrorKind, Modality, PortType, Value};
 
 /// The provider id the mock kinds call.
 pub const PROVIDER: &str = "mock";
 
-struct MockGenerator(NodeDescriptor);
+struct MockGenerator(NodeDescriptor, Modality);
 
 impl NodeKind for MockGenerator {
     fn descriptor(&self) -> &NodeDescriptor {
@@ -25,7 +27,8 @@ impl NodeKind for MockGenerator {
         };
         let params = ctx.node.params.iter().filter(|(name, _)| name.as_str() != "model").map(|(k, v)| (k.clone(), v.clone())).collect();
         let inputs = ctx.inputs.iter().map(|input| GenerateInput { role: "prompt".into(), value: input.value.clone() }).collect();
-        Ok(vec![JobSpec::Generate { node: ctx.node.id, output: "out".into(), provider: PROVIDER.into(), model, params, inputs }])
+        let outputs = vec![GenerateOutput { port: "out".into(), modality: self.1 }];
+        Ok(vec![JobSpec::Generate { node: ctx.node.id, outputs, provider: PROVIDER.into(), model, params, inputs }])
     }
 }
 
@@ -56,7 +59,7 @@ fn descriptor(id: &str, label: &str, output: Modality, model: &str) -> NodeDescr
 /// The built-in kinds plus `mock.text` and `mock.image`.
 pub fn registry() -> Result<Registry, Error> {
     let mut kinds = Registry::builtins()?;
-    kinds.register(Box::new(MockGenerator(descriptor("mock.text", "Mock text", Modality::Text, "mock-text"))))?;
-    kinds.register(Box::new(MockGenerator(descriptor("mock.image", "Mock image", Modality::Image, "mock-image"))))?;
+    kinds.register(Box::new(MockGenerator(descriptor("mock.text", "Mock text", Modality::Text, "mock-text"), Modality::Text)))?;
+    kinds.register(Box::new(MockGenerator(descriptor("mock.image", "Mock image", Modality::Image, "mock-image"), Modality::Image)))?;
     Ok(kinds)
 }

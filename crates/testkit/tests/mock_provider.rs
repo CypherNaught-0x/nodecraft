@@ -1,29 +1,9 @@
 use futures::executor::block_on;
-use nodecraft_providers::{CancelSignal, Clock, ErrorKind, JobInput, Output, Provider, ProviderJob, RunLimits, Submission, run_to_completion};
+use nodecraft_providers::{ErrorKind, JobInput, Output, Provider, ProviderJob, RunLimits, Submission, run_to_completion};
 use nodecraft_testkit::mock::{MockFailure, MockModel, MockOutput, MockProvider};
 use nodecraft_types::{Currency, Money};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Never;
-impl CancelSignal for Never {
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-    fn cancelled(&self) -> nodecraft_providers::BoxFuture<'_, ()> {
-        Box::pin(futures::future::pending())
-    }
-}
-#[derive(Default)]
-struct Instant(AtomicU64);
-impl Clock for Instant {
-    fn sleep(&self, ms: u64) -> nodecraft_providers::BoxFuture<'static, ()> {
-        self.0.fetch_add(ms, Ordering::SeqCst);
-        Box::pin(async {})
-    }
-    fn now_ms(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
-    }
-}
+use nodecraft_testkit::golden::{InstantClock as Instant, NeverCancelled as Never};
 
 fn job(model: &str, prompt: &str, key: &str) -> ProviderJob {
     let mut params = serde_json::Map::new();
@@ -44,7 +24,8 @@ fn results_are_deterministic_and_follow_the_request() {
     let Output::Text(text) = &a[0] else { panic!("text model returns text") };
     assert!(text.starts_with("mock-text: a fox #"), "{text}");
     let image = run(&provider, &job("mock-image", "a fox", "k4")).unwrap();
-    assert!(matches!(&image[0], Output::Bytes { mime, .. } if mime == "image/x-nodecraft-mock"));
+    // Real signatures, so hosts sniff it as the media it claims to be.
+    assert!(matches!(&image[0], Output::Bytes { bytes, .. } if nodecraft_media_sniff_png(bytes)));
     assert_eq!(provider.requests().len(), 4);
     assert_eq!(provider.billed(), 4);
 }
@@ -78,4 +59,39 @@ fn scripted_failures_surface_where_they_are_scripted() {
     assert_eq!(run(&provider, &job("drops", "x", "b")), Err(ErrorKind::Network));
     assert_eq!(run(&provider, &job("fails", "x", "c")), Err(ErrorKind::JobFailed));
     assert_eq!(run(&provider, &job("nope", "x", "d")), Err(ErrorKind::UnsupportedInput));
+}
+
+#[test]
+fn a_lost_reply_bills_once_and_the_retry_gets_the_job() {
+    let provider = MockProvider::new(
+        "mock",
+        [("flaky".to_owned(), MockModel { polls: 1, fail: Some(MockFailure::LostReply(ErrorKind::Network)), ..MockModel::new(MockOutput::Text) })],
+    );
+    let request = job("flaky", "a fox", "k1");
+    assert_eq!(run(&provider, &request), Err(ErrorKind::Network), "the reply was lost");
+    assert_eq!(provider.billed(), 1, "but the job was accepted");
+    // Retrying under the same key resumes the same job; no second charge.
+    assert!(run(&provider, &request).is_ok());
+    assert_eq!(provider.billed(), 1);
+}
+
+#[test]
+fn cancelled_jobs_stay_cancelled_and_sync_retries_return_the_original_result() {
+    let provider = MockProvider::new("mock", [("slow".to_owned(), MockModel { polls: 5, ..MockModel::new(MockOutput::Image) })]);
+    let Submission::Queued(handle) = block_on(provider.submit(&job("slow", "x", "k1"))).unwrap() else { panic!("queued") };
+    block_on(provider.cancel(&handle)).unwrap();
+    assert_eq!(provider.cancelled(), vec![handle.remote_id.clone()]);
+    assert!(matches!(block_on(provider.poll(&handle)), Ok(nodecraft_providers::JobProgress::Failed(e)) if e.kind == ErrorKind::Cancelled));
+    // A model with no polls fails at submit when scripted to fail.
+    let sync_fail =
+        MockProvider::new("mock", [("m".to_owned(), MockModel { fail: Some(MockFailure::Job(ErrorKind::JobFailed)), ..MockModel::new(MockOutput::Text) })]);
+    assert_eq!(run(&sync_fail, &job("m", "x", "k")), Err(ErrorKind::JobFailed));
+    // A resubmit under the same key gets the first result, even with other inputs.
+    let standard = MockProvider::standard();
+    let first = run(&standard, &job("mock-text", "a fox", "same")).unwrap();
+    assert_eq!(run(&standard, &job("mock-text", "an owl", "same")).unwrap(), first);
+}
+
+fn nodecraft_media_sniff_png(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
 }

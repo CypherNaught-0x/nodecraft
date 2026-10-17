@@ -6,6 +6,26 @@
         "value": "mock-text: an owl / at dusk #0a9c4410"
       }
     ],
+    "requests": [
+      {
+        "inputs": [
+          {
+            "role": "prompt",
+            "text": "an owl"
+          },
+          {
+            "role": "prompt",
+            "text": "at dusk"
+          }
+        ],
+        "key": "nodecraft:60606060606060606060606060606060:1",
+        "model": "mock-text",
+        "params": {
+          "style": ""
+        },
+        "provider": "mock"
+      }
+    ],
     "stamped": true
   }
 }

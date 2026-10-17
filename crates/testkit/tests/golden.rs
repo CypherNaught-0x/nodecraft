@@ -56,9 +56,17 @@ fn project(nodes: &[NodeSpec<'_>], wires: &[(u8, &str, u8, u32)]) -> Project {
 fn golden(name: &str, project: &Project, requested: &[u8], providers: &[Arc<dyn Provider>]) {
     let kinds = registry().unwrap();
     let requested: BTreeSet<NodeId> = requested.iter().map(|n| id(*n)).collect();
+    // The project file round-trips: the committed one loads back to the same project.
     golden::check(&dir(), &format!("{name}.project"), &serde_json::to_value(project).unwrap()).unwrap();
+    if !golden::blessing() {
+        let text = std::fs::read_to_string(dir().join(format!("{name}.project.json"))).unwrap();
+        let loaded: Project = serde_json::from_str(&text).unwrap();
+        assert_eq!(&loaded, project, "{name}: the committed project file loads to a different project");
+    }
     let outcome = golden::run(project, C, &requested, &RunMode::WithUpstream, &kinds, providers).unwrap();
     golden::check(&dir(), name, &outcome.report).unwrap();
+    // And the project with its results recorded (history, generation ids, input hashes).
+    golden::check(&dir(), &format!("{name}.recorded"), &serde_json::to_value(&outcome.project).unwrap()).unwrap();
     let after = nodecraft_exec::staleness::stale(outcome.project.canvases().get(&C).unwrap(), &kinds).unwrap();
     assert!(after.is_empty(), "{name}: stale after the run: {after:?}");
 }

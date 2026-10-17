@@ -1,8 +1,25 @@
 {
   "Painter": {
-    "failed": "skipped: “Writer” didn't produce a result"
+    "failed": "skipped: “Writer” didn't produce a result",
+    "requests": null
   },
   "Writer": {
-    "failed": "the job failed: mock job failure"
+    "failed": "the job failed: mock job failure",
+    "requests": [
+      {
+        "inputs": [
+          {
+            "role": "prompt",
+            "text": "a fox"
+          }
+        ],
+        "key": "nodecraft:60606060606060606060606060606060:1",
+        "model": "mock-text",
+        "params": {
+          "style": ""
+        },
+        "provider": "mock"
+      }
+    ]
   }
 }
