@@ -1,0 +1,485 @@
+[
+  {
+    "name": "Grade exposure in linear space",
+    "request": {
+      "action": "image.grade",
+      "options": {
+        "warmth": 0.0,
+        "contrast": 1.0,
+        "saturation": 1.0,
+        "brightness": -1.0
+      }
+    },
+    "source": [
+      255,
+      255,
+      255,
+      127
+    ],
+    "expected": [
+      188,
+      188,
+      188,
+      127
+    ]
+  },
+  {
+    "name": "Tint multiply black",
+    "request": {
+      "action": "image.tint",
+      "options": {
+        "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "intensity": 1.0,
+        "blend": "multiply"
+      }
+    },
+    "source": [
+      255,
+      255,
+      255,
+      127
+    ],
+    "expected": [
+      0,
+      0,
+      0,
+      127
+    ]
+  },
+  {
+    "name": "Grayscale white",
+    "request": {
+      "action": "image.filter",
+      "options": {
+        "preset": {
+          "kind": "grayscale"
+        },
+        "intensity": 1.0
+      }
+    },
+    "source": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "expected": [
+      255,
+      255,
+      255,
+      255
+    ]
+  },
+  {
+    "name": "Hard green key",
+    "request": {
+      "action": "image.key",
+      "options": {
+        "matcher": {
+          "target": {
+            "r": 0,
+            "g": 255,
+            "b": 0,
+            "a": 255
+          },
+          "tolerance": 0.0,
+          "softness": 0.0
+        },
+        "mode": "remove_matched"
+      }
+    },
+    "source": [
+      0,
+      255,
+      0,
+      255
+    ],
+    "expected": [
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "name": "Replacement preserves coverage",
+    "request": {
+      "action": "image.replace_color",
+      "options": {
+        "matcher": {
+          "target": {
+            "r": 0,
+            "g": 255,
+            "b": 0,
+            "a": 255
+          },
+          "tolerance": 0.0,
+          "softness": 0.0
+        },
+        "replacement": {
+          "r": 255,
+          "g": 0,
+          "b": 0,
+          "a": 3
+        },
+        "replace_alpha": false
+      }
+    },
+    "source": [
+      0,
+      255,
+      0,
+      127
+    ],
+    "expected": [
+      255,
+      0,
+      0,
+      127
+    ]
+  },
+  {
+    "name": "No-growth solid pad composites",
+    "request": {
+      "action": "image.aspect",
+      "options": {
+        "ratio": {
+          "kind": "source"
+        },
+        "mode": {
+          "kind": "pad",
+          "padding": {
+            "kind": "solid",
+            "color": {
+              "r": 255,
+              "g": 255,
+              "b": 255,
+              "a": 255
+            }
+          }
+        },
+        "anchor": {
+          "x": 0.5,
+          "y": 0.5
+        }
+      }
+    },
+    "source": [
+      255,
+      0,
+      0,
+      0
+    ],
+    "expected": [
+      255,
+      255,
+      255,
+      255
+    ]
+  },
+  {
+    "name": "Zero rotation still has background",
+    "request": {
+      "action": "image.rotate",
+      "options": {
+        "angle": 0.0,
+        "expand": true,
+        "background": {
+          "r": 255,
+          "g": 255,
+          "b": 255,
+          "a": 255
+        },
+        "resampling": "nearest"
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      0
+    ],
+    "expected": [
+      255,
+      255,
+      255,
+      255
+    ]
+  },
+  {
+    "name": "Flip preserves hidden bytes",
+    "request": {
+      "action": "image.flip",
+      "axis": "both"
+    },
+    "source": [
+      17,
+      93,
+      7,
+      0
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      0
+    ]
+  },
+  {
+    "name": "Full crop preserves hidden bytes",
+    "request": {
+      "action": "image.crop",
+      "options": {
+        "kind": "full"
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      0
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      0
+    ]
+  },
+  {
+    "name": "Identity resize preserves hidden bytes",
+    "request": {
+      "action": "image.resize",
+      "options": {
+        "size": {
+          "kind": "scale",
+          "factor": 1.0
+        },
+        "resampling": "area"
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      0
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      0
+    ]
+  },
+  {
+    "name": "Constant gaussian",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "gaussian",
+        "sigma": 2.0
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant box",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "box",
+        "radius": 2
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant motion",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "motion",
+        "length": 8.0,
+        "angle": 0.0,
+        "samples": 17
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant radial",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "radial",
+        "mode": "spin",
+        "center": {
+          "x": 0.5,
+          "y": 0.5
+        },
+        "amount": 0.2,
+        "samples": 17
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant bilateral",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "bilateral",
+        "radius": 3,
+        "spatial_sigma": 2.0,
+        "range_sigma": 0.1
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant bokeh",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "bokeh",
+        "radius": 4.0,
+        "samples": 25,
+        "aperture": "disk"
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant tilt_shift",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "tilt_shift",
+        "sigma": 4.0,
+        "focus": {
+          "x": 0.5,
+          "y": 0.5
+        },
+        "angle": 0.0,
+        "band_width": 0.25,
+        "falloff": 0.1
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  },
+  {
+    "name": "Constant target_color",
+    "request": {
+      "action": "image.blur",
+      "options": {
+        "kind": "target_color",
+        "sigma": 2.0,
+        "matcher": {
+          "target": {
+            "r": 0,
+            "g": 255,
+            "b": 0,
+            "a": 255
+          },
+          "tolerance": 0.1,
+          "softness": 0.1
+        },
+        "selection": "matched"
+      }
+    },
+    "source": [
+      17,
+      93,
+      7,
+      127
+    ],
+    "expected": [
+      17,
+      93,
+      7,
+      127
+    ]
+  }
+]
