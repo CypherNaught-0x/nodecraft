@@ -570,3 +570,31 @@ a choice a later contributor might otherwise undo.
   results, not proof of freshness; callers needing that distinction use `input_hash`. Global
   resolution budget failures return errors from both `staleness::stale` and `canvas.stale`,
   without changing the document or undo history. This does not change hash bytes or versions.
+
+## 2026-10-17 · Budgets at job time (#207)
+
+- **`exec::budget::Ledger` holds each job to the caps as it starts**, on top of `cost::check`
+  for the whole run. A job reserves its estimate before it is submitted; reservations of running
+  jobs count against the session and project caps, so parallel jobs or back-to-back runs can't
+  together pass a cap. A job that would break one is refused before it reaches the provider, with
+  a non-transient error starting `budget: ` (`budget::is_refusal`).
+- **What is charged:** the provider's reported cost when it gives one, else the estimate,
+  recorded once per provider and idempotency key in the usage log (#219's `UsageLog`): `actual`
+  for a finished job, `unresolved` for one that may or may not have been billed. Reservations
+  live in the ledger, not as `estimate` rows, so a crash never leaves provisional rows behind.
+- **Resumed jobs are adopted, not checked:** a stored handle means the job already runs on the
+  provider, so its money is committed whatever the caps say now.
+- **Maybe-billed jobs are charged, never released:** once the provider accepted a job, or a
+  submit was interrupted without an answer (`RunFailure::uncertain`: cancelled midway, timed out,
+  cut off, a server error), its estimate stays reserved across retries and resumes, and is charged
+  as `unresolved` when the job ends for good. The runner can't tell the scheduler's last attempt,
+  so the host passes driver events to `ProviderRunner::observe`, which closes the account on
+  `Failed` and `Cancelled`. A requeue under a new key closes the old account first and reserves
+  again with a cap check. A job that certainly never reached the provider (refused by the budget,
+  cancelled before submit, a provider refusal such as a bad key) gives its reservation back.
+- **Each generation the provider failed is its own charge:** it is charged its estimate as
+  `unresolved`, and the retry's fresh submission is charged under the key with `#2`, `#3`, … appended,
+  so the usage log's once-per-key rule doesn't swallow it.
+- **Free jobs always fit** (as in `cost::check`), and a charge the log can't record leaves its
+  reservation held, so the money still counts against the caps. Jobs without an idempotency key
+  are refused.

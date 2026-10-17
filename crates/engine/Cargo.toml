@@ -30,5 +30,5 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-futures = { workspace = true, features = ["executor"] }
+futures = { workspace = true, features = ["executor", "thread-pool"] }
 serde_json = { workspace = true }
