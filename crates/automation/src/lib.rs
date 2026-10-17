@@ -7,6 +7,7 @@
 pub mod mcp;
 
 use nodecraft_engine::Session;
+use nodecraft_engine::commands::Resources;
 use nodecraft_graph::{Canvas, Change, Changeset, Project};
 use nodecraft_types::{CanvasId, Error, ProjectId};
 
@@ -15,5 +16,8 @@ use nodecraft_types::{CanvasId, Error, ProjectId};
 pub fn blank_session(project: ProjectId, canvas: CanvasId) -> Result<Session, Error> {
     let mut document = Project::new(project, "Untitled")?;
     Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }]).apply(&mut document)?;
-    Session::new(document)
+    // Node kinds, for commands that read ports and schemas (`canvas.stale`).
+    let mut resources = Resources::default();
+    resources.insert(nodecraft_nodes::Registry::builtins()?);
+    Ok(Session::new(document)?.with_resources(resources))
 }

@@ -23,9 +23,10 @@ use serde_json::{Map, Value, json};
 
 /// Protocol revisions this server speaks, newest first.
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-/// Longest message accepted, in bytes. The engine takes at most 1 MiB of command parameters, so
-/// this leaves room for the envelope while bounding the memory a parse can take.
-pub const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+/// Longest message accepted, in bytes. The engine takes at most 1 MiB of decoded command
+/// parameters; clients may escape non-ASCII text (`\uXXXX`, up to 6 bytes a character), so this
+/// leaves room for that while bounding the memory a parse can take.
+pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Rough cap on a `canvas_inspect` page's JSON. The reply carries it twice (structured and as
 /// text), so a page stays around 1 MiB on the wire.
 pub const PAGE_BUDGET_BYTES: usize = 512 * 1024;
@@ -37,7 +38,8 @@ pub const MAX_PAGE: usize = 500;
 pub const MAX_NEW_IDS: usize = 100;
 
 /// Commands an agent may see and run.
-pub const AGENT_COMMANDS: &[&str] = &["node.add", "node.remove", "node.move", "edge.connect", "edge.disconnect", "edit.undo", "edit.redo", "keys.status"];
+pub const AGENT_COMMANDS: &[&str] =
+    &["node.add", "node.remove", "node.move", "edge.connect", "edge.disconnect", "edit.undo", "edit.redo", "canvas.stale", "keys.status"];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
 /// agent's context, and `keys.remove` deletes a key with no undo.
 pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove"];
@@ -117,7 +119,8 @@ fn tools() -> Value {
             "description": "Without arguments: the project and its canvases with node and edge counts. With `canvas`: a page of that canvas's nodes (sorted by id, from `offset`, at most `limit`, and cut short to keep the reply small; continue from `next_offset`) with the edges into them. Nodes too large for a page are summarised; read one in full with `canvas` and `node`.",
             "inputSchema": object_schema(json!({
                 "canvas": {"type": "string", "description": "Canvas id (UUID)"},
-                "node": {"type": "string", "description": "Node id (UUID): return just this node, in full"},
+                "node": {"type": "string", "description": "Node id (UUID): return just this node, in full, with its edges paged by `edge_offset`"},
+                "edge_offset": {"type": "integer", "minimum": 0},
                 "offset": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE}
             }), &[]),
@@ -133,9 +136,38 @@ fn tools() -> Value {
     ])
 }
 
-/// Bytes of `value` as JSON.
+/// Bytes of `value` as JSON, counted without building the text.
 fn json_len(value: &impl serde::Serialize) -> Result<usize, Error> {
-    serde_json::to_vec(value).map(|v| v.len()).map_err(|_| internal())
+    struct Count(usize);
+    impl Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).map_err(|_| internal())?;
+    Ok(count.0)
+}
+
+/// As many of `edges`, from `offset`, as fit in `budget` bytes (at least one), and where to
+/// continue.
+fn edge_page<'a>(edges: &[&'a Edge], offset: usize, budget: usize) -> Result<(Vec<&'a Edge>, Option<usize>), Error> {
+    let mut page = Vec::new();
+    let mut used = 0usize;
+    for e in edges.iter().skip(offset) {
+        let n = json_len(e)?;
+        if !page.is_empty() && used.saturating_add(n) > budget {
+            break;
+        }
+        used = used.saturating_add(n);
+        page.push(*e);
+    }
+    let next = offset.saturating_add(page.len());
+    Ok((page, (next < edges.len()).then_some(next)))
 }
 
 impl McpServer {
@@ -264,7 +296,8 @@ impl McpServer {
         };
         self.session.registry().get(&id)?;
         if !visible(&id) {
-            return Err(Error::new(ErrorKind::Unsupported, format!("{id} can only be run by a person in the app")));
+            let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
+            return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
         }
         let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
         let result = self.session.dispatch(&id, &params)?;
@@ -284,18 +317,20 @@ impl McpServer {
         let id: CanvasId = canvas.as_str().ok_or_else(|| invalid("`canvas` must be a canvas id string"))?.parse()?;
         let canvas = project.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with that id"))?;
         let revision = self.session.revision();
-        if let Some(node) = args.get("node") {
-            let node: NodeId = node.as_str().ok_or_else(|| invalid("`node` must be a node id string"))?.parse()?;
-            let node = canvas.nodes().get(&node).ok_or_else(|| Error::new(ErrorKind::NotFound, "no node with that id on this canvas"))?;
-            let edges: Vec<&Edge> = canvas.edges().values().filter(|e| e.to.node == node.id || e.from.node == node.id).collect();
-            return Ok(json!({"node": node, "edges": edges, "revision": revision}));
-        }
         let number = |key: &str, default: usize| -> Result<usize, Error> {
             match args.get(key) {
                 None => Ok(default),
                 Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| invalid(format!("`{key}` must be a non-negative integer"))),
             }
         };
+        if let Some(node) = args.get("node") {
+            let node: NodeId = node.as_str().ok_or_else(|| invalid("`node` must be a node id string"))?.parse()?;
+            let node = canvas.nodes().get(&node).ok_or_else(|| Error::new(ErrorKind::NotFound, "no node with that id on this canvas"))?;
+            // The node in full (the graph caps it at 8 MiB); its edges in pages, by edge id.
+            let touching: Vec<&Edge> = canvas.edges().values().filter(|e| e.to.node == node.id || e.from.node == node.id).collect();
+            let (edges, next) = edge_page(&touching, number("edge_offset", 0)?, PAGE_BUDGET_BYTES)?;
+            return Ok(json!({"node": node, "edges": edges, "edges_total": touching.len(), "next_edge_offset": next, "revision": revision}));
+        }
         let offset = number("offset", 0)?;
         let limit = number("limit", 100)?.clamp(1, MAX_PAGE);
         // Each edge is listed with the node it enters, so paging lists every edge once.
@@ -308,12 +343,12 @@ impl McpServer {
         let mut used = 0usize;
         let mut edges_truncated = false;
         let mut taken = 0usize;
+        let mut truncated_at: Option<NodeId> = None;
         for node in canvas.nodes().values().skip(offset).take(limit) {
-            let full = serde_json::to_value(node).map_err(|_| internal())?;
-            let entry = if json_len(&full)? > NODE_INLINE_BYTES {
+            let entry = if json_len(node)? > NODE_INLINE_BYTES {
                 json!({"id": node.id, "kind": node.kind, "title": node.title, "pos": node.pos, "params": node.params.keys().collect::<Vec<_>>(), "history": node.history.len(), "summarised": "too large for a page; read it with `node`"})
             } else {
-                full
+                serde_json::to_value(node).map_err(|_| internal())?
             };
             let into = incoming.get(&node.id).map(Vec::as_slice).unwrap_or_default();
             let cost = json_len(&entry)?.saturating_add(json_len(&into)?);
@@ -322,11 +357,13 @@ impl McpServer {
             }
             used = used.saturating_add(json_len(&entry)?);
             nodes.push(entry);
-            // A first node with more incoming edges than a page holds gets as many as fit.
+            // A first node with more incoming edges than a page holds gets as many as fit; the
+            // rest are read with `node`.
             for e in into {
                 let n = json_len(e)?;
                 if used.saturating_add(n) > PAGE_BUDGET_BYTES {
                     edges_truncated = true;
+                    truncated_at = Some(node.id);
                     break;
                 }
                 used = used.saturating_add(n);
@@ -341,6 +378,7 @@ impl McpServer {
             "nodes": nodes,
             "edges": serde_json::to_value(&edges).map_err(|_| internal())?,
             "edges_truncated": edges_truncated,
+            "edges_continue": truncated_at.map(|n| json!({"node": n, "hint": "read all of this node's edges with canvas_inspect `node` (paged by `edge_offset`)"})),
             "next_offset": more.then_some(next),
             "revision": revision,
         }))

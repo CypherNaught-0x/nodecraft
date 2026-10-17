@@ -23,7 +23,7 @@ They go through the same `Session::dispatch` as the app's menus and shortcuts.
 |---|---|
 | `command_list` | The commands you can run: id, label and parameter schema. Commands without parameters also say whether they can run right now (`ready`, with the reason when not). `query` filters by id or label. |
 | `command_run` | Runs one command with `params`. Document edits are undoable (`edit.undo`). |
-| `canvas_inspect` | Without arguments: the project and its canvases with counts. With `canvas`: a page of its nodes, sorted by id, from `offset`, with the edges into them. A page holds at most `limit` nodes (up to 500) and is also cut short at about 512 KiB; continue from `next_offset`. Nodes over 64 KiB are summarised in pages; read one in full with `canvas` and `node`. |
+| `canvas_inspect` | Without arguments: the project and its canvases with counts. With `canvas`: a page of its nodes, sorted by id, from `offset`, with the edges into them. A page holds at most `limit` nodes (up to 500) and is also cut short at about 512 KiB; continue from `next_offset`. Nodes over 64 KiB are summarised in pages; read one in full with `canvas` and `node`, which also pages all of that node's edges (`edge_offset`, `next_edge_offset`). A page that couldn't fit all of a node's incoming edges sets `edges_truncated` and names the node in `edges_continue`. |
 | `ids_new` | Up to 100 fresh UUIDs for commands that take a caller-chosen id, such as `node.add`. |
 
 A command that fails comes back as a tool result with `isError: true` and a message the model can
@@ -38,7 +38,7 @@ of the lists, and a test fails until then.
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
 
-**Limits:** messages are at most 2 MiB (the engine accepts at most 1 MiB of command parameters).
+**Limits:** messages are at most 4 MiB. The engine accepts at most 1 MiB of decoded command parameters, and clients may escape non-ASCII text.
 A longer line is skipped with an error reply instead of being buffered. Messages must be UTF-8
 JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 

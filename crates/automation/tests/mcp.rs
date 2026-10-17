@@ -9,10 +9,12 @@ use serde_json::{Value, json};
 const CANVAS: CanvasId = CanvasId::from_bytes([2; 16]);
 
 fn server() -> McpServer {
-    let mut n: u8 = 0;
+    let mut n: u64 = 0;
     let ids = move || {
-        n = n.wrapping_add(1);
-        [n; 16]
+        n += 1;
+        let mut b = [7u8; 16];
+        b[..8].copy_from_slice(&n.to_le_bytes());
+        b
     };
     McpServer::new(blank_session(ProjectId::from_bytes([1; 16]), CANVAS).unwrap(), Box::new(ids))
 }
@@ -176,6 +178,8 @@ fn ready_is_only_reported_for_parameterless_commands() {
     assert!(get("node.add").get("ready").is_none(), "needs params: no verdict");
     assert!(get("keys.status").get("ready").is_none());
     assert_eq!(get("edit.redo")["ready"], false);
+    let stale = call(&mut s, "command_run", json!({"id": "canvas.stale", "params": {"canvas": CANVAS}}));
+    assert_eq!(stale["structuredContent"]["result"]["nodes"], json!([]), "node kinds are available: {stale}");
 }
 
 #[test]
@@ -239,4 +243,48 @@ fn malformed_envelopes() {
     serve(&mut s, &mut &b"\xff\xfe\n"[..], &mut out);
     let r: Value = serde_json::from_slice(out.split(|b| *b == b'\n').next().unwrap()).unwrap();
     assert_eq!(r["error"]["code"], -32700, "invalid UTF-8 is a parse error");
+}
+
+#[test]
+fn a_node_with_many_edges_pages_them() {
+    let mut s = server();
+    let ids = call(&mut s, "ids_new", json!({"count": 2}))["structuredContent"]["ids"].clone();
+    let (a, b) = (ids[0].clone(), ids[1].clone());
+    let port = "p".repeat(250);
+    let many = json!([{"name": port, "port_type": {"modality": "text", "many": true}}]);
+    for id in [&a, &b] {
+        let node = json!({"id": id, "kind": "text", "inputs": many, "outputs": many});
+        let r = call(&mut s, "command_run", json!({"id": "node.add", "params": {"canvas": CANVAS, "node": node}}));
+        assert_eq!(r["isError"], false, "{r}");
+    }
+    let mut added = 0u32;
+    for _ in 0..30 {
+        let batch = call(&mut s, "ids_new", json!({"count": 100}))["structuredContent"]["ids"].clone();
+        for eid in batch.as_array().unwrap() {
+            let edge = json!({"id": eid, "from": {"node": a, "port": port}, "to": {"node": b, "port": port}, "order": added});
+            let r = call(&mut s, "command_run", json!({"id": "edge.connect", "params": {"canvas": CANVAS, "edge": edge}}));
+            assert_eq!(r["isError"], false, "{r}");
+            added += 1;
+        }
+    }
+    // The node the edges enter starts its own page, which holds as many as fit.
+    let first = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS}))["structuredContent"].clone();
+    let offset = if first["edges_truncated"] == true { 0 } else { first["next_offset"].as_u64().unwrap() };
+    let page = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS, "offset": offset}))["structuredContent"].clone();
+    assert_eq!(page["edges_truncated"], true, "{}", page["canvas"]);
+    assert_eq!(page["edges_continue"]["node"], b);
+    assert!(page["edges_continue"]["node"].is_string());
+    let mut offset = 0u64;
+    let mut seen = 0usize;
+    loop {
+        let r = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS, "node": b, "edge_offset": offset}));
+        assert!(r["content"][0]["text"].as_str().unwrap().len() < 2 * PAGE_BUDGET_BYTES + 64 * 1024);
+        let body = &r["structuredContent"];
+        seen += body["edges"].as_array().unwrap().len();
+        match body["next_edge_offset"].as_u64() {
+            Some(n) => offset = n,
+            None => break,
+        }
+    }
+    assert_eq!(seen, added as usize);
 }
