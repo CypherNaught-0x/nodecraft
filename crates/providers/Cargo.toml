@@ -11,9 +11,11 @@ description = "NodeCraft: the Provider trait and adapters to model services"
 workspace = true
 
 [features]
-default = ["http"]
+default = ["http", "llm"]
 # The reqwest transport (desktop and browser). Off for crates that only need the traits.
 http = ["dep:reqwest"]
+# Chat endpoints: OpenAI-compatible (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic.
+llm = []
 
 [dependencies]
 nodecraft-catalog = { workspace = true }
