@@ -21,6 +21,14 @@ a choice a later contributor might otherwise undo.
   - A job that got a handle, or whose submit was lost to a timeout, network or server error,
     keeps its reservation while a retry can come. When it is forgotten, settled, or requeued
     under a fresh key, it is charged its estimate as `unresolved`.
+- **The host closes what the scheduler gave up on.** The driver doesn't report to the runner,
+  so hosts call `ProviderRunner::settle` on terminal failures and cancellations, and `forget` when
+  dropping finished jobs (see the method docs). A settle or forget that arrives while the job is
+  running waits until its run ends. Estimates left open without a stored handle are settled as
+  unresolved when a project is reopened.
+- **A generation the provider reports as failed is assumed unbilled.** It keeps one reservation
+  under its key, and a retry settles it once. Most providers don't bill failures; a provider that
+  does would be undercounted by one estimate per failed attempt.
 - **Free and local work isn't charged**: jobs without a `JobPrice` skip the budget. A job with an
   unknown price runs uncharged without caps and is refused under any cap.
 

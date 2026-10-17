@@ -92,6 +92,10 @@ struct State {
     handles: HashMap<String, JobHandle>,
     /// Open reservations of jobs that haven't settled.
     reserved: HashMap<JobId, Reserved>,
+    /// Jobs inside `run` right now, and those asked to settle meanwhile (done when `run` ends).
+    running: std::collections::HashSet<JobId>,
+    settle_after: std::collections::HashSet<JobId>,
+    forget_after: std::collections::HashSet<JobId>,
 }
 
 /// See the module docs.
@@ -177,10 +181,27 @@ impl ProviderRunner {
     }
 
     /// Ends a job's open reservation, if any: charged as unresolved when the job may have been
-    /// billed, released otherwise. Call when the scheduler gives up on a job; [`Self::forget`]
-    /// calls it too.
+    /// billed, released otherwise. If the job is running, this happens when its run ends.
+    ///
+    /// **Host contract.** The driver never tells the runner that the scheduler gave up, so the
+    /// host must:
+    /// - call `settle(job)` on every terminal `Event::Failed` and `Event::Cancelled` (attempts
+    ///   used up, a job cancelled in backoff, a dropped run);
+    /// - call [`Self::forget`] for each job it drops with `Handle::forget_finished`;
+    /// - not call either for a job in backoff that will be retried;
+    /// - when reopening a project, settle any estimate left open without a stored handle as
+    ///   unresolved (its job can't be resumed).
+    ///
+    /// No call is needed before a requeue: `run` closes the old key's reservation itself.
     pub fn settle(&self, id: JobId) {
-        let reserved = self.lock().reserved.remove(&id);
+        let reserved = {
+            let mut s = self.lock();
+            if s.running.contains(&id) {
+                s.settle_after.insert(id);
+                return;
+            }
+            s.reserved.remove(&id)
+        };
         if let (Some(budget), Some(r)) = (&self.budget, reserved) {
             close(budget, &r);
         }
@@ -201,6 +222,11 @@ impl ProviderRunner {
     pub fn forget(&self, id: JobId) {
         self.settle(id);
         let mut s = self.lock();
+        if s.running.contains(&id) {
+            // Dropped when the run ends (with its reservation settled).
+            s.forget_after.insert(id);
+            return;
+        }
         if let Some(q) = s.jobs.remove(&id) {
             s.handles.remove(&q.job.idempotency_key);
         }
@@ -273,79 +299,106 @@ impl JobRunner for ProviderRunner {
             if signal.is_cancelled() {
                 return Outcome::Cancelled;
             }
-            if let (Some(budget), Some(price)) = (&budget, &queued.price) {
-                // A requeued job has a fresh key: end the old attempt's reservation first.
-                let stale = lock().reserved.get(&job_id).filter(|r| r.key != key).cloned();
-                if let Some(old) = stale {
-                    close(budget, &old);
-                    lock().reserved.remove(&job_id);
-                }
-                match reserve(budget, &provider_id, &key, price, handle.is_some()) {
-                    Ok(Some(r)) => {
+            lock().running.insert(job_id);
+            let outcome = async {
+                if let (Some(budget), Some(price)) = (&budget, &queued.price) {
+                    // A requeued job has a fresh key: end the old attempt's reservation first.
+                    let stale = lock().reserved.get(&job_id).filter(|r| r.key != key || r.provider != provider_id).cloned();
+                    if let Some(old) = stale {
+                        close(budget, &old);
                         let mut s = lock();
-                        let maybe = s.reserved.get(&job_id).is_some_and(|old| old.maybe_billed) || r.maybe_billed;
-                        s.reserved.insert(job_id, Reserved { maybe_billed: maybe, ..r });
-                    }
-                    Ok(None) => {}
-                    Err(refusal) => return Outcome::Failed { error: refusal, transient: false },
-                }
-            }
-            let record = |update: RunUpdate| {
-                if let RunUpdate::Submitted(h) = &update {
-                    let mut s = lock();
-                    s.handles.insert(key.clone(), h.clone());
-                    if let Some(r) = s.reserved.get_mut(&job_id) {
-                        r.maybe_billed = true;
-                    }
-                }
-                on_update(job_id, update);
-            };
-            let result = match handle {
-                Some(handle) => nodecraft_providers::resume(queued.provider.as_ref(), &handle, &signal, &clock, limits, record).await,
-                None => nodecraft_providers::run_to_completion(queued.provider.as_ref(), &queued.job, &signal, &clock, limits, record).await,
-            };
-            match result {
-                Ok(done) => {
-                    let reserved = {
-                        let mut s = lock();
-                        s.handles.remove(&start.idempotency_key);
-                        s.jobs.remove(&job_id);
-                        s.reserved.remove(&job_id)
-                    };
-                    if let (Some(budget), Some(r)) = (&budget, reserved) {
-                        // What the provider reported, else the estimate; a report in another
-                        // currency can't settle it, so the estimate stands.
-                        let mut log = lock_log(budget);
-                        let reported = done.usage.cost.filter(|c| c.currency == r.estimate.currency).unwrap_or(r.estimate);
-                        if log.settle(&r.provider, &r.key, reported, Charge::Actual).is_err() {
-                            let _ = log.settle(&r.provider, &r.key, r.estimate, Charge::Actual);
+                        s.reserved.remove(&job_id);
+                        if old.key != key {
+                            s.handles.remove(&old.key);
                         }
                     }
-                    on_output(job_id, done);
-                    Outcome::Done
-                }
-                Err(failure) => {
-                    if failure.handle.is_none() || failure.finished || !failure.is_transient() {
-                        // Nothing to resume: never accepted, ended by the provider, or over for good.
-                        lock().handles.remove(&start.idempotency_key);
+                    match reserve(budget, &provider_id, &key, price, handle.is_some()) {
+                        Ok(Some(r)) => {
+                            let mut s = lock();
+                            let maybe = s.reserved.get(&job_id).is_some_and(|old| old.maybe_billed) || r.maybe_billed;
+                            s.reserved.insert(job_id, Reserved { maybe_billed: maybe, ..r });
+                        }
+                        Ok(None) => {}
+                        Err(refusal) => return Outcome::Failed { error: refusal, transient: false },
                     }
-                    // A submit lost in transit may still have been accepted (and billed).
-                    let lost = failure.handle.is_none()
-                        && matches!(failure.error.kind, ErrorKind::Cancelled | ErrorKind::Timeout | ErrorKind::Network | ErrorKind::Server);
-                    let reserved = {
+                }
+                let record = |update: RunUpdate| {
+                    if let RunUpdate::Submitted(h) = &update {
                         let mut s = lock();
+                        s.handles.insert(key.clone(), h.clone());
                         if let Some(r) = s.reserved.get_mut(&job_id) {
-                            r.maybe_billed |= failure.handle.is_some() || lost;
+                            r.maybe_billed = true;
                         }
-                        // A retry may still come for transient failures: keep the reservation.
-                        if failure.is_transient() { None } else { s.reserved.remove(&job_id) }
-                    };
-                    if let (Some(budget), Some(r)) = (&budget, reserved) {
-                        close(budget, &r);
                     }
-                    outcome(&failure.error)
+                    on_update(job_id, update);
+                };
+                let result = match handle {
+                    Some(handle) => nodecraft_providers::resume(queued.provider.as_ref(), &handle, &signal, &clock, limits, record).await,
+                    None => nodecraft_providers::run_to_completion(queued.provider.as_ref(), &queued.job, &signal, &clock, limits, record).await,
+                };
+                match result {
+                    Ok(done) => {
+                        let reserved = {
+                            let mut s = lock();
+                            s.handles.remove(&start.idempotency_key);
+                            s.jobs.remove(&job_id);
+                            s.reserved.remove(&job_id)
+                        };
+                        if let (Some(budget), Some(r)) = (&budget, reserved) {
+                            // What the provider reported, else the estimate; a report in another
+                            // currency can't settle it, so the estimate stands.
+                            let mut log = lock_log(budget);
+                            let reported = done.usage.cost.filter(|c| c.currency == r.estimate.currency).unwrap_or(r.estimate);
+                            if log.settle(&r.provider, &r.key, reported, Charge::Actual).is_err() {
+                                let _ = log.settle(&r.provider, &r.key, r.estimate, Charge::Actual);
+                            }
+                        }
+                        on_output(job_id, done);
+                        Outcome::Done
+                    }
+                    Err(failure) => {
+                        if failure.handle.is_none() || failure.finished || !failure.is_transient() {
+                            // Nothing to resume: never accepted, ended by the provider, or over for good.
+                            lock().handles.remove(&start.idempotency_key);
+                        }
+                        // A submit lost in transit may still have been accepted (and billed).
+                        let lost = failure.handle.is_none()
+                            && matches!(failure.error.kind, ErrorKind::Cancelled | ErrorKind::Timeout | ErrorKind::Network | ErrorKind::Server);
+                        let reserved = {
+                            let mut s = lock();
+                            if let Some(r) = s.reserved.get_mut(&job_id) {
+                                r.maybe_billed |= failure.handle.is_some() || lost;
+                            }
+                            // A retry may still come for transient failures: keep the reservation.
+                            if failure.is_transient() { None } else { s.reserved.remove(&job_id) }
+                        };
+                        if let (Some(budget), Some(r)) = (&budget, reserved) {
+                            close(budget, &r);
+                        }
+                        outcome(&failure.error)
+                    }
                 }
             }
+            .await;
+            // Settles and forgets asked for while the job ran happen now.
+            let (settle, forget, reserved) = {
+                let mut s = lock();
+                s.running.remove(&job_id);
+                let settle = s.settle_after.remove(&job_id);
+                let forget = s.forget_after.remove(&job_id);
+                let reserved = if settle { s.reserved.remove(&job_id) } else { None };
+                (settle, forget, reserved)
+            };
+            if settle && let (Some(budget), Some(r)) = (&budget, reserved) {
+                close(budget, &r);
+            }
+            if forget {
+                let mut s = lock();
+                if let Some(q) = s.jobs.remove(&job_id) {
+                    s.handles.remove(&q.job.idempotency_key);
+                }
+            }
+            outcome
         })
     }
 }
@@ -666,5 +719,56 @@ mod tests {
         let log = budget.log.lock().unwrap();
         let old = log.charge("fails", "nodecraft:r:4").map(|e| e.status);
         assert_eq!(old, Some(Charge::Unresolved), "the lost submit stays charged when its key is replaced");
+    }
+
+    /// Calls `settle` and `forget` on its own job while that job is being submitted.
+    struct SettlesMidRun(Mutex<Option<Arc<ProviderRunner>>>);
+
+    impl Provider for SettlesMidRun {
+        fn id(&self) -> &str {
+            "mid"
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            if let Some(runner) = self.0.lock().unwrap().take() {
+                runner.settle(JobId(1));
+                runner.forget(JobId(1));
+            }
+            let mut done = Completed::new(vec![]);
+            done.usage.cost = Some(usd(30_000));
+            Box::pin(async move { Ok(Submission::Finished(done)) })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            Box::pin(async { Err(ProviderError::new(ErrorKind::NotFound, "none")) })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn settling_a_running_job_waits_for_its_run() {
+        let (runner, budget) = budgeted(Some(1_000_000));
+        let runner = Arc::new(runner);
+        let provider = Arc::new(SettlesMidRun(Mutex::new(Some(Arc::clone(&runner)))));
+        runner.register(JobId(1), priced(provider, Some(40_000)));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+        let log = budget.log.lock().unwrap();
+        assert_eq!(log.entries().map(|e| (e.cost.micros, e.status)).collect::<Vec<_>>(), [(30_000, Charge::Actual)], "the billed job is still charged");
+        drop(log);
+        // The deferred forget happened: the job is gone.
+        assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+    }
+
+    #[test]
+    fn a_new_provider_for_the_same_key_closes_the_old_reservation() {
+        let (runner, budget) = budgeted(Some(1_000_000));
+        runner.register(JobId(4), priced(Arc::new(SubmitFails(ErrorKind::Timeout)), Some(100_000)));
+        assert!(matches!(block_on(runner.run(job(4), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        // Re-registered on another provider (settings changed), same key.
+        runner.register(JobId(4), priced(Arc::new(Reports(None)), Some(100_000)));
+        assert_eq!(block_on(runner.run(job(4), CancelToken::default())), Outcome::Done);
+        let log = budget.log.lock().unwrap();
+        let rows: Vec<(&str, Charge)> = log.entries().map(|e| (e.provider.as_str(), e.status)).collect();
+        assert_eq!(rows, [("fails", Charge::Unresolved), ("reports", Charge::Actual)], "no estimate left open");
     }
 }
