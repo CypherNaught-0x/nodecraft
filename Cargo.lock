@@ -2605,8 +2605,11 @@ dependencies = [
  "eframe",
  "egui",
  "log",
+ "nodecraft-automation",
  "nodecraft-engine",
+ "nodecraft-types",
  "nodecraft-ui-egui",
+ "serde_json",
  "winresource",
 ]
 
@@ -2635,8 +2638,10 @@ dependencies = [
 name = "nodecraft-automation"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "nodecraft-engine",
  "nodecraft-graph",
+ "nodecraft-media",
  "nodecraft-nodes",
  "nodecraft-types",
  "serde",

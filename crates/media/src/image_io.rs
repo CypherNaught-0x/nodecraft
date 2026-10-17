@@ -37,6 +37,23 @@ impl Limits {
     }
 }
 
+/// Encodes 8-bit RGBA pixels (`width × height × 4` bytes, row-major) as PNG. The pixel buffer
+/// must match the size exactly, and the image is held to `limits`' width and height.
+pub fn encode_png(width: u32, height: u32, rgba: &[u8], limits: &Limits) -> Result<Vec<u8>, MediaError> {
+    if width == 0 || height == 0 || width > limits.max_width || height > limits.max_height {
+        return Err(MediaError::LimitExceeded(format!("{width}×{height} is outside {}×{}", limits.max_width, limits.max_height)));
+    }
+    let expected = u64::from(width).checked_mul(u64::from(height)).and_then(|n| n.checked_mul(4));
+    if expected != Some(rgba.len() as u64) {
+        return Err(MediaError::InvalidParameter("the pixel buffer doesn't match the image size"));
+    }
+    let buffer =
+        image::RgbaImage::from_raw(width, height, rgba.to_vec()).ok_or(MediaError::InvalidParameter("the pixel buffer doesn't match the image size"))?;
+    let mut out = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(buffer).write_to(&mut out, ImageFormat::Png).map_err(|e| MediaError::Decode(format!("can't encode PNG: {e}")))?;
+    Ok(out.into_inner())
+}
+
 /// The channel layout of an image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorModel {
@@ -161,6 +178,18 @@ pub(crate) mod tests {
         let mut out = Cursor::new(Vec::new());
         img.write_to(&mut out, format).unwrap();
         out.into_inner()
+    }
+
+    #[test]
+    fn encodes_png_round_trip_and_checks_sizes() {
+        let rgba: Vec<u8> = (0..4 * 3 * 4).map(|i| i as u8).collect();
+        let png = encode_png(4, 3, &rgba, &Limits::default()).unwrap();
+        let (meta, img) = decode_image(&png, &Limits::default()).unwrap();
+        assert_eq!((meta.width, meta.height), (4, 3));
+        assert_eq!(img.to_rgba8().into_raw(), rgba);
+        assert!(encode_png(4, 3, &rgba[1..], &Limits::default()).is_err(), "wrong buffer size");
+        assert!(encode_png(0, 3, &[], &Limits::default()).is_err());
+        assert!(encode_png(u32::MAX, u32::MAX, &[], &Limits::default()).is_err(), "no overflow, no allocation");
     }
 
     #[test]

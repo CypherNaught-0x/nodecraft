@@ -17,3 +17,9 @@ nodecraft-nodes = { workspace = true }
 nodecraft-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# The control channel (native only): a TCP listener, a random token and PNG screenshots.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nodecraft-media = { workspace = true }
+# Pinned exactly: the OS random source for the control token.
+getrandom = "=0.3.4"
