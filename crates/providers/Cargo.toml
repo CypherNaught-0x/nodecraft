@@ -10,6 +10,31 @@ description = "NodeCraft: the Provider trait and adapters to model services"
 [lints]
 workspace = true
 
+[features]
+default = ["http"]
+# The reqwest transport (desktop and browser). Off for crates that only need the traits.
+http = ["dep:reqwest"]
+
 [dependencies]
 nodecraft-catalog = { workspace = true }
 nodecraft-comfy = { workspace = true }
+nodecraft-media = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+# TLS: the operating system's stack on Windows and macOS (no C toolchain needed, and it builds for
+# Windows ARM64, where aws-lc needs clang-cl); rustls with aws-lc on Linux; `fetch` in the browser.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+reqwest = { workspace = true, optional = true, features = ["native-tls"] }
+[target.'cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))'.dependencies]
+reqwest = { workspace = true, optional = true, features = ["rustls"] }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

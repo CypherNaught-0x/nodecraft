@@ -164,7 +164,8 @@ node --test scripts/claim/*.test.js                     # if you touched the cla
 2. **A new provider** is a module in `crates/providers/src/<provider>/` behind its own Cargo
    feature. It implements `Provider` (`submit`, `poll`, `cancel`), maps errors onto the shared
    error kinds (blocked content, unsupported input, busy, timeout, budget, auth, network), uses
-   idempotency keys where the API supports them, and caps download sizes.
+   idempotency keys where the API supports them, caps download sizes, and sends API keys only
+   through `HttpRequest::secret_header` so they never follow a redirect to another host.
 3. **Tests:** fixture-based contract tests for submit, progress, success, every error kind and
    cancellation. Add one opt-in live smoke test.
 4. **Docs:** add a row to `docs/providers.md` covering auth setup, supported modes and known
