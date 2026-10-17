@@ -15,8 +15,9 @@
 //!   recorded without a cap check, since its money is already spent.
 //! - **Settle.** A finished job is charged what the provider reported, or its estimate. A job the
 //!   provider certainly never billed (refused at submit: bad key, invalid input) is released. A job
-//!   that may have been billed (it got a handle, or its submit was lost to a timeout, network or
-//!   server error) keeps its reservation while the scheduler may retry it, and is charged as
+//!   that may have been billed (it got a handle, or its submit got no clear answer: a timeout, a
+//!   network or server error, a garbled reply, or one saying it ran or expired;
+//!   `RunFailure::uncertain`) keeps its reservation while the scheduler may retry it, and is charged as
 //!   unresolved when it is forgotten or settled.
 
 use std::collections::HashMap;
@@ -405,9 +406,10 @@ impl JobRunner for ProviderRunner {
                             // Nothing to resume: never accepted, ended by the provider, or over for good.
                             lock().handles.remove(&start.idempotency_key);
                         }
-                        // A submit lost in transit may still have been accepted (and billed).
-                        let lost = failure.handle.is_none()
-                            && matches!(failure.error.kind, ErrorKind::Cancelled | ErrorKind::Timeout | ErrorKind::Network | ErrorKind::Server);
+                        // A submit lost in transit (or answered with a garbled or "it ran" reply) may
+                        // still have been accepted and billed; one cancelled before it was sent,
+                        // or refused, certainly wasn't (#227).
+                        let lost = failure.uncertain;
                         let reserved = {
                             let mut s = lock();
                             if let Some(r) = s.reserved.get_mut(&job_id) {
@@ -727,6 +729,34 @@ mod tests {
         token.cancel();
         assert_eq!(block_on(runner.run(job(3), token)), Outcome::Cancelled);
         assert_eq!(spent(&budget), 300_000);
+    }
+
+    #[test]
+    fn garbled_or_it_ran_submit_replies_are_charged_and_refusals_released() {
+        // #227: a reply that can't be read, or one saying the job ran (and failed or expired),
+        // may follow an accepted submission: charged as unresolved. Refusals are released.
+        let (runner, budget) = budgeted(Some(10_000_000));
+        let mut expected = 0;
+        for (n, (kind, charged)) in [
+            (ErrorKind::Malformed, true),
+            (ErrorKind::JobFailed, true),
+            (ErrorKind::Expired, true),
+            (ErrorKind::UnsupportedInput, false),
+            (ErrorKind::BlockedContent, false),
+            (ErrorKind::Budget, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = JobId(10 + u64::try_from(n).unwrap());
+            runner.register(id, priced(Arc::new(SubmitFails(kind)), Some(100_000)));
+            assert!(matches!(block_on(runner.run(job(id.0), CancelToken::default())), Outcome::Failed { transient: false, .. }), "{kind:?}");
+            if charged {
+                expected += 100_000;
+            }
+            assert_eq!(spent(&budget), expected, "{kind:?}");
+        }
+        assert!(budget.log.lock().unwrap().entries().all(|e| e.status == Charge::Unresolved));
     }
 
     #[test]

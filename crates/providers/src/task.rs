@@ -50,11 +50,30 @@ pub struct RunFailure {
     /// The provider itself reported the job as failed: it is over, and resuming it would only
     /// read the same failure again, so a retry must submit afresh.
     pub finished: bool,
+    /// The submit was interrupted with no handle back (cancelled midway, timed out, cut off, a
+    /// server error, a garbled reply, or one saying the job ran): the provider may have accepted,
+    /// and billed, the job anyway. Never set for a run cancelled before its submit, or a refusal.
+    pub uncertain: bool,
 }
 
 impl RunFailure {
     fn before_submit(error: ProviderError) -> Self {
-        Self { error, handle: None, finished: false }
+        Self { error, handle: None, finished: false, uncertain: false }
+    }
+
+    /// A submit that failed with `error`: uncertain unless the error says the provider refused it.
+    fn submit_failed(error: ProviderError) -> Self {
+        let uncertain = matches!(
+            error.kind,
+            ErrorKind::Cancelled
+                | ErrorKind::Timeout
+                | ErrorKind::Network
+                | ErrorKind::Server
+                | ErrorKind::Malformed
+                | ErrorKind::JobFailed
+                | ErrorKind::Expired
+        );
+        Self { error, handle: None, finished: false, uncertain }
     }
 
     /// Worth retrying: transient, and either never submitted or resumable by handle.
@@ -88,8 +107,8 @@ pub async fn run_to_completion(
     let submitted = race(provider.submit(job), cancel).await;
     let handle = match submitted {
         // Cancelled while submitting: we can't know whether the provider accepted it.
-        None => return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"))),
-        Some(Err(e)) => return Err(RunFailure::before_submit(e)),
+        None => return Err(RunFailure::submit_failed(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"))),
+        Some(Err(e)) => return Err(RunFailure::submit_failed(e)),
         Some(Ok(Submission::Finished(done))) => return Ok(done),
         Some(Ok(Submission::Queued(handle))) => handle,
     };
@@ -107,7 +126,7 @@ pub async fn resume(
     limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
 ) -> Result<Completed, RunFailure> {
-    let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()), finished: false };
+    let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()), finished: false, uncertain: false };
     let started = clock.now_ms();
     let mut poll_errors: u32 = 0;
     let max_interval = limits.max_poll_interval_ms.max(1);
@@ -134,7 +153,7 @@ pub async fn resume(
         };
         match polled {
             Ok(JobProgress::Done(done)) => return Ok(done),
-            Ok(JobProgress::Failed(e)) => return Err(RunFailure { error: e, handle: Some(handle.clone()), finished: true }),
+            Ok(JobProgress::Failed(e)) => return Err(RunFailure { error: e, handle: Some(handle.clone()), finished: true, uncertain: false }),
             Ok(progress) => {
                 poll_errors = 0;
                 interval = provider.poll_interval_ms(&progress).clamp(1, max_interval);
@@ -380,6 +399,45 @@ mod tests {
         assert_eq!(run(&p, &Flag::default(), RunLimits::default(), &mut Vec::new()).unwrap_err().error.kind, ErrorKind::BlockedContent);
     }
 
+    /// Fails every submit with `0`.
+    struct Refuses(ErrorKind);
+    impl Provider for Refuses {
+        fn id(&self) -> &str {
+            "refuses"
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            let kind = self.0;
+            Box::pin(async move { Err(ProviderError::new(kind, "no")) })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            Box::pin(async { Ok(JobProgress::Queued { position: None }) })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn interrupted_submits_are_uncertain_and_refused_ones_are_not() {
+        for (kind, uncertain) in [
+            (ErrorKind::Network, true),
+            (ErrorKind::Timeout, true),
+            (ErrorKind::Server, true),
+            (ErrorKind::Malformed, true),
+            (ErrorKind::JobFailed, true),
+            (ErrorKind::Expired, true),
+            (ErrorKind::Auth, false),
+            (ErrorKind::RateLimited, false),
+            (ErrorKind::Busy, false),
+            (ErrorKind::UnsupportedInput, false),
+            (ErrorKind::BlockedContent, false),
+            (ErrorKind::Budget, false),
+        ] {
+            let f = block_on(run_to_completion(&Refuses(kind), &job(), &Flag::default(), &Clocked::default(), RunLimits::default(), |_| {})).unwrap_err();
+            assert_eq!((f.handle.is_none(), f.uncertain), (true, uncertain), "{kind:?}");
+        }
+    }
+
     #[test]
     fn job_failures_surface_their_kind() {
         for kind in [ErrorKind::BlockedContent, ErrorKind::Budget, ErrorKind::Server] {
@@ -397,6 +455,7 @@ mod tests {
         flag.0.store(true, Ordering::SeqCst);
         let f = run(&p, &flag, RunLimits::default(), &mut Vec::new()).unwrap_err();
         assert_eq!((f.error.kind, f.handle), (ErrorKind::Cancelled, None), "cancelled before submit: nothing to resume");
+        assert!(!f.uncertain, "it never reached the provider");
 
         // Cancelled while polling: resume() races the poll against the signal.
         let p = Scripted { cancel_result: Err(ProviderError::new(ErrorKind::Network, "down")), ..Scripted::new(vec![]) };
