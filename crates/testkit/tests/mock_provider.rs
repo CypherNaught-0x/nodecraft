@@ -95,3 +95,148 @@ fn cancelled_jobs_stay_cancelled_and_sync_retries_return_the_original_result() {
 fn starts_with_png_signature(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG\r\n\x1a\n")
 }
+
+fn identity_provider() -> MockProvider {
+    let model = |output, polls, fail| MockModel { output, polls, cost: Some(Money::new(Currency::USD, 40_000)), fail };
+    MockProvider::new(
+        "mock",
+        [
+            ("queued".into(), model(MockOutput::Image, 3, None)),
+            ("sync".into(), model(MockOutput::Text, 0, None)),
+            ("refuse".into(), model(MockOutput::Text, 0, Some(MockFailure::Submit(ErrorKind::Auth)))),
+            ("poll-fail".into(), model(MockOutput::Text, 0, Some(MockFailure::Poll(ErrorKind::Network)))),
+            ("job-fail".into(), model(MockOutput::Text, 0, Some(MockFailure::Job(ErrorKind::JobFailed)))),
+            ("queued-fail".into(), model(MockOutput::Image, 3, Some(MockFailure::Poll(ErrorKind::Network)))),
+            ("lost-queued".into(), model(MockOutput::Image, 3, Some(MockFailure::LostReply(ErrorKind::Network)))),
+            ("lost-sync".into(), model(MockOutput::Text, 0, Some(MockFailure::LostReply(ErrorKind::Network)))),
+        ],
+    )
+}
+
+fn queued(provider: &MockProvider, request: &ProviderJob) -> nodecraft_providers::JobHandle {
+    let Submission::Queued(handle) = block_on(provider.submit(request)).unwrap() else { panic!("original accepted job must remain queued") };
+    handle
+}
+
+fn finished(provider: &MockProvider, request: &ProviderJob) -> nodecraft_providers::Completed {
+    let Submission::Finished(done) = block_on(provider.submit(request)).unwrap() else { panic!("original synchronous result must remain finished") };
+    done
+}
+
+fn changed_requests(key: &str, original_model: &str) -> Vec<ProviderJob> {
+    let mut changed_params = job(original_model, "original", key);
+    changed_params.params.insert("style".into(), serde_json::json!("different"));
+    let mut changed_media = job(original_model, "original", key);
+    changed_media.inputs = vec![JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: std::sync::Arc::from(b"different media".as_slice()) }];
+    let mut requests = vec![job(original_model, "original", key), changed_params, job(original_model, "different text", key), changed_media];
+    requests.extend(["queued", "sync", "unknown", "refuse", "poll-fail", "job-fail", "queued-fail"].map(|model| job(model, "different", key)));
+    requests
+}
+
+#[test]
+fn accepted_queued_identity_wins_over_all_retry_requests_and_keeps_poll_progress() {
+    use nodecraft_providers::JobProgress;
+    let provider = identity_provider();
+    let original = job("queued", "original", "key");
+    let handle = queued(&provider, &original);
+    assert!(matches!(block_on(provider.poll(&handle)).unwrap(), JobProgress::Running { fraction: Some(f), .. } if (f - 1.0/3.0).abs() < 0.001));
+    let retries = changed_requests("key", "queued");
+    for retry in &retries {
+        assert_eq!(queued(&provider, retry), handle);
+    }
+    assert!(matches!(block_on(provider.poll(&handle)).unwrap(), JobProgress::Running { fraction: Some(f), .. } if (f - 2.0/3.0).abs() < 0.001));
+    let JobProgress::Done(done) = block_on(provider.poll(&handle)).unwrap() else { panic!("third original poll completes") };
+    let expected = run(&identity_provider(), &original).unwrap();
+    assert_eq!(done.outputs, expected);
+    assert!(matches!(done.outputs.first(), Some(Output::Bytes { mime, .. }) if mime == "image/png"));
+    for retry in &retries {
+        assert_eq!(queued(&provider, retry), handle);
+    }
+    assert!(matches!(block_on(provider.poll(&handle)).unwrap(), JobProgress::Done(again) if again == done));
+    assert_eq!(provider.requests().len(), 1 + 2 * retries.len());
+    assert_eq!(provider.billed(), 1);
+    assert_eq!(provider.polls(), 4);
+}
+
+#[test]
+fn accepted_sync_identity_wins_over_model_params_inputs_and_failure_scripts() {
+    let provider = identity_provider();
+    let original = job("sync", "original", "key");
+    let done = finished(&provider, &original);
+    let retries = changed_requests("key", "sync");
+    for retry in &retries {
+        assert_eq!(finished(&provider, retry), done);
+    }
+    assert!(matches!(done.outputs.first(), Some(Output::Text(text)) if text.starts_with("sync: original #")));
+    assert_eq!(done.usage.cost, Some(Money::new(Currency::USD, 40_000)));
+    assert_eq!(provider.requests().len(), 1 + retries.len());
+    assert_eq!(provider.billed(), 1);
+    assert_eq!(provider.polls(), 0);
+    assert!(provider.cancelled().is_empty());
+}
+
+#[test]
+fn initial_refusals_do_not_reserve_identity() {
+    for model in ["unknown", "refuse", "poll-fail", "job-fail"] {
+        let provider = identity_provider();
+        assert!(block_on(provider.submit(&job(model, "refused", "key"))).is_err());
+        assert_eq!(provider.billed(), 0);
+        let done = finished(&provider, &job("sync", "original", "key"));
+        assert!(matches!(done.outputs.first(), Some(Output::Text(text)) if text.starts_with("sync: original #")));
+        assert_eq!(provider.billed(), 1);
+        assert_eq!(provider.requests().len(), 2);
+    }
+}
+
+#[test]
+fn lost_replies_replay_original_queued_or_sync_acceptance_after_changed_retry() {
+    use nodecraft_providers::JobProgress;
+    let provider = identity_provider();
+    let request = job("lost-queued", "original", "key");
+    assert_eq!(block_on(provider.submit(&request)).unwrap_err().kind, ErrorKind::Network);
+    let handle = queued(&provider, &job("sync", "changed", "key"));
+    assert_eq!(handle.remote_id, "mock-0");
+    assert_eq!(queued(&provider, &request), handle);
+    for _ in 0..2 {
+        assert!(matches!(block_on(provider.poll(&handle)).unwrap(), JobProgress::Running { .. }));
+    }
+    let JobProgress::Done(done) = block_on(provider.poll(&handle)).unwrap() else { panic!("original queued work completes") };
+    let expected = run(&identity_provider(), &job("queued", "original", "other")).unwrap();
+    // The digest includes the original model; compare with a separate accepted original job.
+    let oracle = identity_provider();
+    assert!(block_on(oracle.submit(&request)).is_err());
+    let original_handle = queued(&oracle, &request);
+    let mut original_done = None;
+    for _ in 0..3 {
+        if let JobProgress::Done(value) = block_on(oracle.poll(&original_handle)).unwrap() {
+            original_done = Some(value);
+        }
+    }
+    assert_eq!(Some(done.clone()), original_done);
+    assert_ne!(done.outputs, expected, "retry must not replace the original model identity");
+    assert_eq!((provider.billed(), provider.requests().len(), provider.polls()), (1, 3, 3));
+    let provider = identity_provider();
+    let request = job("lost-sync", "original", "key");
+    assert_eq!(block_on(provider.submit(&request)).unwrap_err().kind, ErrorKind::Network);
+    let done = finished(&provider, &job("queued", "changed", "key"));
+    assert_eq!(finished(&provider, &request), done);
+    assert!(matches!(done.outputs.first(), Some(Output::Text(text)) if text.starts_with("lost-sync: original #")));
+    assert_eq!((provider.billed(), provider.requests().len(), provider.polls()), (1, 3, 0));
+}
+
+#[test]
+fn cancelled_identity_survives_changed_retry_without_resurrecting_work() {
+    use nodecraft_providers::JobProgress;
+    let provider = identity_provider();
+    let handle = queued(&provider, &job("queued", "original", "key"));
+    block_on(provider.cancel(&handle)).unwrap();
+    let retries = changed_requests("key", "queued");
+    for retry in &retries {
+        assert_eq!(queued(&provider, retry), handle);
+        assert!(matches!(block_on(provider.poll(&handle)).unwrap(), JobProgress::Failed(error) if error.kind == ErrorKind::Cancelled));
+    }
+    assert_eq!(provider.cancelled(), vec![handle.remote_id]);
+    assert_eq!(provider.billed(), 1);
+    assert_eq!(provider.requests().len(), 1 + retries.len());
+    assert_eq!(provider.polls(), retries.len() as u64);
+}
