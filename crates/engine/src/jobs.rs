@@ -76,6 +76,19 @@ pub struct JobBudget {
     pub wall_clock_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
+/// Accounting belongs to a captured provider/key, even if its JobId is re-registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Attempt {
+    provider: String,
+    key: String,
+}
+
+impl Attempt {
+    fn matches_job(&self, job: &QueuedJob) -> bool {
+        job.provider.id() == self.provider && job.job.idempotency_key == self.key
+    }
+}
+
 /// A job's reservation in the usage log.
 #[derive(Clone, Debug)]
 struct Reserved {
@@ -95,9 +108,21 @@ struct State {
     /// Open reservations of jobs that haven't settled.
     reserved: HashMap<JobId, Reserved>,
     /// Jobs inside `run` right now, and those asked to settle meanwhile (done when `run` ends).
-    running: std::collections::HashSet<JobId>,
+    running: HashMap<JobId, Attempt>,
     settle_after: std::collections::HashSet<JobId>,
     forget_after: std::collections::HashSet<JobId>,
+}
+
+impl Reserved {
+    fn matches(&self, attempt: &Attempt) -> bool {
+        self.provider == attempt.provider && self.key == attempt.key
+    }
+}
+
+impl State {
+    fn take_reserved(&mut self, id: JobId, attempt: &Attempt) -> Option<Reserved> {
+        if self.reserved.get(&id).is_some_and(|reservation| reservation.matches(attempt)) { self.reserved.remove(&id) } else { None }
+    }
 }
 
 /// See the module docs.
@@ -180,6 +205,7 @@ struct RunGuard {
     state: Arc<Mutex<State>>,
     budget: Option<JobBudget>,
     job: JobId,
+    attempt: Attempt,
     /// Set when the run returned; a run dropped or unwound mid-flight may have reached the
     /// provider, so its reservation counts as maybe billed.
     returned: bool,
@@ -189,16 +215,23 @@ impl Drop for RunGuard {
     fn drop(&mut self) {
         let (settle, reserved) = {
             let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            s.running.remove(&self.job);
+            let owns_running = s.running.get(&self.job) == Some(&self.attempt);
+            if owns_running {
+                s.running.remove(&self.job);
+            }
             if !self.returned
-                && let Some(r) = s.reserved.get_mut(&self.job)
+                && let Some(r) = s.reserved.get_mut(&self.job).filter(|r| r.matches(&self.attempt))
             {
                 r.maybe_billed = true;
             }
-            let settle = s.settle_after.remove(&self.job);
-            let forget = s.forget_after.remove(&self.job);
-            let reserved = if settle { s.reserved.remove(&self.job) } else { None };
-            if forget && let Some(q) = s.jobs.remove(&self.job) {
+            // An older future must not consume a replacement attempt's deferred requests.
+            let settle = owns_running && s.settle_after.remove(&self.job);
+            let forget = owns_running && s.forget_after.remove(&self.job);
+            let reserved = if settle { s.take_reserved(self.job, &self.attempt) } else { None };
+            if forget
+                && s.jobs.get(&self.job).is_some_and(|job| self.attempt.matches_job(job))
+                && let Some(q) = s.jobs.remove(&self.job)
+            {
                 s.handles.remove(&(q.provider.id().to_owned(), q.job.idempotency_key));
             }
             (settle, reserved)
@@ -236,7 +269,7 @@ impl ProviderRunner {
     pub fn settle(&self, id: JobId) {
         let reserved = {
             let mut s = self.lock();
-            if s.running.contains(&id) {
+            if s.running.contains_key(&id) {
                 s.settle_after.insert(id);
                 return;
             }
@@ -270,7 +303,7 @@ impl ProviderRunner {
     pub fn forget(&self, id: JobId) {
         self.settle(id);
         let mut s = self.lock();
-        if s.running.contains(&id) {
+        if s.running.contains_key(&id) {
             // Dropped when the run ends (with its reservation settled).
             s.forget_after.insert(id);
             return;
@@ -346,35 +379,47 @@ impl JobRunner for ProviderRunner {
             let job_id = start.job;
             let key = start.idempotency_key.clone();
             let provider_id = queued.provider.id().to_owned();
-            // Cancelled before anything was reserved or sent: nothing to charge.
+            let attempt = Attempt { provider: provider_id.clone(), key: key.clone() };
+            // Close a prior identity even when this replacement is unpriced or already cancelled.
+            if let Some(budget) = &budget {
+                let stale = {
+                    let mut s = lock();
+                    if s.reserved.get(&job_id).is_some_and(|r| !r.matches(&attempt)) {
+                        let mut old = s.reserved.remove(&job_id);
+                        if let Some(old) = &mut old {
+                            // An in-flight submit may have reached its provider before Submitted.
+                            old.maybe_billed |= s.running.get(&job_id).is_some_and(|running| old.matches(running));
+                            s.handles.remove(&(old.provider.clone(), old.key.clone()));
+                        }
+                        old
+                    } else {
+                        None
+                    }
+                };
+                if let Some(old) = stale {
+                    close(budget, &old);
+                }
+            }
+            // Cancelled before this attempt reserved or sent anything: nothing new to charge.
             if signal.is_cancelled() {
                 return Outcome::Cancelled;
             }
             {
                 let mut s = lock();
-                s.running.insert(job_id);
+                s.running.insert(job_id, attempt.clone());
                 // Flags left by an earlier, abandoned run don't apply to this one.
                 s.settle_after.remove(&job_id);
                 s.forget_after.remove(&job_id);
             }
             // Ends the running mark and does deferred settles even if this future is dropped
             // mid-await or unwinds.
-            let mut guard = RunGuard { state: Arc::clone(&state), budget: budget.clone(), job: job_id, returned: false };
+            let mut guard = RunGuard { state: Arc::clone(&state), budget: budget.clone(), job: job_id, attempt: attempt.clone(), returned: false };
             let outcome = async {
                 if let (Some(budget), Some(price)) = (&budget, &queued.price) {
-                    // A requeued job has a fresh key: end the old attempt's reservation first.
-                    let stale = lock().reserved.get(&job_id).filter(|r| r.key != key || r.provider != provider_id).cloned();
-                    if let Some(old) = stale {
-                        close(budget, &old);
-                        let mut s = lock();
-                        s.reserved.remove(&job_id);
-                        // The old attempt's handle is done with (a new key, or another provider).
-                        s.handles.remove(&(old.provider.clone(), old.key.clone()));
-                    }
                     match reserve(budget, &provider_id, &key, price, handle.is_some()) {
                         Ok(Some(r)) => {
                             let mut s = lock();
-                            let maybe = s.reserved.get(&job_id).is_some_and(|old| old.maybe_billed) || r.maybe_billed;
+                            let maybe = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.maybe_billed) || r.maybe_billed;
                             s.reserved.insert(job_id, Reserved { maybe_billed: maybe, ..r });
                         }
                         Ok(None) => {}
@@ -385,7 +430,7 @@ impl JobRunner for ProviderRunner {
                     if let RunUpdate::Submitted(h) = &update {
                         let mut s = lock();
                         s.handles.insert((provider_id.clone(), key.clone()), h.clone());
-                        if let Some(r) = s.reserved.get_mut(&job_id) {
+                        if let Some(r) = s.reserved.get_mut(&job_id).filter(|r| r.matches(&attempt)) {
                             r.maybe_billed = true;
                         }
                     }
@@ -400,8 +445,10 @@ impl JobRunner for ProviderRunner {
                         let reserved = {
                             let mut s = lock();
                             s.handles.remove(&(provider_id.clone(), start.idempotency_key.clone()));
-                            s.jobs.remove(&job_id);
-                            s.reserved.remove(&job_id)
+                            if s.jobs.get(&job_id).is_some_and(|job| attempt.matches_job(job)) {
+                                s.jobs.remove(&job_id);
+                            }
+                            s.take_reserved(job_id, &attempt)
                         };
                         // A priced job with nothing reserved (its price unknown, uncapped): still
                         // record what the provider reported, once per key (#228).
@@ -447,11 +494,11 @@ impl JobRunner for ProviderRunner {
                         let lost = failure.uncertain;
                         let reserved = {
                             let mut s = lock();
-                            if let Some(r) = s.reserved.get_mut(&job_id) {
+                            if let Some(r) = s.reserved.get_mut(&job_id).filter(|r| r.matches(&attempt)) {
                                 r.maybe_billed |= failure.handle.is_some() || lost;
                             }
                             // A retry may still come for transient failures: keep the reservation.
-                            if failure.is_transient() { None } else { s.reserved.remove(&job_id) }
+                            if failure.is_transient() { None } else { s.take_reserved(job_id, &attempt) }
                         };
                         if let (Some(budget), Some(r)) = (&budget, reserved) {
                             close(budget, &r);
@@ -1072,4 +1119,6 @@ mod tests {
         let refused = block_on(runner.run(job(1), CancelToken::default()));
         assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
     }
+
+    mod paid_unpriced_tests;
 }
