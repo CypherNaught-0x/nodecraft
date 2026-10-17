@@ -263,3 +263,9 @@ in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging s
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
+
+## CPU text actions
+
+`actions::text` provides bounded split, replace, concat and named-template algorithms with typed
+serde requests and stable action IDs. They do not mutate graph state; live adapters remain #88.
+See [text action contracts and limits](text-actions.md).

@@ -2618,6 +2618,8 @@ dependencies = [
  "nodecraft-media",
  "proptest",
  "rayon",
+ "regex",
+ "regex-syntax",
  "serde",
  "serde_json",
 ]
