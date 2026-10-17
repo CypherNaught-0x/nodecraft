@@ -142,6 +142,43 @@ fn late_set_and_remove_still_reconcile_after_timeout_and_close() {
 }
 
 #[test]
+fn bounded_batches_keep_closed_unknown_requests_pollable_until_the_final_answer() {
+    let mut f = Fixture::new();
+    let mut panel = KeysPanel::default();
+    panel.load(&KeySettings::default());
+    let a = account("openai");
+    f.send(&mut panel, Op::Set, &a);
+    f.entered(Op::Set, &a);
+    for _ in 0..KeyResults::MAX_BATCH {
+        f.send(&mut panel, Op::Set, &a);
+    }
+    assert_eq!(f.dispatches.load(Ordering::SeqCst), KeyResults::MAX_BATCH + 1);
+    // The next backend entry proves the preceding outcome reached the bounded queue.
+    for _ in 0..KeyResults::MAX_BATCH {
+        f.replies.as_ref().unwrap().send(Ok(())).unwrap();
+        f.entered(Op::Set, &a);
+    }
+    panel.tick(KEYCHAIN_TIMEOUT_S + 1.0);
+    panel.open = false;
+    assert!(!panel.is_waiting() && panel.has_unresolved());
+    let first = f.results.as_ref().unwrap().drain();
+    assert_eq!(first.len(), KeyResults::MAX_BATCH);
+    let (changes, others) = panel.receive(first);
+    assert!(others.is_empty());
+    assert_eq!(changes, vec![AccountChange::Remember(a.clone())]);
+    assert_eq!(panel.ledger.requests.len(), 1);
+    assert!(!panel.is_waiting() && panel.has_unresolved(), "the host must keep polling after a full late batch");
+    assert_eq!(panel.rows().iter().find(|(row, _)| row == &a).unwrap().1, KeyStatus::Unknown, "older answers cannot replace the latest intent");
+    let final_answer = f.complete(Ok(()));
+    let (changes, others) = panel.receive(vec![final_answer.clone()]);
+    assert!(changes.is_empty() && others.is_empty(), "the remembered account changes exactly once");
+    assert!(!panel.has_unresolved());
+    assert!(matches!(&panel.rows().iter().find(|(row, _)| row == &a).unwrap().1, KeyStatus::Stored(_)));
+    assert_eq!(panel.receive(vec![final_answer]).1.len(), 1, "duplicate final delivery cannot reconcile twice");
+    assert!(f.memory.get(&a).unwrap().is_some());
+}
+
+#[test]
 fn a_sixty_fifth_new_account_is_refused_before_dispatch() {
     let mut f = Fixture::new();
     let mut panel = KeysPanel::default();
