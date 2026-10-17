@@ -63,7 +63,7 @@ fn write_node(w: &mut Writer, kinds: &Registry, node: &Node) -> Result<(), Error
 /// target → (port, position, upstream, upstream port).
 type Incoming<'a> = BTreeMap<NodeId, Vec<crate::routing::Feed<'a>>>;
 
-fn incoming(canvas: &Canvas) -> Incoming<'_> {
+fn incoming(canvas: &Canvas) -> Result<Incoming<'_>, Error> {
     crate::routing::incoming(canvas)
 }
 
@@ -73,7 +73,7 @@ fn is_source(kinds: &Registry, node: &Node) -> bool {
 
 /// The hash a result of `id` would record if it ran now.
 pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake3, Error> {
-    hash_with(canvas, kinds, &incoming(canvas), id)
+    hash_with(canvas, kinds, &incoming(canvas)?, id)
 }
 
 fn hash_with(canvas: &Canvas, kinds: &Registry, incoming: &Incoming<'_>, id: NodeId) -> Result<Blake3, Error> {
@@ -119,7 +119,8 @@ fn hash_with(canvas: &Canvas, kinds: &Registry, incoming: &Incoming<'_>, id: Nod
 /// transitive, as `planner::plan` expects.
 pub fn stale(canvas: &Canvas, kinds: &Registry) -> BTreeSet<NodeId> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
-    let incoming = incoming(canvas);
+    // If routers can't be resolved, no hash can be checked: nothing is reported stale.
+    let Ok(incoming) = incoming(canvas) else { return BTreeSet::new() };
     let mut stale: BTreeSet<NodeId> = canvas
         .nodes()
         .values()

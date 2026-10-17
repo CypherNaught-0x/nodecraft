@@ -141,7 +141,7 @@ pub const MAX_BLOCKERS: usize = 256;
 /// Kinds' [`NodeKind::mode`](nodecraft_nodes::NodeKind::mode) is asked with the node's own
 /// connected input port types, in `node.inputs` order (list ports with `many: true`).
 pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTreeSet<NodeId>, stale: &BTreeSet<NodeId>) -> Result<Planned, Error> {
-    let graph = Graph::new(canvas, kinds);
+    let graph = Graph::new(canvas, kinds)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id)) {
@@ -206,13 +206,13 @@ struct Graph<'a> {
 }
 
 impl<'a> Graph<'a> {
-    fn new(canvas: &'a Canvas, kinds: &'a Registry) -> Self {
+    fn new(canvas: &'a Canvas, kinds: &'a Registry) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
-        let into = crate::routing::incoming(canvas)
+        let into = crate::routing::incoming(canvas)?
             .into_iter()
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
-        Self { canvas, kinds, into }
+        Ok(Self { canvas, kinds, into })
     }
 
     fn upstream(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
@@ -293,14 +293,30 @@ impl<'a> Graph<'a> {
         for port in &node.inputs {
             let feeds: Vec<_> = self.into.get(&id).into_iter().flatten().filter(|(p, ..)| *p == port.name).collect();
             if feeds.is_empty() {
+                // Wired, but only to routers with nothing behind them: don't silently run as if
+                // the input were unconnected (another mode could drop it).
+                if self.canvas.edges().values().any(|e| e.to.node == id && e.to.port == port.name) {
+                    blockers.push(blocker(Some(&port.name), None, Reason::Invalid(format!("its {} input is fed by a router with no inputs", port.name))));
+                }
                 continue;
             }
+            // A list can't reach a single input directly (the graph refuses it); through a
+            // router it could.
+            let list_into_single = |list: bool| list && !port.port_type.many;
             let mut from = Vec::with_capacity(feeds.len().min(MAX_LIST_ITEMS));
             for (_, up, up_port, _) in feeds {
                 let upstream = self.canvas.nodes().get(up);
                 if run.contains(up) && !upstream.is_some_and(|u| self.is_source(u)) {
                     after.insert(*up);
                     let list = upstream.and_then(|u| u.outputs.iter().find(|p| p.name == *up_port)).is_some_and(|p| p.port_type.many);
+                    if list_into_single(list) {
+                        blockers.push(blocker(
+                            Some(&port.name),
+                            Some(*up),
+                            Reason::Invalid(format!("its {} input takes one value but a list reaches it through a router", port.name)),
+                        ));
+                        break;
+                    }
                     from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list });
                 } else {
                     let resolved = cache.entry((*up, (*up_port).to_owned())).or_insert_with(|| {
@@ -312,6 +328,14 @@ impl<'a> Graph<'a> {
                     match resolved {
                         Ok((value, list, size)) => {
                             let (list, size) = (*list, *size);
+                            if list_into_single(list) {
+                                blockers.push(blocker(
+                                    Some(&port.name),
+                                    Some(*up),
+                                    Reason::Invalid(format!("its {} input takes one value but a list reaches it through a router", port.name)),
+                                ));
+                                break;
+                            }
                             bytes = bytes.saturating_add(size);
                             *plan_bytes = plan_bytes.saturating_add(size);
                             if bytes > MAX_STEP_INPUT_BYTES || *plan_bytes > MAX_PLAN_INPUT_BYTES {

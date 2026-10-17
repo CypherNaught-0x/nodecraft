@@ -517,7 +517,11 @@ a choice a later contributor might otherwise undo.
   through routers (and chains of routers) become the routers' own sources, in order. The planner
   and staleness both read inputs through it, so a router adds no step, no cost and no hash, and
   editing what feeds a router makes its consumers stale.
-- **A single input fed several values through a router is blocked** with a reason, not silently
-  given the first one. Routers in a run request are dropped (selecting only routers is "nothing
-  to run"). Resolution is bounded: cycles are cut with a seen-set and each port resolves to at
-  most one more feed than a list may hold, so the planner still reports the oversize fan-in.
+- **What a router can't hide is blocked with a reason:** a single input fed several values, or a
+  list, through a router; and an input wired only to routers with nothing behind them (it isn't
+  treated as unconnected, which could silently pick another mode). Routers in a run request are
+  dropped (selecting only routers is "nothing to run").
+- **Resolution is linear and bounded:** each router's sources are resolved once, routers before
+  the routers they feed (Kahn's order), each list capped one past the list limit (so the planner
+  still reports an oversize fan-in), and at most 4M entries in total; past that, resolution is
+  refused. No recursion, so long router chains can't overflow the stack.
