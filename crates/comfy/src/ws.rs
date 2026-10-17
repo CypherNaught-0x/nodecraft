@@ -84,6 +84,21 @@ pub enum WsEvent {
 /// Parses a text (JSON) message.
 pub fn parse_text(message: &str) -> Result<WsEvent, ComfyError> {
     let mut v: Value = crate::error::parse_json("WebSocket message", message.as_bytes(), MAX_WS_MESSAGE_BYTES)?;
+    // Check cached-ID extraction before copying any event fields. The raw JSON byte cap
+    // does not bound the allocated Vec/String representation of many small identifiers.
+    if v.get("type").and_then(Value::as_str) == Some("execution_cached") {
+        if let Some(nodes) = v.get("data").and_then(|data| data.get("nodes")).and_then(Value::as_array) {
+            let mut budget = FileBudget::default();
+            budget.scan(nodes.len())?;
+            for node in nodes {
+                match node {
+                    Value::String(node) => budget.charge(node.len().saturating_add(64))?,
+                    Value::Number(_) => budget.charge(96)?,
+                    _ => {}
+                }
+            }
+        }
+    }
     let kind = v.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
     let empty = Value::Null;
     let data = v.get("data").unwrap_or(&empty);
@@ -201,7 +216,14 @@ pub(crate) fn files_in_with(output: &Value, budget: &mut FileBudget) -> Result<V
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Success,
-    Error { node: Option<String>, node_type: Option<String>, message: String },
+    /// Tracking stopped at a metadata limit; retained outputs are an incomplete prefix.
+    /// This allocation-free terminal failure cannot be overwritten by later success events.
+    MetadataLimit,
+    Error {
+        node: Option<String>,
+        node_type: Option<String>,
+        message: String,
+    },
     Interrupted,
 }
 
@@ -292,9 +314,18 @@ impl PromptProgress {
         id.is_some_and(|id| *id == self.prompt_id)
     }
 
-    /// Applies one event. Returns true when it was about this prompt. Limit errors leave all
-    /// tracker state unchanged. Unrelated prompts and events after completion are ignored.
+    /// Applies one event. Returns true when it was about this prompt. A limit error preserves
+    /// the admitted progress/output prefix and latches [`Outcome::MetadataLimit`], so subsequent
+    /// success cannot hide missing metadata. Unrelated prompts and completed trackers are ignored.
     pub fn apply(&mut self, event: &WsEvent) -> Result<bool, ComfyError> {
+        let result = self.admit(event);
+        if result.is_err() {
+            self.outcome = Some(Outcome::MetadataLimit);
+        }
+        result
+    }
+
+    fn admit(&mut self, event: &WsEvent) -> Result<bool, ComfyError> {
         if self.outcome.is_some() {
             return Ok(false);
         }
@@ -611,8 +642,14 @@ mod tests {
         assert!(PromptProgress::with_limits("p", ["1"], Limits { bytes: bytes - 1, ..limits }).is_err());
     }
 
+    fn assert_limit_preserves_prefix(progress: &PromptProgress, before: &PromptProgress) {
+        let mut expected = before.clone();
+        expected.outcome = Some(Outcome::MetadataLimit);
+        assert_eq!(progress, &expected);
+    }
+
     #[test]
-    fn output_count_and_byte_limits_preserve_all_state_on_failed_admission() {
+    fn output_count_and_byte_limits_preserve_prefix_and_latch_terminal_failure() {
         let limits = Limits { files: 1, bytes: 4096, ..Limits::default() };
         let mut progress = PromptProgress::with_limits("p", ["1", "2"], limits).unwrap();
         let mut event = output("1", "a.png");
@@ -620,11 +657,13 @@ mod tests {
         files.push(FileRef { filename: "b.png".into(), subfolder: String::new(), kind: "output".into() });
         let before = progress.clone();
         assert!(progress.apply(&event).is_err());
-        assert_eq!(progress, before, "a late failure must not retain an early file or completed ID");
+        assert_limit_preserves_prefix(&progress, &before);
+        progress = before.clone();
         progress.apply(&output("1", "a.png")).unwrap();
         let before = progress.clone();
         assert!(progress.apply(&output("2", "b.png")).is_err());
-        assert_eq!(progress, before);
+        assert_limit_preserves_prefix(&progress, &before);
+        progress = before.clone();
         progress.apply(&output("1", "a.png")).unwrap();
         let mut progress = PromptProgress::new("p", ["1"]).unwrap();
         let file = FileRef { filename: "a.png".into(), subfolder: String::new(), kind: "output".into() };
@@ -634,7 +673,7 @@ mod tests {
         assert_eq!(progress.retained_bytes, bytes);
         let before = progress.clone();
         assert!(progress.apply(&output("1", "b.png")).is_err());
-        assert_eq!(progress, before);
+        assert_limit_preserves_prefix(&progress, &before);
     }
 
     #[test]
@@ -648,10 +687,11 @@ mod tests {
             WsEvent::ExecutionError { prompt_id: "p".into(), node: Some(secret.clone()), node_type: None, message: "failure".into(), exception_type: None },
             WsEvent::ExecutionError { prompt_id: "p".into(), node: None, node_type: None, message: secret.clone(), exception_type: None },
         ] {
+            let mut progress = progress.clone();
             let before = progress.clone();
             let error = progress.apply(&event).unwrap_err();
             assert!(!error.to_string().contains("fabricated-private-metadata"));
-            assert_eq!(progress, before);
+            assert_limit_preserves_prefix(&progress, &before);
         }
         let other = WsEvent::Executing { prompt_id: Some("other".into()), node: Some(secret) };
         assert_eq!(progress.apply(&other), Ok(false));
@@ -681,5 +721,43 @@ mod tests {
         while let Value::Array(mut values) = nested {
             nested = values.pop().unwrap_or(Value::Null);
         }
+    }
+    #[test]
+    fn rejected_output_admission_cannot_be_hidden_by_later_success() {
+        for terminal in [WsEvent::Success { prompt_id: "p".into() }, WsEvent::Executing { prompt_id: Some("p".into()), node: None }] {
+            let mut progress = PromptProgress::with_limits("p", ["1"], Limits { files: 1, ..Limits::default() }).unwrap();
+            progress.apply(&output("1", "retained.png")).unwrap();
+            assert!(progress.apply(&output("1", "rejected.png")).is_err());
+            progress.apply(&terminal).unwrap();
+            assert_eq!(progress.outcome(), Some(&Outcome::MetadataLimit), "missing metadata cannot become clean success");
+            assert_eq!(progress.outputs().len(), 1);
+        }
+    }
+
+    #[test]
+    fn oversized_terminal_error_is_a_bounded_terminal_failure() {
+        let mut progress = PromptProgress::with_limits("p", ["1"], Limits { bytes: 1024, ..Limits::default() }).unwrap();
+        let error = WsEvent::ExecutionError { prompt_id: "p".into(), node: None, node_type: None, message: "private-error".repeat(100), exception_type: None };
+        let before = progress.clone();
+        assert!(progress.apply(&error).is_err());
+        assert_limit_preserves_prefix(&progress, &before);
+        assert_eq!(progress.outcome(), Some(&Outcome::MetadataLimit));
+        assert_eq!(progress.apply(&WsEvent::Success { prompt_id: "p".into() }), Ok(false));
+    }
+
+    #[test]
+    fn cached_parser_bounds_count_and_allocated_metadata_before_copying() {
+        let message =
+            serde_json::to_string(&serde_json::json!({"type":"execution_cached","data":{"prompt_id":"p","nodes":vec!["1";crate::MAX_OUTPUT_ITEMS+1]}}))
+                .unwrap();
+        assert!(message.len() < MAX_WS_MESSAGE_BYTES);
+        assert!(parse_text(&message).is_err());
+        let message =
+            serde_json::to_string(&serde_json::json!({"type":"execution_cached","data":{"prompt_id":"p","nodes":vec!["x".repeat(100);60_000]}})).unwrap();
+        assert!(message.len() < MAX_WS_MESSAGE_BYTES);
+        assert!(parse_text(&message).is_err(), "allocated identifier overhead has its own budget");
+        assert!(
+            matches!(parse_text(r#"{"type":"execution_cached","data":{"prompt_id":"p","nodes":["1",2,null]}}"#).unwrap(), WsEvent::ExecutionCached { nodes, .. } if nodes == ["1", "2"])
+        );
     }
 }
