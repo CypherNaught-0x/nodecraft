@@ -97,3 +97,39 @@ fn scalar_values_obey_list_and_parameter_limits_atomically() {
     }
     Change::SetParam { canvas, id, name: "p0".into(), value: Some(Value::Bool(false)) }.apply(&mut project).unwrap();
 }
+
+#[test]
+fn instance_config_is_defaulted_bounded_and_preserved_through_setnode_undo() {
+    let (mut project, canvas, id) = setup();
+    let before = project.clone();
+    let mut node = Node::new(id, "test.scalars");
+    node.config.insert("test.scalars.version".into(), Value::Unsigned(Unsigned(1)));
+    node.config.insert("future.owner.v2.opaque".into(), Value::Text("preserve".into()));
+    let undo = Change::SetNode { canvas, node: node.clone() }.apply(&mut project).unwrap();
+    let encoded = serde_json::to_string(&project).unwrap();
+    assert_eq!(serde_json::from_str::<Project>(&encoded).unwrap(), project);
+    let redo = undo.apply(&mut project).unwrap();
+    assert_eq!(project, before);
+    redo.apply(&mut project).unwrap();
+    assert_eq!(project.canvases().get(&canvas).unwrap().nodes().get(&id).unwrap(), &node);
+    let good = project.clone();
+    let mut deep = Value::Bool(true);
+    for _ in 0..=MAX_VALUE_DEPTH {
+        deep = Value::List(vec![deep]);
+    }
+    node.config.insert("bad".into(), deep);
+    assert!(Change::SetNode { canvas, node }.apply(&mut project).is_err());
+    assert_eq!(project, good);
+    let mut node = Node::new(id, "test.scalars");
+    for index in 0..257 {
+        node.config.insert(format!("p{index}"), Value::Bool(false));
+    }
+    assert!(Change::SetNode { canvas, node }.apply(&mut project).is_err());
+    assert_eq!(project, good);
+    let mut node = Node::new(id, "test.scalars");
+    for index in 0..8 {
+        node.config.insert(format!("p{index}"), Value::Text("x".repeat(1024 * 1024)));
+    }
+    assert!(Change::SetNode { canvas, node }.apply(&mut project).is_err());
+    assert_eq!(project, good);
+}

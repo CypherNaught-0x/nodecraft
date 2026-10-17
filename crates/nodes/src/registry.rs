@@ -2,6 +2,10 @@ use crate::{NodeDescriptor, NodeKind};
 use nodecraft_types::{Error, ErrorKind, PortType};
 use std::collections::BTreeMap;
 
+fn shortcut_key(key: &str) -> String {
+    key.chars().flat_map(char::to_lowercase).collect()
+}
+
 #[derive(Default)]
 pub struct Registry {
     kinds: BTreeMap<String, Box<dyn NodeKind>>,
@@ -23,7 +27,7 @@ impl Registry {
             return Err(Error::new(ErrorKind::Conflict, "node kind is already registered"));
         }
         if let Some(shortcut) = &descriptor.quick_add
-            && self.kinds.values().any(|existing| existing.descriptor().quick_add.as_ref().is_some_and(|key| key.eq_ignore_ascii_case(shortcut)))
+            && self.kinds.values().any(|existing| existing.descriptor().quick_add.as_ref().is_some_and(|key| shortcut_key(key) == shortcut_key(shortcut)))
         {
             return Err(Error::new(ErrorKind::Conflict, "quick-add shortcut is already registered"));
         }

@@ -50,6 +50,9 @@ pub struct Node {
     pub pos: Position,
     #[serde(default)]
     pub params: BTreeMap<String, Value>,
+    /// Kind-owned, namespaced/versioned configuration; unknown keys are retained.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, Value>,
     #[serde(default)]
     pub inputs: Vec<Port>,
     #[serde(default)]
@@ -62,6 +65,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// Validate all payload limits before a kind clones or interprets detached instance data.
+    pub fn validate_payload(&self) -> Result<(), Error> {
+        crate::validate::node(self)
+    }
+
     pub fn new(id: NodeId, kind: impl Into<String>) -> Self {
         Self {
             id,
@@ -69,6 +77,7 @@ impl Node {
             title: String::new(),
             pos: Position::default(),
             params: BTreeMap::new(),
+            config: BTreeMap::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
             history: Vec::new(),

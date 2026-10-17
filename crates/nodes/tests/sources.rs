@@ -140,3 +140,14 @@ fn registry_rejects_duplicates_conflicting_shortcuts_and_bad_descriptors() {
     assert!(registry.get("unknown").is_err());
     assert_eq!(registry.descriptors().count(), 4);
 }
+
+#[test]
+fn shortcuts_normalize_unicode_lowercase() {
+    let mut registry = Registry::default();
+    let mut first = nodecraft_nodes::text::kind().descriptor().clone();
+    first.quick_add = Some("Á".into());
+    registry.register(Box::new(Fake(first.clone()))).unwrap();
+    first.id = "other.kind".into();
+    first.quick_add = Some("á".into());
+    assert_eq!(registry.register(Box::new(Fake(first))).unwrap_err().kind, ErrorKind::Conflict);
+}

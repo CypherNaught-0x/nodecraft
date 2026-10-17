@@ -22,7 +22,15 @@ impl SourceKind {
                 inputs: Vec::new(),
                 outputs: vec![Port { name: "out".into(), port_type: PortType { modality, many: false } }],
                 params: ParamSchema {
-                    params: vec![ParamSpec { name: parameter.into(), label: label.into(), control, required: true, default, visible_if: None }],
+                    params: vec![ParamSpec {
+                        name: parameter.into(),
+                        label: label.into(),
+                        description: None,
+                        control,
+                        required: true,
+                        default,
+                        visible_if: None,
+                    }],
                 },
                 quick_add: Some(shortcut.into()),
             },
@@ -42,7 +50,7 @@ impl NodeKind for SourceKind {
         if !ctx.inputs.is_empty() {
             return Err(invalid("source nodes do not accept connected inputs"));
         }
-        let mut params = self.descriptor.validate_node(ctx.node, true)?;
+        let mut params = self.validate_instance(ctx.node, true)?.into_visible_values();
         let value = params.remove(self.parameter).ok_or_else(|| invalid("source value is missing"))?;
         Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value }])
     }

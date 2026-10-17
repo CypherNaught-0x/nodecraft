@@ -1,13 +1,19 @@
 //! Shared pure schema data for node kinds and model catalogs. Graph storage remains generic;
 //! the owning node/model validates values against these controls before use.
 
-use crate::{Error, ErrorKind, Integer, Modality, Number, Value};
+use crate::{Error, ErrorKind, Integer, Modality, Number, Unsigned, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type ParamValues = BTreeMap<String, Value>;
 const MAX_PARAMS: usize = 256;
 const MAX_TEXT: usize = 1024 * 1024;
+const MAX_CHOICES: usize = 16_384;
+const MAX_OPTION_TEXT: usize = 4096;
+
+fn unit_step() -> Unsigned {
+    Unsigned(1)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Choice {
@@ -28,18 +34,28 @@ pub enum ParamControl {
     Toggle,
     /// Step is a UI increment hint, not a floating-point quantization requirement.
     Slider {
-        min: Number,
-        max: Number,
+        min: Option<Number>,
+        max: Option<Number>,
         step: Number,
     },
     Integer {
-        min: Integer,
-        max: Integer,
+        min: Option<Integer>,
+        max: Option<Integer>,
+        #[serde(default = "unit_step")]
+        step: Unsigned,
+    },
+    Unsigned {
+        min: Option<Unsigned>,
+        max: Option<Unsigned>,
+        #[serde(default = "unit_step")]
+        step: Unsigned,
     },
     Color,
     /// A model identifier; catalog membership is checked by the planning layer.
     Model,
-    Seed,
+    Seed {
+        max: Option<Unsigned>,
+    },
     Asset {
         modality: Modality,
     },
@@ -57,6 +73,8 @@ pub struct VisibleIf {
 pub struct ParamSpec {
     pub name: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub control: ParamControl,
     #[serde(default)]
     pub required: bool,
@@ -76,8 +94,19 @@ pub struct ParamSchema {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedParams {
+    /// Includes hidden overrides for editor persistence. Provider adapters use visible_values().
     pub values: ParamValues,
     pub visible: BTreeSet<String>,
+}
+
+impl ResolvedParams {
+    /// Only visible parameters may be passed to provider adapters or execution jobs.
+    pub fn visible_values(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.values.iter().filter(|(name, _)| self.visible.contains(*name))
+    }
+    pub fn into_visible_values(self) -> ParamValues {
+        self.values.into_iter().filter(|(name, _)| self.visible.contains(name)).collect()
+    }
 }
 
 fn invalid(message: &'static str) -> Error {
@@ -92,20 +121,31 @@ impl ParamControl {
         match self {
             Self::Text { max_bytes, .. } if *max_bytes > MAX_TEXT => Err(invalid("text control exceeds maximum size")),
             Self::Choice { options } => {
-                if options.is_empty() || options.len() > MAX_PARAMS {
-                    return Err(invalid("choice control must contain 1 to 256 options"));
+                if options.is_empty() || options.len() > MAX_CHOICES {
+                    return Err(invalid("choice control exceeds option count limit"));
                 }
                 let mut seen = BTreeSet::new();
                 for option in options {
-                    if option.value.is_empty() || option.value.len() > 256 || option.label.is_empty() || option.label.len() > 256 || !seen.insert(&option.value)
+                    if option.value.is_empty()
+                        || option.value.len() > MAX_OPTION_TEXT
+                        || option.label.trim().is_empty()
+                        || option.label.len() > MAX_OPTION_TEXT
+                        || !seen.insert(&option.value)
                     {
                         return Err(invalid("choice options must have bounded unique values and nonempty labels"));
                     }
                 }
                 Ok(())
             }
-            Self::Slider { min, max, step } if min.get() > max.get() || step.get() <= 0.0 => Err(invalid("slider needs ordered bounds and a positive step")),
-            Self::Integer { min, max } if min > max => Err(invalid("integer control needs ordered bounds")),
+            Self::Slider { min, max, step } if min.zip(*max).is_some_and(|(a, b)| a.get() > b.get()) || step.get() <= 0.0 => {
+                Err(invalid("slider needs ordered bounds and a positive step"))
+            }
+            Self::Integer { min, max, step } if min.zip(*max).is_some_and(|(a, b)| a > b) || step.0 == 0 => {
+                Err(invalid("integer control needs ordered bounds and positive step"))
+            }
+            Self::Unsigned { min, max, step } if min.zip(*max).is_some_and(|(a, b)| a > b) || step.0 == 0 => {
+                Err(invalid("unsigned control needs ordered bounds and positive step"))
+            }
             _ => Ok(()),
         }
     }
@@ -114,17 +154,35 @@ impl ParamControl {
     /// before Clone or Serialize. Schema controls currently accept scalar values only.
     pub fn validate_value(&self, value: &Value) -> Result<(), Error> {
         self.validate()?;
+        self.validate_value_checked(value)
+    }
+
+    // The schema has already validated the control; do not scan large option lists again.
+    fn validate_value_checked(&self, value: &Value) -> Result<(), Error> {
         let valid = match (self, value) {
             (Self::Text { max_bytes, .. }, Value::Text(text)) => text.len() <= *max_bytes,
             (Self::Choice { options }, Value::Text(text)) => options.iter().any(|option| option.value == *text),
             (Self::Toggle, Value::Bool(_)) => true,
-            (Self::Slider { min, max, .. }, Value::Number(number)) => number.get() >= min.get() && number.get() <= max.get(),
-            (Self::Integer { min, max }, Value::Integer(number)) => number >= min && number <= max,
+            (Self::Slider { min, max, .. }, Value::Number(number)) => {
+                min.is_none_or(|min| number.get() >= min.get()) && max.is_none_or(|max| number.get() <= max.get())
+            }
+            (Self::Integer { min, max, step }, Value::Integer(number)) => {
+                min.is_none_or(|min| *number >= min)
+                    && max.is_none_or(|max| *number <= max)
+                    && step.0 != 0
+                    && (i128::from(number.0) - i128::from(min.unwrap_or(Integer(0)).0)) % i128::from(step.0) == 0
+            }
+            (Self::Unsigned { min, max, step }, Value::Unsigned(number)) => {
+                min.is_none_or(|min| *number >= min)
+                    && max.is_none_or(|max| *number <= max)
+                    && step.0 != 0
+                    && number.0.checked_sub(min.unwrap_or(Unsigned(0)).0).is_some_and(|delta| delta % step.0 == 0)
+            }
             (Self::Color, Value::Text(text)) => matches!(text.len(), 7 | 9) && text.starts_with('#') && text.bytes().skip(1).all(|b| b.is_ascii_hexdigit()),
             (Self::Model, Value::Text(text)) => {
                 !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_whitespace) && !text.chars().any(char::is_control)
             }
-            (Self::Seed, Value::Unsigned(_)) => true,
+            (Self::Seed { max }, Value::Unsigned(number)) => max.is_none_or(|max| *number <= max),
             (Self::Asset { modality }, Value::Media(asset)) => match modality {
                 Modality::Text => asset.mime.essence().starts_with("text/"),
                 Modality::Image => asset.mime.essence().starts_with("image/"),
@@ -147,21 +205,32 @@ impl ParamSchema {
         let mut seen: BTreeMap<&str, &ParamSpec> = BTreeMap::new();
         let mut bytes = 0_usize;
         for spec in &self.params {
-            if !name(&spec.name) || spec.label.is_empty() || spec.label.len() > 256 || seen.contains_key(spec.name.as_str()) {
+            if !name(&spec.name)
+                || spec.label.trim().is_empty()
+                || spec.label.len() > 256
+                || spec.description.as_ref().is_some_and(|text| text.len() > 4096)
+                || seen.contains_key(spec.name.as_str())
+            {
                 return Err(invalid("parameters need bounded unique names and nonempty labels"));
             }
             spec.control.validate()?;
+            bytes = bytes.saturating_add(spec.name.len()).saturating_add(spec.label.len()).saturating_add(spec.description.as_ref().map_or(0, String::len));
+            if let ParamControl::Choice { options } = &spec.control {
+                for option in options {
+                    bytes = bytes.saturating_add(option.value.len()).saturating_add(option.label.len());
+                }
+            }
             if let Some(value) = &spec.default {
-                spec.control.validate_value(value)?;
+                spec.control.validate_value_checked(value)?;
                 bytes = bytes.saturating_add(value_text_bytes(value));
             }
             if let Some(condition) = &spec.visible_if {
                 let controller = seen.get(condition.parameter.as_str()).ok_or_else(|| invalid("visibility must reference an earlier parameter"))?;
-                controller.control.validate_value(&condition.equals)?;
-                bytes = bytes.saturating_add(value_text_bytes(&condition.equals));
+                controller.control.validate_value_checked(&condition.equals)?;
+                bytes = bytes.saturating_add(condition.parameter.len()).saturating_add(value_text_bytes(&condition.equals));
             }
             if bytes > MAX_TEXT {
-                return Err(invalid("schema defaults and conditions exceed text limit"));
+                return Err(invalid("schema text exceeds aggregate limit"));
             }
             seen.insert(spec.name.as_str(), spec);
         }
@@ -177,8 +246,14 @@ impl ParamSchema {
         }
         let mut bytes = 0_usize;
         for (key, value) in supplied {
-            let spec = self.params.iter().find(|spec| spec.name == *key).ok_or_else(|| invalid("unknown parameter"))?;
-            spec.control.validate_value(value)?;
+            let spec = self.params.iter().find(|spec| spec.name == *key).ok_or_else(|| {
+                if name(key) {
+                    Error::new(ErrorKind::InvalidInput, format!("unknown parameter: {key}; migrate this node to the current schema"))
+                } else {
+                    invalid("unknown parameter; migrate this node to the current schema")
+                }
+            })?;
+            spec.control.validate_value_checked(value)?;
             bytes = bytes.saturating_add(value_text_bytes(value));
         }
         // Include defaults in the effective total before cloning anything.
@@ -216,6 +291,7 @@ impl ParamSchema {
 fn value_text_bytes(value: &Value) -> usize {
     match value {
         Value::Text(text) => text.len(),
+        Value::Media(asset) => asset.mime.as_str().len(),
         _ => 0,
     }
 }

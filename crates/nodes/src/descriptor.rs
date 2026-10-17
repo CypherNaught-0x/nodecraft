@@ -1,7 +1,10 @@
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{Error, ErrorKind, NodeId, ParamSchema, ParamValues, PortType, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +71,7 @@ impl NodeDescriptor {
         Ok(node)
     }
 
+    /// Static-descriptor helper. Stored/dynamic node consumers use NodeKind::validate_instance.
     pub fn validate_node(&self, node: &Node, ready: bool) -> Result<ParamValues, Error> {
         self.validate()?;
         if node.kind != self.id || node.inputs != self.inputs || node.outputs != self.outputs {
@@ -104,12 +108,14 @@ impl From<ModeId> for String {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct InputValue {
     pub port: String,
     pub port_type: PortType,
     pub value: Value,
 }
 
+#[derive(Clone, Debug)]
 pub struct PlanCtx<'a> {
     pub node: &'a Node,
     pub inputs: &'a [InputValue],
@@ -123,8 +129,74 @@ pub enum JobSpec {
     Source { node: NodeId, output: String, value: Value },
 }
 
+/// A proposed explicit schema migration. Apply `node` with graph's SetNode only after showing
+/// the warnings; migrations never silently discard stale parameters in the live document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeMigration {
+    pub node: Node,
+    pub warnings: Vec<String>,
+}
+
 pub trait NodeKind: Send + Sync {
     fn descriptor(&self) -> &NodeDescriptor;
+    /// Static palette metadata only. Instance consumers call resolve_instance().
+    fn instance<'a>(&'a self, _node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+        Ok(Cow::Borrowed(self.descriptor()))
+    }
+    /// Validates detached input before invoking a dynamic kind, then validates its descriptor
+    /// before callers clone schema/ports. UI, MCP and planning use this checked entry point.
+    fn resolve_instance<'a>(&'a self, node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+        node.validate_payload()?;
+        let descriptor = self.instance(node)?;
+        descriptor.validate()?;
+        if node.kind != descriptor.id || descriptor.id != self.descriptor().id {
+            return Err(invalid("instance descriptor changed its node kind"));
+        }
+        Ok(descriptor)
+    }
+    fn validate_instance(&self, node: &Node, ready: bool) -> Result<crate::ResolvedParams, Error> {
+        let descriptor = self.resolve_instance(node)?;
+        if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
+            return Err(invalid("node ports do not match its instance descriptor"));
+        }
+        descriptor.params.resolve(&node.params, ready)
+    }
+    fn instantiate_instance(&self, id: NodeId, config: BTreeMap<String, Value>, supplied: &ParamValues) -> Result<Node, Error> {
+        self.descriptor().validate()?;
+        let mut node = Node::new(id, &self.descriptor().id);
+        node.config = config;
+        let descriptor = self.resolve_instance(&node)?;
+        node.params = descriptor.params.resolve(supplied, false)?.values;
+        node.inputs = descriptor.inputs.clone();
+        node.outputs = descriptor.outputs.clone();
+        node.title = descriptor.label.clone();
+        node.validate_payload()?;
+        Ok(node)
+    }
+    /// Kind-owned version migration. Unknown config keys must be retained. Callers use
+    /// prepare_migration(), show warnings, and apply the returned node through SetNode.
+    fn migrate(&self, _node: &Node) -> Result<Option<NodeMigration>, Error> {
+        Ok(None)
+    }
+    fn prepare_migration(&self, node: &Node) -> Result<Option<NodeMigration>, Error> {
+        node.validate_payload()?;
+        let migration = self.migrate(node)?;
+        if let Some(proposed) = &migration {
+            if proposed.node.id != node.id || proposed.node.kind != node.kind {
+                return Err(invalid("migration changed node identity"));
+            }
+            if proposed.warnings.len() > 256 || proposed.warnings.iter().any(|warning| warning.len() > 4096) {
+                return Err(invalid("migration warnings exceed limits"));
+            }
+            self.validate_instance(&proposed.node, false)?;
+        }
+        Ok(migration)
+    }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId>;
+    /// Dynamic kinds can override input compatibility using their per-instance config.
+    fn instance_mode(&self, node: &Node, inputs: &[PortType]) -> Result<Option<ModeId>, Error> {
+        self.resolve_instance(node)?;
+        Ok(self.mode(inputs))
+    }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error>;
 }
