@@ -44,6 +44,7 @@ image = { version = "0.25", default-features = false }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_path_to_error = "0.1"
 url = "2"
 tempfile = "3"
 uuid = { version = "1", default-features = false, features = ["serde"] }

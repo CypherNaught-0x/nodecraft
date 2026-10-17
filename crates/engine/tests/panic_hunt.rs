@@ -54,3 +54,90 @@ fn panic_hunt() {
         }
     }
 }
+
+fn template(id: &str) -> (Session, Value) {
+    use common::*;
+    let mut document = project();
+    if id == "edge.connect" {
+        nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
+    }
+    let mut session = Session::new(document).unwrap();
+    let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
+    let params = match id {
+        "node.add" => json!({"canvas":canvas(),"node":node(3)}),
+        "node.remove" => json!({"canvas":canvas(),"id":node_id(1)}),
+        "node.move" => movement.clone(),
+        "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
+        "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
+        "edit.undo" => {
+            session.dispatch("node.move", &movement).unwrap();
+            Value::Null
+        }
+        "edit.redo" => {
+            session.dispatch("node.move", &movement).unwrap();
+            session.dispatch("edit.undo", &Value::Null).unwrap();
+            json!({})
+        }
+        _ => panic!("missing valid template for {id}"),
+    };
+    (session, params)
+}
+
+#[test]
+#[ignore = "valid command templates with individual field mutations"]
+fn typed_template_panic_hunt() {
+    let ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| spec.id).collect();
+    let mut successes = 0;
+    for id in ids {
+        let (_, valid) = template(id);
+        let mut cases = vec![valid.clone()];
+        if let Some(object) = valid.as_object() {
+            for key in object.keys() {
+                for raw in [Value::Null, json!(true), json!("secret-do-not-echo"), json!(u64::MAX), json!([]), json!({})] {
+                    let mut mutated = valid.clone();
+                    mutated[key] = raw;
+                    cases.push(mutated);
+                }
+                let mut missing = valid.clone();
+                missing.as_object_mut().unwrap().remove(key);
+                cases.push(missing);
+            }
+        }
+        for path in ["/pos/x", "/pos/y", "/node/id", "/node/kind", "/node/pos/x", "/edge/from/node", "/edge/from/port", "/edge/to/node", "/edge/order"] {
+            if valid.pointer(path).is_some() {
+                for raw in [Value::Null, json!("secret-do-not-echo"), json!(1e100), json!([])] {
+                    let mut mutated = valid.clone();
+                    *mutated.pointer_mut(path).unwrap() = raw;
+                    cases.push(mutated);
+                }
+            }
+        }
+        for params in cases {
+            let (mut session, _) = template(id);
+            let before = session.document().clone();
+            let revision = session.revision();
+            let events = session.events_since(0).unwrap();
+            let result = session.dispatch(id, &params);
+            match result {
+                Err(error) => {
+                    assert_ne!(error.kind, ErrorKind::Internal, "{id}");
+                    assert!(!error.message.contains("secret-do-not-echo"));
+                    assert_eq!(session.document(), &before);
+                    assert_eq!(session.revision(), revision);
+                    assert_eq!(session.events_since(0).unwrap(), events);
+                }
+                Ok(_) => {
+                    successes += 1;
+                    let after = session.document().clone();
+                    session.document().validate().unwrap();
+                    let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };
+                    session.dispatch(reverse, &Value::Null).unwrap();
+                    assert_eq!(session.document(), &before, "{id}");
+                    session.dispatch(again, &Value::Null).unwrap();
+                    assert_eq!(session.document(), &after, "{id}");
+                }
+            }
+        }
+    }
+    assert!(successes >= 7);
+}

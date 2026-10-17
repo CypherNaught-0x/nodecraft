@@ -117,7 +117,7 @@ fn unrelated_edits_nodes_and_omitted_gestures_never_coalesce() {
 #[test]
 fn bounded_event_log_supports_independent_cursors_and_explicit_resync() {
     let mut session = Session::new(project()).unwrap();
-    for i in 0..=MAX_EVENTS {
+    for i in 1..=MAX_EVENTS + 1 {
         session.dispatch("node.move", &moved(i as i32, Some("drag"))).unwrap();
     }
     assert_eq!(session.events_since(0).unwrap_err().kind, ErrorKind::Conflict);
@@ -168,7 +168,18 @@ fn invalid_suffix(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
 fn panicking_handlers_and_atomic_graph_failures_preserve_document_history_and_events() {
     let mut registry = Registry::builtins().unwrap();
     for (id, run) in [("test.panic", fail_after_local_edit as fn(&Context<'_>, &Value) -> Result<Effect, Error>), ("test.invalid", invalid_suffix)] {
-        registry.register(CommandSpec { id, label: "Test", shortcut: None, params_doc: "{}", enabled: always, run }).unwrap();
+        registry
+            .register(CommandSpec {
+                id,
+                alternate_shortcuts: &[],
+                input_schema: || json!({"type":"object"}),
+                label: "Test",
+                shortcut: None,
+                params_doc: "{}",
+                enabled: always,
+                run,
+            })
+            .unwrap();
     }
     let mut session = Session::with_registry(project(), registry).unwrap();
     session.dispatch("node.move", &moved(10, None)).unwrap();
@@ -210,7 +221,18 @@ fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
 #[test]
 fn edits_with_small_undo_but_oversized_redo_are_rejected_atomically() {
     let mut registry = Registry::builtins().unwrap();
-    registry.register(CommandSpec { id: "test.large", label: "Large", shortcut: None, params_doc: "{}", enabled: always, run: oversized_redo }).unwrap();
+    registry
+        .register(CommandSpec {
+            id: "test.large",
+            alternate_shortcuts: &[],
+            input_schema: || json!({"type":"object"}),
+            label: "Large",
+            shortcut: None,
+            params_doc: "{}",
+            enabled: always,
+            run: oversized_redo,
+        })
+        .unwrap();
     let mut session = Session::with_registry(project(), registry).unwrap();
     assert!(session.dispatch("test.large", &json!({})).is_err());
     assert_eq!(session.document(), &project());

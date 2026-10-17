@@ -8,7 +8,7 @@ use nodecraft_graph::{Change, Changeset, Project};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
 
-use crate::commands::{Context, Effect, Registry, invalid, validate_json};
+use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_json};
 
 pub const MAX_HISTORY_STEPS: usize = 256;
 pub const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
@@ -78,6 +78,8 @@ struct Prepared {
 pub struct Session {
     document: Project,
     registry: Registry,
+    resources: Resources,
+    services: Services,
     undo: History,
     redo: History,
     gesture: Option<MoveKey>,
@@ -92,7 +94,17 @@ impl Session {
 
     pub fn with_registry(document: Project, registry: Registry) -> Result<Self, Error> {
         document.validate()?;
-        Ok(Self { document, registry, undo: History::default(), redo: History::default(), gesture: None, revision: 0, events: VecDeque::new() })
+        Ok(Self {
+            document,
+            registry,
+            resources: Resources::default(),
+            services: Services::default(),
+            undo: History::default(),
+            redo: History::default(),
+            gesture: None,
+            revision: 0,
+            events: VecDeque::new(),
+        })
     }
 
     pub fn document(&self) -> &Project {
@@ -111,27 +123,53 @@ impl Session {
         !self.redo.entries.is_empty()
     }
 
-    fn context(&self) -> Context<'_> {
-        Context { document: &self.document, can_undo: self.can_undo(), can_redo: self.can_redo() }
+    pub fn with_resources(mut self, resources: Resources) -> Self {
+        self.resources = resources;
+        self
+    }
+
+    pub fn with_services(mut self, services: Services) -> Self {
+        self.services = services;
+        self
+    }
+
+    fn context(&self, phase: Phase) -> Context<'_> {
+        Context { document: &self.document, can_undo: self.can_undo(), can_redo: self.can_redo(), resources: &self.resources, services: &self.services, phase }
     }
 
     /// Returns an actionable reason when disabled; never mutates the session.
     pub fn enabled(&self, id: &str, params: &Value) -> Result<(), Error> {
         guard(|| {
             validate_json(params)?;
-            (self.registry.get(id)?.enabled)(&self.context(), params)
+            (self.registry.get(id)?.enabled)(&self.context(Phase::Preview), params)
         })
     }
 
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
-        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
         let spec = *self.registry.get(id)?;
-        let prepared = guard(|| {
+        let effect = guard(|| {
             validate_json(params)?;
-            let context = self.context();
+            let context = self.context(Phase::Dispatch);
             (spec.enabled)(&context, params)?;
-            self.prepare((spec.run)(&context, params)?)
+            (spec.run)(&context, params)
         })?;
+        let effect = match effect {
+            Effect::None { result } => {
+                validate_json(&result)?;
+                return Ok(result);
+            }
+            Effect::Service { capability, request } => {
+                validate_json(&request)?;
+                return guard(|| {
+                    let result = self.services.invoke(capability, &request)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            document_effect => document_effect,
+        };
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let prepared = guard(|| self.prepare(effect))?;
         // No handler or fallible graph operation runs after this point.
         match prepared.direction {
             Direction::Edit => {
@@ -162,35 +200,32 @@ impl Session {
     }
 
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
-        let mut document = self.document.clone();
-        let (inverse, direction, gesture, result) = match effect {
+        let (document, inverse, direction, gesture, result) = match effect {
             Effect::Edit { changes, result, gesture } => {
                 validate_json(&result)?;
                 if changes.changes.is_empty() {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                (changes.apply(&mut document)?, Direction::Edit, gesture, result)
+                let (document, inverse) = changes.stage(&self.document)?;
+                // Graph canonical sizing includes the operation array. History stores the full
+                // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
+                changes.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12))?;
+                (document, inverse, Direction::Edit, gesture, result)
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                (entry.inverse.apply(&mut document)?, Direction::Undo, None, Value::Null)
+                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                (document, inverse, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                (entry.inverse.apply(&mut document)?, Direction::Redo, None, Value::Null)
+                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                (document, inverse, Direction::Redo, None, Value::Null)
             }
+            Effect::None { .. } | Effect::Service { .. } => return Err(invalid("non-document effects must bypass history staging")),
         };
         let bytes = history_bytes(&inverse)?;
-        if matches!(direction, Direction::Edit) {
-            // An edit may have a tiny inverse and a huge redo (e.g. inserting many comments).
-            // Check the actual inverse-of-inverse representation before publishing the edit,
-            // so undo cannot get stuck on a step that exceeds the redo budget. This staging
-            // cost is paid on new edits, never while traversing the existing history.
-            let mut undone = document.clone();
-            let redo = inverse.apply(&mut undone)?;
-            history_bytes(&redo)?;
-        }
         Ok(Prepared { document, inverse: Entry { inverse, bytes }, direction, gesture, result })
     }
 
@@ -207,11 +242,16 @@ impl Session {
     }
 }
 
-fn move_key(changes: &Changeset, gesture: Option<String>) -> Result<Option<MoveKey>, Error> {
-    let Some(gesture) = gesture else { return Ok(None) };
-    if gesture.is_empty() || gesture.len() > 128 {
+pub(crate) fn validate_gesture(gesture: Option<&str>) -> Result<(), Error> {
+    if gesture.is_some_and(|token| token.is_empty() || token.len() > 128) {
         return Err(invalid("gesture must contain 1 to 128 bytes"));
     }
+    Ok(())
+}
+
+fn move_key(changes: &Changeset, gesture: Option<String>) -> Result<Option<MoveKey>, Error> {
+    let Some(gesture) = gesture else { return Ok(None) };
+    validate_gesture(Some(&gesture))?;
     match changes.changes.as_slice() {
         [Change::MoveNode { canvas, id, .. }] => Ok(Some(MoveKey { canvas: *canvas, node: *id, gesture })),
         _ => Err(invalid("gesture coalescing requires exactly one node move")),
@@ -248,6 +288,48 @@ mod tests {
     use nodecraft_graph::{Canvas, Generation, Node};
     use nodecraft_types::{GenerationId, ProjectId};
     use serde_json::json;
+
+    #[test]
+    fn non_document_effect_works_at_exhausted_document_revision() {
+        fn enabled(_: &Context<'_>, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn service(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
+            Ok(Effect::None { result: json!("ok") })
+        }
+        let mut session = Session::new(Project::new(ProjectId::from_bytes([1; 16]), "Service").unwrap()).unwrap();
+        session
+            .registry
+            .register(crate::commands::CommandSpec {
+                id: "test.service",
+                label: "Service",
+                shortcut: None,
+                alternate_shortcuts: &[],
+                input_schema: || json!({}),
+                params_doc: "{}",
+                enabled,
+                run: service,
+            })
+            .unwrap();
+        session.revision = u64::MAX;
+        assert_eq!(session.dispatch("test.service", &Value::Null).unwrap(), json!("ok"));
+        assert_eq!(session.revision(), u64::MAX);
+        assert!(!session.can_undo());
+        assert!(session.events.is_empty());
+    }
+
+    #[test]
+    fn canonical_redo_budget_includes_full_changeset_envelope() {
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let node = Node::new(NodeId::from_bytes([2; 16]), "test.text");
+        let changes = Changeset::new(vec![Change::AddNode { canvas, node: node.clone() }]);
+        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![] }]);
+        let full = history_bytes(&restore).unwrap();
+        assert!(changes.validate_replay_budget(full - 12).is_ok());
+        assert!(changes.validate_replay_budget(full - 13).is_err());
+        // The original AddNode spelling is smaller; counting it alone loses the redo boundary.
+        assert!(history_bytes(&changes).unwrap() < full);
+    }
 
     #[test]
     fn history_byte_counter_accepts_exact_budget_and_rejects_next_byte() {

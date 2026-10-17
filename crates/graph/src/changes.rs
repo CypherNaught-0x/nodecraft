@@ -134,20 +134,31 @@ impl Changeset {
         Ok(inverse)
     }
 
+    /// Stage one validated transaction without mutating the source project. The returned draft
+    /// and inverse can be published together by the owning command session.
+    pub fn stage(&self, project: &Project) -> Result<(Project, Self), Error> {
+        Self::prepare(&self.changes, project)
+    }
+
+    /// Validate programmatic payloads before serialization, including the canonical replay size.
+    /// References and ordered transaction relationships require `validate`, `stage` or `apply`.
+    pub fn validate_payload(&self) -> Result<(), Error> {
+        self.validate_replay_budget(validate::MAX_CHANGESET_BYTES)
+    }
+
+    /// Apply a stricter caller budget while retaining the graph's canonical replay accounting.
+    pub fn validate_replay_budget(&self, limit: usize) -> Result<(), Error> {
+        validate_changes_payload(&self.changes, limit.min(validate::MAX_CHANGESET_BYTES))
+    }
+
     fn prepare(changes: &[Change], project: &Project) -> Result<(Project, Self), Error> {
         Self::prepare_with_budget(changes, project, validate::MAX_CHANGESET_BYTES)
     }
 
     fn prepare_with_budget(changes: &[Change], project: &Project, byte_limit: usize) -> Result<(Project, Self), Error> {
-        if changes.len() > validate::MAX_CHANGES {
-            return Err(validate::invalid("changeset exceeds operation limit"));
-        }
         // Project construction/deserialization and this sole mutation path establish validity.
         // Check arbitrary programmatic payloads before cloning any recursive data.
-        for change in changes {
-            change.validate_payload()?;
-        }
-        changes_byte_budget(changes, byte_limit)?;
+        validate_changes_payload(changes, byte_limit)?;
         let mut draft = project.clone();
         let mut inverse = Vec::new();
         for change in changes {
@@ -166,6 +177,16 @@ impl Changeset {
         changes_byte_budget(&inverse.changes, byte_limit)?;
         Ok((draft, inverse))
     }
+}
+
+fn validate_changes_payload(changes: &[Change], limit: usize) -> Result<(), Error> {
+    if changes.len() > validate::MAX_CHANGES {
+        return Err(validate::invalid("changeset exceeds operation limit"));
+    }
+    for change in changes {
+        change.validate_payload()?;
+    }
+    changes_byte_budget(changes, limit)
 }
 
 // Undoing AddNode produces RemoveNode; redoing that removal produces RestoreNode. Charge
