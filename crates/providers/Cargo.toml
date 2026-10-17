@@ -11,11 +11,13 @@ description = "NodeCraft: the Provider trait and adapters to model services"
 workspace = true
 
 [features]
-default = ["http", "llm"]
+default = ["http", "llm", "comfyui"]
 # The reqwest transport (desktop and browser). Off for crates that only need the traits.
 http = ["dep:reqwest"]
 # Chat endpoints: OpenAI-compatible (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic.
 llm = []
+# ComfyUI servers (local or remote) through the `comfy` protocol crate.
+comfyui = []
 
 [dependencies]
 nodecraft-catalog = { workspace = true }

@@ -16,6 +16,8 @@
 //! `CancelToken` as a [`CancelSignal`] and the app's runtime as a [`Clock`]. A failed run that
 //! carries a handle ([`RunFailure::handle`]) must be resumed, never resubmitted.
 
+#[cfg(feature = "comfyui")]
+pub mod comfyui;
 mod error;
 pub mod http;
 #[cfg(feature = "llm")]
