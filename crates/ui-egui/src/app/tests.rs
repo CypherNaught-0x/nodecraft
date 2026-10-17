@@ -1875,3 +1875,55 @@ fn cut_with_a_stale_selection_still_removes_what_remains() {
     assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
     assert!(!h.state().session.document().canvases().get(&canvas).unwrap().nodes().contains_key(&chain_id(4)));
 }
+
+#[test]
+fn copies_that_could_not_paste_back_are_refused_and_cut_keeps_them() {
+    let mut h = chain_harness();
+    let canvas = h.state().canvas;
+    // Two Text nodes with 600 KiB prompts: fine in the graph, too big for one paste command.
+    for n in [1u8, 4] {
+        let value = json!({"type": "text", "value": "x".repeat(600 * 1024)});
+        h.state_mut().session.dispatch("node.param_set", &json!({"canvas": canvas, "id": chain_id(n), "name": "text", "value": value})).unwrap();
+    }
+    h.run();
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 4, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    let before = h.state().session.document().clone();
+    h.event(egui::Event::Cut);
+    h.step();
+    assert!(copied(&h).is_none());
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("too large to copy")));
+}
+
+#[test]
+fn oversized_and_foreign_media_pastes_are_refused() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    h.hover_at(Pos2::new(800.0, 600.0));
+    h.event(egui::Event::Paste("x".repeat(clipboard::MAX_BYTES + 1)));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("16 MiB")));
+    // An Image node referencing an asset, copied from another project.
+    let mut image = h.state().session.kinds().get("source.image").unwrap().descriptor().instantiate(NodeId::from_bytes([9; 16]), &BTreeMap::new()).unwrap();
+    let asset = nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([1; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+    image.params.insert("asset".into(), Value::Media(asset));
+    let foreign = clipboard::Payload {
+        format: clipboard::FORMAT.into(),
+        version: clipboard::VERSION,
+        project: Some(ProjectId::from_bytes([77; 16])),
+        nodes: vec![image.clone()],
+        edges: vec![],
+    };
+    h.event(egui::Event::Paste(clipboard::to_text(&foreign).unwrap()));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("another project")));
+    // From this project, the same node pastes.
+    let local = clipboard::Payload { project: Some(h.state().session.document().id()), ..foreign };
+    h.event(egui::Event::Paste(clipboard::to_text(&local).unwrap()));
+    h.run();
+    assert_eq!(nodes_of(&h, "source.image").len(), 1);
+}

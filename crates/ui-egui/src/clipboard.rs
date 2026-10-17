@@ -5,7 +5,7 @@
 use crate::{ids, selection::Selection};
 use egui::{Pos2, Rect, Vec2};
 use nodecraft_graph::{Canvas, Edge, Node, Position, Project};
-use nodecraft_types::{CanvasId, EdgeId, NodeId};
+use nodecraft_types::{CanvasId, EdgeId, NodeId, ProjectId, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,20 +21,24 @@ pub const MAX_ITEMS: usize = nodecraft_graph::MAX_CHANGES;
 pub struct Payload {
     pub format: String,
     pub version: u32,
+    /// The project it was copied from: media references only resolve there until assets travel
+    /// with copies.
+    #[serde(default)]
+    pub project: Option<ProjectId>,
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub edges: Vec<Edge>,
 }
 
 /// The selected nodes and every edge between two of them, without generation results.
-pub fn payload(canvas: &Canvas, selection: &Selection) -> Option<Payload> {
+pub fn payload(project: ProjectId, canvas: &Canvas, selection: &Selection) -> Option<Payload> {
     let nodes: Vec<Node> =
         selection.nodes().iter().filter_map(|id| canvas.nodes().get(id)).map(|node| Node { history: Vec::new(), active: None, ..node.clone() }).collect();
     if nodes.is_empty() {
         return None;
     }
     let edges = canvas.edges().values().filter(|e| selection.contains(e.from.node) && selection.contains(e.to.node)).cloned().collect();
-    Some(Payload { format: FORMAT.into(), version: VERSION, nodes, edges })
+    Some(Payload { format: FORMAT.into(), version: VERSION, project: Some(project), nodes, edges })
 }
 
 pub fn to_text(payload: &Payload) -> Option<String> {
@@ -53,7 +57,10 @@ pub enum Parsed {
 
 pub fn parse(text: &str) -> Parsed {
     let trimmed = text.trim_start();
-    let ours = trimmed.starts_with('{') && trimmed.get(..trimmed.len().min(4096)).is_some_and(|head| head.contains(FORMAT));
+    // Look for the marker in the first 4 KiB as bytes, so a multibyte character at the cut can't
+    // hide it.
+    let head = trimmed.as_bytes().get(..trimmed.len().min(4096)).unwrap_or_default();
+    let ours = trimmed.starts_with('{') && head.windows(FORMAT.len()).any(|window| window == FORMAT.as_bytes());
     if !ours {
         return Parsed::Text;
     }
@@ -69,16 +76,43 @@ pub fn parse(text: &str) -> Parsed {
         Parsed::Unreadable("it holds no nodes")
     } else if payload.nodes.len().saturating_add(payload.edges.len()) > MAX_ITEMS {
         Parsed::Unreadable("it holds more than 10,000 nodes and noodles")
+    } else if has_duplicates(payload.nodes.iter().map(|n| n.id)) || has_duplicates(payload.edges.iter().map(|e| e.id)) {
+        Parsed::Unreadable("it holds the same node or noodle twice")
     } else {
         Parsed::Nodes(payload)
     }
 }
 
+fn has_duplicates<T: Ord>(ids: impl Iterator<Item = T>) -> bool {
+    let mut seen = BTreeSet::new();
+    ids.into_iter().any(|id| !seen.insert(id))
+}
+
+/// Whether any node carries a media reference (an asset hash) in its parameters or config.
+pub fn has_media(payload: &Payload) -> bool {
+    let mut stack: Vec<&Value> = payload.nodes.iter().flat_map(|n| n.params.values().chain(n.config.values())).collect();
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Media(_) => return true,
+            Value::List(items) => stack.extend(items.iter()),
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Give the payload fresh ids (unused in `project` and among themselves), keep only edges between
 /// pasted nodes, drop tags and fields `canvas` doesn't have, and move the group so the centre of
 /// its cards (each `card` sized) lands on `centre`.
-pub fn place(project: &Project, canvas: CanvasId, payload: Payload, centre: Pos2, card: Vec2, salt: u64) -> Option<(Vec<Node>, Vec<Edge>)> {
-    let bounds = group_centre(&payload.nodes, card);
+pub fn place(
+    project: &Project,
+    canvas: CanvasId,
+    payload: Payload,
+    centre: Pos2,
+    rect_of: impl Fn(&Node) -> Rect,
+    salt: u64,
+) -> Option<(Vec<Node>, Vec<Edge>)> {
+    let bounds = group_centre(&payload.nodes, rect_of);
     let shift = bounds.map_or(Vec2::ZERO, |c| centre - c);
     let target = project.canvases().get(&canvas);
     let mut chosen_nodes = BTreeSet::new();
@@ -120,9 +154,9 @@ pub fn place(project: &Project, canvas: CanvasId, payload: Payload, centre: Pos2
     Some((nodes, edges))
 }
 
-/// The centre of the cards of `nodes` (positions are card top-left corners).
-pub fn group_centre(nodes: &[Node], card: Vec2) -> Option<Pos2> {
-    let bounds = nodes.iter().map(|n| Rect::from_min_size(Pos2::new(n.pos.x, n.pos.y), card)).fold(Rect::NOTHING, |r, c| r.union(c));
+/// The centre of the cards of `nodes`, each card's rect given by `rect_of`.
+pub fn group_centre(nodes: &[Node], rect_of: impl Fn(&Node) -> Rect) -> Option<Pos2> {
+    let bounds = nodes.iter().map(rect_of).fold(Rect::NOTHING, |r, c| r.union(c));
     bounds.is_finite().then(|| bounds.center())
 }
 
@@ -168,7 +202,7 @@ mod tests {
         let canvas = project.canvases().get(&C).unwrap();
         let mut selection = Selection::default();
         selection.replace([NodeId::from_bytes([1; 16]), NodeId::from_bytes([2; 16])].into_iter().collect());
-        let copied = payload(canvas, &selection).unwrap();
+        let copied = payload(project.id(), canvas, &selection).unwrap();
         assert_eq!(copied.nodes.len(), 2);
         assert_eq!(copied.edges.iter().map(|e| e.id).collect::<Vec<_>>(), vec![EdgeId::from_bytes([10; 16])]);
         assert!(copied.nodes.iter().all(|n| n.history.is_empty() && n.active.is_none()));
@@ -176,7 +210,8 @@ mod tests {
         assert_eq!(parse(&text), Parsed::Nodes(copied.clone()));
 
         let card = Vec2::new(300.0, 200.0);
-        let (nodes, edges) = place(&project, C, copied, Pos2::new(1000.0, 1000.0), card, 7).unwrap();
+        let rect_of = |n: &Node| Rect::from_min_size(Pos2::new(n.pos.x, n.pos.y), card);
+        let (nodes, edges) = place(&project, C, copied, Pos2::new(1000.0, 1000.0), rect_of, 7).unwrap();
         // Fresh ids, remapped edge, and the group centred on the target.
         assert!(nodes.iter().all(|n| !canvas.nodes().contains_key(&n.id)));
         let (a, b) = (nodes.first().unwrap(), nodes.get(1).unwrap());
@@ -204,10 +239,10 @@ mod tests {
         {
             assert!(matches!(parse(&text), Parsed::Unreadable(_)), "{text}");
         }
-        let empty = Payload { format: FORMAT.into(), version: VERSION, nodes: vec![], edges: vec![] };
+        let empty = Payload { format: FORMAT.into(), version: VERSION, project: None, nodes: vec![], edges: vec![] };
         assert_eq!(parse(&to_text(&empty).unwrap()), Parsed::Unreadable("it holds no nodes"));
         assert!(matches!(parse(&format!("{{\"format\":\"{FORMAT}\"{}", " ".repeat(MAX_BYTES))), Parsed::Unreadable(_)));
-        assert!(payload(project().canvases().get(&C).unwrap(), &Selection::default()).is_none());
+        assert!(payload(project().id(), project().canvases().get(&C).unwrap(), &Selection::default()).is_none());
     }
 
     #[test]
@@ -218,8 +253,39 @@ mod tests {
         node.active = None;
         node.tag = Some(nodecraft_types::TagId::from_bytes([8; 16]));
         node.field = Some(nodecraft_types::FieldId::from_bytes([9; 16]));
-        let payload = Payload { format: FORMAT.into(), version: VERSION, nodes: vec![node], edges: vec![] };
-        let (nodes, _) = place(&project, C, payload, Pos2::ZERO, Vec2::new(300.0, 200.0), 1).unwrap();
+        let payload = Payload { format: FORMAT.into(), version: VERSION, project: None, nodes: vec![node], edges: vec![] };
+        let (nodes, _) = place(&project, C, payload, Pos2::ZERO, |n| Rect::from_min_size(Pos2::new(n.pos.x, n.pos.y), Vec2::new(300.0, 200.0)), 1).unwrap();
         assert!(nodes.iter().all(|n| n.tag.is_none() && n.field.is_none()));
+    }
+
+    #[test]
+    fn markers_past_a_multibyte_cut_duplicates_and_media_are_handled() {
+        let project = project();
+        let canvas = project.canvases().get(&C).unwrap();
+        let mut selection = Selection::default();
+        selection.replace([NodeId::from_bytes([2; 16])].into_iter().collect());
+        let copied = payload(project.id(), canvas, &selection).unwrap();
+        // The marker sits near the start; a title of é's straddles the 4 KiB cut.
+        let mut long = copied.clone();
+        let text = |title: &str| {
+            let mut p = long.clone();
+            p.nodes.first_mut().unwrap().title = title.to_owned();
+            to_text(&p).unwrap()
+        };
+        let title = (0..2).map(|pad| "a".repeat(pad) + &"é".repeat(2100)).find(|t| !text(t).is_char_boundary(4096)).unwrap();
+        long.nodes.first_mut().unwrap().title = title;
+        assert!(matches!(parse(&to_text(&long).unwrap()), Parsed::Nodes(_)), "the multibyte cut must not hide the marker");
+        // Duplicate ids are refused.
+        let mut twice = copied.clone();
+        let first = twice.nodes.first().cloned().unwrap();
+        twice.nodes.push(first);
+        assert_eq!(parse(&to_text(&twice).unwrap()), Parsed::Unreadable("it holds the same node or noodle twice"));
+        // Media references are detected, nested in lists too.
+        assert!(!has_media(&copied));
+        let mut media = copied;
+        let asset =
+            nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([1; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+        media.nodes.first_mut().unwrap().params.insert("asset".into(), Value::List(vec![Value::Media(asset)]));
+        assert!(has_media(&media));
     }
 }

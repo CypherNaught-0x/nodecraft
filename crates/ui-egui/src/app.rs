@@ -126,6 +126,11 @@ struct Wiring {
     moving: Option<EdgeId>,
 }
 
+/// A copied node's card rect, from its kind's resolved instance (it isn't on the canvas yet).
+fn payload_rect(kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
+    card::world_rect(node, kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok()).as_deref(), t)
+}
+
 /// World offset of a duplicate from its original.
 const DUPLICATE_OFFSET: f32 = 40.0;
 
@@ -385,6 +390,8 @@ impl NodeCraftApp {
                 self.dispatch_delete();
             }
             // Clipboard: the platform turns ⌘C/⌘X/⌘V into events; ⌘D duplicates in place.
+            // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
+            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx());
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
@@ -392,25 +399,27 @@ impl NodeCraftApp {
                     match event {
                         egui::Event::Copy => copy = true,
                         egui::Event::Cut => cut = true,
-                        egui::Event::Paste(text) => pasted = Some(text.clone()),
+                        // Bounded before any copy: oversized text is refused, not cloned.
+                        egui::Event::Paste(text) if text.len() > clipboard::MAX_BYTES => pasted = Some(Err(())),
+                        egui::Event::Paste(text) => pasted = Some(Ok(text.clone())),
                         _ => {}
                     }
                 }
-                (copy, cut, pasted, duplicate)
+                if busy { (false, false, None, false) } else { (copy, cut, pasted, duplicate) }
             });
             let pointer_world = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).map(|p| self.view.to_world(viewport.min, p));
-            // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx());
-            let (copy, cut, duplicate, pasted) = if busy { (false, false, false, None) } else { (copy, cut, duplicate, pasted) };
-            if copy || cut {
-                let text = self
-                    .session
-                    .document()
-                    .canvases()
-                    .get(&self.canvas)
-                    .and_then(|canvas| clipboard::payload(canvas, &self.selection))
-                    .and_then(|p| clipboard::to_text(&p));
-                if let Some(text) = text {
+            if (copy || cut || duplicate)
+                && let Some(payload) = self.selection_payload()
+            {
+                // A copy that couldn't be pasted back is refused, so cut never loses work.
+                if let Err(why) = self.pasteable(&payload) {
+                    self.notice = Some(why);
+                } else if duplicate {
+                    let kinds = self.session.kinds();
+                    if let Some(centre) = clipboard::group_centre(&payload.nodes, |n| payload_rect(kinds, n, t)) {
+                        self.paste(payload, centre + Vec2::splat(DUPLICATE_OFFSET));
+                    }
+                } else if let Some(text) = clipboard::to_text(&payload) {
                     ui.ctx().copy_text(text);
                     if cut {
                         // Cut removes what it copied: the selected nodes (their noodles go with them).
@@ -419,21 +428,22 @@ impl NodeCraftApp {
                     }
                 }
             }
-            if duplicate
-                && let Some(payload) = self.session.document().canvases().get(&self.canvas).and_then(|canvas| clipboard::payload(canvas, &self.selection))
-            {
-                let card = Vec2::new(t.card_width, t.card_min_height);
-                if let Some(centre) = clipboard::group_centre(&payload.nodes, card) {
-                    self.paste(payload, centre + Vec2::splat(DUPLICATE_OFFSET));
+            match pasted {
+                Some(Err(())) => self.notice = Some("The clipboard holds more than 16 MiB; nothing was pasted.".into()),
+                Some(Ok(text)) => {
+                    let centre = pointer_world.unwrap_or_else(|| self.view.to_world(viewport.min, viewport.center()));
+                    match clipboard::parse(&text) {
+                        clipboard::Parsed::Nodes(payload) if payload.project != Some(self.session.document().id()) && clipboard::has_media(&payload) => {
+                            self.notice = Some(
+                                "Can't paste these nodes: their media lives in another project, and copying media between projects isn't supported yet.".into(),
+                            );
+                        }
+                        clipboard::Parsed::Nodes(payload) => self.paste(payload, centre),
+                        clipboard::Parsed::Unreadable(why) => self.notice = Some(format!("Can't paste these nodes: {why}.")),
+                        clipboard::Parsed::Text => self.paste_text(&text, centre),
+                    }
                 }
-            }
-            if let Some(text) = pasted {
-                let centre = pointer_world.unwrap_or_else(|| self.view.to_world(viewport.min, viewport.center()));
-                match clipboard::parse(&text) {
-                    clipboard::Parsed::Nodes(payload) => self.paste(payload, centre),
-                    clipboard::Parsed::Unreadable(why) => self.notice = Some(format!("Can't paste these nodes: {why}.")),
-                    clipboard::Parsed::Text => self.paste_text(&text, centre),
-                }
+                None => {}
             }
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 self.selection.replace(canvas.nodes().keys().copied().collect());
@@ -882,10 +892,25 @@ impl NodeCraftApp {
     }
 
     /// Paste copied nodes centred on `centre` (one undo step) and select them.
+    /// The selection as a clipboard payload.
+    fn selection_payload(&self) -> Option<clipboard::Payload> {
+        let document = self.session.document();
+        document.canvases().get(&self.canvas).and_then(|canvas| clipboard::payload(document.id(), canvas, &self.selection))
+    }
+
+    /// Whether `payload` fits what `canvas.paste` accepts (command JSON limits), with a notice if
+    /// not.
+    fn pasteable(&self, payload: &clipboard::Payload) -> Result<(), String> {
+        let params = json!({"canvas": self.canvas, "nodes": payload.nodes, "edges": payload.edges});
+        nodecraft_engine::commands::validate_json(&params)
+            .map_err(|_| "This selection is too large to copy and paste back in one go (over 1 MiB of text or 16,384 values); copy fewer nodes.".to_owned())
+    }
+
     fn paste(&mut self, payload: clipboard::Payload, centre: Pos2) {
         let t = self.theme.tokens();
-        let card = Vec2::new(t.card_width, t.card_min_height);
-        let Some((nodes, edges)) = clipboard::place(self.session.document(), self.canvas, payload, centre, card, self.session.revision()) else {
+        let kinds = self.session.kinds();
+        let placed = clipboard::place(self.session.document(), self.canvas, payload, centre, |n| payload_rect(kinds, n, t), self.session.revision());
+        let Some((nodes, edges)) = placed else {
             self.notice = Some("Couldn't allocate ids for the pasted nodes; try again.".into());
             return;
         };
