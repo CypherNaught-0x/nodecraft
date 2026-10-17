@@ -97,7 +97,7 @@ fn stamp(project: &mut Project, kinds: &Registry, n: u8) {
     .unwrap();
 }
 fn stale_of(project: &Project) -> BTreeSet<NodeId> {
-    stale(project.canvases().get(&C).unwrap(), &kinds())
+    stale(project.canvases().get(&C).unwrap(), &kinds()).unwrap()
 }
 fn set_param(project: &mut Project, n: u8, name: &str, value: &str) {
     Change::SetParam { canvas: C, id: id(n), name: name.into(), value: Some(Value::Text(value.into())) }.apply(project).unwrap();

@@ -94,8 +94,8 @@ fn consumers_read_through_routers_and_router_chains_in_order() {
         wire(54, 11, 20, 0),
     ]);
     let canvas = p.canvases().get(&C).unwrap();
-    let resolved = incoming(canvas).unwrap();
-    let feeds: Vec<NodeId> = resolved.get(&id(20)).unwrap().iter().map(|(_, _, from, _)| *from).collect();
+    let resolved = incoming(canvas, &kinds()).unwrap();
+    let feeds: Vec<NodeId> = resolved.feeds.get(&id(20)).unwrap().iter().map(|(_, _, from, _)| *from).collect();
     assert_eq!(feeds, vec![id(1), id(2), id(3)]);
     let Planned::Ready(plan) = plan(canvas, &kinds(), &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!() };
     let text = |t: &str| InputSource::Value(Value::Text(t.into()));
@@ -164,7 +164,7 @@ fn a_lattice_of_empty_routers_resolves_in_linear_time() {
     let p = project(changes);
     let canvas = p.canvases().get(&C).unwrap();
     let start = std::time::Instant::now();
-    assert!(incoming(canvas).unwrap().get(&id(20)).unwrap().is_empty());
+    assert!(incoming(canvas, &kinds()).unwrap().feeds.get(&id(20)).unwrap().is_empty());
     // The consumer is wired, but only to routers with nothing behind them: blocked, not run as
     // if unconnected.
     let Planned::Blocked(blockers) = plan(canvas, &kinds(), &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!() };
@@ -183,7 +183,7 @@ fn router_fan_out_is_capped_and_a_list_cannot_reach_a_single_input() {
     }
     let p = project(changes);
     let canvas = p.canvases().get(&C).unwrap();
-    assert_eq!(incoming(canvas).unwrap().get(&id(20)).unwrap().len(), MAX_FEEDS_PER_PORT);
+    assert_eq!(incoming(canvas, &kinds()).unwrap().feeds.get(&id(20)).unwrap().len(), MAX_FEEDS_PER_PORT);
     let Planned::Blocked(_) = plan(canvas, &kinds(), &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!("over the list limit") };
 
     // A list output (from a list-output relay with a result) through a router into a single
@@ -215,6 +215,10 @@ fn router_fan_out_is_capped_and_a_list_cannot_reach_a_single_input() {
     let canvas = p.canvases().get(&C).unwrap();
     let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[3]), &BTreeSet::new()).unwrap() else { panic!() };
     assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::Invalid(m) if m.contains("a list reaches it"))), "{blockers:?}");
+    // When the list-producing upstream is itself scheduled, the deferred Step input must be
+    // rejected before any jobs can run, just like an already materialized list result.
+    let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[5, 3]), &BTreeSet::new()).unwrap() else { panic!() };
+    assert!(blockers.iter().any(|b| b.node == id(3) && matches!(&b.reason, Reason::Invalid(m) if m.contains("a list reaches it"))));
 }
 
 #[test]
@@ -234,9 +238,9 @@ fn a_change_behind_a_router_makes_the_consumer_stale() {
     ])
     .apply(&mut p)
     .unwrap();
-    assert!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).is_empty());
+    assert!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
     Change::SetParam { canvas: C, id: id(1), name: "text".into(), value: Some(Value::Text("b".into())) }.apply(&mut p).unwrap();
-    assert_eq!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds), ids(&[3]));
+    assert_eq!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap(), ids(&[3]));
 }
 
 #[test]
@@ -270,7 +274,7 @@ fn a_long_router_chain_resolves_without_deep_recursion() {
     changes.push(chain_link(60001, router_id(N - 1), id(20)));
     let p = project(changes);
     let canvas = p.canvases().get(&C).unwrap();
-    let feeds: Vec<NodeId> = incoming(canvas).unwrap().get(&id(20)).unwrap().iter().map(|(_, _, from, _)| *from).collect();
+    let feeds: Vec<NodeId> = incoming(canvas, &kinds()).unwrap().feeds.get(&id(20)).unwrap().iter().map(|(_, _, from, _)| *from).collect();
     assert_eq!(feeds, vec![id(1)]);
 
     // 1,400 consumers on the end of that chain: each router is resolved once, so this is linear.
@@ -285,7 +289,7 @@ fn a_long_router_chain_resolves_without_deep_recursion() {
     Changeset::new(consumers).apply(&mut q).unwrap();
     let canvas = q.canvases().get(&C).unwrap();
     let start = std::time::Instant::now();
-    assert_eq!(incoming(canvas).unwrap().len(), 1401);
+    assert_eq!(incoming(canvas, &kinds()).unwrap().feeds.len(), 1401);
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
 }
 
@@ -308,7 +312,133 @@ fn resolution_past_the_entry_budget_is_refused() {
     }
     let p = project(changes);
     let canvas = p.canvases().get(&C).unwrap();
-    assert_eq!(incoming(canvas).unwrap_err().kind, nodecraft_types::ErrorKind::InvalidInput);
+    assert_eq!(incoming(canvas, &kinds()).unwrap_err().kind, nodecraft_types::ErrorKind::InvalidInput);
     assert!(plan(canvas, &kinds(), &RunMode::Selected, &[NodeId::from_bytes(numbered(11, 0))].into_iter().collect(), &BTreeSet::new()).is_err());
-    assert!(crate::staleness::stale(canvas, &kinds()).is_empty());
+    assert!(crate::staleness::stale(canvas, &kinds()).is_err());
+}
+
+#[test]
+fn invalid_router_instances_block_consumers_and_never_produce_hashes() {
+    for defect in 0..5 {
+        let mut router_node = kinds().get(router::ID).unwrap().instantiate_instance(id(10), Default::default(), &Default::default()).unwrap();
+        match defect {
+            0 => {
+                router_node.config = router::config(Modality::Image);
+            }
+            1 => {
+                router_node.config.insert(router::MODALITY.into(), Value::Bool(true));
+            }
+            2 => {
+                router_node.inputs.push(Port { name: "unexpected".into(), port_type: LIST });
+            }
+            3 => {
+                router_node.inputs.first_mut().unwrap().port_type.many = false;
+            }
+            _ => {
+                router_node.outputs.push(Port { name: "unexpected".into(), port_type: TEXT });
+            }
+        }
+        let p = project(vec![
+            text(1, "a"),
+            Change::AddNode { canvas: C, node: router_node },
+            router(11),
+            relay(20, "test.list", None),
+            relay(21, "test.list", None),
+            relay(22, "test.list", None),
+            wire(50, 1, 10, 0),
+            wire(51, 10, 11, 0),
+            wire(52, 11, 20, 0),
+            wire(53, 1, 20, 1),
+            wire(54, 11, 21, 0),
+            wire(55, 1, 22, 0),
+        ]);
+        let mut p = p;
+        let generation = GenerationId::from_bytes([99; 16]);
+        Changeset::new(vec![
+            Change::AddGeneration {
+                canvas: C,
+                id: id(20),
+                index: 0,
+                generation: Generation {
+                    id: generation,
+                    outputs: vec![Value::Text("old".into())],
+                    input_hash: Some(nodecraft_types::Blake3::from_bytes([7; 32])),
+                },
+            },
+            Change::SetActiveGeneration { canvas: C, id: id(20), generation: Some(generation) },
+        ])
+        .apply(&mut p)
+        .unwrap();
+        let canvas = p.canvases().get(&C).unwrap();
+        let kinds = kinds();
+        let resolved = incoming(canvas, &kinds).unwrap();
+        assert_eq!(resolved.invalid.get(&(id(20), "in")), Some(&id(10)));
+        assert_eq!(resolved.invalid.get(&(id(21), "in")), Some(&id(10)));
+        assert_eq!(resolved.wired.len(), canvas.edges().values().map(|e| (e.to.node, e.to.port.as_str())).collect::<BTreeSet<_>>().len());
+        for consumer in [20, 21] {
+            let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[consumer]), &BTreeSet::new()).unwrap() else { panic!() };
+            assert!(
+                blockers
+                    .iter()
+                    .any(|b| b.upstream == Some(id(10)) && b.port.as_deref() == Some("in") && matches!(&b.reason, Reason::Invalid(m) if m.contains("router")))
+            );
+            assert!(crate::staleness::input_hash(canvas, &kinds, id(consumer)).is_err());
+        }
+        assert!(matches!(plan(canvas, &kinds, &RunMode::Selected, &ids(&[22]), &BTreeSet::new()).unwrap(), Planned::Ready(_)));
+        // An invalid input recipe is unknown; this successful query is not evidence of freshness.
+        assert!(crate::staleness::stale(canvas, &kinds).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn absent_router_kind_is_not_a_passthrough_and_router_only_upstream_stays_empty() {
+    let p = project(vec![text(1, "a"), router(10), relay(20, "test.list", None), wire(50, 1, 10, 0), wire(51, 10, 20, 0)]);
+    let canvas = p.canvases().get(&C).unwrap();
+    let mut registry = Registry::default();
+    registry.register(Box::new(Relay(kinds().get("test.list").unwrap().descriptor().clone()))).unwrap();
+    let Planned::Blocked(blockers) = plan(canvas, &registry, &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!() };
+    assert!(blockers.iter().any(|b| b.upstream == Some(id(10)) && matches!(&b.reason, Reason::Invalid(m) if m.contains("not installed"))));
+    assert!(crate::staleness::input_hash(canvas, &registry, id(20)).is_err());
+    assert!(plan(canvas, &kinds(), &RunMode::WithUpstream, &ids(&[10]), &BTreeSet::new()).is_err());
+}
+
+#[test]
+fn direct_and_routed_inputs_hash_identically_and_duplicate_feeds_survive() {
+    let routed = project(vec![text(1, "a"), router(10), relay(20, "test.list", None), wire(50, 1, 10, 0), wire(51, 1, 10, 1), wire(52, 10, 20, 0)]);
+    let direct = project(vec![text(1, "a"), relay(20, "test.list", None), wire(50, 1, 20, 0), wire(51, 1, 20, 1)]);
+    let routed = routed.canvases().get(&C).unwrap();
+    let direct = direct.canvases().get(&C).unwrap();
+    assert_eq!(crate::staleness::input_hash(routed, &kinds(), id(20)).unwrap(), crate::staleness::input_hash(direct, &kinds(), id(20)).unwrap());
+    assert_eq!(incoming(routed, &kinds()).unwrap().feeds.get(&id(20)).unwrap().len(), 2);
+}
+
+#[test]
+fn invalid_router_tails_survive_feed_truncation_at_routers_and_consumers() {
+    for through_router in [false, true] {
+        let mut bad = kinds().get(router::ID).unwrap().instantiate_instance(id(11), Default::default(), &Default::default()).unwrap();
+        bad.config.insert(router::MODALITY.into(), Value::Bool(true));
+        let mut changes = vec![text(1, "a"), router(10), Change::AddNode { canvas: C, node: bad }, relay(20, "test.list", None)];
+        // Valid feeds fill the entire resolved-port allowance before the invalid router is
+        // encountered. Neither the router memo cap nor the consumer cap may hide its failure.
+        let target = if through_router { id(10) } else { id(20) };
+        for order in 0..MAX_FEEDS_PER_PORT {
+            changes.push(link(numbered(30, u16::try_from(order).unwrap()), id(1), target, u32::try_from(order).unwrap()));
+        }
+        changes.push(link(numbered(31, 0), id(11), target, u32::try_from(MAX_FEEDS_PER_PORT).unwrap()));
+        if through_router {
+            changes.push(link(numbered(31, 1), id(10), id(20), 0));
+        }
+        let p = project(changes);
+        let canvas = p.canvases().get(&C).unwrap();
+        let kinds = kinds();
+        let resolved = incoming(canvas, &kinds).unwrap();
+        assert_eq!(resolved.feeds.get(&id(20)).unwrap().len(), MAX_FEEDS_PER_PORT);
+        assert_eq!(resolved.invalid.get(&(id(20), "in")), Some(&id(11)));
+        let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!() };
+        assert!(blockers.iter().any(|b| b.node == id(20)
+            && b.port.as_deref() == Some("in")
+            && b.upstream == Some(id(11))
+            && matches!(&b.reason, Reason::Invalid(message) if message.contains("router"))));
+        assert!(crate::staleness::input_hash(canvas, &kinds, id(20)).is_err());
+    }
 }

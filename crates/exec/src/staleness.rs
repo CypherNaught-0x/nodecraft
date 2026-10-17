@@ -59,13 +59,7 @@ fn write_node(w: &mut Writer, kinds: &Registry, node: &Node) -> Result<(), Error
     w.params(&shaping_params(kinds, node)?)
 }
 
-/// Incoming feeds of every node, built once, with routers resolved to their sources (#72):
-/// target → (port, position, upstream, upstream port).
-type Incoming<'a> = BTreeMap<NodeId, Vec<crate::routing::Feed<'a>>>;
-
-fn incoming(canvas: &Canvas) -> Result<Incoming<'_>, Error> {
-    crate::routing::incoming(canvas)
-}
+type Incoming<'a> = crate::routing::Incoming<'a>;
 
 fn is_source(kinds: &Registry, node: &Node) -> bool {
     kinds.get(&node.kind).is_ok_and(|kind| kind.descriptor().category == Category::Source)
@@ -73,16 +67,19 @@ fn is_source(kinds: &Registry, node: &Node) -> bool {
 
 /// The hash a result of `id` would record if it ran now.
 pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake3, Error> {
-    hash_with(canvas, kinds, &incoming(canvas)?, id)
+    hash_with(canvas, kinds, &crate::routing::incoming(canvas, kinds)?, id)
 }
 
 fn hash_with(canvas: &Canvas, kinds: &Registry, incoming: &Incoming<'_>, id: NodeId) -> Result<Blake3, Error> {
+    if let Some((_, router)) = incoming.invalid.range((id, "")..).next().filter(|((target, _), _)| *target == id) {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("inputs depend on invalid router {router}")));
+    }
     let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "node is not on this canvas"))?;
     let mut w = Writer(blake3::Hasher::new());
     w.bytes(DOMAIN);
     write_node(&mut w, kinds, node)?;
     let mut feeds: BTreeMap<&str, Vec<(u32, NodeId, &str)>> = BTreeMap::new();
-    for (port, order, from, from_port) in incoming.get(&id).into_iter().flatten() {
+    for (port, order, from, from_port) in incoming.feeds.get(&id).into_iter().flatten() {
         feeds.entry(port).or_default().push((*order, *from, from_port));
     }
     for port in &node.inputs {
@@ -116,11 +113,13 @@ fn hash_with(canvas: &Canvas, kinds: &Registry, incoming: &Incoming<'_>, id: Nod
 /// Nodes whose active result is stale: its recorded input hash differs from the current one, or
 /// a node upstream of it is stale (it was built on out-of-date data). Nodes without a result, or
 /// whose result recorded no hash (made before hashing), are never stale themselves. The set is
-/// transitive, as `planner::plan` expects.
-pub fn stale(canvas: &Canvas, kinds: &Registry) -> BTreeSet<NodeId> {
+/// transitive, as `planner::plan` expects. Global router resolution failures return `Err`.
+/// Invalid-router-dependent recipes have no hash and remain unknown, just like rejected node
+/// instances; absence from the stale set is not a freshness assertion. Use [`input_hash`] to
+/// distinguish an unavailable recipe from a fresh result.
+pub fn stale(canvas: &Canvas, kinds: &Registry) -> Result<BTreeSet<NodeId>, Error> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
-    // If routers can't be resolved, no hash can be checked: nothing is reported stale.
-    let Ok(incoming) = incoming(canvas) else { return BTreeSet::new() };
+    let incoming = crate::routing::incoming(canvas, kinds)?;
     let mut stale: BTreeSet<NodeId> = canvas
         .nodes()
         .values()
@@ -148,7 +147,7 @@ pub fn stale(canvas: &Canvas, kinds: &Registry) -> BTreeSet<NodeId> {
             }
         }
     }
-    stale
+    Ok(stale)
 }
 
 #[cfg(test)]

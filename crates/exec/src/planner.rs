@@ -203,16 +203,18 @@ struct Graph<'a> {
     kinds: &'a Registry,
     /// Inputs of each node: (port, upstream node, upstream port, order).
     into: BTreeMap<NodeId, Vec<(&'a str, NodeId, &'a str, u32)>>,
+    routing: crate::routing::Incoming<'a>,
 }
 
 impl<'a> Graph<'a> {
     fn new(canvas: &'a Canvas, kinds: &'a Registry) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
-        let into = crate::routing::incoming(canvas)?
+        let mut routing = crate::routing::incoming(canvas, kinds)?;
+        let into = std::mem::take(&mut routing.feeds)
             .into_iter()
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
-        Ok(Self { canvas, kinds, into })
+        Ok(Self { canvas, kinds, into, routing })
     }
 
     fn upstream(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
@@ -291,11 +293,19 @@ impl<'a> Graph<'a> {
         // One blocker per (port, upstream), however many noodles repeat it.
         let mut reported = BTreeSet::new();
         for port in &node.inputs {
+            if let Some(router) = self.routing.invalid.get(&(id, port.name.as_str())) {
+                let reason = self.routing.invalid_routers.get(router).copied().unwrap_or("invalid upstream router");
+                blockers.push(blocker(Some(&port.name), Some(*router), Reason::Invalid(reason.into())));
+                if blockers.len() >= MAX_BLOCKERS {
+                    return Err(blockers);
+                }
+                continue;
+            }
             let feeds: Vec<_> = self.into.get(&id).into_iter().flatten().filter(|(p, ..)| *p == port.name).collect();
             if feeds.is_empty() {
                 // Wired, but only to routers with nothing behind them: don't silently run as if
                 // the input were unconnected (another mode could drop it).
-                if self.canvas.edges().values().any(|e| e.to.node == id && e.to.port == port.name) {
+                if self.routing.wired.contains(&(id, port.name.as_str())) {
                     blockers.push(blocker(Some(&port.name), None, Reason::Invalid(format!("its {} input is fed by a router with no inputs", port.name))));
                 }
                 continue;
