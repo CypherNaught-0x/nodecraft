@@ -137,10 +137,10 @@ impl Writer {
 }
 
 /// Preflight borrowed values before a proportional clone/JSON allocation. Text payloads
-/// count exactly; scalar JSON reserves128 bytes (tag/envelope plus at most a finite number
-/// or20 decimal digits). Media reserves512 bytes for the tag, digest, metadata keys and
+/// count exactly; scalar JSON reserves 128 bytes (tag/envelope plus at most a finite number
+/// or 20 decimal digits). Media reserves 512 bytes for the tag, digest, metadata keys and
 /// six maximal integers, plus six bytes per MIME byte for worst-case JSON escaping.
-/// Mime is independently capped at1024 bytes. These upper bounds deliberately overcharge
+/// Mime is independently capped at 1024 bytes. These upper bounds deliberately overcharge
 /// short encodings. Keep the traversal stack proportional to depth, not list length.
 fn charge_value(meter: &mut Meter, value: &Value) -> Result<(), Error> {
     let mut stack = vec![std::slice::from_ref(value).iter()];
