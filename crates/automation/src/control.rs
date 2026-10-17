@@ -426,7 +426,8 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
         let text = match read {
             Ok(Line::Eof) | Err(_) => return,
             Ok(Line::TooLong) => {
-                if !fail(&format!("message is larger than {MAX_MESSAGE_BYTES} bytes")) {
+                let limit = if authed { MAX_MESSAGE_BYTES } else { MAX_HELLO_BYTES };
+                if !fail(&format!("message is larger than {limit} bytes")) {
                     return;
                 }
                 continue;
@@ -462,7 +463,7 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
                 match to_ui.try_send(Call {
                     request,
                     reply,
-                    deadline: Instant::now().checked_add(timeouts.answer).unwrap_or_else(|| Instant::now() + Duration::from_secs(3600)),
+                    deadline: Instant::now().checked_add(timeouts.answer).unwrap_or_else(Instant::now),
                 }) {
                     Ok(()) => {
                         wake();

@@ -15,7 +15,8 @@ stdout instead.
 A token file can outlive an app that was killed: check that `pid` is still running before
 connecting. If another instance with `--control` replaces the file, each instance removes only its
 own. The token file is refused in a folder other users can reach. If the channel can't start,
-the app still opens and logs why. Printing to stdout (in-memory
+the app still opens and logs why. On Windows the file's access isn't checked; it relies on the
+settings folder being in the user's profile. Printing to stdout (in-memory
 settings) is for development: release builds on Windows have no console, and on Linux a
 launcher's stdout may be logged.
 
