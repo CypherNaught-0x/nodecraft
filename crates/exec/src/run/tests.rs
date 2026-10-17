@@ -1,5 +1,5 @@
 use super::*;
-use crate::planner::{Planned, RunMode, plan};
+use crate::planner::{Planned, RunMode, plan, value_bytes};
 use nodecraft_graph::{Changeset, Edge, Endpoint, Port, Project};
 use nodecraft_nodes::{Category, ModeId, NodeDescriptor, NodeKind};
 use nodecraft_types::ProjectId;
@@ -624,5 +624,177 @@ fn omitted_defaults_match_materialized_stamps_and_budget_refusal_retains_results
             }
             assert!(crate::staleness::stale(recorded.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
         }
+    }
+}
+
+#[test]
+fn failed_materialization_siblings_cannot_copy_past_the_shared_budget() {
+    let p = project(
+        &[(1, "source.text", "ab"), (2, "test.split", ""), (3, "test.join", ""), (4, "test.join", ""), (5, "test.join", ""), (6, "test.join", "")],
+        &[(1, "out", 2, 0), (2, "items", 3, 0), (2, "items", 4, 0), (2, "items", 5, 0), (2, "items", 6, 0)],
+    );
+    let kinds = kinds();
+    let each = value_bytes(&Value::Text("a".into()));
+    let cap = 2 * each;
+    for late in ["unavailable", "cardinality", "items", "bytes"] {
+        let mut plan = plan_of(&p, &[2, 3, 4, 5, 6]);
+        for step in plan.steps.iter_mut().filter(|s| [id(3), id(4), id(5)].contains(&s.node)) {
+            let input = step.inputs.first_mut().unwrap();
+            let value = || InputSource::Value(Value::Text("a".into()));
+            match late {
+                "unavailable" => input.from.push(InputSource::Step { node: id(2), port: "missing".into(), list: true }),
+                "cardinality" => {
+                    input.port_type = TEXT;
+                    input.from = vec![value(), value()];
+                }
+                "items" => input.from = vec![value(), value(), value()],
+                "bytes" => input.from.push(value()),
+                _ => panic!(),
+            }
+        }
+        let limits = RunLimits { list_items: if late == "bytes" { 3 } else { 2 }, step_bytes: cap, run_bytes: cap };
+        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
+        let (finished, failed, jobs) = drive(&mut run, &kinds, first, &BTreeSet::new());
+        assert_eq!(finished.iter().map(|s| s.node).collect::<Vec<_>>(), vec![id(2), id(6)], "{late}");
+        assert_eq!(failed.iter().map(|s| s.node).collect::<Vec<_>>(), vec![id(3), id(4), id(5)], "{late}");
+        let reason = match late {
+            "unavailable" => "no missing output",
+            "cardinality" => "takes one value",
+            "items" => "more than 2 items",
+            "bytes" => "its inputs are larger",
+            _ => panic!(),
+        };
+        assert!(failed.iter().all(|failure| failure.reason.contains(reason)), "{late}: {failed:?}");
+        assert_eq!(output(&finished, 6), "(a+b)");
+        assert!(run.copied_input_bytes.get() <= cap, "{late}: copied {} bytes despite cap {cap}", run.copied_input_bytes.get());
+        assert_eq!(run.run_bytes, cap);
+        assert!(run.is_finished());
+        for job in jobs {
+            assert_eq!(run.job_done(&kinds, job.id, vec![]), Progress::default());
+        }
+    }
+}
+
+#[test]
+fn materialization_exact_and_one_over_limits_admit_only_copied_values() {
+    let p = project(&[(1, "source.text", "ab"), (2, "test.split", ""), (3, "test.join", "")], &[(1, "out", 2, 0), (2, "items", 3, 0)]);
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2, 3]);
+    let cap = 2 * value_bytes(&Value::Text("a".into()));
+    for limits in [
+        RunLimits { list_items: 2, step_bytes: cap, run_bytes: cap },
+        RunLimits { list_items: 1, step_bytes: cap, run_bytes: cap },
+        RunLimits { list_items: 2, step_bytes: cap - 1, run_bytes: cap },
+        RunLimits { list_items: 2, step_bytes: cap, run_bytes: cap - 1 },
+    ] {
+        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
+        let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+        let accepted = limits.list_items == 2 && limits.step_bytes == cap && limits.run_bytes == cap;
+        assert_eq!(finished.len(), if accepted { 2 } else { 1 });
+        assert_eq!(failed.len(), usize::from(!accepted));
+        assert_eq!(run.run_bytes, if accepted { cap } else { 0 });
+        assert_eq!(run.copied_input_bytes.get(), run.run_bytes, "a rejected input is not copied or charged");
+    }
+}
+
+struct RejectMaterialized(Join);
+impl NodeKind for RejectMaterialized {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Err(invalid("custom planning rejected materialized inputs"))
+    }
+}
+
+#[test]
+fn copies_stay_charged_when_kind_planning_fails_and_remaining_budget_is_usable() {
+    let mut p = project(
+        &[(1, "source.text", "ab"), (2, "test.split", ""), (3, "test.join", ""), (4, "test.join", ""), (5, "test.join", "")],
+        &[(1, "out", 2, 0), (2, "items", 3, 0), (2, "items", 4, 0), (2, "items", 5, 0)],
+    );
+    let mut kinds = kinds();
+    let mut descriptor = kinds.get("test.join").unwrap().descriptor().clone();
+    descriptor.id = "test.reject_materialized".into();
+    kinds.register(Box::new(RejectMaterialized(Join(descriptor)))).unwrap();
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(3)).unwrap().clone();
+    node.kind = "test.reject_materialized".into();
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let Planned::Ready(mut plan) = plan(canvas, &kinds, &RunMode::Selected, &[id(2), id(3), id(4), id(5)].into_iter().collect(), &BTreeSet::new()).unwrap()
+    else {
+        panic!("blocked")
+    };
+    // The independent sibling needs just one value of the remaining allowance.
+    plan.steps.iter_mut().find(|s| s.node == id(4)).unwrap().inputs[0].from = vec![InputSource::Value(Value::Text("z".into()))];
+    let each = value_bytes(&Value::Text("a".into()));
+    let limits = RunLimits { list_items: 2, step_bytes: 2 * each, run_bytes: 3 * each };
+    let (mut run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, limits)).unwrap();
+    let (finished, failed, jobs) = drive(&mut run, &kinds, first, &BTreeSet::new());
+    assert_eq!(finished.iter().map(|r| r.node).collect::<Vec<_>>(), vec![id(2), id(4)]);
+    assert_eq!(output(&finished, 4), "(z)");
+    assert_eq!(failed.len(), 2);
+    assert!(failed[0].reason.contains("custom planning rejected"));
+    assert!(failed[1].reason.contains("the run's inputs are larger"));
+    assert_eq!(run.run_bytes, 3 * each);
+    assert_eq!(run.copied_input_bytes.get(), 3 * each);
+    assert!(run.is_finished());
+    for job in jobs {
+        assert_eq!(run.job_failed(job.id, "late cancellation"), Progress::default());
+    }
+}
+
+#[test]
+fn runtime_size_preflight_matches_all_values_and_has_depth_bounded_scratch() {
+    use nodecraft_types::{AssetRef, Blake3, Integer, MediaMeta, Number, Unsigned};
+    let leaf = Value::Text("leaf".into());
+    let nest = |depth| (0..depth).fold(leaf.clone(), |value, _| Value::List(vec![value]));
+    let wide = Value::List(vec![Value::Bool(true); nodecraft_graph::MAX_VALUE_ITEMS - 1]);
+    let values = vec![
+        Value::Bool(true),
+        Value::Integer(Integer(i64::MIN)),
+        Value::Unsigned(Unsigned(u64::MAX)),
+        Value::Number(Number::new(f64::MAX).unwrap()),
+        leaf.clone(),
+        Value::Media(AssetRef { hash: Blake3::from_bytes([1; 32]), mime: "image/png".parse().unwrap(), meta: MediaMeta::default() }),
+        Value::List(vec![Value::Text("nested".into()), Value::List(vec![Value::Bool(false)])]),
+        nest(nodecraft_graph::MAX_VALUE_DEPTH),
+        wide,
+    ];
+    let p = project(&[(1, "source.text", "x"), (2, "test.split", ""), (3, "test.join", "")], &[(1, "out", 2, 0), (2, "items", 3, 0)]);
+    let kinds = kinds();
+    for value in values {
+        let required = value_bytes(&value);
+        let mut plan = plan_of(&p, &[2, 3]);
+        plan.steps.iter_mut().find(|s| s.node == id(3)).unwrap().inputs[0].from = vec![InputSource::Value(value.clone())];
+        for budget in [required, required - 1] {
+            let limits = RunLimits { list_items: 1, step_bytes: budget, run_bytes: budget };
+            let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
+            let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+            assert_eq!(failed.is_empty(), budget == required);
+            assert_eq!(finished.len(), if budget == required { 2 } else { 1 });
+            assert_eq!(run.run_bytes, if budget == required { required } else { 0 });
+            assert_eq!(run.copied_input_bytes.get(), run.run_bytes);
+            assert!(run.preflight_stack_peak.get() <= nodecraft_graph::MAX_VALUE_DEPTH + 1);
+            if let Value::List(items) = &value
+                && items.len() == nodecraft_graph::MAX_VALUE_ITEMS - 1
+            {
+                assert_eq!(run.preflight_stack_peak.get(), 2, "wide-list scratch tracks root/child depth, not4095children");
+            }
+        }
+    }
+    for value in [nest(nodecraft_graph::MAX_VALUE_DEPTH + 1), Value::List(vec![Value::Bool(true); nodecraft_graph::MAX_VALUE_ITEMS])] {
+        let mut plan = plan_of(&p, &[2, 3]);
+        plan.steps.iter_mut().find(|s| s.node == id(3)).unwrap().inputs[0].from = vec![InputSource::Value(value)];
+        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+        let (_, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].reason.contains("document"));
+        assert_eq!(run.run_bytes, 0);
+        assert_eq!(run.copied_input_bytes.get(), 0);
+        assert!(run.preflight_stack_peak.get() <= nodecraft_graph::MAX_VALUE_DEPTH + 1);
     }
 }
