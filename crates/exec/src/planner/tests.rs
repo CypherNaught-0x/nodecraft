@@ -146,13 +146,11 @@ fn run_selected_uses_upstream_results_and_plans_jobs_now() {
     assert_eq!(order(&plan), vec![id(3)]);
     let step = plan.steps.first().unwrap();
     assert_eq!(step.inputs.first().unwrap().from, vec![InputSource::Value(Value::Text("forest".into()))]);
-    // Every input is known, so the jobs exist already and the (free) cost is complete.
+    // Every input is known, so the jobs exist already.
     assert_eq!(
         step.jobs,
         Some(vec![JobSpec::Source { node: id(3), output: "out".into(), value: Value::List(vec![Value::List(vec![Value::Text("forest".into())])]) }])
     );
-    assert!(plan.unpriced.is_empty());
-    assert_eq!(plan.cost, Money::zero(Currency::USD));
 }
 
 #[test]
@@ -171,7 +169,7 @@ fn run_selected_cant_run_yet_names_the_missing_input() {
     assert_eq!(last.inputs.first().unwrap().from, vec![InputSource::Step { node: id(3), port: "out".into(), list: false }]);
     assert_eq!(last.jobs, None);
     assert_eq!(plan.edges, vec![(id(3), id(4))]);
-    assert_eq!(plan.unpriced, vec![id(4)]);
+    assert!(last.jobs.is_none());
 }
 
 #[test]
@@ -460,7 +458,7 @@ fn a_deep_chain_plans_iteratively() {
     let plan = ready(plan_run(canvas, &kinds(), &RunMode::WithUpstream, &[node(N - 1).id].into_iter().collect(), &BTreeSet::new()).unwrap());
     assert_eq!(plan.steps.len(), usize::from(N));
     assert_eq!(plan.steps.first().map(|s| s.node), Some(node(0).id));
-    assert_eq!(plan.unpriced.len(), usize::from(N) - 1);
+    assert_eq!(plan.steps.iter().filter(|s| s.jobs.is_none()).count(), usize::from(N) - 1);
 }
 
 proptest! {

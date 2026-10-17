@@ -426,9 +426,9 @@ a choice a later contributor might otherwise undo.
   and `nodecraft:<run>:<job>` idempotency keys, and gives every job of a step a dependency on
   every job of the steps in its `after` list. Steps planned later are added as placeholders so a
   failed upstream can skip them and the queue panel can show them.
-- **Cost before confirmation.** Today only sources are priced (free), and steps whose jobs are
-  planned later are listed in `unpriced`. The catalog (#76) prices a step from its node and
-  parameters, which don't depend on upstream values, so multi-step runs can be quoted in full.
+- **Pricing is not the planner's job.** A `RunPlan` carries no cost; `cost::quote` (#76) prices
+  its steps from their nodes' models and parameters, which don't depend on upstream values, so
+  multi-step runs can be quoted in full before they start.
 - **Planning is bounded** for hostile projects: upstream values are resolved once per output,
   one list input holds at most `MAX_VALUE_ITEMS` items, one step's known inputs at most 64 MiB
   and the whole plan's at most 256 MiB, and at most 256 blockers are reported; past a limit the

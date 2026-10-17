@@ -12,7 +12,7 @@
 
 use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry};
-use nodecraft_types::{Currency, Error, ErrorKind, FieldId, Money, NodeId, PortType, Value};
+use nodecraft_types::{Error, ErrorKind, FieldId, NodeId, PortType, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Which nodes a run covers.
@@ -62,19 +62,13 @@ pub struct Step {
     pub jobs: Option<Vec<JobSpec>>,
 }
 
-/// A plan that can run: steps in dependency order and what is known of its cost.
+/// A plan that can run: steps in dependency order. Its price is `cost::quote` (#76), the one
+/// place runs are priced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunPlan {
     pub steps: Vec<Step>,
     /// Dependencies between steps, `(before, after)`.
     pub edges: Vec<(NodeId, NodeId)>,
-    /// Total of the steps priced so far. Source jobs are free; provider pricing comes with the
-    /// catalog (#76), which prices a step from its node and parameters so a multi-step run can
-    /// be quoted in full before it starts.
-    pub cost: Money,
-    /// Steps whose cost isn't known yet (jobs planned later, or not priced). The confirmation
-    /// must say the total is partial while this is non-empty.
-    pub unpriced: Vec<NodeId>,
 }
 
 /// Why a node can't run yet.
@@ -189,28 +183,7 @@ pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTree
     if !blockers.is_empty() {
         return Ok(Planned::Blocked(blockers));
     }
-    let mut cost = Money::zero(Currency::USD);
-    let mut unpriced = Vec::new();
-    for step in &steps {
-        let priced = step.jobs.as_ref().and_then(|jobs| jobs.iter().map(price).collect::<Option<Vec<Vec<Money>>>>()).map(|p| p.into_iter().flatten());
-        match priced {
-            Some(amounts) => {
-                for amount in amounts {
-                    cost = cost.checked_add(amount)?;
-                }
-            }
-            None => unpriced.push(step.node),
-        }
-    }
-    Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), cost, unpriced }))
-}
-
-/// A job's price, or `None` when it can't be priced yet. Sources are free; provider jobs are
-/// priced from the catalog (#76), which also brings quotes in more than one currency.
-fn price(job: &JobSpec) -> Option<Vec<Money>> {
-    match job {
-        JobSpec::Source { .. } => Some(Vec::new()),
-    }
+    Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect() }))
 }
 
 /// Values already resolved for an upstream `(node, output port)`, with whether that output is a
