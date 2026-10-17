@@ -4,6 +4,19 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+
+## 2026-10-17 · MCP bridge (#116)
+
+- **The bridge is the control channel, not a second server.** `nodecraft-cli mcp --bridge` keeps
+  the MCP protocol in the CLI and forwards `command_list`, `command_run` and `canvas_inspect` to
+  the app's control channel (`control::Client`). The app's session, undo and command policy
+  apply unchanged, and there is one authenticated, bounded way into a running app. `ids_new`
+  stays local; `screenshot` exists only when bridged.
+- **Reconnect, never resend.** The app closes connections idle for 10 minutes, so the client
+  reconnects before a call after 9 minutes, re-reading the token file. After a lost or
+  out-of-step reply, the next call reconnects. The call that failed is reported, never resent,
+  so a command can't run twice.
+
 ## 2026-10-17 · Control channel (#115)
 
 - **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.

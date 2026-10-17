@@ -18,6 +18,9 @@ usage: nodecraft-cli <command>
 
 commands:
   mcp             serve NodeCraft to an MCP client over stdin/stdout (a new, empty project)
+  mcp --bridge [token-file]
+                  serve the running app instead (started with `nodecraft --control`); the
+                  token file defaults to control/control.json in the app's settings folder
   --version, -V   print the version, commit and build date
   --help, -h      print this help
 ";
@@ -37,6 +40,39 @@ fn random_bytes() -> impl FnMut() -> [u8; 16] {
     }
 }
 
+/// Serves `server` on stdio until the client closes it.
+fn serve_stdio(server: &mut McpServer) -> ExitCode {
+    // Stdout carries the protocol only; diagnostics go to stderr.
+    match serve(server, &mut std::io::stdin().lock(), &mut std::io::stdout().lock()) {
+        ServeEnd::Closed => ExitCode::SUCCESS,
+        ServeEnd::Io(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The token file the app writes: `control/control.json` in its settings folder.
+fn default_token_file() -> Option<std::path::PathBuf> {
+    // Resolved only: the CLI must not create, probe or repair the app's settings folder.
+    nodecraft_engine::settings::settings_dir().map(|dir| dir.join("control").join("control.json"))
+}
+
+fn bridge(token_file: Option<&str>) -> ExitCode {
+    let Some(path) = token_file.map(std::path::PathBuf::from).or_else(default_token_file) else {
+        eprintln!("error: no settings folder to find the app's control token in; pass the token file");
+        return ExitCode::FAILURE;
+    };
+    let client = match nodecraft_automation::control::Client::from_token_file(&path) {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("error: {}", e.message);
+            return ExitCode::FAILURE;
+        }
+    };
+    serve_stdio(&mut McpServer::bridge(client, Box::new(random_bytes())))
+}
+
 fn mcp() -> ExitCode {
     let mut new_id = random_bytes();
     let session = nodecraft_automation::blank_session(ProjectId::from_bytes(new_id()), CanvasId::from_bytes(new_id()));
@@ -48,15 +84,7 @@ fn mcp() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut server = McpServer::new(session, Box::new(new_id));
-    // Stdout carries the protocol only; diagnostics go to stderr.
-    match serve(&mut server, &mut std::io::stdin().lock(), &mut std::io::stdout().lock()) {
-        ServeEnd::Closed => ExitCode::SUCCESS,
-        ServeEnd::Io(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    serve_stdio(&mut McpServer::new(session, Box::new(new_id)))
 }
 
 fn main() -> ExitCode {
@@ -74,11 +102,15 @@ fn main() -> ExitCode {
             println!("nodecraft-cli {}", nodecraft_engine::build_info::long_version());
             ExitCode::SUCCESS
         }
-        Some("mcp") if args.len() == 1 => mcp(),
-        Some("mcp") => {
-            eprintln!("error: `mcp` takes no options yet (serving over stdio is the default)\n\n{USAGE}");
-            ExitCode::FAILURE
-        }
+        Some("mcp") => match args.get(1..).unwrap_or_default() {
+            [] => mcp(),
+            [flag] if flag == "--bridge" => bridge(None),
+            [flag, path] if flag == "--bridge" => bridge(Some(path)),
+            _ => {
+                eprintln!("error: `mcp` takes only `--bridge [token-file]`\n\n{USAGE}");
+                ExitCode::FAILURE
+            }
+        },
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");
             ExitCode::SUCCESS

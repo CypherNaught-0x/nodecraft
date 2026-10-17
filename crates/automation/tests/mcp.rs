@@ -92,7 +92,7 @@ fn commands_are_listed_and_run_like_the_ui() {
     let page = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS}));
     assert_eq!(page["structuredContent"]["nodes"][0]["id"], id.as_str());
     assert_eq!(call(&mut s, "command_run", json!({"id": "edit.undo"}))["isError"], false);
-    assert_eq!(s.session().revision(), 2);
+    assert_eq!(s.session().unwrap().revision(), 2);
     let overview = call(&mut s, "canvas_inspect", json!({}));
     assert_eq!(overview["structuredContent"]["canvases"][0]["nodes"], 0, "undone");
 }
@@ -105,12 +105,12 @@ fn node_edits_use_shared_validation_and_undo_over_mcp() {
     let node = kinds.get("source.text").unwrap().instantiate_instance(id, Default::default(), &Default::default()).unwrap();
     let added = call(&mut s, "command_run", json!({"id":"node.add","params":{"canvas":CANVAS,"node":node}}));
     assert_eq!(added["isError"], false, "{added}");
-    let original = s.session().document().clone();
+    let original = s.session().unwrap().document().clone();
     let list = call(&mut s, "command_list", json!({"query":"node."}));
     let commands = list["structuredContent"]["commands"].as_array().unwrap();
     for command in ["node.title", "node.param_set"] {
         let entry = commands.iter().find(|entry| entry["id"] == command).unwrap();
-        assert_eq!(entry["params_schema"], (s.session().registry().get(command).unwrap().input_schema)());
+        assert_eq!(entry["params_schema"], (s.session().unwrap().registry().get(command).unwrap().input_schema)());
     }
     let inspect = call(&mut s, "canvas_inspect", json!({"canvas":CANVAS,"node":id}));
     assert_eq!(inspect["structuredContent"]["node"]["title"], "", "automatic titles retain empty stored data");
@@ -118,14 +118,14 @@ fn node_edits_use_shared_validation_and_undo_over_mcp() {
         ("node.title", json!({"canvas":CANVAS,"id":id,"title":"Renamed"})),
         ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"text","value":{"type":"text","value":"Edited prompt"}})),
     ] {
-        let before = s.session().document().clone();
-        let revision = s.session().revision();
+        let before = s.session().unwrap().document().clone();
+        let revision = s.session().unwrap().revision();
         let edited = call(&mut s, "command_run", json!({"id":command,"params":params}));
         assert_eq!(edited["isError"], false, "{edited}");
-        assert_eq!(s.session().revision(), revision + 1);
-        assert_ne!(s.session().document(), &before);
+        assert_eq!(s.session().unwrap().revision(), revision + 1);
+        assert_ne!(s.session().unwrap().document(), &before);
         assert_eq!(call(&mut s, "command_run", json!({"id":"edit.undo"}))["isError"], false);
-        assert_eq!(s.session().document(), &before);
+        assert_eq!(s.session().unwrap().document(), &before);
         assert_eq!(call(&mut s, "command_run", json!({"id":"edit.redo"}))["isError"], false);
         let inspected = call(&mut s, "canvas_inspect", json!({"canvas":CANVAS,"node":id}));
         if command == "node.title" {
@@ -135,22 +135,22 @@ fn node_edits_use_shared_validation_and_undo_over_mcp() {
         }
         assert_eq!(call(&mut s, "command_run", json!({"id":"edit.undo"}))["isError"], false);
     }
-    assert_eq!(s.session().document(), &original);
+    assert_eq!(s.session().unwrap().document(), &original);
     for (command, params) in [
         ("node.title", json!({"canvas":CANVAS,"id":id,"title":"x".repeat(4097)})),
         ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"text","value":{"type":"bool","value":true}})),
         ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"unknown","value":null})),
         ("node.param_set", json!({"canvas":CANVAS,"id":id,"name":"text"})),
     ] {
-        let revision = s.session().revision();
-        let history = (s.session().can_undo(), s.session().can_redo());
-        assert!(s.session().enabled(command, &params).is_err());
+        let revision = s.session().unwrap().revision();
+        let history = (s.session().unwrap().can_undo(), s.session().unwrap().can_redo());
+        assert!(s.session().unwrap().enabled(command, &params).is_err());
         let rejected = call(&mut s, "command_run", json!({"id":command,"params":params}));
         assert_eq!(rejected["isError"], true, "{rejected}");
-        assert_eq!(s.session().document(), &original);
-        assert_eq!(s.session().revision(), revision);
-        assert_eq!((s.session().can_undo(), s.session().can_redo()), history);
-        assert!(s.session().events_since(revision).unwrap().is_empty());
+        assert_eq!(s.session().unwrap().document(), &original);
+        assert_eq!(s.session().unwrap().revision(), revision);
+        assert_eq!((s.session().unwrap().can_undo(), s.session().unwrap().can_redo()), history);
+        assert!(s.session().unwrap().events_since(revision).unwrap().is_empty());
     }
     assert_eq!(call(&mut s, "command_run", json!({"id":"edit.redo"}))["isError"], false, "rejected edits preserve redo");
 }
@@ -171,7 +171,7 @@ fn tool_failures_are_results_the_model_can_read() {
         assert!(text.contains(says), "{text}");
         assert!(!text.contains("sk-secret"), "{text}");
     }
-    assert_eq!(s.session().revision(), 0, "nothing changed");
+    assert_eq!(s.session().unwrap().revision(), 0, "nothing changed");
     assert_eq!(call(&mut s, "canvas_inspect", json!({"canvas": "not-a-uuid"}))["isError"], true);
     assert_eq!(call(&mut s, "canvas_inspect", json!({"canvas": CanvasId::from_bytes([9; 16])}))["isError"], true);
     assert_eq!(call(&mut s, "canvas_inspect", json!({"canvas": CANVAS, "offset": -1}))["isError"], true);
@@ -301,10 +301,10 @@ fn malformed_envelopes() {
     assert_eq!(call(&mut s, "command_run", json!({"id":"node.add","params":{"canvas":CANVAS,"node":{"id":id,"kind":"text"}}}))["isError"], false);
     call(&mut s, "command_run", json!({"id":"node.title","params":{"canvas":CANVAS,"id":id,"title":"redo"}}));
     call(&mut s, "command_run", json!({"id":"edit.undo"}));
-    let before = s.session().document().clone();
-    let revision = s.session().revision();
-    let history = (s.session().can_undo(), s.session().can_redo());
-    let events = s.session().events_since(0).unwrap();
+    let before = s.session().unwrap().document().clone();
+    let revision = s.session().unwrap().revision();
+    let history = (s.session().unwrap().can_undo(), s.session().unwrap().can_redo());
+    let events = s.session().unwrap().events_since(0).unwrap();
     let attempted = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"node.title","params":{"canvas":CANVAS,"id":id,"title":"INVALID_MARKER"}}}}).to_string();
     let marker = attempted.find("INVALID_MARKER").unwrap();
     let mut input = attempted.into_bytes();
@@ -318,18 +318,18 @@ fn malformed_envelopes() {
     assert_eq!(replies.len(), 2);
     assert_eq!(replies[0]["error"]["code"], -32700, "invalid UTF-8 is a parse error before mutation");
     assert_eq!(replies[1], json!({"jsonrpc":"2.0","id":3,"result":{}}), "following valid frame remains aligned");
-    assert_eq!(s.session().document(), &before);
-    assert_eq!(s.session().revision(), revision);
-    assert_eq!((s.session().can_undo(), s.session().can_redo()), history);
-    assert_eq!(s.session().events_since(0).unwrap(), events);
+    assert_eq!(s.session().unwrap().document(), &before);
+    assert_eq!(s.session().unwrap().revision(), revision);
+    assert_eq!((s.session().unwrap().can_undo(), s.session().unwrap().can_redo()), history);
+    assert_eq!(s.session().unwrap().events_since(0).unwrap(), events);
     let valid = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"node.title","params":{"canvas":CANVAS,"id":id,"title":"valid after malformed frame"}}}}).to_string()+"\n";
     let mut out = Vec::new();
     assert!(matches!(serve(&mut s, &mut valid.as_bytes(), &mut out), ServeEnd::Closed));
     let reply: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(reply["result"]["isError"], false);
-    assert_eq!(s.session().revision(), revision + 1);
+    assert_eq!(s.session().unwrap().revision(), revision + 1);
     call(&mut s, "command_run", json!({"id":"edit.undo"}));
-    assert_eq!(s.session().document(), &before);
+    assert_eq!(s.session().unwrap().document(), &before);
 }
 
 #[test]
@@ -381,25 +381,25 @@ fn navigation_commands_are_discoverable_but_require_a_live_view_host() {
     let mut s = server();
     let list = call(&mut s, "command_list", json!({"query":"canvas."}));
     let commands = list["structuredContent"]["commands"].as_array().unwrap();
-    let before = s.session().document().clone();
-    let revision = s.session().revision();
+    let before = s.session().unwrap().document().clone();
+    let revision = s.session().unwrap().revision();
     for (id, params) in
         [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
     {
         let entry = commands.iter().find(|entry| entry["id"] == id).unwrap();
-        assert_eq!(entry["params_schema"], (s.session().registry().get(id).unwrap().input_schema)());
+        assert_eq!(entry["params_schema"], (s.session().unwrap().registry().get(id).unwrap().input_schema)());
         if id != "canvas.pan_to" {
             assert_eq!(entry["ready"], false);
         }
-        let error = s.session().enabled(id, &params).unwrap_err();
+        let error = s.session().unwrap().enabled(id, &params).unwrap_err();
         assert_eq!(error.kind, nodecraft_types::ErrorKind::Unsupported);
         let result = call(&mut s, "command_run", json!({"id":id,"params":params}));
         assert_eq!(result["isError"], true, "{result}");
         assert!(result["content"][0]["text"].as_str().unwrap().contains("unsupported"));
-        assert_eq!(s.session().document(), &before);
-        assert_eq!(s.session().revision(), revision);
-        assert!(!s.session().can_undo() && !s.session().can_redo());
-        assert!(s.session().events_since(revision).unwrap().is_empty());
+        assert_eq!(s.session().unwrap().document(), &before);
+        assert_eq!(s.session().unwrap().revision(), revision);
+        assert!(!s.session().unwrap().can_undo() && !s.session().unwrap().can_redo());
+        assert!(s.session().unwrap().events_since(revision).unwrap().is_empty());
     }
 }
 
@@ -439,10 +439,10 @@ fn navigation_dispatch_uses_explicit_live_host_without_document_mutations() {
         let result = call(&mut s, "command_run", json!({"id":id,"params":params}));
         assert_eq!(result["isError"], false, "{result}");
         assert_eq!(result["structuredContent"]["result"], json!({"accepted":true}));
-        assert_eq!(s.session().document(), &before);
-        assert_eq!(s.session().revision(), revision);
-        assert!(!s.session().can_undo() && !s.session().can_redo());
-        assert!(s.session().events_since(revision).unwrap().is_empty());
+        assert_eq!(s.session().unwrap().document(), &before);
+        assert_eq!(s.session().unwrap().revision(), revision);
+        assert!(!s.session().unwrap().can_undo() && !s.session().unwrap().can_redo());
+        assert!(s.session().unwrap().events_since(revision).unwrap().is_empty());
     }
     assert_eq!(
         *requests.borrow(),

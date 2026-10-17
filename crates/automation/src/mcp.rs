@@ -73,10 +73,18 @@ const INVALID_PARAMS: i64 = -32602;
 /// Where fresh ids come from (randomness belongs to the host platform).
 pub type IdSource = Box<dyn FnMut() -> [u8; 16]>;
 
-/// One MCP connection over one engine session.
+/// One MCP connection: over its own engine session, or bridged to a running app.
 pub struct McpServer {
-    session: Session,
+    backend: Backend,
     new_id: IdSource,
+}
+
+enum Backend {
+    /// A headless session of its own.
+    Local(Box<Session>),
+    /// The running app's session, through its control channel (`nodecraft --control`).
+    #[cfg(not(target_arch = "wasm32"))]
+    Bridge(crate::control::Client),
 }
 
 /// Whether automation may see and run the command `id`.
@@ -320,11 +328,27 @@ pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Re
 
 impl McpServer {
     pub fn new(session: Session, new_id: IdSource) -> Self {
-        Self { session, new_id }
+        Self { backend: Backend::Local(Box::new(session)), new_id }
     }
 
-    pub fn session(&self) -> &Session {
-        &self.session
+    /// A server that works on the running app (`nodecraft --control`) through `client`: the
+    /// agent edits the canvas the user sees, and can take screenshots of it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bridge(client: crate::control::Client, new_id: IdSource) -> Self {
+        Self { backend: Backend::Bridge(client), new_id }
+    }
+
+    /// The local session (`None` when bridged to the app).
+    pub fn session(&self) -> Option<&Session> {
+        match &self.backend {
+            Backend::Local(session) => Some(session),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Bridge(_) => None,
+        }
+    }
+
+    fn bridged(&self) -> bool {
+        !matches!(self.backend, Backend::Local(_))
     }
 
     /// Handles one message (a JSON-RPC request or notification) and returns the reply to send,
@@ -365,7 +389,7 @@ impl McpServer {
         let reply = match method.as_str() {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tools()})),
+            "tools/list" => Ok(json!({"tools": self.tools()})),
             "tools/call" => self.call(params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {}", other.chars().take(64).collect::<String>()))),
         };
@@ -397,17 +421,58 @@ impl McpServer {
             Some(Value::Object(args)) => args,
             Some(_) => return Err((INVALID_PARAMS, "tool arguments must be an object".into())),
         };
-        let result = match name.as_str() {
-            "command_list" => command_list(&self.session, &args),
-            "command_run" => command_run(&mut self.session, args),
-            "canvas_inspect" => canvas_inspect(&self.session, &args),
-            "ids_new" => self.ids_new(&args),
-            other => return Err((INVALID_PARAMS, format!("unknown tool {}", other.chars().take(64).collect::<String>()))),
+        let unknown = || Err((INVALID_PARAMS, format!("unknown tool {}", name.chars().take(64).collect::<String>())));
+        let result = match (&mut self.backend, name.as_str()) {
+            (_, "ids_new") => self.ids_new(&args),
+            (Backend::Local(session), "command_list") => command_list(session, &args),
+            (Backend::Local(session), "command_run") => command_run(session, args),
+            (Backend::Local(session), "canvas_inspect") => canvas_inspect(session, &args),
+            #[cfg(not(target_arch = "wasm32"))]
+            (Backend::Bridge(client), tool @ ("command_list" | "command_run" | "canvas_inspect")) => {
+                let method = match tool {
+                    "command_list" => "commands.list",
+                    "command_run" => "command.run",
+                    _ => "canvas.inspect",
+                };
+                client.call(method, args)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Backend::Bridge(client), "screenshot") => {
+                let image = client.call("screenshot", Map::new()).and_then(|mut shot| {
+                    let shot = shot.as_object_mut().ok_or_else(internal)?;
+                    // Moved, not cloned: a screenshot can be tens of megabytes.
+                    match (shot.remove("data"), shot.remove("mime")) {
+                        (Some(Value::String(data)), Some(Value::String(mime))) => Ok((data, mime)),
+                        _ => Err(Error::new(ErrorKind::Internal, "the app sent a screenshot without image data")),
+                    }
+                });
+                return Ok(match image {
+                    Ok((data, mime)) => json!({"content": [{"type": "image", "data": data, "mimeType": mime}], "isError": false}),
+                    Err(e) => tool_err(&e),
+                });
+            }
+            _ => return unknown(),
         };
         Ok(match result {
             Ok(v) => tool_ok(v),
             Err(e) => tool_err(&e),
         })
+    }
+
+    fn tools(&self) -> Value {
+        let mut list = tools();
+        if self.bridged()
+            && let Some(items) = list.as_array_mut()
+        {
+            items.push(json!({
+                "name": "screenshot",
+                "title": "Screenshot the app",
+                "description": "A PNG of the NodeCraft window as the user sees it right now.",
+                "inputSchema": object_schema(json!({}), &[]),
+                "annotations": {"readOnlyHint": true, "openWorldHint": false}
+            }));
+        }
+        list
     }
 
     fn ids_new(&mut self, args: &Map<String, Value>) -> Result<Value, Error> {
@@ -469,6 +534,11 @@ pub(crate) enum Line {
 /// Reads one line into `buf`, keeping at most [`MAX_MESSAGE_BYTES`]; the rest of a longer line
 /// is read and dropped.
 pub(crate) fn read_line(input: &mut dyn BufRead, buf: &mut Vec<u8>) -> std::io::Result<Line> {
+    read_line_capped(input, buf, MAX_MESSAGE_BYTES)
+}
+
+/// [`read_line`] with a different cap (the bridge reads screenshot replies).
+pub(crate) fn read_line_capped(input: &mut dyn BufRead, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<Line> {
     let mut too_long = false;
     let mut any = false;
     loop {
@@ -492,7 +562,7 @@ pub(crate) fn read_line(input: &mut dyn BufRead, buf: &mut Vec<u8>) -> std::io::
             None => (chunk.len(), false),
         };
         if !too_long {
-            let room = MAX_MESSAGE_BYTES.saturating_sub(buf.len());
+            let room = cap.saturating_sub(buf.len());
             match chunk.get(..take) {
                 Some(part) if part.len() <= room => buf.extend_from_slice(part),
                 _ => {
