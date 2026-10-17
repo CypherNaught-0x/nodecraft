@@ -45,6 +45,9 @@ selected border more visible than the resting one, in both themes.
 | Pinch, or ⌘/Ctrl + scroll | zoom about the pointer (10%–400%) |
 | ⌘/Ctrl + `=` / `-` | zoom about the centre by 1.25× |
 | ⌘/Ctrl + `0`, or click the zoom badge | 100%, centred on the cards |
+| Shift+1 / Shift+2 outside editors and gestures | fit all / selected nodes |
+| Shift+M, or Hide map / Show map | toggle the minimap |
+| Click or primary-drag the minimap | center the canvas on that world point |
 | Drag a card background | move through `node.move`, one undo step per gesture; click selects it |
 | Click a card / Shift-click | select only it / add or remove it from the selection |
 | Shift-drag empty canvas | box select: cards the box touches join the selection (live while dragging); Escape cancels the box |
@@ -113,3 +116,33 @@ same notice offers a way to discard. These drafts are not silently committed dur
 
 New sizing tokens cover preview length, editor rows, title minimum size and handle hit/stroke
 sizes. The selected card is painted last. The home bounds are computed only for startup/reset.
+
+## Minimap and fit navigation
+
+The bottom-right minimap shows actual instance card bodies, highlights selected nodes, and outlines
+the current viewport. Its toolbar keeps Fit all, Fit selected, the map toggle and the existing zoom
+reset discoverable. Map visibility, pan and zoom are session-local view state, never project data or
+undo entries. Default map size is 320×160 points, with a 30-point toolbar, 16-point outer margin
+and 6-point gaps; these dimensions and the 24-point fit padding are theme tokens.
+
+Fit resolves actual instance geometry for every node, including offscreen nodes, and includes titles,
+unsaved labels and handles. Every instance hook and node payload is checked; identical borrowed descriptors share successful
+validation within a refresh, while owned dynamic descriptors validate individually. Startup/reset
+uses the same geometry path. Only lightweight rectangles survive between document revisions.
+Unknown kinds and failed instance/schema admission use the complete painted placeholder, which
+remains navigable. Invalid payloads or unavailable/nonfinite geometry disable Fit all; Fit selected
+requires valid geometry for every selected node. This navigation fallback does not provide
+authoritative layout geometry. Empty sets and invalid/tiny viewports cannot fit.
+Fit reserves space above the overlay and clamps zoom to 10%–400%. When widely spread nodes cannot
+all fit at 10%, it centers them at minimum zoom and reports that limitation.
+
+Minimap gestures own the pointer through release even outside the map, with a frozen transform
+so the target cannot chase the changing viewport. Map input cannot start a canvas gesture beneath
+it, interrupt a card/box/pan gesture, or act through a popup or active text editor.
+
+The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
+commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
+params)` (and `navigation_enabled`) to compute current geometry, selection and focus, temporarily
+install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
+headless Session has no live capability and returns Unsupported. Existing services/resources are
+preserved. The older 100% reset button and shortcut retain their existing view-only path.

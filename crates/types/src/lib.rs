@@ -17,5 +17,5 @@ pub use error::{Error, ErrorKind};
 pub use ids::*;
 pub use money::{Currency, Money, Rounding};
 pub use scalar::{Integer, Number, Unsigned};
-pub use schema::{Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, VisibleIf};
+pub use schema::{BorrowedResolvedParams, Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, ValidatedParamSchema, VisibleIf};
 pub use value::{Modality, PortType, Value};
