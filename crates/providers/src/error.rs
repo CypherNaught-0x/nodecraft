@@ -29,6 +29,9 @@ pub enum ErrorKind {
     NotFound,
     /// The job was cancelled.
     Cancelled,
+    /// The provider ran the job and it failed (a workflow error, a model that refused). Not
+    /// retried automatically: running it again would usually fail the same way, and may cost.
+    JobFailed,
     /// The job ran past its deadline. Not retried: it may still be running (and billing) on the
     /// provider, so the job's handle should be resumed or cancelled, never resubmitted.
     Expired,
@@ -101,6 +104,7 @@ impl fmt::Display for ProviderError {
             ErrorKind::NotFound => "job not found",
             ErrorKind::Cancelled => "cancelled",
             ErrorKind::Expired => "took too long",
+            ErrorKind::JobFailed => "the job failed",
         };
         write!(f, "{what}: {}", self.message)
     }
