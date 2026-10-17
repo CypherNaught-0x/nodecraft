@@ -15,7 +15,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_REDIRECTS: usize = 5;
 
 /// Headers that always carry credentials and are dropped when a redirect leaves the origin.
-const ALWAYS_SECRET: &[&str] = &["authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "x-goog-api-key"];
+const ALWAYS_SECRET: &[&str] = &["authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "x-goog-api-key", "xi-api-key"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {

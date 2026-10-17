@@ -47,11 +47,14 @@ pub enum RunUpdate {
 pub struct RunFailure {
     pub error: ProviderError,
     pub handle: Option<JobHandle>,
+    /// The provider itself reported the job as failed: it is over, and resuming it would only
+    /// read the same failure again, so a retry must submit afresh.
+    pub finished: bool,
 }
 
 impl RunFailure {
     fn before_submit(error: ProviderError) -> Self {
-        Self { error, handle: None }
+        Self { error, handle: None, finished: false }
     }
 
     /// Worth retrying: transient, and either never submitted or resumable by handle.
@@ -104,7 +107,7 @@ pub async fn resume(
     limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
 ) -> Result<Vec<Output>, RunFailure> {
-    let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()) };
+    let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()), finished: false };
     let started = clock.now_ms();
     let mut poll_errors: u32 = 0;
     let max_interval = limits.max_poll_interval_ms.max(1);
@@ -131,7 +134,7 @@ pub async fn resume(
         };
         match polled {
             Ok(JobProgress::Done(outputs)) => return Ok(outputs),
-            Ok(JobProgress::Failed(e)) => return Err(fail(e)),
+            Ok(JobProgress::Failed(e)) => return Err(RunFailure { error: e, handle: Some(handle.clone()), finished: true }),
             Ok(progress) => {
                 poll_errors = 0;
                 interval = provider.poll_interval_ms(&progress).clamp(1, max_interval);
@@ -195,7 +198,9 @@ pub async fn fetch_output(http: &dyn Http, url: &str, expected: Option<nodecraft
         return Err(ProviderError::new(ErrorKind::Malformed, "the output link is not an http(s) URL"));
     }
     let response = http.send(HttpRequest::get(url).max_response_bytes(max_bytes).timeout_ms(10 * 60 * 1000)).await?.error_for_status()?;
-    if let Some(announced) = response.header("content-length").and_then(|v| v.trim().parse::<usize>().ok())
+    // A compressed body is decoded (by the browser's fetch) while Content-Length stays compressed.
+    if response.header("content-encoding").is_none()
+        && let Some(announced) = response.header("content-length").and_then(|v| v.trim().parse::<usize>().ok())
         && announced != response.body.len()
     {
         return Err(ProviderError::new(ErrorKind::Network, format!("the download was cut short ({} of {announced} bytes)", response.body.len())));
@@ -376,7 +381,7 @@ mod tests {
             let p = Scripted::new(vec![Ok(JobProgress::Failed(ProviderError::new(kind, "x")))]);
             let f = run(&p, &Flag::default(), RunLimits::default(), &mut Vec::new()).unwrap_err();
             assert_eq!(f.error.kind, kind);
-            assert!(f.handle.is_some());
+            assert!(f.handle.is_some() && f.finished, "the provider ended it: nothing to resume");
         }
     }
 

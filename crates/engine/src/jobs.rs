@@ -58,6 +58,14 @@ impl ProviderRunner {
         self.lock().handles.insert(idempotency_key, handle);
     }
 
+    /// Drops a finished job's registration and handle (call when the scheduler forgets it).
+    pub fn forget(&self, id: JobId) {
+        let mut s = self.lock();
+        if let Some(q) = s.jobs.remove(&id) {
+            s.handles.remove(&q.job.idempotency_key);
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -136,8 +144,8 @@ impl JobRunner for ProviderRunner {
                     Outcome::Done
                 }
                 Err(failure) => {
-                    if failure.handle.is_none() || !failure.is_transient() {
-                        // Nothing to resume (never accepted, or finished for good).
+                    if failure.handle.is_none() || failure.finished || !failure.is_transient() {
+                        // Nothing to resume: never accepted, ended by the provider, or over for good.
                         lock().handles.remove(&start.idempotency_key);
                     }
                     outcome(&failure.error)
@@ -223,6 +231,44 @@ mod tests {
         assert_eq!(second, Outcome::Done);
         assert_eq!(provider.submits.load(Ordering::SeqCst), 1, "submitted once across both attempts");
         assert_eq!(outputs.lock().unwrap().as_slice(), &[(JobId(1), vec![Output::Text("done".into())])]);
+    }
+
+    /// Fails on the provider (transiently) the first time it is polled, then succeeds.
+    struct FailsOnce {
+        submits: AtomicU64,
+        polls: AtomicU64,
+    }
+
+    impl Provider for FailsOnce {
+        fn id(&self) -> &str {
+            "fails-once"
+        }
+        fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            self.submits.fetch_add(1, Ordering::SeqCst);
+            let id = job.idempotency_key.clone();
+            Box::pin(async move { Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::Value::Null })) })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            let first = self.polls.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                Ok(if first { JobProgress::Failed(ProviderError::new(ErrorKind::Server, "OOM")) } else { JobProgress::Done(vec![Output::Text("ok".into())]) })
+            })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn a_job_the_provider_failed_is_submitted_again_on_retry() {
+        let provider = Arc::new(FailsOnce { submits: AtomicU64::new(0), polls: AtomicU64::new(0) });
+        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
+        runner.register(JobId(1), QueuedJob { provider: provider.clone(), job });
+        assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        assert_eq!(block_on(runner.run(start(2), CancelToken::default())), Outcome::Done);
+        assert_eq!(provider.submits.load(Ordering::SeqCst), 2, "a failed generation is retried as a new one");
+        runner.forget(JobId(1));
     }
 
     #[test]
