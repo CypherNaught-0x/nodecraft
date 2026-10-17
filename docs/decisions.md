@@ -4,7 +4,6 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
-
 ## 2026-10-17 · Control channel (#115)
 
 - **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.
@@ -616,7 +615,6 @@ a choice a later contributor might otherwise undo.
   still reports an oversize fan-in), and at most 4M entries in total; past that, resolution is
   refused. No recursion, so long router chains can't overflow the stack.
 
-
 ## 2026-10-17 · Router validation (#216)
 
 - **Resolution uses the installed registry.** Each router instance is validated once against
@@ -654,7 +652,6 @@ a choice a later contributor might otherwise undo.
 - Overview labels remain readable, controls appear only at readable scale, and named keyboard
   Rename actions complement double-click. Settings store lifecycle and scroll preferences remain
   intact in the graph-backed shell. Selection expansion remains owned by #58/PR144.
-
 
 ## 2026-10-17 · Staleness hashes content, within a budget (#213)
 
@@ -801,3 +798,17 @@ a choice a later contributor might otherwise undo.
   with no caps, reserves nothing. When it finishes, fresh or resumed, the cost the provider
   reported is recorded as `actual`, once per provider and key. A report the log refuses as
   implausibly large is left out rather than failing the finished job.
+
+## 2026-10-17 · Quick-add and palette (#61)
+
+- **`node.create {canvas, id, kind, pos}`** creates a kind with its default parameters through
+  the node registry, so quick-add keys, the palette and agents share one command; `node.add`
+  stays the low-level "insert this exact node". Ids are supplied by the caller (`crate::ids` in
+  the shell hashes and probes, as for edges).
+- **Quick-add keys come from node kinds' `quick_add` metadata**, not from hard-coded handlers.
+  A binding is one ASCII letter or digit, optionally `Shift+` (so `Shift+T` for the technique
+  picker works later); anything else is not bound. They fire on a fresh press (not key repeat)
+  with exactly those modifiers, outside text fields, menus and gestures, and never while the
+  palette is open (the palette also takes canvas keys like Delete and Escape for itself).
+- **The palette lists commands that are enabled with no parameters right now** (e.g. Undo when
+  there is something to undo); commands that need a target are reached from the canvas or menus.

@@ -7,6 +7,7 @@
 pub mod build_info;
 mod command_schemas;
 pub mod commands;
+pub mod create_cmds;
 pub mod edge_cmds;
 pub mod graph_cmds;
 pub mod jobs;

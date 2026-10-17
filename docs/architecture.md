@@ -209,8 +209,10 @@ shortcuts, alternate bindings, machine-readable JSON Schema and typed parameter 
 `node.add`, `node.remove`, `node.move`, `edge.connect`, `edge.disconnect`, `edit.undo` and
 `edit.redo`. `node_cmds::specs()` adds `node.title` and `node.param_set`; the latter validates the
 proposed node against its registered schema, including hidden parameters. An explicit null removes
-an override and restores a schema default; an omitted value is rejected. IDs in parameters are caller-supplied; node creation currently accepts detached
-graph data until the node-kind registry supplies templates. Handlers inspect an immutable
+an override and restores a schema default; an omitted value is rejected. `edge_cmds::specs()` adds
+the atomic `edge.rewire` and `canvas.delete`, and `create_cmds::specs()` adds `node.create`, which
+instantiates a registered kind with its defaults (quick-add keys and the palette use it; `node.add`
+still inserts exact detached graph data). IDs in parameters are caller-supplied. Handlers inspect an immutable
 context and return effects; they cannot directly mutate the live document. Hosts may inject typed
 immutable resources for selection/settings snapshots or explicit capabilities; missing resources
 return Unsupported. Handlers may return `Effect::Service` with a capability id and bounded JSON request. The session

@@ -2,8 +2,10 @@
 use crate::{
     canvas::{self, CanvasView},
     card::{self, EditTarget, EditorState, Intent},
+    ids,
     navigation::Navigation,
     noodle::{self, Side},
+    palette::{self, Palette},
     selection::{self, Selection},
     theme::{self, ThemeKind, Tokens},
 };
@@ -149,6 +151,18 @@ enum SelectQuery {
     Kind(String),
 }
 
+/// A kind's `quick_add` binding: one ASCII letter or digit, optionally after `Shift+`.
+/// Anything else (Escape, arrows, other modifiers, non-ASCII) is not bound.
+fn quick_add_key(spec: &str) -> Option<(egui::Modifiers, egui::Key)> {
+    let (modifiers, key) = match spec.strip_prefix("Shift+") {
+        Some(key) => (egui::Modifiers::SHIFT, key),
+        None => (egui::Modifiers::NONE, spec),
+    };
+    let mut chars = key.chars();
+    let single = chars.next().filter(|c| c.is_ascii_alphanumeric() && chars.next().is_none())?;
+    egui::Key::from_name(&single.to_ascii_uppercase().to_string()).map(|key| (modifiers, key))
+}
+
 /// A card's world rect: as painted this frame, or (for cards not drawn, e.g. off screen) from the
 /// kind's static descriptor.
 fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
@@ -199,6 +213,7 @@ pub struct NodeCraftApp {
     /// from here, not the evictable schema cache, so it matches what is on screen.
     painted: BTreeMap<NodeId, Rect>,
     wiring: Option<Wiring>,
+    palette: Option<Palette>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
     schemas: BTreeMap<NodeId, CachedSchema>,
@@ -306,6 +321,7 @@ impl NodeCraftApp {
             marquee: None,
             painted: BTreeMap::new(),
             wiring: None,
+            palette: None,
             text_focused: false,
             schemas: BTreeMap::new(),
             cache_clock: 0,
@@ -332,7 +348,8 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let selected_before = self.selection.clone();
-        if !canvas::text_input_focused(ui.ctx()) {
+        // Canvas keys yield to text fields and to the open palette (whose query may lose focus).
+        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() {
             let command = ui.input_mut(|input| {
                 self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
                     spec.shortcut
@@ -374,6 +391,29 @@ impl NodeCraftApp {
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 self.selection.replace(canvas.nodes().keys().copied().collect());
             }
+            // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
+            // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
+            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx());
+            if !self.text_focused && !busy {
+                let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
+                    self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
+                let pressed = ui.input_mut(|i| {
+                    let found = i.events.iter().find_map(|event| match event {
+                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
+                            bindings.iter().find(|(m, k, _)| k == key && m == modifiers).map(|(m, k, kind)| (*m, *k, kind.clone()))
+                        }
+                        _ => None,
+                    });
+                    let (modifiers, key, kind) = found?;
+                    // Consume every event of that key, repeats included.
+                    i.events.retain(|event| !matches!(event, egui::Event::Key { key: k, modifiers: m, .. } if *k == key && *m == modifiers));
+                    Some(kind)
+                });
+                if let Some(kind) = pressed {
+                    let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
+                    self.create_node(&kind, self.view.to_world(viewport.min, at));
+                }
+            }
             // Escape closes an open menu or leaves a text field first, then drops a noodle being
             // dragged, then cancels a box select, then clears.
             if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) && self.wiring.take().is_none() {
@@ -387,6 +427,8 @@ impl NodeCraftApp {
             }
         }
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
+        // Taken before navigation too: a fit or pan from the overlay also moves the view.
+        let view_before = self.view;
         let overlay_blocks = self.navigation_overlay(ui);
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
@@ -409,6 +451,10 @@ impl NodeCraftApp {
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
         if !overlay_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+        }
+        // The palette creates at the world point it opened on; once the view moves, close it.
+        if self.view != view_before {
+            self.palette = None;
         }
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
@@ -546,6 +592,16 @@ impl NodeCraftApp {
                     (Some((id, _)), false) => self.selection.only_edge(id),
                     (None, false) => self.selection.clear(),
                     (None, true) => {}
+                }
+            }
+            // Double-click empty canvas (not a noodle) for the quick-add palette.
+            if background.double_clicked()
+                && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+            {
+                let world = self.view.to_world(viewport.min, p);
+                let reach = NOODLE_HIT / self.view.zoom;
+                if !curves.iter().any(|(_, curve, _)| noodle::distance(curve, world) <= reach) {
+                    self.palette = Some(Palette::new(world, p));
                 }
             }
             // A noodle whose source node or picked-up edge vanished mid-drag (Delete, undo) is dropped.
@@ -692,6 +748,18 @@ impl NodeCraftApp {
                     });
                 });
         }
+        if let Some(mut open) = self.palette.take() {
+            let entries = self.palette_entries();
+            match open.show(ui.ctx(), &entries, t) {
+                palette::Outcome::Open => self.palette = Some(open),
+                palette::Outcome::Closed => {}
+                palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
+                palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
+                    Ok(_) => self.notice = None,
+                    Err(error) => self.notice = Some(error.message),
+                },
+            }
+        }
         self.navigation.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.keys_button(ui, viewport);
@@ -743,6 +811,42 @@ impl NodeCraftApp {
             store.update(|settings| apply(&mut settings.keys));
         }
     }
+    /// Create a node of `kind` centred on `world`, select it, and report failures as a notice.
+    fn create_node(&mut self, kind: &str, world: Pos2) {
+        let t = self.theme.tokens();
+        let pos = nodecraft_graph::Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
+        let seed = (kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
+        let Some(id) = ids::node_id(self.session.document(), seed) else {
+            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            return;
+        };
+        match self.session.dispatch("node.create", &json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos})) {
+            Ok(_) => {
+                self.notice = None;
+                self.selection.only(id);
+            }
+            Err(error) => self.notice = Some(error.message),
+        }
+    }
+
+    /// What the palette offers: every node kind, then every command that runs without
+    /// parameters right now.
+    fn palette_entries(&self) -> Vec<palette::Entry> {
+        let mut kinds: Vec<palette::Entry> = self
+            .session
+            .kinds()
+            .descriptors()
+            .map(|d| palette::Entry { target: palette::Target::Kind(d.id.clone()), label: d.label.clone(), shortcut: d.quick_add.clone() })
+            .collect();
+        kinds.sort_by(|a, b| a.label.cmp(&b.label));
+        let commands = self.session.registry().specs().filter(|spec| self.session.enabled(spec.id, &json!({})).is_ok()).map(|spec| palette::Entry {
+            target: palette::Target::Command(spec.id),
+            label: spec.label.to_owned(),
+            shortcut: spec.shortcut.map(str::to_owned),
+        });
+        kinds.into_iter().chain(commands).collect()
+    }
+
     /// Paint the noodle being dragged and, once the pointer is released, choose the command it
     /// becomes (and a notice when the drop target can't accept it).
     fn wire(&self, ui: &egui::Ui, canvas: &Canvas, wiring: &Wiring, pointer: Pos2, t: &Tokens) -> (Option<(&'static str, serde_json::Value)>, Option<String>) {

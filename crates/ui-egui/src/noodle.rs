@@ -5,7 +5,6 @@
 use egui::{Pos2, Rect, Vec2};
 use nodecraft_graph::{Canvas, Endpoint, Node, Project};
 use nodecraft_types::{EdgeId, PortType};
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Line segments per noodle for hit testing and box selection.
 pub const SAMPLES: usize = 24;
@@ -129,25 +128,9 @@ pub fn next_order(canvas: &Canvas, to: &Endpoint, except: Option<EdgeId>) -> Opt
     into_port(canvas, to).into_iter().rev().find(|e| Some(e.id) != except).map_or(Some(0), |e| e.order.checked_add(1))
 }
 
-/// A new edge id, unique across the whole project.
-///
-/// Ids come from the caller (the types crate holds no randomness), and the shell has no
-/// portable random source on wasm yet, so the id is a hash of the endpoints and a counter,
-/// probed until unused. Collaboration (#119) will need ids that are unique across peers too.
+/// A new edge id, unique across the whole project (see [`crate::ids`]).
 pub fn new_edge_id(project: &Project, from: &Endpoint, to: &Endpoint, salt: u64) -> Option<EdgeId> {
-    let taken = |id: &EdgeId| project.canvases().values().any(|c| c.edges().contains_key(id));
-    (0..1024u64).find_map(|attempt| {
-        let half = |lane: u8| {
-            let mut h = DefaultHasher::new();
-            (lane, from.node, &from.port, to.node, &to.port, salt, attempt).hash(&mut h);
-            h.finish().to_le_bytes()
-        };
-        let mut bytes = [0u8; 16];
-        for (dst, src) in bytes.iter_mut().zip(half(0).into_iter().chain(half(1))) {
-            *dst = src;
-        }
-        Some(EdgeId::from_bytes(bytes)).filter(|id| !taken(id))
-    })
+    crate::ids::edge_id(project, (from.node, &from.port, to.node, &to.port, salt))
 }
 
 #[cfg(test)]

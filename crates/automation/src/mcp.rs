@@ -8,7 +8,7 @@
 //! - `command_run`: runs one command through the same `Session::dispatch` as the UI;
 //! - `canvas_inspect`: the project's canvases, one canvas's nodes and edges (paged, size-capped),
 //!   or one node in full;
-//! - `ids_new`: fresh ids for commands that take caller-supplied ids (`node.add`).
+//! - `ids_new`: fresh ids for commands that take caller-supplied ids (`node.add`, `node.create`, edge commands).
 //!
 //! Every command is classified: [`AGENT_COMMANDS`] may be listed and run, [`HUMAN_ONLY`] never.
 //! An unclassified command stays hidden, and a test fails until it is classified.
@@ -43,6 +43,7 @@ pub const MAX_NEW_IDS: usize = 100;
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
     "node.add",
+    "node.create",
     "node.remove",
     "node.move",
     "node.title",
@@ -149,7 +150,7 @@ fn tools() -> Value {
         {
             "name": "ids_new",
             "title": "New ids",
-            "description": "Fresh unique ids (UUIDs) for commands that take a caller-chosen id, such as node.add.",
+            "description": "Fresh unique ids (UUIDs) for commands that take a caller-chosen id, such as node.add, node.create or edge.connect.",
             "inputSchema": object_schema(json!({"count": {"type": "integer", "minimum": 1, "maximum": MAX_NEW_IDS}}), &[]),
             "annotations": {"readOnlyHint": true, "openWorldHint": false}
         }
