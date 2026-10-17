@@ -194,6 +194,10 @@ fn typed_template_panic_hunt() {
                     }
                     let after = session.document().clone();
                     session.document().validate().unwrap();
+                    if id == "canvas.paste" {
+                        assert_ne!(after, before, "a successful paste is a document edit");
+                        assert_eq!(session.revision(), revision + 1);
+                    }
                     if id.starts_with("file.") {
                         assert_eq!(after, before);
                         continue;

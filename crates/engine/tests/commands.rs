@@ -217,7 +217,11 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(registry.specs().count(), 24, "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation and 3 file commands");
+    assert_eq!(
+        registry.specs().count(),
+        24,
+        "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation and 3 file commands"
+    );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
 

@@ -302,7 +302,7 @@ fn actual_run_result_is_owned_and_atomic_across_frozen_v1_refusal() {
     let (mut run, progress) =
         Run::start(&plan, canvas(), graph, &kinds, RunOptions { id: [7; 16], first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER }).unwrap();
     let job = progress.jobs.first().unwrap();
-    let nodecraft_nodes::JobSpec::Source { output, value, .. } = run.work(job.id).unwrap().clone();
+    let nodecraft_nodes::JobSpec::Source { output, value, .. } = run.work(job.id).unwrap().clone() else { panic!("expected source work") };
     let completed = run.job_done(&kinds, job.id, vec![(output, value)]);
     assert!(run.is_finished());
     assert!(completed.failed.is_empty());
@@ -380,6 +380,10 @@ fn current_main_card_and_multi_edit_commands_use_the_admitted_publication_bounda
         ("node.param_set", json!({"canvas":canvas(),"id":id(1),"name":"text","value":{"type":"text","value":"changed"}})),
         ("edge.rewire", json!({"canvas":canvas(),"edge":edge(1,3),"replace":[EdgeId::from_bytes([1;16])]})),
         ("canvas.delete", json!({"canvas":canvas(),"nodes":[id(3)]})),
+        (
+            "canvas.paste",
+            json!({"canvas":canvas(),"nodes":[kinds.get("source.text").unwrap().descriptor().instantiate(id(4), &Default::default()).unwrap()],"edges":[]}),
+        ),
     ] {
         let stale = session.prepare(effect(50.0)).unwrap();
         let before = session.document.clone();
