@@ -30,6 +30,7 @@ pub type SettingsStore = craft_settings::SettingsStore<NodeCraftSettings>;
 pub struct NodeCraftSettings {
     pub appearance: AppearanceSettings,
     pub canvas: CanvasSettings,
+    pub keys: KeySettings,
 }
 
 impl craft_settings::Settings for NodeCraftSettings {
@@ -94,6 +95,51 @@ impl CanvasSettings {
     /// The zoom speed from the file, clamped to a usable range; 1.0 if it is not a number.
     pub fn zoom_speed(&self) -> f32 {
         if self.zoom_speed.is_finite() { self.zoom_speed.clamp(Self::MIN_ZOOM_SPEED, Self::MAX_ZOOM_SPEED) } else { 1.0 }
+    }
+}
+
+/// Which provider accounts have a key in the keychain: names only, never keys. Kept here so the
+/// keys panel can list them without reading every key at startup (each read can show an unlock
+/// prompt).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeySettings {
+    /// Read through [`KeySettings::accounts`], which drops invalid and duplicate names.
+    pub accounts: Vec<String>,
+}
+
+impl KeySettings {
+    /// Most accounts listed.
+    pub const MAX_ACCOUNTS: usize = 64;
+
+    /// The valid account names from the file, without duplicates, in order, at most
+    /// [`Self::MAX_ACCOUNTS`].
+    pub fn accounts(&self) -> Vec<crate::secrets::Account> {
+        let mut out: Vec<crate::secrets::Account> = Vec::new();
+        for name in &self.accounts {
+            if out.len() >= Self::MAX_ACCOUNTS {
+                break;
+            }
+            if let Ok(account) = crate::secrets::Account::new(name)
+                && !out.contains(&account)
+            {
+                out.push(account);
+            }
+        }
+        out
+    }
+
+    /// Adds `account` to the list (no-op if listed or the list is full).
+    pub fn remember(&mut self, account: &crate::secrets::Account) {
+        let known = self.accounts();
+        if !known.contains(account) && known.len() < Self::MAX_ACCOUNTS {
+            self.accounts = known.iter().map(|a| a.as_str().to_owned()).chain([account.as_str().to_owned()]).collect();
+        }
+    }
+
+    /// Removes `account` from the list.
+    pub fn forget(&mut self, account: &crate::secrets::Account) {
+        self.accounts = self.accounts().into_iter().filter(|a| a != account).map(|a| a.as_str().to_owned()).collect();
     }
 }
 
@@ -260,5 +306,26 @@ mod tests {
             craft_settings::Probe { env: Box::new(|name| (name == "NODECRAFT_CONFIG_DIR").then(Default::default)), exe_dir: None, platform_config_dir: None };
         let (store, _) = SettingsStore::open_with(OpenOptions::new(Location::Auto).probe(probe));
         assert!(!store.is_persistent(), "an empty NODECRAFT_CONFIG_DIR keeps settings in memory");
+    }
+
+    #[test]
+    fn key_accounts_are_names_only_and_bounded() {
+        let mut keys = KeySettings { accounts: vec!["openai".into(), "OpenAI".into(), "openai".into(), "comfyui:gpu:8188".into(), "has space".into()] };
+        let names: Vec<String> = keys.accounts().iter().map(|a| a.as_str().to_owned()).collect();
+        assert_eq!(names, ["openai", "comfyui:gpu:8188"], "invalid and duplicate names are dropped");
+        let anthropic = crate::secrets::Account::new("anthropic").unwrap();
+        keys.remember(&anthropic);
+        keys.remember(&anthropic);
+        assert_eq!(keys.accounts().len(), 3);
+        keys.forget(&anthropic);
+        assert_eq!(keys.accounts().len(), 2);
+        let mut many = KeySettings { accounts: (0..100).map(|i| format!("p{i}")).collect() };
+        assert_eq!(many.accounts().len(), KeySettings::MAX_ACCOUNTS);
+        many.remember(&anthropic);
+        assert!(!many.accounts().contains(&anthropic), "the list is full");
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
+        let (store, _) = open_in(dir.path());
+        assert_eq!(store.get().keys.accounts().len(), 1);
     }
 }

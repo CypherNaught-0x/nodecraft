@@ -81,8 +81,11 @@ a choice a later contributor might otherwise undo.
 - **`keys.set` / `keys.remove` / `keys.status`** are commands with a `keys.store` host service:
   no document change, no undo step, results only ever show a masked tail. **`keys.set` is never
   offered to the in-canvas agent or MCP clients**: a key in tool-call parameters would end up in
-  LLM transcripts and logs. Keychain calls can block on a prompt, so the settings UI must run them
-  off the UI thread (#205).
+  LLM transcripts and logs. Keychain calls can block on a prompt, so the app registers the
+  service through `secrets::KeyWorker` (#205): the request is checked at once, run on a
+  keychain thread, and answered through `KeyWorker::results` under the `pending` id it
+  returned. Headless hosts keep the synchronous service. Settings list the accounts that have
+  keys (`[keys] accounts`, names only), so the keys panel never reads every key at startup.
 ## 2026-10-17 · ComfyUI provider (#9, part 2)
 
 - **Prompt ids are salted per install** (`prompt_id_for(salt, key, attempt)`): the same job always
