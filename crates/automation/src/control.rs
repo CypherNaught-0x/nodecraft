@@ -20,7 +20,7 @@
 //! Connection threads only parse and authenticate; every request is answered on the UI thread,
 //! which owns the session ([`Call`], [`answer`]). A screenshot is answered a frame later.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
@@ -514,14 +514,36 @@ fn network(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Network, message)
 }
 
+// Kept private: token-file admission is shared by initial connection and reconnect.
+const MAX_TOKEN_FILE_BYTES: usize = 4096;
+fn token_read_error(path: &std::path::Path, error: std::io::Error) -> Error {
+    Error::new(ErrorKind::NotFound, format!("no control token at {} ({error}); start the app with `nodecraft --control`", path.display()))
+}
+fn read_token_file_with<T>(reader: impl Read, path: &std::path::Path, connect: impl FnOnce(SocketAddr, &str) -> Result<T, Error>) -> Result<T, Error> {
+    // A byte beyond the cap detects oversize even when file metadata is stale or absent.
+    let mut bytes = Vec::with_capacity(MAX_TOKEN_FILE_BYTES + 1);
+    reader.take((MAX_TOKEN_FILE_BYTES + 1) as u64).read_to_end(&mut bytes).map_err(|error| token_read_error(path, error))?;
+    if bytes.len() > MAX_TOKEN_FILE_BYTES {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("control token file is larger than {MAX_TOKEN_FILE_BYTES} bytes")));
+    }
+    let invalid = || Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display()));
+    let file: TokenFile = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    // Shape only: preserve hex case and the server's existing exact authentication comparison.
+    if file.token.len() != 64 || !file.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)
+}
+
+#[cfg(test)]
+mod token_file_tests;
+
 impl Client {
     /// Connects to the app named by the token file at `path` and says hello.
+    /// Files are capped at 4 KiB and their 64-hex token is checked before connecting.
     pub fn from_token_file(path: &std::path::Path) -> Result<Self, Error> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| Error::new(ErrorKind::NotFound, format!("no control token at {} ({e}); start the app with `nodecraft --control`", path.display())))?;
-        let file: TokenFile =
-            serde_json::from_str(&text).map_err(|_| Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display())))?;
-        let mut client = Self::connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)?;
+        let file = std::fs::File::open(path).map_err(|e| token_read_error(path, e))?;
+        let mut client = read_token_file_with(file, path, Self::connect)?;
         client.origin = Origin::File(path.to_path_buf());
         Ok(client)
     }
