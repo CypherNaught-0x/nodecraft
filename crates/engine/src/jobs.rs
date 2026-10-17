@@ -120,6 +120,15 @@ impl Reserved {
 }
 
 impl State {
+    /// Handles are global provider/key entries. Prune only the touched identity, after its
+    /// registration/running transition, and retain retries still referenced by another JobId.
+    /// Restored handles without registrations are not swept. Work scales with host job state.
+    fn prune_handle(&mut self, attempt: &Attempt) {
+        if !self.jobs.values().any(|job| attempt.matches_job(job)) && !self.running.values().any(|running| running == attempt) {
+            self.handles.remove(&(attempt.provider.clone(), attempt.key.clone()));
+        }
+    }
+
     fn take_reserved(&mut self, id: JobId, attempt: &Attempt) -> Option<Reserved> {
         if self.reserved.get(&id).is_some_and(|reservation| reservation.matches(attempt)) { self.reserved.remove(&id) } else { None }
     }
@@ -232,8 +241,11 @@ impl Drop for RunGuard {
                 && s.jobs.get(&self.job).is_some_and(|job| self.attempt.matches_job(job))
                 && let Some(q) = s.jobs.remove(&self.job)
             {
-                s.handles.remove(&(q.provider.id().to_owned(), q.job.idempotency_key));
+                s.prune_handle(&Attempt { provider: q.provider.id().to_owned(), key: q.job.idempotency_key });
             }
+            // Also clean late Submitted handles after a re-registration, on every return/drop.
+            // A different replacement's running mark and deferred requests remain untouched.
+            s.prune_handle(&self.attempt);
             (settle, reserved)
         };
         if settle && let (Some(budget), Some(r)) = (&self.budget, reserved) {
@@ -281,14 +293,19 @@ impl ProviderRunner {
     }
 
     /// Registers the provider job behind a scheduler job; add it before scheduling the `JobId`.
-    /// Re-registering it on another provider drops the old provider's handle, which can never
-    /// be resumed by the new one.
-    pub fn register(&self, id: JobId, job: QueuedJob) {
+    /// Changing provider or key drops the obsolete handle once no registration or running job
+    /// references its provider/key. Matching retries and other JobIds can share a handle.
+    /// An empty key on the same provider leaves the previous scheduler-assigned key in place;
+    /// `run` supplies the authoritative key and cleans up if it changes.
+    pub fn register(&self, id: JobId, mut job: QueuedJob) {
         let mut s = self.lock();
-        if let Some(old) = s.jobs.insert(id, job.clone())
-            && old.provider.id() != job.provider.id()
+        if job.job.idempotency_key.is_empty()
+            && let Some(old) = s.jobs.get(&id).filter(|old| old.provider.id() == job.provider.id())
         {
-            s.handles.remove(&(old.provider.id().to_owned(), old.job.idempotency_key));
+            job.job.idempotency_key.clone_from(&old.job.idempotency_key);
+        }
+        if let Some(old) = s.jobs.insert(id, job) {
+            s.prune_handle(&Attempt { provider: old.provider.id().to_owned(), key: old.job.idempotency_key });
         }
     }
 
@@ -309,7 +326,7 @@ impl ProviderRunner {
             return;
         }
         if let Some(q) = s.jobs.remove(&id) {
-            s.handles.remove(&(q.provider.id().to_owned(), q.job.idempotency_key));
+            s.prune_handle(&Attempt { provider: q.provider.id().to_owned(), key: q.job.idempotency_key });
         }
     }
 
@@ -372,7 +389,7 @@ impl JobRunner for ProviderRunner {
                 let old = s.jobs.get_mut(&start.job).map(|registered| std::mem::replace(&mut registered.job.idempotency_key, start.idempotency_key.clone()));
                 // Requeued under a new key: the old key's handle is done with.
                 if let Some(old) = old.filter(|old| *old != start.idempotency_key) {
-                    s.handles.remove(&(queued.provider.id().to_owned(), old));
+                    s.prune_handle(&Attempt { provider: queued.provider.id().to_owned(), key: old });
                 }
             }
             let signal = TokenSignal(cancel);
@@ -389,7 +406,7 @@ impl JobRunner for ProviderRunner {
                         if let Some(old) = &mut old {
                             // An in-flight submit may have reached its provider before Submitted.
                             old.maybe_billed |= s.running.get(&job_id).is_some_and(|running| old.matches(running));
-                            s.handles.remove(&(old.provider.clone(), old.key.clone()));
+                            s.prune_handle(&Attempt { provider: old.provider.clone(), key: old.key.clone() });
                         }
                         old
                     } else {
@@ -444,7 +461,6 @@ impl JobRunner for ProviderRunner {
                     Ok(done) => {
                         let reserved = {
                             let mut s = lock();
-                            s.handles.remove(&(provider_id.clone(), start.idempotency_key.clone()));
                             if s.jobs.get(&job_id).is_some_and(|job| attempt.matches_job(job)) {
                                 s.jobs.remove(&job_id);
                             }
@@ -865,7 +881,7 @@ mod tests {
         assert_eq!(rows, [(120_000, Charge::Actual)]);
     }
 
-    /// Its first submit is lost (network); later ones finish at once, reporting `1`.
+    /// Its first submit is lost (network); later ones finish at once, reporting its configured cost.
     struct FailsThenReports(AtomicU64, Money);
 
     impl Provider for FailsThenReports {
@@ -1121,4 +1137,5 @@ mod tests {
     }
 
     mod paid_unpriced_tests;
+    mod stale_handle_tests;
 }
