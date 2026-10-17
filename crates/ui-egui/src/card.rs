@@ -83,10 +83,14 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
     clipped
 }
 
-pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+/// Position-independent logical metrics; never recover these by subtracting large coordinates.
+pub fn world_size(descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Vec2 {
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let height = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
-    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, height))
+    Vec2::new(t.card_width, height)
+}
+pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), world_size(descriptor, t))
 }
 
 pub struct CardView<'a> {
@@ -95,8 +99,17 @@ pub struct CardView<'a> {
     pub preview_pos: Option<Position>,
 }
 
+/// Positive distances outside the body, including the clipped title/UNSAVED notice and
+/// minimum screen-sized output handle. Called only with a validated canvas zoom.
+pub fn outer_insets(t: &Tokens, zoom: f32, output: bool) -> (f32, f32, f32, f32) {
+    let top = t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap;
+    let handle = if output { t.handle_radius.max(t.handle_min_screen_radius / zoom) + t.handle_stroke / (2.0 * zoom) } else { 0.0 };
+    // The handle is centered on the right edge. Conservatively include its vertical extent.
+    (0.0, top.max(handle), handle, handle)
+}
 pub fn cull_margin(t: &Tokens, zoom: f32) -> f32 {
-    ((t.label_size * zoom).max(t.title_min_screen_px) + (t.label_gap + t.control_gap) * zoom).max((t.handle_radius * zoom).max(t.handle_min_screen_radius))
+    let (_, top, right, bottom) = outer_insets(t, zoom, true);
+    top.max(right).max(bottom) * zoom
 }
 
 pub fn show(
@@ -125,7 +138,7 @@ pub fn show(
     let transform = egui::emath::TSTransform::new(origin.to_vec2() + view.pan, view.zoom);
     parent.ctx().set_transform_layer(layer, transform);
     let label_rect = Rect::from_min_size(
-        rect.left_top() - Vec2::new(0.0, t.label_size.max(t.title_min_screen_px / view.zoom) + t.label_gap + t.control_gap),
+        rect.left_top() - Vec2::new(0.0, outer_insets(t, view.zoom, false).1),
         Vec2::new(rect.width(), t.label_size.max(t.title_min_screen_px / view.zoom) + t.control_gap),
     );
     let mut ui = parent.new_child(egui::UiBuilder::new().id_salt(("node", node.id)).layer_id(layer).max_rect(rect.union(label_rect)));
@@ -503,5 +516,21 @@ mod tests {
         assert_eq!(title(&node, None), format!("{}…", "é".repeat(64)));
         node.title = "My title".into();
         assert_eq!(title(&node, None), "My title");
+    }
+}
+
+#[cfg(test)]
+mod layout_metrics_tests {
+    use super::*;
+    #[test]
+    fn minimum_zoom_outer_metrics_cover_painted_handle_stroke_and_clipped_notice() {
+        let t = &crate::theme::DARK;
+        let zoom = crate::canvas::MIN_ZOOM;
+        let (_, top, right, bottom) = outer_insets(t, zoom, true);
+        let painted = t.handle_radius.max(t.handle_min_screen_radius / zoom) + t.handle_stroke / (2.0 * zoom);
+        assert_eq!(right, painted);
+        assert_eq!(bottom, painted);
+        assert!(top >= t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap);
+        assert!(cull_margin(t, zoom) >= painted * zoom);
     }
 }

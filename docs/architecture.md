@@ -493,3 +493,8 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 `Generation.input_hash` with an actionable Unsupported error before journal append or document,
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
+
+Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
+The UI supplies a revision-stamped scoped geometry capability; the engine validates it and
+returns one MoveNode changeset. Both grid and whole-DAG dependency modes share bounded actual
+instance metrics and canonical outer-coordinate ordering; see decisions and UI design.

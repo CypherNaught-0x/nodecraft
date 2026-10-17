@@ -229,6 +229,7 @@ impl Session {
 
     fn context(&self, phase: Phase) -> Context<'_> {
         Context {
+            revision: self.revision,
             document: &self.document,
             kinds: &self.kinds,
             can_undo: self.can_undo(),

@@ -15,6 +15,7 @@ pub mod generate;
 pub mod graph_cmds;
 pub mod jobs;
 pub mod keys_cmds;
+pub mod layout_cmds;
 pub mod navigation_cmds;
 pub mod node_cmds;
 mod persistence;

@@ -110,6 +110,9 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if id == "canvas.auto_format" {
+        session.swap_resource(Some(common::layout_context(&session)));
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
@@ -130,6 +133,7 @@ fn template(id: &str) -> (Session, Value) {
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
         "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
         "canvas.search_query" => json!({"query":"needle"}),
+        "canvas.auto_format" => json!({"mode":"grid"}),
         "canvas.pan_to" => json!({"x":0,"y":0}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();

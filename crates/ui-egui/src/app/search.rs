@@ -381,12 +381,13 @@ mod tests {
     #[test]
     fn popup_and_existing_box_gesture_exclude_search_opening() {
         let mut h = harness();
-        let from = Pos2::new(40.0, 40.0);
+        let from = Pos2::new(40.0, 120.0);
+        assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, "Format selection").is_none_or(|button| !button.rect().contains(from)));
         h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
         h.hover_at(from);
         h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
         h.run();
-        h.hover_at(Pos2::new(100.0, 100.0));
+        h.hover_at(Pos2::new(100.0, 180.0));
         h.run();
         assert!(h.state().marquee.is_some());
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
@@ -394,7 +395,7 @@ mod tests {
         assert!(!h.state().search.open);
         assert!(h.state().marquee.is_some());
         h.event(egui::Event::PointerButton {
-            pos: Pos2::new(100.0, 100.0),
+            pos: Pos2::new(100.0, 180.0),
             button: egui::PointerButton::Primary,
             pressed: false,
             modifiers: egui::Modifiers::NONE,

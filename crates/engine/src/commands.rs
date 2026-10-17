@@ -73,6 +73,8 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
+    /// Revision of this exact document, shared by preview and dispatch.
+    pub revision: u64,
     pub document: &'a Project,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
@@ -136,6 +138,7 @@ impl Registry {
             .chain(crate::clipboard_cmds::specs())
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
+            .chain(crate::layout_cmds::specs())
         {
             registry.register(spec)?;
         }
