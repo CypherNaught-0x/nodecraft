@@ -300,11 +300,15 @@ impl ChatRequest {
             return bad("no model chosen".into());
         }
         for m in &mut self.messages {
+            let foreign = m.parts.iter().any(|p| matches!(p, Part::Opaque { dialect: d, .. } if *d != dialect));
             m.parts.retain(|p| match p {
                 Part::Text(t) => !t.trim().is_empty(),
                 Part::Opaque { dialect: d, .. } => *d == dialect,
                 _ => true,
             });
+            if foreign && m.parts.is_empty() {
+                return bad("an earlier reply holds only reasoning this endpoint can't read; remove that turn or continue with the model that wrote it".into());
+            }
         }
         if self.messages.is_empty() || self.messages.iter().any(|m| m.parts.is_empty()) {
             return bad("nothing to send: a message has no text or image".into());
@@ -368,7 +372,7 @@ impl ChatRequest {
 fn check_tool_pairs(messages: &[Message]) -> Result<(), ProviderError> {
     let bad = |m: String| Err(ProviderError::new(ErrorKind::UnsupportedInput, m));
     let calls =
-        |m: &Message| -> HashSet<String> { m.parts.iter().filter_map(|p| if let Part::ToolUse { id, .. } = p { Some(id.clone()) } else { None }).collect() };
+        |m: &Message| -> Vec<String> { m.parts.iter().filter_map(|p| if let Part::ToolUse { id, .. } = p { Some(id.clone()) } else { None }).collect() };
     let results =
         |m: &Message| -> Vec<String> { m.parts.iter().filter_map(|p| if let Part::ToolResult { id, .. } = p { Some(id.clone()) } else { None }).collect() };
     let mut open: HashSet<String> = HashSet::new();
@@ -380,13 +384,17 @@ fn check_tool_pairs(messages: &[Message]) -> Result<(), ProviderError> {
             }
         }
         let answered = results(m);
+        let unique = |ids: &[String]| ids.iter().collect::<HashSet<_>>().len() == ids.len();
+        if !unique(&answered) || !unique(&calls(m)) {
+            return bad("a tool call id appears twice in one message".into());
+        }
         if let Some(stray) = answered.iter().find(|id| !open.contains(*id)) {
             return bad(format!("the tool result for {:?} doesn't answer a call in the previous message", stray.chars().take(64).collect::<String>()));
         }
         if open.iter().any(|id| !answered.contains(id)) {
             return bad("every tool call needs its result in the next message".into());
         }
-        open = calls(m);
+        open = calls(m).into_iter().collect();
     }
     if !open.is_empty() {
         return bad("every tool call needs its result in the next message".into());
@@ -418,10 +426,17 @@ fn check_tools(tools: &[Tool]) -> Result<(), ProviderError> {
     Ok(())
 }
 
-/// A reported USD spend as money, rounded up to the micro-dollar so a charge is never free.
+/// A reported USD spend as money. Fractions of a micro-dollar round up, so a charge is never
+/// free, but float noise doesn't: 0.000123 is 123 micro-dollars, not 124.
 fn usd(cost: f64) -> Option<Money> {
     // Bounded before the cast: NaN, negative and absurd amounts are ignored.
-    (cost.is_finite() && (0.0..1e12).contains(&cost)).then(|| Money::new(Currency::USD, (cost * 1e6).ceil() as u64))
+    if !(cost.is_finite() && (0.0..1e12).contains(&cost)) {
+        return None;
+    }
+    let micros = cost * 1e6;
+    let nearest = micros.round();
+    let micros = if (micros - nearest).abs() <= 1e-6 * nearest.max(1.0) { nearest } else { micros.ceil() };
+    Some(Money::new(Currency::USD, micros as u64))
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -569,8 +584,8 @@ impl LlmClient {
             return Err(ProviderError::new(ErrorKind::Network, "the reply stream ended early"));
         }
         let parts = match dialect {
-            Dialect::OpenAi => openai::stream_parts(&mut state),
-            Dialect::Anthropic => anthropic::stream_parts(&mut state),
+            Dialect::OpenAi => openai::stream_parts(&mut state)?,
+            Dialect::Anthropic => anthropic::stream_parts(&mut state)?,
         };
         let stop = state.stop.take().unwrap_or(StopReason::EndTurn);
         Ok(ChatResponse::new(parts, stop, Usage { cost, ..state.usage }))

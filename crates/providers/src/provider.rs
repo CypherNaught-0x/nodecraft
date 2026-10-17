@@ -80,6 +80,7 @@ pub enum Output {
 
 /// What a job used, as far as the provider reports it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Usage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,

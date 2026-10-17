@@ -178,9 +178,21 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
     // Tool calls stream as pieces keyed by index: the id and name first, then the arguments.
     let calls = delta.and_then(|d| d.get("tool_calls")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     for (i, call) in calls.iter().enumerate() {
-        let index = call.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
+        let id = call.get("id").and_then(Value::as_str).filter(|id| !id.is_empty());
+        let index = match call.get("index").and_then(Value::as_u64) {
+            Some(index) => index,
+            // No index (some compatibility layers): a new id starts a new call, anything else
+            // continues the last one.
+            None => match state.blocks.iter().next_back() {
+                Some((last, block)) => match (id, block.value["id"].as_str()) {
+                    (Some(new), Some(known)) if !known.is_empty() && new != known => last.saturating_add(1),
+                    _ => *last,
+                },
+                None => i as u64,
+            },
+        };
         let block = state.block(index, || json!({ "id": "", "name": "" }))?;
-        if let Some(id) = call.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        if let Some(id) = id {
             block.value["id"] = json!(id);
         }
         let function = call.get("function");
@@ -205,18 +217,18 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
 }
 
 /// The streamed reply's parts: its text, then its tool calls in index order.
-pub(super) fn stream_parts(state: &mut StreamState) -> Vec<Part> {
+pub(super) fn stream_parts(state: &mut StreamState) -> Result<Vec<Part>, ProviderError> {
     let mut parts = Vec::new();
     let text = std::mem::take(&mut state.text);
     if !text.is_empty() {
         parts.push(Part::Text(text));
     }
     for (index, block) in std::mem::take(&mut state.blocks) {
-        let name = block.value["name"].as_str().unwrap_or_default().to_owned();
+        let name = block.value["name"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| malformed("a tool call without a name"))?.to_owned();
         let id = block.value["id"].as_str().filter(|id| !id.is_empty()).map_or_else(|| format!("call_{index}"), str::to_owned);
         parts.push(Part::ToolUse { id, name, input: tool_input(&block.args) });
     }
-    parts
+    Ok(parts)
 }
 
 fn error_from(status: Option<u16>, err: &Value) -> ProviderError {

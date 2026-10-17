@@ -103,21 +103,24 @@ fn malformed(what: &str) -> ProviderError {
 
 /// A finished content block as a part: text and tool calls are understood, everything else
 /// (thinking, redacted thinking, server tool blocks) is kept as it came. `args` is a streamed
-/// tool call's input text.
-fn part(block: Value, args: Option<&str>) -> Option<Part> {
-    match block.get("type").and_then(Value::as_str) {
-        Some("text") => Some(Part::Text(block.get("text").and_then(Value::as_str).filter(|t| !t.is_empty())?.to_owned())),
+/// block's input text (tool calls, and server tool calls such as web search).
+fn part(mut block: Value, args: Option<&str>) -> Result<Option<Part>, ProviderError> {
+    let streamed = args.filter(|raw| !raw.trim().is_empty()).map(tool_input);
+    Ok(match block.get("type").and_then(Value::as_str) {
+        Some("text") => block.get("text").and_then(Value::as_str).filter(|t| !t.is_empty()).map(|t| Part::Text(t.to_owned())),
         Some("tool_use") => {
-            let id = block.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let name = block.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let input = match args {
-                Some(raw) if !raw.trim().is_empty() => tool_input(raw),
-                _ => block.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
-            };
+            let text = |k: &str| block.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned);
+            let (Some(id), Some(name)) = (text("id"), text("name")) else { return Err(malformed("a tool call without an id or name")) };
+            let input = streamed.unwrap_or_else(|| block.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})));
             Some(Part::ToolUse { id, name, input })
         }
-        _ => Some(Part::Opaque { dialect: Dialect::Anthropic, block }),
-    }
+        _ => {
+            if let (Some(input), Some(obj)) = (streamed, block.as_object_mut()) {
+                obj.insert("input".into(), input);
+            }
+            Some(Part::Opaque { dialect: Dialect::Anthropic, block })
+        }
+    })
 }
 
 pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
@@ -128,7 +131,10 @@ pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
     if content.len() > MAX_REPLY_BLOCKS {
         return Err(malformed("the reply has too many parts"));
     }
-    let parts = content.iter().filter_map(|b| part(b.clone(), None)).collect();
+    let mut parts = Vec::new();
+    for b in content {
+        parts.extend(part(b.clone(), None)?);
+    }
     let usage = v.get("usage");
     let usage = Usage {
         input_tokens: usage.and_then(|u| u.get("input_tokens")).and_then(Value::as_u64),
@@ -141,9 +147,13 @@ pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
 /// Appends `piece` to the string field `key` of a streamed block.
 fn append(block: &mut Value, key: &str, piece: &str) {
     if let Some(obj) = block.as_object_mut() {
-        let mut s = obj.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
-        s.push_str(piece);
-        obj.insert(key.to_owned(), Value::String(s));
+        // In place: copying the string on every delta would make long replies quadratic.
+        match obj.get_mut(key) {
+            Some(Value::String(s)) => s.push_str(piece),
+            _ => {
+                obj.insert(key.to_owned(), Value::String(piece.to_owned()));
+            }
+        }
     }
 }
 
@@ -206,8 +216,12 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
 }
 
 /// The streamed reply's parts, in block order.
-pub(super) fn stream_parts(state: &mut StreamState) -> Vec<Part> {
-    std::mem::take(&mut state.blocks).into_values().filter_map(|b| part(b.value, Some(&b.args))).collect()
+pub(super) fn stream_parts(state: &mut StreamState) -> Result<Vec<Part>, ProviderError> {
+    let mut parts = Vec::new();
+    for b in std::mem::take(&mut state.blocks).into_values() {
+        parts.extend(part(b.value, Some(&b.args))?);
+    }
+    Ok(parts)
 }
 
 fn error_from(err: &Value, status: Option<u16>) -> ProviderError {

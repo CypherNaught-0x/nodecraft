@@ -184,7 +184,7 @@ fn openai_streamed_tool_calls() {
     ] {
         openai::stream_event(&ev(d), &mut s).unwrap();
     }
-    let parts = openai::stream_parts(&mut s);
+    let parts = openai::stream_parts(&mut s).unwrap();
     assert_eq!(
         parts,
         vec![
@@ -273,7 +273,7 @@ fn anthropic_streamed_tool_calls_and_thinking() {
         }
     }
     assert_eq!(text, "Checking.");
-    let parts = anthropic::stream_parts(&mut s);
+    let parts = anthropic::stream_parts(&mut s).unwrap();
     assert_eq!(
         parts,
         vec![
@@ -340,4 +340,74 @@ fn litellm_key_spend() {
     assert_eq!(block_on(claude.litellm_key_info()).unwrap_err().kind, ErrorKind::UnsupportedInput);
     let odd = LlmClient::new(Endpoint::litellm("http://proxy:4000", None), Canned::new(200, r#"{"info":{"spend":-3}}"#));
     assert_eq!(block_on(odd.litellm_key_info()).unwrap().spent, None, "nonsense amounts are dropped");
+}
+
+#[test]
+fn review_regressions() {
+    let ev = |d: &str| sse::SseEvent { event: None, data: d.into() };
+    // Calls without an index, one per chunk, stay separate.
+    let mut s = StreamState::default();
+    for d in [
+        r#"{"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{\"x\":"}}]}}]}"#,
+        r#"{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"1}"}}]}}]}"#,
+        r#"{"choices":[{"delta":{"tool_calls":[{"id":"b","function":{"name":"g","arguments":"{}"}}]}}]}"#,
+    ] {
+        openai::stream_event(&ev(d), &mut s).unwrap();
+    }
+    assert_eq!(
+        openai::stream_parts(&mut s).unwrap(),
+        vec![Part::ToolUse { id: "a".into(), name: "f".into(), input: json!({"x": 1}) }, Part::ToolUse { id: "b".into(), name: "g".into(), input: json!({}) },]
+    );
+    // Unnamed calls are malformed in every path.
+    let mut s = StreamState::default();
+    openai::stream_event(&ev(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"arguments":"{}"}}]}}]}"#), &mut s).unwrap();
+    assert_eq!(openai::stream_parts(&mut s).unwrap_err().kind, ErrorKind::Malformed);
+    let mut s = StreamState::default();
+    anthropic::stream_event(&ev(r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t"}}"#), &mut s).unwrap();
+    assert_eq!(anthropic::stream_parts(&mut s).unwrap_err().kind, ErrorKind::Malformed);
+    assert_eq!(
+        anthropic::parse(br#"{"content":[{"type":"tool_use","name":"f","input":{}}],"stop_reason":"tool_use"}"#).unwrap_err().kind,
+        ErrorKind::Malformed
+    );
+    // Server tool blocks keep their streamed input.
+    let mut s = StreamState::default();
+    anthropic::stream_event(
+        &ev(r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv","name":"web_search","input":{}}}"#),
+        &mut s,
+    )
+    .unwrap();
+    anthropic::stream_event(
+        &ev(r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"oslo\"}"}}"#),
+        &mut s,
+    )
+    .unwrap();
+    assert!(matches!(&anthropic::stream_parts(&mut s).unwrap()[0], Part::Opaque { block, .. } if block["input"] == json!({"query": "oslo"})));
+    // Duplicate ids are refused before sending.
+    let mut r = tool_turns();
+    r.messages[1].parts.push(call("call_1"));
+    assert!(r.validate(Dialect::OpenAi).unwrap_err().message.contains("twice"));
+    let mut r = tool_turns();
+    r.messages[2].parts.push(result("call_1"));
+    assert!(r.validate(Dialect::OpenAi).unwrap_err().message.contains("twice"));
+    // A thinking-only turn sent elsewhere says why it can't go.
+    let only = Message { role: Role::Assistant, parts: vec![Part::Opaque { dialect: Dialect::Anthropic, block: json!({"type": "thinking"}) }] };
+    let mut r = ChatRequest { messages: vec![Message::user("a"), only, Message::user("b")], tools: vec![], ..tool_turns() };
+    assert!(r.validate(Dialect::OpenAi).unwrap_err().message.contains("reasoning"));
+    // Float noise doesn't add a micro-dollar.
+    for micros in [123u64, 246, 1, 999_999, 1_234_567] {
+        assert_eq!(usd(micros as f64 / 1e6), Some(Money::new(Currency::USD, micros)), "{micros}");
+    }
+}
+
+/// Long streamed replies stay linear: each delta appends in place.
+#[test]
+fn long_anthropic_streams_are_linear() {
+    let mut s = StreamState::default();
+    let ev = sse::SseEvent { event: None, data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"abcdefgh"}}"#.into() };
+    let started = std::time::Instant::now();
+    for _ in 0..200_000 {
+        anthropic::stream_event(&ev, &mut s).unwrap();
+    }
+    assert_eq!(s.blocks[&0].value["thinking"].as_str().map(str::len), Some(1_600_000));
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
 }
