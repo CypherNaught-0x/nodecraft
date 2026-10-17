@@ -200,13 +200,24 @@ fn panicking_handlers_and_atomic_graph_failures_preserve_document_history_and_ev
 #[test]
 fn registration_rejects_invalid_or_duplicate_stable_ids() {
     let mut registry = Registry::builtins().unwrap();
-    let builtin_count = registry.specs().count();
+    let navigation = ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle", "canvas.pan_to"];
+    assert_eq!(
+        nodecraft_engine::navigation_cmds::specs().into_iter().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(),
+        navigation.into_iter().collect()
+    );
+    let registered: std::collections::BTreeSet<_> = registry.specs().filter(|spec| navigation.contains(&spec.id)).map(|spec| spec.id).collect();
+    assert_eq!(registered, navigation.into_iter().collect());
+    for id in navigation {
+        let spec = *registry.get(id).unwrap();
+        assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
+    }
+    let builtin_ids: std::collections::BTreeSet<_> = registry.specs().map(|spec| spec.id).collect();
     let spec = *registry.get("node.move").unwrap();
     assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(registry.specs().count(), builtin_count);
+    assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
 
 fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {

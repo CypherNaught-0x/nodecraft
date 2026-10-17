@@ -9,21 +9,24 @@ use egui::{Pos2, Rect, Vec2};
 use nodecraft_engine::Session;
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId};
 use serde_json::{Value, json};
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
-};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
+// A private host resource, never serialized. Retaining its Arc in the cache keeps
+// the previous allocation alive, so a replacement Session cannot reuse its identity.
+struct SessionIdentity;
 #[derive(Default)]
 pub struct Geometry {
-    key: Option<(ProjectId, CanvasId, u64, ThemeKind, usize)>,
+    key: Option<(ProjectId, CanvasId, u64, ThemeKind)>,
+    session_identity: Option<Arc<SessionIdentity>>,
     pub rects: BTreeMap<NodeId, Rect>,
     pub error: bool,
     #[cfg(test)]
     validations: usize,
 }
 impl Geometry {
-    pub fn refresh(&mut self, session: &Session, canvas: CanvasId, theme: ThemeKind) {
+    pub fn refresh(&mut self, session: &mut Session, canvas: CanvasId, theme: ThemeKind) {
+        let identity = session.swap_resource::<Arc<SessionIdentity>>(None).unwrap_or_else(|| Arc::new(SessionIdentity));
+        session.swap_resource(Some(Arc::clone(&identity)));
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
@@ -31,13 +34,12 @@ impl Geometry {
             self.error = true;
             return;
         };
-        // Identity distinguishes a replacement Session at the same revision. No dereference.
-        let identity = scene.nodes().values().next().map_or(0, |node| node as *const _ as usize);
-        let key = (document.id(), canvas, session.revision(), theme, identity);
-        if self.key == Some(key) {
+        let key = (document.id(), canvas, session.revision(), theme);
+        if self.key == Some(key) && self.session_identity.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, &identity)) {
             return;
         }
         self.key = Some(key);
+        self.session_identity = Some(identity);
         self.rects.clear();
         self.error = false;
         let mut validated = ValidatedDescriptors::default();
@@ -69,31 +71,71 @@ impl Geometry {
 // References returned as Borrowed live in the immutably borrowed registry for this refresh.
 // Owned descriptors may reuse allocations and therefore never enter this identity set.
 #[derive(Default)]
-struct ValidatedDescriptors {
-    borrowed: BTreeSet<*const nodecraft_nodes::NodeDescriptor>,
+struct ValidatedDescriptors<'a> {
+    borrowed: BTreeMap<*const nodecraft_nodes::NodeDescriptor, (usize, nodecraft_types::ValidatedParamSchema<'a>)>,
     #[cfg(test)]
     validations: usize,
 }
-fn instance_rect(session: &Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors) -> Result<Rect, Error> {
+fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<Rect, Error> {
     node.validate_payload()?;
-    let kind = session.kinds().get(&node.kind)?;
-    let descriptor = kind.instance(node)?;
-    if node.kind != descriptor.id || descriptor.id != kind.descriptor().id {
-        return Err(Error::new(ErrorKind::InvalidInput, "instance descriptor changed its node kind"));
-    }
-    let borrowed = match &descriptor {
-        Cow::Borrowed(value) => Some(std::ptr::from_ref(*value)),
-        Cow::Owned(_) => None,
+    // Match painting's bounded placeholder on every schema-resolution/admission failure.
+    let placeholder = || {
+        let rect = card::world_rect(node, None, t);
+        if valid_rect(rect) { Ok(rect) } else { Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable")) }
     };
-    if borrowed.is_none_or(|identity| !validated.borrowed.contains(&identity)) {
-        descriptor.validate()?;
-        #[cfg(test)]
-        {
-            validated.validations += 1;
+    let Ok(kind) = session.kinds().get(&node.kind) else {
+        return placeholder();
+    };
+    let Ok(descriptor) = kind.instance(node) else {
+        return placeholder();
+    };
+    if node.kind != descriptor.id || descriptor.id != kind.descriptor().id || node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
+        return placeholder();
+    }
+    let admit = |bytes: usize, schema: &nodecraft_types::ValidatedParamSchema<'_>| {
+        let Ok(resolved) = schema.resolve_borrowed(&node.params, false) else {
+            return false;
+        };
+        let overhead = resolved.visible.iter().fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
+        bytes.saturating_add(overhead) <= crate::app::MAX_SCHEMA_CACHE_BYTES
+    };
+    let admitted = match &descriptor {
+        Cow::Borrowed(value) => {
+            let identity = std::ptr::from_ref(*value);
+            if let std::collections::btree_map::Entry::Vacant(entry) = validated.borrowed.entry(identity) {
+                if value.validate().is_err() {
+                    return placeholder();
+                }
+                let (Some(bytes), Ok(schema)) = (crate::app::descriptor_bytes(value), value.params.validated()) else {
+                    return placeholder();
+                };
+                entry.insert((bytes, schema));
+                #[cfg(test)]
+                {
+                    validated.validations += 1;
+                }
+            }
+            let Some((bytes, schema)) = validated.borrowed.get(&identity) else {
+                return placeholder();
+            };
+            admit(*bytes, schema)
         }
-        if let Some(identity) = borrowed {
-            validated.borrowed.insert(identity);
+        Cow::Owned(value) => {
+            if value.validate().is_err() {
+                return placeholder();
+            }
+            let (Some(bytes), Ok(schema)) = (crate::app::descriptor_bytes(value), value.params.validated()) else {
+                return placeholder();
+            };
+            #[cfg(test)]
+            {
+                validated.validations += 1;
+            }
+            admit(bytes, &schema)
         }
+    };
+    if !admitted {
+        return placeholder();
     }
     let rect = card::world_rect(node, Some(&descriptor), t);
     if !valid_rect(rect) {
@@ -309,6 +351,9 @@ mod tests {
         }
         fn instance<'a>(&'a self, node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
             self.2.fetch_add(1, Ordering::Relaxed);
+            if node.config.get("test.unavailable") == Some(&Value::Bool(true)) {
+                return Err(Error::new(ErrorKind::Unsupported, "instance unavailable"));
+            }
             if node.config.get("test.owned") == Some(&Value::Bool(true)) { Ok(Cow::Owned(self.1.clone())) } else { Ok(Cow::Borrowed(&self.1)) }
         }
         fn mode(&self, _: &[PortType]) -> Option<ModeId> {
@@ -351,7 +396,16 @@ mod tests {
             description: None,
             control: ParamControl::Text { multiline: true, max_bytes: 1_048_576 },
             required: false,
-            default: Some(Value::Text("x".repeat(900_000))),
+            default: Some(Value::Text("x".repeat(600_000))),
+            visible_if: None,
+        });
+        tall.params.params.push(ParamSpec {
+            name: "choice".into(),
+            label: "Choice".into(),
+            description: None,
+            control: ParamControl::Choice { options: (0..16_384).map(|n| nodecraft_types::Choice { value: n.to_string(), label: n.to_string() }).collect() },
+            required: false,
+            default: Some(Value::Text("0".into())),
             visible_if: None,
         });
         let calls = Arc::new(AtomicUsize::new(0));
@@ -362,26 +416,30 @@ mod tests {
         Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
         let mut node = Node::new(NodeId::from_bytes([3; 16]), "test.dynamic");
         node.pos.x = 100_000.0;
+        node.params.insert("p0".into(), Value::Bool(true));
         Change::AddNode { canvas, node: node.clone() }.apply(&mut document).unwrap();
-        for n in 10..110 {
+        for n in 10..1009_u16 {
             let mut other = node.clone();
-            other.id = NodeId::from_bytes([n; 16]);
+            let mut bytes = [0; 16];
+            bytes[..2].copy_from_slice(&n.to_le_bytes());
+            other.id = NodeId::from_bytes(bytes);
             Change::AddNode { canvas, node: other }.apply(&mut document).unwrap();
         }
         let mut session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
-        let mut geometry = Geometry::default();
+        let mut navigation = Navigation { visible: false, ..Navigation::default() };
+        let geometry = &mut navigation.geometry;
         let before = calls.load(Ordering::Relaxed);
-        geometry.refresh(&session, canvas, ThemeKind::Dark);
-        assert_eq!(geometry.validations, 1, "shared near-1MiB schema validated once");
-        assert_eq!(calls.load(Ordering::Relaxed) - before, 101, "each instance hook still runs");
+        geometry.refresh(&mut session, canvas, ThemeKind::Dark);
+        assert_eq!(geometry.validations, 1, "one validated descriptor proof shared by all nonempty instances");
+        assert_eq!(calls.load(Ordering::Relaxed) - before, 1000, "each nonempty instance hook still runs");
         let actual = geometry.rects[&node.id];
         assert!(actual.height() > card::world_rect(&node, Some(&short), ThemeKind::Dark.tokens()).height());
         let count = calls.load(Ordering::Relaxed);
-        geometry.refresh(&session, canvas, ThemeKind::Dark);
+        geometry.refresh(&mut session, canvas, ThemeKind::Dark);
         assert_eq!(calls.load(Ordering::Relaxed), count);
         session.dispatch("node.move", &json!({"canvas":canvas,"id":node.id,"pos":{"x":200_000.0,"y":20.0}})).unwrap();
-        geometry.refresh(&session, canvas, ThemeKind::Dark);
-        assert_eq!(calls.load(Ordering::Relaxed) - count, 101);
+        geometry.refresh(&mut session, canvas, ThemeKind::Dark);
+        assert_eq!(calls.load(Ordering::Relaxed) - count, 1000);
         assert_eq!(geometry.validations, 1);
         assert_eq!(geometry.rects[&node.id].min.x, 200_000.0);
         assert_eq!(geometry.rects[&node.id].height(), actual.height());
@@ -392,8 +450,104 @@ mod tests {
             instance_rect(&session, &owned, ThemeKind::Dark.tokens(), &mut validated).unwrap();
         }
         assert_eq!(validated.validations, 2, "owned descriptor allocations never share validation");
-        geometry.refresh(&session, CanvasId::from_bytes([9; 16]), ThemeKind::Dark);
+        geometry.refresh(&mut session, CanvasId::from_bytes([9; 16]), ThemeKind::Dark);
         assert!(geometry.bounds(None, ThemeKind::Dark.tokens()).is_none());
+    }
+    #[test]
+    fn invalid_unavailable_and_cache_rejected_schemas_match_painted_placeholder() {
+        let short = NodeDescriptor {
+            id: "test.dynamic".into(),
+            label: "Dynamic".into(),
+            category: Category::Source,
+            inputs: vec![],
+            outputs: vec![],
+            params: ParamSchema::default(),
+            quick_add: None,
+        };
+        for failure in ["invalid", "params", "budget", "ports", "unavailable"] {
+            let mut instance = short.clone();
+            if failure == "invalid" {
+                instance.label.clear();
+            }
+            if failure == "budget" {
+                instance.params.params.push(ParamSpec {
+                    name: "escaped".into(),
+                    label: "Escaped".into(),
+                    description: None,
+                    control: ParamControl::Text { multiline: true, max_bytes: 1_048_576 },
+                    required: false,
+                    default: Some(Value::Text("\0".repeat(900_000))),
+                    visible_if: None,
+                });
+                instance.validate().unwrap();
+                assert!(crate::app::descriptor_bytes(&instance).is_none(), "valid escaped text exceeds view cache admission budget");
+            }
+            let mut node = Node::new(NodeId::from_bytes([31; 16]), "test.dynamic");
+            if failure == "params" {
+                node.params.insert("unknown".into(), Value::Bool(true));
+            }
+            if failure == "ports" {
+                node.outputs
+                    .push(nodecraft_graph::Port { name: "unexpected".into(), port_type: PortType { modality: nodecraft_types::Modality::Text, many: false } });
+            }
+            if failure == "unavailable" {
+                node.config.insert("test.unavailable".into(), Value::Bool(true));
+            }
+            let mut kinds = nodecraft_nodes::Registry::default();
+            kinds.register(Box::new(Dynamic(short.clone(), instance, Arc::new(AtomicUsize::new(0))))).unwrap();
+            let document = Project::new(ProjectId::from_bytes([32; 16]), "Fallback").unwrap();
+            let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+            assert_eq!(
+                instance_rect(&session, &node, ThemeKind::Dark.tokens(), &mut ValidatedDescriptors::default()).unwrap(),
+                card::world_rect(&node, None, ThemeKind::Dark.tokens()),
+                "{failure}"
+            );
+        }
+    }
+    #[test]
+    fn replacement_session_retains_identity_and_invalidates_equal_document_keys() {
+        let canvas = CanvasId::from_bytes([11; 16]);
+        let id = NodeId::from_bytes([12; 16]);
+        let mut document = Project::new(ProjectId::from_bytes([13; 16]), "Replacement").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+        let node = Node::new(id, "unknown.kind");
+        Change::AddNode { canvas, node: node.clone() }.apply(&mut document).unwrap();
+        let mut session = Session::new(document.clone()).unwrap();
+        let mut geometry = Geometry::default();
+        geometry.refresh(&mut session, canvas, ThemeKind::Dark);
+        let old = Arc::downgrade(geometry.session_identity.as_ref().unwrap());
+        let before = geometry.rects[&id];
+        let mut moved = node;
+        moved.pos.x = 4000.0;
+        Change::SetNode { canvas, node: moved }.apply(&mut document).unwrap();
+        session = Session::new(document).unwrap();
+        assert!(old.upgrade().is_some(), "cache retains old allocation after Session replacement");
+        geometry.refresh(&mut session, canvas, ThemeKind::Dark);
+        assert_eq!(geometry.rects[&id].min.x - before.min.x, 4000.0);
+        assert!(old.upgrade().is_none());
+    }
+    #[test]
+    fn unavailable_instances_use_complete_placeholder_and_nonfinite_bounds_fail() {
+        let canvas = CanvasId::from_bytes([21; 16]);
+        let id = NodeId::from_bytes([22; 16]);
+        let mut document = Project::new(ProjectId::from_bytes([23; 16]), "Placeholder").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+        let node = Node::new(id, "unknown.kind");
+        Change::AddNode { canvas, node: node.clone() }.apply(&mut document).unwrap();
+        let session = Session::new(document).unwrap();
+        let t = ThemeKind::Dark.tokens();
+        let mut validated = ValidatedDescriptors::default();
+        let rect = instance_rect(&session, &node, t, &mut validated).unwrap();
+        assert_eq!(rect, card::world_rect(&node, None, t));
+        assert!(decorated(rect, t).contains_rect(rect));
+        let mut bad = node;
+        bad.pos.x = f32::NAN;
+        assert!(instance_rect(&session, &bad, t, &mut validated).is_err());
+        let geometry = Geometry { rects: [(id, rect)].into(), error: true, ..Geometry::default() };
+        assert!(geometry.bounds(None, t).is_none(), "never fit a partial graph");
+        let mut missing = Selection::default();
+        missing.only(NodeId::from_bytes([24; 16]));
+        assert!(geometry.bounds(Some(&missing), t).is_none());
     }
     #[test]
     fn mapping_roundtrips_extreme_domains_and_clamps_drag() {

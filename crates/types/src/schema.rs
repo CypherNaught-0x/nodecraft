@@ -10,6 +10,11 @@ const MAX_PARAMS: usize = 256;
 const MAX_TEXT: usize = 1024 * 1024;
 const MAX_CHOICES: usize = 16_384;
 const MAX_OPTION_TEXT: usize = 4096;
+#[cfg(test)]
+thread_local! {
+    static SCHEMA_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CHOICE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn unit_step() -> Unsigned {
     Unsigned(1)
@@ -126,6 +131,8 @@ impl ParamControl {
                 }
                 let mut seen = BTreeSet::new();
                 for option in options {
+                    #[cfg(test)]
+                    CHOICE_VISITS.with(|count| count.set(count.get() + 1));
                     if option.value.is_empty()
                         || option.value.len() > MAX_OPTION_TEXT
                         || option.label.trim().is_empty()
@@ -161,7 +168,11 @@ impl ParamControl {
     fn validate_value_checked(&self, value: &Value) -> Result<(), Error> {
         let valid = match (self, value) {
             (Self::Text { max_bytes, .. }, Value::Text(text)) => text.len() <= *max_bytes,
-            (Self::Choice { options }, Value::Text(text)) => options.iter().any(|option| option.value == *text),
+            (Self::Choice { options }, Value::Text(text)) => options.iter().any(|option| {
+                #[cfg(test)]
+                CHOICE_VISITS.with(|count| count.set(count.get() + 1));
+                option.value == *text
+            }),
             (Self::Toggle, Value::Bool(_)) => true,
             (Self::Slider { min, max, .. }, Value::Number(number)) => {
                 min.is_none_or(|min| number.get() >= min.get()) && max.is_none_or(|max| number.get() <= max.get())
@@ -199,6 +210,8 @@ impl ParamControl {
 
 impl ParamSchema {
     pub fn validate(&self) -> Result<(), Error> {
+        #[cfg(test)]
+        SCHEMA_VALIDATIONS.with(|count| count.set(count.get() + 1));
         if self.params.len() > MAX_PARAMS {
             return Err(invalid("schema exceeds parameter limit"));
         }
@@ -240,24 +253,74 @@ impl ParamSchema {
     /// Missing optional values remain absent. Required, visible values are enforced only when
     /// `ready` is true, so an unconfigured source can still be placed on the canvas.
     pub fn resolve(&self, supplied: &ParamValues, ready: bool) -> Result<ResolvedParams, Error> {
+        let validated = self.validated()?;
+        let borrowed = validated.resolve_borrowed(supplied, ready)?;
+        Ok(ResolvedParams { values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(), visible: borrowed.visible })
+    }
+
+    /// Validate immutable schema data once before checking many instances. The proof borrows
+    /// the schema, so callers cannot change controls/defaults while reusing it.
+    pub fn validated(&self) -> Result<ValidatedParamSchema<'_>, Error> {
         self.validate()?;
+        let choices = self
+            .params
+            .iter()
+            .filter_map(|spec| match &spec.control {
+                ParamControl::Choice { options } => Some((
+                    spec.name.as_str(),
+                    options
+                        .iter()
+                        .map(|option| {
+                            #[cfg(test)]
+                            CHOICE_VISITS.with(|count| count.set(count.get() + 1));
+                            option.value.as_str()
+                        })
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        Ok(ValidatedParamSchema { schema: self, choices })
+    }
+}
+
+/// An immutable schema whose controls, defaults and visibility conditions were checked.
+pub struct ValidatedParamSchema<'a> {
+    schema: &'a ParamSchema,
+    choices: BTreeMap<&'a str, BTreeSet<&'a str>>,
+}
+/// Effective values borrow supplied scalars or schema defaults; no Value is cloned.
+pub struct BorrowedResolvedParams<'a> {
+    pub values: BTreeMap<&'a str, &'a Value>,
+    pub visible: BTreeSet<String>,
+}
+impl ValidatedParamSchema<'_> {
+    /// Uses the same value checks and effective-byte budget as `ParamSchema::resolve`, without
+    /// rescanning choice controls or copying large defaults for each instance.
+    pub fn resolve_borrowed<'a>(&'a self, supplied: &'a ParamValues, ready: bool) -> Result<BorrowedResolvedParams<'a>, Error> {
+        let schema = self.schema;
         if supplied.len() > MAX_PARAMS {
             return Err(invalid("parameter values exceed count limit"));
         }
         let mut bytes = 0_usize;
         for (key, value) in supplied {
-            let spec = self.params.iter().find(|spec| spec.name == *key).ok_or_else(|| {
+            let spec = schema.params.iter().find(|spec| spec.name == *key).ok_or_else(|| {
                 if name(key) {
                     Error::new(ErrorKind::InvalidInput, format!("unknown parameter: {key}; migrate this node to the current schema"))
                 } else {
                     invalid("unknown parameter; migrate this node to the current schema")
                 }
             })?;
-            spec.control.validate_value_checked(value)?;
+            if let Some(options) = self.choices.get(key.as_str()) {
+                if !matches!(value, Value::Text(text) if options.contains(text.as_str())) {
+                    return Err(invalid("parameter value does not match its control type or bounds"));
+                }
+            } else {
+                spec.control.validate_value_checked(value)?;
+            }
             bytes = bytes.saturating_add(value_text_bytes(value));
         }
-        // Include defaults in the effective total before cloning anything.
-        for spec in &self.params {
+        for spec in &schema.params {
             if !supplied.contains_key(&spec.name) {
                 bytes = bytes.saturating_add(spec.default.as_ref().map_or(0, value_text_bytes));
             }
@@ -265,26 +328,26 @@ impl ParamSchema {
         if bytes > MAX_TEXT {
             return Err(invalid("resolved parameters exceed text limit"));
         }
-        let mut values = supplied.clone();
+        let mut values: BTreeMap<&str, &Value> = supplied.iter().map(|(name, value)| (name.as_str(), value)).collect();
         let mut visible = BTreeSet::new();
-        for spec in &self.params {
-            if !values.contains_key(&spec.name)
+        for spec in &schema.params {
+            if !values.contains_key(spec.name.as_str())
                 && let Some(value) = &spec.default
             {
-                values.insert(spec.name.clone(), value.clone());
+                values.insert(&spec.name, value);
             }
             let show = spec
                 .visible_if
                 .as_ref()
-                .is_none_or(|condition| visible.contains(&condition.parameter) && values.get(&condition.parameter) == Some(&condition.equals));
+                .is_none_or(|condition| visible.contains(&condition.parameter) && values.get(condition.parameter.as_str()).copied() == Some(&condition.equals));
             if show {
                 visible.insert(spec.name.clone());
-                if ready && spec.required && !values.contains_key(&spec.name) {
+                if ready && spec.required && !values.contains_key(spec.name.as_str()) {
                     return Err(invalid("a required visible parameter has no value"));
                 }
             }
         }
-        Ok(ResolvedParams { values, visible })
+        Ok(BorrowedResolvedParams { values, visible })
     }
 }
 
@@ -293,5 +356,41 @@ fn value_text_bytes(value: &Value) -> usize {
         Value::Text(text) => text.len(),
         Value::Media(asset) => asset.mime.as_str().len(),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod borrowing_tests {
+    use super::*;
+    fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
+        ParamSpec { name: name.into(), label: name.into(), description: None, control, required: false, default: Some(default), visible_if: None }
+    }
+    #[test]
+    fn shared_large_defaults_and_choice_controls_are_scanned_once_and_never_copied() {
+        let schema = ParamSchema {
+            params: vec![
+                spec("large", ParamControl::Text { multiline: true, max_bytes: MAX_TEXT }, Value::Text("x".repeat(600_000))),
+                spec(
+                    "choice",
+                    ParamControl::Choice { options: (0..16_384).map(|n| Choice { value: n.to_string(), label: n.to_string() }).collect() },
+                    Value::Text("0".into()),
+                ),
+                spec("toggle", ParamControl::Toggle, Value::Bool(false)),
+            ],
+        };
+        SCHEMA_VALIDATIONS.with(|count| count.set(0));
+        CHOICE_VISITS.with(|count| count.set(0));
+        let validated = schema.validated().unwrap();
+        let baseline = CHOICE_VISITS.with(|count| count.get());
+        assert!(baseline >= 16_384, "instrument actual nested option work");
+        for n in 0..1000 {
+            let supplied = ParamValues::from([("toggle".into(), Value::Bool(n % 2 == 0)), ("choice".into(), Value::Text(n.to_string()))]);
+            let resolved = validated.resolve_borrowed(&supplied, false).unwrap();
+            let default = schema.params.first().unwrap().default.as_ref().unwrap();
+            assert!(std::ptr::eq(*resolved.values.get("large").unwrap(), default), "effective default is the original Value allocation");
+            assert!(std::ptr::eq(*resolved.values.get("toggle").unwrap(), supplied.get("toggle").unwrap()));
+        }
+        assert_eq!(SCHEMA_VALIDATIONS.with(|count| count.get()), 1);
+        assert_eq!(CHOICE_VISITS.with(|count| count.get()), baseline, "supplied Choice uses indexed membership, not option rescans");
     }
 }

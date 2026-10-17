@@ -22,7 +22,7 @@ use std::{
     sync::Arc,
 };
 
-const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
 struct CachedSchema {
     descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
     visible: BTreeSet<String>,
@@ -40,7 +40,7 @@ fn cache_bytes(cache: &BTreeMap<NodeId, CachedSchema>) -> usize {
         total.saturating_add(bytes).saturating_add(256).saturating_add(entry.visible.iter().map(|name| name.len().saturating_add(96)).sum::<usize>())
     })
 }
-fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> Option<usize> {
+pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> Option<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -251,7 +251,7 @@ impl NodeCraftApp {
         })
     }
     pub fn home(&mut self) -> Pos2 {
-        self.navigation.geometry.refresh(&self.session, self.canvas, self.theme);
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
@@ -299,6 +299,7 @@ impl NodeCraftApp {
                 }
             }
         }
+        let popup_owned = egui::Popup::is_any_open(ui.ctx());
         let overlay_blocks = self.navigation_overlay(ui);
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
@@ -411,9 +412,15 @@ impl NodeCraftApp {
                     if !overlay_blocks && (r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary)) {
                         pan += r.drag_delta() * self.view.zoom;
                     }
-                    if !overlay_blocks || self.text_focused {
-                        intents.extend(result.intents.into_iter().map(|intent| (node.id, intent)));
-                    }
+                    // A Choice popup can close while producing its parameter intent over the
+                    // overlay. Preserve its ownership from frame start, without admitting moves.
+                    intents.extend(
+                        result
+                            .intents
+                            .into_iter()
+                            .filter(|intent| !overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                            .map(|intent| (node.id, intent)),
+                    );
                 }
             }
             match query {
@@ -532,7 +539,20 @@ fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
             _ => return false,
         }
     }
-    key.is_some_and(|key| input.consume_key(modifiers, key))
+    key.is_some_and(|key| {
+        if !matches!(key, egui::Key::Num1 | egui::Key::Num2 | egui::Key::M) {
+            return input.consume_key(modifiers, key);
+        }
+        let digit = matches!(key, egui::Key::Num1 | egui::Key::Num2);
+        let mut consumed = false;
+        input.events.retain(|event| {
+            let matched = matches!(event, egui::Event::Key { key: logical, physical_key, pressed: true, modifiers: actual, .. }
+                if actual.matches_exact(modifiers) && if digit { physical_key.unwrap_or(*logical) == key } else { *logical == key });
+            consumed |= matched;
+            !matched
+        });
+        consumed
+    })
 }
 
 impl eframe::App for NodeCraftApp {

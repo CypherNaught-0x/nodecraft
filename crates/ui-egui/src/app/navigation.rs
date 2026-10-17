@@ -3,12 +3,14 @@ use super::*;
 use nodecraft_engine::navigation_cmds::NavigationContext;
 use serde_json::Value as Json;
 
+const FIT_CLAMP_NOTICE: &str = "Nodes are too spread out to fit at minimum zoom; the view is centered at 10%.";
+
 fn navigation_id(id: &str) -> bool {
     matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
 }
 impl NodeCraftApp {
     fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
-        self.navigation.geometry.refresh(&self.session, self.canvas, self.theme);
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let t = self.theme.tokens();
         let fit = matches!(id, "canvas.fit_all" | "canvas.fit_selection");
         let viewport = if fit { self.navigation.usable(self.viewport, t) } else { self.viewport };
@@ -80,33 +82,40 @@ impl NodeCraftApp {
             }
             _ => return Err(Error::new(ErrorKind::InvalidInput, "unknown navigation intent")),
         }
-        self.notice = clamped.then(|| "Nodes are too spread out to fit at minimum zoom; the view is centered at 10%.".into());
+        if matches!(id, "canvas.fit_all" | "canvas.fit_selection") && self.notice.as_deref().is_none_or(|notice| notice == FIT_CLAMP_NOTICE) {
+            self.notice = clamped.then(|| FIT_CLAMP_NOTICE.into());
+        }
         if self.view != previous_view || self.navigation.visible != previous_visibility {
             ctx.request_repaint();
         }
         Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"clamped":clamped}))
     }
     pub(super) fn navigation_overlay(&mut self, ui: &mut egui::Ui) -> bool {
-        if !self.text_focused && !canvas::text_input_focused(ui.ctx()) && !egui::Popup::is_any_open(ui.ctx()) {
-            let command = ui.input_mut(|input| {
-                self.session.registry().specs().filter(|spec| navigation_id(spec.id)).find_map(|spec| {
-                    spec.shortcut
-                        .into_iter()
-                        .chain(spec.alternate_shortcuts.iter().copied())
-                        .any(|shortcut| consume_shortcut(input, shortcut))
-                        .then_some(spec.id)
-                })
-            });
-            if let Some(command) = command
-                && let Err(error) = self.dispatch_navigation(ui.ctx(), command, &json!({}))
-            {
-                self.notice = Some(error.message);
-            }
-        }
+        // Decide ownership/availability before consuming any key. An editor, popup,
+        // unavailable fit or active canvas gesture must retain the original event.
         let all = self.navigation_enabled(ui.ctx(), "canvas.fit_all", &json!({})).is_ok();
         let selected = self.navigation_enabled(ui.ctx(), "canvas.fit_selection", &json!({})).is_ok();
         let toggle = self.navigation_enabled(ui.ctx(), "canvas.minimap_toggle", &json!({})).is_ok();
         let pan = self.navigation_enabled(ui.ctx(), "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
+        let specs: Vec<_> = self.session.registry().specs().filter(|spec| navigation_id(spec.id)).copied().collect();
+        for spec in specs {
+            let enabled = match spec.id {
+                "canvas.fit_all" => all,
+                "canvas.fit_selection" => selected,
+                "canvas.minimap_toggle" => toggle,
+                _ => false,
+            };
+            if enabled
+                && ui.input_mut(|input| {
+                    spec.shortcut.into_iter().chain(spec.alternate_shortcuts.iter().copied()).any(|shortcut| consume_shortcut(input, shortcut))
+                })
+            {
+                if let Err(error) = self.dispatch_navigation(ui.ctx(), spec.id, &json!({})) {
+                    self.notice = Some(error.message);
+                }
+                break;
+            }
+        }
         let preview = self.drag.as_ref().and_then(|drag| {
             self.session
                 .document()
@@ -169,6 +178,96 @@ mod tests {
         h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE });
         h.run();
     }
+    fn native_key(logical: egui::Key, physical: Option<egui::Key>, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key: logical, physical_key: physical, pressed: true, repeat: false, modifiers }
+    }
+    #[test]
+    fn native_shaped_shifted_digits_and_fallback_fit_once_with_exact_modifiers() {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        let fitted = h.state().view;
+        h.state_mut().selection.only(NodeId::from_bytes([4; 16]));
+        for (logical, physical) in [(egui::Key::Quote, Some(egui::Key::Num2)), (egui::Key::Num2, None)] {
+            h.event(native_key(logical, physical, egui::Modifiers::SHIFT));
+            h.run();
+            assert!(h.state().view.zoom > fitted.zoom);
+            h.event(native_key(egui::Key::Exclamationmark, Some(egui::Key::Num1), egui::Modifiers::SHIFT));
+            h.run();
+            assert_eq!(h.state().view, fitted);
+        }
+        h.state_mut().view.zoom = 0.5;
+        h.event(native_key(egui::Key::Num1, None, egui::Modifiers::SHIFT));
+        h.run();
+        assert_eq!(h.state().view, fitted);
+        let visible = h.state().navigation.visible;
+        h.event(native_key(egui::Key::M, Some(egui::Key::M), egui::Modifiers::SHIFT));
+        h.run();
+        assert_eq!(h.state().navigation.visible, !visible);
+        h.run();
+        assert_eq!(h.state().navigation.visible, !visible, "one press dispatches once");
+        for event in [
+            native_key(egui::Key::Num1, Some(egui::Key::Num1), egui::Modifiers::NONE),
+            native_key(egui::Key::Exclamationmark, None, egui::Modifiers::SHIFT),
+            native_key(egui::Key::Exclamationmark, Some(egui::Key::Num3), egui::Modifiers::SHIFT),
+            native_key(egui::Key::Num1, Some(egui::Key::Num1), egui::Modifiers::SHIFT | egui::Modifiers::ALT),
+            native_key(egui::Key::M, Some(egui::Key::M), egui::Modifiers::SHIFT | egui::Modifiers::CTRL),
+        ] {
+            let view = h.state().view;
+            h.event(event);
+            h.run();
+            assert_eq!(h.state().view, view);
+            assert_eq!(h.state().navigation.visible, !visible);
+        }
+        assert_eq!(h.state().session.revision(), 0);
+        assert!(!h.state().session.can_undo());
+    }
+    #[test]
+    fn popup_and_gesture_retain_shortcut_events_and_document_state() {
+        for popup in [false, true] {
+            let retained = Rc::new(RefCell::new(false));
+            let observed = Rc::clone(&retained);
+            let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(
+                move |ui, app: &mut NodeCraftApp| {
+                    if popup {
+                        egui::Popup::open_id(ui.ctx(), egui::Id::new("shortcut_owner"));
+                    } else {
+                        app.marquee = Some(Marquee { start: Pos2::ZERO, base: BTreeSet::new(), cancelled: false });
+                    }
+                    app.viewport = ui.max_rect();
+                    app.navigation_overlay(ui);
+                    *observed.borrow_mut() |= ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, .. })));
+                },
+                app(),
+            );
+            let document = h.state().session.document().clone();
+            let view = h.state().view;
+            let selection = h.state().selection.clone();
+            let visible = h.state().navigation.visible;
+            h.event(native_key(egui::Key::M, Some(egui::Key::M), egui::Modifiers::SHIFT));
+            h.run();
+            assert!(*retained.borrow());
+            assert_eq!(h.state().view, view);
+            assert_eq!(h.state().selection, selection);
+            assert_eq!(h.state().navigation.visible, visible);
+            assert_eq!(h.state().session.document(), &document);
+            assert_eq!(h.state().session.revision(), 0);
+            assert!(!h.state().session.can_undo());
+        }
+    }
+    #[test]
+    fn fits_and_toggle_preserve_unrelated_notice_and_clear_owned_notice() {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        h.state_mut().notice = Some("Provider failed earlier".into());
+        for id in ["canvas.fit_all", "canvas.minimap_toggle"] {
+            h.state_mut().dispatch_navigation(&ctx, id, &json!({})).unwrap();
+            assert_eq!(h.state().notice.as_deref(), Some("Provider failed earlier"));
+        }
+        h.state_mut().notice = Some(FIT_CLAMP_NOTICE.into());
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        assert!(h.state().notice.is_none());
+    }
     #[test]
     fn fit_commands_shortcuts_and_toggle_preserve_document_history() {
         let mut h = harness();
@@ -207,6 +306,7 @@ mod tests {
     fn minimap_click_drag_freezes_mapping_and_never_selects_or_moves_nodes() {
         let mut h = harness();
         let original = h.state().session.document().clone();
+        h.state_mut().notice = Some("Provider failed earlier".into());
         h.state_mut().selection.only(NodeId::from_bytes([3; 16]));
         let selection = h.state().selection.clone();
         let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
@@ -225,6 +325,7 @@ mod tests {
         assert!((f64::from(center.y) - expected.1).abs() < 0.01);
         button(&mut h, to, false);
         assert!(h.state().navigation.drag.is_none());
+        assert_eq!(h.state().notice.as_deref(), Some("Provider failed earlier"));
         assert_eq!(h.state().selection, selection);
         assert_eq!(h.state().session.document(), &original);
         assert_eq!(h.state().session.revision(), 0);
@@ -263,6 +364,54 @@ mod tests {
         assert_eq!(h.state().view, original);
         assert!(!h.state().navigation.pointer_owned);
         assert_eq!(h.state().session.revision(), 0);
+    }
+    #[test]
+    fn fit_contains_the_entire_painted_unknown_kind_placeholder() {
+        let mut document = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([41; 16]), "Unknown node").unwrap();
+        let canvas = nodecraft_types::CanvasId::from_bytes([42; 16]);
+        Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+        let node = nodecraft_graph::Node::new(NodeId::from_bytes([43; 16]), "missing.plugin");
+        Change::AddNode { canvas, node: node.clone() }.apply(&mut document).unwrap();
+        let app = NodeCraftApp::from_session(Session::new(document).unwrap(), canvas).unwrap();
+        let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        h.run();
+        let app = h.state();
+        let actual = app.painted[&node.id];
+        assert_eq!(app.navigation.geometry.rects[&node.id], actual);
+        assert_eq!(actual, card::world_rect(&node, None, app.theme.tokens()));
+        let decorated = crate::navigation::decorated(actual, app.theme.tokens());
+        assert!(app.navigation.usable(app.viewport, app.theme.tokens()).contains_rect(app.view.rect_to_screen(app.viewport.min, decorated)));
+    }
+    #[test]
+    fn node_text_editor_owns_shifted_navigation_events_without_mutation() {
+        use egui_kittest::kittest::Queryable;
+        let retained = Rc::new(RefCell::new(false));
+        let observed = Rc::clone(&retained);
+        let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).with_max_steps(120).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                app.show(ui);
+                *observed.borrow_mut() |=
+                    ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, key: egui::Key::Exclamationmark, .. })));
+            },
+            NodeCraftApp::headless().unwrap(),
+        );
+        h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Text").click();
+        h.run();
+        let view = h.state().view;
+        let document = h.state().session.document().clone();
+        let selection = h.state().selection.clone();
+        let visible = h.state().navigation.visible;
+        h.event(native_key(egui::Key::Exclamationmark, Some(egui::Key::Num1), egui::Modifiers::SHIFT));
+        h.run();
+        assert!(*retained.borrow(), "navigation leaves the node editor's original event available");
+        assert_eq!(h.state().view, view);
+        assert_eq!(h.state().navigation.visible, visible);
+        assert_eq!(h.state().selection, selection);
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), 0);
+        assert!(!h.state().session.can_undo());
     }
     #[test]
     fn text_focus_suppresses_navigation_shortcuts() {

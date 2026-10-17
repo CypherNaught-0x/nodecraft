@@ -1087,3 +1087,40 @@ fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
     box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
     assert!(h.state().selection.is_empty());
 }
+
+#[test]
+fn navigation_overlay_preserves_choice_popup_pointer_commit_and_undo() {
+    let mut h = schema_harness(vec![spec(
+        "quality",
+        ParamControl::Choice { options: vec![Choice { value: "low".into(), label: "Low".into() }, Choice { value: "high".into(), label: "High".into() }] },
+        Value::Text("low".into()),
+    )]);
+    h.get_by_role_and_label(Role::ComboBox, "quality").click();
+    h.run();
+    assert!(egui::Popup::is_any_open(&h.ctx));
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    let option = h.get_by_label("High").rect().center();
+    h.state_mut().view.pan += map.center() - option;
+    h.run();
+    let option = h.get_by_label("High").rect().center();
+    assert!(map.contains(option), "real Choice option must overlap the minimap: {option:?} vs {map:?}");
+    let camera = h.state().view;
+    let document = h.state().session.document().clone();
+    let selection = h.state().selection.clone();
+    // Separate real pointer down/up frames; no accessibility action or fabricated intent.
+    h.hover_at(option);
+    h.event(egui::Event::PointerButton { pos: option, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.event(egui::Event::PointerButton { pos: option, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(!egui::Popup::is_any_open(&h.ctx));
+    assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().session.revision(), 1, "one parameter commit");
+    assert_eq!(h.state().view, camera);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().navigation.drag.is_none());
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document);
+    assert!(!h.state().session.can_undo());
+    assert_eq!(h.state().view, camera);
+}
