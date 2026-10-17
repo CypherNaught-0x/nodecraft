@@ -3415,3 +3415,522 @@ fn perf281_visual_current() {
     first_frame_hover_captured(false, Some(&root));
     first_frame_hover_captured(true, Some(&root));
 }
+
+#[test]
+fn palette_closes_on_admitted_marquee_and_first_escape_cancels_it() {
+    let mut h = harness();
+    double_click(&mut h, Pos2::new(100.0, 100.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let from = Pos2::new(60.0, 500.0);
+    h.hover_at(from);
+    h.step();
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
+    h.step();
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    h.hover_at(from + Vec2::new(40.0, 20.0));
+    h.run();
+    assert!(h.state().marquee.is_some(), "actual marquee must be admitted");
+    assert!(h.state().palette.is_none(), "admitted gesture closes palette before Escape");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().marquee.as_ref().is_some_and(|m| m.cancelled));
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn minimap_real_double_click_never_opens_palette() {
+    let mut h = harness();
+    h.run();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    double_click(&mut h, map.center());
+    h.run();
+    assert!(h.state().palette.is_none());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert!(!h.state().session.can_undo());
+    let mut empty = harness();
+    double_click(&mut empty, Pos2::new(100.0, 100.0));
+    empty.run();
+    assert!(empty.state().palette.is_some(), "empty canvas remains eligible");
+}
+
+#[test]
+fn quick_add_yields_over_actual_keys_window_without_text_focus() {
+    let mut h = harness();
+    h.get_by_role_and_label(Role::Button, "API keys").click();
+    h.run();
+    let key_label = h.get_by_label("Account").rect();
+    let at = key_label.left_center() - Vec2::new(5.0, 0.0);
+    h.hover_at(at);
+    h.step();
+    h.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    assert!(!canvas::text_input_focused(&h.ctx));
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let selection = h.state().selection.clone();
+    let events = h.state().session.events_since(0).unwrap();
+    for key in [egui::Key::T, egui::Key::I] {
+        h.key_press(key);
+        h.run();
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().selection, selection);
+        assert_eq!(h.state().session.events_since(0).unwrap(), events);
+        assert!(!h.state().session.can_undo());
+    }
+}
+
+struct FloatingFixture {
+    app: NodeCraftApp,
+    open: bool,
+    at: Pos2,
+    transform: egui::emath::TSTransform,
+    rect: Rect,
+    blocked_keys: usize,
+    extra_areas: usize,
+}
+fn floating_fixture() -> Harness<'static, FloatingFixture> {
+    Harness::builder().with_size(Vec2::new(1000.0, 700.0)).with_step_dt(1.0 / 60.0).with_max_steps(120).build_ui_state(
+        |ui, state: &mut FloatingFixture| {
+            if state.open {
+                let response = egui::Window::new("Public foreground fixture")
+                    .fixed_pos(state.at)
+                    .fixed_size(Vec2::new(240.0, 160.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.label("No editor, key service or private data");
+                    })
+                    .unwrap()
+                    .response;
+                ui.ctx().set_transform_layer(response.layer_id, state.transform);
+                state.rect = state.transform * response.rect;
+            }
+            for n in 0..state.extra_areas {
+                egui::Area::new(egui::Id::new(("public-cap-fixture", n)))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(Pos2::new(-500.0, -500.0))
+                    .constrain(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label("offscreen public fixture");
+                    });
+            }
+            state.app.show(ui);
+            state.blocked_keys += ui.input(|i| i.events.iter().filter(|e| matches!(e, egui::Event::Key { key: egui::Key::T, pressed: true, .. })).count());
+        },
+        FloatingFixture {
+            app: NodeCraftApp::headless().unwrap(),
+            open: false,
+            at: Pos2::new(80.0, 80.0),
+            transform: egui::emath::TSTransform::IDENTITY,
+            rect: Rect::NOTHING,
+            blocked_keys: 0,
+            extra_areas: 0,
+        },
+    )
+}
+
+#[test]
+fn floating_window_first_open_move_transform_and_close_have_bounded_current_ownership() {
+    let mut h = floating_fixture();
+    h.run();
+    let document = h.state().app.session.document().clone();
+    let revision = h.state().app.session.revision();
+    let events = h.state().app.session.events_since(0).unwrap();
+    // Position first: one fresh key is the only event on the Window's first sizing frame.
+    let pointer = Pos2::new(120.0, 110.0);
+    h.hover_at(pointer);
+    h.step();
+    h.state_mut().open = true;
+    h.event(egui::Event::Key { key: egui::Key::T, physical_key: Some(egui::Key::T), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.step();
+    assert!(h.state().rect.contains(pointer));
+    assert_eq!(h.state().app.session.document(), &document);
+    assert_eq!(h.state().blocked_keys, 1, "blocked press remains unconsumed");
+    h.event(egui::Event::Key { key: egui::Key::T, physical_key: Some(egui::Key::T), pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    let pointer = Pos2::new(480.0, 160.0);
+    h.hover_at(pointer);
+    h.step();
+    h.state_mut().at = Pos2::new(340.0, 90.0);
+    h.state_mut().transform = egui::emath::TSTransform::from_translation(Vec2::new(100.0, 40.0));
+    h.event(egui::Event::Key { key: egui::Key::T, physical_key: Some(egui::Key::T), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.step();
+    assert!(h.state().rect.contains(pointer));
+    assert_eq!(h.state().app.session.document(), &document);
+    assert_eq!(h.state().blocked_keys, 2);
+    assert_eq!(h.state().app.session.revision(), revision);
+    assert_eq!(h.state().app.session.events_since(0).unwrap(), events);
+    assert!(!h.state().app.session.can_undo());
+    h.event(egui::Event::Key { key: egui::Key::T, physical_key: Some(egui::Key::T), pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.state_mut().open = false;
+    h.run(); // A closed area's final frame may conservatively retain ownership.
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_ne!(h.state().app.session.document(), &document);
+    assert_eq!(h.state().blocked_keys, 2);
+    h.state_mut().app.session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().app.session.document(), &document);
+}
+
+#[test]
+fn floating_window_keeps_empty_canvas_and_card_quick_add_available() {
+    let mut h = floating_fixture();
+    h.state_mut().open = true;
+    h.run();
+    let document = h.state().app.session.document().clone();
+    let card = screen(&h.state().app).min + Vec2::new(5.0, 10.0);
+    for pointer in [Pos2::new(800.0, 120.0), card] {
+        assert!(!h.state().rect.contains(pointer));
+        h.hover_at(pointer);
+        h.step();
+        h.key_press(egui::Key::T);
+        h.run();
+        assert_ne!(h.state().app.session.document(), &document);
+        assert_eq!(h.state().app.selection.nodes().len(), 1);
+        h.state_mut().app.session.dispatch("edit.undo", &json!({})).unwrap();
+        h.run();
+        assert_eq!(h.state().app.session.document(), &document);
+    }
+    assert_eq!(h.state().blocked_keys, 0, "allowed key presses were consumed");
+}
+
+#[test]
+fn thousand_painted_cards_do_not_exhaust_floating_area_admission() {
+    let app = NodeCraftApp::headless().unwrap();
+    let canvas = app.canvas;
+    let template = node(&app).clone();
+    let mut document = app.session.document().clone();
+    let changes = (10..1009u32)
+        .map(|n| {
+            let mut node = template.clone();
+            node.id = NodeId::from_bytes(u128::from(n).to_be_bytes());
+            Change::AddNode { canvas, node }
+        })
+        .collect();
+    nodecraft_graph::Changeset::new(changes).apply(&mut document).unwrap();
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(Session::new(document.clone()).unwrap(), canvas).unwrap());
+    h.run();
+    assert_eq!(h.state().painted.len(), 1000);
+    let areas = h.ctx.memory(|m| m.areas().visible_layer_ids().len());
+    eprintln!("1000 painted cards: {areas} floating Area IDs");
+    assert!(areas < MAX_QUICK_ADD_AREAS, "card child layers must not count as floating Areas: {areas}");
+    h.hover_at(screen(h.state()).min + Vec2::new(5.0, 10.0));
+    h.step();
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), 1001);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document);
+}
+
+#[test]
+fn palette_closes_on_node_drag_and_late_card_pan_without_extra_history() {
+    for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+        let mut h = harness();
+        // Open the palette clear of the card: main's palette is a foreground Area and owns every
+        // press inside it, so the drag must start on visible canvas outside its rect. That is the
+        // #267 case this proves: a canvas gesture admitted while the palette is open closes it.
+        double_click(&mut h, Pos2::new(520.0, 70.0));
+        h.run();
+        assert!(h.state().palette.is_some());
+        let document = h.state().session.document().clone();
+        let card = screen(h.state());
+        let palette = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).map(|area| area.rect()).unwrap_or(Rect::NOTHING);
+        let start = card.left_center() + Vec2::new(5.0, 0.0);
+        assert!(card.contains(start) && !palette.contains(start), "fixture: {start:?} must be card, not palette {palette:?}");
+        h.hover_at(start);
+        h.step();
+        h.event(egui::Event::PointerButton { pos: start, button, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        let to = start + Vec2::new(40.0, 20.0);
+        h.hover_at(to);
+        h.run();
+        assert!(h.state().palette.is_none());
+        assert_eq!(h.state().session.document(), &document, "held drag/pan is view state");
+        assert!(!h.state().session.can_undo());
+        h.event(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        if button == egui::PointerButton::Primary {
+            assert_ne!(h.state().session.document(), &document);
+            h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+            assert_eq!(h.state().session.document(), &document);
+            assert!(!h.state().session.can_undo());
+        } else {
+            assert_eq!(h.state().session.document(), &document);
+            assert!(!h.state().session.can_undo());
+        }
+    }
+}
+
+#[test]
+fn palette_closes_on_real_wire_drag_and_first_escape_cancels_without_edit() {
+    let mut h = chain_harness();
+    double_click(&mut h, Pos2::new(550.0, 600.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let from = port_point(&h, 1, Side::Output);
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(40.0, 20.0));
+    h.run();
+    assert!(h.state().wiring.is_some());
+    assert!(h.state().palette.is_none());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().wiring.is_none());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert!(!h.state().session.can_undo());
+}
+
+/// A router whose list input is fed by two text sources, so its input order badges (#64) are on
+/// screen with empty canvas around them for the palette to open on.
+fn reorder_harness() -> Harness<'static, NodeCraftApp> {
+    let hub = NodeId::from_bytes([9; 16]);
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let canvas = CanvasId::from_bytes([7; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([8; 16]), "Reorder").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut router = kinds.get(nodecraft_nodes::router::ID).unwrap().descriptor().instantiate(hub, &BTreeMap::new()).unwrap();
+    router.pos = nodecraft_graph::Position { x: 620.0, y: 240.0 };
+    Change::AddNode { canvas, node: router }.apply(&mut document).unwrap();
+    for n in 1..=2u8 {
+        let id = NodeId::from_bytes([n; 16]);
+        let mut source = kinds.get("source.text").unwrap().descriptor().instantiate(id, &BTreeMap::new()).unwrap();
+        source.pos = nodecraft_graph::Position { x: 0.0, y: f32::from(n) * 300.0 };
+        Change::AddNode { canvas, node: source }.apply(&mut document).unwrap();
+        let wire = nodecraft_graph::Edge {
+            id: EdgeId::from_bytes([20 + n; 16]),
+            from: Endpoint { node: id, port: "out".into() },
+            to: Endpoint { node: hub, port: "in".into() },
+            order: u32::from(n) - 1,
+        };
+        Change::Connect { canvas, edge: wire }.apply(&mut document).unwrap();
+    }
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.state_mut().view = CanvasView { pan: Vec2::new(90.0, 60.0), zoom: 0.6 };
+    h.run();
+    h
+}
+
+/// The two noodles into the hub's list input, in document order.
+fn reorder_ids(h: &Harness<'static, NodeCraftApp>) -> Vec<EdgeId> {
+    let app = h.state();
+    let mut edges: Vec<_> = app.session.document().canvases().get(&app.canvas).unwrap().edges().values().cloned().collect();
+    edges.sort_by_key(|edge| edge.order);
+    edges.into_iter().map(|edge| edge.id).collect()
+}
+
+/// The fixture: the palette is open and both badges are outside it, so a badge press is the
+/// reorder and not a click inside the palette's Area.
+fn palette_over_badges() -> (Harness<'static, NodeCraftApp>, Pos2, Pos2) {
+    let mut h = reorder_harness();
+    let open_at = Pos2::new(520.0, 640.0);
+    double_click(&mut h, open_at);
+    h.run();
+    assert!(h.state().palette.is_some(), "double-clicking empty canvas opens the palette");
+    let palette = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).map(|area| area.rect()).unwrap_or(Rect::NOTHING);
+    let from = h.get_by_label("Input 2 of 2 into in of Router, drag to reorder").rect().center();
+    let to = h.get_by_label("Input 1 of 2 into in of Router, drag to reorder").rect().center();
+    assert!(!palette.contains(from) && !palette.contains(to), "fixture: badges {from:?} {to:?} must lie outside {palette:?}");
+    (h, from, to)
+}
+
+/// #267: a port-reorder drag admitted over an open palette closed neither, so the first Escape
+/// dismissed the palette and the drag needed a second one. Reordering is a canvas gesture like a
+/// card drag, so it closes the palette the frame it is admitted.
+#[test]
+fn palette_closes_on_a_port_reorder_drag_and_first_escape_cancels_it() {
+    let (mut h, from, to) = palette_over_badges();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let order = reorder_ids(&h);
+    let events = h.state().session.events_since(0).unwrap();
+    h.hover_at(from);
+    h.step();
+    h.drag_at(from);
+    h.step();
+    h.hover_at(to);
+    h.run();
+    assert!(h.state().reordering.is_some(), "the held drag is the port reorder");
+    assert!(h.state().palette.is_none(), "the admitted reorder owns the frame and closes the palette");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().reordering.is_none(), "the first Escape cancels the reorder, not the palette");
+    h.drop_at(to);
+    h.run();
+    assert_eq!(h.state().session.document(), &document, "a cancelled reorder never publishes an edit");
+    assert_eq!(reorder_ids(&h), order);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert!(!h.state().session.can_undo());
+}
+
+/// The same drag carried to its drop still reorders, in exactly one undo step, with the palette
+/// already gone.
+#[test]
+fn a_port_reorder_drag_completed_over_an_open_palette_is_one_clean_undo_step() {
+    let (mut h, from, to) = palette_over_badges();
+    let document = h.state().session.document().clone();
+    let order = reorder_ids(&h);
+    h.hover_at(from);
+    h.step();
+    h.drag_at(from);
+    h.step();
+    h.hover_at(to);
+    h.run();
+    assert!(h.state().palette.is_none(), "the palette went when the drag was admitted");
+    assert_ne!(from, to);
+    h.drop_at(to);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    let moved = reorder_ids(&h);
+    assert_ne!(moved, order, "the badge was dropped in the other one's place");
+    assert_ne!(h.state().session.document(), &document, "the reorder is one document edit");
+    assert_eq!(h.state().session.revision(), 1, "one revision for the reorder (the palette opened with no edit)");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(reorder_ids(&h), order);
+    assert_eq!(h.state().session.document(), &document, "one undo restores the order");
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn floating_area_inspection_exact_cap_and_over_cap_preserve_key_admission() {
+    let mut h = floating_fixture();
+    h.run();
+    let original = h.state().app.session.document().clone();
+    let base = h.ctx.memory(|m| m.areas().visible_layer_ids().len());
+    h.state_mut().extra_areas = MAX_QUICK_ADD_AREAS - base;
+    h.run();
+    assert_eq!(h.ctx.memory(|m| m.areas().visible_layer_ids().len()), MAX_QUICK_ADD_AREAS);
+    h.hover_at(Pos2::new(800.0, 120.0));
+    h.step();
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_ne!(h.state().app.session.document(), &original);
+    assert_eq!(h.state().blocked_keys, 0);
+    h.state_mut().app.session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run();
+    h.state_mut().extra_areas += 1;
+    h.run();
+    assert_eq!(h.ctx.memory(|m| m.areas().visible_layer_ids().len()), MAX_QUICK_ADD_AREAS + 1);
+    let revision = h.state().app.session.revision();
+    let events = h.state().app.session.events_since(0).unwrap();
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().app.session.document(), &original);
+    assert_eq!(h.state().app.session.revision(), revision);
+    assert_eq!(h.state().app.session.events_since(0).unwrap(), events);
+    assert_eq!(h.state().blocked_keys, 1, "over-cap admission leaves the key unconsumed");
+    assert!(h.state().app.session.can_redo());
+}
+
+fn palette_row_focus_with_history() -> Harness<'static, NodeCraftApp> {
+    let mut h = harness();
+    let canvas = h.state().canvas;
+    let id = node(h.state()).id;
+    for title in ["Before palette", "Redo entry"] {
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id,"title":title})).unwrap();
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    double_click(&mut h, Pos2::new(100.0, 100.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    h.key_press(egui::Key::Tab);
+    h.run();
+    assert!(h.ctx.memory(|m| m.focused().is_some()), "Tab focuses an actual palette row");
+    assert!(!canvas::text_input_focused(&h.ctx));
+    h.hover_at(Pos2::new(800.0, 120.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    assert!(!canvas::text_input_focused(&h.ctx));
+    assert!(h.state().session.can_undo() && h.state().session.can_redo());
+    h
+}
+fn raw_key(key: egui::Key, pressed: bool) -> egui::Event {
+    egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+#[test]
+fn palette_same_frame_escape_and_metadata_key_preserve_ownership() {
+    let mut h = palette_row_focus_with_history();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let selection = h.state().selection.clone();
+    // input_mut injects ONE RawInput frame. Queued Harness.event calls would each run a frame.
+    h.input_mut().events.extend([raw_key(egui::Key::Escape, true), raw_key(egui::Key::T, true)]);
+    h.step();
+    assert!(h.state().palette.is_none());
+    assert!(h.ctx.input(|i| i.key_pressed(egui::Key::T)), "refused T stays unconsumed");
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().session.can_undo() && h.state().session.can_redo());
+    h.input_mut().events.extend([raw_key(egui::Key::Escape, false), raw_key(egui::Key::T, false)]);
+    h.step();
+    h.key_press(egui::Key::T);
+    h.run();
+    let canvas = h.state().canvas;
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), document.canvases().get(&canvas).unwrap().nodes().len() + 1);
+    assert_eq!(h.state().session.revision(), revision + 1);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document, "next fresh T is exactly one intended undo step");
+}
+
+#[test]
+fn palette_same_frame_row_choice_and_metadata_key_create_only_chosen_kind() {
+    let mut h = palette_row_focus_with_history();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    assert_eq!(h.state().palette.as_ref().unwrap().highlighted, 0);
+    // #191 and #194 added kinds since this test was written, so the chosen kind is read from the
+    // real palette rather than hardcoded to the row that used to be first. What is being proved
+    // is #267's guarantee: the row choice is the only node this frame creates.
+    let chosen = match &h.state().palette_entries().first().map(|entry| entry.target.clone()) {
+        Some(palette::Target::Kind(kind)) => kind.clone(),
+        other => panic!("the first palette row must offer a kind, got {other:?}"),
+    };
+    h.input_mut().events.extend([raw_key(egui::Key::Enter, true), raw_key(egui::Key::T, true)]);
+    h.step();
+    assert!(h.state().palette.is_none());
+    assert!(h.ctx.input(|i| i.key_pressed(egui::Key::T)), "palette frame does not consume unrelated T");
+    assert_eq!(nodes_of(&h, &chosen).len(), 1, "the real focused first row chooses {chosen}");
+    assert_ne!(chosen, "source.text", "the fixture must not prove the guarantee with its own key");
+    assert_eq!(nodes_of(&h, "source.text").len(), 1, "unrelated T must not add Text");
+    assert_eq!(h.state().session.revision(), revision + 1);
+    assert_eq!(h.state().session.events_since(0).unwrap().len(), events.len() + 1);
+    assert_eq!(h.state().selection.nodes().len(), 1);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document, "row choice is exactly one intended undo step");
+}

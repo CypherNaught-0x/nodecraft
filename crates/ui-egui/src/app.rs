@@ -240,6 +240,11 @@ const DUPLICATE_OFFSET: f32 = 40.0;
 /// Screen points within which a click selects a noodle.
 const NOODLE_HIT: f32 = 6.0;
 
+/// How many floating areas quick-add will inspect for the pointer before refusing the key. The
+/// bound keeps the ownership scan O(areas); tests assert against this value so the cap and the
+/// fixture can't drift apart (#267).
+pub(crate) const MAX_QUICK_ADD_AREAS: usize = 256;
+
 fn curves(canvas: &Canvas, painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
     canvas
         .edges()
@@ -716,6 +721,16 @@ impl NodeCraftApp {
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
+        // Dismissing or choosing from a palette must not replay another key from the same
+        // input frame as a canvas shortcut. Keep ownership even after palette.show closes it.
+        let palette_owned_input = self.palette.is_some();
+        // The "Turn into" menu takes letters for kinds exactly as a text field does, and its entry
+        // keys are those kinds' quick-add letters. Real backends deliver `Event::Key` and
+        // `Event::Text` in one raw-input frame, so one keypress arrives in this same frame: a pick
+        // closes the menu and clears `self.turn_into` before `quick_add` runs at the end of the
+        // frame, and the inline `turn_into.is_some()` gate would be too late. Keep the ownership
+        // frozen even after the menu closes, so one keypress creates one node (#267).
+        let turn_into_owned_input = self.turn_into.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.poll_save(ui.ctx());
@@ -953,37 +968,9 @@ impl NodeCraftApp {
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 self.selection.replace(canvas.nodes().keys().copied().collect());
             }
-            // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
-            // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
-            let busy = self.drag.is_some()
-                || self.marquee.is_some()
-                || self.wiring.is_some()
-                || self.reordering.is_some()
-                || self.comments.drag.is_some()
-                || self.comments.gesture_cancelled
-                || minimap_owned
-                || bulk_blocks
-                || egui::Popup::is_any_open(ui.ctx());
-            if !self.text_focused && !busy {
-                let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
-                    self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
-                let pressed = ui.input_mut(|i| {
-                    let found = i.events.iter().find_map(|event| match event {
-                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
-                            bindings.iter().find(|(m, k, _)| k == key && m == modifiers).map(|(m, k, kind)| (*m, *k, kind.clone()))
-                        }
-                        _ => None,
-                    });
-                    let (modifiers, key, kind) = found?;
-                    // Consume every event of that key, repeats included.
-                    i.events.retain(|event| !matches!(event, egui::Event::Key { key: k, modifiers: m, .. } if *k == key && *m == modifiers));
-                    Some(kind)
-                });
-                if let Some(kind) = pressed {
-                    let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
-                    self.create_node(&kind, self.view.to_world(viewport.min, at));
-                }
-            }
+            // Quick-add moved to the end of the frame (`quick_add` below), after every floating
+            // Window has laid out, so the canvas can tell whether it really owns the pointer.
+            // Its admission gate keeps this frame's `minimap_owned` freeze; see #267 and #361.
             // Menus and editors own Escape before canvas gestures; comments consume it above.
             if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) {
                 self.cancel_canvas_gesture();
@@ -1502,6 +1489,15 @@ impl NodeCraftApp {
             self.marquee_geometry.clear();
         }
         self.view.pan_by(pan);
+        // All canvas gestures (including late card/port pan) have now been admitted.
+        // Close before the palette can consume the first Escape meant for that gesture.
+        // The `self.view != view_before` arm is not covered by the earlier close: cards and order
+        // badges only collect their pan, which `view.pan_by` applies just above, after that check
+        // ran. A reorder drag holds neither `drag` nor `marquee` nor `wiring`, so it needs its own
+        // arm too (#267).
+        if self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || self.reordering.is_some() || self.view != view_before {
+            self.palette = None;
+        }
         if !self.model_frame_owned {
             self.drop_files(ui, viewport, t);
         }
@@ -1551,7 +1547,110 @@ impl NodeCraftApp {
         self.file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
+        // Floating UI must lay out before final quick-add admission, including a Window's first
+        // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
+        // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
+        // mutation keys, and a quick-add creates a node, so it carries into the gate below.
+        // `model_blocks` and `bulk_blocks` are this frame's model-swap (#472) and bulk-panel (#473)
+        // admissions. Main's inline quick-add ran inside that canvas-keys guard, so the relocated
+        // version carries both terms forward (same precedent as #460's drop guard).
+        // A menu that was open when the frame began keeps owning its own key even after it has
+        // closed: its pick and quick-add's press arrive in the same raw-input frame (#267).
+        if !palette_owned_input && !turn_into_owned_input {
+            self.quick_add(ui, viewport, minimap_press.unwrap_or_default(), model_blocks, bulk_blocks);
+        }
         ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
+    }
+
+    /// Hosts embedding floating Windows must lay them out before this app's final admission.
+    /// The framework top-layer query alone misses a new Window's noninteractable sizing pass;
+    /// current AreaState rectangles cover that pass too, including transformed title/chrome.
+    fn canvas_owns_quick_add_pointer(&self, ui: &egui::Ui) -> bool {
+        // No viewport test here on purpose: main has always created at the viewport centre when
+        // the pointer sits outside the canvas (`minimap_drag_owns_quick_add_keys_until_pointer
+        // _release`), and a point outside the canvas is not over a floating window either. The
+        // area scan below still refuses a window that reaches past the canvas edge.
+        let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) else { return true };
+        let canvas = ui.layer_id();
+        let canvas_family = |layer: egui::LayerId| {
+            layer == canvas
+                // Canvas-owned navigation is not a floating Window, so quick-add over a visible
+                // minimap stays available; a *held* minimap gesture is refused by the busy gate.
+                || layer == egui::LayerId::new(egui::Order::Foreground, ui.id().with("navigation_overlay"))
+                || (layer.order == canvas.order && self.painted.keys().any(|id| layer.id == ui.id().with(("node_layer", *id))))
+        };
+        if ui.ctx().layer_id_at(pointer).is_some_and(|layer| layer.order >= canvas.order && !canvas_family(layer)) {
+            return false;
+        }
+        // UI-owned area metadata, inspected only for a fresh candidate. Fail closed without
+        // consuming the key if an embedding host exceeds this bounded inspection allowance.
+        let layers = ui.ctx().memory(|m| m.areas().visible_layer_ids());
+        if layers.len() > MAX_QUICK_ADD_AREAS {
+            return false;
+        }
+        !layers.into_iter().any(|layer| {
+            if layer.order < canvas.order || canvas_family(layer) {
+                return false;
+            }
+            egui::AreaState::load(ui.ctx(), layer.id).is_some_and(|area| {
+                let rect = area.rect();
+                let rect = ui.ctx().layer_transform_to_global(layer).map_or(rect, |transform| transform * rect);
+                !rect.is_finite() || rect.contains(pointer)
+            })
+        })
+    }
+
+    /// A kind's `quick_add` key creates it under the pointer: a fresh press (not a repeat) with
+    /// exactly the bound modifiers, nothing else holding input, and the canvas holding the
+    /// pointer. Runs last in the frame so floating Windows have laid out (#267); it keeps every
+    /// gate main's inline version had, including the frozen minimap admission from #361 and the
+    /// model-swap (#472) and bulk-panel (#473) admissions.
+    fn quick_add(&mut self, ui: &egui::Ui, viewport: Rect, minimap_owned: bool, model_blocks: bool, bulk_blocks: bool) {
+        let busy = self.drag.is_some()
+            || self.marquee.is_some()
+            || self.wiring.is_some()
+            || self.reordering.is_some()
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
+            || minimap_owned
+            // #472: a model swap in flight owns every canvas key, so it owns this one too. Main's
+            // inline quick-add ran inside the canvas-keys guard that starts with `!model_blocks`,
+            // so the relocated version carries that term forward (as #460's drop guard was).
+            || model_blocks
+            // #473: the bulk parameter panel owns the pointer and canvas keys while it holds input.
+            // Main's inline quick-add sat behind that guard in the canvas-keys block, so the
+            // relocated version carries it forward (same precedent as #460's drop guard).
+            || bulk_blocks
+            || self.navigation.pointer_owned
+            || self.navigation.drag.is_some()
+            // #460: the pending native-drop control owns the pointer and every canvas key while
+            // it is held. Main's inline quick-add sat behind that guard in the canvas-keys block,
+            // so the relocated version carries it forward (#335).
+            || self.drop_pointer_owned()
+            || egui::Popup::is_any_open(ui.ctx());
+        // The "Turn into" menu takes letters for kinds, exactly as a text field does.
+        if self.text_focused || canvas::text_input_focused(ui.ctx()) || self.palette.is_some() || self.turn_into.is_some() || busy {
+            return;
+        }
+        // Borrow binding metadata; no owned list or kind string until admission succeeds.
+        let candidate = ui.input(|i| {
+            i.events.iter().find_map(|event| {
+                let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = event else { return None };
+                self.session.kinds().descriptors().find_map(|d| {
+                    let (m, k) = quick_add_key(d.quick_add.as_deref()?)?;
+                    (k == *key && m == *modifiers).then_some((m, k, d.id.as_str()))
+                })
+            })
+        });
+        let Some((modifiers, key, kind)) = candidate else { return };
+        if !self.canvas_owns_quick_add_pointer(ui) {
+            return;
+        }
+        let kind = kind.to_owned();
+        ui.input_mut(|i| i.events.retain(|event| !matches!(event, egui::Event::Key { key: k, modifiers: m, .. } if *k == key && *m == modifiers)));
+        let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
+        self.create_node(&kind, self.view.to_world(viewport.min, at));
+        ui.ctx().request_repaint();
     }
 
     /// Top-right button that opens the API keys panel.
