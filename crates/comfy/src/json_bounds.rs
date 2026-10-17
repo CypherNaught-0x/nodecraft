@@ -6,18 +6,24 @@ use serde_json::Value;
 /// Maximum nesting of in-memory JSON, including the outgoing request envelope.
 pub const MAX_JSON_DEPTH: usize = 64;
 /// Maximum JSON values and object keys in one conversion.
-pub const MAX_JSON_ITEMS: usize = 100_000;
+pub const MAX_JSON_ITEMS: usize = 2_000_000;
 /// Maximum encoded JSON bytes, including keys and envelope metadata.
 pub const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
 
-#[derive(Default)]
 pub(crate) struct Budget {
     items: usize,
     bytes: usize,
+    max_items: usize,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self { items: 0, bytes: 0, max_items: MAX_JSON_ITEMS }
+    }
 }
 
 fn limit(message: &'static str) -> ComfyError {
-    ComfyError::Malformed { what: "programmatic JSON", message: message.into() }
+    ComfyError::InvalidInput { node: "-".into(), input: "-".into(), message: message.into() }
 }
 
 impl Budget {
@@ -34,8 +40,8 @@ impl Budget {
             return Err(limit("JSON nesting exceeds the 64-level limit"));
         }
         self.items = self.items.saturating_add(1);
-        if self.items > MAX_JSON_ITEMS {
-            return Err(limit("JSON values and keys exceed the 100000-item limit"));
+        if self.items > self.max_items {
+            return Err(limit("JSON values and keys exceed the 2000000-item limit"));
         }
         Ok(())
     }
@@ -43,8 +49,8 @@ impl Budget {
     pub(crate) fn container(&mut self, len: usize, depth: usize) -> Result<(), ComfyError> {
         self.item(depth)?;
         // Reject wide containers before allocating traversal state or iterating their children.
-        if len > MAX_JSON_ITEMS.saturating_sub(self.items) {
-            return Err(limit("JSON values and keys exceed the 100000-item limit"));
+        if len > self.max_items.saturating_sub(self.items) {
+            return Err(limit("JSON values and keys exceed the 2000000-item limit"));
         }
         self.bytes(2usize.saturating_add(len.saturating_sub(1)))
     }
@@ -336,10 +342,10 @@ mod tests {
 
     #[test]
     fn borrowed_validator_bounds_width_keys_escaping_and_depth_with_small_scratch() {
-        let array = Value::Array(vec![Value::Null; MAX_JSON_ITEMS + 1]);
-        assert!(Budget::default().value(&array, 0).is_err());
-        let object = Value::Object((0..MAX_JSON_ITEMS).map(|i| (i.to_string(), Value::Null)).collect());
-        assert!(Budget::default().value(&object, 0).is_err());
+        let array = Value::Array(vec![Value::Null; 101]);
+        assert!(Budget { max_items: 100, ..Budget::default() }.value(&array, 0).is_err());
+        let object = Value::Object((0..100).map(|i| (i.to_string(), Value::Null)).collect());
+        assert!(Budget { max_items: 100, ..Budget::default() }.value(&object, 0).is_err());
         let object = Value::Object([("k".repeat(MAX_JSON_BYTES), Value::Null)].into_iter().collect());
         assert!(Budget::default().value(&object, 0).is_err());
         let escaped = Value::String("\u{0000}".repeat(MAX_JSON_BYTES / 6 + 1));
@@ -355,5 +361,69 @@ mod tests {
             budget.value(&value, 0).unwrap();
             assert_eq!(budget.bytes, serde_json::to_vec(&value).unwrap().len());
         }
+    }
+    #[test]
+    fn upload_combo_discovery_does_not_charge_options_it_never_copies() {
+        let options: Vec<String> = (0..4096).map(|id| format!("{}-{id}.png", "x".repeat(512))).collect();
+        let raw = serde_json::json!({"LoadImage":{"input":{"required":{"image":[options,{"image_upload":true}]}},"output":["IMAGE"]}});
+        let catalog = NodeCatalog::parse(&serde_json::to_vec(&raw).unwrap()).unwrap().0;
+        let mut workflow = ApiWorkflow::default();
+        for id in 0..20 {
+            workflow.nodes.insert(
+                id.to_string(),
+                crate::ApiNode {
+                    class_type: "LoadImage".into(),
+                    title: None,
+                    inputs: [("image".into(), InputValue::Value(Value::String("selected.png".into())))].into_iter().collect(),
+                },
+            );
+        }
+        // Shared catalog options exceed 32 MiB only if wrongly charged for every Media
+        // exposure. The 2M item cap alone does not make this regression pass.
+        let exposed = discover(&workflow, &catalog).unwrap();
+        assert_eq!(exposed.inputs.len(), 20);
+        assert!(exposed.inputs.iter().all(|input| matches!(input.kind, crate::ExposedKind::Media(crate::Media::Image))));
+    }
+
+    #[test]
+    fn representative_max_node_api_and_ui_workflows_round_trip_under_interacting_caps() {
+        let mut api = workflow();
+        let sampler = api.nodes.get("3").unwrap().clone();
+        for id in 100..100 + crate::MAX_NODES - api.nodes.len() {
+            api.nodes.insert(id.to_string(), sampler.clone());
+        }
+        assert_eq!(api.nodes.len(), crate::MAX_NODES);
+        let wire = serde_json::to_vec(&api.to_json().unwrap()).unwrap();
+        assert!(wire.len() < crate::MAX_WORKFLOW_BYTES);
+        assert_eq!(ApiWorkflow::parse(&wire, None).unwrap(), api);
+        assert!(PromptRequest::new(api, "client").to_json().is_ok());
+
+        let mut ui: Value = serde_json::from_str(crate::fixtures::UI_WORKFLOW).unwrap();
+        let nodes = ui.get_mut("nodes").unwrap().as_array_mut().unwrap();
+        let original = nodes.len();
+        let sampler = nodes.iter().find(|node| node.get("type").and_then(Value::as_str) == Some("KSampler")).unwrap().clone();
+        for id in original..crate::MAX_NODES {
+            let mut node = sampler.clone();
+            node.as_object_mut().unwrap().insert("id".into(), Value::from(id + 100_000));
+            nodes.push(node);
+        }
+        let catalog = catalog();
+        let expected = workflow().nodes.len() + crate::MAX_NODES - original;
+        let source = serde_json::to_vec(&ui).unwrap();
+        assert!(source.len() < crate::MAX_WORKFLOW_BYTES);
+        let converted = ApiWorkflow::parse(&source, Some(&catalog)).unwrap();
+        assert_eq!(converted.nodes.len(), expected);
+        let wire = serde_json::to_vec(&converted.to_json().unwrap()).unwrap();
+        assert_eq!(ApiWorkflow::parse(&wire, None).unwrap(), converted);
+    }
+
+    #[test]
+    fn local_resource_limit_errors_do_not_blame_the_server_or_echo_values() {
+        let value = nested(MAX_JSON_DEPTH + 1);
+        let error = Budget::default().value(&value, 0).unwrap_err();
+        assert!(matches!(error, ComfyError::InvalidInput { .. }));
+        assert!(!error.to_string().contains("from ComfyUI"));
+        assert!(!error.to_string().contains("fabricated-json-secret"));
+        dispose(value);
     }
 }

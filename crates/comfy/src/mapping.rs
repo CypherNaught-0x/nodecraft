@@ -125,10 +125,13 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
                 budget.text(text, 1)?;
             }
             match &spec.kind {
-                InputKind::Combo { options, default, .. } => {
-                    budget.container(options.len(), 1)?;
-                    for option in options {
-                        budget.text(option, 2)?;
+                InputKind::Combo { options, default, upload } => {
+                    // Upload combos expose Media, so their directory listing is not copied.
+                    if upload.is_none() {
+                        budget.container(options.len(), 1)?;
+                        for option in options {
+                            budget.text(option, 2)?;
+                        }
                     }
                     if let Some(default) = default {
                         budget.text(default, 1)?;
