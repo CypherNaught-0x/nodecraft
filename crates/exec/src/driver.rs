@@ -106,6 +106,15 @@ impl Future for Cancelled {
     }
 }
 
+mod admission;
+use admission::{Admission, Permit};
+pub use admission::{AdmissionLimits, DriverError};
+
+struct Envelope {
+    command: Command,
+    permit: Permit,
+}
+
 enum Command {
     Add(Vec<JobSpec>, oneshot::Sender<Result<(), SchedulerError>>),
     Requeue(Vec<(JobId, String)>, oneshot::Sender<Result<(), SchedulerError>>),
@@ -136,66 +145,87 @@ impl Drop for Reporter {
     }
 }
 
-/// The driver has stopped (all handles dropped and the queue drained, or the driver was dropped).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DriverGone;
-
-impl std::fmt::Display for DriverGone {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the run queue has stopped")
-    }
+/// Sends commands to a running driver. All clones share bounded admission. After every handle
+/// is dropped, an unpaused queue drains normally; a paused queue cancels unfinished work.
+#[derive(Clone)]
+pub struct Handle {
+    tx: mpsc::UnboundedSender<Envelope>,
+    admission: Arc<Admission>,
 }
 
-impl std::error::Error for DriverGone {}
-
-/// Sends commands to a running driver. Clone it freely; after every handle is dropped, an
-/// unpaused queue drains normally. A paused queue cancels unfinished work instead of resuming;
-/// the driver waits for running jobs to report their cooperative cancellation before finishing.
-#[derive(Clone)]
-pub struct Handle(mpsc::UnboundedSender<Command>);
-
 impl Handle {
-    /// Adds jobs; resolves to the scheduler's verdict on them.
-    pub async fn add(&self, jobs: Vec<JobSpec>) -> Result<Result<(), SchedulerError>, DriverGone> {
+    fn send(&self, command: Command) -> Result<(), DriverError> {
+        if self.tx.is_closed() {
+            return Err(DriverError::Closed);
+        }
+        let permit = self.admission.reserve(&command)?;
+        // Never send or drop a payload while the admission lock is held: waking an executor
+        // can synchronously run user code. Failed sends drop the envelope and its permit.
+        self.tx.unbounded_send(Envelope { command, permit }).map_err(|_| DriverError::Closed)
+    }
+
+    /// Enqueues immediately; the returned future waits only for the scheduler verdict.
+    /// Dropping or never polling that future does not cancel accepted jobs. It holds no sender
+    /// and does not extend last-handle shutdown. Rejection drops the payload before returning.
+    #[must_use = "construction enqueues work; await the future to observe the scheduler verdict"]
+    pub fn add(&self, jobs: Vec<JobSpec>) -> impl Future<Output = Result<Result<(), SchedulerError>, DriverError>> + Send + 'static + use<> {
         let (tx, rx) = oneshot::channel();
-        self.0.unbounded_send(Command::Add(jobs, tx)).map_err(|_| DriverGone)?;
-        rx.await.map_err(|_| DriverGone)
+        let accepted = self.send(Command::Add(jobs, tx));
+        async move {
+            accepted?;
+            rx.await.map_err(|_| DriverError::Closed)
+        }
     }
 
-    pub fn cancel(&self, scope: CancelScope) -> Result<(), DriverGone> {
-        self.0.unbounded_send(Command::Cancel(scope)).map_err(|_| DriverGone)
+    pub fn cancel(&self, scope: CancelScope) -> Result<(), DriverError> {
+        self.send(Command::Cancel(scope))
     }
 
-    /// Retries failed, cancelled or skipped jobs under new idempotency keys (see
-    /// [`Scheduler::requeue`]).
-    pub async fn requeue(&self, jobs: Vec<(JobId, String)>) -> Result<Result<(), SchedulerError>, DriverGone> {
+    /// Retries under new idempotency keys (see [`Scheduler::requeue`]). Like [`Handle::add`],
+    /// enqueues at construction, not first poll; abandoning the verdict does not retract it.
+    #[must_use = "construction enqueues retries; await the future to observe the scheduler verdict"]
+    pub fn requeue(&self, jobs: Vec<(JobId, String)>) -> impl Future<Output = Result<Result<(), SchedulerError>, DriverError>> + Send + 'static + use<> {
         let (tx, rx) = oneshot::channel();
-        self.0.unbounded_send(Command::Requeue(jobs, tx)).map_err(|_| DriverGone)?;
-        rx.await.map_err(|_| DriverGone)
+        let accepted = self.send(Command::Requeue(jobs, tx));
+        async move {
+            accepted?;
+            rx.await.map_err(|_| DriverError::Closed)
+        }
     }
 
-    /// Drops finished jobs from the queue (call when the queue panel is cleared, or periodically
-    /// in a long session).
-    pub fn forget_finished(&self) -> Result<(), DriverGone> {
-        self.0.unbounded_send(Command::Forget).map_err(|_| DriverGone)
+    /// Drops finished jobs. Saturation is explicit; retry only commands rejected by admission.
+    pub fn forget_finished(&self) -> Result<(), DriverError> {
+        self.send(Command::Forget)
     }
 
-    /// Stops or resumes starting jobs (budget reached, user pause); running jobs carry on.
-    pub fn set_paused(&self, paused: bool) -> Result<(), DriverGone> {
-        self.0.unbounded_send(Command::Pause(paused)).map_err(|_| DriverGone)
+    /// Stops/resumes starting jobs; running jobs carry on. Uses reserved control capacity.
+    pub fn set_paused(&self, paused: bool) -> Result<(), DriverError> {
+        self.send(Command::Pause(paused))
     }
 }
 
 /// A driver ready to run: spawn [`Driver::run`] on the runtime and keep the [`Handle`].
 pub struct Driver {
     scheduler: Scheduler,
-    commands: mpsc::UnboundedReceiver<Command>,
+    commands: mpsc::UnboundedReceiver<Envelope>,
 }
 
 /// Creates a driver around `scheduler` and the handle that controls it.
 pub fn driver(scheduler: Scheduler) -> (Driver, Handle) {
+    make_driver(scheduler, AdmissionLimits::default())
+}
+
+/// Creates a driver with lower pending-command limits. Invalid ceilings return `PayloadLimit`.
+pub fn driver_with_admission(scheduler: Scheduler, limits: AdmissionLimits) -> Result<(Driver, Handle), DriverError> {
+    if !limits.valid() {
+        return Err(DriverError::PayloadLimit);
+    }
+    Ok(make_driver(scheduler, limits))
+}
+
+fn make_driver(scheduler: Scheduler, limits: AdmissionLimits) -> (Driver, Handle) {
     let (tx, rx) = mpsc::unbounded();
-    (Driver { scheduler, commands: rx }, Handle(tx))
+    (Driver { scheduler, commands: rx }, Handle { tx, admission: Admission::new(limits) })
 }
 
 impl Driver {
@@ -251,20 +281,25 @@ impl Driver {
                     }
                 }
                 command = command.fuse() => match command {
-                    Some(Command::Add(jobs, reply)) => {
-                        let _ = reply.send(scheduler.add(jobs));
-                    }
-                    Some(Command::Requeue(jobs, reply)) => {
-                        let _ = reply.send(scheduler.requeue(&jobs));
-                    }
-                    Some(Command::Pause(paused)) => scheduler.set_paused(paused),
-                    Some(Command::Forget) => scheduler.forget_finished(),
-                    Some(Command::Cancel(scope)) => {
-                        for job in scheduler.cancel(scope) {
-                            if let Some(token) = tokens.get(&job) {
-                                token.cancel();
+                    Some(Envelope { command, permit }) => {
+                        match command {
+                            Command::Add(jobs, reply) => {
+                                let _ = reply.send(scheduler.add(jobs));
+                            }
+                            Command::Requeue(jobs, reply) => {
+                                let _ = reply.send(scheduler.requeue(&jobs));
+                            }
+                            Command::Pause(paused) => scheduler.set_paused(paused),
+                            Command::Forget => scheduler.forget_finished(),
+                            Command::Cancel(scope) => {
+                                for job in scheduler.cancel(scope) {
+                                    if let Some(token) = tokens.get(&job) {
+                                        token.cancel();
+                                    }
+                                }
                             }
                         }
+                        drop(permit);
                     }
                     None => {
                         open = false;
@@ -442,6 +477,297 @@ mod tests {
             rt.pump(&mut cx);
         }
         panic!("driver did not terminate within 64 polls");
+    }
+
+    fn admission_limits() -> AdmissionLimits {
+        AdmissionLimits { data_commands: 1, control_commands: 2, ..AdmissionLimits::default() }
+    }
+
+    fn add_charge(jobs: Vec<JobSpec>) -> (usize, Vec<JobSpec>) {
+        let (tx, _) = oneshot::channel();
+        let command = Command::Add(jobs, tx);
+        let charge = admission::command_bytes(&command).unwrap();
+        let Command::Add(jobs, _) = command else { panic!("add") };
+        (charge, jobs)
+    }
+
+    #[test]
+    fn admission_is_shared_eager_and_controls_keep_fifo_under_data_saturation() {
+        let (mut driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), admission_limits()).unwrap();
+        let peer = handle.clone();
+        let accepted = handle.add(vec![spec(1, &[])]); // never polled
+        assert_eq!(block_on(peer.add(vec![spec(2, &[])])), Err(DriverError::Full));
+        handle.cancel(CancelScope::All).unwrap();
+        peer.set_paused(true).unwrap();
+        assert_eq!(handle.forget_finished(), Err(DriverError::Full));
+        drop(accepted); // only the acknowledgement is abandoned
+        assert_eq!(block_on(peer.add(vec![])), Err(DriverError::Full));
+        let Envelope { command, permit } = driver.commands.next().now_or_never().flatten().unwrap();
+        assert!(matches!(command, Command::Add(..)));
+        drop(command);
+        // Dequeue alone keeps the reservation until synchronous consumption has finished.
+        assert_eq!(block_on(peer.add(vec![])), Err(DriverError::Full));
+        drop(permit);
+        let next = peer.add(vec![]);
+        let cancel = driver.commands.next().now_or_never().flatten().unwrap();
+        assert!(matches!(cancel.command, Command::Cancel(CancelScope::All)));
+        drop(cancel);
+        let pause = driver.commands.next().now_or_never().flatten().unwrap();
+        assert!(matches!(pause.command, Command::Pause(true)));
+        drop(pause);
+        assert!(matches!(driver.commands.next().now_or_never().flatten().unwrap().command, Command::Add(..)));
+        drop(next);
+        drop(driver);
+        assert_eq!(peer.cancel(CancelScope::All), Err(DriverError::Closed));
+    }
+
+    #[test]
+    fn actual_capacities_and_exact_byte_limits_are_charged_before_acceptance() {
+        let jobs = vec![spec(1, &[])];
+        let (charge, jobs) = add_charge(jobs);
+        let limits = AdmissionLimits { data_bytes: charge, data_payload_bytes: charge, ..admission_limits() };
+        let (mut driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), limits).unwrap();
+        let first = handle.add(jobs);
+        assert_eq!(block_on(handle.add(vec![])), Err(DriverError::Full));
+        drop(driver.commands.next().now_or_never().flatten().unwrap());
+        assert_eq!(block_on(first), Err(DriverError::Closed)); // reply dropped, capacity released
+        let second = handle.add(vec![spec(1, &[])]);
+        drop(driver.commands.next().now_or_never().flatten().unwrap());
+        drop(second);
+        let mut spare = Vec::with_capacity(64);
+        spare.push(spec(2, &[]));
+        assert_eq!(block_on(handle.add(spare)), Err(DriverError::PayloadLimit));
+        let mut job = spec(3, &[]);
+        job.deps.reserve(1024);
+        assert_eq!(block_on(handle.add(vec![job])), Err(DriverError::PayloadLimit));
+        let mut job = spec(4, &[]);
+        job.lane.0.reserve(1024);
+        assert_eq!(block_on(handle.add(vec![job])), Err(DriverError::PayloadLimit));
+        let mut job = spec(5, &[]);
+        job.idempotency_key.reserve(1024);
+        let rejected = handle.add(vec![job]); // rejection already releases owned data
+        let accepted = handle.add(vec![spec(6, &[])]);
+        assert_eq!(block_on(rejected), Err(DriverError::PayloadLimit));
+        drop(accepted);
+        // A separate aggregate-byte bound, independent of the count bound.
+        let limits = AdmissionLimits { data_commands: 3, data_bytes: charge, data_payload_bytes: charge, ..AdmissionLimits::default() };
+        let (mut driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), limits).unwrap();
+        let first = handle.add(vec![spec(1, &[])]);
+        assert_eq!(block_on(handle.add(vec![spec(2, &[])])), Err(DriverError::Full));
+        drop(driver.commands.next().now_or_never().flatten().unwrap());
+        drop(first);
+        let next = handle.add(vec![spec(2, &[])]);
+        drop(driver.commands.next().now_or_never().flatten().unwrap());
+        drop(next);
+    }
+
+    #[test]
+    fn requeue_and_cancel_capacities_and_control_bytes_are_bounded() {
+        let (tx, _) = oneshot::channel();
+        let keys = vec![(JobId(1), String::from("key"))];
+        let charge = admission::command_bytes(&Command::Requeue(keys.clone(), tx)).unwrap();
+        let limits = AdmissionLimits { data_payload_bytes: charge, ..admission_limits() };
+        let (mut driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), limits).unwrap();
+        let accepted = handle.requeue(keys);
+        drop(driver.commands.next().now_or_never().flatten().unwrap());
+        drop(accepted);
+        let mut key = String::from("k");
+        key.reserve(1024);
+        assert_eq!(block_on(handle.requeue(vec![(JobId(1), key)])), Err(DriverError::PayloadLimit));
+        let mut keys = Vec::with_capacity(1024);
+        keys.push((JobId(1), String::new()));
+        assert_eq!(block_on(handle.requeue(keys)), Err(DriverError::PayloadLimit));
+        let control = admission::command_bytes(&Command::Cancel(CancelScope::All)).unwrap();
+        let limits = AdmissionLimits { control_commands: 8, control_bytes: control, control_payload_bytes: control, ..AdmissionLimits::default() };
+        let (mut driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), limits).unwrap();
+        let ids = Vec::with_capacity(1);
+        assert_eq!(handle.cancel(CancelScope::Jobs(ids)), Err(DriverError::PayloadLimit));
+        handle.cancel(CancelScope::All).unwrap();
+        assert_eq!(handle.set_paused(true), Err(DriverError::Full));
+        drop(driver.commands.next().now_or_never().flatten().unwrap());
+        handle.forget_finished().unwrap();
+        assert!(driver_with_admission(Scheduler::new(Limits::default()), AdmissionLimits { data_bytes: usize::MAX, ..limits }).is_err());
+    }
+
+    #[test]
+    fn permanent_resource_policy_errors_are_never_reported_as_full() {
+        for data in [true, false] {
+            let limits = if data {
+                AdmissionLimits { data_commands: 0, ..AdmissionLimits::default() }
+            } else {
+                AdmissionLimits { control_commands: 0, ..AdmissionLimits::default() }
+            };
+            let (mut driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), limits).unwrap();
+            if data {
+                assert_eq!(block_on(handle.add(vec![])), Err(DriverError::PayloadLimit));
+                assert_eq!(block_on(handle.requeue(vec![])), Err(DriverError::PayloadLimit));
+            } else {
+                assert_eq!(handle.cancel(CancelScope::All), Err(DriverError::PayloadLimit));
+                assert_eq!(handle.set_paused(true), Err(DriverError::PayloadLimit));
+            }
+            assert!(driver.commands.next().now_or_never().is_none(), "nothing enqueued");
+            let invalid = if data {
+                AdmissionLimits { data_bytes: 1, data_payload_bytes: 2, ..AdmissionLimits::default() }
+            } else {
+                AdmissionLimits { control_bytes: 1, control_payload_bytes: 2, ..AdmissionLimits::default() }
+            };
+            assert!(matches!(driver_with_admission(Scheduler::new(Limits::default()), invalid), Err(DriverError::PayloadLimit)));
+            // Defensive reserve remains permanent even if an internal caller bypasses valid().
+            let admission = Admission::new(invalid);
+            let command = if data {
+                let (tx, _) = oneshot::channel();
+                Command::Add(vec![], tx)
+            } else {
+                Command::Pause(true)
+            };
+            assert!(matches!(admission.reserve(&command), Err(DriverError::PayloadLimit)));
+        }
+    }
+
+    #[test]
+    fn raw_count_and_capacity_policy_reject_before_enqueue() {
+        use crate::scheduler::{MAX_JOBS, StorageLimits};
+        let (mut driver, handle) = driver(Scheduler::new(Limits::default()));
+        assert_eq!(block_on(handle.add(vec![spec(1, &[]); MAX_JOBS + 1])), Err(DriverError::PayloadLimit));
+        assert_eq!(block_on(handle.requeue(vec![(JobId(1), String::new()); MAX_JOBS + 1])), Err(DriverError::PayloadLimit));
+        assert_eq!(handle.cancel(CancelScope::Jobs(vec![JobId(1); MAX_JOBS + 1])), Err(DriverError::PayloadLimit));
+        let outer = crate::payload::CAPACITY_FACTOR * MAX_JOBS + 1;
+        assert_eq!(block_on(handle.add(Vec::with_capacity(outer))), Err(DriverError::PayloadLimit));
+        assert_eq!(block_on(handle.requeue(Vec::with_capacity(outer))), Err(DriverError::PayloadLimit));
+        assert_eq!(handle.cancel(CancelScope::Jobs(Vec::with_capacity(outer))), Err(DriverError::PayloadLimit));
+        let mut hostile = spec(1, &[]);
+        hostile.idempotency_key = String::with_capacity(StorageLimits::HARD.key_bytes * crate::payload::CAPACITY_FACTOR + 1);
+        assert_eq!(block_on(handle.add(vec![hostile])), Err(DriverError::PayloadLimit));
+        let key = String::with_capacity(StorageLimits::HARD.key_bytes * crate::payload::CAPACITY_FACTOR + 1);
+        assert_eq!(block_on(handle.requeue(vec![(JobId(1), key)])), Err(DriverError::PayloadLimit));
+        assert!(driver.commands.next().now_or_never().is_none());
+    }
+
+    #[test]
+    fn full_supported_batches_are_one_atomic_add_without_runner_starts() {
+        use crate::scheduler::MAX_JOBS;
+        for (count, width, pushed) in [(10_000, 8, false), (10_000, 90, true), (10_000, 90, false), (MAX_JOBS, 0, true)] {
+            let mut jobs = Vec::new();
+            for id in 0..count as u64 {
+                let deps = if pushed {
+                    let mut deps = Vec::new();
+                    for dep in 0..id.min(width) {
+                        deps.push(JobId(dep));
+                    }
+                    deps
+                } else {
+                    (0..id.min(width)).map(JobId).collect()
+                };
+                jobs.push(JobSpec { deps, ..spec(id, &[]) });
+            }
+            let mut scheduler = Scheduler::new(Limits::default());
+            scheduler.set_paused(true);
+            let (driver, handle) = driver_with_admission(scheduler, admission_limits()).unwrap();
+            let accepted = handle.add(jobs);
+            // Exactly one accepted command occupies the pool, regardless of batch size.
+            assert_eq!(block_on(handle.add(vec![])), Err(DriverError::Full));
+            let rt = Arc::new(BoundedRuntime::default());
+            let runner = Arc::new(ControlledRunner::default());
+            let mut events = Vec::new();
+            let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |e| events.push(e)));
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            assert!(task.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(block_on(accepted), Ok(Ok(())));
+            assert!(rt.tasks.lock().unwrap().is_empty());
+            assert!(runner.attempts.lock().unwrap().is_empty());
+            drop(handle);
+            let scheduler = finish_bounded(&mut task, &rt);
+            drop(task);
+            assert_eq!(scheduler.summary().cancelled, count);
+            assert_eq!(events.iter().filter(|e| matches!(e, Event::Queued { .. })).count(), count);
+            assert_eq!(events.iter().filter(|e| matches!(e, Event::Cancelled { .. })).count(), count);
+            assert!(runner.attempts.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_last_job_still_rejects_the_whole_batch_through_handle() {
+        let mut scheduler = Scheduler::new(Limits::default());
+        scheduler.set_paused(true);
+        let before = format!("{scheduler:?}");
+        let (driver, handle) = driver(scheduler);
+        let mut jobs: Vec<JobSpec> = (0..10_000).map(|id| spec(id, &[])).collect();
+        jobs.last_mut().unwrap().deps.push(JobId(9_999));
+        let verdict = handle.add(jobs);
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner::default());
+        let mut events = Vec::new();
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |e| events.push(e)));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(task.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(block_on(verdict), Ok(Err(SchedulerError::Cycle(JobId(9_999)))));
+        drop(handle);
+        let scheduler = finish_bounded(&mut task, &rt);
+        drop(task);
+        assert_eq!(format!("{scheduler:?}"), before);
+        assert!(events.is_empty());
+        assert!(runner.attempts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn max_job_cancel_selection_is_reserved_when_data_is_full_and_keeps_scope() {
+        use crate::scheduler::{JobState, MAX_JOBS};
+        let mut scheduler = Scheduler::new(Limits::default());
+        scheduler.set_paused(true);
+        let (driver, handle) = driver_with_admission(scheduler, admission_limits()).unwrap();
+        let accepted = handle.add((0..MAX_JOBS as u64).map(|id| spec(id, &[])).collect());
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner::default());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), move |e| sink.lock().unwrap().push(e)));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(task.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(block_on(accepted), Ok(Ok(())));
+        let occupying = handle.add(vec![]);
+        assert_eq!(block_on(handle.add(vec![])), Err(DriverError::Full));
+        // 100k push-built roots, with a duplicate to leave one real job outside the selection.
+        let mut roots = Vec::new();
+        for id in 0..MAX_JOBS {
+            roots.push(JobId((id % (MAX_JOBS - 1)) as u64));
+        }
+        handle.cancel(CancelScope::Jobs(roots)).unwrap();
+        assert!(task.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(block_on(occupying), Ok(Ok(())));
+        let cancelled = events.lock().unwrap().iter().filter(|e| matches!(e, Event::Cancelled { .. })).count();
+        assert_eq!(cancelled, MAX_JOBS - 1, "CancelAll would cancel the unselected final job");
+        assert!(!events.lock().unwrap().contains(&Event::Cancelled { job: JobId((MAX_JOBS - 1) as u64) }));
+        drop(handle);
+        let scheduler = finish_bounded(&mut task, &rt);
+        assert_eq!(scheduler.state(JobId((MAX_JOBS - 1) as u64)), Some(&JobState::Cancelled));
+        assert!(runner.attempts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unpolled_acknowledgements_do_not_hold_senders_or_cancel_accepted_work() {
+        let (driver, handle) = driver(Scheduler::new(Limits::default()));
+        let abandoned = handle.add(vec![spec(2, &[])]);
+        drop(abandoned);
+        let accepted = handle.add(vec![spec(1, &[])]);
+        drop(handle);
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner::default());
+        runner.release.store(true, Ordering::SeqCst);
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |_| {}));
+        let scheduler = finish_bounded(&mut task, &rt);
+        assert_eq!(scheduler.summary().done, 2);
+        assert_eq!(block_on(accepted), Ok(Ok(())));
+        let (driver, handle) = driver_with_admission(Scheduler::new(Limits::default()), admission_limits()).unwrap();
+        let admission = Arc::clone(&handle.admission);
+        let accepted = handle.add(vec![spec(1, &[])]);
+        drop(driver); // drains queued envelopes and releases their permits
+        let (tx, _) = oneshot::channel();
+        let permit = admission.reserve(&Command::Add(vec![], tx)).unwrap();
+        drop(permit);
+        assert_eq!(block_on(accepted), Err(DriverError::Closed));
+        let rejected = handle.add(vec![spec(2, &[])]);
+        drop(handle);
+        assert_eq!(block_on(rejected), Err(DriverError::Closed));
     }
 
     #[test]
