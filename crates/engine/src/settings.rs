@@ -129,7 +129,9 @@ impl KeySettings {
         out
     }
 
-    /// Adds `account` to the list (no-op if listed or the list is full).
+    /// Adds `account` to the list (no-op if listed or the list is full). Like [`Self::forget`],
+    /// it rewrites the list from [`Self::accounts`], so invalid, duplicate and surplus names from a
+    /// hand-edited file are dropped.
     pub fn remember(&mut self, account: &crate::secrets::Account) {
         let known = self.accounts();
         if !known.contains(account) && known.len() < Self::MAX_ACCOUNTS {
