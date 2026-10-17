@@ -1,0 +1,292 @@
+[
+  {
+    "name": "legacy maximum omitted",
+    "request": {
+      "action": "text.split",
+      "input": "a,,b",
+      "mode": {
+        "mode": "separator",
+        "value": ","
+      }
+    },
+    "canonical": {
+      "action": "text.split",
+      "input": "a,,b",
+      "mode": {
+        "mode": "separator",
+        "value": ","
+      },
+      "max_parts": 16384
+    },
+    "result": {
+      "type": "parts",
+      "value": [
+        "a",
+        "",
+        "b"
+      ]
+    }
+  },
+  {
+    "name": "explicit maximum and Unicode order",
+    "request": {
+      "action": "text.split",
+      "input": "é🦀a",
+      "mode": {
+        "mode": "chars",
+        "value": 2
+      },
+      "max_parts": 2
+    },
+    "canonical": {
+      "action": "text.split",
+      "input": "é🦀a",
+      "mode": {
+        "mode": "chars",
+        "value": 2
+      },
+      "max_parts": 2
+    },
+    "result": {
+      "type": "parts",
+      "value": [
+        "é🦀",
+        "a"
+      ]
+    }
+  },
+  {
+    "name": "paragraph unit has no payload",
+    "request": {
+      "action": "text.split",
+      "input": "a\n\nb\n",
+      "mode": {
+        "mode": "paragraphs"
+      },
+      "max_parts": 2
+    },
+    "canonical": {
+      "action": "text.split",
+      "input": "a\n\nb\n",
+      "mode": {
+        "mode": "paragraphs"
+      },
+      "max_parts": 2
+    },
+    "result": {
+      "type": "parts",
+      "value": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  {
+    "name": "unit null is the same explicit unit marker",
+    "request": {
+      "action": "text.split",
+      "input": "",
+      "mode": {
+        "mode": "paragraphs",
+        "value": null
+      },
+      "max_parts": 1
+    },
+    "canonical": {
+      "action": "text.split",
+      "input": "",
+      "mode": {
+        "mode": "paragraphs"
+      },
+      "max_parts": 1
+    },
+    "result": {
+      "type": "parts",
+      "value": []
+    }
+  },
+  {
+    "name": "grouped lines preserve CRLF",
+    "request": {
+      "action": "text.split",
+      "input": "a\r\nb\nc",
+      "mode": {
+        "mode": "lines",
+        "value": 2
+      },
+      "max_parts": 2
+    },
+    "canonical": {
+      "action": "text.split",
+      "input": "a\r\nb\nc",
+      "mode": {
+        "mode": "lines",
+        "value": 2
+      },
+      "max_parts": 2
+    },
+    "result": {
+      "type": "parts",
+      "value": [
+        "a\r\nb\n",
+        "c"
+      ]
+    }
+  },
+  {
+    "name": "regex separator",
+    "request": {
+      "action": "text.split",
+      "input": "a1b",
+      "mode": {
+        "mode": "regex",
+        "value": "[0-9]"
+      },
+      "max_parts": 2
+    },
+    "canonical": {
+      "action": "text.split",
+      "input": "a1b",
+      "mode": {
+        "mode": "regex",
+        "value": "[0-9]"
+      },
+      "max_parts": 2
+    },
+    "result": {
+      "type": "parts",
+      "value": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  {
+    "name": "literal replacement switches",
+    "request": {
+      "action": "text.replace",
+      "input": "CAT catapult",
+      "options": {
+        "pattern": {
+          "mode": "literal",
+          "value": "cat"
+        },
+        "replacement": "$1",
+        "case_sensitive": false,
+        "whole_word": true
+      }
+    },
+    "canonical": {
+      "action": "text.replace",
+      "input": "CAT catapult",
+      "options": {
+        "pattern": {
+          "mode": "literal",
+          "value": "cat"
+        },
+        "replacement": "$1",
+        "case_sensitive": false,
+        "whole_word": true
+      }
+    },
+    "result": {
+      "type": "text",
+      "value": "$1 catapult"
+    }
+  },
+  {
+    "name": "regex capture replacement",
+    "request": {
+      "action": "text.replace",
+      "input": "a1",
+      "options": {
+        "pattern": {
+          "mode": "regex",
+          "value": "([a-z])([0-9])"
+        },
+        "replacement": "$2$1",
+        "case_sensitive": true,
+        "whole_word": false
+      }
+    },
+    "canonical": {
+      "action": "text.replace",
+      "input": "a1",
+      "options": {
+        "pattern": {
+          "mode": "regex",
+          "value": "([a-z])([0-9])"
+        },
+        "replacement": "$2$1",
+        "case_sensitive": true,
+        "whole_word": false
+      }
+    },
+    "result": {
+      "type": "text",
+      "value": "1a"
+    }
+  },
+  {
+    "name": "concat is one ordered collection input",
+    "request": {
+      "action": "text.concat",
+      "inputs": [
+        " a ",
+        " ",
+        "b"
+      ],
+      "options": {
+        "separator": ",",
+        "prefix": "[",
+        "suffix": "]",
+        "trim": true,
+        "skip_empty": true
+      }
+    },
+    "canonical": {
+      "action": "text.concat",
+      "inputs": [
+        " a ",
+        " ",
+        "b"
+      ],
+      "options": {
+        "separator": ",",
+        "prefix": "[",
+        "suffix": "]",
+        "trim": true,
+        "skip_empty": true
+      }
+    },
+    "result": {
+      "type": "text",
+      "value": "[a,b]"
+    }
+  },
+  {
+    "name": "template variables exact and unused permitted",
+    "request": {
+      "action": "text.template",
+      "template": "{{name}}/{{é}}",
+      "fields": {
+        "name": "a",
+        "é": "🦀",
+        "unused": ""
+      }
+    },
+    "canonical": {
+      "action": "text.template",
+      "template": "{{name}}/{{é}}",
+      "fields": {
+        "name": "a",
+        "é": "🦀",
+        "unused": ""
+      }
+    },
+    "result": {
+      "type": "text",
+      "value": "a/🦀"
+    }
+  }
+]

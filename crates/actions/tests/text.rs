@@ -76,7 +76,7 @@ fn resource_edges_and_amplification() {
 }
 #[test]
 fn stable_wire_contract_and_safe_errors() {
-    let request = TextRequest::Split { input: "é".into(), mode: SplitMode::Chars(1) };
+    let request = TextRequest::Split { input: "é".into(), mode: SplitMode::Chars(1), max_parts: MAX_ITEMS };
     let value = serde_json::to_value(&request).unwrap();
     assert_eq!(value["action"], "text.split");
     assert_eq!(request.id(), "text.split");
@@ -171,4 +171,93 @@ fn replacement_validation_is_eager_and_expansion_work_is_bounded() {
     assert_eq!(replace("a", &rep(MatchMode::Literal("a".into()), "${"), l()).unwrap(), "${");
     let options = rep(MatchMode::Regex("(a?)".into()), &"$1".repeat(MAX_ITEMS));
     assert_eq!(replace(&"b".repeat(65), &options, l()), Err(TextError::WorkLimit));
+}
+
+#[test]
+fn documented_schema_wire_fixtures_round_trip_and_execute() {
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        request: serde_json::Value,
+        canonical: serde_json::Value,
+        result: serde_json::Value,
+    }
+    let cases: Vec<Case> = serde_json::from_str(include_str!("fixtures/text_requests.json")).unwrap();
+    for case in cases {
+        let request: TextRequest = serde_json::from_value(case.request).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), case.canonical, "{}", case.name);
+        let canonical: TextRequest = serde_json::from_value(case.canonical).unwrap();
+        assert_eq!(request, canonical, "{}", case.name);
+        assert_eq!(serde_json::to_value(request.execute(l()).unwrap()).unwrap(), case.result, "{}", case.name);
+    }
+}
+
+#[test]
+fn persisted_maximum_parts_intersects_host_budget_without_truncating() {
+    let request = |input: &str, mode: SplitMode, max_parts| TextRequest::Split { input: input.into(), mode, max_parts };
+    let parts = request("a,b", SplitMode::Separator(",".into()), 2);
+    assert_eq!(parts.execute(l()).unwrap(), TextResult::Parts(vec!["a".into(), "b".into()]));
+    assert_eq!(parts.execute(Limits { items: 1, ..l() }), Err(TextError::ItemLimit));
+    assert_eq!(request("a,b,c", SplitMode::Separator(",".into()), 2).execute(l()), Err(TextError::ItemLimit));
+    assert_eq!(request("a,b", SplitMode::Separator(",".into()), 1).execute(l()), Err(TextError::ItemLimit));
+    assert_eq!(parts.execute(Limits { items: 0, ..l() }), Err(TextError::ItemLimit));
+    for mode in [SplitMode::Chars(1), SplitMode::Lines(1), SplitMode::Paragraphs] {
+        assert_eq!(request("", mode, 1).execute(Limits { items: 0, ..l() }).unwrap(), TextResult::Parts(vec![]));
+    }
+    for max_parts in [0, MAX_ITEMS + 1, usize::MAX] {
+        assert_eq!(request("", SplitMode::Regex("[".into()), max_parts).execute(l()), Err(TextError::InvalidMaxParts));
+    }
+    let exact = request(&"x".repeat(MAX_ITEMS), SplitMode::Chars(1), MAX_ITEMS);
+    let TextResult::Parts(values) = exact.execute(l()).unwrap() else { panic!("parts") };
+    assert_eq!(values.len(), MAX_ITEMS);
+    assert_eq!(request(&"x".repeat(MAX_ITEMS + 1), SplitMode::Chars(1), MAX_ITEMS).execute(l()), Err(TextError::ItemLimit));
+    assert_eq!(parts.execute(Limits { items: MAX_ITEMS + 1, ..l() }), Err(TextError::InvalidLimits));
+}
+
+#[test]
+fn schema_required_null_and_unknown_field_policies_match_wire() {
+    use serde_json::json;
+    let base = json!({"action":"text.split","input":"","mode":{"mode":"chars","value":1},"max_parts":1});
+    for value in [json!(null), json!(-1), json!(1.5), json!("1")] {
+        let mut invalid = base.clone();
+        invalid["max_parts"] = value;
+        assert!(serde_json::from_value::<TextRequest>(invalid).is_err());
+    }
+    for field in ["input", "mode", "action"] {
+        let mut invalid = base.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<TextRequest>(invalid).is_err());
+    }
+    let mut invalid = base.clone();
+    invalid["surprise"] = json!(true);
+    assert!(serde_json::from_value::<TextRequest>(invalid).is_err());
+    let mut invalid = base.clone();
+    invalid["mode"]["surprise"] = json!(true);
+    assert!(serde_json::from_value::<TextRequest>(invalid).is_err());
+    let replacement = json!({"action":"text.replace","input":"x","options":{"pattern":{"mode":"literal","value":"x"},"replacement":"","case_sensitive":true,"whole_word":false}});
+    for field in ["pattern", "replacement", "case_sensitive", "whole_word"] {
+        for null in [false, true] {
+            let mut invalid = replacement.clone();
+            if null {
+                invalid["options"][field] = json!(null);
+            } else {
+                invalid["options"].as_object_mut().unwrap().remove(field);
+            }
+            assert!(serde_json::from_value::<TextRequest>(invalid).is_err());
+        }
+    }
+    let concat = json!({"action":"text.concat","inputs":[],"options":{"separator":"","prefix":"","suffix":"","trim":false,"skip_empty":false}});
+    for field in ["separator", "prefix", "suffix", "trim", "skip_empty"] {
+        let mut invalid = concat.clone();
+        invalid["options"].as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<TextRequest>(invalid).is_err(), "ConcatOptions::default is not a serde omission default");
+    }
+    for request in [
+        json!({"action":"text.template","template":"","fields":null}),
+        json!({"action":"text.template","template":""}),
+        json!({"action":"text.template","template":"","fields":{"name":null}}),
+        json!({"action":"text.template","template":"","fields":{},"missing_variable":"empty"}),
+    ] {
+        assert!(serde_json::from_value::<TextRequest>(request).is_err());
+    }
 }

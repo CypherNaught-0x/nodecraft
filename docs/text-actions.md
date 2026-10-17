@@ -6,6 +6,135 @@ for future adapters, not registered engine commands. Live nodes and recomputatio
 Requests are owned parameter data; adapters must bound serialized input before deserialization.
 The borrowed functions check all input strings before copying, compiling or producing output.
 
+## Normative action schema inventory (v1, #162)
+
+This section specifies the action-owned inventory that the shared Rust descriptor contract in
+#162 must express. It is not a second descriptor implementation or a promise that generated
+UI/CLI/MCP forms already exist. The implementation here remains `TextRequest`, typed options,
+`TextResult` and pure functions. Graph/live actions and engine commands remain #88; generated
+text actions remain #165. Wire fixtures are `crates/actions/tests/fixtures/text_requests.json`.
+
+Stable action and parameter IDs are namespaced and semantic: `text.split.max_parts`, for
+example, always means an output-cardinality ceiling, never a grouping size. The wire envelope
+uses `action` with one of the four action IDs. Unknown request/option/mode fields and unknown
+enum tags are rejected, not preserved or interpreted as defaults. No nullable parameter,
+implicit auto, seed, random mode or missing-variable substitution is defined. JSON integer
+counts deserialize as Rust `usize`: negative, fractional, string and out-of-target-range counts
+are invalid. Positive grouping counts can be as large as `usize::MAX`; the portable native/wasm
+subset is 1..=4,294,967,295. A grouping count larger than the bounded input simply gives one
+nonempty group, and never authorizes a count-sized allocation.
+
+The tables list wire-required fields. Except `max_parts` for legacy split requests, missing
+fields do not acquire defaults during serde deserialization. Explicit JSON null is rejected
+for all typed fields, with one unit-enum exception: `paragraphs` can have no `value` or an
+explicit `value: null`; both serialize canonically without `value`. Empty text, false, zero,
+missing and null are distinct. Empty text can be a valid input; zero is invalid for grouping
+and `max_parts`. Boolean false is an explicit setting.
+
+### Input roles, precedence and result shape
+
+Requests contain already resolved inputs. Connection-versus-local-value and bulk-edit precedence
+belongs to #162/#88 adapters, not these pure functions; an adapter must pass the resulting value
+once, with no further implicit default or override inside the library.
+
+| Action | Input role and cardinality | Result role and cardinality |
+|---|---|---|
+| `text.split` | `text.split.input`: exactly one scalar text (`input`) | `text.split.parts`: exactly one ordered text collection with 0..effective `max_parts` elements |
+| `text.replace` | `text.replace.input`: exactly one scalar text (`input`) | `text.replace.output`: exactly one scalar text, including an empty string |
+| `text.concat` | `text.concat.inputs`: one ordered text collection (`inputs`), containing 0..host `items` scalar texts | `text.concat.output`: exactly one scalar text |
+| `text.template` | `text.template.template`: exactly one scalar template text (`template`) | `text.template.output`: exactly one scalar text |
+
+Split collection elements and concat inputs retain their left-to-right order. A split is one
+operation returning a collection, not one job per part. Concat consumes one ordered collection,
+not independent jobs or a cross product. Missing/null collection inputs are invalid; an empty
+collection is valid. The host item ceiling is 16,384. `TextResult` is tagged `type: "parts"`
+with a string array `value`, or `type: "text"` with a string `value`.
+
+### Split parameters
+
+| Stable parameter ID | Wire mapping | Value/control; required policy | Bounds/units and condition |
+|---|---|---|---|
+| `text.split.mode` | `mode.mode` | Required enum; display labels Separator, Regular expression, Paragraphs, Lines, Characters; wire `separator`, `regex`, `paragraphs`, `lines`, `chars` | Exactly one branch |
+| `text.split.separator` | `mode.value` when `separator` | Required text | Nonempty literal; visible/enabled only in separator mode; counts toward aggregate UTF-8 input bytes |
+| `text.split.pattern` | `mode.value` when `regex` | Required regex text | Empty is a valid zero-width regex; visible/enabled only in regex mode; 8,192 effective pattern bytes plus compilation/work limits below |
+| `text.split.line_count` | `mode.value` when `lines` | Required positive integer, step 1 | Lines per group, not bytes; visible/enabled only in line mode |
+| `text.split.char_count` | `mode.value` when `chars` | Required positive integer, step 1 | Unicode scalar values per group; visible/enabled only in character mode |
+| `text.split.max_parts` | `max_parts` | Integer, step 1; persisted on new requests; omitted legacy field defaults to 16,384 | 1..=16,384 parts; always visible |
+
+Paragraphs has no value-bearing parameter. The tagged representation contains only the active
+branch; inactive separator/pattern/count values are not persisted or executed. An editor may
+keep inactive drafts as view state, but must construct only the chosen branch; hidden values
+cannot bypass validation. Choosing a branch requires a value of that branch's type.
+
+`max_parts` is validated before input scanning or regex compilation. Host `Limits` are validated
+first, and effective item capacity is `min(max_parts, Limits.items)`. Host zero remains valid:
+empty line/character/paragraph splits may return zero parts, while a separator split of empty
+input needs one empty part and fails with `ItemLimit`. Exceeding capacity returns `ItemLimit`
+with no partial collection; this is a ceiling, not `splitn`, and never truncates or merges a tail.
+The standalone borrowed `split` function still uses only the explicit host `Limits.items`.
+
+### Find/replace parameters
+
+| Stable parameter ID | Wire mapping | Value/control; required policy | Bounds/units and condition |
+|---|---|---|---|
+| `text.replace.regex` | `options.pattern.mode` | Required two-way switch; false maps to `literal`, true to `regex` | Enum wire representation, not a second stored boolean |
+| `text.replace.find` | `options.pattern.value` | Required text/regex text | Literal must be nonempty; regex may be empty; effective pattern at most 8,192 UTF-8 bytes; regex editor enabled only for regex mode |
+| `text.replace.replacement` | `options.replacement` | Required text, empty permitted | Part of aggregate input bytes; regex capture expansion only when regex is enabled |
+| `text.replace.case_sensitive` | `options.case_sensitive` | Required boolean | True is case-sensitive; false uses Unicode simple folding |
+| `text.replace.whole_word` | `options.whole_word` | Required boolean | Unicode neighbor-boundary behavior below, including punctuation-edged terms |
+
+Both pattern branches use the same persisted find field and differ by tagged interpretation.
+Replacement text is never an extra input port; it is an action-owned setting. Switching regex
+mode does not silently escape, unescape or rewrite saved text. Every active value is validated
+before processing; hiding regex-specific editing does not suppress literal validation.
+
+### Concat parameters
+
+| Stable parameter ID | Wire mapping | Value/control; required policy | Bounds/units and condition |
+|---|---|---|---|
+| `text.concat.separator` | `options.separator` | Required text, empty permitted | Inserted only between retained inputs |
+| `text.concat.prefix` | `options.prefix` | Required text, empty permitted | Emitted once, including for an empty collection |
+| `text.concat.suffix` | `options.suffix` | Required text, empty permitted | Emitted once, including for an empty collection |
+| `text.concat.trim` | `options.trim` | Required boolean | Unicode trim before empty testing |
+| `text.concat.skip_empty` | `options.skip_empty` | Required boolean | Drops empty results after optional trim, preserving the rest's order |
+
+All concat controls are visible and enabled together. Their text contributes to aggregate input
+bytes; the joined expansion is checked against output bytes before every append.
+
+### Template parameters
+
+| Stable parameter ID | Wire mapping | Value/control; required policy | Bounds/units and condition |
+|---|---|---|---|
+| `text.template.variables` | `fields` | Required bounded key-to-text record; empty object permitted | At most 1,024 entries; keys and values count toward the 1 MiB aggregate UTF-8 input cap; no nested/list/null values |
+| `text.template.missing_variable` | Fixed policy, no wire field | Read-only constant `error`, no selectable alternatives | Missing referenced key returns `MissingField`; no empty/fallback substitution |
+
+Map keys are exact UTF-8 strings, serialized in sorted key order by `BTreeMap`; map ordering does
+not determine output ordering. Placeholders determine insertion order, including repeated keys.
+A key used by a placeholder must be nonempty and contain neither brace; whitespace is significant.
+Unused map keys (including empty keys) are allowed and still budgeted. Values are copied once
+and are never reinterpreted as template syntax. All template controls are visible together.
+
+### Creation defaults, serialized defaults and identity
+
+The creation scaffold for future adapters is explicit: split starts with empty input,
+`lines` grouping 1 and `max_parts: 16384`; replace starts with empty input, `literal` find `""`,
+replacement `""`, `case_sensitive: true`, `whole_word: false`; concat starts with `inputs: []`
+and `ConcatOptions::default()` (all text empty, both switches false); template starts with an
+empty template and `{}` variables. The replace scaffold is an unconfigured editor draft only,
+not a declared schema default. An adapter must not emit an executable or canonical Replace
+request until the required nonempty literal find is supplied; executing the draft would report
+`EmptySeparator`. The other scaffolds are creation values for adapters, not omitted-field serde
+defaults or implemented node forms. `TextRequest`
+has no Rust `Default`. The only serde omission default is split `max_parts`; constructing a
+`TextRequest::Split` in Rust now requires that field explicitly.
+
+All resolved input values/order, active mode values, booleans, template fields and `max_parts`
+affect the effective execution snapshot/staleness identity. Host limits that can turn success
+into an error must also be recorded by the future execution adapter. Split mode/grouping and
+`max_parts` affect collection output shape/admission; no parameter creates paid calls or extra
+jobs in this library. The versioned descriptor transport, cache integration, bulk editing and
+graph mutation/undo are owned by #162/#88 and are not implemented or claimed here.
+
 ## Semantics
 
 - Split separator/regex discards delimiters and retains empty fields (including empty input). An
@@ -43,7 +172,9 @@ Hard ceilings: 1 MiB aggregate UTF-8 input bytes (including options/field keys a
 output bytes, 16,384 parts/regex candidates/concat inputs, 1,024 template fields and insertions.
 Literal replacement has no match-count ceiling: bounded input/output and fixed literal matching
 bound its work. Regex candidates are the boundary-qualified matches.
-`Limits` can only lower byte and item ceilings, including to zero. All appends and part copies
+`Limits` can only lower byte and item ceilings, including to zero. Persisted split `max_parts`
+is independently restricted to 1..=16,384 and intersects the host item ceiling; out-of-range
+values return `InvalidMaxParts` before processing. All appends and part copies
 check budgets first; errors return no partial result. Regex pattern bytes are capped at 8,192
 (including escaped literal form and whole-word wrappers), nesting at 64, compiled program at 1 MiB and DFA cache at
 256 KiB. Rust `regex` uses a finite-automata engine without backtracking; unsupported lookaround

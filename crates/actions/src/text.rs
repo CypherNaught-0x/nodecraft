@@ -50,6 +50,7 @@ pub enum TextError {
     OutputLimit,
     ItemLimit,
     InvalidCount,
+    InvalidMaxParts,
     EmptySeparator,
     PatternLimit,
     WorkLimit,
@@ -67,6 +68,7 @@ impl std::fmt::Display for TextError {
             Self::OutputLimit => "text output byte budget exceeded",
             Self::ItemLimit => "text item or match budget exceeded",
             Self::InvalidCount => "text split count must be positive",
+            Self::InvalidMaxParts => "text split maximum parts must be between 1 and 16384",
             Self::EmptySeparator => "text separator must not be empty",
             Self::WorkLimit => "text search or replacement work budget exceeded",
             Self::PatternLimit => "regex pattern byte budget exceeded",
@@ -81,7 +83,7 @@ impl std::fmt::Display for TextError {
 impl std::error::Error for TextError {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", content = "value", rename_all = "snake_case")]
+#[serde(tag = "mode", content = "value", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SplitMode {
     Separator(String),
     Regex(String),
@@ -90,7 +92,7 @@ pub enum SplitMode {
     Chars(usize),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", content = "value", rename_all = "snake_case")]
+#[serde(tag = "mode", content = "value", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MatchMode {
     Literal(String),
     Regex(String),
@@ -116,7 +118,13 @@ pub struct ConcatOptions {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TextRequest {
     #[serde(rename = "text.split")]
-    Split { input: String, mode: SplitMode },
+    Split {
+        input: String,
+        mode: SplitMode,
+        /// Persisted output cardinality ceiling; old requests default to the hard ceiling.
+        #[serde(default = "default_max_parts")]
+        max_parts: usize,
+    },
     #[serde(rename = "text.replace")]
     Replace { input: String, options: ReplaceOptions },
     #[serde(rename = "text.concat")]
@@ -130,6 +138,10 @@ pub enum TextResult {
     Text(String),
     Parts(Vec<String>),
 }
+fn default_max_parts() -> usize {
+    MAX_ITEMS
+}
+
 impl TextRequest {
     pub fn id(&self) -> &'static str {
         match self {
@@ -141,7 +153,13 @@ impl TextRequest {
     }
     pub fn execute(&self, limits: Limits) -> Result<TextResult, TextError> {
         match self {
-            Self::Split { input, mode } => split(input, mode, limits).map(TextResult::Parts),
+            Self::Split { input, mode, max_parts } => {
+                let limits = limits.validate()?;
+                if !(1..=MAX_ITEMS).contains(max_parts) {
+                    return Err(TextError::InvalidMaxParts);
+                }
+                split(input, mode, Limits { items: limits.items.min(*max_parts), ..limits }).map(TextResult::Parts)
+            }
             Self::Replace { input, options } => replace(input, options, limits).map(TextResult::Text),
             Self::Concat { inputs, options } => concat(inputs, options, limits).map(TextResult::Text),
             Self::Template { template, fields } => fill_template(template, fields, limits).map(TextResult::Text),
