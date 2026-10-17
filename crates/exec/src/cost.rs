@@ -353,8 +353,10 @@ pub const MAX_RETIRED_KEYS: usize = 250_000;
 /// settled or released. Past this many, an open charge leaving the list stays charged as it is
 /// (the conservative outcome) and only its identity is kept. Their text is outside
 /// [`MAX_LISTED_TEXT`] and bounded by this count times four fields of [`MAX_TEXT`] (20 MiB).
-/// Unresolved charges stay pending until settled as actual; hosts settle or export them, since
-/// a full pending list only stops later charges from being settleable, never from counting.
+/// Unresolved charges stay pending until settled as actual; hosts find them with
+/// [`UsageLog::pending`] to settle them. A full pending list only stops later charges from being
+/// settleable, never from counting. (An age or size policy for old unresolved charges is
+/// deferred.)
 pub const MAX_PENDING: usize = 10_000;
 /// Most sessions with their own totals. Past it, the least recently charged session folds into
 /// one "earlier sessions" total, saved under the empty name, which still counts for the project.
@@ -648,9 +650,10 @@ impl UsageLog {
     /// change. Totals move by the difference; nothing changes on an error.
     ///
     /// Open charges that left the list stay settleable while pending (see [`MAX_PENDING`]).
-    /// `NotFound` means the charge was settled already, or left the list while pending was full:
-    /// its last amount stays in the totals (the conservative outcome). Don't `record` it again,
-    /// which would count it twice.
+    /// `Conflict` means a listed charge is already settled as actual. `NotFound` means no open
+    /// charge has that key: never recorded, released, settled after leaving the list, or left the
+    /// list while pending was full (its last amount stays in the totals, the conservative
+    /// outcome). Don't `record` it again, which would count it twice.
     pub fn settle(&mut self, provider: &str, idempotency_key: &str, cost: Money, status: Charge) -> Result<(), Error> {
         if cost.micros > MAX_CHARGE_MICROS {
             return Err(Error::new(ErrorKind::InvalidInput, "a charge is larger than any job could cost"));
@@ -734,6 +737,11 @@ impl UsageLog {
         }
         let seq = *self.keys.get(&key)?;
         self.entries.get(usize::try_from(seq.checked_sub(self.first_seq)?).ok()?)
+    }
+
+    /// Open charges that left the list, still to be settled or released.
+    pub fn pending(&self) -> impl Iterator<Item = &UsageEntry> {
+        self.pending.values()
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &UsageEntry> {

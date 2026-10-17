@@ -898,8 +898,13 @@ fn saved_pending_charges_are_checked_on_load() {
     for n in 0..MAX_USAGE_ENTRIES + 1 {
         log.record(estimate("s", &format!("k{n}"), 1)).unwrap();
     }
+    assert_eq!(log.pending().map(|e| e.idempotency_key.as_str()).collect::<Vec<_>>(), vec!["k0"]);
     let file: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     assert_eq!(file.pending.len(), 1);
+    // The same key twice within pending: refused.
+    let mut twice = file.clone();
+    twice.pending.push(twice.pending[0].clone());
+    assert!(UsageLog::try_from(twice).is_err());
     assert!(UsageLog::try_from(file.clone()).is_ok());
     // Settled, listed too, retired too, or too many: refused.
     let mut settled = file.clone();
