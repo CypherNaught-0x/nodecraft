@@ -253,11 +253,13 @@ fn sequence_bound(hir: &regex_syntax::hir::Hir) -> Option<(usize, usize)> {
     struct Atom {
         ranges: Vec<(u32, u32)>,
         repeated: bool,
+        assertion: bool,
     }
     fn flatten(hir: &regex_syntax::hir::Hir, out: &mut Vec<Atom>) -> Option<()> {
         use regex_syntax::hir::{Class, HirKind};
         match uncapture(hir).kind() {
             HirKind::Empty => {}
+            HirKind::Look(_) => out.push(Atom { ranges: Vec::new(), repeated: false, assertion: true }),
             HirKind::Concat(parts) => {
                 for part in parts {
                     flatten(part, out)?;
@@ -265,7 +267,7 @@ fn sequence_bound(hir: &regex_syntax::hir::Hir) -> Option<(usize, usize)> {
             }
             HirKind::Literal(lit) => {
                 for ch in std::str::from_utf8(&lit.0).ok()?.chars() {
-                    out.push(Atom { ranges: vec![(u32::from(ch), u32::from(ch))], repeated: false });
+                    out.push(Atom { ranges: vec![(u32::from(ch), u32::from(ch))], repeated: false, assertion: false });
                 }
             }
             HirKind::Class(class) => {
@@ -273,7 +275,7 @@ fn sequence_bound(hir: &regex_syntax::hir::Hir) -> Option<(usize, usize)> {
                     Class::Unicode(c) => c.ranges().iter().map(|r| (u32::from(r.start()), u32::from(r.end()))).collect(),
                     Class::Bytes(c) => c.ranges().iter().map(|r| (u32::from(r.start()), u32::from(r.end()))).collect(),
                 };
-                out.push(Atom { ranges, repeated: false });
+                out.push(Atom { ranges, repeated: false, assertion: false });
             }
             HirKind::Repetition(rep) if rep.max.is_none() && rep.greedy => {
                 let before = out.len();
@@ -282,7 +284,7 @@ fn sequence_bound(hir: &regex_syntax::hir::Hir) -> Option<(usize, usize)> {
                     return None;
                 }
                 let atom = out.get_mut(before)?;
-                if atom.repeated {
+                if atom.repeated || atom.assertion {
                     return None;
                 }
                 atom.repeated = true;
@@ -315,15 +317,28 @@ fn sequence_bound(hir: &regex_syntax::hir::Hir) -> Option<(usize, usize)> {
     for (index, atom) in atoms.iter().enumerate().filter(|(_, atom)| atom.repeated) {
         if let Some(prior) = previous {
             let prior_atom = atoms.get(prior)?;
-            if !atoms.get(prior.saturating_add(1)..index)?.iter().any(|delimiter| disjoint(prior_atom, delimiter) && disjoint(atom, delimiter)) {
+            if !atoms
+                .get(prior.saturating_add(1)..index)?
+                .iter()
+                .any(|delimiter| !delimiter.assertion && disjoint(prior_atom, delimiter) && disjoint(atom, delimiter))
+            {
                 return None;
             }
         }
         previous = Some(index);
     }
-    // At most one scan per run per search, including failed fixed suffixes. Multiplying
-    // the width by atom count also pays for fixed-prefix retries and UTF-8 context.
-    Some((atoms.len().checked_mul(4)?, atoms.len().checked_add(1)?))
+    // Assertions are predicates of the original haystack position, independent of a
+    // search's start. A rejected suffix position stays rejected on the next call;
+    // greedy runs choose the last admissible suffix, so a long rejected tail cannot
+    // yield a succession of earlier short successes. The final failed search and
+    // adjacent-empty suppression are covered by the factor two in SearchBudget.
+    // Each assertion examines at most the neighboring Unicode scalars (8 bytes),
+    // including CRLF/multiline context. It contributes work but never consumes a
+    // delimiter or makes a repeated assertion/overlapping pair admissible.
+    let assertions = atoms.iter().filter(|atom| atom.assertion).count();
+    let consuming = atoms.len().checked_sub(assertions)?;
+    let context = consuming.checked_mul(4)?.checked_add(assertions.checked_mul(8)?)?;
+    Some((context, atoms.len().checked_add(1)?))
 }
 fn compile(pattern: &str, case_sensitive: bool) -> Result<Regex, TextError> {
     if pattern.len() > MAX_PATTERN_BYTES {
@@ -618,7 +633,17 @@ mod search_budget_tests {
             ("(a+)+", true, false),
             ("(?:ab)+", true, false),
             ("a{1,2}b+", true, false),
-            (r"a+\b", true, false),
+            (r"a+\b", true, true),
+            (r"a+\ba+", true, false),
+            (r"a+\Bb+", true, false),
+            (r"(?:a+\b)+", true, false),
+            (r"(?:a+)+\b", true, false),
+            (r"A*\baA*", false, false),
+            (r"K*\bkK*", false, false),
+            (r"\p{L}*\bé\p{L}*", true, false),
+            (r"\p{L}*\b,\b\p{L}*", true, true),
+            (r"\b{start-half}a+\b{end-half}", true, true),
+            (r"\b{start-half}a+?\b{end-half}", true, false),
             ("a+?b", true, false),
             ("(a+?)", true, true),
         ] {
@@ -628,8 +653,18 @@ mod search_budget_tests {
     }
 
     #[test]
+    fn assertion_search_work_accepts_exact_ceiling_then_rejects_next_step() {
+        let mut budget = SearchBudget::new(r"\ba+\b", true, 100).unwrap();
+        let step = 56;
+        budget.used = MAX_SEARCH_BYTES - step;
+        assert_eq!(budget.next(100, 0), Ok(()));
+        assert_eq!(budget.used, MAX_SEARCH_BYTES);
+        assert_eq!(budget.next(100, 0), Err(TextError::WorkLimit));
+    }
+
+    #[test]
     fn documented_precharge_and_per_search_formulas_match_exactly() {
-        for (pattern, initial, step) in [("a", 22, 18), ("a+?", 22, 24), ("a+", 44, 24), (r"\s*,\s*", 88, 40), ("a*a*", 0, 22)] {
+        for (pattern, initial, step) in [("a", 22, 18), ("a+?", 22, 24), ("a+", 44, 24), (r"\s*,\s*", 88, 40), ("a*a*", 0, 22), (r"\ba+\b", 88, 56)] {
             let mut budget = SearchBudget::new(pattern, true, 10).unwrap();
             assert_eq!(budget.used, initial, "{pattern}");
             budget.next(10, 0).unwrap();

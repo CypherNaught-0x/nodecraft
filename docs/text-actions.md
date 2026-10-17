@@ -188,27 +188,37 @@ then charges lookahead before every iterator search, including its final unsucce
 - A top-level lazy repetition of one character class or Unicode scalar, optionally captured:
   precharge `2*(N+1)`; each search costs `2*(4+8)`. There is no trailing expression or
   alternative that can force scanning a long suffix before returning a short match.
-- Flat sequences of fixed character atoms and greedy unbounded repetitions of single atoms:
-  after captures/concatenations are flattened and literals expanded into Unicode scalars, let
-  `A` count all atoms (each repeated atom counts once). Precharge `2*(N+1)*(A+1)`; each
-  search costs `2*(4*A+8)`. Every neighboring pair of repetitions requires a mandatory fixed
-  character class between them disjoint from **both** repetition alphabets. The full delimiter
-  class must be disjoint, using the case-folded HIR alphabets. This admits ordinary `a+`,
-  `,\s*`, `\s*,\s*`, `v(\d+)` and `\n\s*\n`.
+- Flat sequences of fixed character atoms, zero-width HIR assertions, and greedy unbounded
+  repetitions of single consuming atoms: after captures/concatenations are flattened and
+  literals expanded into Unicode scalars, let `C` count consuming atoms (each repeated atom
+  counts once), `Z` count assertions and `A=C+Z`. Precharge `2*(N+1)*(A+1)`; each search
+  costs `2*(4*C+8*Z+8)`. With no assertions this is the prior `2*(4*A+8)` formula.
+  Every neighboring pair of repetitions requires a mandatory **consuming** fixed character
+  class between them disjoint from **both** repetition alphabets. Assertions never serve as
+  delimiters, even when their alphabet is empty. The full delimiter class must be disjoint,
+  using case-folded HIR alphabets. Ordinary `a+`, `,\s*`, `\s*,\s*`, `v(\d+)`,
+  `\n\s*\n`, `\bfo\w*\b`, `(?m)^\w+` and whole-word wrappers are admitted.
 
-For the flat grammar, a greedy run stops at the first character outside its alphabet. A
-successful fixed suffix either starts at that boundary or takes a bounded number of final
-characters from the run; a successful match therefore consumes the scanned run apart from
-bounded suffix lookahead. Mandatory outside delimiters separate neighboring runs, preventing
-later repetitions from repeatedly scanning earlier runs. The atom-count factor conservatively
-covers all runs and fixed-prefix retries. Lazy single-atom matches and empty-match suppression
-advance monotonically. Captures and offsets always retain full-haystack iterator semantics.
+For the flat grammar, a greedy run stops at the first character outside its alphabet and
+selects the last admissible suffix position. Assertions only test original-haystack positions;
+their result does not depend on the current iterator search start. A suffix position rejected
+because of its assertion remains rejected on subsequent searches, so a long rejected tail
+cannot yield a succession of earlier short successful matches. Mandatory outside delimiters
+separate neighboring runs and prevent later repetitions from repeatedly scanning earlier runs.
+The atom-count precharge conservatively covers runs, suffix assertions and fixed-prefix retries;
+the factor two covers a final failed search and adjacent-empty suppression. Each assertion
+checks at most the neighboring two Unicode scalars, hence its eight-byte context allowance;
+this also covers ASCII/Unicode word boundaries, half-boundaries, absolute anchors and CRLF or
+multiline line anchors. Captures and offsets retain full-haystack iterator semantics.
+
+The existing top-level lazy single-atom shortcut is unchanged. Lazy repetitions embedded in
+assertion-bearing sequences remain conservative, as do repetitions of assertions themselves.
 
 Other unbounded patterns precharge nothing and cost `2*(N-previous_end+1)` before each search.
-This includes unbounded alternatives, assertions within unbounded sequences, nested or finite
+This includes unbounded alternatives, nested or finite
 repetitions within unbounded sequences, multi-character repeated groups, and neighboring repeats
 without a delimiter outside both alphabets. Examples include `a+b|a`, `.*[^A-Z]|[A-Z]`,
-`(ab)+`, `a*a*` and `a*?suffix`. The factor two covers the iterator's possible second search to
+`(ab)+`, `a*a*`, `a+\ba+` and `a*?suffix`. The factor two covers the iterator's possible second search to
 suppress an adjacent empty match. Finite-width expressions take the first shortcut regardless
 of their internal shape. Total charged search bytes are capped at 64 MiB; conservative rejection
 remains possible for fallback patterns, without treating returned match length as actual search.

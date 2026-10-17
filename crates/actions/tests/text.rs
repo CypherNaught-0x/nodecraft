@@ -287,3 +287,43 @@ fn replacement_step_limit_has_an_exact_boundary_without_an_item_limit() {
     assert_eq!(replace(&exact, &options, Limits { items: 0, ..l() }).unwrap().len(), MAX_REPLACEMENT_STEPS);
     assert_eq!(replace(&(exact + "a"), &options, l()), Err(TextError::WorkLimit));
 }
+
+#[test]
+fn near_ceiling_whole_word_regex_preserves_results() {
+    for (pattern, word) in [(r"fo\w*", "foobar"), (r"\d+", "123456"), ("[A-Z][a-z]+", "Foobar"), (r"\w+", "éclair")] {
+        let input = format!("{word} ").repeat((MAX_INPUT_BYTES - pattern.len() - 1) / (word.len() + 1));
+        assert!(input.len() > MAX_INPUT_BYTES - 64);
+        let mut options = rep(MatchMode::Regex(pattern.into()), "!");
+        options.whole_word = true;
+        assert_eq!(replace(&input, &options, l()).unwrap(), "! ".repeat(input.len() / (word.len() + 1)));
+    }
+}
+
+#[test]
+fn boundary_and_multiline_assertions_accept_large_inputs() {
+    for (pattern, word, ending) in
+        [(r"\bfo\w*\b", "foobar", " "), (r"(?m)^\w+", "éclair", "\n"), (r"(?m)\w+$", "éclair", "\n"), (r"\b{start-half}\w+\b{end-half}", "éclair", " ")]
+    {
+        let unit = format!("{word}{ending}");
+        let count = (MAX_INPUT_BYTES - pattern.len() - 1) / unit.len();
+        let input = unit.repeat(count);
+        assert_eq!(replace(&input, &rep(MatchMode::Regex(pattern.into()), "!"), l()).unwrap(), format!("!{ending}").repeat(count));
+    }
+    for pattern in [r"^\w+$", r"\A\w+\z", r"\w+\b{end-half}$"] {
+        let input = "é".repeat((MAX_INPUT_BYTES - pattern.len() - 1) / 2);
+        assert_eq!(replace(&input, &rep(MatchMode::Regex(pattern.into()), "!"), l()).unwrap(), "!");
+    }
+    for input in ["", "é foobar 中", "éfoobar 中", "e\u{301}foobar", "foobar\u{301} 中", "🦀foobar🦀", "foo\nbar\n"] {
+        for pattern in [r"\bfo\w*\b", r"(?m)^\w+", r"(?m)\w+$", r"\b", r"\w*\b", r"(?m)[a\n]*^", r"\w+\B", r"\A\w+\z"] {
+            let re = regex::Regex::new(pattern).unwrap();
+            assert_eq!(replace(input, &rep(MatchMode::Regex(pattern.into()), "!"), l()).unwrap(), re.replace_all(input, "!"));
+            assert_eq!(split(input, &SplitMode::Regex(pattern.into()), l()).unwrap(), re.split(input).collect::<Vec<_>>());
+        }
+    }
+    let mut captured = rep(MatchMode::Regex(r"(?P<word>fo\w*)".into()), "${word}!");
+    captured.whole_word = true;
+    assert_eq!(replace("éfoobar foobar🦀 foobar\u{301}", &captured, l()).unwrap(), "éfoobar foobar!🦀 foobar\u{301}!");
+    let input = "a ".repeat(100_000);
+    assert_eq!(replace(&input, &rep(MatchMode::Regex(r"^\w+z$".into()), "!"), l()).unwrap(), input);
+    assert_eq!(replace(&input, &rep(MatchMode::Regex(r"\b".into()), ""), l()).unwrap(), input);
+}
