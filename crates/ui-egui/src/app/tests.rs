@@ -1747,3 +1747,201 @@ fn a_fit_while_the_palette_is_open_closes_it() {
     assert_ne!(h.state().view, before, "the fit moved the view");
     assert!(h.state().palette.is_none(), "the palette's world point no longer matches the view");
 }
+
+/// The text the last frames asked the platform to copy, if any.
+fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
+    h.output().platform_output.commands.iter().find_map(|command| match command {
+        egui::OutputCommand::CopyText(text) => Some(text.clone()),
+        _ => None,
+    })
+}
+fn counts(h: &Harness<'static, NodeCraftApp>) -> (usize, usize) {
+    let app = h.state();
+    let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
+    (canvas.nodes().len(), canvas.edges().len())
+}
+
+#[test]
+fn copy_paste_cut_and_duplicate_move_nodes_with_their_noodles() {
+    let mut h = chain_harness();
+    // Select A and B (with the A → B noodle between them) and copy.
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 2, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    h.event(egui::Event::Copy);
+    h.step();
+    let text = copied(&h).expect("a copy");
+    assert!(text.contains("nodecraft.nodes"));
+    h.run();
+    let before = h.state().session.document().clone();
+    // Paste under the pointer: two new nodes and their inner noodle, selected, one undo step.
+    let at = Pos2::new(800.0, 600.0);
+    h.hover_at(at);
+    h.event(egui::Event::Paste(text.clone()));
+    h.run();
+    assert_eq!(counts(&h), (6, 3));
+    let pasted = h.state().selection.nodes().clone();
+    assert_eq!(pasted.len(), 2);
+    assert!(pasted.iter().all(|id| !before.canvases().get(&h.state().canvas).unwrap().nodes().contains_key(id)));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // Duplicate: the same, offset from the originals, without touching the clipboard.
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 2, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run();
+    assert_eq!(counts(&h), (6, 3));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    // Cut: copies, then removes the nodes (and every noodle touching them) in one step.
+    press_card(&mut h, 3, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    h.event(egui::Event::Cut);
+    h.step();
+    assert!(copied(&h).is_some_and(|t| t.contains("nodecraft.nodes")));
+    h.run();
+    assert_eq!(counts(&h), (3, 1));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn plain_text_pastes_as_a_text_node_but_not_into_a_focused_field() {
+    let mut h = harness();
+    h.hover_at(Pos2::new(800.0, 600.0));
+    h.event(egui::Event::Paste("A lighthouse in fog".into()));
+    h.run();
+    let texts = nodes_of(&h, "source.text");
+    assert_eq!(texts.len(), 2);
+    assert!(texts.iter().any(|n| n.params.get("text") == Some(&Value::Text("A lighthouse in fog".into()))));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    // With a text field focused, the paste goes into the field, not onto the canvas.
+    let rect = screen(h.state());
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    h.event(egui::Event::Paste("into the field".into()));
+    h.run();
+    assert_eq!(nodes_of(&h, "source.text").len(), 1);
+    // Blank text pastes nothing.
+    click(&mut h, Pos2::new(900.0, 650.0));
+    h.event(egui::Event::Paste("   ".into()));
+    h.run();
+    assert_eq!(nodes_of(&h, "source.text").len(), 1);
+}
+
+#[test]
+fn paste_lands_centred_duplicate_offsets_and_unreadable_copies_explain() {
+    let mut h = chain_harness();
+    let t = *h.state().theme.tokens();
+    press_card(&mut h, 4, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    let original = nodes_of(&h, "source.text").into_iter().find(|n| n.id == chain_id(4)).unwrap();
+    // Duplicate: 40 points right and down of the original.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run();
+    let copy = nodes_of(&h, "source.text").into_iter().find(|n| n.id != chain_id(4) && n.id != chain_id(1)).unwrap();
+    assert_eq!((copy.pos.x - original.pos.x, copy.pos.y - original.pos.y), (40.0, 40.0));
+    // Paste: the card's centre lands on the pointer.
+    h.event(egui::Event::Copy);
+    h.step();
+    let text = copied(&h).unwrap();
+    h.run();
+    let at = Pos2::new(800.0, 600.0);
+    h.hover_at(at);
+    h.event(egui::Event::Paste(text.clone()));
+    h.run();
+    let pasted = h.state().selection.nodes().iter().next().copied().unwrap();
+    let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&pasted).unwrap().clone();
+    let world = h.state().view.to_world(h.state().viewport.min, at);
+    assert!((node.pos.x + t.card_width / 2.0 - world.x).abs() < 0.5);
+    assert!((node.pos.y + t.card_min_height / 2.0 - world.y).abs() < 0.5);
+    // A NodeCraft copy this version can't read gives a notice, not a Text node full of JSON.
+    let before = h.state().session.document().clone();
+    h.event(egui::Event::Paste(text.replace("\"version\":1", "\"version\":9")));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Can't paste these nodes")));
+}
+
+#[test]
+fn cut_with_a_stale_selection_still_removes_what_remains() {
+    let mut h = chain_harness();
+    press_card(&mut h, 3, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 4, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    // Node 3 disappears behind the selection's back (e.g. undo in another view).
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": chain_id(3)})).unwrap();
+    h.event(egui::Event::Cut);
+    h.run();
+    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(!h.state().session.document().canvases().get(&canvas).unwrap().nodes().contains_key(&chain_id(4)));
+}
+
+#[test]
+fn copies_that_could_not_paste_back_are_refused_and_cut_keeps_them() {
+    let mut h = chain_harness();
+    let canvas = h.state().canvas;
+    // Two Text nodes with 600 KiB prompts: fine in the graph, too big for one paste command.
+    for n in [1u8, 4] {
+        let value = json!({"type": "text", "value": "x".repeat(600 * 1024)});
+        h.state_mut().session.dispatch("node.param_set", &json!({"canvas": canvas, "id": chain_id(n), "name": "text", "value": value})).unwrap();
+    }
+    h.run();
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 4, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    let before = h.state().session.document().clone();
+    h.event(egui::Event::Cut);
+    h.step();
+    assert!(copied(&h).is_none());
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("too large to copy")));
+}
+
+#[test]
+fn oversized_and_foreign_media_pastes_are_refused() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    h.hover_at(Pos2::new(800.0, 600.0));
+    h.event(egui::Event::Paste("x".repeat(clipboard::MAX_BYTES + 1)));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("16 MiB")));
+    // An Image node referencing an asset, copied from another project.
+    let mut image = h.state().session.kinds().get("source.image").unwrap().descriptor().instantiate(NodeId::from_bytes([9; 16]), &BTreeMap::new()).unwrap();
+    let asset = nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([1; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+    image.params.insert("asset".into(), Value::Media(asset));
+    let foreign = clipboard::Payload {
+        format: clipboard::FORMAT.into(),
+        version: clipboard::VERSION,
+        project: Some(ProjectId::from_bytes([77; 16])),
+        nodes: vec![image.clone()],
+        edges: vec![],
+    };
+    h.event(egui::Event::Paste(clipboard::to_text(&foreign).unwrap()));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("another project")));
+    // From this project, the same node pastes.
+    let local = clipboard::Payload { project: Some(h.state().session.document().id()), ..foreign };
+    h.event(egui::Event::Paste(clipboard::to_text(&local).unwrap()));
+    h.run();
+    assert_eq!(nodes_of(&h, "source.image").len(), 1);
+}
+
+#[test]
+fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
+    let mut h = harness();
+    h.get_by_role_and_label(Role::Button, "API keys").click();
+    h.run();
+    assert!(h.state().keys.open);
+    let before = h.state().session.document().clone();
+    // The key field isn't focused yet: the paste must not become a Text node.
+    h.hover_at(Pos2::new(400.0, 300.0));
+    h.event(egui::Event::Paste("sk-proj-not-a-real-key-1234".into()));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // Copy and cut are held back too.
+    h.event(egui::Event::Copy);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}

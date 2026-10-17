@@ -15,6 +15,7 @@ nodecraft-engine = { workspace = true }
 nodecraft-graph.workspace = true
 nodecraft-types.workspace = true
 nodecraft-nodes.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
 eframe = { workspace = true, features = ["wgpu", "accesskit"] }

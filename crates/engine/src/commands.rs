@@ -125,6 +125,7 @@ impl Registry {
             .chain(crate::stale_cmds::specs())
             .chain(crate::navigation_cmds::specs())
             .chain(crate::create_cmds::specs())
+            .chain(crate::clipboard_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -180,8 +181,9 @@ impl<'a> JsonItems<'a> {
 }
 
 /// Also protects callers that construct JSON values programmatically instead of using a
-/// text decoder. The iterator stack is bounded by nesting depth, not array width.
-pub(crate) fn validate_json(root: &Value) -> Result<(), Error> {
+/// text decoder. The iterator stack is bounded by nesting depth, not array width. Public so a
+/// frontend can check parameters it will send later (e.g. a copy that must paste back).
+pub fn validate_json(root: &Value) -> Result<(), Error> {
     const MAX_ITEMS: usize = 16_384;
     const MAX_BYTES: usize = 1024 * 1024;
     let mut stack = vec![JsonItems::Root(Some(root).into_iter())];

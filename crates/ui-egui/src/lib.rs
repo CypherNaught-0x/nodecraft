@@ -7,6 +7,7 @@
 pub mod app;
 pub mod canvas;
 pub mod card;
+pub mod clipboard;
 pub mod ids;
 pub mod keys;
 pub mod navigation;
