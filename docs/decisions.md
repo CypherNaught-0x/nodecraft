@@ -464,3 +464,21 @@ a choice a later contributor might otherwise undo.
   loads rather than under-quoted later.
 - **`catalog-check` is an integration test** of `nodecraft-catalog` that `cargo xtask
   catalog-check` runs, so xtask stays std-only and `cargo test` covers it too.
+
+## 2026-10-17 · Cost quotes and budgets (#76)
+
+- **Pricing lives in `cost::quote`.** A node is paid when its kind has a model parameter
+  (`ParamControl::Model`); its price is the sum of the catalog models its model parameters name
+  (each priced from its own parameters via `model_params`, which provider requests must use too)
+  times the jobs the step plans. A paid step whose jobs are planned later is quoted as one job and
+  flagged as an estimate (`Quote::estimated`, so the total is not "complete"); the driver checks
+  budgets again before each job (#207). Kinds without a model parameter
+  (sources, local actions) are free. Totals are kept per currency and never converted.
+- **Caps are conservative.** A capped run is blocked when any step's price is unknown (no model,
+  model not in the catalog, usage-based pricing without a count) or is in a different currency
+  from the cap; spend in other currencies doesn't count towards a cap. The per-call cap applies
+  to each job; session and project caps to what was already spent plus the run. Amounts equal to
+  a cap are allowed, and a run that costs nothing is never blocked.
+- **The usage log counts a charge once per provider and idempotency key** (empty keys are refused), keeps the
+  newest 100,000 entries while folding evicted spend into running totals so caps never loosen,
+  tracks sessions by id, and exports CSV that spreadsheets can't read as formulas.
