@@ -30,7 +30,7 @@ fn scalar_values_and_config_only_nested_media_survive_archive_and_recovery() {
     assert_eq!(after.assets.validate_project(&after.project).unwrap(), BTreeSet::from([hash]));
     assert_eq!(assets_in_changes(&changes).unwrap(), BTreeSet::from([hash]));
     assert_eq!(assets_in_changes(&Changeset::new(vec![Change::SetNode { canvas, node: node.clone() }])).unwrap(), BTreeSet::from([hash]));
-    assert_eq!(assets_in_changes(&Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![] }])).unwrap(), BTreeSet::from([hash]));
+    assert_eq!(assets_in_changes(&Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![], pins: vec![] }])).unwrap(), BTreeSet::from([hash]));
     let loaded = decode(&encode(&after).unwrap()).unwrap();
     assert_eq!(loaded, after);
     let mut journal_bytes = checkpoint.bytes;

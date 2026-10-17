@@ -17,6 +17,7 @@ impl Registry {
         for kind in [crate::text::kind(), crate::image::kind(), crate::video::kind(), crate::audio::kind()] {
             registry.register(Box::new(kind))?;
         }
+        registry.register(Box::new(crate::note::kind()))?;
         Ok(registry)
     }
 

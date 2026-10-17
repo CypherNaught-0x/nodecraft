@@ -28,6 +28,8 @@ impl NodeCraftApp {
                 || (self.text_focused && !own_focus && !self.search_focused)
                 || self.drag.is_some()
                 || self.marquee.is_some()
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
                 || ctx.dragged_id().is_some()
                 || self.navigation.pointer_owned,
             open: self.search.open,
@@ -242,7 +244,8 @@ impl NodeCraftApp {
         if self.search.open && (was_scanning || self.search.scanning) {
             ctx.request_repaint();
         }
-        let gesture = self.drag.is_some() || self.marquee.is_some() || ctx.dragged_id().is_some();
+        let gesture =
+            self.drag.is_some() || self.marquee.is_some() || self.comments.drag.is_some() || self.comments.gesture_cancelled || ctx.dragged_id().is_some();
         !gesture && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| rect.contains(p)))
     }
 }

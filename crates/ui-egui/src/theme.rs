@@ -39,6 +39,10 @@ pub struct Tokens {
     /// Translucent fill of the box-select rectangle (outlined with `accent`).
     pub marquee_fill: Color32,
 
+    pub comments_width: f32,
+    pub comments_height: f32,
+    pub comment_marker_size: f32,
+    pub comments_button_width: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
@@ -92,6 +96,10 @@ pub const DARK: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
+    comments_width: 340.0,
+    comments_height: 500.0,
+    comment_marker_size: 30.0,
+    comments_button_width: 110.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,

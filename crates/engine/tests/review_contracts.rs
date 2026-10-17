@@ -118,7 +118,14 @@ fn replace_comment(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Edit {
         changes: Changeset::new(vec![Change::PutComment {
             canvas: canvas(),
-            comment: Comment { id: CommentId::from_bytes([4; 16]), text: value.as_str().unwrap().repeat(1024 * 1024), pos: Position::default() },
+            comment: Comment {
+                id: CommentId::from_bytes([4; 16]),
+                text: value.as_str().unwrap().repeat(1024 * 1024),
+                pos: Position::default(),
+                node: None,
+                replies: vec![],
+                resolved: false,
+            },
         }]),
         result: Value::Null,
         gesture: None,
@@ -127,9 +134,19 @@ fn replace_comment(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 #[test]
 fn aggregate_history_byte_budget_evicts_oldest_complete_steps() {
     let mut original = project();
-    Change::PutComment { canvas: canvas(), comment: Comment { id: CommentId::from_bytes([4; 16]), text: "a".repeat(1024 * 1024), pos: Position::default() } }
-        .apply(&mut original)
-        .unwrap();
+    Change::PutComment {
+        canvas: canvas(),
+        comment: Comment {
+            id: CommentId::from_bytes([4; 16]),
+            text: "a".repeat(1024 * 1024),
+            pos: Position::default(),
+            node: None,
+            replies: vec![],
+            resolved: false,
+        },
+    }
+    .apply(&mut original)
+    .unwrap();
     let mut registry = registry();
     let spec = *registry.get("test.service_1").unwrap();
     registry.register(CommandSpec { id: "test.comment", run: replace_comment, ..spec }).unwrap();

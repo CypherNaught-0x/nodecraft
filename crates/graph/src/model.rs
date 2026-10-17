@@ -103,11 +103,59 @@ pub struct Tag {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommentReply {
+    pub id: CommentId,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommentPin {
+    pub id: CommentId,
+    pub offset: Position,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: CommentId,
     pub text: String,
     #[serde(default)]
     pub pos: Position,
+    /// None: canvas position. Some: offset from that node's body origin.
+    #[serde(default)]
+    pub node: Option<NodeId>,
+    #[serde(default)]
+    pub replies: Vec<CommentReply>,
+    #[serde(default)]
+    pub resolved: bool,
+}
+
+impl Comment {
+    pub fn new(id: CommentId, text: impl Into<String>, pos: Position) -> Self {
+        Self { id, text: text.into(), pos, node: None, replies: Vec::new(), resolved: false }
+    }
+
+    pub fn validate_payload(&self) -> Result<(), Error> {
+        crate::validate::comment(self)
+    }
+
+    /// Resolve using stored node coordinates, independently of view/theme/schema geometry.
+    pub fn world_position(&self, canvas: &Canvas) -> Result<Position, Error> {
+        match self.node {
+            None => {
+                crate::validate::position(self.pos)?;
+                Ok(self.pos)
+            }
+            Some(id) => {
+                let node = canvas.nodes.get(&id).ok_or_else(|| crate::validate::invalid("comment anchor node is missing"))?;
+                let x = f64::from(node.pos.x) + f64::from(self.pos.x);
+                let y = f64::from(node.pos.y) + f64::from(self.pos.y);
+                if !x.is_finite() || !y.is_finite() || x.abs() > 10_000_000.0 || y.abs() > 10_000_000.0 {
+                    return Err(crate::validate::invalid("comment anchor exceeds canvas bounds"));
+                }
+                Ok(Position { x: x as f32, y: y as f32 })
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
