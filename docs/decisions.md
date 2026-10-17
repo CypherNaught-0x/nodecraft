@@ -25,6 +25,24 @@ a choice a later contributor might otherwise undo.
   that finished despite the request counts as done. A panicking runner fails its job instead of
   stalling the queue.
 
+## 2026-10-17 · Programmatic ComfyUI JSON boundaries (#155)
+
+- `ApiWorkflow::to_json`, `PromptRequest::to_json` and `discover` are fallible. Library
+  conversion, input checking, mutation and discovery validate borrowed JSON before recursive
+  copying or serialization: maximum depth 64 (root depth zero), 100,000 values plus object keys,
+  and 32 MiB of encoded JSON including escaped strings, keys and outgoing envelope metadata.
+  One iterative iterator stack uses at most 65 frames, regardless of array/object width.
+- Conversion fan-out, repeated discovery metadata and check-report context share aggregate
+  output budgets before retained copies. Accepted JSON is preserved; limits return value-free
+  errors. Input mismatch errors report types rather than arbitrary JSON or selected secrets.
+  Rejected owned `set_input` values are disposed of iteratively, and mutation validates the
+  prospective aggregate before changing the workflow.
+- The public structs still expose caller-owned `serde_json::Value`. Calling raw derived
+  `Clone`/`PartialEq`, formatting raw Values, or dropping caller-built excessively deep trees is
+  the caller's responsibility; the guards protect the library entry points, not those external
+  operations. Callers constructing hostile fixtures must dismantle them iteratively too.
+  WebSocket progress/output retention (`files_in`) is a separate boundary and follow-up.
+
 ## 2026-10-17 · Paused run-driver shutdown (#150)
 
 - Dropping the last run-queue handle drains an unpaused queue normally, including dependencies

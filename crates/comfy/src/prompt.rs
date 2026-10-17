@@ -25,13 +25,7 @@ pub struct PromptRequest {
 
 impl std::fmt::Debug for PromptRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let keys: Vec<&String> = self.extra_data.keys().collect();
-        f.debug_struct("PromptRequest")
-            .field("workflow", &self.workflow)
-            .field("client_id", &self.client_id)
-            .field("prompt_id", &self.prompt_id)
-            .field("extra_data_keys", &keys)
-            .finish()
+        f.debug_struct("PromptRequest").field("workflow_nodes", &self.workflow.nodes.len()).field("extra_data_entries", &self.extra_data.len()).finish()
     }
 }
 
@@ -40,9 +34,29 @@ impl PromptRequest {
         Self { workflow, client_id: client_id.into(), prompt_id: None, extra_data: Map::new() }
     }
 
-    pub fn to_json(&self) -> Value {
+    /// Builds the wire envelope after validating workflow, extra data and metadata together.
+    /// Returns an error when the shared JSON depth/item/byte limits are exceeded.
+    pub fn to_json(&self) -> Result<Value, ComfyError> {
+        let mut budget = crate::json_bounds::Budget::default();
+        budget.container(2 + usize::from(self.prompt_id.is_some()) + usize::from(!self.extra_data.is_empty()), 0)?;
+        budget.key("prompt", 1)?;
+        self.workflow.validate_budget(&mut budget, 1)?;
+        budget.key("client_id", 1)?;
+        budget.text(&self.client_id, 1)?;
+        if let Some(id) = &self.prompt_id {
+            budget.key("prompt_id", 1)?;
+            budget.text(id, 1)?;
+        }
+        if !self.extra_data.is_empty() {
+            budget.key("extra_data", 1)?;
+            budget.container(self.extra_data.len(), 1)?;
+            for (key, value) in &self.extra_data {
+                budget.key(key, 2)?;
+                budget.value(value, 2)?;
+            }
+        }
         let mut body = Map::new();
-        body.insert("prompt".into(), self.workflow.to_json());
+        body.insert("prompt".into(), self.workflow.to_json_validated());
         body.insert("client_id".into(), Value::String(self.client_id.clone()));
         if let Some(id) = &self.prompt_id {
             body.insert("prompt_id".into(), Value::String(id.clone()));
@@ -50,7 +64,7 @@ impl PromptRequest {
         if !self.extra_data.is_empty() {
             body.insert("extra_data".into(), Value::Object(self.extra_data.clone()));
         }
-        Value::Object(body)
+        Ok(Value::Object(body))
     }
 }
 
@@ -131,16 +145,16 @@ mod tests {
     fn request_body() {
         let wf = ApiWorkflow::parse(fixtures::API_WORKFLOW.as_bytes(), None).unwrap();
         let mut req = PromptRequest::new(wf.clone(), "client-1");
-        let body = req.to_json();
+        let body = req.to_json().unwrap();
         assert_eq!(body["client_id"], "client-1");
-        assert_eq!(body["prompt"], wf.to_json());
+        assert_eq!(body["prompt"], wf.to_json().unwrap());
         assert!(body.get("extra_data").is_none());
         req.extra_data.insert("k".into(), Value::Bool(true));
-        assert_eq!(req.to_json()["extra_data"]["k"], true);
+        assert_eq!(req.to_json().unwrap()["extra_data"]["k"], true);
         req.extra_data.insert("api_key_comfy_org".into(), Value::String("sk-secret".into()));
         assert!(!format!("{req:?}").contains("sk-secret"));
         req.prompt_id = Some("nodecraft:run:7".into());
-        assert_eq!(req.to_json()["prompt_id"], "nodecraft:run:7");
+        assert_eq!(req.to_json().unwrap()["prompt_id"], "nodecraft:run:7");
         let http = crate::Server::new("http://h:8188").unwrap().prompt(&req).unwrap();
         assert_eq!(http.url.as_str(), "http://h:8188/prompt");
     }
