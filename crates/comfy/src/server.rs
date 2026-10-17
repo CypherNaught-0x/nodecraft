@@ -18,8 +18,8 @@ pub struct Server {
 
 impl fmt::Debug for Server {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Never print the auth header value.
-        f.debug_struct("Server").field("base", &self.base.as_str()).field("auth", &self.auth.as_ref().map(|(name, _)| name)).finish()
+        // A reverse-proxy path can contain credentials too; retain only the origin.
+        f.debug_struct("Server").field("origin", &self.base.origin().ascii_serialization()).field("auth", &self.auth.as_ref().map(|(name, _)| name)).finish()
     }
 }
 
@@ -31,7 +31,7 @@ pub enum Method {
 }
 
 /// The body of a [`Request`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Body {
     Empty,
     Json(Vec<u8>),
@@ -40,6 +40,17 @@ pub enum Body {
         boundary: String,
         bytes: Vec<u8>,
     },
+}
+
+impl fmt::Debug for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Prompts may carry account credentials; uploads may contain private media.
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Json(bytes) => f.debug_struct("Json").field("byte_len", &bytes.len()).finish(),
+            Self::Multipart { bytes, .. } => f.debug_struct("Multipart").field("byte_len", &bytes.len()).finish(),
+        }
+    }
 }
 
 /// An HTTP request ready to send.
@@ -59,7 +70,10 @@ pub struct Request {
 impl fmt::Debug for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
-        f.debug_struct("Request").field("method", &self.method).field("url", &self.url.as_str()).field("headers", &names).field("body", &self.body).finish()
+        // Public Requests can bypass Server's URL validation. Even paths may contain
+        // credentials, so diagnostics retain only the origin (scheme, host and port).
+        let origin = self.url.origin().ascii_serialization();
+        f.debug_struct("Request").field("method", &self.method).field("origin", &origin).field("headers", &names).field("body", &self.body).finish()
     }
 }
 
@@ -321,6 +335,92 @@ mod tests {
         assert!(!format!("{s:?}{r:?}").contains("s3cret"));
         assert!(server().with_auth_header("X-Key", "a\r\nInjected: 1").is_err());
         assert!(server().with_auth_header("Bad Name", "v").is_err());
+    }
+
+    fn assert_private_debug(value: &impl fmt::Debug, secrets: &[&[u8]]) {
+        for output in [format!("{value:?}"), format!("{value:#?}")] {
+            for secret in secrets {
+                assert!(!output.contains(String::from_utf8_lossy(secret).as_ref()), "{output}");
+                // Derived Vec<u8> Debug is recoverable in compact and pretty forms.
+                let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+                let decimal = secret.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
+                assert!(!compact.contains(&decimal), "{output}");
+            }
+        }
+    }
+
+    #[test]
+    fn server_debug_omits_private_base_path_without_changing_requests() {
+        let server = Server::new("https://example.com:8443/fabricated-private-base-path")
+            .unwrap()
+            .with_auth_header("X-API-Key", "fabricated-private-auth-value")
+            .unwrap();
+        let base = server.base_url().clone();
+        let request = server.object_info().unwrap();
+        assert_private_debug(&server, &[b"fabricated-private-base-path", b"fabricated-private-auth-value"]);
+        for output in [format!("{server:?}"), format!("{server:#?}")] {
+            assert!(output.contains("https://example.com:8443") && output.contains("X-API-Key"));
+        }
+        assert_eq!(server.base_url(), &base);
+        assert_eq!(base.as_str(), "https://example.com:8443/fabricated-private-base-path/");
+        assert_eq!(server.object_info().unwrap(), request);
+        assert_eq!(request.url.as_str(), "https://example.com:8443/fabricated-private-base-path/object_info");
+        assert_eq!(request.headers, vec![("X-API-Key".into(), "fabricated-private-auth-value".into())]);
+    }
+
+    #[test]
+    fn prompt_debug_redacts_credentials_without_changing_transport() {
+        let workflow = crate::ApiWorkflow::parse(crate::fixtures::API_WORKFLOW.as_bytes(), None).unwrap();
+        let mut prompt = crate::PromptRequest::new(workflow, "client-1");
+        let secret = "fabricated-comfy-account-secret";
+        prompt.extra_data.insert("api_key_comfy_org".into(), serde_json::json!(secret));
+        let request = server().with_auth_header("Authorization", "fabricated-header-secret").unwrap().prompt(&prompt).unwrap();
+        let original = request.clone();
+        assert_private_debug(&request.body, &[secret.as_bytes()]);
+        assert_private_debug(&request, &[secret.as_bytes(), b"fabricated-header-secret"]);
+        let output = format!("{request:?}");
+        assert!(output.contains("Post") && output.contains("http://127.0.0.1:8188") && output.contains("Authorization"));
+        let expected = serde_json::to_vec(&prompt.to_json()).unwrap();
+        assert!(output.contains(&format!("Json {{ byte_len: {} }}", expected.len())));
+        assert_eq!(request, original);
+        assert_eq!(request.body, Body::Json(expected));
+        assert_eq!(request.content_type().as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn multipart_debug_redacts_upload_and_boundary_without_changing_transport() {
+        let payload = b"fabricated-private-image-content";
+        let request = server().upload_image("private.png", payload, UploadKind::Input, false).unwrap();
+        let original = request.clone();
+        let Body::Multipart { boundary, bytes } = &request.body else { panic!("not multipart") };
+        assert_private_debug(&request.body, &[payload, boundary.as_bytes(), b"private.png"]);
+        assert_private_debug(&request, &[payload, boundary.as_bytes(), b"private.png"]);
+        assert!(format!("{request:?}").contains(&format!("Multipart {{ byte_len: {} }}", bytes.len())));
+        assert!(bytes.windows(payload.len()).any(|w| w == payload));
+        assert_eq!(request.content_type().unwrap(), format!("multipart/form-data; boundary={boundary}"));
+        assert_eq!(request, original);
+        // A caller-supplied boundary is private too, even when it is not a generated hash.
+        let custom = Body::Multipart { boundary: "fabricated-boundary-secret".into(), bytes: payload.to_vec() };
+        assert_private_debug(&custom, &[payload, b"fabricated-boundary-secret"]);
+        assert_eq!(format!("{:?}", Body::Empty), "Empty");
+    }
+
+    #[test]
+    fn public_request_debug_omits_url_credentials_query_and_fragment() {
+        let request = Request {
+            method: Method::Get,
+            url: Url::parse("https://private-user:private-password@example.com:8443/private-path?token=private-query#private-fragment").unwrap(),
+            headers: vec![("X-API-Key".into(), "private-header".into())],
+            body: Body::Empty,
+        };
+        let original = request.clone();
+        assert_private_debug(&request, &[b"private-user", b"private-password", b"private-query", b"private-fragment", b"private-path", b"private-header"]);
+        for output in [format!("{request:?}"), format!("{request:#?}")] {
+            assert!(output.contains("https://example.com:8443"));
+            assert!(output.contains("Get") && output.contains("X-API-Key"));
+        }
+        assert_eq!(request, original);
+        assert_eq!(request.content_type(), None);
     }
 
     #[test]
