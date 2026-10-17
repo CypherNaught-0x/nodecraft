@@ -365,7 +365,8 @@ fn finished(entry: &HistoryEntry) -> Result<Vec<FileRef>, ProviderError> {
         // Out of memory is worth retrying once the GPU frees up; other workflow errors would just
         // fail (and maybe cost) again.
         let lower = error.to_ascii_lowercase();
-        let kind = if lower.contains("out of memory") || lower.contains("oom") { ErrorKind::Server } else { ErrorKind::JobFailed };
+        let oom = lower.contains("out of memory") || lower.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == "oom");
+        let kind = if oom { ErrorKind::Server } else { ErrorKind::JobFailed };
         return Err(ProviderError::new(kind, format!("{error}{at}")));
     }
     if !entry.completed {
