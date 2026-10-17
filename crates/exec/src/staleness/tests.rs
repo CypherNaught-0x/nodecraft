@@ -224,6 +224,11 @@ fn configuration_counts_and_nodes_their_kind_rejects_are_unknown() {
     Change::SetNode { canvas: C, node: bad }.apply(&mut q).unwrap();
     assert!(input_hash(q.canvases().get(&C).unwrap(), &kinds(), id(3)).is_err());
     assert!(stale_of(&q).is_empty());
+    let canvas = q.canvases().get(&C).unwrap();
+    let kinds = kinds();
+    let mut hasher = InputHasher::new(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
+    assert!(hasher.hash(canvas, &kinds, id(3), &BTreeMap::new()).unwrap().is_none());
+    assert!(hasher.hash(canvas, &kinds, id(2), &BTreeMap::new()).unwrap().is_some(), "a rejected node doesn't exhaust the shared meter");
 }
 
 /// Replaces node `n`'s active result outputs in place, keeping its id and recorded hash.
@@ -389,4 +394,400 @@ fn a_result_recorded_for_another_port_layout_counts_as_empty() {
         input_hash(q.canvases().get(&C).unwrap(), &kinds(), id(3)).unwrap()
     };
     assert_eq!(input_hash(p.canvases().get(&C).unwrap(), &kinds(), id(3)).unwrap(), empty);
+}
+
+#[test]
+fn omitted_large_defaults_are_charged_for_every_distinct_node_before_resolution() {
+    let descriptor = NodeDescriptor {
+        id: "test.large_default".into(),
+        label: "Large default".into(),
+        category: Category::Generation,
+        inputs: vec![],
+        outputs: vec![],
+        quick_add: None,
+        params: ParamSchema {
+            params: vec![ParamSpec {
+                name: "prompt".into(),
+                label: "Prompt".into(),
+                description: None,
+                control: ParamControl::Text { multiline: true, max_bytes: 1_000_000 },
+                required: false,
+                default: Some(Value::Text("x".repeat(600_000))),
+                visible_if: None,
+            }],
+        },
+    };
+    descriptor.validate().unwrap();
+    let mut kinds = Registry::builtins().unwrap();
+    kinds.register(Box::new(Gen(descriptor))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([2; 16]), "Omitted defaults").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut p).unwrap();
+    for n in [10, 11] {
+        let node = Node::new(id(n), "test.large_default");
+        assert!(node.params.is_empty());
+        Change::AddNode { canvas: C, node }.apply(&mut p).unwrap();
+        stamp(&mut p, &kinds, n);
+    }
+    let before = p.clone();
+    let canvas = p.canvases().get(&C).unwrap();
+    let mut query = InputHasher::new(canvas, &kinds, 1_000_000).unwrap();
+    query.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap().unwrap();
+    assert!(query.meter.hashed >= 600_000 && query.meter.hashed < 601_000);
+    assert_eq!(query.hash(canvas, &kinds, id(11), &BTreeMap::new()).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert!(!query.recipes.contains_key(&id(11)), "second default must be refused before resolving/hashing its recipe");
+    let error = stale_within(canvas, &kinds, 1_000_000).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert_eq!(p, before, "budget refusal is read-only");
+}
+
+#[test]
+fn effective_default_and_stored_payloads_have_identical_hashes_and_admission_boundaries() {
+    use nodecraft_types::{AssetRef, MediaMeta, Unsigned};
+    for (control, value) in [
+        (ParamControl::Text { multiline: true, max_bytes: 1_000_000 }, Value::Text("x".repeat(600_000))),
+        (ParamControl::Unsigned { min: None, max: None, step: Unsigned(1) }, Value::Unsigned(Unsigned(u64::MAX))),
+        (
+            ParamControl::Asset { modality: Modality::Image },
+            Value::Media(AssetRef {
+                hash: Blake3::from_bytes([0xff; 32]),
+                mime: "image/png; comment=\"long quoted MIME\"".parse().unwrap(),
+                meta: MediaMeta {
+                    width: Some(u32::MAX),
+                    height: Some(u32::MAX),
+                    duration_ms: Some(u64::MAX),
+                    sample_rate: Some(u32::MAX),
+                    channels: Some(u16::MAX),
+                    page_count: Some(u32::MAX),
+                },
+            }),
+        ),
+    ] {
+        let mut kinds = Registry::builtins().unwrap();
+        kinds
+            .register(Box::new(Gen(NodeDescriptor {
+                id: "test.default".into(),
+                label: "Default".into(),
+                category: Category::Generation,
+                inputs: vec![],
+                outputs: vec![],
+                quick_add: None,
+                params: ParamSchema {
+                    params: vec![ParamSpec {
+                        name: "value".into(),
+                        label: "Value".into(),
+                        description: None,
+                        control,
+                        required: false,
+                        default: Some(value.clone()),
+                        visible_if: None,
+                    }],
+                },
+            })))
+            .unwrap();
+        let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Admission").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+        let mut omitted = Node::new(id(10), "test.default");
+        omitted.config.insert("configuration".into(), Value::List(vec![value.clone(), Value::Bool(true)]));
+        let mut stored = omitted.clone();
+        stored.id = id(11);
+        stored.params.insert("value".into(), value.clone());
+        Changeset::new(vec![Change::AddNode { canvas: C, node: omitted }, Change::AddNode { canvas: C, node: stored }]).apply(&mut project).unwrap();
+        let canvas = project.canvases().get(&C).unwrap();
+        let mut query = InputHasher::new(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
+        let omitted_hash = query.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap().unwrap();
+        let required = query.meter.hashed;
+        assert_eq!(query.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap().unwrap(), omitted_hash);
+        assert_eq!(query.meter.hashed, required, "memoized recipes aren't charged twice");
+        let mut exact = InputHasher::new(canvas, &kinds, required).unwrap();
+        assert_eq!(exact.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap().unwrap(), omitted_hash);
+        assert_eq!(exact.meter.left, 0);
+        assert_eq!(exact.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap().unwrap(), omitted_hash, "successful exact admission permits memoized reuse");
+        assert_eq!(
+            InputHasher::new(canvas, &kinds, required - 1).unwrap().hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
+        let mut stored_query = InputHasher::new(canvas, &kinds, required).unwrap();
+        assert_eq!(
+            stored_query.hash(canvas, &kinds, id(11), &BTreeMap::new()).unwrap().unwrap(),
+            omitted_hash,
+            "stored/default representation doesn't change v2 identity"
+        );
+        assert_eq!(stored_query.meter.hashed, required, "same effective payload is admitted once in either representation");
+    }
+}
+
+#[test]
+fn scalar_and_media_reservations_cover_json_before_serialization_and_keep_v2_bytes() {
+    use nodecraft_types::{AssetRef, Integer, MediaMeta, Number, Unsigned};
+    let values = [
+        Value::Bool(false),
+        Value::Integer(Integer(i64::MIN)),
+        Value::Unsigned(Unsigned(u64::MAX)),
+        Value::Number(Number::new(f64::MAX).unwrap()),
+        Value::Media(AssetRef {
+            hash: Blake3::from_bytes([0xff; 32]),
+            mime: format!("image/png; x=\"{}\"", "a".repeat(900)).parse().unwrap(),
+            meta: MediaMeta {
+                width: Some(u32::MAX),
+                height: Some(u32::MAX),
+                duration_ms: Some(u64::MAX),
+                sample_rate: Some(u32::MAX),
+                channels: Some(u16::MAX),
+                page_count: Some(u32::MAX),
+            },
+        }),
+    ];
+    for value in values {
+        let json = serde_json::to_vec(&value).unwrap();
+        let mut meter = Meter { left: MAX_QUERY_BYTES, hashed: 0, refused: false };
+        charge_value(&mut meter, &value).unwrap();
+        assert!(meter.hashed >= VALUE_COST + json.len(), "scalar/media reservation must cover actual encoded payload");
+        let mut writer = Writer::new();
+        writer.value(&value, Some(&mut Meter { left: meter.hashed, hashed: 0, refused: false })).unwrap();
+        let mut legacy = Writer::new();
+        legacy.text("v");
+        legacy.bytes(&json);
+        assert_eq!(writer.finish(), legacy.finish(), "scalar/media v2 encoding is unchanged");
+        let mut insufficient = Meter { left: meter.hashed - 1, hashed: 0, refused: false };
+        assert_eq!(Writer::new().value(&value, Some(&mut insufficient)).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+}
+
+struct Counted(Gen, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl NodeKind for Counted {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn instance<'a>(&'a self, _: &Node) -> Result<std::borrow::Cow<'a, NodeDescriptor>, Error> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(std::borrow::Cow::Borrowed(self.descriptor()))
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        self.0.plan(ctx)
+    }
+}
+
+fn counted_defaults() -> (Project, Registry, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let descriptor = NodeDescriptor {
+        id: "test.counted".into(),
+        label: "Counted".into(),
+        category: Category::Generation,
+        inputs: vec![],
+        outputs: vec![],
+        quick_add: None,
+        params: ParamSchema {
+            params: vec![ParamSpec {
+                name: "prompt".into(),
+                label: "Prompt".into(),
+                description: None,
+                control: ParamControl::Text { multiline: true, max_bytes: 1_000_000 },
+                required: false,
+                default: Some(Value::Text("x".repeat(600_000))),
+                visible_if: None,
+            }],
+        },
+    };
+    let mut kinds = Registry::builtins().unwrap();
+    kinds.register(Box::new(Counted(Gen(descriptor), calls.clone()))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([2; 16]), "Counted").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut p).unwrap();
+    for n in [10, 11, 12] {
+        Change::AddNode { canvas: C, node: Node::new(id(n), "test.counted") }.apply(&mut p).unwrap();
+    }
+    calls.store(0, std::sync::atomic::Ordering::SeqCst);
+    (p, kinds, calls)
+}
+
+#[test]
+fn public_budget_refusal_prepares_the_instance_only_once() {
+    let (p, kinds, calls) = counted_defaults();
+    let canvas = p.canvases().get(&C).unwrap();
+    assert_eq!(input_hash_within(canvas, &kinds, id(10), 550_000).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn shared_admission_refusal_stops_further_preparation_but_local_errors_do_not() {
+    let (p, kinds, calls) = counted_defaults();
+    let canvas = p.canvases().get(&C).unwrap();
+    let none = BTreeMap::new();
+    let mut hasher = InputHasher::new(canvas, &kinds, 1_000_000).unwrap();
+    assert_eq!(hasher.hash(canvas, &kinds, id(99), &none).unwrap_err().kind, ErrorKind::NotFound);
+    assert!(hasher.hash(canvas, &kinds, id(10), &none).unwrap().is_some());
+    assert!(hasher.hash(canvas, &kinds, id(11), &none).is_err());
+    // First: preflight plus authoritative default validation. Second: preflight only.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert!(hasher.hash(canvas, &kinds, id(12), &none).is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert!(hasher.hash(canvas, &kinds, id(10), &none).is_err());
+}
+
+#[test]
+fn feed_index_admission_has_an_exact_boundary() {
+    let p = project();
+    let kinds = kinds();
+    let canvas = p.canvases().get(&C).unwrap();
+    // Two resolved edges, each owning target "in" and upstream "out" names.
+    let cost = 2 * (VALUE_COST + "in".len() + "out".len());
+    assert_eq!(InputHasher::new(canvas, &kinds, cost).unwrap().hashed(), cost);
+    assert!(InputHasher::new(canvas, &kinds, cost - 1).is_err());
+    let mut hasher = InputHasher::new(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
+    let expected = hasher.hash(canvas, &kinds, id(2), &BTreeMap::new()).unwrap();
+    let required = hasher.hashed();
+    assert_eq!(InputHasher::new(canvas, &kinds, required).unwrap().hash(canvas, &kinds, id(2), &BTreeMap::new()).unwrap(), expected);
+    assert!(InputHasher::new(canvas, &kinds, required - 1).unwrap().hash(canvas, &kinds, id(2), &BTreeMap::new()).is_err());
+}
+
+struct Validated(Gen, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl NodeKind for Validated {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn validate_instance(&self, node: &Node, _: bool) -> Result<nodecraft_nodes::ResolvedParams, Error> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if node.config.contains_key("reject") {
+            return Err(Error::new(ErrorKind::InvalidInput, "custom configuration is incompatible"));
+        }
+        let value = if node.config.contains_key("large") { "x".repeat(600_000) } else { "authoritative".into() };
+        Ok(nodecraft_nodes::ResolvedParams {
+            values: [("effective".into(), Value::Text(value))].into_iter().collect(),
+            visible: ["effective".into()].into_iter().collect(),
+        })
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        self.validate_instance(ctx.node, true)?;
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn authoritative_custom_validation_controls_rejection_effective_values_and_budget() {
+    let mut kinds = kinds();
+    let descriptor = NodeDescriptor {
+        id: "test.validated".into(),
+        label: "Validated".into(),
+        category: Category::Generation,
+        inputs: vec![],
+        outputs: vec![],
+        quick_add: None,
+        params: ParamSchema::default(),
+    };
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    kinds.register(Box::new(Validated(Gen(descriptor.clone()), calls.clone()))).unwrap();
+    let mut p = project();
+    for n in [10, 11, 12] {
+        let mut node = Node::new(id(n), "test.validated");
+        node.params.insert("effective".into(), Value::Text("stored".into()));
+        if n == 10 {
+            node.config.insert("reject".into(), Value::Bool(true));
+        }
+        if n == 12 {
+            node.config.insert("large".into(), Value::Bool(true));
+        }
+        Change::AddNode { canvas: C, node }.apply(&mut p).unwrap();
+    }
+    let canvas = p.canvases().get(&C).unwrap();
+    let before = p.clone();
+    let rejected = input_hash(canvas, &kinds, id(10)).unwrap_err();
+    assert_eq!(rejected.message, "custom configuration is incompatible");
+    let mut hasher = InputHasher::new(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
+    assert!(hasher.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap().is_none());
+    let actual = hasher.hash(canvas, &kinds, id(11), &BTreeMap::new()).unwrap().unwrap();
+    let mut recipe = Writer::new();
+    recipe.text("test.validated");
+    recipe.params(&BTreeMap::new()).unwrap();
+    recipe.len(1);
+    recipe.param("effective", &Value::Text("authoritative".into())).unwrap();
+    let mut expected = Writer::new();
+    expected.digest(&recipe.finish());
+    assert_eq!(actual, Blake3::from_bytes(expected.finish()), "v2 hashes authoritative returned effective values");
+    let mut limited = InputHasher::new(canvas, &kinds, 550_000).unwrap();
+    assert!(limited.hash(canvas, &kinds, id(12), &BTreeMap::new()).is_err(), "returned hook payload must be admitted before hashing");
+    assert_eq!(p, before);
+    let mut defaulted = descriptor;
+    defaulted.params.params.push(ParamSpec {
+        name: "prompt".into(),
+        label: "Prompt".into(),
+        description: None,
+        control: ParamControl::Text { multiline: true, max_bytes: 1_000_000 },
+        required: false,
+        default: Some(Value::Text("x".repeat(600_000))),
+        visible_if: None,
+    });
+    let mut bounded = Registry::builtins().unwrap();
+    bounded.register(Box::new(Validated(Gen(defaulted), calls.clone()))).unwrap();
+    calls.store(0, std::sync::atomic::Ordering::SeqCst);
+    assert!(input_hash_within(canvas, &bounded, id(11), 550_000).is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "omitted default preflight refuses before custom validation");
+}
+
+#[test]
+fn maximal_omitted_schema_keeps_canonical_values_and_exact_admission() {
+    let mut descriptor = NodeDescriptor {
+        id: "test.max_defaults".into(),
+        label: "Max defaults".into(),
+        category: Category::Generation,
+        inputs: vec![],
+        outputs: vec![],
+        quick_add: None,
+        params: ParamSchema::default(),
+    };
+    let mut expected_values = BTreeMap::new();
+    // Every name/default and visibility key is counted once, independent of returned order.
+    let mut required = descriptor.id.len();
+    for n in 0..256 {
+        let name = format!("field{n:03}");
+        let text = format!("value{n:03}");
+        required += 2 * name.len() + VALUE_COST + text.len();
+        let value = Value::Text(text);
+        expected_values.insert(name.clone(), value.clone());
+        descriptor.params.params.push(ParamSpec {
+            name,
+            label: "Field".into(),
+            description: None,
+            control: ParamControl::Text { multiline: false, max_bytes: 100 },
+            required: false,
+            default: Some(value),
+            visible_if: None,
+        });
+    }
+    descriptor.validate().unwrap();
+    let mut kinds = Registry::builtins().unwrap();
+    kinds.register(Box::new(Gen(descriptor))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([2; 16]), "Max schema").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut p).unwrap();
+    Change::AddNode { canvas: C, node: Node::new(id(10), "test.max_defaults") }.apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let mut recipe = Writer::new();
+    recipe.text("test.max_defaults");
+    recipe.params(&BTreeMap::new()).unwrap();
+    recipe.params(&expected_values).unwrap();
+    let mut expected = Writer::new();
+    expected.digest(&recipe.finish());
+    let expected = Blake3::from_bytes(expected.finish());
+    let mut exact = InputHasher::new(canvas, &kinds, required).unwrap();
+    assert_eq!(exact.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap(), Some(expected));
+    assert_eq!(exact.hashed(), required);
+    assert!(InputHasher::new(canvas, &kinds, required - 1).unwrap().hash(canvas, &kinds, id(10), &BTreeMap::new()).is_err());
+    let mut node = canvas.nodes().get(&id(10)).unwrap().clone();
+    node.params.insert("field000".into(), Value::Text("override!".into()));
+    expected_values.insert("field000".into(), Value::Text("override!".into()));
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let mut recipe = Writer::new();
+    recipe.text("test.max_defaults");
+    recipe.params(&BTreeMap::new()).unwrap();
+    recipe.params(&expected_values).unwrap();
+    let mut expected = Writer::new();
+    expected.digest(&recipe.finish());
+    let mut exact = InputHasher::new(canvas, &kinds, required + 1).unwrap();
+    assert_eq!(exact.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap(), Some(Blake3::from_bytes(expected.finish())));
+    assert_eq!(exact.hashed(), required + 1, "stored override replaces, rather than adds to, the default reservation");
 }
