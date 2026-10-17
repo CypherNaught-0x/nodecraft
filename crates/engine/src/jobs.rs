@@ -89,8 +89,9 @@ struct Reserved {
 #[derive(Default)]
 struct State {
     jobs: HashMap<JobId, QueuedJob>,
-    /// Handles of jobs the provider accepted, by idempotency key, so retries resume them.
-    handles: HashMap<String, JobHandle>,
+    /// Handles of jobs a provider accepted, by provider and idempotency key, so retries resume
+    /// them, and a job moved to another provider never resumes the first one's handle (#228).
+    handles: HashMap<(String, String), JobHandle>,
     /// Open reservations of jobs that haven't settled.
     reserved: HashMap<JobId, Reserved>,
     /// Jobs inside `run` right now, and those asked to settle meanwhile (done when `run` ends).
@@ -198,7 +199,7 @@ impl Drop for RunGuard {
             let forget = s.forget_after.remove(&self.job);
             let reserved = if settle { s.reserved.remove(&self.job) } else { None };
             if forget && let Some(q) = s.jobs.remove(&self.job) {
-                s.handles.remove(&q.job.idempotency_key);
+                s.handles.remove(&(q.provider.id().to_owned(), q.job.idempotency_key));
             }
             (settle, reserved)
         };
@@ -247,14 +248,22 @@ impl ProviderRunner {
     }
 
     /// Registers the provider job behind a scheduler job; add it before scheduling the `JobId`.
+    /// Re-registering it on another provider drops the old provider's handle, which can never
+    /// be resumed by the new one.
     pub fn register(&self, id: JobId, job: QueuedJob) {
-        self.lock().jobs.insert(id, job);
+        let mut s = self.lock();
+        if let Some(old) = s.jobs.insert(id, job.clone())
+            && old.provider.id() != job.provider.id()
+        {
+            s.handles.remove(&(old.provider.id().to_owned(), old.job.idempotency_key));
+        }
     }
 
-    /// Restores handles saved before a restart (from `RunUpdate::Submitted`), keyed by
-    /// idempotency key, so those jobs are resumed rather than submitted again.
-    pub fn restore_handle(&self, idempotency_key: String, handle: JobHandle) {
-        self.lock().handles.insert(idempotency_key, handle);
+    /// Restores handles saved before a restart (from `RunUpdate::Submitted`), keyed by the
+    /// provider that issued them and the idempotency key, so those jobs are resumed rather than
+    /// submitted again.
+    pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) {
+        self.lock().handles.insert((provider.into(), idempotency_key), handle);
     }
 
     /// Drops a finished job's registration and handle (call when the scheduler forgets it).
@@ -267,7 +276,7 @@ impl ProviderRunner {
             return;
         }
         if let Some(q) = s.jobs.remove(&id) {
-            s.handles.remove(&q.job.idempotency_key);
+            s.handles.remove(&(q.provider.id().to_owned(), q.job.idempotency_key));
         }
     }
 
@@ -317,18 +326,21 @@ impl JobRunner for ProviderRunner {
         let budget = self.budget.clone();
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
-            let (queued, handle) = {
-                let s = lock();
-                (s.jobs.get(&start.job).cloned(), s.handles.get(&start.idempotency_key).cloned())
-            };
-            let Some(mut queued) = queued else {
+            let Some(mut queued) = lock().jobs.get(&start.job).cloned() else {
                 return Outcome::Failed { error: format!("{} has no provider job registered", start.job), transient: false };
             };
+            // Only a handle this job's current provider issued can be resumed.
+            let handle = lock().handles.get(&(queued.provider.id().to_owned(), start.idempotency_key.clone())).cloned();
             // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
             // step so `forget` finds the handle stored under it.
             queued.job.idempotency_key = start.idempotency_key.clone();
-            if let Some(registered) = lock().jobs.get_mut(&start.job) {
-                registered.job.idempotency_key = start.idempotency_key.clone();
+            {
+                let mut s = lock();
+                let old = s.jobs.get_mut(&start.job).map(|registered| std::mem::replace(&mut registered.job.idempotency_key, start.idempotency_key.clone()));
+                // Requeued under a new key: the old key's handle is done with.
+                if let Some(old) = old.filter(|old| *old != start.idempotency_key) {
+                    s.handles.remove(&(queued.provider.id().to_owned(), old));
+                }
             }
             let signal = TokenSignal(cancel);
             let job_id = start.job;
@@ -356,9 +368,8 @@ impl JobRunner for ProviderRunner {
                         close(budget, &old);
                         let mut s = lock();
                         s.reserved.remove(&job_id);
-                        if old.key != key {
-                            s.handles.remove(&old.key);
-                        }
+                        // The old attempt's handle is done with (a new key, or another provider).
+                        s.handles.remove(&(old.provider.clone(), old.key.clone()));
                     }
                     match reserve(budget, &provider_id, &key, price, handle.is_some()) {
                         Ok(Some(r)) => {
@@ -373,7 +384,7 @@ impl JobRunner for ProviderRunner {
                 let record = |update: RunUpdate| {
                     if let RunUpdate::Submitted(h) = &update {
                         let mut s = lock();
-                        s.handles.insert(key.clone(), h.clone());
+                        s.handles.insert((provider_id.clone(), key.clone()), h.clone());
                         if let Some(r) = s.reserved.get_mut(&job_id) {
                             r.maybe_billed = true;
                         }
@@ -388,10 +399,31 @@ impl JobRunner for ProviderRunner {
                     Ok(done) => {
                         let reserved = {
                             let mut s = lock();
-                            s.handles.remove(&start.idempotency_key);
+                            s.handles.remove(&(provider_id.clone(), start.idempotency_key.clone()));
                             s.jobs.remove(&job_id);
                             s.reserved.remove(&job_id)
                         };
+                        // A priced job with nothing reserved (its price unknown, uncapped): still
+                        // record what the provider reported, once per key (#228).
+                        if let (Some(budget), Some(price), None, Some(cost)) = (&budget, &queued.price, &reserved, done.usage.cost) {
+                            let entry = UsageEntry {
+                                at_ms: (budget.wall_clock_ms)(),
+                                session: budget.session.clone(),
+                                node: price.node,
+                                provider: provider_id.clone(),
+                                model: price.model.clone(),
+                                cost,
+                                idempotency_key: key.clone(),
+                                status: Charge::Actual,
+                            };
+                            // Already charged under this key as unresolved: the report settles it. A
+                            // report the log refuses (implausibly large) is left out rather than
+                            // failing a finished job.
+                            let mut log = lock_log(budget);
+                            if let Ok(false) = log.record(entry) {
+                                let _ = log.settle(&provider_id, &key, cost, Charge::Actual);
+                            }
+                        }
                         if let (Some(budget), Some(r)) = (&budget, reserved) {
                             // What the provider reported, else the estimate; a report in another
                             // currency can't settle it, so the estimate stands.
@@ -407,7 +439,7 @@ impl JobRunner for ProviderRunner {
                     Err(failure) => {
                         if failure.handle.is_none() || failure.finished || !failure.is_transient() {
                             // Nothing to resume: never accepted, ended by the provider, or over for good.
-                            lock().handles.remove(&start.idempotency_key);
+                            lock().handles.remove(&(provider_id.clone(), start.idempotency_key.clone()));
                         }
                         // A submit lost in transit (or answered with a garbled or "it ran" reply) may
                         // still have been accepted and billed; one cancelled before it was sent,
@@ -706,10 +738,132 @@ mod tests {
         let (runner, budget) = budgeted(Some(100_000));
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         runner.register(JobId(1), priced(provider.clone(), Some(900_000)));
-        runner.restore_handle("nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("flaky", "nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done, "already paid for");
         assert_eq!(provider.submits.load(Ordering::SeqCst), 0, "resumed, not resubmitted");
         assert_eq!(spent(&budget), 900_000);
+    }
+
+    #[test]
+    fn a_job_moved_to_another_provider_never_resumes_the_old_handle() {
+        // #228: A accepts the job, then polling fails transiently: its handle is kept for a retry.
+        let (runner, budget) = budgeted(Some(500_000));
+        let a = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 100 });
+        runner.register(JobId(1), priced(a.clone(), Some(300_000)));
+        assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        let polls = a.polls.load(Ordering::SeqCst);
+        // The same job and key, now on B (which can't resume anything): B submits afresh and is
+        // held to the cap, A's possibly billed attempt having been charged.
+        runner.register(JobId(1), priced(Arc::new(Reports(None)), Some(300_000)));
+        let Outcome::Failed { error, transient: false } = block_on(runner.run(job(1), CancelToken::default())) else { panic!("not refused") };
+        assert!(is_budget_refusal(&error), "{error}");
+        assert_eq!(a.polls.load(Ordering::SeqCst), polls, "A's handle wasn't polled by B");
+        assert_eq!(spent(&budget), 300_000, "A's attempt charged as unresolved");
+        // With room, B runs its own job.
+        *budget.budgets.lock().unwrap() = Budgets { session: Some(usd(1_000_000)), ..Budgets::default() };
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+        // A handle restored for one provider is never offered to another.
+        runner.register(JobId(2), priced(Arc::new(Reports(None)), Some(1)));
+        runner.restore_handle("flaky", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done, "submitted afresh, not resumed");
+    }
+
+    #[test]
+    fn a_reported_cost_is_recorded_once_for_a_job_with_no_estimate() {
+        // #228: no caps and no estimate, so nothing is reserved; the actual cost still counts.
+        let (runner, budget) = budgeted(None);
+        runner.register(JobId(1), priced(Arc::new(Reports(Some(usd(4_200)))), None));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+        runner.register(JobId(1), priced(Arc::new(Reports(Some(usd(4_200)))), None));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done, "a rerun under the same key");
+        let rows: Vec<(u64, Charge)> = budget.log.lock().unwrap().entries().map(|e| (e.cost.micros, e.status)).collect();
+        assert_eq!(rows, [(4_200, Charge::Actual)]);
+        // Resumed after a restart, with no estimate, reporting a cost: recorded too.
+        let resumed = Arc::new(ResumesWith(usd(900)));
+        runner.register(JobId(2), priced(resumed, None));
+        runner.restore_handle("resumes", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done);
+        assert_eq!(spent(&budget), 4_200 + 900);
+    }
+
+    #[test]
+    fn handles_left_by_a_provider_change_or_requeue_are_dropped_without_a_budget() {
+        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let a = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 100 });
+        runner.register(JobId(1), priced(a.clone(), None));
+        assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        assert_eq!(runner.lock().handles.len(), 1, "kept for a retry");
+        runner.register(JobId(1), priced(Arc::new(Reports(None)), None));
+        assert!(runner.lock().handles.is_empty(), "another provider can't resume it");
+        // A requeue under a new key drops the old key's handle too.
+        runner.register(JobId(2), priced(a, None));
+        assert!(matches!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        let requeued = Start { idempotency_key: "nodecraft:r2:2".into(), ..job(2) };
+        assert!(matches!(block_on(runner.run(requeued, CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        assert_eq!(runner.lock().handles.keys().map(|(_, k)| k.as_str()).collect::<Vec<_>>(), vec!["nodecraft:r2:2"]);
+    }
+
+    #[test]
+    fn a_later_reported_cost_settles_an_unresolved_charge() {
+        let (runner, budget) = budgeted(None);
+        let flip = Arc::new(FailsThenReports(AtomicU64::new(0), usd(120_000)));
+        runner.register(JobId(1), priced(flip.clone(), Some(300_000)));
+        assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        runner.settle(JobId(1));
+        assert_eq!(budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), vec![Charge::Unresolved]);
+        // A later run under the same provider and key gets through and reports what it cost.
+        runner.register(JobId(1), priced(flip, Some(300_000)));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+        let rows: Vec<(u64, Charge)> = budget.log.lock().unwrap().entries().map(|e| (e.cost.micros, e.status)).collect();
+        assert_eq!(rows, [(120_000, Charge::Actual)]);
+    }
+
+    /// Its first submit is lost (network); later ones finish at once, reporting `1`.
+    struct FailsThenReports(AtomicU64, Money);
+
+    impl Provider for FailsThenReports {
+        fn id(&self) -> &str {
+            "flip"
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+            let cost = self.1;
+            Box::pin(async move {
+                if first {
+                    Err(ProviderError::new(ErrorKind::Network, "reset"))
+                } else {
+                    let mut done = Completed::new(vec![Output::Text("ok".into())]);
+                    done.usage.cost = Some(cost);
+                    Ok(Submission::Finished(done))
+                }
+            })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            Box::pin(async { Err(ProviderError::new(ErrorKind::NotFound, "none")) })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// Finishes when polled (resumed), reporting the cost it holds.
+    struct ResumesWith(Money);
+
+    impl Provider for ResumesWith {
+        fn id(&self) -> &str {
+            "resumes"
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Auth, "only resumes")) })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            let mut done = Completed::new(vec![Output::Text("ok".into())]);
+            done.usage.cost = Some(self.0);
+            Box::pin(async move { Ok(JobProgress::Done(done)) })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     #[test]
