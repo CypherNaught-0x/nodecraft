@@ -584,6 +584,9 @@ fn review_regressions_for_219() {
     assert_eq!(log.spent("now").session.get(&Currency::USD), Some(&usd(30_006)));
     assert_eq!(log.release("fal", "k").unwrap_err().kind, ErrorKind::Conflict, "actual charges are final");
     assert_eq!(log.release("fal", "nope").unwrap_err().kind, ErrorKind::NotFound);
+    log.record(charge("lost", 9, Charge::Estimate)).unwrap();
+    log.settle("fal", "lost", usd(9), Charge::Unresolved).unwrap();
+    assert_eq!(log.release("fal", "lost").unwrap_err().kind, ErrorKind::Conflict, "unresolved may have been billed");
     // Still saves and loads after a release.
     let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     assert!(back == log);

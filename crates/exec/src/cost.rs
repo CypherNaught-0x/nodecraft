@@ -389,6 +389,10 @@ impl UsageLog {
         add_to(&mut project, entry.cost)?;
         let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
         add_to(&mut session, entry.cost)?;
+        // The same ceiling a saved log is held to, so every log that records can be reloaded.
+        if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
+            return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
+        }
         let seq = self.first_seq.checked_add(self.entries.len() as u64).ok_or_else(|| Error::new(ErrorKind::Overflow, "usage log sequence overflow"))?;
         if self.entries.len() >= MAX_USAGE_ENTRIES
             && let Some(oldest) = self.entries.pop_front()
@@ -453,8 +457,12 @@ impl UsageLog {
 
     /// Removes an unsettled charge for a job the provider certainly never billed (a rejected key,
     /// invalid input), taking it out of the totals and freeing its key for a later attempt.
+    /// Only an estimate can be released: an unresolved charge may have been billed.
     pub fn release(&mut self, provider: &str, idempotency_key: &str) -> Result<(), Error> {
         let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        if entry.status != Charge::Estimate {
+            return Err(Error::new(ErrorKind::Conflict, "only an estimate can be released; this charge may have been billed"));
+        }
         let mut project = self.project.clone();
         sub_from(&mut project, entry.cost)?;
         let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
