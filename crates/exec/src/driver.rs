@@ -148,8 +148,9 @@ impl std::fmt::Display for DriverGone {
 
 impl std::error::Error for DriverGone {}
 
-/// Sends commands to a running driver. Clone it freely; the driver finishes once every handle is
-/// dropped and its jobs have ended.
+/// Sends commands to a running driver. Clone it freely; after every handle is dropped, an
+/// unpaused queue drains normally. A paused queue cancels unfinished work instead of resuming;
+/// the driver waits for running jobs to report their cooperative cancellation before finishing.
 #[derive(Clone)]
 pub struct Handle(mpsc::UnboundedSender<Command>);
 
@@ -200,6 +201,11 @@ pub fn driver(scheduler: Scheduler) -> (Driver, Handle) {
 impl Driver {
     /// Runs until every handle is dropped and no job is left, calling `on_event` for each
     /// scheduler event. Returns the scheduler for inspection.
+    ///
+    /// Closing the command stream drains an unpaused queue normally. If paused at closure,
+    /// queued and retry-waiting work is cancelled without starting; running jobs are asked to
+    /// cancel cooperatively and awaited. As with explicit cancellation, a runner must respond
+    /// for shutdown to finish, and work that finishes successfully still counts as done.
     pub async fn run(self, runner: Arc<dyn JobRunner>, runtime: Arc<dyn Runtime>, mut on_event: impl FnMut(Event)) -> Scheduler {
         let Driver { mut scheduler, mut commands } = self;
         let (done_tx, mut done_rx) = mpsc::unbounded::<(JobId, Outcome)>();
@@ -233,6 +239,9 @@ impl Driver {
                 Some(at) => runtime.sleep(at.saturating_sub(runtime.now_ms())),
                 None => Box::pin(futures::future::pending()),
             };
+            // Once closed, the command stream cannot make progress or resume paused work.
+            let command = async { if open { commands.next().await } else { futures::future::pending().await } };
+            futures::pin_mut!(command);
             futures::select! {
                 done = done_rx.next() => {
                     if let Some((job, outcome)) = done {
@@ -241,7 +250,7 @@ impl Driver {
                         let _ = scheduler.report(job, outcome, runtime.now_ms());
                     }
                 }
-                command = commands.next() => match command {
+                command = command.fuse() => match command {
                     Some(Command::Add(jobs, reply)) => {
                         let _ = reply.send(scheduler.add(jobs));
                     }
@@ -257,7 +266,16 @@ impl Driver {
                             }
                         }
                     }
-                    None => open = false,
+                    None => {
+                        open = false;
+                        if scheduler.is_paused() {
+                            for job in scheduler.cancel(CancelScope::All) {
+                                if let Some(token) = tokens.get(&job) {
+                                    token.cancel();
+                                }
+                            }
+                        }
+                    }
                 },
                 () = (&mut wake).fuse() => {}
             }
@@ -356,6 +374,165 @@ mod tests {
             retry: RetryPolicy::default(),
             idempotency_key: format!("nodecraft:test:{id}"),
         }
+    }
+
+    /// A manually polled runtime bounds even a driver that spins within one poll.
+    #[derive(Default)]
+    struct BoundedRuntime {
+        tasks: Mutex<Vec<TaskFuture<()>>>,
+        ticks: AtomicUsize,
+    }
+
+    impl Runtime for BoundedRuntime {
+        fn spawn(&self, task: TaskFuture<()>) {
+            self.tasks.lock().unwrap().push(task);
+        }
+        fn sleep(&self, _ms: u64) -> TaskFuture<()> {
+            Box::pin(futures::future::pending())
+        }
+        fn now_ms(&self) -> u64 {
+            assert!(self.ticks.fetch_add(1, Ordering::SeqCst) < 256, "driver spun within one poll");
+            0
+        }
+    }
+
+    impl BoundedRuntime {
+        fn pump(&self, cx: &mut Context<'_>) {
+            let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+            for mut task in tasks {
+                if task.as_mut().poll(cx).is_pending() {
+                    self.tasks.lock().unwrap().push(task);
+                }
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ControlledRunner {
+        attempts: Mutex<Vec<JobId>>,
+        release: Arc<AtomicBool>,
+        wait_for_cancel: bool,
+    }
+
+    impl JobRunner for Arc<ControlledRunner> {
+        fn run(&self, start: Start, cancel: CancelToken) -> TaskFuture<Outcome> {
+            self.attempts.lock().unwrap().push(start.job);
+            let release = Arc::clone(&self.release);
+            let wait_for_cancel = self.wait_for_cancel;
+            Box::pin(async move {
+                if start.job == JobId(1) {
+                    if wait_for_cancel {
+                        cancel.cancelled().await;
+                        return Outcome::Cancelled;
+                    }
+                    futures::future::poll_fn(|_| if release.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }).await;
+                }
+                Outcome::Done
+            })
+        }
+    }
+
+    fn finish_bounded(task: &mut Pin<Box<impl Future<Output = Scheduler>>>, rt: &BoundedRuntime) -> Scheduler {
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        for _ in 0..64 {
+            if let Poll::Ready(scheduler) = task.as_mut().poll(&mut cx) {
+                assert!(rt.tasks.lock().unwrap().is_empty(), "no orphaned spawned tasks");
+                return scheduler;
+            }
+            rt.pump(&mut cx);
+        }
+        panic!("driver did not terminate within 64 polls");
+    }
+
+    #[test]
+    fn closed_paused_queue_cancels_dependencies_without_starting() {
+        let mut scheduler = Scheduler::new(Limits::default());
+        scheduler.add(vec![spec(1, &[]), spec(2, &[1]), spec(3, &[2])]).unwrap();
+        scheduler.set_paused(true);
+        let (driver, handle) = driver(scheduler);
+        drop(handle);
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner::default());
+        let mut events = Vec::new();
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |event| events.push(event)));
+        let scheduler = finish_bounded(&mut task, &rt);
+        drop(task);
+        assert!(runner.attempts.lock().unwrap().is_empty());
+        assert!(scheduler.is_idle() && scheduler.is_paused());
+        assert_eq!(scheduler.summary().cancelled, 3);
+        for id in 1..=3 {
+            assert_eq!(events.iter().filter(|event| **event == Event::Cancelled { job: JobId(id) }).count(), 1);
+        }
+    }
+
+    #[test]
+    fn closed_paused_queue_cancels_retry_waiting_without_another_attempt() {
+        let mut scheduler = Scheduler::new(Limits::default());
+        scheduler.add(vec![spec(1, &[]), spec(2, &[1])]).unwrap();
+        scheduler.start_ready(0);
+        scheduler.report(JobId(1), Outcome::Failed { error: "busy".into(), transient: true }, 0).unwrap();
+        assert!(scheduler.next_wakeup_ms().is_some());
+        scheduler.set_paused(true);
+        let (driver, handle) = driver(scheduler);
+        drop(handle);
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner::default());
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |_| {}));
+        let scheduler = finish_bounded(&mut task, &rt);
+        assert!(runner.attempts.lock().unwrap().is_empty());
+        assert_eq!(scheduler.summary().cancelled, 2);
+        assert!(scheduler.is_idle());
+    }
+
+    #[test]
+    fn closed_paused_queue_waits_for_running_cancellation_and_emits_terminal_events() {
+        let mut scheduler = Scheduler::new(Limits { global: 1, ..Limits::default() });
+        scheduler.add(vec![spec(1, &[]), spec(2, &[1]), spec(3, &[])]).unwrap();
+        let (driver, handle) = driver(scheduler);
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner { wait_for_cancel: true, ..ControlledRunner::default() });
+        let mut events = Vec::new();
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |event| events.push(event)));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(task.as_mut().poll(&mut cx).is_pending());
+        rt.pump(&mut cx);
+        assert_eq!(*runner.attempts.lock().unwrap(), vec![JobId(1)]);
+        handle.set_paused(true).unwrap();
+        drop(handle);
+        // Closing the command stream must yield while awaiting cooperative completion.
+        assert!(task.as_mut().poll(&mut cx).is_pending());
+        assert!(!rt.tasks.lock().unwrap().is_empty());
+        let scheduler = finish_bounded(&mut task, &rt);
+        drop(task);
+        assert_eq!(*runner.attempts.lock().unwrap(), vec![JobId(1)]);
+        assert_eq!(scheduler.summary().cancelled, 3);
+        assert!(scheduler.is_idle());
+        for id in 1..=3 {
+            assert_eq!(events.iter().filter(|event| **event == Event::Cancelled { job: JobId(id) }).count(), 1);
+        }
+    }
+
+    #[test]
+    fn closed_unpaused_queue_yields_while_running_then_drains_dependencies() {
+        let mut scheduler = Scheduler::new(Limits::default());
+        scheduler.add(vec![spec(1, &[]), spec(2, &[1])]).unwrap();
+        let (driver, handle) = driver(scheduler);
+        drop(handle);
+        let rt = Arc::new(BoundedRuntime::default());
+        let runner = Arc::new(ControlledRunner::default());
+        let mut task = Box::pin(driver.run(Arc::new(Arc::clone(&runner)), rt.clone(), |_| {}));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        // Repeated polls with a closed stream and unfinished work must remain Pending.
+        for _ in 0..3 {
+            assert!(task.as_mut().poll(&mut cx).is_pending());
+            rt.pump(&mut cx);
+        }
+        assert_eq!(*runner.attempts.lock().unwrap(), vec![JobId(1)]);
+        runner.release.store(true, Ordering::SeqCst);
+        let scheduler = finish_bounded(&mut task, &rt);
+        assert_eq!(*runner.attempts.lock().unwrap(), vec![JobId(1), JobId(2)]);
+        assert_eq!(scheduler.summary().done, 2);
+        assert!(scheduler.is_idle());
     }
 
     #[test]
