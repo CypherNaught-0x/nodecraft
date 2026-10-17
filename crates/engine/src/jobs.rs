@@ -11,10 +11,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{JobId, Outcome, Start};
-use nodecraft_providers::{BoxFuture, CancelSignal, Clock, ErrorKind, JobHandle, Output, Provider, ProviderError, ProviderJob, RunLimits, RunUpdate};
+use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, JobHandle, Provider, ProviderError, ProviderJob, RunLimits, RunUpdate};
 
-/// Where a finished job's outputs go (the engine turns them into an `AddGeneration` changeset).
-pub type OutputSink = dyn Fn(JobId, Vec<Output>) + Send + Sync;
+/// Where a finished job's outputs and usage go (the engine turns the outputs into an
+/// `AddGeneration` changeset; budgets charge the usage's reported cost).
+pub type OutputSink = dyn Fn(JobId, Completed) + Send + Sync;
 
 /// Progress reports while a job runs (queue panel, status cards).
 pub type UpdateSink = dyn Fn(JobId, RunUpdate) + Send + Sync;
@@ -138,13 +139,13 @@ impl JobRunner for ProviderRunner {
                 None => nodecraft_providers::run_to_completion(queued.provider.as_ref(), &queued.job, &signal, &clock, limits, record).await,
             };
             match result {
-                Ok(outputs) => {
+                Ok(done) => {
                     {
                         let mut s = lock();
                         s.handles.remove(&start.idempotency_key);
                         s.jobs.remove(&job_id);
                     }
-                    on_output(job_id, outputs);
+                    on_output(job_id, done);
                     Outcome::Done
                 }
                 Err(failure) => {
@@ -164,6 +165,7 @@ mod tests {
     use super::*;
     use futures::executor::block_on;
     use nodecraft_exec::scheduler::Lane;
+    use nodecraft_providers::Output;
     use nodecraft_providers::{JobProgress, Submission};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -201,7 +203,11 @@ mod tests {
             let n = self.polls.fetch_add(1, Ordering::SeqCst);
             let fail = n < self.fail_polls;
             Box::pin(async move {
-                if fail { Err(ProviderError::new(ErrorKind::Network, "reset")) } else { Ok(JobProgress::Done(vec![Output::Text("done".into())])) }
+                if fail {
+                    Err(ProviderError::new(ErrorKind::Network, "reset"))
+                } else {
+                    Ok(JobProgress::Done(Completed::new(vec![Output::Text("done".into())])))
+                }
             })
         }
         fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
@@ -222,7 +228,7 @@ mod tests {
         let runner = ProviderRunner::new(
             Arc::new(InstantRuntime(AtomicU64::new(0))),
             RunLimits { max_poll_errors: 5, ..RunLimits::default() },
-            Arc::new(move |id, out| sink.lock().unwrap().push((id, out))),
+            Arc::new(move |id, out| sink.lock().unwrap().push((id, out.outputs))),
             Arc::new(|_, _| {}),
         );
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
@@ -255,7 +261,11 @@ mod tests {
         fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
             let first = self.polls.fetch_add(1, Ordering::SeqCst) == 0;
             Box::pin(async move {
-                Ok(if first { JobProgress::Failed(ProviderError::new(ErrorKind::Server, "OOM")) } else { JobProgress::Done(vec![Output::Text("ok".into())]) })
+                Ok(if first {
+                    JobProgress::Failed(ProviderError::new(ErrorKind::Server, "OOM"))
+                } else {
+                    JobProgress::Done(Completed::new(vec![Output::Text("ok".into())]))
+                })
             })
         }
         fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {

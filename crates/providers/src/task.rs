@@ -6,7 +6,7 @@ use std::fmt;
 use futures::FutureExt;
 
 use crate::http::{Http, HttpRequest};
-use crate::provider::{BoxFuture, CancelSignal, Clock, JobProgress, Output, Provider, ProviderJob, Submission};
+use crate::provider::{BoxFuture, CancelSignal, Clock, Completed, JobProgress, Provider, ProviderJob, Submission};
 use crate::{ErrorKind, JobHandle, ProviderError};
 
 /// How long a job may take overall before it counts as expired.
@@ -81,7 +81,7 @@ pub async fn run_to_completion(
     clock: &dyn Clock,
     limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
-) -> Result<Vec<Output>, RunFailure> {
+) -> Result<Completed, RunFailure> {
     if cancel.is_cancelled() {
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
@@ -90,7 +90,7 @@ pub async fn run_to_completion(
         // Cancelled while submitting: we can't know whether the provider accepted it.
         None => return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"))),
         Some(Err(e)) => return Err(RunFailure::before_submit(e)),
-        Some(Ok(Submission::Finished(outputs))) => return Ok(outputs),
+        Some(Ok(Submission::Finished(done))) => return Ok(done),
         Some(Ok(Submission::Queued(handle))) => handle,
     };
     on_update(RunUpdate::Submitted(handle.clone()));
@@ -106,7 +106,7 @@ pub async fn resume(
     clock: &dyn Clock,
     limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
-) -> Result<Vec<Output>, RunFailure> {
+) -> Result<Completed, RunFailure> {
     let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()), finished: false };
     let started = clock.now_ms();
     let mut poll_errors: u32 = 0;
@@ -133,7 +133,7 @@ pub async fn resume(
             return Err(fail(ProviderError::new(ErrorKind::Cancelled, format!("cancelled{note}"))));
         };
         match polled {
-            Ok(JobProgress::Done(outputs)) => return Ok(outputs),
+            Ok(JobProgress::Done(done)) => return Ok(done),
             Ok(JobProgress::Failed(e)) => return Err(RunFailure { error: e, handle: Some(handle.clone()), finished: true }),
             Ok(progress) => {
                 poll_errors = 0;
@@ -224,6 +224,7 @@ pub fn check_media(bytes: &[u8], expected: Option<nodecraft_media::MediaKind>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Output;
     use crate::http::HttpResponse;
     use futures::executor::block_on;
     use std::sync::Mutex;
@@ -265,7 +266,7 @@ mod tests {
             let sync = self.sync;
             Box::pin(async move {
                 if sync {
-                    Ok(Submission::Finished(vec![Output::Text("now".into())]))
+                    Ok(Submission::Finished(Completed::new(vec![Output::Text("now".into())])))
                 } else {
                     Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::Value::Null }))
                 }
@@ -332,16 +333,20 @@ mod tests {
         Ok(JobProgress::Running { fraction: Some(f), message: None, partial: None })
     }
 
-    fn run(p: &Scripted, flag: &Flag, limits: RunLimits, updates: &mut Vec<RunUpdate>) -> Result<Vec<Output>, RunFailure> {
+    fn run(p: &Scripted, flag: &Flag, limits: RunLimits, updates: &mut Vec<RunUpdate>) -> Result<Completed, RunFailure> {
         block_on(run_to_completion(p, &job(), flag, &p.clock, limits, |u| updates.push(u)))
     }
 
     #[test]
     fn polls_until_done_and_reports_progress() {
-        let p = Scripted::new(vec![Ok(JobProgress::Queued { position: Some(2) }), running(0.5), Ok(JobProgress::Done(vec![Output::Text("hi".into())]))]);
+        let p = Scripted::new(vec![
+            Ok(JobProgress::Queued { position: Some(2) }),
+            running(0.5),
+            Ok(JobProgress::Done(Completed::new(vec![Output::Text("hi".into())]))),
+        ]);
         let mut updates = Vec::new();
         let out = run(&p, &Flag::default(), RunLimits::default(), &mut updates).unwrap();
-        assert_eq!(out, vec![Output::Text("hi".into())]);
+        assert_eq!(out.outputs, vec![Output::Text("hi".into())]);
         assert!(matches!(&updates[0], RunUpdate::Submitted(h) if h.remote_id == "k1"), "the idempotency key reaches the provider");
         assert_eq!(updates.len(), 3);
     }
@@ -350,7 +355,7 @@ mod tests {
     fn synchronous_providers_finish_at_submit() {
         let p = Scripted { sync: true, ..Scripted::new(vec![]) };
         let mut updates = Vec::new();
-        assert_eq!(run(&p, &Flag::default(), RunLimits::default(), &mut updates).unwrap(), vec![Output::Text("now".into())]);
+        assert_eq!(run(&p, &Flag::default(), RunLimits::default(), &mut updates).unwrap().outputs, vec![Output::Text("now".into())]);
         assert!(updates.is_empty());
     }
 
@@ -358,7 +363,7 @@ mod tests {
     fn transient_poll_errors_are_retried_with_retry_after_then_give_up_with_the_handle() {
         let mut limited = ProviderError::new(ErrorKind::RateLimited, "slow down");
         limited.retry_after_ms = Some(7_000);
-        let p = Scripted::new(vec![Err(limited), Ok(JobProgress::Done(vec![]))]);
+        let p = Scripted::new(vec![Err(limited), Ok(JobProgress::Done(Completed::default()))]);
         let mut updates = Vec::new();
         assert!(run(&p, &Flag::default(), RunLimits::default(), &mut updates).is_ok());
         assert!(matches!(updates.get(1), Some(RunUpdate::PollRetry(_))));

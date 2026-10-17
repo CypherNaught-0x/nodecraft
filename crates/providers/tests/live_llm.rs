@@ -20,6 +20,7 @@ fn ask(model: &str) -> ChatRequest {
         messages: vec![Message::user("Reply with the single word: pong")],
         max_tokens: Some(64),
         temperature: None,
+        tools: vec![],
     }
 }
 

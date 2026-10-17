@@ -30,5 +30,7 @@ pub use error::{ErrorKind, ProviderError};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;
 pub use http::{ChunkSink, Http, HttpMethod, HttpRequest, HttpResponse, MAX_REDIRECTS, USER_AGENT};
-pub use provider::{BoxFuture, CancelSignal, Clock, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Submission};
+pub use provider::{
+    BoxFuture, CancelSignal, Clock, Completed, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Submission, Usage,
+};
 pub use task::{DEFAULT_JOB_DEADLINE_MS, Downloaded, RunFailure, RunLimits, RunUpdate, check_media, fetch_output, resume, run_to_completion};
