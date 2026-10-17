@@ -1590,7 +1590,7 @@ fn quick_add_keys_create_kinds_under_the_pointer_as_one_step() {
 #[test]
 fn double_click_opens_a_searchable_palette_of_kinds_and_commands() {
     let mut h = harness();
-    let at = Pos2::new(800.0, 560.0);
+    let at = Pos2::new(560.0, 650.0);
     double_click(&mut h, at);
     h.run();
     assert!(h.state().palette.is_some());
@@ -1702,7 +1702,7 @@ fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clicka
     h.run();
     assert!(h.state().palette.is_none());
     idle(&mut h);
-    double_click(&mut h, Pos2::new(900.0, 650.0));
+    double_click(&mut h, Pos2::new(600.0, 660.0));
     h.run();
     assert!(h.state().palette.is_some());
     h.event(egui::Event::Text("vid".into()));
@@ -1717,7 +1717,7 @@ fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clicka
 fn enter_right_after_typing_chooses_from_the_typed_query() {
     let mut h = harness();
     let texts = nodes_of(&h, "source.text").len();
-    double_click(&mut h, Pos2::new(800.0, 560.0));
+    double_click(&mut h, Pos2::new(560.0, 650.0));
     h.run();
     assert!(h.state().palette.is_some());
     // Queued together (the harness may still deliver them a frame apart): ↵ chooses from "vid".

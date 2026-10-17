@@ -2,8 +2,8 @@
 use crate::{
     canvas::{self, CanvasView},
     card::{self, EditTarget, EditorState, Intent},
-    navigation::Navigation,
     ids,
+    navigation::Navigation,
     noodle::{self, Side},
     palette::{self, Palette},
     selection::{self, Selection},
