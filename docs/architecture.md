@@ -109,3 +109,9 @@ From [storytold/craft-libs](https://github.com/storytold/craft-libs), pinned to 
 `nodecraft_engine::build_info` reports the workspace version plus the commit and build date baked
 in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging scripts and CI).
 `nodecraft --version` and `nodecraft-cli --version` print it.
+
+## Plugin planning
+
+The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
+feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+Future integration must preserve the existing layers, engine mutation path and wasm support.

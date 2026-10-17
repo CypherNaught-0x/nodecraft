@@ -4,6 +4,20 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Plugin system plan (#154)
+
+- **Plan before runtime.** [The plugin RFC](plugins-rfc.md) accepts data-only packages as the first
+  distributable scope. Third-party executable actions require a safe-API sandbox feasibility gate;
+  no runtime engine, ABI, signature algorithm or marketplace is selected in this documentation PR.
+- **One host authority.** Plugin code/data cannot mutate a Session, bypass descriptor validation,
+  read raw credentials or submit paid calls outside host quote/budget/idempotency brokers. Schema
+  semantics stay with #162; catalog data stays with #77 rather than a plugin-specific variant.
+- **Portable preservation precedes execution.** Exact digest locks and bounded missing-plugin
+  placeholders retain unknown work. Installation never grants rights or executes project content.
+  Browser-unsupported capabilities are explicit; compilation alone does not prove runtime parity.
+- **No Rust dynamic ABI.** The MVP avoids native dynamic loading and local unsafe code. Runtime
+  selection/resource targets remain measured, reviewed phase deliverables, not shipped guarantees.
+
 ## 2026-10-17 · exec scheduler (#74)
 
 - **The scheduler is a deterministic state machine** (`exec::scheduler`) with no clock or I/O:
