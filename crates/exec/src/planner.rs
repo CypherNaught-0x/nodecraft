@@ -155,6 +155,13 @@ pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTree
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
     };
+    // Routers never run: they are resolved into their consumers' inputs.
+    let requested_only_routers =
+        matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(|id| crate::routing::is_router(canvas, *id));
+    let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !crate::routing::is_router(canvas, *id)).collect();
+    if requested_only_routers {
+        return Err(Error::new(ErrorKind::InvalidInput, "routers pass inputs through and have nothing to run"));
+    }
     let order = graph.order(&run)?;
     let mut steps = Vec::with_capacity(order.len());
     let mut edges = BTreeSet::new();
@@ -200,13 +207,11 @@ struct Graph<'a> {
 
 impl<'a> Graph<'a> {
     fn new(canvas: &'a Canvas, kinds: &'a Registry) -> Self {
-        let mut into: BTreeMap<NodeId, Vec<_>> = BTreeMap::new();
-        for edge in canvas.edges().values() {
-            into.entry(edge.to.node).or_default().push((edge.to.port.as_str(), edge.from.node, edge.from.port.as_str(), edge.order));
-        }
-        for list in into.values_mut() {
-            list.sort_by(|a, b| (a.0, a.3).cmp(&(b.0, b.3)));
-        }
+        // Routers are resolved away: consumers read the routers' own sources.
+        let into = crate::routing::incoming(canvas)
+            .into_iter()
+            .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
+            .collect();
         Self { canvas, kinds, into }
     }
 
@@ -331,6 +336,15 @@ impl<'a> Graph<'a> {
                             }
                         }
                     }
+                }
+                // A single input takes one value; through a router it could receive several.
+                if !port.port_type.many && from.len() > 1 {
+                    blockers.push(blocker(
+                        Some(&port.name),
+                        None,
+                        Reason::Invalid(format!("its {} input takes one value but receives several through a router", port.name)),
+                    ));
+                    break;
                 }
                 // The same item cap for values and for outputs of other steps in this run.
                 if from.len() > MAX_LIST_ITEMS {

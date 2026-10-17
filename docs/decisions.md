@@ -507,3 +507,17 @@ a choice a later contributor might otherwise undo.
 - **Stale is transitive:** a result is stale when its hash no longer matches *or* any upstream
   node is stale (it was built on out-of-date data). This is the set `planner::plan` expects, and
   `canvas.stale` returns it (read-only; the node registry comes from the host as a resource).
+
+## 2026-10-17 · Router node (#72)
+
+- **`structure.router` is a node kind with no work of its own:** one list input and one single
+  output, in a modality chosen per instance (`config["modality"]`, `text` by default), so it can
+  feed any input of that modality. Quick-add `R`. Renaming uses the node title.
+- **Routers are resolved away in one place, `exec::routing::incoming`:** every consumer's feeds
+  through routers (and chains of routers) become the routers' own sources, in order. The planner
+  and staleness both read inputs through it, so a router adds no step, no cost and no hash, and
+  editing what feeds a router makes its consumers stale.
+- **A single input fed several values through a router is blocked** with a reason, not silently
+  given the first one. Routers in a run request are dropped (selecting only routers is "nothing
+  to run"). Resolution is bounded: cycles are cut with a seen-set and each port resolves to at
+  most one more feed than a list may hold, so the planner still reports the oversize fan-in.

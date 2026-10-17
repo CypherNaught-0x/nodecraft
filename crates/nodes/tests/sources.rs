@@ -49,8 +49,9 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
 #[test]
 fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
     let registry = Registry::builtins().unwrap();
-    assert_eq!(registry.descriptors().count(), 4);
-    assert_eq!(registry.compatible(&[]).count(), 4);
+    // The four sources and the router.
+    assert_eq!(registry.descriptors().count(), 5);
+    assert_eq!(registry.compatible(&[]).count(), 5);
     for (id, modality, key) in [
         ("source.text", Modality::Text, "T"),
         ("source.image", Modality::Image, "I"),
@@ -68,7 +69,8 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
         for input in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document] {
             let port = PortType { modality: input, many: false };
             assert!(kind.mode(&[port]).is_none());
-            assert_eq!(registry.compatible(&[port]).count(), 0);
+            // Only the router takes a wire of any modality (it is created with the wire's).
+            assert_eq!(registry.compatible(&[port]).map(|d| d.id.as_str()).collect::<Vec<_>>(), vec![nodecraft_nodes::router::ID]);
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
             let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()) }];
             assert!(kind.plan(&PlanCtx { node: &node, inputs: &inputs }).is_err());
@@ -138,7 +140,7 @@ fn registry_rejects_duplicates_conflicting_shortcuts_and_bad_descriptors() {
     descriptor.outputs.push(descriptor.outputs.first().unwrap().clone());
     assert_eq!(registry.register(Box::new(Fake(descriptor))).unwrap_err().kind, ErrorKind::InvalidInput);
     assert!(registry.get("unknown").is_err());
-    assert_eq!(registry.descriptors().count(), 4);
+    assert_eq!(registry.descriptors().count(), 5);
 }
 
 #[test]

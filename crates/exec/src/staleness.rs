@@ -59,15 +59,12 @@ fn write_node(w: &mut Writer, kinds: &Registry, node: &Node) -> Result<(), Error
     w.params(&shaping_params(kinds, node)?)
 }
 
-/// Incoming edges of every node, built once: target → (port, order, upstream, upstream port).
-type Incoming<'a> = BTreeMap<NodeId, Vec<(&'a str, u32, NodeId, &'a str)>>;
+/// Incoming feeds of every node, built once, with routers resolved to their sources (#72):
+/// target → (port, position, upstream, upstream port).
+type Incoming<'a> = BTreeMap<NodeId, Vec<crate::routing::Feed<'a>>>;
 
 fn incoming(canvas: &Canvas) -> Incoming<'_> {
-    let mut map: Incoming<'_> = BTreeMap::new();
-    for edge in canvas.edges().values() {
-        map.entry(edge.to.node).or_default().push((edge.to.port.as_str(), edge.order, edge.from.node, edge.from.port.as_str()));
-    }
-    map
+    crate::routing::incoming(canvas)
 }
 
 fn is_source(kinds: &Registry, node: &Node) -> bool {

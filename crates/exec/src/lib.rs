@@ -9,5 +9,6 @@ mod payload;
 pub mod cost;
 pub mod driver;
 pub mod planner;
+pub mod routing;
 pub mod scheduler;
 pub mod staleness;
