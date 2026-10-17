@@ -92,6 +92,8 @@ fn to_error(e: SecretError) -> Error {
     let kind = match e {
         SecretError::Invalid(_) => ErrorKind::InvalidInput,
         SecretError::Unavailable(_) => ErrorKind::Unsupported,
+        // "Unlock your keychain" is something the user can fix, unlike an internal failure.
+        SecretError::Denied(_) => ErrorKind::Authentication,
         _ => ErrorKind::Internal,
     };
     Error::new(kind, e.to_string())
@@ -106,8 +108,9 @@ pub(crate) enum KeyRequest {
     Status { account: String },
 }
 
-/// Registers the `keys` host service on `services`, backed by `store`. Hosts run commands off the
-/// UI thread, since keychain calls can block on a prompt.
+/// Registers the `keys` host service on `services`, backed by `store`. Keychain calls can block
+/// on an unlock prompt and `Session::dispatch` runs services synchronously, so the settings UI
+/// must hand them to a worker thread (#205).
 pub fn register_key_service(services: &mut Services, store: Arc<dyn SecretStore>) -> Result<(), Error> {
     let store = Mutex::new(store);
     services.register(KEY_SERVICE, move |request: &Value| {
