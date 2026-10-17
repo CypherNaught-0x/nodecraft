@@ -11,6 +11,8 @@ description = "NodeCraft: run planner, scheduler, queue, cancellation and cost q
 workspace = true
 
 [dependencies]
+nodecraft-types = { workspace = true }
+nodecraft-graph = { workspace = true }
 nodecraft-nodes = { workspace = true }
 nodecraft-catalog = { workspace = true }
 nodecraft-actions = { workspace = true }
@@ -18,3 +20,4 @@ futures = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor", "thread-pool"] }
+proptest.workspace = true

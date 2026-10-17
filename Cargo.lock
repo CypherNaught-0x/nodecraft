@@ -2686,7 +2686,10 @@ dependencies = [
  "futures",
  "nodecraft-actions",
  "nodecraft-catalog",
+ "nodecraft-graph",
  "nodecraft-nodes",
+ "nodecraft-types",
+ "proptest",
 ]
 
 [[package]]
