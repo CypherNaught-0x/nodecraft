@@ -176,3 +176,23 @@ pub fn check(dir: &Path, name: &str, actual: &Json) -> Result<(), String> {
         std::fs::read_to_string(&path).map_err(|e| format!("{}: {e} (run with NODECRAFT_BLESS=1 to create it)", path.display()))?.replace("\r\n", "\n");
     if expected == pretty { Ok(()) } else { Err(format!("{} differs from this run:\n--- expected\n{expected}\n--- actual\n{pretty}", path.display())) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn golden_files_compare_regardless_of_line_endings() {
+        let dir = std::env::temp_dir().join(format!("nodecraft-golden-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let value = json!({"a": [1, 2]});
+        let lf = serde_json::to_string_pretty(&value).unwrap() + "\n";
+        std::fs::write(dir.join("crlf.json"), lf.replace('\n', "\r\n")).unwrap();
+        if !blessing() {
+            assert!(check(&dir, "crlf", &value).is_ok());
+            assert!(check(&dir, "crlf", &json!({"a": [1]})).is_err());
+            assert!(check(&dir, "missing", &value).unwrap_err().contains("NODECRAFT_BLESS=1"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

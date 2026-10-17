@@ -25,7 +25,7 @@ fn results_are_deterministic_and_follow_the_request() {
     assert!(text.starts_with("mock-text: a fox #"), "{text}");
     let image = run(&provider, &job("mock-image", "a fox", "k4")).unwrap();
     // Real signatures, so hosts sniff it as the media it claims to be.
-    assert!(matches!(&image[0], Output::Bytes { bytes, .. } if nodecraft_media_sniff_png(bytes)));
+    assert!(matches!(&image[0], Output::Bytes { bytes, .. } if starts_with_png_signature(bytes)));
     assert_eq!(provider.requests().len(), 4);
     assert_eq!(provider.billed(), 4);
 }
@@ -92,6 +92,6 @@ fn cancelled_jobs_stay_cancelled_and_sync_retries_return_the_original_result() {
     assert_eq!(run(&standard, &job("mock-text", "an owl", "same")).unwrap(), first);
 }
 
-fn nodecraft_media_sniff_png(bytes: &[u8]) -> bool {
+fn starts_with_png_signature(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG\r\n\x1a\n")
 }

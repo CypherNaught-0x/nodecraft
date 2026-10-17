@@ -5,15 +5,16 @@
 //! role-tagged text; a list input sends one entry per item. Media inputs need the asset store,
 //! which isn't wired yet, and are refused as unsupported rather than sent empty.
 //!
-//! Results are hostile input. Inline bytes are sniffed ([`check_media`]); the provider's claimed
-//! type is ignored. Each result goes to the first output port whose modality it has, and a result
-//! no port takes fails the job. Text comes back as a text value. Media comes back as a value that
+//! Results are hostile input. Inline bytes are sniffed; the provider's claimed type is ignored,
+//! except that bytes which sniff as text count only when it claimed text (an error page claiming
+//! to be an image fails the job). Each result goes to the first output port whose modality it
+//! has, and a result no port takes, or a call that returned nothing, fails the job. Text comes back as a text value. Media comes back as a value that
 //! references the bytes by hash; the host stores them in its asset store under that hash.
 
 use nodecraft_graph::MAX_VALUE_ITEMS;
-use nodecraft_media::MediaKind;
+use nodecraft_media::{ContentHash, MediaKind};
 use nodecraft_nodes::{GenerateOutput, JobSpec};
-use nodecraft_providers::{Completed, JobInput, Output, ProviderJob, check_media};
+use nodecraft_providers::{Completed, JobInput, Output, ProviderJob};
 use nodecraft_types::{AssetRef, Blake3, Error, ErrorKind, MediaMeta, Modality, Value};
 use serde_json::{Map, Value as Json};
 use std::sync::Arc;
@@ -105,6 +106,9 @@ fn port_for(outputs: &[GenerateOutput], modality: Modality) -> Result<&str, Erro
 /// Routes a provider's result onto `outputs` (see the module docs). URLs must be downloaded
 /// first (`fetch_output`).
 pub fn produced(outputs: &[GenerateOutput], done: &Completed) -> Result<Produced, Error> {
+    if done.outputs.is_empty() {
+        return Err(Error::new(ErrorKind::InvalidInput, "the provider returned no output"));
+    }
     if done.outputs.len() > MAX_VALUE_ITEMS {
         return Err(Error::new(ErrorKind::InvalidInput, "the provider returned too many outputs"));
     }
@@ -112,21 +116,28 @@ pub fn produced(outputs: &[GenerateOutput], done: &Completed) -> Result<Produced
     for item in &done.outputs {
         match item {
             Output::Text(text) => produced.outputs.push((port_for(outputs, Modality::Text)?.to_owned(), Value::Text(text.clone()))),
-            Output::Bytes { bytes, .. } => {
+            Output::Bytes { mime: claimed, bytes } => {
                 if bytes.len() > MAX_INLINE_OUTPUT_BYTES {
                     return Err(Error::new(ErrorKind::InvalidInput, "the provider returned an output too large to keep"));
                 }
-                let checked = check_media(bytes, None).map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
-                let modality = modality_of(nodecraft_media::sniff(bytes).map_or(MediaKind::Text, |s| s.kind));
-                let port = port_for(outputs, modality)?.to_owned();
-                if modality == Modality::Text {
-                    let text =
-                        String::from_utf8(checked.bytes).map_err(|_| Error::new(ErrorKind::InvalidInput, "the provider returned text that isn't UTF-8"))?;
-                    produced.outputs.push((port, Value::Text(text)));
+                let sniffed = nodecraft_media::sniff(bytes)
+                    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the provider returned an output that isn't a known media type"))?;
+                if sniffed.kind == MediaKind::Text {
+                    // Text bytes count only when the provider said they were text: an error page
+                    // claiming to be an image must not become a caption.
+                    if !claimed.trim_start().to_ascii_lowercase().starts_with("text/") {
+                        return Err(Error::new(ErrorKind::InvalidInput, format!("the provider claimed {claimed} but returned text (an error page?)")));
+                    }
+                    if sniffed.mime != "text/plain" {
+                        return Err(Error::new(ErrorKind::Unsupported, "the provider returned UTF-16 text, which isn't supported"));
+                    }
+                    let text = std::str::from_utf8(bytes).map_err(|_| Error::new(ErrorKind::InvalidInput, "the provider returned text that isn't UTF-8"))?;
+                    produced.outputs.push((port_for(outputs, Modality::Text)?.to_owned(), Value::Text(text.trim_start_matches('\u{feff}').to_owned())));
                     continue;
                 }
-                let hash = Blake3::from_bytes(checked.hash.0);
-                let mime = checked.mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
+                let port = port_for(outputs, modality_of(sniffed.kind))?.to_owned();
+                let hash = Blake3::from_bytes(ContentHash::of(bytes).0);
+                let mime = sniffed.mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
                 produced.assets.push((hash, Arc::clone(bytes)));
                 produced.outputs.push((port, Value::Media(AssetRef { hash, mime, meta: MediaMeta::default() })));
             }
@@ -191,11 +202,18 @@ mod tests {
         let (port, Value::Media(asset)) = &got.outputs[1] else { panic!("not media") };
         assert_eq!((port.as_str(), asset.mime.as_str()), ("image", "image/png"));
         assert_eq!(got.assets, vec![(asset.hash, png)]);
-        // An HTML error page claiming to be a PNG isn't media; text bytes go to the text port.
+        // An HTML error page claiming to be a PNG is refused, not recorded as a caption; text
+        // bytes the provider calls text go to the text port (without a UTF-8 BOM).
         let html = Completed::new(vec![Output::Bytes { mime: "image/png".into(), bytes: Arc::from(&b"<html>error</html>"[..]) }]);
-        assert_eq!(produced(&routes(), &html).unwrap().outputs, vec![("caption".to_owned(), Value::Text("<html>error</html>".into()))]);
+        assert!(produced(&routes(), &html).is_err());
+        let text = Completed::new(vec![Output::Bytes { mime: "text/plain; charset=utf-8".into(), bytes: Arc::from(&b"\xEF\xBB\xBFhello"[..]) }]);
+        assert_eq!(produced(&routes(), &text).unwrap().outputs, vec![("caption".to_owned(), Value::Text("hello".into()))]);
+        let utf16 = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(&b"\xFF\xFEh\x00i\x00"[..]) }]);
+        assert_eq!(produced(&routes(), &utf16).unwrap_err().kind, ErrorKind::Unsupported);
         let image_only = [GenerateOutput { port: "image".into(), modality: Modality::Image }];
-        assert!(produced(&image_only, &html).is_err(), "no port takes text");
+        assert!(produced(&image_only, &text).is_err(), "no port takes text");
+        // A paid call that returned nothing is a failure.
+        assert!(produced(&routes(), &Completed::new(vec![])).is_err());
         // Unknown binary, audio on an image-only node, and URLs are refused.
         let binary = Completed::new(vec![Output::Bytes { mime: "image/png".into(), bytes: Arc::from(&b"\x00\x01\x02\x03"[..]) }]);
         assert!(produced(&routes(), &binary).is_err());

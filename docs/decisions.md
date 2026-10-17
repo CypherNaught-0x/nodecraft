@@ -864,9 +864,10 @@ a choice a later contributor might otherwise undo.
   - Out: parameters go to the provider as plain JSON, and non-finite numbers are refused. Inputs
     go as role-tagged text, with a list sending one entry per item, up to the list limit. Media
     inputs are refused as unsupported until the asset store exists.
-  - Back: inline bytes are sniffed (`check_media`), and the provider's claimed type is ignored.
-    Each result goes to the first output port of its modality, and one no port takes fails the
-    job. Text comes back as a text value. Media comes back as a value that references the bytes by
+  - Back: inline bytes are sniffed, and the provider's claimed type is ignored. Bytes that
+    sniff as text count only if the provider claimed text, so an error page posing as an image
+    fails the job; UTF-16 text is refused. Each result goes to the first output port of its
+    modality. A result no port takes, or a call that returned nothing, fails the job. Text comes back as a text value. Media comes back as a value that references the bytes by
     Blake3 hash, and the host stores the bytes. URL outputs must be downloaded first, and inline
     outputs are capped at 256 MiB.
 - **`nodecraft-testkit` provides `MockProvider`**, a deterministic fake for text, image, video and

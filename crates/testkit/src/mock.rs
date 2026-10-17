@@ -16,7 +16,8 @@ pub enum MockOutput {
 }
 
 /// Where a mock model fails, if it does. A model that finishes at submit (`polls: 0`) has no
-/// polls, so its `Poll` and `Job` failures happen at submit instead.
+/// polls, so its `Poll` and `Job` failures happen at submit instead (unbilled by the mock, though
+/// hosts may treat some of those kinds as possibly billed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MockFailure {
     /// The submit is refused with this kind; nothing is billed.
@@ -148,7 +149,7 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
         }
         media => {
             // A real format signature (PNG, WAV, MP4) followed by the digest, so hosts sniff and
-            // route it like real output; the claimed type is deliberately vague.
+            // route it like real output.
             let (signature, mime): (&[u8], &str) = match media {
                 MockOutput::Image => (b"\x89PNG\r\n\x1a\n", "image/png"),
                 MockOutput::Video => (b"\x00\x00\x00\x10ftypisom\x00\x00\x02\x00", "video/mp4"),
