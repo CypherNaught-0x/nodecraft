@@ -269,3 +269,8 @@ edits still dispatch the shared commands. `node.param_set` validates the resolve
 ports and proposed parameters before returning a SetParam changeset. Configuration remains
 untouched. Builtin command schemas include all current scalar Value variants and Node.config;
 null is the reset sentinel for a parameter, not a stored Value variant.
+
+Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
+The UI supplies a revision-stamped scoped geometry capability; the engine validates it and
+returns one MoveNode changeset. Both grid and whole-DAG dependency modes share bounded actual
+instance metrics and canonical outer-coordinate ordering; see decisions and UI design.
