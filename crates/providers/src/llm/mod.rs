@@ -26,7 +26,7 @@ use std::sync::Arc;
 use nodecraft_types::{Currency, Money};
 use serde_json::Value;
 
-use crate::http::{Http, HttpRequest};
+use crate::http::{Http, HttpRequest, HttpResponse};
 use crate::provider::{BoxFuture, Completed, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission, Usage};
 use crate::{ErrorKind, ProviderError};
 
@@ -520,6 +520,10 @@ impl LlmClient {
     /// Sends the request and waits for the whole reply.
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, ProviderError> {
         let response = self.http.send(self.request(req, false)?).await?;
+        self.chat_response(response)
+    }
+
+    fn chat_response(&self, response: HttpResponse) -> Result<ChatResponse, ProviderError> {
         let cost = reported_cost(&response.headers);
         let response = self.error_for(response)?;
         let mut reply = match self.endpoint.dialect {
@@ -730,6 +734,17 @@ impl Provider for LlmClient {
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(async move {
             let reply = self.chat(&chat_request(job)?).await?;
+            Ok(Submission::Finished(Completed { outputs: vec![Output::Text(reply.text)], usage: reply.usage }))
+        })
+    }
+
+    fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        // This constructor is pure; all effects of this single-request path are tracked below.
+        context.arm();
+        Box::pin(async move {
+            let request = self.request(&chat_request(job)?, false)?;
+            let response = context.send(self.http.as_ref(), request).await?;
+            let reply = self.chat_response(response)?;
             Ok(Submission::Finished(Completed { outputs: vec![Output::Text(reply.text)], usage: reply.usage }))
         })
     }

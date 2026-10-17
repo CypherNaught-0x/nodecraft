@@ -380,6 +380,8 @@ fn finished(entry: &HistoryEntry) -> Result<Vec<FileRef>, ProviderError> {
     Ok(files)
 }
 
+// Deliberately uses Provider's conservative evidence default: submission can query history,
+// fetch catalogs, upload inputs and dispatch a prompt. A local later error proves no absence.
 impl Provider for ComfyProvider {
     fn id(&self) -> &str {
         "comfyui"
@@ -542,6 +544,38 @@ mod tests {
 
     fn history_ok(id: &str, files: &str) -> String {
         format!(r#"{{"{id}":{{"outputs":{{"3":{{"images":{files}}}}},"status":{{"status_str":"success","completed":true,"messages":[]}}}}}}"#)
+    }
+
+    #[test]
+    fn submission_evidence_is_conservative_for_every_comfy_stage_and_cached_local_error() {
+        struct FailsAt {
+            server: Arc<FakeServer>,
+            path: &'static str,
+        }
+        impl Http for FailsAt {
+            fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+                if request.url.contains(self.path) {
+                    Box::pin(async { Err(ProviderError::new(ErrorKind::Auth, "public fixture failure")) })
+                } else {
+                    self.server.send(request)
+                }
+            }
+        }
+        for path in ["/queue", "/history/", "/object_info", "/upload/image", "/prompt"] {
+            let p = ComfyProvider::new("http://gpu-box:8188", None, SALT, Arc::new(FailsAt { server: FakeServer::new(), path }), Arc::new(|| 0)).unwrap();
+            let c = crate::SubmitContext::new();
+            let request = job();
+            assert!(block_on(p.submit_with_delivery(&request, &c)).is_err(), "{path}");
+            assert!(c.finish_error().is_none());
+        }
+        let server = FakeServer::new();
+        let p = provider(server);
+        block_on(p.catalog()).unwrap();
+        let mut bad = job();
+        bad.params.clear();
+        let c = crate::SubmitContext::new();
+        assert!(block_on(p.submit_with_delivery(&bad, &c)).is_err());
+        assert!(c.finish_error().is_none());
     }
 
     #[test]

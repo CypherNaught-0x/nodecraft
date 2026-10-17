@@ -214,6 +214,25 @@ pub type ChunkSink<'a> = dyn FnMut(&[u8]) -> Result<(), ProviderError> + 'a;
 pub trait Http: MaybeSendSync {
     fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>>;
 
+    /// Request-local evidence. Legacy implementations are unknown before future construction.
+    fn send_with_delivery<'a>(&'a self, request: HttpRequest, context: &'a crate::RequestContext) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
+        context.unknown();
+        let work = self.send(request);
+        Box::pin(async move { work.await.map_err(crate::HttpFailure::unknown) })
+    }
+
+    /// Streaming counterpart with the same conservative legacy construction boundary.
+    fn send_streaming_with_delivery<'a>(
+        &'a self,
+        request: HttpRequest,
+        on_chunk: &'a mut ChunkSink<'a>,
+        context: &'a crate::RequestContext,
+    ) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
+        context.unknown();
+        let work = self.send_streaming(request, on_chunk);
+        Box::pin(async move { work.await.map_err(crate::HttpFailure::unknown) })
+    }
+
     /// Like [`Http::send`], but a successful (2xx) body goes to `on_chunk` as it arrives and the
     /// returned response has an empty body; an error status's body is returned whole. The default
     /// waits for the whole body and hands it over at once.
@@ -271,9 +290,13 @@ mod reqwest_impl {
 
         /// Sends the request (following redirects on native) and returns the final response with
         /// its status and lowercased headers.
-        async fn open(&self, mut request: HttpRequest) -> Result<(reqwest::Response, u16, Vec<(String, String)>), ProviderError> {
+        async fn open(
+            &self,
+            mut request: HttpRequest,
+            context: Option<&crate::RequestContext>,
+        ) -> Result<(reqwest::Response, u16, Vec<(String, String)>), ProviderError> {
             for _ in 0..=MAX_REDIRECTS {
-                let response = self.send_once(&request).await?;
+                let response = self.send_once(&request, context).await?;
                 let status = response.status().as_u16();
                 let headers: Vec<(String, String)> =
                     response.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_owned()))).collect();
@@ -290,7 +313,7 @@ mod reqwest_impl {
             Err(ProviderError::new(ErrorKind::Malformed, format!("more than {MAX_REDIRECTS} redirects")))
         }
 
-        async fn send_once(&self, request: &HttpRequest) -> Result<reqwest::Response, ProviderError> {
+        async fn send_once(&self, request: &HttpRequest, context: Option<&crate::RequestContext>) -> Result<reqwest::Response, ProviderError> {
             let method = match request.method {
                 HttpMethod::Get => reqwest::Method::GET,
                 HttpMethod::Head => reqwest::Method::HEAD,
@@ -306,7 +329,12 @@ mod reqwest_impl {
             if !request.body.is_empty() {
                 builder = builder.body(request.body.clone());
             }
-            builder.send().await.map_err(|e| network(&e))
+            let request = builder.build().map_err(|e| network(&e))?;
+            // Delivery becomes possible when execute is INVOKED, before its future is polled.
+            if let Some(context) = context {
+                context.unknown();
+            }
+            self.client.execute(request).await.map_err(|e| network(&e))
         }
     }
 
@@ -362,43 +390,73 @@ mod reqwest_impl {
         }
     }
 
+    impl ReqwestHttp {
+        async fn send_inner(&self, request: HttpRequest, context: Option<&crate::RequestContext>) -> Result<HttpResponse, ProviderError> {
+            let cap = request.max_response_bytes;
+            let (response, status, headers) = self.open(request, context).await?;
+            let body = read_body(response, cap).await?;
+            Ok(HttpResponse { status, headers, body })
+        }
+        async fn streaming_inner<'a>(
+            &'a self,
+            request: HttpRequest,
+            on_chunk: &'a mut ChunkSink<'a>,
+            context: Option<&'a crate::RequestContext>,
+        ) -> Result<HttpResponse, ProviderError> {
+            let cap = request.max_response_bytes;
+            let (response, status, headers) = self.open(request, context).await?;
+            if !(200..300).contains(&status) {
+                let body = read_body(response, cap).await?;
+                return Ok(HttpResponse { status, headers, body });
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let mut response = response;
+                let mut total = 0usize;
+                while let Some(chunk) = response.chunk().await.map_err(|e| network(&e))? {
+                    total = total.saturating_add(chunk.len());
+                    if total > cap {
+                        return Err(too_large(cap));
+                    }
+                    on_chunk(&chunk)?;
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let body = read_body(response, cap).await?;
+                on_chunk(&body)?;
+            }
+            Ok(HttpResponse { status, headers, body: Vec::new() })
+        }
+    }
     impl Http for ReqwestHttp {
         fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
-            Box::pin(async move {
-                let cap = request.max_response_bytes;
-                let (response, status, headers) = self.open(request).await?;
-                let body = read_body(response, cap).await?;
-                Ok(HttpResponse { status, headers, body })
-            })
+            Box::pin(self.send_inner(request, None))
         }
-
         fn send_streaming<'a>(&'a self, request: HttpRequest, on_chunk: &'a mut ChunkSink<'a>) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
-            Box::pin(async move {
-                let cap = request.max_response_bytes;
-                let (response, status, headers) = self.open(request).await?;
-                if !(200..300).contains(&status) {
-                    let body = read_body(response, cap).await?;
-                    return Ok(HttpResponse { status, headers, body });
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let mut response = response;
-                    let mut total = 0usize;
-                    while let Some(chunk) = response.chunk().await.map_err(|e| network(&e))? {
-                        total = total.saturating_add(chunk.len());
-                        if total > cap {
-                            return Err(too_large(cap));
-                        }
-                        on_chunk(&chunk)?;
-                    }
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let body = read_body(response, cap).await?;
-                    on_chunk(&body)?;
-                }
-                Ok(HttpResponse { status, headers, body: Vec::new() })
-            })
+            Box::pin(self.streaming_inner(request, on_chunk, None))
+        }
+        fn send_with_delivery<'a>(
+            &'a self,
+            request: HttpRequest,
+            context: &'a crate::RequestContext,
+        ) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
+            context.arm();
+            // Browser fetch owns redirects/staging: no positive browser delivery claim.
+            #[cfg(target_arch = "wasm32")]
+            context.unknown();
+            Box::pin(async move { self.send_inner(request, Some(context)).await.map_err(|error| context.failure(error)) })
+        }
+        fn send_streaming_with_delivery<'a>(
+            &'a self,
+            request: HttpRequest,
+            on_chunk: &'a mut ChunkSink<'a>,
+            context: &'a crate::RequestContext,
+        ) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
+            context.arm();
+            #[cfg(target_arch = "wasm32")]
+            context.unknown();
+            Box::pin(async move { self.streaming_inner(request, on_chunk, Some(context)).await.map_err(|error| context.failure(error)) })
         }
     }
 }
