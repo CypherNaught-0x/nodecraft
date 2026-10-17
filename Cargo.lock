@@ -2636,6 +2636,11 @@ name = "nodecraft-automation"
 version = "0.1.0"
 dependencies = [
  "nodecraft-engine",
+ "nodecraft-graph",
+ "nodecraft-nodes",
+ "nodecraft-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2653,7 +2658,10 @@ dependencies = [
 name = "nodecraft-cli"
 version = "0.1.0"
 dependencies = [
+ "nodecraft-automation",
  "nodecraft-engine",
+ "nodecraft-types",
+ "serde_json",
 ]
 
 [[package]]

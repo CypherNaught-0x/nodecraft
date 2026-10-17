@@ -215,4 +215,5 @@ that drive real pointer and key events through the canvas.
 | Cutting a release, signing, packaging | `docs/releasing.md` |
 | Installing (incl. unsigned builds) | `docs/install.md` |
 | Status | `ROADMAP.md` (update it when a milestone task lands) |
+| MCP server and its tools | `docs/mcp.md` |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |
