@@ -1,0 +1,24 @@
+{
+  "Painter": {
+    "outputs": [
+      {
+        "type": "media",
+        "value": {
+          "hash": "08705acdb70129938a93aa10aca935cdf87b454a387cdd2858a374c44af8e73a",
+          "meta": {},
+          "mime": "image/x-nodecraft-mock"
+        }
+      }
+    ],
+    "stamped": true
+  },
+  "Writer": {
+    "outputs": [
+      {
+        "type": "text",
+        "value": "mock-text: a fox in the snow #8486ca86"
+      }
+    ],
+    "stamped": true
+  }
+}

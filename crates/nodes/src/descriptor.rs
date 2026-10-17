@@ -122,11 +122,36 @@ pub struct PlanCtx<'a> {
 }
 
 /// Pure job descriptions consumed by the run planner. Source jobs emit existing values/assets;
-/// they perform no decoding, filesystem access or paid provider calls.
+/// they perform no decoding, filesystem access or paid provider calls. Generate jobs call a model
+/// through a provider adapter (#79): the host looks the provider up by id, sends it the model,
+/// parameters and role-tagged inputs, and maps what it returns onto `output`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobSpec {
-    Source { node: NodeId, output: String, value: Value },
+    Source {
+        node: NodeId,
+        output: String,
+        value: Value,
+    },
+    Generate {
+        node: NodeId,
+        /// The output port the results go to (several results make a list output's items).
+        output: String,
+        /// The provider adapter's id (`fal`, `comfyui`, `mock`); also the scheduler lane.
+        provider: String,
+        /// The provider's model id (from the catalog).
+        model: String,
+        /// The model's parameters, as the node resolved them.
+        params: ParamValues,
+        inputs: Vec<GenerateInput>,
+    },
+}
+
+/// One input to a model call, in a role such as `prompt`, `system` or `image`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerateInput {
+    pub role: String,
+    pub value: Value,
 }
 
 /// A proposed explicit schema migration. Apply `node` with graph's SetNode only after showing

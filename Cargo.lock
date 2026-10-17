@@ -2683,6 +2683,7 @@ dependencies = [
 name = "nodecraft-engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "craft-settings",
  "futures",
  "keyring",
@@ -2779,7 +2780,15 @@ dependencies = [
 name = "nodecraft-testkit"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "futures",
  "nodecraft-engine",
+ "nodecraft-exec",
+ "nodecraft-graph",
+ "nodecraft-nodes",
+ "nodecraft-providers",
+ "nodecraft-types",
+ "serde_json",
 ]
 
 [[package]]

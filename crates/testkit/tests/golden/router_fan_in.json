@@ -1,0 +1,11 @@
+{
+  "Writer": {
+    "outputs": [
+      {
+        "type": "text",
+        "value": "mock-text: an owl / at dusk #0a9c4410"
+      }
+    ],
+    "stamped": true
+  }
+}

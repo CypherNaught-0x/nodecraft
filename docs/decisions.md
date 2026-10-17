@@ -852,3 +852,26 @@ a choice a later contributor might otherwise undo.
   and projects. A NodeCraft copy this version can't read shows a notice instead of becoming text.
 - **Parameters travel through the OS clipboard as they are**, which is safe because kinds never
   keep secrets in parameters or config (keys live in the keychain).
+
+## 2026-10-17 · Model calls as jobs, the mock provider and golden graphs (#79)
+
+- **`JobSpec::Generate` is the one way a node calls a model.** It names a provider adapter by id,
+  a model, the node's parameters and role-tagged inputs, plus the output port the results go to.
+  The provider id is also the scheduler lane, so per-provider limits apply. `exec::run` treats it
+  like any job; `SourceRunner` refuses it.
+- **`engine::generate` translates in both directions.** Parameters go to the provider as plain
+  JSON. Inputs go as role-tagged text, with a list sending one entry per item. Media inputs are
+  refused as unsupported until the asset store exists. A `Completed` result comes back as text
+  values, or as media values that reference the returned bytes by Blake3 hash; the host stores
+  the bytes. URL outputs must be downloaded first.
+- **`nodecraft-testkit` provides `MockProvider`**, a deterministic fake for text, image, video and
+  audio models. Its results depend only on model, parameters and inputs. It can be scripted per
+  model: polls before done, a reported cost, failure at submit, poll or job. It records requests
+  and bills once per idempotency key. It also provides mock generation kinds (`mock.text`,
+  `mock.image`).
+- **Golden graphs run a canvas end to end:** plan, run executor, `run_to_completion` against the
+  mock, results recorded with `record_changes`. Each step's outputs are compared with a blessed
+  JSON file, and the project itself with a second one, so serialization drift shows up in review.
+  Each golden also checks that nothing is stale after its results are recorded. Bless with
+  `NODECRAFT_BLESS=1`. The project files are graph JSON until the `.ncraft` archive (#134)
+  lands.

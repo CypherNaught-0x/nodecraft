@@ -1,0 +1,8 @@
+{
+  "Painter": {
+    "failed": "skipped: “Writer” didn't produce a result"
+  },
+  "Writer": {
+    "failed": "the job failed: mock job failure"
+  }
+}

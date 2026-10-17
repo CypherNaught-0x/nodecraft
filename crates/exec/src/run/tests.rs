@@ -124,7 +124,7 @@ fn drive(run: &mut Run, kinds: &Registry, first: Progress, fail: &BTreeSet<NodeI
     let mut queue = first.jobs;
     while let Some(job) = queue.pop() {
         all.push(job.clone());
-        let JobSpec::Source { node, output, value } = run.work(job.id).unwrap().clone();
+        let Some(JobSpec::Source { node, output, value }) = run.work(job.id).cloned() else { panic!("only source jobs in these tests") };
         let progress = if fail.contains(&node) { run.job_failed(job.id, "provider said no") } else { run.job_done(kinds, job.id, vec![(output, value)]) };
         queue.extend(progress.jobs);
         finished.extend(progress.finished);
