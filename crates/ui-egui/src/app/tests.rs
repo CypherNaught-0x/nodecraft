@@ -1927,3 +1927,21 @@ fn oversized_and_foreign_media_pastes_are_refused() {
     h.run();
     assert_eq!(nodes_of(&h, "source.image").len(), 1);
 }
+
+#[test]
+fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
+    let mut h = harness();
+    h.get_by_role_and_label(Role::Button, "API keys").click();
+    h.run();
+    assert!(h.state().keys.open);
+    let before = h.state().session.document().clone();
+    // The key field isn't focused yet: the paste must not become a Text node.
+    h.hover_at(Pos2::new(400.0, 300.0));
+    h.event(egui::Event::Paste("sk-proj-not-a-real-key-1234".into()));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // Copy and cut are held back too.
+    h.event(egui::Event::Copy);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}

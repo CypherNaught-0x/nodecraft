@@ -391,7 +391,9 @@ impl NodeCraftApp {
             }
             // Clipboard: the platform turns ⌘C/⌘X/⌘V into events; ⌘D duplicates in place.
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx());
+            // Nor while the API keys panel is open: text pasted for a key before its field has
+            // focus must never become a node in the (autosaved) project.
+            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
