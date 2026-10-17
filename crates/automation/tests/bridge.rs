@@ -96,11 +96,16 @@ fn the_bridge_reconnects_after_the_app_closes_an_idle_connection() {
         }
     });
     let mut client = Client::connect(addr, &token.to_hex()).unwrap();
-    assert!(client.call("state.get", serde_json::Map::new()).is_ok());
+    let add = |n: u8| {
+        let node = json!({"id": format!("{n:02x}111111-1111-4111-8111-111111111111"), "kind": "source.text"});
+        json!({"id": "node.add", "params": {"canvas": CANVAS, "node": node}}).as_object().unwrap().clone()
+    };
+    assert!(client.call("command.run", add(1)).is_ok());
     std::thread::sleep(Duration::from_millis(800));
-    // The app closed the idle connection: this call fails (and is not resent)...
-    let lost = client.call("state.get", serde_json::Map::new());
+    // The app closed the idle connection: this call fails and is not resent...
+    let lost = client.call("command.run", add(2));
+    assert!(lost.is_err(), "{lost:?}");
     // ...and the next one reconnects.
-    let next = client.call("state.get", serde_json::Map::new());
-    assert!(next.is_ok(), "reconnected: {lost:?} then {next:?}");
+    let state = client.call("state.get", serde_json::Map::new()).unwrap();
+    assert_eq!(state["canvases"][0]["nodes"], 1, "the failed add never ran: nothing runs twice or late");
 }

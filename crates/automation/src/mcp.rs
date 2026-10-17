@@ -438,11 +438,16 @@ impl McpServer {
             }
             #[cfg(not(target_arch = "wasm32"))]
             (Backend::Bridge(client), "screenshot") => {
-                return Ok(match client.call("screenshot", Map::new()) {
-                    Ok(shot) => json!({
-                        "content": [{"type": "image", "data": shot.get("data").cloned().unwrap_or(Value::Null), "mimeType": shot.get("mime").cloned().unwrap_or(json!("image/png"))}],
-                        "isError": false
-                    }),
+                let image = client.call("screenshot", Map::new()).and_then(|mut shot| {
+                    let shot = shot.as_object_mut().ok_or_else(internal)?;
+                    // Moved, not cloned: a screenshot can be tens of megabytes.
+                    match (shot.remove("data"), shot.remove("mime")) {
+                        (Some(Value::String(data)), Some(Value::String(mime))) => Ok((data, mime)),
+                        _ => Err(Error::new(ErrorKind::Internal, "the app sent a screenshot without image data")),
+                    }
+                });
+                return Ok(match image {
+                    Ok((data, mime)) => json!({"content": [{"type": "image", "data": data, "mimeType": mime}], "isError": false}),
                     Err(e) => tool_err(&e),
                 });
             }
