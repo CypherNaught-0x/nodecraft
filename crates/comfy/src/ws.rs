@@ -86,16 +86,16 @@ pub fn parse_text(message: &str) -> Result<WsEvent, ComfyError> {
     let mut v: Value = crate::error::parse_json("WebSocket message", message.as_bytes(), MAX_WS_MESSAGE_BYTES)?;
     // Check cached-ID extraction before copying any event fields. The raw JSON byte cap
     // does not bound the allocated Vec/String representation of many small identifiers.
-    if v.get("type").and_then(Value::as_str) == Some("execution_cached") {
-        if let Some(nodes) = v.get("data").and_then(|data| data.get("nodes")).and_then(Value::as_array) {
-            let mut budget = FileBudget::default();
-            budget.scan(nodes.len())?;
-            for node in nodes {
-                match node {
-                    Value::String(node) => budget.charge(node.len().saturating_add(64))?,
-                    Value::Number(_) => budget.charge(96)?,
-                    _ => {}
-                }
+    if v.get("type").and_then(Value::as_str) == Some("execution_cached")
+        && let Some(nodes) = v.get("data").and_then(|data| data.get("nodes")).and_then(Value::as_array)
+    {
+        let mut budget = FileBudget::default();
+        budget.scan(nodes.len())?;
+        for node in nodes {
+            match node {
+                Value::String(node) => budget.charge(node.len().saturating_add(64))?,
+                Value::Number(_) => budget.charge(96)?,
+                _ => {}
             }
         }
     }
