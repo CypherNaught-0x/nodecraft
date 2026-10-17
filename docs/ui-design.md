@@ -42,6 +42,9 @@ selected border more visible than the resting one, in both themes.
 | Pinch, or ⌘/Ctrl + scroll | zoom about the pointer (10%–400%) |
 | ⌘/Ctrl + `=` / `-` | zoom about the centre by 1.25× |
 | ⌘/Ctrl + `0`, or click the zoom badge | 100%, centred on the cards |
+| ⌘/Ctrl+F outside unrelated editors, popups and gestures | open/focus canvas search |
+| Enter / Shift+Enter in search | next / previous result, wrapping after the scan completes |
+| Escape in search | close search and retain selection |
 | Shift+1 / Shift+2 outside editors and gestures | fit all / selected nodes |
 | Shift+M, or Hide map / Show map | toggle the minimap |
 | Click or primary-drag the minimap | center the canvas on that world point |
@@ -134,3 +137,51 @@ params)` (and `navigation_enabled`) to compute current geometry, selection and f
 install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
 headless Session has no live capability and returns Unsupported. Existing services/resources are
 preserved. The older 100% reset button and shortcut retain their existing view-only path.
+
+## Canvas search
+
+Search opens from the top-right Search button or ⌘/Ctrl+F. It matches complete stored node titles,
+Text values throughout parameter/configuration lists, and the linked tag title. Automatic prompt
+labels match through their full stored prompt/text, including tails beyond the card preview.
+When the card uses a kind-label fallback, search uses the same checked instance label. Unavailable
+kinds still match their stored title/text; their automatic fallback is “Unknown node.” Model
+matching currently means persisted textual identifiers/configuration. Catalog display labels and
+unstored schema defaults are not indexed; catalog integration can add verified labels later.
+
+Matching is literal and case insensitive through Rust Unicode scalar lowercase expansion, including
+İ→i plus combining dot. It is not regex, locale-dependent matching, Unicode normalization or full
+case folding (ß does not become ss). Each field is independent. Leading/trailing Unicode whitespace
+in the query is ignored; an empty query returns no matches and leaves selection alone. Queries
+above 1024 UTF-8 bytes are rejected with an error; a bounded editor draft permits displaying and
+correcting that error instead of accepting a silently truncated query.
+
+Scanning borrows text, keeps a UTF-8 cursor plus small KMP state, and charges at most 32 KiB of source
+text and 4096 structural/path work units per frame. Empty/nested values count too. A chunk boundary
+never loses a partial match. Results retain at most one NodeId per actual validated canvas node,
+ordered by NodeId, without a truncated result list or full-prompt lowercase copies. Revisions,
+canvas changes and queries restart the scan; unchanged idle frames do not scan. The existing
+geometry refresh also retains one fallback label per node (at most 256 bytes each, at most 2.56 MB
+of label bytes under today's graph node cap, plus map overhead); descriptor validation precedes
+copying, borrowed validation is shared and owned descriptors are not retained. Queries do no
+instance resolution. Startup/reset shares this cache.
+
+The overlay shows progress, match count, Previous, Next and Close search. Typing is accepted before
+Enter in the same frame. While incomplete, one generation-tagged next/previous request waits for
+the complete list; another request replaces it, so wrapping cannot use partial or old results.
+Query changes select/frame the first result after completion; document edits keep the current ID
+when it still matches. Next/previous wrap deterministically. Closing cancels deferred framing and
+retains the query and document selection. No matches leave the previous selection unchanged.
+
+Framing uses actual instance card/title/handle bounds, reserves both overlays, selects the result
+in view state and reports minimum-zoom or unavailable-geometry limitations. The search input alone
+has a focus exemption for framing. Opening yields to unrelated node editors so ⌘/Ctrl+F cannot
+blur-commit a dirty title/parameter. Popups and existing gestures retain ownership. Search Escape
+is consumed before canvas selection Escape, including egui's early focus-loss transition.
+
+`canvas.search_open`, `canvas.search_query`, `canvas.search_next`, `canvas.search_previous` and
+`canvas.search_close` share the engine service path. Live callers use
+`NodeCraftApp::dispatch_search(ctx,id,params)` / `search_enabled`; state changes apply immediately,
+scans progress on rendered frames, and queued framing waits for completion and input availability.
+Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
+Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
+events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.

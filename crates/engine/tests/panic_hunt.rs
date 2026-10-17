@@ -82,6 +82,16 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if id.starts_with("canvas.search_") {
+        session.swap_resource(Some(nodecraft_engine::search_cmds::SearchContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            open: true,
+            has_query: true,
+        }));
+        session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
@@ -92,6 +102,8 @@ fn template(id: &str) -> (Session, Value) {
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
+        "canvas.search_query" => json!({"query":"needle"}),
         "canvas.pan_to" => json!({"x":0,"y":0}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();

@@ -19,6 +19,8 @@ pub struct Geometry {
     key: Option<(ProjectId, CanvasId, u64, ThemeKind)>,
     session_identity: Option<Arc<SessionIdentity>>,
     pub rects: BTreeMap<NodeId, Rect>,
+    /// Checked instance labels: at most256bytes per actual node; no descriptor bodies retained.
+    pub labels: BTreeMap<NodeId, String>,
     pub error: bool,
     #[cfg(test)]
     validations: usize,
@@ -30,6 +32,7 @@ impl Geometry {
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
+            self.labels.clear();
             self.key = None;
             self.error = true;
             return;
@@ -41,14 +44,19 @@ impl Geometry {
         self.key = Some(key);
         self.session_identity = Some(identity);
         self.rects.clear();
+        self.labels.clear();
         self.error = false;
         let mut validated = ValidatedDescriptors::default();
         for node in scene.nodes().values() {
-            match instance_rect(session, node, theme.tokens(), &mut validated) {
-                Ok(rect) => {
+            match instance_info(session, node, theme.tokens(), &mut validated) {
+                Ok((rect, label)) => {
                     self.rects.insert(node.id, rect);
+                    self.labels.insert(node.id, label);
                 }
-                Err(_) => self.error = true,
+                Err(_) => {
+                    self.error = true;
+                    self.labels.insert(node.id, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() });
+                }
             }
         }
         #[cfg(test)]
@@ -76,12 +84,12 @@ struct ValidatedDescriptors<'a> {
     #[cfg(test)]
     validations: usize,
 }
-fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<Rect, Error> {
+fn instance_info<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<(Rect, String), Error> {
     node.validate_payload()?;
     // Match painting's bounded placeholder on every schema-resolution/admission failure.
     let placeholder = || {
         let rect = card::world_rect(node, None, t);
-        if valid_rect(rect) { Ok(rect) } else { Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable")) }
+        if valid_rect(rect) { Ok((rect, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() })) } else { Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable")) }
     };
     let Ok(kind) = session.kinds().get(&node.kind) else {
         return placeholder();
@@ -141,7 +149,7 @@ fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tok
     if !valid_rect(rect) {
         return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
     }
-    Ok(rect)
+    Ok((rect, if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
 }
 /// Includes the painted title/unsaved label, body and handles at ordinary zoom. Additional
 /// screen padding in fit accounts for minimum screen-sized text/handles at low zoom.
@@ -447,7 +455,7 @@ mod tests {
         owned.config.insert("test.owned".into(), Value::Bool(true));
         let mut validated = ValidatedDescriptors::default();
         for _ in 0..2 {
-            instance_rect(&session, &owned, ThemeKind::Dark.tokens(), &mut validated).unwrap();
+            instance_info(&session, &owned, ThemeKind::Dark.tokens(), &mut validated).unwrap();
         }
         assert_eq!(validated.validations, 2, "owned descriptor allocations never share validation");
         geometry.refresh(&mut session, CanvasId::from_bytes([9; 16]), ThemeKind::Dark);

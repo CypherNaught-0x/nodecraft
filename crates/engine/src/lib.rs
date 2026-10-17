@@ -10,6 +10,7 @@ pub mod commands;
 pub mod graph_cmds;
 pub mod navigation_cmds;
 pub mod node_cmds;
+pub mod search_cmds;
 pub mod session;
 pub mod settings;
 
