@@ -156,3 +156,106 @@ fn keychain_answers_arrive_later_from_the_worker() {
     assert_eq!(h.state().panel.rows()[0].1, KeyStatus::Stored("…1234".into()));
     assert_eq!(h.state().changes, [AccountChange::Remember(Account::new("openai").unwrap())]);
 }
+
+#[test]
+fn undo_after_save_and_closing_the_window_never_bring_the_key_back() {
+    let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
+    h.run();
+    h.get_by_label("openai").click();
+    h.run();
+    type_into(&mut h, "Key", KEY);
+    h.get_by_label("Save").click();
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.state().panel.key.is_empty(), "undo history was cleared");
+    // Typed but not saved, then the panel is closed (toolbar toggle): forgotten.
+    type_into(&mut h, "Key", KEY);
+    assert_eq!(h.state().panel.key, KEY);
+    h.state_mut().panel.open = false;
+    h.run();
+    assert!(h.state().panel.key.is_empty());
+    h.state_mut().panel.open = true;
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.state().panel.key.is_empty());
+}
+
+/// A keychain that refuses everything (locked, access denied).
+struct Denied;
+impl SecretStore for Denied {
+    fn get(&self, _: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
+        Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))
+    }
+    fn set(&self, _: &Account, _: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
+        Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))
+    }
+    fn delete(&self, _: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
+        Ok(false)
+    }
+}
+
+/// A keychain that never answers (a prompt nobody clicks).
+struct Hangs;
+impl SecretStore for Hangs {
+    fn get(&self, _: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+        Ok(None)
+    }
+    fn set(&self, _: &Account, _: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
+        Ok(())
+    }
+    fn delete(&self, _: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
+        Ok(false)
+    }
+}
+
+fn worker_state(store: Arc<dyn SecretStore>, accounts: &[&str]) -> State {
+    let (worker, results) = KeyWorker::spawn(store).unwrap();
+    let mut services = Services::default();
+    register_key_worker(&mut services, worker).unwrap();
+    State {
+        panel: KeysPanel { open: true, ..KeysPanel::default() },
+        session: session(services),
+        settings: KeySettings { accounts: accounts.iter().map(|a| (*a).to_owned()).collect() },
+        changes: vec![],
+        results: Some(results),
+    }
+}
+
+#[test]
+fn keychain_errors_and_silence_become_retryable_failures() {
+    let mut h = harness(worker_state(Arc::new(Denied), &["openai"]));
+    h.run();
+    h.get_by_label("Check").click();
+    h.run();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().panel.is_waiting() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run();
+    }
+    assert!(
+        matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("unlock the keychain") || why.contains("denied")),
+        "{:?}",
+        h.state().panel.rows()
+    );
+
+    let mut state = worker_state(Arc::new(Hangs), &["openai"]);
+    state.panel.timeout_s = 0.2;
+    let mut h = harness(state);
+    h.run();
+    h.get_by_label("Check").click();
+    h.run();
+    for _ in 0..30 {
+        h.step();
+    }
+    assert!(!h.state().panel.is_waiting());
+    assert!(matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("No answer")));
+    assert!(h.query_by_label("Check").is_some(), "the row can be tried again");
+}

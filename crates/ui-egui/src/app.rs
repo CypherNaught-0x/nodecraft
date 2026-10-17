@@ -182,11 +182,20 @@ impl NodeCraftApp {
     pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Result<Self, Error> {
         let settings = store.get().clone();
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
-        let (worker, results) = nodecraft_engine::secrets::KeyWorker::spawn(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore))?;
+        // If the thread can't start, the app runs without the keychain (the panel says so).
         let mut services = nodecraft_engine::commands::Services::default();
-        nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
+        let results = match nodecraft_engine::secrets::KeyWorker::spawn(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore)) {
+            Ok((worker, results)) => {
+                nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
+                Some(results)
+            }
+            Err(e) => {
+                log::warn!("API keys unavailable: {}", e.message);
+                None
+            }
+        };
         let mut app = Self::with_services(services)?;
-        app.key_results = Some(results);
+        app.key_results = results;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.apply_settings(ctx, &settings);

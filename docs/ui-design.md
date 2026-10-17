@@ -25,6 +25,7 @@ same structure with the values inverted.
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
 | `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
+| `danger` | `#f06a5f` | `#c4372b` | errors and failed states in chrome |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9. Cards are 320 points wide, at least 220 high, with 64 points per

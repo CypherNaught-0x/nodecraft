@@ -38,6 +38,8 @@ pub struct Tokens {
     pub accent: Color32,
     /// Translucent fill of the box-select rectangle (outlined with `accent`).
     pub marquee_fill: Color32,
+    /// Errors and failed states in chrome (not the accent, which reads as a highlight).
+    pub danger: Color32,
 
     /// Distance between grid dots, at 100% zoom.
     pub grid_spacing: f32,
@@ -79,6 +81,7 @@ pub const DARK: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
+    danger: Color32::from_rgb(0xf0, 0x6a, 0x5f),
     grid_spacing: 20.0,
     grid_dot_radius: 1.0,
     card_radius: 14,
@@ -115,6 +118,7 @@ pub const LIGHT: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0x18, 0x18, 0x1b),
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
+    danger: Color32::from_rgb(0xc4, 0x37, 0x2b),
     ..DARK
 };
 

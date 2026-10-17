@@ -19,6 +19,10 @@ use serde_json::{Value, json};
 
 use crate::theme::Tokens;
 
+/// How long a request may wait for the keychain (an unanswered unlock prompt) before the row
+/// says so and can be used again. A late answer is then ignored.
+pub const KEYCHAIN_TIMEOUT_S: f64 = 120.0;
+
 /// Common providers, offered as quick picks.
 const PRESETS: &[&str] = &["openai", "anthropic", "openrouter", "fal", "replicate"];
 
@@ -48,17 +52,38 @@ pub enum AccountChange {
     Forget(Account),
 }
 
-#[derive(Default)]
 pub struct KeysPanel {
     pub open: bool,
+    /// Seconds a request may wait for the keychain ([`KEYCHAIN_TIMEOUT_S`]).
+    pub timeout_s: f64,
     rows: Vec<(Account, KeyStatus)>,
     loaded: bool,
     account: String,
     key: String,
-    /// Requests the keychain hasn't answered: id → (account, what was asked).
-    pending: BTreeMap<u64, (Account, Op)>,
+    /// Requests the keychain hasn't answered: id → (account, what was asked, when, in egui
+    /// seconds).
+    pending: BTreeMap<u64, (Account, Op, f64)>,
+    /// egui time of the current frame.
+    now: f64,
     confirm_remove: Option<Account>,
     pub notice: Option<String>,
+}
+
+impl Default for KeysPanel {
+    fn default() -> Self {
+        Self {
+            open: false,
+            timeout_s: KEYCHAIN_TIMEOUT_S,
+            rows: Vec::new(),
+            loaded: false,
+            account: String::new(),
+            key: String::new(),
+            pending: BTreeMap::new(),
+            now: 0.0,
+            confirm_remove: None,
+            notice: None,
+        }
+    }
 }
 
 impl KeysPanel {
@@ -97,11 +122,15 @@ impl KeysPanel {
         match session.dispatch(id, &params) {
             Ok(answer) => match answer.get("pending").and_then(Value::as_u64) {
                 Some(request) => {
-                    self.pending.insert(request, (account.clone(), op));
+                    self.notice = None;
+                    self.pending.insert(request, (account.clone(), op, self.now));
                     self.set_status(account, KeyStatus::Waiting);
                     None
                 }
-                None => self.apply(account, op, Ok(answer)),
+                None => {
+                    self.notice = None;
+                    self.apply(account, op, Ok(answer))
+                }
             },
             Err(e) => {
                 self.notice = Some(e.message);
@@ -146,7 +175,7 @@ impl KeysPanel {
         let mut others = Vec::new();
         for outcome in outcomes {
             match self.pending.remove(&outcome.id) {
-                Some((account, op)) => changes.extend(self.apply(&account, op, outcome.result)),
+                Some((account, op, _)) => changes.extend(self.apply(&account, op, outcome.result)),
                 None => others.push(outcome),
             }
         }
@@ -157,8 +186,14 @@ impl KeysPanel {
     pub fn show(&mut self, ctx: &egui::Context, session: &mut Session, settings: &KeySettings, t: &Tokens) -> Vec<AccountChange> {
         let mut changes = Vec::new();
         if !self.open {
+            // Closed some other way (the toolbar button): still forget anything typed.
+            if !self.key.is_empty() {
+                self.forget_typed(ctx);
+            }
             return changes;
         }
+        self.now = ctx.input(|i| i.time);
+        self.expire();
         self.load(settings);
         let mut open = self.open;
         let frame =
@@ -178,7 +213,7 @@ impl KeysPanel {
                         KeyStatus::Waiting => ("Waiting for the keychain…".to_owned(), t.text_muted),
                         KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
                         KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
-                        KeyStatus::Failed(why) => (why.clone(), t.accent),
+                        KeyStatus::Failed(why) => (why.clone(), t.danger),
                     };
                     ui.label(egui::RichText::new(text).color(color));
                     ui.horizontal(|ui| {
@@ -215,11 +250,15 @@ impl KeysPanel {
                 ui.end_row();
                 let label = ui.label(egui::RichText::new("Key").color(t.text_muted));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.key).password(true).hint_text("paste the key").desired_width(t.card_width))
-                        .labelled_by(label.id);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.key).id(Self::key_field()).password(true).hint_text("paste the key").desired_width(t.card_width),
+                    )
+                    .labelled_by(label.id);
                     if ui.add_enabled(!self.key.trim().is_empty(), egui::Button::new("Save")).clicked() {
-                        // The field is cleared whatever happens: the key lives only in the keychain.
+                        // The field (and its undo history) is cleared whatever happens: the key
+                        // lives only in the keychain.
                         let key = std::mem::take(&mut self.key);
+                        self.forget_typed(ui.ctx());
                         match Account::new(self.account.trim()) {
                             Ok(account) => changes.extend(self.send(session, Op::Set, &account, json!({"account": account.as_str(), "key": key}))),
                             Err(e) => self.notice = Some(e.to_string()),
@@ -229,11 +268,41 @@ impl KeysPanel {
                 ui.end_row();
             });
             if let Some(notice) = &self.notice {
-                ui.label(egui::RichText::new(notice).color(t.accent));
+                ui.label(egui::RichText::new(notice).color(t.danger));
             }
         });
+        if !open {
+            // Closing forgets anything typed: the key lives only in the keychain.
+            self.forget_typed(ctx);
+            self.confirm_remove = None;
+        }
         self.open = open;
         changes
+    }
+
+    /// The key field's id, so its undo history can be cleared.
+    fn key_field() -> egui::Id {
+        egui::Id::new("nodecraft.keys.key")
+    }
+
+    /// Clears the typed key and the field's undo history, which would otherwise bring it back.
+    fn forget_typed(&mut self, ctx: &egui::Context) {
+        self.key.clear();
+        if let Some(mut state) = egui::TextEdit::load_state(ctx, Self::key_field()) {
+            state.clear_undoer();
+            state.store(ctx, Self::key_field());
+        }
+    }
+
+    /// Requests the keychain never answered become failures the user can retry.
+    fn expire(&mut self) {
+        let (now, limit) = (self.now, self.timeout_s);
+        let late: Vec<u64> = self.pending.iter().filter(|(_, (_, _, since))| now - since > limit).map(|(id, _)| *id).collect();
+        for id in late {
+            if let Some((account, _, _)) = self.pending.remove(&id) {
+                self.set_status(&account, KeyStatus::Failed("No answer from the keychain (is an unlock prompt open?). Try again.".into()));
+            }
+        }
     }
 }
 
