@@ -10,7 +10,7 @@ a choice a later contributor might otherwise undo.
   a registry of `Box<dyn Provider>`; no `async-trait` dependency.
 - **`exec` and `providers` don't know each other** (same layer). The engine implements
   `exec::driver::JobRunner` with `providers::run_to_completion`, wrapping exec's `CancelToken`
-  and the runtime as `providers::CancelSignal` / `Sleep`.
+  and the runtime as `providers::CancelSignal` / `Clock`.
 - **A job is submitted once.** Transient poll errors are retried in place. A run that fails after
   the provider accepted the job returns its handle (`RunFailure::handle`), and the engine's
   `jobs::ProviderRunner` keeps it, so the scheduler's retry *resumes* the job instead of
@@ -32,12 +32,7 @@ a choice a later contributor might otherwise undo.
 - **Downloads are checked and hashed:** sniffed with `media::sniff` (an error page served as 200
   is refused), length-checked against `Content-Length`, and returned with their BLAKE3
   `ContentHash` for the asset store. Inline output bytes go through the same check.
-  sends only `NodeCraft/<version>` as User-Agent, caps reply sizes while streaming, follows
-  redirects only within the same origin (custom auth headers would otherwise leak), and keeps
-  header values and URL queries out of `Debug` output and errors.
-- **reqwest 0.13 with rustls** (aws-lc-rs provider) on desktop; the browser build uses `fetch`.
-- **Downloads are sniffed** with `media::sniff`: an error page served as 200 is refused rather
-  than stored as an image.
+
 ## 2026-10-17 · Plugin system plan (#154)
 
 - **Plan before runtime.** [The plugin RFC](plugins-rfc.md) accepts data-only packages as the first
