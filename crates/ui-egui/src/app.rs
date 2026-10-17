@@ -125,6 +125,21 @@ fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regi
     painted.get(&node.id).copied().unwrap_or_else(|| card::world_rect(node, kinds.get(&node.kind).ok().map(|kind| kind.descriptor()), t))
 }
 
+/// A card's world rect for box selection: as painted this frame, or for a card that wasn't drawn,
+/// its resolved instance rect when the card could reach the box at all (the largest card at its
+/// position). Cards that can't reach it skip the resolution.
+fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, world: Rect, t: &theme::Tokens) -> Rect {
+    if let Some(rect) = painted.get(&node.id) {
+        return *rect;
+    }
+    let largest = Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, t.card_max_height));
+    if !largest.intersects(world) {
+        return largest;
+    }
+    let resolved = kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok());
+    card::world_rect(node, resolved.as_deref(), t)
+}
+
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
     pub view: CanvasView,
@@ -393,7 +408,7 @@ impl NodeCraftApp {
                 let world = Rect::from_two_pos(marquee.start, self.view.to_world(viewport.min, pointer));
                 let mut nodes = marquee.base.clone();
                 let (painted, kinds) = (&self.painted, self.session.kinds());
-                nodes.extend(selection::in_box(canvas, world, |node| card_geometry(painted, kinds, node, t)));
+                nodes.extend(selection::in_box(canvas, world, |node| box_geometry(painted, kinds, node, world, t)));
                 self.selection.replace(nodes);
                 // Above the card layers, which are drawn over the background painter.
                 ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("marquee"))).with_clip_rect(viewport).rect(

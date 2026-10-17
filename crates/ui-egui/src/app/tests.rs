@@ -1018,3 +1018,72 @@ fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
     box_drag(&mut h, view.to_screen(origin, lower.min), view.to_screen(origin, lower.max), egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
 }
+
+#[test]
+fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
+    use std::borrow::Cow;
+    // The reverse of the tall case: static metadata is tall (six rows), each instance resolves to
+    // one row. Placed just above the viewport, the real card is culled while the static shape
+    // would reach into view.
+    struct Short(NodeDescriptor, NodeDescriptor);
+    impl NodeKind for Short {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn instance<'a>(&'a self, _: &nodecraft_graph::Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+            Ok(Cow::Borrowed(&self.1))
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+    }
+    let toggle = |n: u32| spec(&format!("p{n}"), ParamControl::Toggle, Value::Bool(false));
+    let tall = NodeDescriptor {
+        id: "test.short".into(),
+        label: "Short".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        params: ParamSchema { params: (0..6).map(toggle).collect() },
+        quick_add: None,
+    };
+    let short = NodeDescriptor { params: ParamSchema { params: vec![toggle(0)] }, ..tall.clone() };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Short").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut card = nodecraft_graph::Node::new(NodeId::from_bytes([3; 16]), "test.short");
+    card.params.insert("p0".into(), Value::Bool(false));
+    Change::AddNode { canvas, node: card }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Short(tall, short))).unwrap();
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.run();
+    let t = *h.state().theme.tokens();
+    let static_rect = card::world_rect(node(h.state()), h.state().session.kinds().get("test.short").ok().map(|k| k.descriptor()), &t);
+    let real = card::world_rect(
+        node(h.state()),
+        h.state().session.kinds().get("test.short").ok().and_then(|k| k.resolve_instance(node(h.state())).ok()).as_deref(),
+        &t,
+    );
+    assert!(static_rect.height() > real.height() + 100.0);
+    // Scroll so the real card (and its label and cull margin) is above the top edge, while the
+    // static shape would still reach well into the viewport.
+    let top = real.max.y + 120.0;
+    h.state_mut().view = CanvasView { pan: Vec2::new(300.0, -top), zoom: 1.0 };
+    h.run();
+    assert!(h.state().painted.is_empty(), "the short card must be culled for this test");
+    let (origin, view) = (h.state().viewport.min, h.state().view);
+    let from = view.to_screen(origin, Pos2::new(static_rect.min.x - 10.0, top + 10.0));
+    let to = view.to_screen(origin, Pos2::new(static_rect.max.x + 10.0, (static_rect.max.y - 10.0).max(top + 40.0)));
+    assert!(static_rect.intersects(Rect::from_two_pos(view.to_world(origin, from), view.to_world(origin, to))));
+    box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
+    assert!(h.state().selection.is_empty());
+}
