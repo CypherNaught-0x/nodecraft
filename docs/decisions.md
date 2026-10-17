@@ -4,6 +4,21 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · MCP server (#116)
+
+- **Generic tools, not one per command.** `command_list` and `command_run` follow the engine
+  registry, so a new command is available to agents with no MCP change, and runs through the
+  same `Session::dispatch` (validation, undo, events) as the UI. Techniques will get their own
+  tools, since they are the user's published units.
+- **Sans-IO server.** `automation::mcp::McpServer::handle` maps one JSON-RPC message to its reply;
+  `serve` adds the stdio framing. The bridge and HTTP transports reuse the same handler.
+- **Some commands are for people only** (`HUMAN_ONLY`): commands that take a secret
+  (`keys.set`) or destroy something with no undo (`keys.remove`). They are hidden from listing
+  and refused when run.
+- **Ids come from the host.** Commands take caller-chosen ids, so `ids_new` hands out UUIDs from a
+  host-supplied random source; the CLI seeds it from the standard library's per-process random
+  keys.
+
 ## 2026-10-17 · Chat turns, tools and usage (#195)
 
 - **Finished jobs report usage.** `Submission::Finished` and `JobProgress::Done` carry a

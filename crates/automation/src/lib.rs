@@ -3,3 +3,17 @@
 //! NodeCraft automation: control channel, MCP server and HTTP serve mode.
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
+
+pub mod mcp;
+
+use nodecraft_engine::Session;
+use nodecraft_graph::{Canvas, Change, Changeset, Project};
+use nodecraft_types::{CanvasId, Error, ProjectId};
+
+/// A session on a new, empty project with one canvas: what headless automation starts from until
+/// project files can be opened (#54).
+pub fn blank_session(project: ProjectId, canvas: CanvasId) -> Result<Session, Error> {
+    let mut document = Project::new(project, "Untitled")?;
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }]).apply(&mut document)?;
+    Session::new(document)
+}
