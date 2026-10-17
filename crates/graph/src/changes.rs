@@ -6,6 +6,21 @@ use crate::{Canvas, Comment, CommentPin, CommentReply, Edge, Field, Generation, 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// Compact membership-only edits; relationships are validated after the entire batch.
+    SetNodeFields {
+        canvas: CanvasId,
+        assignments: Vec<NodeFieldAssignment>,
+    },
+    /// Absolute positions keep inverse/redo exact and a 10k-member move compact.
+    MoveNodes {
+        canvas: CanvasId,
+        positions: Vec<NodePosition>,
+    },
+    /// Compact, independently bounded tag assignments; never copies node payloads.
+    SetNodeTags {
+        canvas: CanvasId,
+        assignments: Vec<NodeTagAssignment>,
+    },
     SetProjectTitle {
         title: String,
     },
@@ -146,6 +161,26 @@ pub enum Change {
     },
 }
 
+/// A tag-only node edit, also used to retain each previous value in the inverse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeTagAssignment {
+    pub node: NodeId,
+    pub tag: Option<TagId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeFieldAssignment {
+    pub node: NodeId,
+    pub field: Option<FieldId>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodePosition {
+    pub node: NodeId,
+    pub pos: Position,
+}
+
 /// An ordered, atomic edit and the serializable unit of undo/autosave/collaboration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Changeset {
@@ -275,10 +310,7 @@ fn stage_once(changes: &[Change], draft: &mut Project, byte_limit: usize) -> Res
     inverse.reverse();
     let inverse = Changeset::new(inverse);
     // A successful edit must always return a replayable, bounded undo payload.
-    for change in &inverse.changes {
-        change.validate_payload()?;
-    }
-    changes_byte_budget(&inverse.changes, byte_limit)?;
+    validate_changes_payload(&inverse.changes, byte_limit)?;
     Ok(inverse)
 }
 
@@ -286,13 +318,26 @@ fn validate_changes_payload(changes: &[Change], limit: usize) -> Result<(), Erro
     if changes.len() > validate::MAX_CHANGES {
         return Err(validate::invalid("changeset exceeds operation limit"));
     }
+    let mut assignments = 0usize;
     let mut pins = 0usize;
+    // Charge aggregate work before building any per-operation ID set or copying payloads.
     for change in changes {
-        change.validate_payload()?;
+        assignments = assignments.saturating_add(match change {
+            Change::SetNodeTags { assignments, .. } => assignments.len(),
+            Change::SetNodeFields { assignments, .. } => assignments.len(),
+            Change::MoveNodes { positions, .. } => positions.len(),
+            _ => 0,
+        });
         pins = pins.saturating_add(pin_count(change));
+        if assignments > validate::MAX_NODES {
+            return Err(validate::invalid("changeset exceeds aggregate bulk node edit limit"));
+        }
         if pins > validate::MAX_CHANGES {
             return Err(validate::invalid("aggregate restored pin metadata exceeds limit"));
         }
+    }
+    for change in changes {
+        change.validate_payload()?;
     }
     changes_byte_budget(changes, limit)
 }
@@ -322,6 +367,19 @@ fn changes_byte_budget(changes: &[Change], limit: usize) -> Result<(), Error> {
     // Only borrowed wrappers are allocated; recursive caller-owned values are never cloned.
     let canonical: Vec<_> = changes.iter().map(BudgetChange).collect();
     validate::byte_budget(&canonical, limit)
+}
+
+fn validate_bulk_ids(ids: impl Iterator<Item = NodeId>, count: usize) -> Result<(), Error> {
+    if count > validate::MAX_NODES {
+        return Err(validate::invalid("bulk edit exceeds node limit"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(duplicate());
+        }
+    }
+    Ok(())
 }
 
 fn missing() -> Error {
@@ -384,8 +442,34 @@ impl Change {
                 validate::text(&edge.from.port, 256)?;
                 validate::text(&edge.to.port, 256)
             }
-            Self::PutField { field, .. } => validate::text(&field.title, 4096),
-            Self::PutTag { tag, .. } => validate::text(&tag.title, 4096),
+            Self::PutField { field, .. } => field.validate(),
+            Self::PutTag { tag, .. } => {
+                validate::text(&tag.title, 4096)?;
+                if let Some(color) = &tag.color {
+                    validate::text(color, 64)?;
+                }
+                Ok(())
+            }
+            Self::SetNodeFields { assignments, .. } => validate_bulk_ids(assignments.iter().map(|a| a.node), assignments.len()),
+            Self::MoveNodes { positions, .. } => {
+                validate_bulk_ids(positions.iter().map(|a| a.node), positions.len())?;
+                for position in positions {
+                    validate::position(position.pos)?;
+                }
+                Ok(())
+            }
+            Self::SetNodeTags { assignments, .. } => {
+                if assignments.len() > validate::MAX_NODES {
+                    return Err(validate::invalid("tag assignments exceed node limit"));
+                }
+                let mut ids = std::collections::BTreeSet::new();
+                for assignment in assignments {
+                    if !ids.insert(assignment.node) {
+                        return Err(duplicate());
+                    }
+                }
+                Ok(())
+            }
             Self::PutComment { comment, .. } => validate::comment(comment),
             Self::SetCommentText { text, .. } => validate::text(text, validate::MAX_COMMENT_BYTES),
             Self::SetCommentReplyText { text, .. } => validate::text(text, validate::MAX_REPLY_BYTES),
@@ -421,6 +505,33 @@ impl Change {
 
     fn apply_one(&self, project: &mut Project, anchors: &mut Anchors) -> Result<Self, Error> {
         let inverse = match self {
+            Self::SetNodeFields { canvas, assignments } => {
+                let target = canvas_mut(project, *canvas)?;
+                let mut inverse = Vec::with_capacity(assignments.len());
+                for assignment in assignments {
+                    let node = target.nodes.get_mut(&assignment.node).ok_or_else(missing)?;
+                    inverse.push(NodeFieldAssignment { node: assignment.node, field: std::mem::replace(&mut node.field, assignment.field) });
+                }
+                Self::SetNodeFields { canvas: *canvas, assignments: inverse }
+            }
+            Self::MoveNodes { canvas, positions } => {
+                let target = canvas_mut(project, *canvas)?;
+                let mut inverse = Vec::with_capacity(positions.len());
+                for position in positions {
+                    let node = target.nodes.get_mut(&position.node).ok_or_else(missing)?;
+                    inverse.push(NodePosition { node: position.node, pos: std::mem::replace(&mut node.pos, position.pos) });
+                }
+                Self::MoveNodes { canvas: *canvas, positions: inverse }
+            }
+            Self::SetNodeTags { canvas, assignments } => {
+                let target = canvas_mut(project, *canvas)?;
+                let mut inverse = Vec::with_capacity(assignments.len());
+                for assignment in assignments {
+                    let node = target.nodes.get_mut(&assignment.node).ok_or_else(missing)?;
+                    inverse.push(NodeTagAssignment { node: assignment.node, tag: std::mem::replace(&mut node.tag, assignment.tag) });
+                }
+                Self::SetNodeTags { canvas: *canvas, assignments: inverse }
+            }
             Self::SetProjectTitle { title } => Self::SetProjectTitle { title: std::mem::replace(&mut project.title, title.clone()) },
             Self::AddCanvas { canvas } => {
                 if project.canvases.contains_key(&canvas.id) {

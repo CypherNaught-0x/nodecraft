@@ -10,7 +10,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -236,8 +236,10 @@ fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
     if from == 1 {
         crate::legacy::validate(json)?;
         Ok(json)
-    } else if from == VERSION {
+    } else if from == 2 {
         crate::v2::validate(json)?;
+        Ok(json)
+    } else if from == VERSION {
         Ok(json)
     } else {
         Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))

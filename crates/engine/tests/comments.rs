@@ -64,7 +64,7 @@ fn exact_one_mebibyte_root_and_note_are_fully_editable_but_content_overflow_reje
 }
 
 #[test]
-fn legacy_open_conversion_checkpoint_failure_preserves_live_state_then_v2_edits_recover() {
+fn legacy_open_conversion_checkpoint_failure_preserves_live_state_then_v3_edits_recover() {
     use nodecraft_format::{MemoryStorage, ProjectStorage, Snapshot, StorageLocation, journal};
     use nodecraft_types::{Error, ErrorKind};
     use std::{cell::RefCell, rc::Rc};
@@ -93,32 +93,35 @@ fn legacy_open_conversion_checkpoint_failure_preserves_live_state_then_v2_edits_
             self.0.borrow_mut().memory.append(b)
         }
     }
-    let storage = Shared::default();
-    let bytes = include_bytes!("../../format/tests/fixtures/v1/comments-v1.ncraft");
-    storage.0.borrow_mut().memory.files.insert(StorageLocation::from_command("legacy.ncraft".into()).unwrap(), bytes.to_vec());
-    let mut s = Session::with_storage(Snapshot { project: common::project(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
-    let before = s.document().clone();
-    let old_journal = storage.0.borrow().memory.recovery.clone();
-    let old_status = s.file_status();
-    storage.0.borrow_mut().fail = true;
-    assert!(s.dispatch("file.open", &json!({"location":"legacy.ncraft","discard_dirty":true})).is_err());
-    assert_eq!(s.document(), &before);
-    assert_eq!(s.revision(), 0);
-    assert!(!s.can_undo() && !s.can_redo());
-    assert!(s.events_since(0).unwrap().is_empty());
-    assert_eq!(storage.0.borrow().memory.recovery, old_journal);
-    assert_eq!(s.file_status().location, old_status.location);
-    assert_eq!(storage.0.borrow().memory.files.values().next().unwrap(), bytes);
-    storage.0.borrow_mut().fail = false;
-    s.dispatch("file.open", &json!({"location":"legacy.ncraft","discard_dirty":true})).unwrap();
-    assert_eq!(&storage.0.borrow().memory.recovery[..8], b"NCRJ0002");
-    let root = CommentId::from_bytes([3; 16]);
-    s.dispatch("comment.reply", &json!({"canvas":common::canvas(),"id":root,"reply":id(12),"text":"Migrated reply"})).unwrap();
-    let recovered = journal::recover(&storage.0.borrow().memory.recovery).unwrap();
-    assert!(!recovered.legacy);
-    assert_eq!(recovered.applied, 1);
-    assert_eq!(&recovered.snapshot.project, s.document());
-    assert_eq!(storage.0.borrow().memory.files.values().next().unwrap(), bytes, "opening never rewrites the source archive");
+    for bytes in [
+        include_bytes!("../../format/tests/fixtures/v1/comments-v1.ncraft").as_slice(),
+        include_bytes!("../../format/tests/fixtures/v2/comments-v2.ncraft").as_slice(),
+    ] {
+        let storage = Shared::default();
+        storage.0.borrow_mut().memory.files.insert(StorageLocation::from_command("legacy.ncraft".into()).unwrap(), bytes.to_vec());
+        let mut s = Session::with_storage(Snapshot { project: common::project(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+        let before = s.document().clone();
+        let old_journal = storage.0.borrow().memory.recovery.clone();
+        let old_status = s.file_status();
+        storage.0.borrow_mut().fail = true;
+        assert!(s.dispatch("file.open", &json!({"location":"legacy.ncraft","discard_dirty":true})).is_err());
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo() && !s.can_redo());
+        assert!(s.events_since(0).unwrap().is_empty());
+        assert_eq!(storage.0.borrow().memory.recovery, old_journal);
+        assert_eq!(s.file_status().location, old_status.location);
+        assert_eq!(storage.0.borrow().memory.files.values().next().unwrap(), bytes);
+        storage.0.borrow_mut().fail = false;
+        s.dispatch("file.open", &json!({"location":"legacy.ncraft","discard_dirty":true})).unwrap();
+        assert_eq!(&storage.0.borrow().memory.recovery[..8], b"NCRJ0003");
+        s.dispatch("comment.create", &create(12, "Migrated root")).unwrap();
+        let recovered = journal::recover(&storage.0.borrow().memory.recovery).unwrap();
+        assert!(!recovered.legacy);
+        assert_eq!(recovered.applied, 1);
+        assert_eq!(&recovered.snapshot.project, s.document());
+        assert_eq!(storage.0.borrow().memory.files.values().next().unwrap(), bytes, "opening never rewrites the source archive");
+    }
 }
 #[test]
 fn compose_rejects_out_of_range_offsets_even_when_the_world_sum_is_valid() {
