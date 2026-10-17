@@ -852,7 +852,29 @@ fn a_reused_session_with_an_open_charge_keeps_its_own_total() {
     assert!(log.session_clock.len() <= log.sessions.len(), "the clock forgets folded sessions");
     // It still saves and loads.
     let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
-    assert!(back == log);
+    assert_eq!(back, log);
+}
+
+#[test]
+fn many_open_sessions_settle_reload_and_fold_back_under_the_limit() {
+    let mut log = UsageLog::default();
+    let extra = 50;
+    for n in 0..MAX_SESSIONS + extra {
+        log.record(UsageEntry { session: format!("o{n:05}"), ..charge(&format!("k{n}"), 1, Charge::Estimate) }).unwrap();
+    }
+    assert!(log.sessions.len() > MAX_SESSIONS, "open sessions are kept past the limit");
+    for n in 0..MAX_SESSIONS + extra {
+        log.settle("fal", &format!("k{n}"), usd(1), Charge::Actual).unwrap();
+    }
+    // A log saved with more sessions than the limit (their charges now settled) reloads.
+    let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert_eq!(back, log);
+    // The next new session folds the surplus at once.
+    let mut log = back;
+    log.record(UsageEntry { session: "next".into(), ..charge("next", 1, Charge::Actual) }).unwrap();
+    assert!(log.sessions.len() <= MAX_SESSIONS);
+    let total = u64::try_from(MAX_SESSIONS + extra + 1).unwrap();
+    assert_eq!(log.spent("next").project.get(&Currency::USD), Some(&usd(total)), "folding never changes the project total");
 }
 
 #[test]

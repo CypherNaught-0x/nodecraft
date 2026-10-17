@@ -867,4 +867,13 @@ mod tests {
         runner.register(JobId(1), priced(Arc::new(Reports(None)), Some(100_000)));
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
     }
+
+    #[test]
+    fn a_budget_without_a_session_id_refuses_paid_jobs() {
+        let (runner, budget) = budgeted(Some(1_000_000));
+        let runner = runner.with_budget(JobBudget { session: String::new(), ..budget });
+        runner.register(JobId(1), priced(Arc::new(Reports(None)), Some(10)));
+        let refused = block_on(runner.run(job(1), CancelToken::default()));
+        assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
+    }
 }

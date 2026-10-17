@@ -602,15 +602,17 @@ impl UsageLog {
         let mut sessions = self.sessions.clone();
         // The earlier-sessions total exists before counting, so the first fold frees one slot.
         sessions.entry(EARLIER_SESSIONS.to_owned()).or_default();
+        // Least recently charged first; sorted once, so catching up after the limit was exceeded
+        // (sessions kept for open charges that have since settled) stays linear.
+        let mut candidates: Vec<(u64, String)> = sessions
+            .keys()
+            .filter(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS && !open.contains(name.as_str()))
+            .map(|name| (self.session_clock.get(name.as_str()).copied().unwrap_or(0), name.clone()))
+            .collect();
+        candidates.sort_unstable();
+        let mut candidates = candidates.into_iter();
         while sessions.len() >= MAX_SESSIONS {
-            let Some(name) = sessions
-                .keys()
-                .filter(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS && !open.contains(name.as_str()))
-                .min_by_key(|name| (self.session_clock.get(name.as_str()).copied().unwrap_or(0), name.as_str()))
-                .cloned()
-            else {
-                break;
-            };
+            let Some((_, name)) = candidates.next() else { break };
             let totals = sessions.remove(&name).unwrap_or_default();
             let earlier = sessions.entry(EARLIER_SESSIONS.to_owned()).or_default();
             for money in totals.into_values() {
@@ -798,10 +800,10 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if file.pending.len() > MAX_PENDING {
             return Err(bad("too many pending charges"));
         }
-        // Sessions past the limit are only kept for open charges (see `MAX_SESSIONS`).
-        let open_sessions: BTreeSet<&str> =
-            file.entries.iter().filter(|e| e.status != Charge::Actual).chain(file.pending.iter()).map(|e| e.session.as_str()).collect();
-        if file.sessions.len() > MAX_SESSIONS.saturating_add(open_sessions.len()) {
+        // Sessions past the limit are only kept for open charges (see `MAX_SESSIONS`), and only
+        // fold when a new session arrives, so a log can hold up to one per possible open charge
+        // even after those charges settle.
+        if file.sessions.len() > MAX_SESSIONS.saturating_add(1).saturating_add(MAX_USAGE_ENTRIES).saturating_add(MAX_PENDING) {
             return Err(bad("too many sessions"));
         }
         let text_bytes = file.entries.iter().fold(0usize, |sum, e| sum.saturating_add(entry_text(e)));
