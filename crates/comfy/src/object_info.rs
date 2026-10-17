@@ -3,7 +3,7 @@
 //! Input order matters: the UI workflow format stores widget values by position, so converting it
 //! needs the order the server declares (`input_order` when present, otherwise the JSON order).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::Value;
 
@@ -76,32 +76,34 @@ impl InputSpec {
 
     /// Checks `value` fits this input; returns a reason when it doesn't.
     pub fn check(&self, value: &Value) -> Result<(), String> {
+        crate::json_bounds::Budget::default().value(value, 0).map_err(|error| error.to_string())?;
+        let kind = crate::json_bounds::kind(value);
         match &self.kind {
             InputKind::Int { min, max, .. } => {
-                let n = whole_number(value).ok_or_else(|| format!("expected a whole number, got {value}"))?;
+                let n = whole_number(value).ok_or_else(|| format!("expected a whole number, got {kind}"))?;
                 in_range(n, *min, *max)
             }
             InputKind::Float { min, max, .. } => {
-                let n = value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("expected a number, got {value}"))?;
+                let n = value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("expected a number, got {kind}"))?;
                 in_range(n, *min, *max)
             }
-            InputKind::String { .. } => value.is_string().then_some(()).ok_or_else(|| format!("expected text, got {value}")),
-            InputKind::Boolean { .. } => value.is_boolean().then_some(()).ok_or_else(|| format!("expected true or false, got {value}")),
+            InputKind::String { .. } => value.is_string().then_some(()).ok_or_else(|| format!("expected text, got {kind}")),
+            InputKind::Boolean { .. } => value.is_boolean().then_some(()).ok_or_else(|| format!("expected true or false, got {kind}")),
             InputKind::Combo { options, upload, .. } => {
                 let text = match value {
                     Value::String(s) => s.clone(),
                     Value::Number(n) => n.to_string(),
-                    _ => return Err(format!("expected one of the options, got {value}")),
+                    _ => return Err(format!("expected one of the options, got {kind}")),
                 };
                 // Uploaded files are named by the upload reply, so they need not be listed yet; an
                 // empty list means the options are fetched elsewhere (remote combos).
                 if upload.is_some() || options.is_empty() || options.contains(&text) {
                     Ok(())
                 } else {
-                    Err(format!("{text:?} is not available on this server"))
+                    Err("the selected option is not available on this server".into())
                 }
             }
-            InputKind::Link(t) => Err(format!("{t} inputs take a connection, not a value")),
+            InputKind::Link(_) => Err("this input takes a connection, not a value".into()),
         }
     }
 }
@@ -238,8 +240,11 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
             Some(list) => list.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
             None => ordered.get("input").and_then(|i| i.get(section)).map(OValue::keys).unwrap_or_default(),
         };
-        for name in names {
-            if let Some(spec) = specs.get(&name).and_then(|s| parse_input(&name, s, required)) {
+        // A malformed input_order may repeat one large spec thousands of times. Keep
+        // the first occurrence before copying defaults/options, preserving tolerant parsing.
+        let mut seen = HashSet::new();
+        for name in names.iter().filter(|name| seen.insert(name.as_str())) {
+            if let Some(spec) = specs.get(name).and_then(|s| parse_input(name, s, required)) {
                 inputs.push(spec);
             }
         }

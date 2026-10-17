@@ -4,6 +4,49 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Provider foundation (#141)
+
+- **`Provider` is dyn-compatible** (boxed futures, `Send` on native only) so the engine can hold
+  a registry of `Box<dyn Provider>`; no `async-trait` dependency.
+- **`exec` and `providers` don't know each other** (same layer). The engine implements
+  `exec::driver::JobRunner` with `providers::run_to_completion`, wrapping exec's `CancelToken`
+  and the runtime as `providers::CancelSignal` / `Clock`.
+- **A job is submitted once.** Transient poll errors are retried in place. A run that fails after
+  the provider accepted the job returns its handle (`RunFailure::handle`), and the engine's
+  `jobs::ProviderRunner` keeps it, so the scheduler's retry *resumes* the job instead of
+  submitting (and paying for) it again. A job past its deadline is `Expired`, which is never
+  retried; a cancel the provider couldn't confirm says so ("may still run and be billed").
+  `JobHandle` is serialisable so accepted jobs can be resumed after a restart.
+- **Deadlines use real time** (`Clock::now_ms`, the app's monotonic clock), not the sum of sleeps.
+- **`submit` may finish at once** (`Submission::Finished`) for synchronous APIs (chat, OpenAI
+  Images, TTS), so their outputs don't get stashed in a handle.
+- **HTTP through an `Http` trait** so adapters are tested against fixtures. The reqwest transport
+  sends only `NodeCraft/<version>` as User-Agent, applies timeouts on every target, caps reply
+  sizes while streaming, and keeps header values, URL credentials and queries out of `Debug`
+  output and errors. It follows redirects itself: credential headers (the well-known ones plus
+  any marked with `secret_header`) are dropped when a redirect leaves the origin, so CDN download
+  redirects work without leaking keys. In the browser, `fetch` follows redirects and only drops
+  `Authorization`; adapters there must not rely on custom key headers being dropped.
+- **TLS:** the OS stack (`native-tls`) on Windows and macOS, rustls with aws-lc on Linux, `fetch`
+  in the browser. aws-lc needs clang-cl for Windows ARM64, which the release builds.
+- **Downloads are checked and hashed:** sniffed with `media::sniff` (an error page served as 200
+  is refused), length-checked against `Content-Length`, and returned with their BLAKE3
+  `ContentHash` for the asset store. Inline output bytes go through the same check.
+
+## 2026-10-17 · Plugin system plan (#154)
+
+- **Plan before runtime.** [The plugin RFC](plugins-rfc.md) accepts data-only packages as the first
+  distributable scope. Third-party executable actions require a safe-API sandbox feasibility gate;
+  no runtime engine, ABI, signature algorithm or marketplace is selected in this documentation PR.
+- **One host authority.** Plugin code/data cannot mutate a Session, bypass descriptor validation,
+  read raw credentials or submit paid calls outside host quote/budget/idempotency brokers. Schema
+  semantics stay with #162; catalog data stays with #77 rather than a plugin-specific variant.
+- **Portable preservation precedes execution.** Exact digest locks and bounded missing-plugin
+  placeholders retain unknown work. Installation never grants rights or executes project content.
+  Browser-unsupported capabilities are explicit; compilation alone does not prove runtime parity.
+- **No Rust dynamic ABI.** The MVP avoids native dynamic loading and local unsafe code. Runtime
+  selection/resource targets remain measured, reviewed phase deliverables, not shipped guarantees.
+
 ## 2026-10-17 · exec scheduler (#74)
 
 - **The scheduler is a deterministic state machine** (`exec::scheduler`) with no clock or I/O:
@@ -24,6 +67,31 @@ a choice a later contributor might otherwise undo.
   keep running. A failure reported after a cancel request counts as a cancellation (no retry); work
   that finished despite the request counts as done. A panicking runner fails its job instead of
   stalling the queue.
+
+## 2026-10-17 · Programmatic ComfyUI JSON boundaries (#155)
+
+- `ApiWorkflow::to_json`, `PromptRequest::to_json` and `discover` are fallible. Library
+  conversion, input checking, mutation and discovery validate borrowed JSON before recursive
+  copying or serialization: maximum depth 64 (root depth zero), 2,000,000 values plus object keys,
+  and 32 MiB of encoded JSON including escaped strings, keys and outgoing envelope metadata.
+  One iterative iterator stack uses at most 65 frames, regardless of array/object width. The
+  item cap allows representative 10,000-node API and UI workflows with real sampler parameters;
+  it interacts with the 32 MiB and depth caps, so not every 10,000-node combination necessarily
+  fits. Large width tests use a private smaller item budget to keep fixtures economical.
+- Conversion fan-out, repeated discovery metadata and check-report context share aggregate
+  output budgets before retained copies. Accepted JSON is preserved; limits return value-free
+  errors attributed to local input, not server responses. Input mismatch errors report types
+  rather than arbitrary JSON or selected secrets. Discovery's 32 MiB admission budget includes
+  the original workflow and copied exposure data together, so a large literal can fit `to_json`
+  but fail `discover`. Only retained combo options are charged: upload combos expose Media
+  without copying server input-directory listings, while their copied defaults still count.
+  Rejected owned `set_input` values are disposed of iteratively, and mutation validates the
+  prospective aggregate before changing the workflow.
+- The public structs still expose caller-owned `serde_json::Value`. Calling raw derived
+  `Clone`/`PartialEq`, formatting raw Values, or dropping caller-built excessively deep trees is
+  the caller's responsibility; the guards protect the library entry points, not those external
+  operations. Callers constructing hostile fixtures must dismantle them iteratively too.
+  WebSocket progress/output retention (`files_in`) is a separate boundary and follow-up.
 
 ## 2026-10-17 · Paused run-driver shutdown (#150)
 

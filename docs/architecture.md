@@ -371,3 +371,8 @@ restore metadata plus certified exact F/I/R staging preserves undo/redo budgets.
 is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
 authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
 explicit Save/Cancel, versioned migration and later v3 ownership are specified in that contract.
+## Plugin planning
+
+The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
+feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+Future integration must preserve the existing layers, engine mutation path and wasm support.

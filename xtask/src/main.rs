@@ -5,6 +5,7 @@
 
 mod layers;
 mod version;
+mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -32,10 +33,15 @@ fn main() -> ExitCode {
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
-        Some("layers") => cmd_layers(),
-        Some("wasm") => cmd_wasm(),
-        Some("ci") => cmd_ci(),
-        Some("version") => version::run(&root(), &rest),
+        Some(command @ ("layers" | "wasm" | "ci" | "version")) => root().and_then(|root| {
+            eprintln!("xtask workspace: {}", root.display());
+            match command {
+                "layers" => cmd_layers(&root),
+                "wasm" => cmd_wasm(&root),
+                "ci" => cmd_ci(&root),
+                _ => version::run(&root, &rest),
+            }
+        }),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())
@@ -51,15 +57,15 @@ fn main() -> ExitCode {
     }
 }
 
-/// Workspace root (parent of the xtask crate).
-pub fn root() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.parent().unwrap_or(manifest_dir).to_path_buf()
+/// Resolve the invoking workspace at runtime; never trust a compiled-in checkout.
+pub fn root() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("read invocation directory: {e}"))?;
+    workspace::resolve(&cwd)
 }
 
-pub fn cargo() -> Command {
-    let mut c = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    c.current_dir(root());
+pub fn cargo(root: &Path) -> Command {
+    let mut c = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    c.current_dir(root);
     c
 }
 
@@ -69,16 +75,16 @@ fn run(mut cmd: Command, what: &str) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("{what}: exited with {status}")) }
 }
 
-fn metadata() -> Result<serde_json::Value, String> {
-    let out = cargo().args(["metadata", "--format-version", "1", "--no-deps"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
+fn metadata(root: &Path) -> Result<serde_json::Value, String> {
+    let out = cargo(root).args(["metadata", "--format-version", "1", "--no-deps"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
     if !out.status.success() {
         return Err(format!("cargo metadata failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }
     serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: bad JSON: {e}"))
 }
 
-fn cmd_layers() -> Result<(), String> {
-    let crates = layers::from_metadata(&metadata()?)?;
+fn cmd_layers(root: &Path) -> Result<(), String> {
+    let crates = layers::from_metadata(&metadata(root)?)?;
     println!("Dependency layering (docs/architecture.md)\n");
     println!("{:<24} {:<14} workspace deps", "crate", "layer");
     for c in &crates {
@@ -113,14 +119,14 @@ fn cmd_layers() -> Result<(), String> {
 
 /// Workspace packages that must build for wasm32: every layered library crate, the egui shell
 /// included. Test tooling, apps and xtask are not checked.
-fn wasm_set() -> Result<Vec<String>, String> {
-    let crates = layers::from_metadata(&metadata()?)?;
+fn wasm_set(root: &Path) -> Result<Vec<String>, String> {
+    let crates = layers::from_metadata(&metadata(root)?)?;
     Ok(crates.into_iter().filter(|c| matches!(layers::classify(&c.name), Some(layers::Class::Layer(_) | layers::Class::Standalone))).map(|c| c.name).collect())
 }
 
-fn cmd_wasm() -> Result<(), String> {
-    let set = wasm_set()?;
-    let mut c = cargo();
+fn cmd_wasm(root: &Path) -> Result<(), String> {
+    let set = wasm_set(root)?;
+    let mut c = cargo(root);
     c.args(["check", "--target", "wasm32-unknown-unknown"]);
     for pkg in &set {
         c.args(["-p", pkg]);
@@ -130,21 +136,21 @@ fn cmd_wasm() -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_ci() -> Result<(), String> {
-    type Step = (&'static str, Box<dyn Fn() -> Result<(), String>>);
-    let cargo_step = |args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String>> {
+fn cmd_ci(root: &Path) -> Result<(), String> {
+    type Step<'a> = (&'static str, Box<dyn Fn() -> Result<(), String> + 'a>);
+    let cargo_step = |args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String> + '_> {
         Box::new(move || {
-            let mut c = cargo();
+            let mut c = cargo(root);
             c.args(args);
             run(c, &format!("cargo {}", args.join(" ")))
         })
     };
-    let steps: Vec<Step> = vec![
+    let steps: Vec<Step<'_>> = vec![
         ("fmt", cargo_step(&["fmt", "--all", "--", "--check"])),
         ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])),
         ("test", cargo_step(&["test", "--workspace"])),
-        ("layers", Box::new(cmd_layers)),
-        ("wasm", Box::new(cmd_wasm)),
+        ("layers", Box::new(|| cmd_layers(root))),
+        ("wasm", Box::new(|| cmd_wasm(root))),
     ];
     let mut done = Vec::new();
     for (name, f) in &steps {

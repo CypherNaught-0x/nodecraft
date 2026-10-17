@@ -25,3 +25,5 @@ serde_path_to_error.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+futures = { workspace = true, features = ["executor"] }
+serde_json = { workspace = true }
