@@ -9,6 +9,7 @@ mod command_schemas;
 pub mod commands;
 pub mod graph_cmds;
 pub mod jobs;
+pub mod keys_cmds;
 pub mod secrets;
 pub mod session;
 pub mod settings;

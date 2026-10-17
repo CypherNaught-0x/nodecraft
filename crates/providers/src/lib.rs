@@ -23,6 +23,7 @@ pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
 mod provider;
+pub mod secrets;
 mod task;
 
 pub use error::{ErrorKind, ProviderError};

@@ -205,7 +205,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(registry.specs().count(), 7);
+    assert_eq!(registry.specs().count(), 10, "7 graph commands and 3 keys.* commands");
 }
 
 fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
@@ -238,4 +238,24 @@ fn edits_with_small_undo_but_oversized_redo_are_rejected_atomically() {
     assert_eq!(session.document(), &project());
     assert!(!session.can_undo());
     assert_eq!(session.revision(), 0);
+}
+
+#[test]
+fn keys_commands_go_through_the_host_service_and_never_echo_keys() {
+    use nodecraft_engine::commands::Services;
+    use nodecraft_engine::secrets::{MemoryStore, register_key_service};
+    use std::sync::Arc;
+    let mut services = Services::default();
+    register_key_service(&mut services, Arc::new(MemoryStore::default())).unwrap();
+    let project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([3; 16]), "Keys").unwrap();
+    let mut session = Session::new(project).unwrap().with_services(services);
+    let set = session.dispatch("keys.set", &serde_json::json!({"account": "anthropic", "key": "sk-ant-abcdefghijk9876"})).unwrap();
+    assert_eq!(set, serde_json::json!({"stored": true, "masked": "…9876"}));
+    let status = session.dispatch("keys.status", &serde_json::json!({"account": "anthropic"})).unwrap();
+    assert_eq!(status["stored"], true);
+    assert!(!session.can_undo(), "keys never enter the document or its history");
+    let err = session.dispatch("keys.set", &serde_json::json!({"account": "Bad Name", "key": "sk-leak-me-123456"})).unwrap_err();
+    assert!(!err.to_string().contains("sk-leak"), "{err}");
+    assert!(session.dispatch("keys.set", &serde_json::json!({"account": "openai"})).is_err(), "the key is required");
+    assert_eq!(session.dispatch("keys.remove", &serde_json::json!({"account": "anthropic"})).unwrap(), serde_json::json!({"removed": true}));
 }

@@ -1,145 +1,27 @@
 //! Provider API keys in the operating system's keychain.
 //!
 //! Keys live only in the keychain (macOS Keychain, Windows Credential Manager, the Secret Service
-//! on Linux), under the service `io.github.cyphernaught0x.nodecraft` with the provider's account
-//! name (`openai`, `anthropic`, `comfyui:<server>`). They never go into project files, settings,
-//! logs or error messages: [`Secret`] doesn't print its value, and errors never contain it.
+//! on Linux), under the service [`SERVICE`] with the provider's [`Account`] name. They never go
+//! into project files, settings, logs or error messages. The value types and the store interface
+//! live in `providers::secrets`, so adapters receive a [`Secret`]; this module adds the OS
+//! keychain and the `keys` host service behind the `keys.*` commands.
 //!
 //! The browser build has no keychain; it will keep keys per origin with a notice (M10). Until then
-//! it gets a [`MemoryStore`] (keys last for the session).
+//! hosts use a [`MemoryStore`] there (keys last for the session).
 
-use std::collections::BTreeMap;
-use std::fmt;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
+
+pub use nodecraft_providers::secrets::{Account, MAX_SECRET_BYTES, MemoryStore, Secret, SecretError, SecretStore};
+use nodecraft_types::{Error, ErrorKind};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::commands::Services;
 
 /// The keychain service name: the app id.
 pub const SERVICE: &str = "io.github.cyphernaught0x.nodecraft";
-/// Longest key accepted (real API keys are well under 1 KiB; JWT-style keys can be longer).
-pub const MAX_SECRET_BYTES: usize = 8 * 1024;
-
-/// A secret value. `Debug` and `Display` never show it; [`Secret::masked`] shows the last four
-/// characters for the settings UI.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
-
-impl Secret {
-    /// A secret from user input, trimmed. Refuses empty, oversized or multi-line values (a pasted
-    /// key with a newline would otherwise break HTTP headers).
-    pub fn new(value: &str) -> Result<Self, SecretError> {
-        let v = value.trim();
-        if v.is_empty() {
-            return Err(SecretError::Invalid("the key is empty".into()));
-        }
-        if v.len() > MAX_SECRET_BYTES {
-            return Err(SecretError::Invalid(format!("the key is longer than {MAX_SECRET_BYTES} bytes")));
-        }
-        if v.chars().any(char::is_control) {
-            return Err(SecretError::Invalid("the key contains line breaks or control characters".into()));
-        }
-        Ok(Self(v.to_owned()))
-    }
-
-    /// The value, for building a request header. Don't log or display it.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-
-    /// `…abcd` (the last four characters), or `…` for short keys.
-    pub fn masked(&self) -> String {
-        let n = self.0.chars().count();
-        if n <= 8 {
-            return "…".into();
-        }
-        let tail: String = self.0.chars().skip(n - 4).collect();
-        format!("…{tail}")
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Secret(…)")
-    }
-}
-
-impl fmt::Display for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.masked())
-    }
-}
-
-/// A keychain account name: the provider id, optionally with a qualifier (`comfyui:gpu-box`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Account(String);
-
-impl Account {
-    /// Lowercase ASCII letters, digits and `-_.:`, 1–128 characters.
-    pub fn new(name: &str) -> Result<Self, SecretError> {
-        let ok = !name.is_empty() && name.len() <= 128 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_.:".contains(c));
-        if ok {
-            Ok(Self(name.to_owned()))
-        } else {
-            Err(SecretError::Invalid(format!("{:?} is not a valid key name", name.chars().take(64).collect::<String>())))
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Why a keychain operation failed. Messages are safe to show and never contain the secret.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SecretError {
-    /// The value or account name can't be stored.
-    Invalid(String),
-    /// No keychain on this system (e.g. Linux without a Secret Service such as GNOME Keyring or
-    /// KWallet), or the platform isn't supported.
-    Unavailable(String),
-    /// The keychain is locked or the user denied access.
-    Denied(String),
-    /// The keychain failed.
-    Failed(String),
-}
-
-impl fmt::Display for SecretError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid(m) => write!(f, "{m}"),
-            Self::Unavailable(m) => write!(f, "no keychain available: {m}"),
-            Self::Denied(m) => write!(f, "keychain access denied: {m}"),
-            Self::Failed(m) => write!(f, "keychain error: {m}"),
-        }
-    }
-}
-
-impl std::error::Error for SecretError {}
-
-/// Where keys are kept.
-pub trait SecretStore: Send + Sync {
-    /// The key for `account`, or `None` when none is stored.
-    fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError>;
-    fn set(&self, account: &Account, secret: &Secret) -> Result<(), SecretError>;
-    /// Removes the key; `Ok(false)` when there was none.
-    fn delete(&self, account: &Account) -> Result<bool, SecretError>;
-}
-
-/// Keys in memory: tests, and the browser build until per-origin storage lands.
-#[derive(Default)]
-pub struct MemoryStore(Mutex<BTreeMap<Account, Secret>>);
-
-impl SecretStore for MemoryStore {
-    fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError> {
-        Ok(self.0.lock().unwrap_or_else(PoisonError::into_inner).get(account).cloned())
-    }
-    fn set(&self, account: &Account, secret: &Secret) -> Result<(), SecretError> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).insert(account.clone(), secret.clone());
-        Ok(())
-    }
-    fn delete(&self, account: &Account) -> Result<bool, SecretError> {
-        Ok(self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(account).is_some())
-    }
-}
+/// The host-service capability the `keys.*` commands use.
+pub const KEY_SERVICE: &str = "keys.store";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use keychain::KeyringStore;
@@ -152,15 +34,28 @@ mod keychain {
     #[derive(Debug, Default)]
     pub struct KeyringStore;
 
-    fn map(e: keyring::Error) -> SecretError {
+    pub(super) fn map(e: keyring::Error) -> SecretError {
         use keyring::Error as E;
         match e {
-            E::NoDefaultStore | E::NotSupportedByStore(_) => SecretError::Unavailable("install or unlock a keyring (GNOME Keyring, KWallet) on Linux".into()),
+            E::NoDefaultStore | E::NotSupportedByStore(_) => {
+                // Keep the reason the keychain couldn't be opened; it is decided once per run.
+                let reason = match keyring::Entry::store_status() {
+                    Err(e) => e.to_string().chars().take(200).collect::<String>(),
+                    Ok(()) => "not supported".into(),
+                };
+                let hint = if cfg!(target_os = "linux") {
+                    "install or unlock a keyring (GNOME Keyring, KWallet), then restart NodeCraft"
+                } else {
+                    "restart NodeCraft"
+                };
+                SecretError::Unavailable(format!("{reason}; {hint}"))
+            }
             E::NoStorageAccess(_) => SecretError::Denied("unlock the keychain and allow NodeCraft access".into()),
             // These carry the stored bytes: never echo them.
             E::BadEncoding(_) | E::BadDataFormat(..) => SecretError::Failed("the stored key can't be read; set it again".into()),
             E::Ambiguous(_) => SecretError::Failed("more than one key is stored under this name; remove and set it again".into()),
-            E::TooLong(..) | E::Invalid(..) => SecretError::Invalid("the keychain refused the key".into()),
+            E::TooLong(_, limit) => SecretError::Invalid(format!("the key is too long for this system's keychain (at most {limit})")),
+            E::Invalid(..) => SecretError::Invalid("the keychain refused the key".into()),
             // Platform messages describe the failure, never the secret.
             other => SecretError::Failed(other.to_string().chars().take(300).collect()),
         }
@@ -173,7 +68,9 @@ mod keychain {
     impl SecretStore for KeyringStore {
         fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError> {
             match entry(account)?.get_password() {
-                Ok(v) => Secret::new(&v).map(Some).or(Ok(None)),
+                // A value written by another tool or an older version that can't be sent: say so,
+                // rather than pretending no key is set (which would surface later as a 401).
+                Ok(v) => Secret::new(&v).map(Some).map_err(|_| SecretError::Failed("the stored key can't be used; set it again".into())),
                 Err(keyring::Error::NoEntry) => Ok(None),
                 Err(e) => Err(map(e)),
             }
@@ -191,7 +88,54 @@ mod keychain {
     }
 }
 
-/// Checks a chat endpoint's key with a request that costs nothing (listing models).
+fn to_error(e: SecretError) -> Error {
+    let kind = match e {
+        SecretError::Invalid(_) => ErrorKind::InvalidInput,
+        SecretError::Unavailable(_) => ErrorKind::Unsupported,
+        _ => ErrorKind::Internal,
+    };
+    Error::new(kind, e.to_string())
+}
+
+/// A request to the `keys` host service (built by the `keys.*` commands).
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum KeyRequest {
+    Set { account: String, key: String },
+    Remove { account: String },
+    Status { account: String },
+}
+
+/// Registers the `keys` host service on `services`, backed by `store`. Hosts run commands off the
+/// UI thread, since keychain calls can block on a prompt.
+pub fn register_key_service(services: &mut Services, store: Arc<dyn SecretStore>) -> Result<(), Error> {
+    let store = Mutex::new(store);
+    services.register(KEY_SERVICE, move |request: &Value| {
+        let request: KeyRequest = serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "malformed key request"))?;
+        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        match request {
+            KeyRequest::Set { account, key } => {
+                let account = Account::new(&account).map_err(to_error)?;
+                let secret = Secret::new(&key).map_err(to_error)?;
+                store.set(&account, &secret).map_err(to_error)?;
+                Ok(json!({ "stored": true, "masked": secret.masked() }))
+            }
+            KeyRequest::Remove { account } => {
+                let account = Account::new(&account).map_err(to_error)?;
+                Ok(json!({ "removed": store.delete(&account).map_err(to_error)? }))
+            }
+            KeyRequest::Status { account } => {
+                let account = Account::new(&account).map_err(to_error)?;
+                let found = store.get(&account).map_err(to_error)?;
+                Ok(json!({ "stored": found.is_some(), "masked": found.map(|s| s.masked()) }))
+            }
+        }
+    })
+}
+
+/// Checks a chat endpoint's key with a request that costs nothing (listing models). Some servers
+/// list models without any key (Ollama, LM Studio, OpenRouter), so success there only says the
+/// server is reachable; a rejected key is reported as `ErrorKind::Auth`.
 pub async fn test_llm_key(client: &nodecraft_providers::llm::LlmClient) -> Result<usize, nodecraft_providers::ProviderError> {
     client.list_models().await.map(|models| models.len())
 }
@@ -201,38 +145,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secrets_never_print() {
-        let s = Secret::new("  sk-proj-abcdefghijklmnop1234 \n").unwrap();
-        assert_eq!(s.expose(), "sk-proj-abcdefghijklmnop1234", "trimmed");
-        assert_eq!(format!("{s:?}"), "Secret(…)");
-        assert_eq!(s.to_string(), "…1234");
-        assert_eq!(Secret::new("short").unwrap().masked(), "…");
-        assert!(Secret::new("   ").is_err());
-        assert!(Secret::new("sk-1\nsk-2").is_err(), "a pasted key with a line break would break headers");
-        assert!(Secret::new(&"x".repeat(MAX_SECRET_BYTES + 1)).is_err());
-        let err = Secret::new("sk\u{7}x").unwrap_err();
-        assert!(!err.to_string().contains("sk"), "errors don't echo the value");
+    fn key_service_round_trip_without_echoing_keys() {
+        let mut services = Services::default();
+        register_key_service(&mut services, Arc::new(MemoryStore::default())).unwrap();
+        let set = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-proj-abcdefghij1234"})).unwrap();
+        assert_eq!(set, json!({"stored": true, "masked": "…1234"}));
+        assert!(!set.to_string().contains("abcdefghij"));
+        let status = services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap();
+        assert_eq!(status, json!({"stored": true, "masked": "…1234"}));
+        let bad = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-secret with space"})).unwrap_err();
+        assert!(!bad.to_string().contains("sk-secret"), "{bad}");
+        assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": true}));
+        assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap(), json!({"stored": false, "masked": null}));
+        assert!(services.invoke(KEY_SERVICE, &json!({"op": "drop_all"})).is_err());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn account_names() {
-        for ok in ["openai", "anthropic", "comfyui:gpu-box.local", "fal_ai-2"] {
-            assert!(Account::new(ok).is_ok(), "{ok}");
+    fn keychain_errors_never_echo_stored_bytes() {
+        use keyring::Error as E;
+        let secret = b"sk-live-secret-bytes".to_vec();
+        let platform = || -> Box<dyn std::error::Error + Send + Sync> { Box::new(std::io::Error::other("platform said no")) };
+        for e in [
+            E::BadEncoding(secret.clone()),
+            E::BadDataFormat(secret.clone(), platform()),
+            E::TooLong("password".into(), 2560),
+            E::Invalid("p".into(), "r".into()),
+            E::PlatformFailure(platform()),
+        ] {
+            let msg = keychain::map(e).to_string();
+            assert!(!msg.contains("sk-live"), "{msg}");
         }
-        for bad in ["", "OpenAI", "a b", "x/y", &"a".repeat(129)] {
-            assert!(Account::new(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn memory_store_round_trip() {
-        let store = MemoryStore::default();
-        let acc = Account::new("openai").unwrap();
-        assert_eq!(store.get(&acc).unwrap(), None);
-        store.set(&acc, &Secret::new("sk-123456789").unwrap()).unwrap();
-        assert_eq!(store.get(&acc).unwrap().map(|s| s.expose().to_owned()).as_deref(), Some("sk-123456789"));
-        assert!(store.delete(&acc).unwrap());
-        assert!(!store.delete(&acc).unwrap());
+        assert!(matches!(keychain::map(E::NoStorageAccess(platform())), SecretError::Denied(_)));
+        assert!(keychain::map(E::TooLong("password".into(), 2560)).to_string().contains("2560"));
     }
 
     /// Opt-in: touches the real keychain (`NODECRAFT_LIVE_KEYCHAIN=1`); never in CI.
@@ -247,6 +192,6 @@ mod tests {
         store.set(&acc, &Secret::new("test-value-123456").unwrap()).unwrap();
         assert_eq!(store.get(&acc).unwrap().map(|s| s.expose().to_owned()).as_deref(), Some("test-value-123456"));
         assert!(store.delete(&acc).unwrap());
-        assert_eq!(store.get(&acc).unwrap(), None);
+        assert!(store.get(&acc).unwrap().is_none());
     }
 }

@@ -10,10 +10,14 @@ a choice a later contributor might otherwise undo.
   account per provider (`openai`, `comfyui:<server>`), through `keyring` pinned exactly (it wraps
   the platform APIs; we add no `unsafe`). The browser build has no keychain yet: it uses an
   in-memory store until per-origin storage with a notice (M10).
-- **`Secret` never prints its value** (`Debug`/`Display` show `…abcd`), refuses multi-line or
-  oversized pastes, and keychain errors never echo stored bytes.
+- **`Secret` never prints its value** (`Debug` shows `Secret(…)`, `Display` at most `…abcd` for
+  long keys), accepts only visible ASCII up to 1 KiB (it travels in HTTP headers; Windows caps
+  keychain entries), and keychain errors never echo stored bytes. The value types live in
+  `providers::secrets` so adapters take a `Secret`; the OS keychain stays in the engine.
 - **Keys are tested for free** (listing models), never with a paid generation.
-- The settings UI and `keys.*` commands follow the command registry (#52).
+- **`keys.set` / `keys.remove` / `keys.status`** are commands with a `keys.store` host service:
+  no document change, no undo step, results only ever show a masked tail. Keychain calls can
+  block on a prompt, so hosts run them off the UI thread. The settings UI builds on these.
 ## 2026-10-17 · ComfyUI provider (#9, part 2)
 
 - **Prompt ids are salted per install** (`prompt_id_for(salt, key, attempt)`): the same job always
