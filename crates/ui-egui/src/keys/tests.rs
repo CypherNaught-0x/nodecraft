@@ -23,7 +23,14 @@ fn session(services: Services) -> Session {
 }
 
 fn harness(state: State) -> Harness<'static, State> {
-    Harness::builder().with_size(egui::Vec2::new(900.0, 600.0)).build_ui_state(
+    harness_at_dt(state, None)
+}
+fn harness_at_dt(state: State, step_dt: Option<f32>) -> Harness<'static, State> {
+    let mut builder = Harness::builder().with_size(egui::Vec2::new(900.0, 600.0));
+    if let Some(step_dt) = step_dt {
+        builder = builder.with_step_dt(step_dt);
+    }
+    builder.build_ui_state(
         |ui, s: &mut State| {
             if let Some(results) = &s.results {
                 let (changes, _) = s.panel.receive(results.drain());
@@ -191,33 +198,49 @@ fn undo_after_save_and_closing_the_window_never_bring_the_key_back() {
     assert!(h.state().panel.key.is_empty());
 }
 
-/// A keychain that refuses everything (locked, access denied).
-struct Denied;
-impl SecretStore for Denied {
+/// Keep worker completion separate from Grid layout frames. Neither a quick denial nor an
+/// unanswered prompt requires Harness::run to become quiescent within its default four frames.
+struct ControlledStore {
+    entered: std::sync::mpsc::Sender<()>,
+    replies: std::sync::Mutex<std::sync::mpsc::Receiver<Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError>>>,
+    exited: std::sync::mpsc::Sender<()>,
+}
+impl SecretStore for ControlledStore {
     fn get(&self, _: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
-        Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))
+        self.entered.send(()).map_err(|_| nodecraft_engine::secrets::SecretError::Failed("fixture closed".into()))?;
+        self.replies.lock().unwrap().recv().map_err(|_| nodecraft_engine::secrets::SecretError::Failed("fixture closed".into()))?
     }
     fn set(&self, _: &Account, _: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
-        Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))
+        Err(nodecraft_engine::secrets::SecretError::Failed("unexpected fixture write".into()))
     }
     fn delete(&self, _: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
-        Ok(false)
+        Err(nodecraft_engine::secrets::SecretError::Failed("unexpected fixture delete".into()))
     }
 }
-
-/// A keychain that never answers (a prompt nobody clicks).
-struct Hangs;
-impl SecretStore for Hangs {
-    fn get(&self, _: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-        Ok(None)
+impl Drop for ControlledStore {
+    fn drop(&mut self) {
+        let _ = self.exited.send(());
     }
-    fn set(&self, _: &Account, _: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
-        Ok(())
+}
+struct StoreControl {
+    entered: std::sync::mpsc::Receiver<()>,
+    replies: std::sync::mpsc::Sender<Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError>>,
+    exited: std::sync::mpsc::Receiver<()>,
+}
+fn controlled_store() -> (Arc<dyn SecretStore>, StoreControl) {
+    let (entered, entering) = std::sync::mpsc::channel();
+    let (replies, replying) = std::sync::mpsc::channel();
+    let (exited, exiting) = std::sync::mpsc::channel();
+    (Arc::new(ControlledStore { entered, replies: std::sync::Mutex::new(replying), exited }), StoreControl { entered: entering, replies, exited: exiting })
+}
+fn wait_for_answer(h: &mut Harness<'static, State>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().panel.is_waiting() {
+        assert!(std::time::Instant::now() < deadline, "controlled keychain answer never reached the panel");
+        h.step(); // One bounded frame, not a demand that an asynchronous Grid stop repainting.
+        std::thread::yield_now();
     }
-    fn delete(&self, _: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
-        Ok(false)
-    }
+    h.run_steps(2);
 }
 
 fn worker_state(store: Arc<dyn SecretStore>, accounts: &[&str]) -> State {
@@ -235,34 +258,49 @@ fn worker_state(store: Arc<dyn SecretStore>, accounts: &[&str]) -> State {
 
 #[test]
 fn keychain_errors_and_silence_become_retryable_failures() {
-    let mut h = harness(worker_state(Arc::new(Denied), &["openai"]));
-    h.run();
-    h.get_by_label("Check").click();
-    h.run();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while h.state().panel.is_waiting() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        h.run();
+    let (store, control) = controlled_store();
+    let mut h = harness_at_dt(worker_state(store, &["openai"]), Some(1.0 / 60.0));
+    h.run_steps(2);
+    for _ in 0..2 {
+        h.get_by_label("Check").click();
+        h.run_steps(2);
+        control.entered.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(h.state().panel.is_waiting(), "the controlled call is still awaiting its reply");
+        control.replies.send(Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))).unwrap();
+        wait_for_answer(&mut h);
+        assert!(
+            matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("unlock the keychain") || why.contains("denied")),
+            "{:?}",
+            h.state().panel.rows()
+        );
+        assert!(h.query_by_label("Check").is_some(), "a denied read can be retried");
+        assert!(h.state().changes.is_empty());
     }
-    assert!(
-        matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("unlock the keychain") || why.contains("denied")),
-        "{:?}",
-        h.state().panel.rows()
-    );
+    drop(h);
+    control.exited.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
 
-    let mut state = worker_state(Arc::new(Hangs), &["openai"]);
+    let (store, control) = controlled_store();
+    let mut state = worker_state(store, &["openai"]);
     state.panel.timeout_s = 0.2;
-    let mut h = harness(state);
-    h.run();
+    // The default 250ms test frame exceeds this fixture's 200ms timeout. Advance
+    // an explicit 60Hz clock so pending and timed-out states are tested separately.
+    let mut h = harness_at_dt(state, Some(1.0 / 60.0));
+    h.run_steps(2);
     h.get_by_label("Check").click();
-    h.run();
+    h.run_steps(2);
+    control.entered.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(h.state().panel.is_waiting());
     for _ in 0..30 {
         h.step();
     }
     assert!(!h.state().panel.is_waiting());
     assert!(matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("No answer")));
     assert!(h.query_by_label("Check").is_some(), "the row can be tried again");
+    assert!(h.state().changes.is_empty());
+    // Release the silent fake and close the worker instead of leaving a sleeping thread.
+    control.replies.send(Ok(None)).unwrap();
+    drop(h);
+    control.exited.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     // A request made and then left with the panel closed still times out.
     let mut panel = KeysPanel { timeout_s: 1.0, ..KeysPanel::default() };
     panel.pending.insert(9, (Account::new("fal").unwrap(), Op::Status, 0.0));
