@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, NodeId, PortType, ProjectId, TagId, Value};
+use nodecraft_types::{Blake3, CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, NodeId, PortType, ProjectId, TagId, Value};
 use serde::{Deserialize, Serialize};
 
 /// World coordinates, independent of the UI toolkit. Validation rejects non-finite values.
@@ -37,6 +37,18 @@ pub struct Generation {
     pub id: GenerationId,
     #[serde(default)]
     pub outputs: Vec<Value>,
+    /// Hash of everything the result was made from (kind, parameters, input values), recorded
+    /// when it is produced; a node whose inputs now hash differently is stale (#75). Absent for
+    /// results recorded before hashing, which are never reported stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_hash: Option<Blake3>,
+}
+
+impl Generation {
+    /// A result with no recorded input hash.
+    pub fn new(id: GenerationId, outputs: Vec<Value>) -> Self {
+        Self { id, outputs, input_hash: None }
+    }
 }
 
 /// A detached node is editable data. Once stored, document edits go through changesets.

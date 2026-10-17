@@ -10,7 +10,7 @@ use nodecraft_types::{Error, GenerationId};
 use serde_json::{Value, json};
 
 fn generation(n: u8) -> Generation {
-    Generation { id: GenerationId::from_bytes([n; 16]), outputs: vec![nodecraft_types::Value::Text(format!("output {n}"))] }
+    Generation { id: GenerationId::from_bytes([n; 16]), outputs: vec![nodecraft_types::Value::Text(format!("output {n}"))], input_hash: None }
 }
 fn enabled(_: &Context<'_>, _: &Value) -> Result<(), Error> {
     Ok(())

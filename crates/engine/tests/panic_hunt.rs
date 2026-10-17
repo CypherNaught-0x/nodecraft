@@ -69,6 +69,7 @@ fn template(id: &str) -> (Session, Value) {
         "node.move" => movement.clone(),
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
+        "canvas.stale" => json!({"canvas":canvas()}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();
             Value::Null

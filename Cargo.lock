@@ -2675,6 +2675,7 @@ dependencies = [
  "nodecraft-format",
  "nodecraft-gpu",
  "nodecraft-graph",
+ "nodecraft-nodes",
  "nodecraft-providers",
  "nodecraft-types",
  "serde",
@@ -2687,6 +2688,7 @@ dependencies = [
 name = "nodecraft-exec"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "futures",
  "nodecraft-actions",
  "nodecraft-catalog",
@@ -2694,6 +2696,7 @@ dependencies = [
  "nodecraft-nodes",
  "nodecraft-types",
  "proptest",
+ "serde_json",
 ]
 
 [[package]]

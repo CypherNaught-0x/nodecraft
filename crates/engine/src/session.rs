@@ -349,11 +349,15 @@ mod tests {
         Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
         let mut node = Node::new(id, "test.text");
         for n in 0..6 {
-            node.history.push(Generation { id: GenerationId::from_bytes([n; 16]), outputs: vec![nodecraft_types::Value::Text("x".repeat(512 * 1024))] });
+            node.history.push(Generation {
+                id: GenerationId::from_bytes([n; 16]),
+                outputs: vec![nodecraft_types::Value::Text("x".repeat(512 * 1024))],
+                input_hash: None,
+            });
         }
         Change::AddNode { canvas, node }.apply(&mut document).unwrap();
         let session = Session::new(document).unwrap();
-        let generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![nodecraft_types::Value::Text("new".into())] };
+        let generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![nodecraft_types::Value::Text("new".into())], input_hash: None };
         let changes = Changeset::new(vec![Change::AddGeneration { canvas, id, index: 3, generation }]);
         let prepared = session.prepare(Effect::Edit { changes, result: json!(null), gesture: None }).unwrap();
         assert!(prepared.inverse.bytes < 512);

@@ -29,7 +29,12 @@ fn scalar_parameters_and_generation_outputs_survive_serialized_apply_undo_redo()
     let generation = GenerationId::from_bytes([3; 16]);
     let mut edits: Vec<_> =
         scalars().into_iter().enumerate().map(|(index, value)| Change::SetParam { canvas, id, name: format!("p{index}"), value: Some(value) }).collect();
-    edits.push(Change::AddGeneration { canvas, id, index: 0, generation: Generation { id: generation, outputs: vec![Value::List(scalars())] } });
+    edits.push(Change::AddGeneration {
+        canvas,
+        id,
+        index: 0,
+        generation: Generation { id: generation, outputs: vec![Value::List(scalars())], input_hash: None },
+    });
     edits.push(Change::SetActiveGeneration { canvas, id, generation: Some(generation) });
     let forward = Changeset::new(edits);
     let forward: Changeset = serde_json::from_str(&serde_json::to_string(&forward).unwrap()).unwrap();

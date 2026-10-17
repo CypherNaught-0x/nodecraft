@@ -13,5 +13,6 @@ pub mod keys_cmds;
 pub mod secrets;
 pub mod session;
 pub mod settings;
+pub mod stale_cmds;
 
 pub use session::{DocChanged, Session};
