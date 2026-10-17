@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 pub const MAX_JOURNAL_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHANGES_BYTES: usize = 16 * 1024 * 1024;
-const MAGIC: &[u8; 8] = b"NCRJ0002";
+const MAGIC: &[u8; 8] = b"NCRJ0003";
+const V2_MAGIC: &[u8; 8] = b"NCRJ0002";
 const LEGACY_MAGIC: &[u8; 8] = b"NCRJ0001";
 
 pub struct Checkpoint {
@@ -26,9 +27,9 @@ pub fn checkpoint(snapshot: &Snapshot) -> Result<Checkpoint, Error> {
 /// Decode once and reuse the validated archive bytes as the recovery checkpoint.
 pub fn checkpoint_from_archive(archive: Vec<u8>) -> Result<(Snapshot, Checkpoint), Error> {
     let (snapshot, version) = crate::archive::decode_versioned(&archive)?;
-    // Never append v2 operations beneath a legacy header/identity. The caller atomically
+    // Never append v3 operations beneath a legacy header/identity. The caller atomically
     // checkpoints this converted snapshot before adopting it or publishing any new edit.
-    if version == 1 {
+    if version < crate::archive::VERSION {
         let checkpoint = checkpoint(&snapshot)?;
         return Ok((snapshot, checkpoint));
     }
@@ -120,14 +121,20 @@ pub struct Recovered {
     pub applied: u64,
     /// The final incomplete append was ignored. The caller must checkpoint before continuing.
     pub truncated_tail: bool,
-    /// The host must atomically checkpoint the migrated snapshot before appending any v2 edit.
+    /// The host must atomically checkpoint the migrated snapshot before appending any v3 edit.
     pub legacy: bool,
 }
 
 pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
-    let legacy = bytes.get(..8) == Some(LEGACY_MAGIC.as_slice());
-    if bytes.len() > MAX_JOURNAL_BYTES || (!legacy && bytes.get(..8) != Some(MAGIC.as_slice())) {
-        return Err(invalid("invalid recovery file or size limit exceeded"));
+    let header_version = match bytes.get(..8) {
+        Some(magic) if magic == LEGACY_MAGIC => 1,
+        Some(magic) if magic == V2_MAGIC => 2,
+        Some(magic) if magic == MAGIC => 3,
+        _ => return Err(invalid("invalid recovery file")),
+    };
+    let legacy = header_version < crate::archive::VERSION;
+    if bytes.len() > MAX_JOURNAL_BYTES {
+        return Err(invalid("recovery size limit exceeded"));
     }
     let mut input = bytes.get(8..).ok_or_else(|| invalid("truncated recovery file"))?;
     let len = length(&mut input, MAX_ARCHIVE_BYTES)?;
@@ -135,7 +142,7 @@ pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
     let identity = hash(archive);
     // Frame identities bind the original archive bytes, never a migrated re-encoding.
     let (mut snapshot, version) = crate::archive::decode_versioned(archive)?;
-    if (version == 1) != legacy {
+    if version != header_version {
         return Err(invalid("recovery header and archive version disagree"));
     }
     let mut applied = 0_u64;
@@ -166,9 +173,9 @@ pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
         let mut frame = payload;
         let json_len = length(&mut frame, MAX_CHANGES_BYTES)?;
         let json = take(&mut frame, json_len)?;
-        if legacy {
+        if version == 1 {
             crate::legacy::validate(json)?;
-        } else {
+        } else if version == 2 {
             crate::v2::validate(json)?;
         }
         let record: Record = serde_json::from_slice(json).map_err(|_| invalid("invalid recovery changeset"))?;

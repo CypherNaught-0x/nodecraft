@@ -276,7 +276,7 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
 
 #[test]
 fn unsupported_versions_are_rejected_before_graph_decode() {
-    for version in [0, 3, u32::MAX] {
+    for version in [0, 4, u32::MAX] {
         let json = serde_json::to_vec(&json!({"version":version,"project":{"unknown":"future"}})).unwrap();
         assert_eq!(decode(&zip(&[("project.json", &json)])).unwrap_err().kind, ErrorKind::Unsupported);
     }

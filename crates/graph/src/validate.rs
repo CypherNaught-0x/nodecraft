@@ -259,13 +259,16 @@ impl Canvas {
             if *id != field.id {
                 return Err(invalid("field map key does not match its id"));
             }
-            text(&field.title, 4096)?;
+            field.validate()?;
         }
         for (id, tag) in &self.tags {
             if *id != tag.id {
                 return Err(invalid("tag map key does not match its id"));
             }
             text(&tag.title, 4096)?;
+            if let Some(color) = &tag.color {
+                text(color, 64)?;
+            }
         }
         let mut message_count = 0usize;
         for (id, comment) in &self.comments {
