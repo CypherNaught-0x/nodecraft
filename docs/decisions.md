@@ -707,13 +707,6 @@ a choice a later contributor might otherwise undo.
   current session's stay exact and a saved log always reloads. (Logs saved before #233 can hold an open charge whose
   session already folded; if that session id charges again, the old undercount can recur. Session
   ids are per launch, so this needs an old log and a reused id.) A session id that charges again after
-
-  total ceiling as `record`.
-- **Sessions are bounded.** At most 1,024 sessions keep their own totals. The least recently
-  charged one (never the one charging) folds into an "earlier sessions" total saved under the
-  reserved empty name. Settling or
-  releasing a folded session's entries adjusts that total, so the project total and the current
-  session's stay exact and a saved log always reloads. A session id that charges again after
   being folded starts a fresh session total. Entries with an empty session id were never written
   by NodeCraft and are now refused. The CSV export can stream (`write_csv`).
 

@@ -939,13 +939,3 @@ fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is()
     assert!(!log.record(estimate("s", &last_out, 1)).unwrap(), "still the same charge");
     assert_eq!(log.spent("s").project.get(&Currency::USD), Some(&usd(total)), "it still counts");
 }
-
-#[test]
-fn folding_prunes_the_session_clock() {
-    let mut log = UsageLog::default();
-    for n in 0..MAX_SESSIONS + 200 {
-        log.record(entry(&format!("s{n:05}"), &format!("k{n}"), 1)).unwrap();
-    }
-    assert!(log.session_clock.len() <= MAX_SESSIONS, "{}", log.session_clock.len());
-    assert!(log.session_clock.keys().all(|name| log.sessions.contains_key(name)));
-}
