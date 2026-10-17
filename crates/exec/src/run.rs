@@ -196,8 +196,11 @@ pub fn record_changes(canvas: CanvasId, node: &Node, generation: Generation) -> 
 }
 
 impl Run {
-    /// Starts a run of `plan`, made on `canvas` (`canvas_id`). Returns the run and the first jobs. `Err` for a malformed plan: a node not
-    /// on the canvas, planned twice, or a step that comes after one not planned before it.
+    /// Starts a run of `plan`, made on `canvas` (`canvas_id`). Returns the run and the first
+    /// jobs. `Err` for a malformed plan (a node not on the canvas, planned twice, or a step that
+    /// comes after one not planned before it), or a canvas too large to hash (as `stale` refuses
+    /// it). Input hashes share one byte budget for the run; once it is spent, later results are
+    /// recorded without a hash (unknown, never stale).
     pub fn start(plan: &RunPlan, canvas_id: CanvasId, canvas: &Canvas, kinds: &Registry, options: RunOptions) -> Result<(Self, Progress), Error> {
         let mut steps: BTreeMap<NodeId, StepState> = BTreeMap::new();
         for step in &plan.steps {
@@ -234,10 +237,7 @@ impl Run {
             limits: options.limits,
             retry: options.retry,
         };
-        let mut progress = Progress::default();
-        for node in ready {
-            progress.absorb(run.begin(kinds, node));
-        }
+        let progress = run.start_ready(kinds, ready);
         Ok((run, progress))
     }
 
@@ -296,7 +296,22 @@ impl Run {
         if *left > 0 {
             return Progress::default();
         }
-        self.finish(kinds, node)
+        let (mut progress, ready) = self.finish(kinds, node);
+        progress.absorb(self.start_ready(kinds, ready));
+        progress
+    }
+
+    /// Starts `ready` steps, and the steps they make ready in turn (a step with no jobs finishes
+    /// at once), with a work list rather than recursion, so long chains can't exhaust the stack.
+    fn start_ready(&mut self, kinds: &Registry, ready: Vec<NodeId>) -> Progress {
+        let mut progress = Progress::default();
+        let mut queue: std::collections::VecDeque<NodeId> = ready.into();
+        while let Some(node) = queue.pop_front() {
+            let (step, more) = self.begin(kinds, node);
+            progress.absorb(step);
+            queue.extend(more);
+        }
+        progress
     }
 
     /// A job failed for good or was cancelled: its step fails (its other jobs are to be
@@ -343,14 +358,14 @@ impl Run {
     }
 
     /// Hands out a ready step's jobs: the planned ones, or ones planned now from this run's
-    /// outputs. A step with no jobs finishes at once.
-    fn begin(&mut self, kinds: &Registry, node: NodeId) -> Progress {
+    /// outputs. A step with no jobs finishes at once; the steps that makes ready are returned.
+    fn begin(&mut self, kinds: &Registry, node: NodeId) -> (Progress, Vec<NodeId>) {
         let planned = match self.steps.get_mut(&node) {
             Some(state) => match state.step.jobs.take() {
                 Some(jobs) => Ok(jobs),
                 None => self.materialise(kinds, node),
             },
-            None => return Progress::default(),
+            None => return (Progress::default(), Vec::new()),
         };
         let jobs = match planned {
             Ok(jobs) if jobs.len() > MAX_STEP_JOBS => Err(format!("it would run more than {MAX_STEP_JOBS} jobs")),
@@ -359,13 +374,13 @@ impl Run {
         };
         let jobs = match jobs {
             Ok(jobs) => jobs,
-            Err(reason) => return self.fail(node, reason),
+            Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
         let mut progress = Progress::default();
         let mut ids = Vec::with_capacity(jobs.len());
         for work in jobs {
             let id = JobId(self.next_job);
-            let Some(next) = self.next_job.checked_add(1) else { return self.fail(node, "the run ran out of job ids".into()) };
+            let Some(next) = self.next_job.checked_add(1) else { return (self.fail(node, "the run ran out of job ids".into()), Vec::new()) };
             self.next_job = next;
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane: lane(&work), retry: self.retry, idempotency_key: self.key(id) });
             self.jobs.insert(id, JobState { step: node, work, done: false, outputs: Vec::new() });
@@ -377,9 +392,11 @@ impl Run {
             state.status = Status::Running(left);
         }
         if left == 0 {
-            progress.absorb(self.finish(kinds, node));
+            let (finished, ready) = self.finish(kinds, node);
+            progress.absorb(finished);
+            return (progress, ready);
         }
-        progress
+        (progress, Vec::new())
     }
 
     /// Plans a deferred step from this run's outputs, within [`RunLimits`] (#210).
@@ -444,31 +461,33 @@ impl Run {
         outputs.get(index).ok_or_else(|| format!("{} has no {port} output", self.title(node)))
     }
 
-    /// A step whose jobs are all done: its result, then the steps that were waiting on it.
-    fn finish(&mut self, kinds: &Registry, node: NodeId) -> Progress {
+    /// A step whose jobs are all done: its result, and the steps it makes ready (for the caller
+    /// to start).
+    fn finish(&mut self, kinds: &Registry, node: NodeId) -> (Progress, Vec<NodeId>) {
         let result = match self.assemble(kinds, node) {
             Ok(result) => result,
-            Err(reason) => return self.fail(node, reason),
+            Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
-        let mut progress = Progress { finished: vec![result], ..Progress::default() };
+        let progress = Progress { finished: vec![result], ..Progress::default() };
+        let mut ready = Vec::new();
         let dependents = self.steps.get_mut(&node).map(|state| {
             state.status = Status::Done;
             state.dependents.clone()
         });
         self.open_steps = self.open_steps.saturating_sub(1);
         for next in dependents.into_iter().flatten() {
-            let ready = match self.steps.get_mut(&next) {
+            let now_ready = match self.steps.get_mut(&next) {
                 Some(StepState { status: Status::Waiting(waiting), .. }) => {
                     *waiting = waiting.saturating_sub(1);
                     *waiting == 0
                 }
                 _ => false,
             };
-            if ready {
-                progress.absorb(self.begin(kinds, next));
+            if now_ready {
+                ready.push(next);
             }
         }
-        progress
+        (progress, ready)
     }
 
     /// Assembles a step's outputs and stamps its input hash.

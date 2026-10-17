@@ -501,3 +501,79 @@ fn recording_a_large_result_drops_old_generations_until_it_fits() {
     // A result larger than a node can hold can't be recorded at all.
     assert!(record_changes(C, &node, Generation::new(GenerationId::from_bytes([10; 16]), vec![Value::Text("x".repeat(MAX_NODE_BYTES))])).is_err());
 }
+
+/// List in, list out: one job per item (so an empty list plans no jobs).
+struct Each(NodeDescriptor);
+impl NodeKind for Each {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("each").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        let items = match ctx.inputs.first().map(|i| &i.value) {
+            Some(Value::List(items)) => items.clone(),
+            _ => vec![],
+        };
+        Ok(items.into_iter().map(|value| JobSpec::Source { node: ctx.node.id, output: "items".into(), value }).collect())
+    }
+}
+
+#[test]
+fn a_long_chain_of_steps_without_jobs_finishes_without_recursion() {
+    let mut kinds = kinds();
+    let each = NodeDescriptor {
+        id: "test.each".into(),
+        label: "Each".into(),
+        category: Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: LIST }],
+        outputs: vec![Port { name: "items".into(), port_type: LIST }],
+        params: ParamSchema::default(),
+        quick_add: None,
+    };
+    kinds.register(Box::new(Each(each))).unwrap();
+    // An empty split feeds 9,990 chained "each" steps (the document holds 10,000 nodes): every
+    // one plans no jobs. Recursing per step overflowed the stack at about 1,000.
+    const N: u16 = 9_990;
+    let mut p = Project::new(ProjectId::from_bytes([4; 16]), "Chain").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut p).unwrap();
+    let mut changes = vec![
+        Change::AddNode {
+            canvas: C,
+            node: kinds
+                .get("source.text")
+                .unwrap()
+                .descriptor()
+                .instantiate(id(0), &[("text".to_owned(), Value::Text(String::new()))].into_iter().collect())
+                .unwrap(),
+        },
+        Change::AddNode { canvas: C, node: kinds.get("test.split").unwrap().descriptor().instantiate(id(1), &Default::default()).unwrap() },
+    ];
+    let edge = |n: u16, from: (u16, &str), to: u16| {
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(&n.to_be_bytes());
+        bytes[15] = 3;
+        Edge {
+            id: EdgeId::from_bytes(bytes),
+            from: Endpoint { node: id(from.0), port: from.1.into() },
+            to: Endpoint { node: id(to), port: "in".into() },
+            order: 0,
+        }
+    };
+    changes.push(Change::Connect { canvas: C, edge: edge(0, (0, "out"), 1) });
+    for n in 2..N + 2 {
+        changes.push(Change::AddNode { canvas: C, node: kinds.get("test.each").unwrap().descriptor().instantiate(id(n), &Default::default()).unwrap() });
+        changes.push(Change::Connect { canvas: C, edge: edge(n, (n - 1, "items"), n) });
+    }
+    for chunk in changes.chunks(5_000) {
+        Changeset::new(chunk.to_vec()).apply(&mut p).unwrap();
+    }
+    let canvas = p.canvases().get(&C).unwrap();
+    let requested = (1..N + 2).map(id).collect();
+    let Planned::Ready(plan) = crate::planner::plan(canvas, &kinds, &RunMode::Selected, &requested, &BTreeSet::new()).unwrap() else { panic!("blocked") };
+    let (run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    assert!(run.is_finished());
+    assert_eq!(first.finished.len(), usize::from(N) + 1);
+    assert!(first.jobs.is_empty() && first.failed.is_empty());
+}
