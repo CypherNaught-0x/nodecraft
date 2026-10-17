@@ -292,3 +292,16 @@ fn token_files_replace_links_and_old_files_and_stay_out_of_shared_folders() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn trusted_stdio_does_not_change_tcp_token_admission() {
+    let mut tcp = Connection::new(token());
+    assert!(matches!(tcp.step(r#"{"id":1,"method":"hello"}"#), Step::Close(reply) if reply["error"]["kind"] == "authentication"));
+    assert!(!tcp.is_authed());
+    let mut input = std::io::Cursor::new(b"{\"id\":1,\"method\":\"hello\"}\n");
+    let mut output = Vec::new();
+    stdio::serve(&mut session(), &mut input, &mut output).unwrap();
+    let reply: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(reply["result"]["protocol"], PROTOCOL);
+    assert!(!tcp.is_authed(), "trusted stdio cannot authorize an existing TCP connection");
+}
