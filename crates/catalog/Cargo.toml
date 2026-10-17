@@ -12,3 +12,9 @@ workspace = true
 
 [dependencies]
 nodecraft-graph = { workspace = true }
+nodecraft-types = { workspace = true }
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

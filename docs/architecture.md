@@ -23,7 +23,7 @@ every CI run, and fails on an unregistered crate.
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
-| L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph |
+| L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
 | L2 | `actions` | deterministic image/video/text actions (CPU reference, rayon) | graph, media |
 | L3 | `exec` | planner (routers, batches, techniques → job DAG), scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |

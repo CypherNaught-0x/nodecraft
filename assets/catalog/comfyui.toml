@@ -1,0 +1,81 @@
+# Models run by a local or remote ComfyUI server. They are free: they use your own GPU.
+# Format: docs/catalog.md. Check with `cargo xtask catalog-check`.
+# `provider_model` names the workflow template the ComfyUI adapter (#9) runs.
+
+[[model]]
+id = "comfyui.flux-dev"
+provider = "comfyui"
+provider_model = "flux-dev"
+label = "FLUX.1 [dev] (local)"
+description = "High-quality text-to-image and image-to-image on your own ComfyUI server."
+latency_s = 40
+quality = 4
+pricing = { type = "free" }
+
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.modes]]
+id = "image-to-image"
+output = "image"
+inputs = [
+  { role = "prompt", modality = "text", min = 1, max = 1, inline = true },
+  { role = "image", modality = "image", min = 1, max = 1 },
+]
+
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [
+  { value = "1:1", label = "Square 1:1" },
+  { value = "4:3", label = "Landscape 4:3" },
+  { value = "16:9", label = "Wide 16:9" },
+  { value = "3:4", label = "Portrait 3:4" },
+  { value = "9:16", label = "Tall 9:16" },
+] }
+default = { type = "text", value = "1:1" }
+
+[[model.params.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "100" }
+default = { type = "unsigned", value = "28" }
+
+[[model.params.params]]
+name = "seed"
+label = "Seed"
+control = { type = "seed" }
+
+[[model]]
+id = "comfyui.sdxl"
+provider = "comfyui"
+provider_model = "sdxl-base"
+label = "SDXL (local)"
+description = "Fast general-purpose text-to-image on your own ComfyUI server."
+latency_s = 12
+quality = 3
+pricing = { type = "free" }
+
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "80" }
+default = { type = "unsigned", value = "30" }
+
+[[model.params.params]]
+name = "cfg"
+label = "Guidance"
+control = { type = "slider", min = 1.0, max = 15.0, step = 0.5 }
+default = { type = "number", value = 7.0 }
+
+[[model.params.params]]
+name = "seed"
+label = "Seed"
+control = { type = "seed" }
