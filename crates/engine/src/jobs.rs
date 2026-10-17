@@ -127,6 +127,9 @@ fn close(budget: &JobBudget, r: &Reserved) {
 
 /// Reserves (or adopts) a priced job's estimate. `Err` is the refusal message.
 fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resumed: bool) -> Result<Option<Reserved>, String> {
+    if budget.session.is_empty() {
+        return Err(format!("{REFUSAL_PREFIX}the budget has no session id, so charges can't be recorded (a host setup error)"));
+    }
     let budgets = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let mut log = lock_log(budget);
     let maybe_billed = resumed;

@@ -353,10 +353,13 @@ pub const MAX_RETIRED_KEYS: usize = 250_000;
 /// settled or released. Past this many, an open charge leaving the list stays charged as it is
 /// (the conservative outcome) and only its identity is kept.
 pub const MAX_PENDING: usize = 10_000;
-/// Most sessions with their own totals. Past it, the least recently charged session (never the
-/// one charging) folds into one "earlier sessions" total, saved under the empty name, which still
-/// counts for the project. A session id that charges again after being folded starts a fresh
-/// session total: sessions are per launch, and one 1,024 sessions dormant is over.
+/// Most sessions with their own totals. Past it, the least recently charged session folds into
+/// one "earlier sessions" total, saved under the empty name, which still counts for the project.
+/// Never folded: the session charging, and any session with an open charge (an estimate or
+/// unresolved), whose later settle or release must come out of its own total. A session id that
+/// charges again after being folded starts a fresh session total: sessions are per launch, and one
+/// 1,024 sessions dormant is over. Sessions kept for open charges can exceed the limit, by at most
+/// the number of open charges.
 pub const MAX_SESSIONS: usize = 1024;
 /// The session name the folded totals of earlier sessions are kept under.
 pub const EARLIER_SESSIONS: &str = "";
@@ -546,6 +549,8 @@ impl UsageLog {
         let seq = self.first_seq.saturating_add(self.entries.len() as u64);
         self.project = project;
         if let Some(sessions) = folded {
+            // Folded sessions are forgotten by the clock too, so it stays as small as the map.
+            self.session_clock.retain(|name, _| sessions.contains_key(name));
             self.sessions = sessions;
         }
         self.sessions.insert(entry.session.clone(), session);
@@ -592,11 +597,15 @@ impl UsageLog {
         if self.sessions.len() < MAX_SESSIONS {
             return Ok(None);
         }
+        let open: BTreeSet<&str> =
+            self.entries.iter().filter(|e| e.status != Charge::Actual).chain(self.pending.values()).map(|e| e.session.as_str()).collect();
         let mut sessions = self.sessions.clone();
+        // The earlier-sessions total exists before counting, so the first fold frees one slot.
+        sessions.entry(EARLIER_SESSIONS.to_owned()).or_default();
         while sessions.len() >= MAX_SESSIONS {
             let Some(name) = sessions
                 .keys()
-                .filter(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS)
+                .filter(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS && !open.contains(name.as_str()))
                 .min_by_key(|name| (self.session_clock.get(name.as_str()).copied().unwrap_or(0), name.as_str()))
                 .cloned()
             else {
@@ -789,7 +798,10 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if file.pending.len() > MAX_PENDING {
             return Err(bad("too many pending charges"));
         }
-        if file.sessions.len() > MAX_SESSIONS {
+        // Sessions past the limit are only kept for open charges (see `MAX_SESSIONS`).
+        let open_sessions: BTreeSet<&str> =
+            file.entries.iter().filter(|e| e.status != Charge::Actual).chain(file.pending.iter()).map(|e| e.session.as_str()).collect();
+        if file.sessions.len() > MAX_SESSIONS.saturating_add(open_sessions.len()) {
             return Err(bad("too many sessions"));
         }
         let text_bytes = file.entries.iter().fold(0usize, |sum, e| sum.saturating_add(entry_text(e)));

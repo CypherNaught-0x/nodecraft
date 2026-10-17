@@ -744,18 +744,23 @@ fn a_folded_session_with_listed_charges_settles_reloads_and_charges_again() {
     for n in 0..MAX_SESSIONS {
         log.record(entry(&format!("s{n:05}"), &format!("k{n}"), 1)).unwrap();
     }
-    assert!(log.spent("a").session.is_empty(), "a was folded");
-    // Settling and releasing a's charges adjust the earlier-sessions total.
+    // a holds open charges, so it isn't folded: their settle and release come out of its own total.
+    assert_eq!(log.spent("a").session.get(&Currency::USD), Some(&usd(19)), "a kept its total");
     log.settle("t", "a-open", usd(7), Charge::Actual).unwrap();
     log.release("t", "a-free").unwrap();
-    // a charges again: a fresh session total; the project total stays exact.
     log.record(entry("a", "a-new", 3)).unwrap();
-    assert_eq!(log.spent("a").session.get(&Currency::USD), Some(&usd(3)));
+    assert_eq!(log.spent("a").session.get(&Currency::USD), Some(&usd(15)));
     let project = 7 + 5 + 3 + u64::try_from(MAX_SESSIONS).unwrap();
     assert_eq!(log.spent("a").project.get(&Currency::USD), Some(&usd(project)));
     // And the log the app saved reloads.
     let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     assert_eq!(back, log);
+    // With nothing open any more, a quiet a folds like any other session.
+    for n in 0..MAX_SESSIONS {
+        log.record(entry(&format!("t{n:05}"), &format!("j{n}"), 1)).unwrap();
+    }
+    assert!(log.spent("a").session.is_empty(), "a was folded");
+    assert_eq!(log.spent("a").project.get(&Currency::USD), Some(&usd(project + u64::try_from(MAX_SESSIONS).unwrap())));
 }
 
 #[test]
@@ -830,4 +835,39 @@ fn settling_respects_the_total_ceiling() {
     let snapshot = over.clone();
     assert_eq!(over.settle("t", "more", usd(MAX_CHARGE_MICROS), Charge::Actual).unwrap_err().kind, ErrorKind::Overflow);
     assert_eq!(over, snapshot, "nothing changed");
+}
+
+#[test]
+fn a_reused_session_with_an_open_charge_keeps_its_own_total() {
+    let mut log = UsageLog::default();
+    let in_session = |session: &str, key: &str, micros: u64, status: Charge| UsageEntry { session: session.into(), ..charge(key, micros, status) };
+    log.record(in_session("a", "old", 5_000_000, Charge::Estimate)).unwrap();
+    // Enough other sessions to force folding; "a" has an open charge, so it isn't folded.
+    for n in 0..MAX_SESSIONS + 1 {
+        log.record(in_session(&format!("s{n}"), &format!("k{n}"), 1, Charge::Actual)).unwrap();
+    }
+    log.record(in_session("a", "new", 5_000_000, Charge::Estimate)).unwrap();
+    log.release("fal", "old").unwrap();
+    assert_eq!(log.spent("a").session.get(&Currency::USD), Some(&usd(5_000_000)), "the new estimate still counts");
+    assert!(log.session_clock.len() <= log.sessions.len(), "the clock forgets folded sessions");
+    // It still saves and loads.
+    let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert!(back == log);
+}
+
+#[test]
+fn folding_keeps_the_session_count_at_the_limit() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_SESSIONS {
+        log.record(UsageEntry { session: format!("s{n}"), ..charge(&format!("k{n}"), 1, Charge::Actual) }).unwrap();
+    }
+    assert_eq!(log.sessions.len(), MAX_SESSIONS);
+    log.record(UsageEntry { session: "new".into(), ..charge("kn", 1, Charge::Actual) }).unwrap();
+    // The earlier-sessions total takes a slot of its own, so the first fold makes room for it
+    // and for the new session; later folds take one each.
+    assert_eq!(log.sessions.len(), MAX_SESSIONS);
+    assert!(!log.sessions.contains_key("s0") && log.sessions.contains_key("s2"), "the least recent folded first");
+    log.record(UsageEntry { session: "newer".into(), ..charge("kn2", 1, Charge::Actual) }).unwrap();
+    assert_eq!(log.sessions.len(), MAX_SESSIONS);
+    assert!(log.sessions.contains_key("s3"));
 }

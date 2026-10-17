@@ -671,10 +671,14 @@ a choice a later contributor might otherwise undo.
   pushed off the list is kept as *pending*, up to 10,000 of them and saved with the log. It can
   still be settled, released or found with `charge`. Once settled, only its identity is kept.
   Past the limit, it stays charged as it is, which is conservative. `settle` enforces the same
-  total ceiling as `record`. At most 1,024 sessions keep their own totals. The least recently charged one (never the one charging)
-  folds into an "earlier sessions" total saved under the reserved empty name. Settling or
-  releasing a folded session's entries adjusts that total, so the project total and the current
-  session's stay exact and a saved log always reloads. A session id that charges again after
+  total ceiling as `record`. At most 1,024 sessions keep their own totals. The least recently charged one folds into an
+  "earlier sessions" total saved under the reserved empty name. Two kinds of session never fold:
+  the one charging, and any with an open charge (#233). Otherwise a reused session id would
+  settle an old charge out of its new total and undercount. Sessions kept for open charges can
+  exceed the limit, by at most the number of open charges, and loading allows that. The session
+  clock forgets folded names, so it stays as small as the session map. Settling or releasing a
+  folded session's entries adjusts the earlier-sessions total, so the project total and the
+  current session's stay exact and a saved log always reloads. A session id that charges again after
   being folded starts a fresh session total. Entries with an empty session id were never written
   by NodeCraft and are now refused. The CSV export can stream (`write_csv`).
 
