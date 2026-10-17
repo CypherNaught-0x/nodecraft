@@ -405,33 +405,20 @@ fn retired_id(provider: &str, idempotency_key: &str) -> Retired {
     id
 }
 
-/// Takes `amount` out of session `name`'s totals; what its own total no longer holds (it was
-/// folded into the earlier sessions') comes out of [`EARLIER_SESSIONS`].
+/// Open charges always belong to their named session after load admission. Never debit a
+/// newer session generation using an own-first/folded fallback (legacy files lacked ownership).
 fn take_from_session(sessions: &mut BTreeMap<String, Totals>, name: &str, amount: Money) -> Result<(), Error> {
-    let own = sessions.get(name).and_then(|t| t.get(&amount.currency)).map_or(0, |m| m.micros);
-    let from_own = own.min(amount.micros);
-    if from_own > 0
-        && let Some(totals) = sessions.get_mut(name)
-    {
-        sub_from(totals, Money::new(amount.currency, from_own))?;
-    }
-    let rest = amount.micros.saturating_sub(from_own);
-    if rest > 0 {
-        let earlier = sessions.get_mut(EARLIER_SESSIONS).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing a session"))?;
-        sub_from(earlier, Money::new(amount.currency, rest))?;
-    }
-    Ok(())
+    let own = sessions.get_mut(name).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing an open charge's session"))?;
+    sub_from(own, amount)
 }
-
-/// Adds `amount` to session `name`'s totals, or to [`EARLIER_SESSIONS`] when it was folded.
 fn give_to_session(sessions: &mut BTreeMap<String, Totals>, name: &str, amount: Money) -> Result<(), Error> {
-    let target = if sessions.contains_key(name) { name } else { EARLIER_SESSIONS };
-    add_to(sessions.entry(target.to_owned()).or_default(), amount)
+    let own = sessions.get_mut(name).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing an open charge's session"))?;
+    add_to(own, amount)
 }
 
-/// The two sessions a change to an entry of `name` can touch, copied so the change is atomic.
+/// Copy the established owner so a failed settlement leaves all totals unchanged.
 fn touched_sessions(sessions: &BTreeMap<String, Totals>, name: &str) -> BTreeMap<String, Totals> {
-    [name, EARLIER_SESSIONS].into_iter().filter_map(|n| sessions.get(n).map(|t| (n.to_owned(), t.clone()))).collect()
+    sessions.get(name).map(|totals| (name.to_owned(), totals.clone())).into_iter().collect()
 }
 
 fn entry_text(entry: &UsageEntry) -> usize {
@@ -470,6 +457,10 @@ impl Eq for UsageLog {}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageLogFile {
+    /// Missing/0 is legacy ambiguous ownership; 1 guarantees every retained open charge is
+    /// covered by its named session. Old deny-unknown-fields readers must refuse this marker.
+    #[serde(default)]
+    pub open_session_ownership: u8,
     pub entries: Vec<UsageEntry>,
     pub project: Totals,
     #[serde(default)]
@@ -495,6 +486,10 @@ fn add_to(map: &mut Totals, amount: Money) -> Result<(), Error> {
 }
 
 fn sub_from(map: &mut Totals, amount: Money) -> Result<(), Error> {
+    // Saved totals may omit zero currencies; subtracting zero must not need a stored slot.
+    if amount.micros == 0 {
+        return Ok(());
+    }
     let total = map.get_mut(&amount.currency).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing a currency"))?;
     *total = total.checked_sub(amount)?;
     Ok(())
@@ -775,6 +770,7 @@ impl UsageLog {
 impl From<UsageLog> for UsageLogFile {
     fn from(log: UsageLog) -> Self {
         Self {
+            open_session_ownership: 1,
             entries: log.entries.into(),
             project: log.project,
             sessions: log.sessions,
@@ -789,8 +785,11 @@ impl From<UsageLog> for UsageLogFile {
 impl TryFrom<UsageLogFile> for UsageLog {
     type Error = Error;
 
-    fn try_from(file: UsageLogFile) -> Result<Self, Error> {
+    fn try_from(mut file: UsageLogFile) -> Result<Self, Error> {
         let bad = |m: &str| Error::new(ErrorKind::InvalidInput, format!("usage log: {m}"));
+        if file.open_session_ownership > 1 {
+            return Err(bad("unsupported open-session ownership version; use a newer NodeCraft"));
+        }
         if file.entries.len() > MAX_USAGE_ENTRIES {
             return Err(bad("too many entries"));
         }
@@ -885,6 +884,41 @@ impl TryFrom<UsageLogFile> for UsageLog {
         }
         if file.project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(bad("a total is larger than any project could spend"));
+        }
+        // Only now, after checking the complete original accounting, may legacy totals move.
+        // Work is bounded by the already-admitted listed and pending charge counts.
+        let mut open: BTreeMap<&str, Totals> = BTreeMap::new();
+        for entry in file.entries.iter().chain(file.pending.iter()).filter(|entry| entry.status != Charge::Actual) {
+            add_to(open.entry(&entry.session).or_default(), entry.cost)?;
+        }
+        let original_earlier = file.sessions.get(EARLIER_SESSIONS).cloned().unwrap_or_default();
+        for (name, totals) in open {
+            for amount in totals.into_values() {
+                let own = file.sessions.get(name).and_then(|totals| totals.get(&amount.currency)).map_or(0, |money| money.micros);
+                let earlier = original_earlier.get(&amount.currency).map_or(0, |money| money.micros);
+                if file.open_session_ownership == 0 {
+                    if amount.micros > 0 && own > 0 && earlier > 0 {
+                        return Err(bad(
+                            "legacy open-charge ownership is ambiguous; retain the original log and reconcile open charges and session totals against provider records before retrying",
+                        ));
+                    }
+                    if own == 0 && amount.micros > 0 {
+                        let earlier = file.sessions.get_mut(EARLIER_SESSIONS).ok_or_else(|| bad("legacy open charges exceed earlier-session totals"))?;
+                        sub_from(earlier, amount).map_err(|_| bad("legacy open charges exceed earlier-session totals"))?;
+                        add_to(file.sessions.entry(name.to_owned()).or_default(), amount)?;
+                    }
+                    // Even a zero-cost open charge needs an owner for a later nonzero settle.
+                    file.sessions.entry(name.to_owned()).or_default().entry(amount.currency).or_insert(Money::zero(amount.currency));
+                }
+                if !file.sessions.contains_key(name)
+                    || file.sessions.get(name).and_then(|totals| totals.get(&amount.currency)).map_or(0, |money| money.micros) < amount.micros
+                {
+                    return Err(bad("named session totals don't cover their open charges"));
+                }
+            }
+        }
+        if file.sessions.len() > MAX_SESSIONS.saturating_add(1).saturating_add(MAX_USAGE_ENTRIES).saturating_add(MAX_PENDING) {
+            return Err(bad("too many sessions after legacy ownership normalization"));
         }
         let mut session_clock = BTreeMap::new();
         for (seq, entry) in file.entries.iter().enumerate() {
