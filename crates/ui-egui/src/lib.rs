@@ -8,6 +8,7 @@ pub mod app;
 pub mod canvas;
 pub mod card;
 pub mod selection;
+pub mod keys;
 pub mod theme;
 
 pub use app::NodeCraftApp;

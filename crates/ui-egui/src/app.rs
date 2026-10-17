@@ -163,6 +163,12 @@ pub struct NodeCraftApp {
     cache_clock: u64,
     next_gesture: u64,
     centred: bool,
+    /// The API keys panel, and the accounts it lists (from settings).
+    pub keys: crate::keys::KeysPanel,
+    pub key_accounts: nodecraft_engine::settings::KeySettings,
+    /// Answers from the keychain thread (the app's `keys.store` service).
+    #[cfg(not(target_arch = "wasm32"))]
+    key_results: Option<nodecraft_engine::secrets::KeyResults>,
 }
 impl NodeCraftApp {
     pub fn new(ctx: &egui::Context) -> Result<Self, Error> {
@@ -175,7 +181,14 @@ impl NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Result<Self, Error> {
         let settings = store.get().clone();
-        let mut app = Self::new(ctx)?;
+        // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
+        let (worker, results) = nodecraft_engine::secrets::KeyWorker::spawn(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore))?;
+        let mut services = nodecraft_engine::commands::Services::default();
+        nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
+        let mut app = Self::with_services(services)?;
+        app.key_results = Some(results);
+        app.apply_settings(ctx, &NodeCraftSettings::default());
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.apply_settings(ctx, &settings);
         app.store = Some(store);
         Ok(app)
@@ -188,10 +201,16 @@ impl NodeCraftApp {
             Theme::Light => ThemeKind::Light,
         };
         self.canvas_prefs = settings.canvas.clone();
+        self.key_accounts = settings.keys.clone();
         theme::apply(ctx, self.theme);
     }
 
     pub fn headless() -> Result<Self, Error> {
+        Self::with_services(nodecraft_engine::commands::Services::default())
+    }
+
+    /// The headless app with these host services on its session (the keychain, for one).
+    pub fn with_services(services: nodecraft_engine::commands::Services) -> Result<Self, Error> {
         let kinds = nodecraft_nodes::Registry::builtins()?;
         let canvas = CanvasId::from_bytes([1; 16]);
         let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Untitled")?;
@@ -201,7 +220,7 @@ impl NodeCraftApp {
         let mut node = kinds.get("source.text")?.descriptor().instantiate(NodeId::from_bytes([3; 16]), &values)?;
         node.pos = nodecraft_graph::Position { x: -160.0, y: -110.0 };
         Change::AddNode { canvas, node }.apply(&mut document)?;
-        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?;
+        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
         Self::from_session(session, canvas)
     }
     pub fn from_session(session: Session, canvas: CanvasId) -> Result<Self, Error> {
@@ -228,6 +247,10 @@ impl NodeCraftApp {
             cache_clock: 0,
             next_gesture: 0,
             centred: false,
+            keys: crate::keys::KeysPanel::default(),
+            key_accounts: nodecraft_engine::settings::KeySettings::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            key_results: None,
         })
     }
     pub fn home(&self) -> Pos2 {
@@ -490,6 +513,54 @@ impl NodeCraftApp {
         }
         self.zoom_badge(ui, viewport);
         self.text_focused = canvas::text_input_focused(ui.ctx());
+        self.keys_button(ui, viewport);
+        let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
+        self.save_accounts(changes);
+    }
+
+    /// Top-right button that opens the API keys panel.
+    fn keys_button(&mut self, ui: &mut egui::Ui, viewport: Rect) {
+        let t = self.theme.tokens();
+        let frame = egui::Frame::NONE
+            .fill(t.panel_fill)
+            .stroke(egui::Stroke::new(1.0, t.panel_stroke))
+            .corner_radius(t.panel_radius)
+            .inner_margin(egui::Margin::symmetric(6, 4));
+        egui::Area::new(ui.id().with("keys_button"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-16.0, 16.0))
+            .constrain_to(viewport)
+            .show(ui.ctx(), |ui| {
+                frame.show(ui, |ui| {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
+                        .on_hover_text("Add, check and remove provider keys")
+                        .clicked()
+                    {
+                        self.keys.open = !self.keys.open;
+                    }
+                });
+            });
+    }
+
+    /// Keeps the remembered account names in settings in step with the keychain.
+    fn save_accounts(&mut self, changes: Vec<crate::keys::AccountChange>) {
+        if changes.is_empty() {
+            return;
+        }
+        let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
+            for change in &changes {
+                match change {
+                    crate::keys::AccountChange::Remember(account) => keys.remember(account),
+                    crate::keys::AccountChange::Forget(account) => keys.forget(account),
+                }
+            }
+        };
+        apply(&mut self.key_accounts);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            store.update(|settings| apply(&mut settings.keys));
+        }
     }
     /// Bottom-right zoom percentage; clicking it resets the view.
     fn zoom_badge(&mut self, ui: &mut egui::Ui, viewport: Rect) {
@@ -534,6 +605,18 @@ fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(results) = &self.key_results {
+            let (changes, others) = self.keys.receive(results.drain());
+            // Nothing else asks the keychain yet; answers to other requests are logged, not lost.
+            for outcome in others {
+                log::info!("keychain answered request {} for {}", outcome.id, outcome.account);
+            }
+            self.save_accounts(changes);
+            if self.keys.is_waiting() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             let tick = store.tick(std::time::Instant::now());

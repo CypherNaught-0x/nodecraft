@@ -1086,4 +1086,23 @@ fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
     assert!(static_rect.intersects(Rect::from_two_pos(view.to_world(origin, from), view.to_world(origin, to))));
     box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
     assert!(h.state().selection.is_empty());
+#[test]
+fn the_keys_button_opens_the_keys_panel() {
+    let mut h = harness();
+    assert!(!h.state().keys.open);
+    assert!(h.query_by_label("API keys").is_some());
+    h.get_by_role_and_label(Role::Button, "API keys").click();
+    h.run();
+    assert!(h.state().keys.open);
+    assert!(h.query_by_label("No keys yet.").is_some(), "headless: no accounts in settings");
+    // No keychain service in the headless app: checking or saving says so instead of failing silently.
+    h.get_by_label("openai").click();
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").click();
+    h.run();
+    h.event(egui::Event::Text("sk-proj-abcdefghij1234".into()));
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(h.state().keys.notice.as_deref().is_some_and(|n| n.contains("unavailable")), "{:?}", h.state().keys.notice);
 }
