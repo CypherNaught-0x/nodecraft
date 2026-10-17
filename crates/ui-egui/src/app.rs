@@ -2,6 +2,7 @@
 use crate::{
     canvas::{self, CanvasView},
     card::{self, EditTarget, EditorState, Intent},
+    navigation::Navigation,
     noodle::{self, Side},
     selection::{self, Selection},
     theme::{self, ThemeKind, Tokens},
@@ -16,11 +17,13 @@ use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, Port
 use serde_json::json;
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
+    rc::Rc,
     sync::Arc,
 };
 
-const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
 struct CachedSchema {
     descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
     visible: BTreeSet<String>,
@@ -38,7 +41,7 @@ fn cache_bytes(cache: &BTreeMap<NodeId, CachedSchema>) -> usize {
         total.saturating_add(bytes).saturating_add(256).saturating_add(entry.visible.iter().map(|name| name.len().saturating_add(96)).sum::<usize>())
     })
 }
-fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> Option<usize> {
+pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> Option<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -174,6 +177,8 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
     card::world_rect(node, resolved.as_deref(), t)
 }
 
+mod navigation;
+
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
     pub view: CanvasView,
@@ -181,6 +186,8 @@ pub struct NodeCraftApp {
     pub canvas: CanvasId,
     pub selection: Selection,
     pub canvas_prefs: CanvasSettings,
+    pub navigation: Navigation,
+    navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
     pub viewport: Rect,
@@ -267,10 +274,20 @@ impl NodeCraftApp {
         let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
         Self::from_session(session, canvas)
     }
-    pub fn from_session(session: Session, canvas: CanvasId) -> Result<Self, Error> {
+    pub fn from_session(mut session: Session, canvas: CanvasId) -> Result<Self, Error> {
         if !session.document().canvases().contains_key(&canvas) {
             return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
         }
+        let navigation_mailbox = Rc::new(RefCell::new(None));
+        let mailbox = Rc::clone(&navigation_mailbox);
+        session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, move |request| {
+            let mut slot = mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "navigation host is busy"))?;
+            if slot.is_some() {
+                return Err(Error::new(ErrorKind::Conflict, "navigation request is already pending"));
+            }
+            *slot = Some(request.clone());
+            Ok(json!({"accepted":true}))
+        })?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -278,6 +295,8 @@ impl NodeCraftApp {
             canvas,
             selection: Selection::default(),
             canvas_prefs: CanvasSettings::default(),
+            navigation: Navigation::default(),
+            navigation_mailbox,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
             viewport: Rect::NOTHING,
@@ -298,16 +317,9 @@ impl NodeCraftApp {
             key_results: None,
         })
     }
-    pub fn home(&self) -> Pos2 {
-        self.session
-            .document()
-            .canvases()
-            .get(&self.canvas)
-            .into_iter()
-            .flat_map(|c| c.nodes().values())
-            .map(|node| card::world_rect(node, self.schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()), self.theme.tokens()))
-            .reduce(|a, b| a.union(b))
-            .map_or(Pos2::ZERO, |r| r.center())
+    pub fn home(&mut self) -> Pos2 {
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
+        self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.cache_clock = self.cache_clock.saturating_add(1);
@@ -315,7 +327,8 @@ impl NodeCraftApp {
         let viewport = ui.max_rect();
         self.viewport = viewport;
         if !self.centred {
-            self.view.reset(viewport, self.home());
+            let home = self.home();
+            self.view.reset(viewport, home);
             self.centred = true;
         }
         let selected_before = self.selection.clone();
@@ -373,9 +386,12 @@ impl NodeCraftApp {
                 }
             }
         }
+        let popup_owned = egui::Popup::is_any_open(ui.ctx());
+        let overlay_blocks = self.navigation_overlay(ui);
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
-        if background.drag_started_by(egui::PointerButton::Primary)
+        if !overlay_blocks
+            && background.drag_started_by(egui::PointerButton::Primary)
             && shift
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         {
@@ -391,7 +407,9 @@ impl NodeCraftApp {
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
-        canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+        if !overlay_blocks {
+            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+        }
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
         canvas::paint_grid(&painter, viewport, &self.view, t);
@@ -437,13 +455,14 @@ impl NodeCraftApp {
                 ) {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
-                    if r.clicked() {
+                    if !overlay_blocks && r.clicked() {
                         if shift {
                             self.selection.toggle(node.id);
                         } else {
                             self.selection.only(node.id);
                         }
-                    } else if (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
+                    } else if !overlay_blocks
+                        && (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
                         && !self.selection.contains(node.id)
                     {
                         // Grabbing or right-clicking a selected card keeps the rest of the selection.
@@ -453,19 +472,21 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     }
-                    r.context_menu(|ui| {
-                        if ui.button("Select upstream").clicked() {
-                            query = Some(SelectQuery::Upstream);
-                        }
-                        if ui.button("Select downstream").clicked() {
-                            query = Some(SelectQuery::Downstream);
-                        }
-                        let label = descriptor.map_or(node.kind.as_str(), |d| d.label.as_str());
-                        if ui.button(format!("Select all {label} nodes")).clicked() {
-                            query = Some(SelectQuery::Kind(node.kind.clone()));
-                        }
-                    });
-                    if r.drag_started_by(egui::PointerButton::Primary) {
+                    if !overlay_blocks || egui::Popup::is_any_open(ui.ctx()) {
+                        r.context_menu(|ui| {
+                            if ui.button("Select upstream").clicked() {
+                                query = Some(SelectQuery::Upstream);
+                            }
+                            if ui.button("Select downstream").clicked() {
+                                query = Some(SelectQuery::Downstream);
+                            }
+                            let label = descriptor.map_or(node.kind.as_str(), |d| d.label.as_str());
+                            if ui.button(format!("Select all {label} nodes")).clicked() {
+                                query = Some(SelectQuery::Kind(node.kind.clone()));
+                            }
+                        });
+                    }
+                    if !overlay_blocks && r.drag_started_by(egui::PointerButton::Primary) {
                         if let Some(serial) = self.next_gesture.checked_add(1) {
                             self.next_gesture = serial;
                             self.drag = Some(Drag { id: node.id, gesture: format!("canvas-drag-{serial}"), pos: node.pos });
@@ -474,10 +495,13 @@ impl NodeCraftApp {
                             self.drag = None;
                         }
                     }
-                    if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
+                    if !overlay_blocks && (r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary)) {
                         pan += r.drag_delta() * self.view.zoom;
                     }
                     for (side, port, r) in &result.ports {
+                        if overlay_blocks {
+                            continue;
+                        }
                         if r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary) {
                             pan += r.drag_delta() * self.view.zoom;
                         }
@@ -497,13 +521,21 @@ impl NodeCraftApp {
                             }),
                         };
                     }
-                    intents.extend(result.intents.into_iter().map(|intent| (node.id, intent)));
+                    // A Choice popup can close while producing its parameter intent over the
+                    // overlay. Preserve its ownership from frame start, without admitting moves.
+                    intents.extend(
+                        result
+                            .intents
+                            .into_iter()
+                            .filter(|intent| !overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                            .map(|intent| (node.id, intent)),
+                    );
                 }
             }
             // Noodles follow this frame's painted cards (drag previews, resolved heights). They are
             // painted on the canvas layer, which stays under the card layers.
             let curves = curves(canvas, &self.painted, kinds, t);
-            if background.clicked() {
+            if !overlay_blocks && background.clicked() {
                 let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
                     let world = self.view.to_world(viewport.min, p);
                     let reach = NOODLE_HIT / self.view.zoom;
@@ -660,7 +692,7 @@ impl NodeCraftApp {
                     });
                 });
         }
-        self.zoom_badge(ui, viewport);
+        self.navigation.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.keys_button(ui, viewport);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
@@ -808,31 +840,14 @@ impl NodeCraftApp {
             (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None)
         }
     }
-    /// Bottom-right zoom percentage; clicking it resets the view.
-    fn zoom_badge(&mut self, ui: &mut egui::Ui, viewport: Rect) {
-        let t = self.theme.tokens();
-        let frame = egui::Frame::NONE
-            .fill(t.panel_fill)
-            .stroke(egui::Stroke::new(1.0, t.panel_stroke))
-            .corner_radius(t.panel_radius)
-            .inner_margin(egui::Margin::symmetric(6, 4));
-        let mut reset = false;
-        egui::Area::new(ui.id().with("zoom_badge"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -16.0))
-            .constrain_to(viewport)
-            .show(ui.ctx(), |ui| {
-                frame.show(ui, |ui| {
-                    let label = egui::RichText::new(format!("{:.0}%", self.view.zoom * 100.0)).color(t.text_muted).monospace();
-                    reset = ui.add(egui::Button::new(label).frame(false)).on_hover_text("Reset view (⌘0)").clicked();
-                });
-            });
-        if reset {
-            self.view.reset(viewport, self.home());
-        }
-    }
 }
 fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
+    consume_shortcut_with_policy(input, shortcut, false)
+}
+fn consume_navigation_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
+    consume_shortcut_with_policy(input, shortcut, true)
+}
+fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, navigation: bool) -> bool {
     let mut modifiers = egui::Modifiers::NONE;
     let mut key = None;
     for part in shortcut.split('+') {
@@ -843,10 +858,26 @@ fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
             "Alt" => modifiers |= egui::Modifiers::ALT,
             "Z" => key = Some(egui::Key::Z),
             "Y" => key = Some(egui::Key::Y),
+            "1" => key = Some(egui::Key::Num1),
+            "2" => key = Some(egui::Key::Num2),
+            "M" => key = Some(egui::Key::M),
             _ => return false,
         }
     }
-    key.is_some_and(|key| input.consume_key(modifiers, key))
+    key.is_some_and(|key| {
+        if !navigation {
+            return input.consume_key(modifiers, key);
+        }
+        let digit = matches!(key, egui::Key::Num1 | egui::Key::Num2);
+        let mut consumed = false;
+        input.events.retain(|event| {
+            let matched = matches!(event, egui::Event::Key { key: logical, physical_key, pressed: true, modifiers: actual, .. }
+                if actual.matches_exact(modifiers) && if digit { physical_key.unwrap_or(*logical) == key } else { *logical == key });
+            consumed |= matched;
+            !matched
+        });
+        consumed
+    })
 }
 
 impl eframe::App for NodeCraftApp {

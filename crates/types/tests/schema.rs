@@ -240,3 +240,30 @@ fn aggregate_text_budget_includes_media_mime_defaults_conditions_and_overrides()
     }
     assert!(ParamSchema { params }.validate().is_err());
 }
+
+#[test]
+fn borrowed_resolution_preserves_hidden_checks_and_effective_byte_boundaries() {
+    let mut hidden =
+        spec("hidden", ParamControl::Choice { options: vec![Choice { value: "yes".into(), label: "Yes".into() }] }, Some(Value::Text("yes".into())));
+    hidden.visible_if = Some(VisibleIf { parameter: "toggle".into(), equals: Value::Bool(true) });
+    let schema = ParamSchema { params: vec![spec("toggle", ParamControl::Toggle, Some(Value::Bool(false))), hidden] };
+    let validated = schema.validated().unwrap();
+    let supplied = ParamValues::from([("hidden".into(), Value::Text("yes".into()))]);
+    let resolved = validated.resolve_borrowed(&supplied, true).unwrap();
+    assert!(!resolved.visible.contains("hidden"));
+    assert_eq!(resolved.values.get("hidden").copied(), supplied.get("hidden"));
+    let invalid = ParamValues::from([("hidden".into(), Value::Text("no".into()))]);
+    assert!(validated.resolve_borrowed(&invalid, false).is_err(), "hidden supplied values are still checked");
+    let schema = ParamSchema {
+        params: vec![
+            spec("a", ParamControl::Text { multiline: true, max_bytes: 1_048_576 }, Some(Value::Text("a".repeat(100)))),
+            spec("b", ParamControl::Text { multiline: true, max_bytes: 1_048_576 }, None),
+        ],
+    };
+    let validated = schema.validated().unwrap();
+    for (length, succeeds) in [(1_048_476, true), (1_048_477, false)] {
+        let supplied = ParamValues::from([("b".into(), Value::Text("b".repeat(length)))]);
+        assert_eq!(validated.resolve_borrowed(&supplied, false).is_ok(), succeeds);
+        assert_eq!(schema.resolve(&supplied, false).is_ok(), succeeds);
+    }
+}

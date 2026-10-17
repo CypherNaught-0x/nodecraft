@@ -8,6 +8,7 @@ pub mod app;
 pub mod canvas;
 pub mod card;
 pub mod keys;
+pub mod navigation;
 pub mod noodle;
 pub mod selection;
 pub mod theme;

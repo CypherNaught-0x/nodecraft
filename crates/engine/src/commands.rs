@@ -21,6 +21,13 @@ impl Resources {
     pub fn insert<T: Any>(&mut self, value: T) {
         self.values.insert(TypeId::of::<T>(), Box::new(value));
     }
+    pub fn swap<T: Any>(&mut self, value: Option<T>) -> Option<T> {
+        let old = match value {
+            Some(value) => self.values.insert(TypeId::of::<T>(), Box::new(value)),
+            None => self.values.remove(&TypeId::of::<T>()),
+        };
+        old.and_then(|value| value.downcast::<T>().ok()).map(|value| *value)
+    }
     pub fn get<T: Any>(&self) -> Option<&T> {
         self.values.get(&TypeId::of::<T>()).and_then(|value| value.downcast_ref())
     }
@@ -116,6 +123,7 @@ impl Registry {
             .chain(crate::edge_cmds::specs())
             .chain(crate::keys_cmds::specs())
             .chain(crate::stale_cmds::specs())
+            .chain(crate::navigation_cmds::specs())
         {
             registry.register(spec)?;
         }

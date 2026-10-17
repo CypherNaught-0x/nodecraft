@@ -54,6 +54,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
     "canvas.stale",
+    "canvas.fit_all",
+    "canvas.fit_selection",
+    "canvas.minimap_toggle",
+    "canvas.pan_to",
     "keys.status",
 ];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
