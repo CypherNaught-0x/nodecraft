@@ -119,6 +119,12 @@ enum SelectQuery {
     Kind(String),
 }
 
+/// A card's world rect: as painted this frame, or (for cards not drawn, e.g. off screen) from the
+/// kind's static descriptor.
+fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
+    painted.get(&node.id).copied().unwrap_or_else(|| card::world_rect(node, kinds.get(&node.kind).ok().map(|kind| kind.descriptor()), t))
+}
+
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
     pub view: CanvasView,
@@ -133,6 +139,9 @@ pub struct NodeCraftApp {
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
+    /// World rects of the cards painted this frame. Geometry for selection (and noodles) comes
+    /// from here, not the evictable schema cache, so it matches what is on screen.
+    painted: BTreeMap<NodeId, Rect>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
     schemas: BTreeMap<NodeId, CachedSchema>,
@@ -198,6 +207,7 @@ impl NodeCraftApp {
             editors: BTreeMap::new(),
             drag: None,
             marquee: None,
+            painted: BTreeMap::new(),
             text_focused: false,
             schemas: BTreeMap::new(),
             cache_clock: 0,
@@ -294,6 +304,7 @@ impl NodeCraftApp {
             self.selection.retain_existing(canvas);
             // Selected cards draw last, on top.
             let selected = self.selection.clone();
+            self.painted.clear();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -323,6 +334,7 @@ impl NodeCraftApp {
                     t,
                 ) {
                     let r = result.response;
+                    self.painted.insert(node.id, r.rect);
                     if r.clicked() {
                         if shift {
                             self.selection.toggle(node.id);
@@ -379,10 +391,9 @@ impl NodeCraftApp {
                 // Nodes removed mid-drag (e.g. by undo) must not come back from the base.
                 marquee.base.retain(|id| canvas.nodes().contains_key(id));
                 let world = Rect::from_two_pos(marquee.start, self.view.to_world(viewport.min, pointer));
-                let schemas = &self.schemas;
                 let mut nodes = marquee.base.clone();
-                nodes
-                    .extend(selection::in_box(canvas, world, |node| card::world_rect(node, schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()), t)));
+                let (painted, kinds) = (&self.painted, self.session.kinds());
+                nodes.extend(selection::in_box(canvas, world, |node| card_geometry(painted, kinds, node, t)));
                 self.selection.replace(nodes);
                 // Above the card layers, which are drawn over the background painter.
                 ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("marquee"))).with_clip_rect(viewport).rect(

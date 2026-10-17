@@ -959,3 +959,62 @@ fn selection_shortcuts_yield_to_text_fields() {
     h.run();
     assert!(h.state().selection.is_empty());
 }
+
+#[test]
+fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
+    use std::borrow::Cow;
+    // Static palette metadata has one parameter; each instance resolves six, so the painted card
+    // is taller than anything the static descriptor implies.
+    struct Tall(NodeDescriptor, NodeDescriptor);
+    impl NodeKind for Tall {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn instance<'a>(&'a self, _: &nodecraft_graph::Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+            Ok(Cow::Borrowed(&self.1))
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+    }
+    let toggle = |n: u32| spec(&format!("p{n}"), ParamControl::Toggle, Value::Bool(false));
+    let short = NodeDescriptor {
+        id: "test.tall".into(),
+        label: "Tall".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        params: ParamSchema { params: vec![toggle(0)] },
+        quick_add: None,
+    };
+    let tall = NodeDescriptor { params: ParamSchema { params: (0..6).map(toggle).collect() }, ..short.clone() };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Tall").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut card = nodecraft_graph::Node::new(NodeId::from_bytes([3; 16]), "test.tall");
+    card.params.insert("p0".into(), Value::Bool(false));
+    Change::AddNode { canvas, node: card }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Tall(short, tall))).unwrap();
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.run();
+    let id = NodeId::from_bytes([3; 16]);
+    let painted = *h.state().painted.get(&id).unwrap();
+    let static_rect = card::world_rect(node(h.state()), h.state().session.kinds().get("test.tall").ok().map(|k| k.descriptor()), h.state().theme.tokens());
+    assert!(painted.height() > static_rect.height() + 10.0, "{painted:?} vs {static_rect:?}");
+    // Simulate eviction, then box only the part of the card below the static height.
+    h.state_mut().schemas.clear();
+    let (origin, view) = (h.state().viewport.min, h.state().view);
+    let lower = Rect::from_min_max(Pos2::new(painted.min.x - 20.0, static_rect.max.y + 4.0), Pos2::new(painted.max.x + 20.0, painted.max.y - 4.0));
+    let geometry = card_geometry(&h.state().painted, h.state().session.kinds(), node(h.state()), h.state().theme.tokens());
+    assert_eq!(geometry, painted);
+    box_drag(&mut h, view.to_screen(origin, lower.min), view.to_screen(origin, lower.max), egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+}
