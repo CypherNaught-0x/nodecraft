@@ -53,6 +53,8 @@ pub struct RunFailure {
     /// The submit was interrupted with no handle back (cancelled midway, timed out, cut off, a
     /// server error, a garbled reply, or one saying the job ran): the provider may have accepted,
     /// and billed, the job anyway. Never set for a run cancelled before its submit, or a refusal.
+    /// `false` alone does not mean unbilled: a returned `handle` independently proves acceptance
+    /// and possible billing, even when submission itself is no longer uncertain.
     pub uncertain: bool,
 }
 
@@ -63,16 +65,23 @@ impl RunFailure {
 
     /// A submit that failed with `error`: uncertain unless the error says the provider refused it.
     fn submit_failed(error: ProviderError) -> Self {
-        let uncertain = matches!(
-            error.kind,
+        // Exhaustive within this crate: every new error kind needs a deliberate billing decision.
+        let uncertain = match error.kind {
             ErrorKind::Cancelled
-                | ErrorKind::Timeout
-                | ErrorKind::Network
-                | ErrorKind::Server
-                | ErrorKind::Malformed
-                | ErrorKind::JobFailed
-                | ErrorKind::Expired
-        );
+            | ErrorKind::Timeout
+            | ErrorKind::Network
+            | ErrorKind::Server
+            | ErrorKind::Malformed
+            | ErrorKind::JobFailed
+            | ErrorKind::Expired => true,
+            ErrorKind::BlockedContent
+            | ErrorKind::UnsupportedInput
+            | ErrorKind::Busy
+            | ErrorKind::RateLimited
+            | ErrorKind::Budget
+            | ErrorKind::Auth
+            | ErrorKind::NotFound => false,
+        };
         Self { error, handle: None, finished: false, uncertain }
     }
 
@@ -420,6 +429,7 @@ mod tests {
     #[test]
     fn interrupted_submits_are_uncertain_and_refused_ones_are_not() {
         for (kind, uncertain) in [
+            (ErrorKind::Cancelled, true),
             (ErrorKind::Network, true),
             (ErrorKind::Timeout, true),
             (ErrorKind::Server, true),
@@ -432,10 +442,65 @@ mod tests {
             (ErrorKind::UnsupportedInput, false),
             (ErrorKind::BlockedContent, false),
             (ErrorKind::Budget, false),
+            (ErrorKind::NotFound, false),
         ] {
             let f = block_on(run_to_completion(&Refuses(kind), &job(), &Flag::default(), &Clocked::default(), RunLimits::default(), |_| {})).unwrap_err();
             assert_eq!((f.handle.is_none(), f.uncertain), (true, uncertain), "{kind:?}");
         }
+    }
+
+    /// Count invocation separately from polling: constructing a provider future may have effects.
+    #[derive(Default)]
+    struct PendingSubmit {
+        invoked: AtomicU64,
+        polled: AtomicU64,
+        other_calls: AtomicU64,
+    }
+    impl Provider for PendingSubmit {
+        fn id(&self) -> &str {
+            "pending"
+        }
+        fn submit<'a>(&'a self, _: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            self.invoked.fetch_add(1, Ordering::SeqCst);
+            Box::pin(futures::future::poll_fn(|_| {
+                self.polled.fetch_add(1, Ordering::SeqCst);
+                std::task::Poll::Pending
+            }))
+        }
+        fn poll<'a>(&'a self, _: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            self.other_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::NotFound, "no handle")) })
+        }
+        fn cancel<'a>(&'a self, _: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            self.other_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn cancellation_of_a_polled_pending_submit_is_uncertain_without_a_handle() {
+        let provider = PendingSubmit::default();
+        let flag = Flag::default();
+        let clock = Clocked::default();
+        let job = job();
+        let mut updates = Vec::new();
+        let mut run = Box::pin(run_to_completion(&provider, &job, &flag, &clock, RunLimits::default(), |u| updates.push(u)));
+        let waker = futures::task::noop_waker();
+        assert!(run.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+        assert_eq!(provider.invoked.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.polled.load(Ordering::SeqCst), 1, "submit really reached its first pending poll");
+        flag.0.store(true, Ordering::SeqCst);
+        let failure = block_on(run).unwrap_err();
+        assert_eq!(failure.error.kind, ErrorKind::Cancelled);
+        assert!(failure.uncertain && failure.handle.is_none() && !failure.finished);
+        assert!(!failure.is_transient());
+        assert!(updates.is_empty());
+        assert_eq!(provider.other_calls.load(Ordering::SeqCst), 0, "no handle exists to poll or cancel");
+        assert_eq!(provider.invoked.load(Ordering::SeqCst), 1);
+        let before = PendingSubmit::default();
+        let failure = block_on(run_to_completion(&before, &job, &flag, &clock, RunLimits::default(), |_| {})).unwrap_err();
+        assert!(!failure.uncertain && failure.handle.is_none());
+        assert_eq!(before.invoked.load(Ordering::SeqCst), 0, "pre-invocation cancel never calls submit");
     }
 
     #[test]

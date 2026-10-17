@@ -830,15 +830,23 @@ mod tests {
         assert_eq!(rows, [("fails", Charge::Unresolved), ("reports", Charge::Actual)], "no estimate left open");
     }
 
-    /// Accepts the job, then never finishes.
-    struct Never;
+    /// Submit is polled but never returns a handle; acceptance is unknown.
+    #[derive(Default)]
+    struct Never {
+        invoked: AtomicU64,
+        polled: AtomicU64,
+    }
 
     impl Provider for Never {
         fn id(&self) -> &str {
             "never"
         }
         fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
-            Box::pin(futures::future::pending())
+            self.invoked.fetch_add(1, Ordering::SeqCst);
+            Box::pin(futures::future::poll_fn(|_| {
+                self.polled.fetch_add(1, Ordering::SeqCst);
+                std::task::Poll::Pending
+            }))
         }
         fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
             Box::pin(futures::future::pending())
@@ -849,9 +857,43 @@ mod tests {
     }
 
     #[test]
+    fn cancel_after_pending_submit_settles_its_reservation_as_unresolved_once() {
+        let (runner, budget) = budgeted(Some(1_000_000));
+        let provider = Arc::new(Never::default());
+        runner.register(JobId(1), priced(provider.clone(), Some(100_000)));
+        let token = CancelToken::default();
+        let mut run = runner.run(job(1), token.clone());
+        let waker = futures::task::noop_waker();
+        assert!(run.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+        assert_eq!(provider.invoked.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.polled.load(Ordering::SeqCst), 1);
+        assert_eq!(spent(&budget), 100_000);
+        assert_eq!(budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Estimate]);
+        assert!(runner.lock().handles.is_empty());
+        assert!(runner.lock().reserved.contains_key(&JobId(1)));
+        token.cancel();
+        assert_eq!(block_on(run), Outcome::Cancelled);
+        assert_eq!(spent(&budget), 100_000, "pending submit may already have been accepted");
+        assert_eq!(budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved]);
+        assert!(runner.lock().handles.is_empty() && runner.lock().reserved.is_empty() && runner.lock().running.is_empty());
+        runner.settle(JobId(1));
+        runner.settle(JobId(1));
+        runner.forget(JobId(1));
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 1, "terminal settlement is exactly once");
+        let before = Arc::new(Never::default());
+        runner.register(JobId(2), priced(before.clone(), Some(100_000)));
+        let token = CancelToken::default();
+        token.cancel();
+        assert_eq!(block_on(runner.run(job(2), token)), Outcome::Cancelled);
+        assert_eq!(before.invoked.load(Ordering::SeqCst), 0);
+        assert_eq!(spent(&budget), 100_000, "pre-invocation cancellation adds no reservation");
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 1);
+    }
+
+    #[test]
     fn a_dropped_run_can_still_be_settled() {
         let (runner, budget) = budgeted(Some(1_000_000));
-        runner.register(JobId(1), priced(Arc::new(Never), Some(100_000)));
+        runner.register(JobId(1), priced(Arc::new(Never::default()), Some(100_000)));
         let mut run = runner.run(job(1), CancelToken::default());
         let waker = futures::task::noop_waker();
         assert!(run.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
