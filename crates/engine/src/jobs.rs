@@ -169,6 +169,41 @@ fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resu
     }
 }
 
+/// See `run`: clears a job's running mark and performs settles and forgets that arrived while it
+/// ran, however the run ends.
+struct RunGuard {
+    state: Arc<Mutex<State>>,
+    budget: Option<JobBudget>,
+    job: JobId,
+    /// Set when the run returned; a run dropped or unwound mid-flight may have reached the
+    /// provider, so its reservation counts as maybe billed.
+    returned: bool,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        let (settle, reserved) = {
+            let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            s.running.remove(&self.job);
+            if !self.returned
+                && let Some(r) = s.reserved.get_mut(&self.job)
+            {
+                r.maybe_billed = true;
+            }
+            let settle = s.settle_after.remove(&self.job);
+            let forget = s.forget_after.remove(&self.job);
+            let reserved = if settle { s.reserved.remove(&self.job) } else { None };
+            if forget && let Some(q) = s.jobs.remove(&self.job) {
+                s.handles.remove(&q.job.idempotency_key);
+            }
+            (settle, reserved)
+        };
+        if settle && let (Some(budget), Some(r)) = (&self.budget, reserved) {
+            close(budget, &r);
+        }
+    }
+}
+
 impl ProviderRunner {
     pub fn new(runtime: Arc<dyn Runtime>, limits: RunLimits, on_output: Arc<OutputSink>, on_update: Arc<UpdateSink>) -> Self {
         Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None }
@@ -299,7 +334,16 @@ impl JobRunner for ProviderRunner {
             if signal.is_cancelled() {
                 return Outcome::Cancelled;
             }
-            lock().running.insert(job_id);
+            {
+                let mut s = lock();
+                s.running.insert(job_id);
+                // Flags left by an earlier, abandoned run don't apply to this one.
+                s.settle_after.remove(&job_id);
+                s.forget_after.remove(&job_id);
+            }
+            // Ends the running mark and does deferred settles even if this future is dropped
+            // mid-await or unwinds.
+            let mut guard = RunGuard { state: Arc::clone(&state), budget: budget.clone(), job: job_id, returned: false };
             let outcome = async {
                 if let (Some(budget), Some(price)) = (&budget, &queued.price) {
                     // A requeued job has a fresh key: end the old attempt's reservation first.
@@ -380,24 +424,8 @@ impl JobRunner for ProviderRunner {
                 }
             }
             .await;
-            // Settles and forgets asked for while the job ran happen now.
-            let (settle, forget, reserved) = {
-                let mut s = lock();
-                s.running.remove(&job_id);
-                let settle = s.settle_after.remove(&job_id);
-                let forget = s.forget_after.remove(&job_id);
-                let reserved = if settle { s.reserved.remove(&job_id) } else { None };
-                (settle, forget, reserved)
-            };
-            if settle && let (Some(budget), Some(r)) = (&budget, reserved) {
-                close(budget, &r);
-            }
-            if forget {
-                let mut s = lock();
-                if let Some(q) = s.jobs.remove(&job_id) {
-                    s.handles.remove(&q.job.idempotency_key);
-                }
-            }
+            guard.returned = true;
+            drop(guard);
             outcome
         })
     }
@@ -770,5 +798,40 @@ mod tests {
         let log = budget.log.lock().unwrap();
         let rows: Vec<(&str, Charge)> = log.entries().map(|e| (e.provider.as_str(), e.status)).collect();
         assert_eq!(rows, [("fails", Charge::Unresolved), ("reports", Charge::Actual)], "no estimate left open");
+    }
+
+    /// Accepts the job, then never finishes.
+    struct Never;
+
+    impl Provider for Never {
+        fn id(&self) -> &str {
+            "never"
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            Box::pin(futures::future::pending())
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            Box::pin(futures::future::pending())
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn a_dropped_run_can_still_be_settled() {
+        let (runner, budget) = budgeted(Some(1_000_000));
+        runner.register(JobId(1), priced(Arc::new(Never), Some(100_000)));
+        let mut run = runner.run(job(1), CancelToken::default());
+        let waker = futures::task::noop_waker();
+        assert!(run.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+        drop(run);
+        // The submit was in flight when the run was dropped: it may have been accepted.
+        runner.settle(JobId(1));
+        assert_eq!(budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved], "dropped mid-submit: kept charged");
+        assert!(runner.lock().reserved.is_empty() && runner.lock().running.is_empty());
+        // A later run isn't hit by flags from the dropped one.
+        runner.register(JobId(1), priced(Arc::new(Reports(None)), Some(100_000)));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
     }
 }
