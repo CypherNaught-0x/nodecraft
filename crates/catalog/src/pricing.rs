@@ -129,11 +129,14 @@ impl Pricing {
 /// shortest decimal that is written into the provider request (which can be slightly larger).
 /// `None` for negative, non-finite or too-large values.
 fn ceil_micros(x: f64) -> Option<u64> {
+    // `-0.0` is zero (it would print as "-0").
+    let x = if x == 0.0 { 0.0 } else { x };
     Some(binary_ceil_micros(x)?.max(decimal_ceil_micros(x)?))
 }
 
 /// `⌈d × 10⁶⌉` for `d`, the shortest decimal that reads back as `x` (Rust's `Display`, which never
-/// uses an exponent, the same digits serde writes).
+/// uses an exponent). That is the value serde writes, or the next-larger shortest decimal on exact
+/// ties, so never below it.
 fn decimal_ceil_micros(x: f64) -> Option<u64> {
     let text = format!("{x}");
     let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
@@ -227,6 +230,7 @@ mod tests {
         assert_eq!(ceil_micros(10000000000000.002), Some(10_000_000_000_000_002_000));
         assert_eq!(decimal_ceil_micros(1.0000004), Some(1_000_001));
         assert_eq!(decimal_ceil_micros(3.0), Some(3_000_000));
+        assert_eq!(ceil_micros(-0.0), Some(0));
         for bad in [-1.0, f64::NAN, f64::INFINITY, 1e300, 1.9e13] {
             assert_eq!(ceil_micros(bad), None, "{bad}");
         }
