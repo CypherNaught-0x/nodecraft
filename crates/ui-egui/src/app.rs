@@ -724,8 +724,11 @@ impl NodeCraftApp {
         };
         // Nodes that already feed the source: connecting into any of them would close a loop.
         let feeding = selection::upstream(canvas, &[wiring.from.node].into_iter().collect());
+        // Inputs this output already feeds (other than the noodle being moved), built once so
+        // each candidate input is a set lookup rather than a scan of every edge.
+        let fed: std::collections::BTreeSet<(NodeId, &str)> =
+            canvas.edges().values().filter(|e| e.from == wiring.from && Some(e.id) != wiring.moving).map(|e| (e.to.node, e.to.port.as_str())).collect();
         let accepts = |node: &Node, input: &nodecraft_graph::Port| -> Result<(), String> {
-            let to = Endpoint { node: node.id, port: input.name.clone() };
             if node.id == wiring.from.node {
                 Err("A node can't connect to itself.".into())
             } else if !noodle::compatible(wiring.port_type, input.port_type) {
@@ -738,7 +741,7 @@ impl NodeCraftApp {
                 })
             } else if feeding.contains(&node.id) {
                 Err("That connection would create a loop.".into())
-            } else if canvas.edges().values().any(|e| e.from == wiring.from && e.to == to && Some(e.id) != wiring.moving) {
+            } else if fed.contains(&(node.id, input.name.as_str())) {
                 Err("These ports are already connected.".into())
             } else {
                 Ok(())
