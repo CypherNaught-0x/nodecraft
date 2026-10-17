@@ -289,20 +289,55 @@ impl Migration {
     }
 }
 
+/// Most parameters and parameter text a model swap carries over (the parameter schema's own
+/// limits).
+const MAX_MIGRATED_PARAMS: usize = 256;
+const MAX_MIGRATED_BYTES: usize = 1024 * 1024;
+
+/// Text bytes in a value, iteratively (lists nest).
+fn text_bytes(value: &nodecraft_types::Value) -> usize {
+    let mut total = 0usize;
+    let mut stack = vec![value];
+    while let Some(value) = stack.pop() {
+        match value {
+            nodecraft_types::Value::Text(text) => total = total.saturating_add(text.len()),
+            nodecraft_types::Value::List(items) => stack.extend(items.iter()),
+            _ => {}
+        }
+    }
+    total
+}
+
+/// A parameter name for the notice, cut to 128 bytes at a character boundary.
+fn short(name: &str) -> String {
+    let end = (0..=name.len().min(128)).rev().find(|i| name.is_char_boundary(*i)).unwrap_or(0);
+    name.get(..end).unwrap_or_default().to_owned()
+}
+
 /// Carry parameters over to `to` by name: values the new schema accepts are kept, the rest are
 /// removed or reset and listed, and the new model's defaults fill the gaps.
 pub fn migrate(params: &ParamValues, to: &ModelDescriptor) -> Result<Migration, Error> {
-    let mut kept = ParamValues::new();
+    if params.len() > MAX_MIGRATED_PARAMS {
+        return Err(Error::new(ErrorKind::InvalidInput, "too many parameters to carry over"));
+    }
+    // Decide and measure everything before copying any value.
+    let mut keep = Vec::new();
     let (mut removed, mut reset) = (Vec::new(), Vec::new());
+    let mut bytes = 0usize;
     for (name, value) in params {
         match to.params.params.iter().find(|spec| spec.name == *name) {
             Some(spec) if spec.control.validate_value(value).is_ok() => {
-                kept.insert(name.clone(), value.clone());
+                bytes = bytes.saturating_add(text_bytes(value));
+                keep.push(name);
             }
-            Some(_) => reset.push(name.clone()),
-            None => removed.push(name.clone()),
+            Some(_) => reset.push(short(name)),
+            None => removed.push(short(name)),
         }
     }
+    if bytes > MAX_MIGRATED_BYTES {
+        return Err(Error::new(ErrorKind::InvalidInput, "parameters are too large to carry over"));
+    }
+    let kept: ParamValues = keep.into_iter().filter_map(|name| params.get(name).map(|value| (name.clone(), value.clone()))).collect();
     let params = to.params.resolve(&kept, false)?.values;
     Ok(Migration { params, removed, reset })
 }

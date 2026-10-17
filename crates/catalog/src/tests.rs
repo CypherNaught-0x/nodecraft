@@ -208,3 +208,43 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn quotes_and_swaps_refuse_bad_programmatic_input() {
+    let catalog = catalog();
+    let mut video = catalog.get("test.video").unwrap().clone();
+    // Changed in code to something the loader would reject: no free quote.
+    video.pricing = Pricing::PerUnit { unit: Unit::Second, price: "1 USD".parse().unwrap(), count: None, default_count: Some(0) };
+    assert!(video.quote(&ParamValues::new()).is_err());
+
+    // Too many or too large parameters are refused before anything is copied.
+    let flux = catalog.get("comfyui.flux-dev").unwrap();
+    let many: ParamValues = (0..300).map(|i| (format!("p{i}"), Value::Bool(true))).collect();
+    assert!(migrate(&many, flux).is_err());
+    let mut prompt_model = flux.clone();
+    prompt_model.params.params.push(nodecraft_types::ParamSpec {
+        name: "note".into(),
+        label: "Note".into(),
+        description: None,
+        control: nodecraft_types::ParamControl::Text { multiline: true, max_bytes: 1024 * 1024 },
+        required: false,
+        default: None,
+        visible_if: None,
+    });
+    let mut big = ParamValues::new();
+    big.insert("note".into(), Value::Text("x".repeat(1024 * 1024 - 64)));
+    big.insert("steps".into(), Value::Unsigned(Unsigned(2)));
+    assert!(migrate(&big, &prompt_model).is_ok());
+    // Two values each within their control, together over the 1 MiB budget: refused up front.
+    let second = prompt_model.params.params.last().cloned().map(|spec| nodecraft_types::ParamSpec { name: "note2".into(), ..spec });
+    prompt_model.params.params.extend(second);
+    let mut bigger = ParamValues::new();
+    bigger.insert("note".into(), Value::Text("x".repeat(600 * 1024)));
+    bigger.insert("note2".into(), Value::Text("y".repeat(600 * 1024)));
+    assert_eq!(migrate(&bigger, &prompt_model).unwrap_err().message, "parameters are too large to carry over");
+    // Long unknown names are cut for the notice.
+    let mut long = ParamValues::new();
+    long.insert("é".repeat(100), Value::Bool(true));
+    let migration = migrate(&long, flux).unwrap();
+    assert!(migration.removed.first().is_some_and(|name| name.len() <= 128 && name.chars().all(|c| c == 'é')));
+}

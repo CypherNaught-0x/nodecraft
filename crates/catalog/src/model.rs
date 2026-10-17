@@ -150,6 +150,9 @@ impl ModelDescriptor {
     /// The price of one job with these parameters: schema defaults are applied first, so the
     /// quote counts what the run will actually ask for. `None` when the cost depends on usage.
     pub fn quote(&self, params: &ParamValues) -> Result<Option<Money>, Error> {
+        // A descriptor built or changed in code must meet the same rules as one loaded from a
+        // file, or e.g. a zero `default_count` would quote a paid job as free.
+        self.validate()?;
         let resolved = self.params.resolve(params, false)?;
         let visible: ParamValues = resolved.visible_values().map(|(k, v)| (k.clone(), v.clone())).collect();
         self.pricing.quote(&visible, self.pricing.currency().unwrap_or(Currency::USD))

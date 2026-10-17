@@ -114,19 +114,41 @@ impl Pricing {
                         price.0.checked_mul_ratio(n, per, Rounding::Up).map(Some)
                     }
                     (Some(Value::Number(n)), _) => {
-                        let micros = n.get() * 1_000_000.0;
-                        // Strictly below 2^64, so `ceil` then `as u64` can't saturate.
-                        if !(micros.is_finite() && (0.0..18_446_744_073_709_551_616.0).contains(&micros)) {
-                            return Err(invalid("a price count is out of range"));
-                        }
+                        let micros = ceil_micros(n.get()).ok_or_else(|| invalid("a price count is out of range"))?;
                         let denominator = per.checked_mul(1_000_000).ok_or_else(|| invalid("a price count is out of range"))?;
-                        price.0.checked_mul_ratio(micros.ceil() as u64, denominator, Rounding::Up).map(Some)
+                        price.0.checked_mul_ratio(micros, denominator, Rounding::Up).map(Some)
                     }
                     (Some(_), _) => Err(invalid("a price count parameter must be a number")),
                 }
             }
         }
     }
+}
+
+/// `⌈x × 10⁶⌉` computed exactly from the float's binary value, so no rounding can make a count
+/// cheaper than it is. `None` for negative, non-finite or too-large values.
+fn ceil_micros(x: f64) -> Option<u64> {
+    if !x.is_finite() || x < 0.0 {
+        return None;
+    }
+    let bits = x.to_bits();
+    let exponent = i32::try_from((bits >> 52) & 0x7ff).ok()?;
+    let fraction = bits & ((1u64 << 52) - 1);
+    // x = mantissa × 2^power, exactly.
+    let (mantissa, power) = if exponent == 0 { (fraction, -1074) } else { (fraction | (1u64 << 52), exponent - 1075) };
+    let scaled = u128::from(mantissa).checked_mul(1_000_000)?;
+    let micros = if power >= 0 {
+        scaled.checked_mul(1u128.checked_shl(u32::try_from(power).ok()?)?)?
+    } else {
+        let shift = u32::try_from(-power).ok()?;
+        if shift >= 128 {
+            u128::from(scaled > 0)
+        } else {
+            let denominator = 1u128 << shift;
+            scaled / denominator + u128::from(scaled % denominator != 0)
+        }
+    };
+    u64::try_from(micros).ok()
 }
 
 #[cfg(test)]
@@ -171,6 +193,21 @@ mod tests {
         assert!(per_second.quote(&params, Currency::USD).is_err());
         params.insert("duration".into(), Value::Text("long".into()));
         assert!(per_second.quote(&params, Currency::USD).is_err());
+    }
+
+    #[test]
+    fn fractional_counts_convert_exactly_and_round_up() {
+        assert_eq!(ceil_micros(2.5), Some(2_500_000));
+        assert_eq!(ceil_micros(0.0), Some(0));
+        assert_eq!(ceil_micros(0.0000001), Some(1));
+        assert_eq!(ceil_micros(f64::MIN_POSITIVE / 4.0), Some(1));
+        // 0.1 is slightly above one tenth in binary, so it costs one micro more, never less.
+        assert_eq!(ceil_micros(0.1), Some(100_001));
+        // The review's case: plain f64 multiplication would round this down to …020.
+        assert_eq!(ceil_micros(10000000000.000021), Some(10_000_000_000_000_021));
+        for bad in [-1.0, f64::NAN, f64::INFINITY, 1e300, 1.9e13] {
+            assert_eq!(ceil_micros(bad), None, "{bad}");
+        }
     }
 
     #[test]
