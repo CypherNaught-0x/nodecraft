@@ -10,9 +10,9 @@
 //! downstream results fresh. Positions, titles, tags and unrelated edits don't change the hash.
 //!
 //! **Bounded work:** one query digests each node's recipe and each upstream output once
-//! (memoized), streams values into the hasher without serializing them, and charges every byte
-//! against a shared budget ([`MAX_QUERY_BYTES`]); a canvas past it is refused, not hashed for
-//! minutes.
+//! (memoized), streams values into the hasher instead of serializing them, and charges their
+//! bytes, and a small cost per feed, against a shared budget ([`MAX_QUERY_BYTES`]); a canvas
+//! past it is refused, not hashed for minutes.
 //!
 //! **Recipe versions:** the hash starts with a domain tag ([`DOMAIN`]). The stored hash carries no
 //! version, so after a change to the recipe an old result can't be told from one whose inputs
@@ -76,14 +76,16 @@ impl Writer {
     }
     /// A value, streamed (iteratively: lists nest): a tag, then text as length-prefixed bytes,
     /// lists as their length then items, and scalars and media through their short canonical
-    /// JSON. Every byte is charged to `meter` before it is hashed.
-    fn value(&mut self, value: &Value, meter: &mut Meter) -> Result<(), Error> {
+    /// JSON (bounded by the node size limit). Each value and its text are charged to `meter`
+    /// before they are hashed; `None` when the caller already charged them.
+    fn value(&mut self, value: &Value, mut meter: Option<&mut Meter>) -> Result<(), Error> {
+        let mut charge = |bytes: usize| meter.as_deref_mut().map_or(Ok(()), |m| m.charge(bytes));
         let mut stack = vec![value];
         while let Some(value) = stack.pop() {
-            meter.charge(VALUE_COST)?;
+            charge(VALUE_COST)?;
             match value {
                 Value::Text(text) => {
-                    meter.charge(text.len())?;
+                    charge(text.len())?;
                     self.text("t");
                     self.text(text);
                 }
@@ -94,7 +96,7 @@ impl Writer {
                 }
                 other => {
                     let json = serde_json::to_vec(other).map_err(|_| Error::new(ErrorKind::Internal, "a value couldn't be hashed"))?;
-                    meter.charge(json.len())?;
+                    charge(json.len())?;
                     self.text("v");
                     self.bytes(&json);
                 }
@@ -102,15 +104,15 @@ impl Writer {
         }
         Ok(())
     }
-    fn param(&mut self, name: &str, value: &Value, meter: &mut Meter) -> Result<(), Error> {
-        meter.charge(name.len())?;
+    /// A parameter whose bytes were charged already ([`stored_bytes`]).
+    fn param(&mut self, name: &str, value: &Value) -> Result<(), Error> {
         self.text(name);
-        self.value(value, meter)
+        self.value(value, None)
     }
-    fn params(&mut self, params: &ParamValues, meter: &mut Meter) -> Result<(), Error> {
+    fn params(&mut self, params: &ParamValues) -> Result<(), Error> {
         self.len(params.len());
         for (name, value) in params {
-            self.param(name, value, meter)?;
+            self.param(name, value)?;
         }
         Ok(())
     }
@@ -119,8 +121,9 @@ impl Writer {
     }
 }
 
-/// Approximate bytes of a node's stored parameters and configuration: charged before its kind
-/// resolves (and copies) them.
+/// Approximate bytes of a node's stored parameters and configuration: charged once, before its
+/// kind resolves (and copies) them and before they are hashed. (Defaults the kind fills in come
+/// from its schema, which is small and bounded.)
 fn stored_bytes(node: &Node) -> usize {
     node.params.iter().chain(node.config.iter()).fold(0usize, |sum, (name, value)| {
         let mut total = sum.saturating_add(name.len());
@@ -148,7 +151,8 @@ struct Query<'a> {
     kinds: &'a Registry,
     incoming: crate::routing::Incoming<'a>,
     recipes: BTreeMap<NodeId, Recipe>,
-    outputs: BTreeMap<(NodeId, &'a str), [u8; 32]>,
+    /// Upstream output digests by (node, port); `None` when it has no usable result there.
+    outputs: BTreeMap<(NodeId, &'a str), Option<[u8; 32]>>,
     meter: Meter,
 }
 
@@ -174,10 +178,10 @@ impl<'a> Query<'a> {
         self.meter.charge(stored_bytes(node))?;
         let mut w = Writer::new();
         w.text(&node.kind);
-        w.params(&node.config, &mut self.meter)?;
+        w.params(&node.config)?;
         let recipe = match self.kinds.get(&node.kind) {
             Err(_) => {
-                w.params(&node.params, &mut self.meter)?;
+                w.params(&node.params)?;
                 Ok(w.finish())
             }
             Ok(kind) => match kind.validate_instance(node, false) {
@@ -186,7 +190,7 @@ impl<'a> Query<'a> {
                     let visible: Vec<_> = resolved.visible_values().collect();
                     w.len(visible.len());
                     for (name, value) in visible {
-                        w.param(name, value, &mut self.meter)?;
+                        w.param(name, value)?;
                     }
                     Ok(w.finish())
                 }
@@ -200,19 +204,23 @@ impl<'a> Query<'a> {
     /// lend (no result, or one recorded for another port layout).
     fn output(&mut self, upstream: &'a Node, port: &'a str) -> Result<Option<[u8; 32]>, Error> {
         if let Some(digest) = self.outputs.get(&(upstream.id, port)) {
-            return Ok(Some(*digest));
+            return Ok(*digest);
         }
-        let Some(active) = upstream.active.and_then(|active| upstream.history.iter().find(|g| g.id == active)) else { return Ok(None) };
+        let active = upstream.active.and_then(|active| upstream.history.iter().find(|g| g.id == active));
         // Results are positional; one recorded for a different port layout can't be used.
-        if active.outputs.len() != upstream.outputs.len() {
-            return Ok(None);
-        }
-        let Some(value) = upstream.outputs.iter().position(|p| p.name == port).and_then(|i| active.outputs.get(i)) else { return Ok(None) };
-        let mut w = Writer::new();
-        w.value(value, &mut self.meter)?;
-        let digest = w.finish();
+        let value = active
+            .filter(|active| active.outputs.len() == upstream.outputs.len())
+            .and_then(|active| upstream.outputs.iter().position(|p| p.name == port).and_then(|i| active.outputs.get(i)));
+        let digest = match value {
+            Some(value) => {
+                let mut w = Writer::new();
+                w.value(value, Some(&mut self.meter))?;
+                Some(w.finish())
+            }
+            None => None,
+        };
         self.outputs.insert((upstream.id, port), digest);
-        Ok(Some(digest))
+        Ok(digest)
     }
 
     /// The hash a result of `id` would record if it ran now. Outer `Err`: the node isn't on the
@@ -240,6 +248,8 @@ impl<'a> Query<'a> {
             list.sort();
             w.len(list.len());
             for (_, from, from_port) in list {
+                // Each feed costs a little, so huge fan-ins count against the budget too.
+                self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
                 w.text(from_port);
                 match canvas.nodes().get(&from) {
                     // A source contributes its recipe: what it emits.

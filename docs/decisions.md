@@ -588,3 +588,8 @@ a choice a later contributor might otherwise undo.
   told from one whose inputs changed, so it is reported stale: we never show a result as fresh
   when we can't vouch for it. The producer that stamps hashes isn't wired yet, so no saved
   project carries `v1` hashes.
+- **`input_hash` is a new semantic field in saved generations.** Archive and journal versions
+  that accept it, and the guards that make old readers reject it, are coordinated in #134 and
+  #162. This change doesn't alter the stored field.
+- This supersedes the #75 entry's "identity of an upstream node's active result" and "old hashes
+  become unknown".

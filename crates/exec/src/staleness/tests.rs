@@ -360,8 +360,8 @@ fn a_large_source_fanned_out_is_hashed_once_and_oversized_queries_are_refused() 
     let (stale_set, hashed) = stale_within(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
     // Only the fixture's 2 and 3 (stamped before the source changed) are stale.
     assert_eq!(stale_set, [id(2), id(3)].into_iter().collect());
-    // The megabyte is read once (twice at most: stored-size charge plus hashing), not 2,000 times.
-    assert!(hashed < 3 * big.len(), "hashed {hashed} bytes");
+    // The megabyte is charged once, not 2,000 times.
+    assert!(hashed >= big.len() && hashed < 2 * big.len(), "hashed {hashed} bytes");
     // With a budget smaller than the canvas, the query is refused rather than run.
     assert_eq!(stale_within(canvas, &kinds, 500_000).unwrap_err().kind, ErrorKind::InvalidInput);
 }
@@ -375,4 +375,18 @@ fn results_stamped_under_an_older_recipe_are_stale() {
     node.history.iter_mut().find(|g| g.id == active).unwrap().input_hash = Some(Blake3::from_bytes(*blake3::hash(b"nodecraft.input-hash.v1 ...").as_bytes()));
     Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
     assert_eq!(stale_of(&p), [id(2), id(3)].into_iter().collect());
+}
+
+#[test]
+fn a_result_recorded_for_another_port_layout_counts_as_empty() {
+    let mut p = project();
+    // 2's active result has two outputs for its one port: unusable, like no result.
+    rewrite_active(&mut p, 2, vec![Value::Text("a".into()), Value::Text("b".into())]);
+    assert_eq!(stale_of(&p), [id(3)].into_iter().collect());
+    let empty = {
+        let mut q = project();
+        Change::SetActiveGeneration { canvas: C, id: id(2), generation: None }.apply(&mut q).unwrap();
+        input_hash(q.canvases().get(&C).unwrap(), &kinds(), id(3)).unwrap()
+    };
+    assert_eq!(input_hash(p.canvases().get(&C).unwrap(), &kinds(), id(3)).unwrap(), empty);
 }
