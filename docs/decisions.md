@@ -4,6 +4,19 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · LLM endpoints (#10)
+
+- **Two wire dialects** cover every chat endpoint in scope: OpenAI Chat Completions (OpenAI,
+  Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic Messages. Endpoints are data
+  (`llm::Endpoint` presets), not separate providers.
+- **Chat finishes at submit** (`Submission::Finished`); streaming goes through
+  `LlmClient::chat_stream` and `Http::send_streaming` with an incremental SSE parser capped per
+  event.
+- **Refusals and content filters are errors** (`BlockedContent`), never partial text presented as
+  a result. Quota errors that arrive as HTTP 429 map to `Budget`, not a retryable rate limit.
+- **Claude defaults:** `claude-opus-5-5`; no `temperature` unless set and no `thinking` parameter,
+  since current Claude models reject sampling parameters and always think adaptively.
+
 ## 2026-10-17 · Provider foundation (#141)
 
 - **`Provider` is dyn-compatible** (boxed futures, `Send` on native only) so the engine can hold
