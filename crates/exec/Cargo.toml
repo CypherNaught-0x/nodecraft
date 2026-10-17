@@ -14,3 +14,7 @@ workspace = true
 nodecraft-nodes = { workspace = true }
 nodecraft-catalog = { workspace = true }
 nodecraft-actions = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor", "thread-pool"] }
