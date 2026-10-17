@@ -30,11 +30,15 @@ pub enum Unpriced {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepQuote {
     pub node: NodeId,
-    pub model: Option<String>,
-    /// The price of one job, `None` for free steps.
+    /// The catalog models its model parameters name, in schema order.
+    pub models: Vec<String>,
+    /// The price of one job (all its models together), `None` for free steps.
     pub per_job: Result<Option<Money>, Unpriced>,
-    /// Jobs the step runs (its planned jobs, or one when they're planned later).
+    /// Jobs the step runs: its planned jobs, or one when they're planned later.
     pub jobs: u64,
+    /// Whether `jobs` is known. A paid step whose jobs are planned later (it waits on another
+    /// step of the run) is an estimate: the driver checks budgets again before each job (#207).
+    pub jobs_known: bool,
 }
 
 impl StepQuote {
@@ -59,8 +63,13 @@ impl Quote {
     pub fn unpriced(&self) -> impl Iterator<Item = (NodeId, Unpriced)> + '_ {
         self.steps.iter().filter_map(|step| step.total().err().map(|why| (step.node, why)))
     }
+    /// Paid steps quoted before their jobs are known (one job assumed).
+    pub fn estimated(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.steps.iter().filter(|step| !step.jobs_known && matches!(step.per_job, Ok(Some(_)))).map(|step| step.node)
+    }
+    /// Every step priced and every paid step's job count known: the total is exact.
     pub fn is_complete(&self) -> bool {
-        self.unpriced().next().is_none()
+        self.unpriced().next().is_none() && self.estimated().next().is_none()
     }
 }
 
@@ -77,8 +86,9 @@ pub fn quote(plan: &RunPlan, canvas: &Canvas, kinds: &Registry, catalog: &Catalo
     for step in &plan.steps {
         let node = canvas.nodes().get(&step.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a planned node is not on the canvas"))?;
         let jobs = step.jobs.as_ref().map_or(1, |jobs| u64::try_from(jobs.len()).unwrap_or(u64::MAX).max(1));
-        let (model, per_job) = price_step(node, kinds, catalog);
-        let mut step = StepQuote { node: step.node, model, per_job, jobs };
+        let jobs_known = step.jobs.is_some();
+        let (models, per_job) = price_step(node, kinds, catalog);
+        let mut step = StepQuote { node: step.node, models, per_job, jobs, jobs_known };
         if let Ok(Some(amount)) = step.total() {
             let total = quote.totals.entry(amount.currency).or_insert_with(|| Money::zero(amount.currency));
             match total.checked_add(amount) {
@@ -92,36 +102,46 @@ pub fn quote(plan: &RunPlan, canvas: &Canvas, kinds: &Registry, catalog: &Catalo
     Ok(quote)
 }
 
-fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Option<String>, Result<Option<Money>, Unpriced>) {
+/// One job's price for `node`: the sum of the models its model parameters name. Free when the
+/// kind has no model parameter (local work) or every model is free.
+fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Vec<String>, Result<Option<Money>, Unpriced>) {
     let kind = match kinds.get(&node.kind) {
         Ok(kind) => kind,
-        Err(_) => return (None, Err(Unpriced::Invalid(format!("the {} node kind isn't available", node.kind)))),
+        Err(_) => return (Vec::new(), Err(Unpriced::Invalid(format!("the {} node kind isn't available", node.kind)))),
     };
     let descriptor = match kind.resolve_instance(node) {
         Ok(descriptor) => descriptor,
-        Err(error) => return (None, Err(Unpriced::Invalid(error.message))),
+        Err(error) => return (Vec::new(), Err(Unpriced::Invalid(error.message))),
     };
-    // A kind without a model parameter runs locally and is free.
-    let Some(spec) = descriptor.params.params.iter().find(|spec| spec.control == ParamControl::Model) else {
-        return (None, Ok(None));
-    };
-    let id = match node.params.get(&spec.name) {
-        Some(Value::Text(id)) if !id.is_empty() => id.clone(),
-        _ => return (None, Err(Unpriced::NoModel)),
-    };
-    let Some(model) = catalog.get(&id) else {
-        return (Some(id.clone()), Err(Unpriced::UnknownModel(id)));
-    };
-    // Free models cost nothing in any currency, so they never trip a currency check.
-    if model.pricing == Pricing::Free {
-        return (Some(id), Ok(None));
+    let mut models = Vec::new();
+    let mut total: Option<Money> = None;
+    for spec in descriptor.params.params.iter().filter(|spec| spec.control == ParamControl::Model) {
+        let id = match node.params.get(&spec.name) {
+            Some(Value::Text(id)) if !id.is_empty() => id.clone(),
+            _ => return (models, Err(Unpriced::NoModel)),
+        };
+        models.push(id.clone());
+        let Some(model) = catalog.get(&id) else {
+            return (models, Err(Unpriced::UnknownModel(id)));
+        };
+        // Free models cost nothing in any currency, so they never trip a currency check.
+        if model.pricing == Pricing::Free {
+            continue;
+        }
+        let price = match model.quote(&model_params(node, model)) {
+            Ok(Some(money)) => money,
+            Ok(None) => return (models, Err(Unpriced::ByUsage(id))),
+            Err(error) => return (models, Err(Unpriced::Invalid(error.message))),
+        };
+        total = match total {
+            None => Some(price),
+            Some(sum) => match sum.checked_add(price) {
+                Ok(sum) => Some(sum),
+                Err(error) => return (models, Err(Unpriced::Invalid(error.message))),
+            },
+        };
     }
-    let price = match model.quote(&model_params(node, model)) {
-        Ok(Some(money)) => Ok(Some(money)),
-        Ok(None) => Err(Unpriced::ByUsage(id.clone())),
-        Err(error) => Err(Unpriced::Invalid(error.message)),
-    };
-    (Some(id), price)
+    (models, Ok(total))
 }
 
 /// Spending caps. A cap applies to amounts in its own currency; anything else can't be compared
@@ -255,8 +275,9 @@ pub const MAX_USAGE_ENTRIES: usize = 100_000;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UsageLog {
     entries: VecDeque<UsageEntry>,
-    /// Idempotency keys of `entries`, for constant-time duplicate checks.
-    keys: BTreeSet<String>,
+    /// `(provider, idempotency key)` of `entries`, for constant-time duplicate checks; keys are
+    /// only unique per provider.
+    keys: BTreeSet<(String, String)>,
     /// Spend of entries that left the list: per session and in total, so caps never loosen.
     evicted_sessions: BTreeMap<String, BTreeMap<Currency, Money>>,
     evicted_total: BTreeMap<Currency, Money>,
@@ -276,17 +297,26 @@ impl UsageLog {
         if entry.idempotency_key.is_empty() {
             return Err(Error::new(ErrorKind::InvalidInput, "a usage entry needs an idempotency key"));
         }
-        if self.keys.contains(&entry.idempotency_key) {
+        let key = (entry.provider.clone(), entry.idempotency_key.clone());
+        if self.keys.contains(&key) {
             return Ok(false);
         }
         if self.entries.len() >= MAX_USAGE_ENTRIES
-            && let Some(oldest) = self.entries.pop_front()
+            && let Some(oldest) = self.entries.front()
         {
-            self.keys.remove(&oldest.idempotency_key);
-            add_to(&mut self.evicted_total, oldest.cost)?;
-            add_to(self.evicted_sessions.entry(oldest.session).or_default(), oldest.cost)?;
+            // Compute the new totals first, so an overflow leaves the log as it was.
+            let mut total = self.evicted_total.clone();
+            add_to(&mut total, oldest.cost)?;
+            let mut session = self.evicted_sessions.get(&oldest.session).cloned().unwrap_or_default();
+            add_to(&mut session, oldest.cost)?;
+            let oldest_session = oldest.session.clone();
+            if let Some(oldest) = self.entries.pop_front() {
+                self.keys.remove(&(oldest.provider, oldest.idempotency_key));
+            }
+            self.evicted_total = total;
+            self.evicted_sessions.insert(oldest_session, session);
         }
-        self.keys.insert(entry.idempotency_key.clone());
+        self.keys.insert(key);
         self.entries.push_back(entry);
         Ok(true)
     }

@@ -40,6 +40,48 @@ pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.002 USD" }
 id = "chat"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
+id = "test.free"
+provider = "test"
+provider_model = "free-v1"
+label = "Free"
+description = "Local and free."
+latency_s = 5
+quality = 2
+pricing = { type = "free" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
+id = "test.eur"
+provider = "test"
+provider_model = "eur-v1"
+label = "Euro"
+description = "Priced in euros."
+latency_s = 5
+quality = 3
+pricing = { type = "per_call", price = "0.05 EUR" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
+id = "test.rewrite"
+provider = "test"
+provider_model = "rewrite-v1"
+label = "Rewrite"
+description = "A prompt rewriter priced per call."
+latency_s = 1
+quality = 3
+pricing = { type = "per_call", price = "0.01 USD" }
+[[model.modes]]
+id = "chat"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 "#;
 
 /// A generative stand-in with a model picker and an image count.
@@ -73,6 +115,18 @@ fn kinds() -> Registry {
                     spec("num_images", ParamControl::Unsigned { min: Some(Unsigned(1)), max: Some(Unsigned(4)), step: Unsigned(1) }),
                 ],
             },
+            quick_add: None,
+        })))
+        .unwrap();
+    // A node with two model pickers: a prompt rewriter and an image model.
+    kinds
+        .register(Box::new(Gen(NodeDescriptor {
+            id: "test.two".into(),
+            label: "Two".into(),
+            category: Category::Generation,
+            inputs: vec![Port { name: "in".into(), port_type: PortType { modality: Modality::Text, many: false } }],
+            outputs: vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Text, many: false } }],
+            params: ParamSchema { params: vec![spec("rewriter", ParamControl::Model), spec("model", ParamControl::Model)] },
             quick_add: None,
         })))
         .unwrap();
@@ -221,7 +275,7 @@ fn money_formats_without_float_noise() {
 
 #[test]
 fn a_step_costs_its_per_job_price_times_its_jobs() {
-    let step = StepQuote { node: id(2), model: Some("test.img".into()), per_job: Ok(Some(usd(40_000))), jobs: 3 };
+    let step = StepQuote { node: id(2), models: vec!["test.img".into()], per_job: Ok(Some(usd(40_000))), jobs: 3, jobs_known: true };
     assert_eq!(step.total(), Ok(Some(usd(120_000))));
     let overflow = StepQuote { jobs: u64::MAX, ..step.clone() };
     assert!(matches!(overflow.total(), Err(Unpriced::Invalid(_))));
@@ -267,4 +321,104 @@ fn csv_cells_neutralise_formulas_and_quote_separators() {
     ] {
         assert_eq!(cell(text), expected, "{text:?}");
     }
+}
+
+/// One text source feeding generator nodes built from `(n, kind, params)`; returns the project and
+/// a plan of the generators alone (so their jobs are known: the source resolves inline).
+/// A generator to build: node number, kind, and text parameters.
+type GenSpec<'a> = (u8, &'a str, &'a [(&'a str, &'a str)]);
+
+fn generators(nodes: &[GenSpec<'_>]) -> (Project, RunPlan) {
+    let kinds = kinds();
+    let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Cost").unwrap();
+    Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let mut values = BTreeMap::new();
+    values.insert("text".to_owned(), Value::Text("a fox".into()));
+    Change::AddNode { canvas: C, node: kinds.get("source.text").unwrap().descriptor().instantiate(id(1), &values).unwrap() }.apply(&mut project).unwrap();
+    for (n, kind, params) in nodes {
+        let params: BTreeMap<String, Value> = params.iter().map(|(k, v)| ((*k).to_owned(), Value::Text((*v).into()))).collect();
+        let node = kinds.get(kind).unwrap().descriptor().instantiate(id(*n), &params).unwrap();
+        Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+        let edge = Edge {
+            id: EdgeId::from_bytes([n + 100; 16]),
+            from: Endpoint { node: id(1), port: "out".into() },
+            to: Endpoint { node: id(*n), port: "in".into() },
+            order: 0,
+        };
+        Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
+    }
+    let requested: BTreeSet<NodeId> = nodes.iter().map(|(n, ..)| id(*n)).collect();
+    let canvas = project.canvases().get(&C).unwrap();
+    let Planned::Ready(plan) = plan(canvas, &kinds, &RunMode::Selected, &requested, &BTreeSet::new()).unwrap() else { panic!("blocked") };
+    (project, plan)
+}
+
+#[test]
+fn every_model_on_a_node_is_priced_and_free_models_cost_nothing() {
+    let (project, plan) = generators(&[(2, "test.two", &[("rewriter", "test.rewrite"), ("model", "test.img")]), (3, "test.gen", &[("model", "test.free")])]);
+    let quote = quote(&plan, project.canvases().get(&C).unwrap(), &kinds(), &catalog()).unwrap();
+    let step = |n: u8| quote.steps.iter().find(|s| s.node == id(n)).unwrap().clone();
+    // 0.01 rewrite + 0.04 image, one job each, known.
+    assert_eq!(step(2).total(), Ok(Some(usd(50_000))));
+    assert_eq!(step(2).models, vec!["test.rewrite".to_owned(), "test.img".to_owned()]);
+    assert!(step(2).jobs_known);
+    assert_eq!(step(3).total(), Ok(None));
+    assert!(quote.is_complete());
+    assert_eq!(quote.totals, [(Currency::USD, usd(50_000))].into_iter().collect());
+    // Models in two currencies on one node can't be summed: unpriced, not silently dropped.
+    let (project, plan) = generators(&[(2, "test.two", &[("rewriter", "test.rewrite"), ("model", "test.eur")])]);
+    let mixed = super::quote(&plan, project.canvases().get(&C).unwrap(), &kinds(), &catalog()).unwrap();
+    assert!(matches!(mixed.steps.first().unwrap().total(), Err(Unpriced::Invalid(_))));
+}
+
+#[test]
+fn deferred_paid_steps_are_estimates_and_currency_mismatches_block() {
+    // Generator 3 is fed by generator 2 in the same run, so its jobs are planned later.
+    let (mut project, _) = generators(&[(2, "test.two", &[("rewriter", "test.rewrite"), ("model", "test.rewrite")])]);
+    let node = kinds()
+        .get("test.gen")
+        .unwrap()
+        .descriptor()
+        .instantiate(id(3), &[("model".to_owned(), Value::Text("test.img".into()))].into_iter().collect())
+        .unwrap();
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let edge = Edge {
+        id: EdgeId::from_bytes([200; 16]),
+        from: Endpoint { node: id(2), port: "out".into() },
+        to: Endpoint { node: id(3), port: "in".into() },
+        order: 0,
+    };
+    Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
+    let canvas = project.canvases().get(&C).unwrap();
+    let Planned::Ready(chain) = plan(canvas, &kinds(), &RunMode::Selected, &[id(2), id(3)].into_iter().collect(), &BTreeSet::new()).unwrap() else { panic!() };
+    let quote = quote(&chain, canvas, &kinds(), &catalog()).unwrap();
+    assert_eq!(quote.estimated().collect::<Vec<_>>(), vec![id(3)]);
+    assert!(quote.unpriced().next().is_none());
+    assert!(!quote.is_complete());
+    // A EUR model under USD caps: per-call and session both refuse to compare.
+    let (project, plan) = generators(&[(2, "test.gen", &[("model", "test.eur")]), (3, "test.gen", &[("model", "test.img")])]);
+    let mixed = super::quote(&plan, project.canvases().get(&C).unwrap(), &kinds(), &catalog()).unwrap();
+    assert_eq!(mixed.totals.len(), 2);
+    let caps = Budgets { per_call: Some(usd(1_000_000)), session: Some(usd(10_000_000)), project: None };
+    let blocks = check(&mixed, &caps, &Spent::default()).unwrap();
+    assert!(blocks.iter().any(|b| matches!(b, Block::Currency { scope: Scope::PerCall, .. })));
+    assert!(blocks.iter().any(|b| matches!(b, Block::Currency { scope: Scope::Session, .. })));
+}
+
+#[test]
+fn the_same_key_from_another_provider_is_another_charge() {
+    let mut log = UsageLog::default();
+    let entry = |provider: &str| UsageEntry {
+        at_ms: 0,
+        session: "now".into(),
+        node: id(2),
+        provider: provider.into(),
+        model: "m".into(),
+        cost: usd(10),
+        idempotency_key: "nodecraft:run:1".into(),
+    };
+    assert!(log.record(entry("fal")).unwrap());
+    assert!(log.record(entry("replicate")).unwrap());
+    assert!(!log.record(entry("fal")).unwrap());
+    assert_eq!(log.spent("now").unwrap().session.get(&Currency::USD), Some(&usd(20)));
 }
