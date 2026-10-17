@@ -194,9 +194,17 @@ mod worker {
     pub struct KeyResults(Receiver<KeyOutcome>);
 
     impl KeyResults {
-        /// Results that have arrived since the last call, in request order (never blocks).
+        /// At most one result-queue's worth of outcomes may be returned by one drain.
+        pub const MAX_BATCH: usize = QUEUE;
+
+        /// Up to [`Self::MAX_BATCH`] available results, in request order (never blocks).
+        /// Concurrently arriving results can join this batch, but cannot extend it past the
+        /// bound. Remaining outcomes stay queued for later calls; none are skipped or dropped.
         pub fn drain(&self) -> Vec<KeyOutcome> {
-            self.0.try_iter().collect()
+            let outcomes = self.0.try_iter().take(Self::MAX_BATCH);
+            #[cfg(test)]
+            let outcomes = outcomes.inspect(|outcome| tests::after_receive(outcome.id));
+            outcomes.collect()
         }
     }
 
@@ -243,6 +251,117 @@ mod worker {
             let id = worker.submit(account, op)?;
             Ok(json!({ "pending": id }))
         })
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::{
+            cell::RefCell,
+            sync::atomic::AtomicUsize,
+            sync::mpsc::{Sender, channel},
+            time::Duration,
+        };
+
+        // A thread-local scheduling probe observes the real drain iterator. It has no runtime
+        // counterpart and never receives secrets. The fake store controls all worker progress.
+        type ReceiveProbe = Box<dyn Fn(u64)>;
+        thread_local! {
+            static AFTER_RECEIVE: RefCell<Option<ReceiveProbe>> = RefCell::new(None);
+        }
+        pub(super) fn after_receive(id: u64) {
+            AFTER_RECEIVE.with(|probe| {
+                if let Some(probe) = probe.borrow().as_ref() {
+                    probe(id);
+                }
+            });
+        }
+        struct ClearProbe;
+        impl Drop for ClearProbe {
+            fn drop(&mut self) {
+                AFTER_RECEIVE.with(|probe| *probe.borrow_mut() = None);
+            }
+        }
+        struct GatedStore {
+            entered: Sender<usize>,
+            permit: Mutex<Receiver<()>>,
+            calls: AtomicUsize,
+        }
+        impl SecretStore for GatedStore {
+            fn get(&self, _: &Account) -> Result<Option<Secret>, SecretError> {
+                let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+                self.entered.send(call).map_err(|_| SecretError::Failed("fixture closed".into()))?;
+                self.permit.lock().unwrap().recv_timeout(Duration::from_secs(10)).map_err(|_| SecretError::Failed("fixture did not release call".into()))?;
+                Ok(None)
+            }
+            fn set(&self, _: &Account, _: &Secret) -> Result<(), SecretError> {
+                panic!("unexpected write in status-only fixture")
+            }
+            fn delete(&self, _: &Account) -> Result<bool, SecretError> {
+                panic!("unexpected delete in status-only fixture")
+            }
+        }
+        #[test]
+        fn drain_stays_bounded_during_synchronized_refill_and_delivers_every_result_once() {
+            let (entered, calls) = channel();
+            let (permit, permits) = channel();
+            let (worker, results) = KeyWorker::spawn(Arc::new(GatedStore { entered, permit: Mutex::new(permits), calls: AtomicUsize::new(0) })).unwrap();
+            let account = Account::new("openai").unwrap();
+            assert_eq!(worker.submit(account.clone(), KeyOp::Status).unwrap(), 1);
+            assert_eq!(calls.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
+            // The first call is parked, so exactly QUEUE further requests fit the inbox.
+            for expected in 2..=QUEUE as u64 + 1 {
+                assert_eq!(worker.submit(account.clone(), KeyOp::Status).unwrap(), expected);
+            }
+            for call in 1..=QUEUE {
+                if call != 1 {
+                    assert_eq!(calls.recv_timeout(Duration::from_secs(10)).unwrap(), call);
+                }
+                permit.send(()).unwrap();
+            }
+            // Entering call65 proves64 outcomes were sent into the bounded result queue.
+            assert_eq!(calls.recv_timeout(Duration::from_secs(10)).unwrap(), QUEUE + 1);
+            assert_eq!(worker.submit(account, KeyOp::Status).unwrap(), QUEUE as u64 + 2);
+            let refill = permit.clone();
+            AFTER_RECEIVE.with(|probe| {
+                *probe.borrow_mut() = Some(Box::new(move |id| {
+                    if id == 1 {
+                        refill.send(()).unwrap();
+                        // Call66 cannot start before the worker sends result65. Thus result65
+                        // is queued before the draining iterator resumes after its first receive.
+                        assert_eq!(calls.recv_timeout(Duration::from_secs(10)).unwrap(), QUEUE + 2);
+                    }
+                }))
+            });
+            let reset = ClearProbe;
+            let mut delivered = results.drain();
+            drop(reset);
+            assert_eq!(delivered.len(), KeyResults::MAX_BATCH, "refill must not extend one drain beyond its fixed batch");
+            assert_eq!(delivered.iter().map(|outcome| outcome.id).collect::<Vec<_>>(), (1..=QUEUE as u64).collect::<Vec<_>>());
+            // The result admitted during that drain is retained for the next call.
+            let next = results.drain();
+            assert_eq!(next.iter().map(|outcome| outcome.id).collect::<Vec<_>>(), [QUEUE as u64 + 1]);
+            delivered.extend(next);
+            assert!(results.drain().is_empty(), "the last fake call is still parked: empty drain doesn't wait");
+            drop(worker); // Closing submission must still deliver the last running call.
+            permit.send(()).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while delivered.len() < QUEUE + 2 {
+                let batch = results.drain();
+                assert!(batch.len() <= KeyResults::MAX_BATCH);
+                delivered.extend(batch);
+                assert!(std::time::Instant::now() < deadline, "the worker didn't finish its final result");
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                delivered.iter().map(|outcome| outcome.id).collect::<Vec<_>>(),
+                (1..=QUEUE as u64 + 2).collect::<Vec<_>>(),
+                "ordered exactly-once delivery across batches"
+            );
+            assert!(delivered.iter().all(|outcome| outcome.account == "openai" && outcome.result == Ok(json!({"stored":false,"masked":null}))));
+            // Waiting for disconnect is test-only; drain remains nonblocking on a closed queue.
+            assert!(matches!(results.0.recv_timeout(Duration::from_secs(10)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected)));
+            assert!(results.drain().is_empty());
+        }
     }
 }
 
