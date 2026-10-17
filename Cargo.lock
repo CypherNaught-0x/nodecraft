@@ -2211,6 +2211,9 @@ version = "0.1.0"
 dependencies = [
  "nodecraft-comfy",
  "nodecraft-graph",
+ "nodecraft-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

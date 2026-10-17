@@ -23,6 +23,19 @@ a choice a later contributor might otherwise undo.
 - **Missing custom nodes and models are found before queueing** (`ApiWorkflow::check`), so the
   node shows an error card instead of a server error.
 
+## 2026-10-17 · Instance schemas and provider-ready controls (#53)
+
+- **Checked instance hooks complement static palette descriptors.** Resolve validates bounded
+  node config before dynamic code and validates its descriptor before control/port cloning.
+  Node-aware modes support workflows and Techniques; pure source planning uses this same path.
+- **Configuration is kind-owned, namespaced and versioned.** A separate defaulted `Node.config`
+  map retains unknown typed data under graph budgets. SetNode is its mutation path. Explicit
+  migration proposals carry warnings and never silently mutate a saved node during planning.
+- **Numeric schemas preserve full-width integers.** Optional bounds, unsigned controls, exact
+  positive integer steps and seed maxima describe provider constraints without f64 coercion.
+- **Hidden values persist but are not execution inputs.** ResolvedParams exposes visible-only
+  adapters. All schema text, including large model choice lists and descriptions, shares a cap.
+
 ## 2026-10-16 · Settings through craft-settings (#55)
 
 - **App id `nodecraft`** for the folder and `NODECRAFT_CONFIG_DIR`; schema version 1.
@@ -71,6 +84,26 @@ a choice a later contributor might otherwise undo.
   event or consume a history step. Custom enabled hooks still run on dispatch; builtin graph
   preview validation is deferred to the sole staged transaction. Each consumer holds a revision cursor into the last 256 `DocChanged`
   notifications; an expired cursor explicitly requires a document resync.
+
+## 2026-10-16 · Node kinds and shared parameter schemas (#53)
+
+- **Schema data lives in `types`, re-exported by `nodes`.** Both node kinds and catalog models
+  need the same controls; putting the pure data below both L2 crates avoids a lateral dependency.
+  Controls cover text, choices, toggles, sliders, integers, colours, model IDs, seeds and assets.
+  Schema/default/condition validation runs before any parameter cloning. Conditions reference
+  earlier parameters; hidden controllers also hide their dependants, so there are no cycles.
+- **Parameters use real scalar values.** `Value` now includes booleans, finite `Number`s, signed
+  integers and unsigned integers. Integer values and integer bounds use decimal strings on the
+  wire so full-width seeds/counts survive browser JSON. Number construction rejects NaN/infinity;
+  workspace `serde_json` enables `float_roundtrip` so defaults and equality conditions survive
+  save/load exactly. These variants are part of the initial format; later additions remain
+  subject to the format-version gate recorded below.
+- **Source planning is pure.** `source.text`, `source.image`, `source.video`, `source.audio`
+  accept no inputs and emit existing values/assets on `out`. Empty text is valid; media sources
+  may be placed unconfigured but cannot plan until an asset is selected. No placeholder hashes,
+  decoding or provider calls occur. Importers/decoders validate bytes; source schemas validate
+  the declared MIME modality. Node descriptors expose quick-add and mode compatibility metadata
+  for the future palette and Turn-into picker.
 
 ## 2026-10-16 · Graph transactions (#51)
 
