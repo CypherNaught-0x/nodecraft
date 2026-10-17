@@ -125,27 +125,51 @@ impl HistoryEntry {
         let v: Value = crate::error::parse_json("/history", bytes, MAX_HISTORY_BYTES)?;
         let Some(entry) = v.get(prompt_id) else { return Ok(None) };
         let status = entry.get("status");
-        let mut outputs: Vec<(String, Vec<FileRef>)> = entry
-            .get("outputs")
-            .and_then(Value::as_object)
-            .map(|o| o.iter().map(|(node, out)| (node.clone(), crate::ws::files_in(out))).collect())
-            .unwrap_or_default();
+        let mut budget = crate::progress_bounds::FileBudget::default();
+        budget.charge(prompt_id.len().saturating_add(256))?;
+        let mut outputs = Vec::new();
+        if let Some(nodes) = entry.get("outputs").and_then(Value::as_object) {
+            if nodes.len() > crate::MAX_PROGRESS_NODES {
+                return Err(crate::progress_bounds::exceeded());
+            }
+            budget.scan(nodes.len())?;
+            for (node, out) in nodes {
+                budget.charge(node.len().saturating_add(128))?;
+                let files = crate::ws::files_in_with(out, &mut budget)?;
+                outputs.push((node.clone(), files));
+            }
+        }
         outputs.sort_by(|a, b| crate::workflow::id_order(&a.0, &b.0));
-        let messages: Vec<&Value> = status.and_then(|s| s.get("messages")).and_then(Value::as_array).into_iter().flatten().collect();
+        let messages = status.and_then(|s| s.get("messages")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        budget.scan(messages.len())?;
         let message = |kind: &str| messages.iter().find(|m| m.get(0).and_then(Value::as_str) == Some(kind)).and_then(|m| m.get(1));
         let failure = message("execution_error");
-        let error = failure.and_then(|d| d.get("exception_message")?.as_str().map(|s| s.trim().to_owned()));
-        let text = |d: &Value, k: &str| d.get(k).and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_u64().map(|n| n.to_string())));
+        let error = failure.and_then(|d| d.get("exception_message")).and_then(Value::as_str).map(str::trim);
+        let status_text = status.and_then(|s| s.get("status_str")).and_then(Value::as_str).unwrap_or_default();
+        budget.charge(status_text.len())?;
+        if let Some(error) = error {
+            budget.charge(error.len().saturating_add(128))?;
+        }
+        fn text<'a>(d: &'a Value, k: &str) -> Option<std::borrow::Cow<'a, str>> {
+            d.get(k).and_then(|value| match value {
+                Value::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
+                Value::Number(number) => number.as_u64().map(|n| std::borrow::Cow::Owned(n.to_string())),
+                _ => None,
+            })
+        }
         let error_node = failure.and_then(|d| Some((text(d, "node_id")?, text(d, "node_type").unwrap_or_default())));
+        if let Some((node, kind)) = &error_node {
+            budget.charge(crate::progress_bounds::sum(&[128, node.len(), kind.len()]))?;
+        }
         let interrupted = message("execution_interrupted").is_some();
         Ok(Some(Self {
             prompt_id: prompt_id.to_owned(),
             completed: status.and_then(|s| s.get("completed")).and_then(Value::as_bool).unwrap_or(false),
-            status: status.and_then(|s| s.get("status_str")).and_then(Value::as_str).unwrap_or_default().to_owned(),
+            status: status_text.to_owned(),
             interrupted,
             outputs,
-            error,
-            error_node,
+            error: error.map(str::to_owned),
+            error_node: error_node.map(|(node, kind)| (node.into_owned(), kind.into_owned())),
         }))
     }
 }
@@ -203,5 +227,16 @@ mod tests {
         assert!(HistoryEntry::parse(stopped, "p3").unwrap().unwrap().interrupted);
         assert!(HistoryEntry::parse(b"[1]", "p").unwrap().is_none());
         assert!(HistoryEntry::parse(br#"{"p":{"outputs":5,"status":[]}}"#, "p").unwrap().is_some());
+    }
+    #[test]
+    fn history_shares_file_and_metadata_budgets_across_node_outputs() {
+        let files = vec![serde_json::json!({"filename":"a.png"}); crate::MAX_OUTPUT_FILES / 2 + 1];
+        let body = serde_json::to_vec(&serde_json::json!({"p":{"outputs":{"1":{"images":files},"2":{"images":files}}}})).unwrap();
+        assert!(HistoryEntry::parse(&body, "p").is_err());
+        let body = serde_json::to_vec(
+            &serde_json::json!({"p":{"status":{"messages":[["execution_error",{"exception_message":"x".repeat(crate::MAX_RETAINED_METADATA_BYTES)}]]}}}),
+        )
+        .unwrap();
+        assert!(HistoryEntry::parse(&body, "p").is_err());
     }
 }

@@ -1,10 +1,11 @@
 //! The WebSocket messages a ComfyUI server sends while it runs prompts, and a tracker that turns
 //! them into progress for one prompt.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::progress_bounds::{FileBudget, Limits, association_bytes, exceeded, sum};
 use crate::{ComfyError, FileRef};
 
 /// Cap on one WebSocket message (previews are the large ones).
@@ -82,7 +83,22 @@ pub enum WsEvent {
 
 /// Parses a text (JSON) message.
 pub fn parse_text(message: &str) -> Result<WsEvent, ComfyError> {
-    let v: Value = crate::error::parse_json("WebSocket message", message.as_bytes(), MAX_WS_MESSAGE_BYTES)?;
+    let mut v: Value = crate::error::parse_json("WebSocket message", message.as_bytes(), MAX_WS_MESSAGE_BYTES)?;
+    // Check cached-ID extraction before copying any event fields. The raw JSON byte cap
+    // does not bound the allocated Vec/String representation of many small identifiers.
+    if v.get("type").and_then(Value::as_str) == Some("execution_cached")
+        && let Some(nodes) = v.get("data").and_then(|data| data.get("nodes")).and_then(Value::as_array)
+    {
+        let mut budget = FileBudget::default();
+        budget.scan(nodes.len())?;
+        for node in nodes {
+            match node {
+                Value::String(node) => budget.charge(node.len().saturating_add(64))?,
+                Value::Number(_) => budget.charge(96)?,
+                _ => {}
+            }
+        }
+    }
     let kind = v.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
     let empty = Value::Null;
     let data = v.get("data").unwrap_or(&empty);
@@ -107,8 +123,11 @@ pub fn parse_text(message: &str) -> Result<WsEvent, ComfyError> {
             max: data.get("max").and_then(Value::as_u64).unwrap_or(0),
         },
         "executed" => {
-            let output = data.get("output").cloned().unwrap_or(Value::Null);
-            WsEvent::Executed { prompt_id: need_prompt()?, node: text("node").unwrap_or_default(), files: files_in(&output), output }
+            let prompt_id = need_prompt()?;
+            let node = text("node").unwrap_or_default();
+            let files = files_in(data.get("output").unwrap_or(&empty))?;
+            let output = v.get_mut("data").and_then(Value::as_object_mut).and_then(|data| data.remove("output")).unwrap_or(Value::Null);
+            WsEvent::Executed { prompt_id, node, files, output }
         }
         "execution_error" => WsEvent::ExecutionError {
             prompt_id: need_prompt()?,
@@ -169,29 +188,42 @@ fn id_or_text(v: &Value) -> Option<String> {
 }
 
 /// Every file named in a node result: any list of objects with a `filename` (`images`, `gifs`,
-/// `audio`, `video`, 3D outputs and whatever custom nodes use).
-pub fn files_in(output: &Value) -> Vec<FileRef> {
-    let Some(map) = output.as_object() else { return Vec::new() };
-    let text = |item: &Value, k: &str| item.get(k).and_then(Value::as_str).map(str::to_owned);
-    map.values()
-        .filter_map(Value::as_array)
-        .flatten()
-        .filter_map(|item| {
-            // `subfolder` and `type` may be missing or null.
-            Some(FileRef {
-                filename: text(item, "filename")?,
-                subfolder: text(item, "subfolder").unwrap_or_default(),
-                kind: text(item, "type").unwrap_or_else(|| "output".into()),
-            })
-        })
-        .collect()
+/// `audio`, `video`, 3D outputs and whatever custom nodes use). Enumeration is shallow and
+/// fallible: shared file-count, scanned-entry and metadata-storage limits apply before copying.
+pub fn files_in(output: &Value) -> Result<Vec<FileRef>, ComfyError> {
+    files_in_with(output, &mut FileBudget::default())
+}
+
+pub(crate) fn files_in_with(output: &Value, budget: &mut FileBudget) -> Result<Vec<FileRef>, ComfyError> {
+    let Some(map) = output.as_object() else { return Ok(Vec::new()) };
+    budget.scan(map.len())?;
+    let mut files = Vec::new();
+    for value in map.values() {
+        let Some(items) = value.as_array() else { continue };
+        budget.scan(items.len())?;
+        for item in items {
+            let Some(filename) = item.get("filename").and_then(Value::as_str) else { continue };
+            let subfolder = item.get("subfolder").and_then(Value::as_str).unwrap_or_default();
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or("output");
+            budget.file(sum(&[filename.len(), subfolder.len(), kind.len()]))?;
+            files.push(FileRef { filename: filename.into(), subfolder: subfolder.into(), kind: kind.into() });
+        }
+    }
+    Ok(files)
 }
 
 /// How a prompt ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Success,
-    Error { node: Option<String>, node_type: Option<String>, message: String },
+    /// Tracking stopped at a metadata limit; retained outputs are an incomplete prefix.
+    /// This allocation-free terminal failure cannot be overwritten by later success events.
+    MetadataLimit,
+    Error {
+        node: Option<String>,
+        node_type: Option<String>,
+        message: String,
+    },
     Interrupted,
 }
 
@@ -205,45 +237,114 @@ pub struct PromptProgress {
     step: Option<(u64, u64)>,
     started: bool,
     outputs: Vec<(String, FileRef)>,
+    seen_outputs: HashMap<String, HashSet<FileRef>>,
+    retained_bytes: usize,
+    limits: Limits,
     outcome: Option<Outcome>,
 }
 
 impl PromptProgress {
     /// Tracks `prompt_id`, whose workflow has the nodes `node_ids` (see [`crate::ApiWorkflow::ids`]).
     /// Only those count towards progress: servers may also report cached or expanded nodes.
-    pub fn new<I: IntoIterator<Item = S>, S: Into<String>>(prompt_id: impl Into<String>, node_ids: I) -> Self {
-        Self {
+    /// Identifiers, count and conservative retained storage are checked before copying; see
+    /// [`crate::MAX_PROGRESS_NODES`] and [`crate::MAX_RETAINED_METADATA_BYTES`].
+    pub fn new<I: IntoIterator<Item = S>, S: AsRef<str>>(prompt_id: impl AsRef<str>, node_ids: I) -> Result<Self, ComfyError> {
+        Self::with_limits(prompt_id.as_ref(), node_ids, Limits::default())
+    }
+
+    fn with_limits<I: IntoIterator<Item = S>, S: AsRef<str>>(prompt_id: &str, node_ids: I, limits: Limits) -> Result<Self, ComfyError> {
+        let mut retained_bytes = 512usize.saturating_add(prompt_id.len());
+        if retained_bytes > limits.bytes {
+            return Err(exceeded());
+        }
+        let mut nodes = HashSet::new();
+        for (index, node) in node_ids.into_iter().enumerate() {
+            if index >= limits.scanned {
+                return Err(exceeded());
+            }
+            let node = node.as_ref();
+            if node.len() > limits.bytes {
+                return Err(exceeded());
+            }
+            if nodes.contains(node) {
+                continue;
+            }
+            if nodes.len() >= limits.nodes {
+                return Err(exceeded());
+            }
+            // Reserve space for both the workflow set and its eventual completed-ID set.
+            retained_bytes = retained_bytes.saturating_add(256usize.saturating_add(node.len().saturating_mul(2)));
+            if retained_bytes > limits.bytes {
+                return Err(exceeded());
+            }
+            nodes.insert(node.to_owned());
+        }
+        Ok(Self {
             prompt_id: prompt_id.into(),
-            nodes: node_ids.into_iter().map(Into::into).collect(),
+            nodes,
             done: HashSet::new(),
             current: None,
             step: None,
             started: false,
             outputs: Vec::new(),
+            seen_outputs: HashMap::new(),
+            retained_bytes,
+            limits,
             outcome: None,
+        })
+    }
+
+    fn finish_node(&mut self, node: String) {
+        if self.nodes.contains(&node) {
+            self.done.insert(node);
         }
+    }
+
+    fn replacing_current(&self, node: Option<&str>) -> Result<usize, ComfyError> {
+        let previous = self.current.as_ref().map_or(0, |node| 128usize.saturating_add(node.len()));
+        let next = node.map_or(0, |node| 128usize.saturating_add(node.len()));
+        let bytes = self.retained_bytes.saturating_sub(previous).saturating_add(next);
+        if bytes > self.limits.bytes {
+            return Err(exceeded());
+        }
+        Ok(bytes)
     }
 
     fn mine(&self, id: Option<&String>) -> bool {
         id.is_some_and(|id| *id == self.prompt_id)
     }
 
-    /// Applies one event. Returns true when it was about this prompt.
-    pub fn apply(&mut self, event: &WsEvent) -> bool {
+    /// Applies one event. Returns true when it was about this prompt. A limit error preserves
+    /// the admitted progress/output prefix and latches [`Outcome::MetadataLimit`], so subsequent
+    /// success cannot hide missing metadata. Unrelated prompts and completed trackers are ignored.
+    pub fn apply(&mut self, event: &WsEvent) -> Result<bool, ComfyError> {
+        let result = self.admit(event);
+        if result.is_err() {
+            self.outcome = Some(Outcome::MetadataLimit);
+        }
+        result
+    }
+
+    fn admit(&mut self, event: &WsEvent) -> Result<bool, ComfyError> {
         if self.outcome.is_some() {
-            return false;
+            return Ok(false);
         }
         match event {
             WsEvent::ExecutionStart { prompt_id } if self.mine(Some(prompt_id)) => self.started = true,
             WsEvent::ExecutionCached { prompt_id, nodes } if self.mine(Some(prompt_id)) => {
+                if nodes.len() > self.limits.scanned || nodes.iter().any(|node| node.len() > self.limits.bytes) {
+                    return Err(exceeded());
+                }
                 self.started = true;
-                self.done.extend(nodes.iter().cloned());
+                self.done.extend(nodes.iter().filter(|node| self.nodes.contains(*node)).cloned());
             }
             WsEvent::Executing { prompt_id, node } if self.mine(prompt_id.as_ref()) => {
+                let retained_bytes = self.replacing_current(node.as_deref())?;
                 self.started = true;
                 if let Some(previous) = self.current.take() {
-                    self.done.insert(previous);
+                    self.finish_node(previous);
                 }
+                self.retained_bytes = retained_bytes;
                 self.step = None;
                 match node {
                     Some(node) => self.current = Some(node.clone()),
@@ -257,22 +358,62 @@ impl PromptProgress {
                 self.step = Some((*value, *max));
             }
             WsEvent::Executed { prompt_id, node, files, .. } if self.mine(Some(prompt_id)) => {
-                self.done.insert(node.clone());
-                self.outputs.extend(files.iter().map(|f| (node.clone(), f.clone())));
+                if files.len() > self.limits.scanned || node.len() > self.limits.bytes {
+                    return Err(exceeded());
+                }
+                let mut bytes = self.retained_bytes;
+                let mut pending = Vec::new();
+                let mut seen = HashSet::new();
+                for file in files {
+                    let cost = association_bytes(node, file);
+                    if cost > self.limits.bytes {
+                        return Err(exceeded());
+                    }
+                    if self.seen_outputs.get(node).is_some_and(|known| known.contains(file)) || !seen.insert(file) {
+                        continue;
+                    }
+                    if self.outputs.len().saturating_add(pending.len()) >= self.limits.files {
+                        return Err(exceeded());
+                    }
+                    bytes = bytes.saturating_add(cost);
+                    if bytes > self.limits.bytes {
+                        return Err(exceeded());
+                    }
+                    pending.push(file);
+                }
+                if self.nodes.contains(node) {
+                    self.done.insert(node.clone());
+                }
+                for file in pending {
+                    self.seen_outputs.entry(node.clone()).or_default().insert(file.clone());
+                    self.outputs.push((node.clone(), file.clone()));
+                }
+                self.retained_bytes = bytes;
             }
             WsEvent::ExecutionError { prompt_id, node, node_type, message, .. } if self.mine(Some(prompt_id)) => {
+                let bytes = self.retained_bytes.saturating_add(sum(&[
+                    128,
+                    node.as_ref().map_or(0, String::len),
+                    node_type.as_ref().map_or(0, String::len),
+                    message.len(),
+                ]));
+                if bytes > self.limits.bytes {
+                    return Err(exceeded());
+                }
                 self.outcome = Some(Outcome::Error { node: node.clone(), node_type: node_type.clone(), message: message.clone() });
+                self.retained_bytes = bytes;
             }
             WsEvent::Interrupted { prompt_id, .. } if self.mine(Some(prompt_id)) => self.outcome = Some(Outcome::Interrupted),
             WsEvent::Success { prompt_id } if self.mine(Some(prompt_id)) => {
+                self.retained_bytes = self.replacing_current(None)?;
                 if let Some(previous) = self.current.take() {
-                    self.done.insert(previous);
+                    self.finish_node(previous);
                 }
                 self.outcome = Some(Outcome::Success);
             }
-            _ => return false,
+            _ => return Ok(false),
         }
-        true
+        Ok(true)
     }
 
     /// True once the server has started (or skipped through the cache) this prompt.
@@ -297,7 +438,7 @@ impl PromptProgress {
             Some((value, max)) if max > 0 => (value.min(max) as f64) / (max as f64),
             _ => 0.0,
         };
-        let running = if self.current.is_some() { step } else { 0.0 };
+        let running = if self.current.as_ref().is_some_and(|node| self.nodes.contains(node)) { step } else { 0.0 };
         let done = self.done.iter().filter(|n| self.nodes.contains(*n)).count();
         let fraction = (done as f64 + running) / self.nodes.len() as f64;
         fraction.clamp(0.0, 1.0) as f32
@@ -342,7 +483,7 @@ mod tests {
             r#"{"type":"executed","data":{"node":"9","prompt_id":"p","output":{"images":[{"filename":"NodeCraft_00001_.png","subfolder":"","type":"output"}],"text":["hi"]}}}"#,
         );
         let WsEvent::Executed { files, node, .. } = &executed else { panic!("{executed:?}") };
-        assert_eq!(files_in(&serde_json::json!({"images":[{"filename":"a.png","subfolder":null,"type":null}]})).len(), 1, "null fields");
+        assert_eq!(files_in(&serde_json::json!({"images":[{"filename":"a.png","subfolder":null,"type":null}]})).unwrap().len(), 1, "null fields");
         assert_eq!(node, "9");
         assert_eq!(files, &[FileRef { filename: "NodeCraft_00001_.png".into(), subfolder: String::new(), kind: "output".into() }]);
         assert_eq!(
@@ -402,48 +543,221 @@ mod tests {
 
     #[test]
     fn tracks_one_prompt() {
-        let mut p = PromptProgress::new("p", ["3", "4", "8", "9"]);
-        assert!(!p.apply(&ev(r#"{"type":"execution_start","data":{"prompt_id":"other"}}"#)));
-        assert!(p.apply(&ev(r#"{"type":"execution_cached","data":{"nodes":["4"],"prompt_id":"p"}}"#)));
+        let mut p = PromptProgress::new("p", ["3", "4", "8", "9"]).unwrap();
+        assert!(!p.apply(&ev(r#"{"type":"execution_start","data":{"prompt_id":"other"}}"#)).unwrap());
+        assert!(p.apply(&ev(r#"{"type":"execution_cached","data":{"nodes":["4"],"prompt_id":"p"}}"#)).unwrap());
         assert!(p.started());
         assert_eq!(p.fraction(), 0.25);
-        p.apply(&ev(r#"{"type":"executing","data":{"node":"3","prompt_id":"p"}}"#));
-        p.apply(&ev(r#"{"type":"progress","data":{"value":10,"max":20,"prompt_id":"p","node":"3"}}"#));
+        p.apply(&ev(r#"{"type":"executing","data":{"node":"3","prompt_id":"p"}}"#)).unwrap();
+        p.apply(&ev(r#"{"type":"progress","data":{"value":10,"max":20,"prompt_id":"p","node":"3"}}"#)).unwrap();
         assert_eq!(p.current_node(), Some("3"));
         assert!((p.fraction() - 0.375).abs() < 1e-6);
-        p.apply(&ev(r#"{"type":"executing","data":{"node":"8","prompt_id":"p"}}"#));
+        p.apply(&ev(r#"{"type":"executing","data":{"node":"8","prompt_id":"p"}}"#)).unwrap();
         assert_eq!(p.fraction(), 0.5);
-        p.apply(&ev(r#"{"type":"executed","data":{"node":"9","prompt_id":"p","output":{"images":[{"filename":"a.png","subfolder":"","type":"output"}]}}}"#));
+        p.apply(&ev(r#"{"type":"executed","data":{"node":"9","prompt_id":"p","output":{"images":[{"filename":"a.png","subfolder":"","type":"output"}]}}}"#))
+            .unwrap();
         assert_eq!(p.outputs().len(), 1);
-        p.apply(&ev(r#"{"type":"executing","data":{"node":null,"prompt_id":"p"}}"#));
+        p.apply(&ev(r#"{"type":"executing","data":{"node":null,"prompt_id":"p"}}"#)).unwrap();
         assert_eq!(p.outcome(), Some(&Outcome::Success));
         assert_eq!(p.fraction(), 1.0);
-        assert!(!p.apply(&ev(r#"{"type":"execution_error","data":{"prompt_id":"p"}}"#)), "finished prompts ignore later events");
+        assert!(!p.apply(&ev(r#"{"type":"execution_error","data":{"prompt_id":"p"}}"#)).unwrap(), "finished prompts ignore later events");
     }
 
     #[test]
     fn errors_and_interrupts_end_a_prompt() {
-        let mut p = PromptProgress::new("p", ["1", "2"]);
-        p.apply(&ev(r#"{"type":"execution_error","data":{"prompt_id":"p","node_id":"3","node_type":"KSampler","exception_message":"boom"}}"#));
+        let mut p = PromptProgress::new("p", ["1", "2"]).unwrap();
+        p.apply(&ev(r#"{"type":"execution_error","data":{"prompt_id":"p","node_id":"3","node_type":"KSampler","exception_message":"boom"}}"#)).unwrap();
         assert_eq!(p.outcome(), Some(&Outcome::Error { node: Some("3".into()), node_type: Some("KSampler".into()), message: "boom".into() }));
-        let mut p = PromptProgress::new("p", ["1", "2"]);
-        p.apply(&ev(r#"{"type":"execution_interrupted","data":{"prompt_id":"p"}}"#));
+        let mut p = PromptProgress::new("p", ["1", "2"]).unwrap();
+        p.apply(&ev(r#"{"type":"execution_interrupted","data":{"prompt_id":"p"}}"#)).unwrap();
         assert_eq!(p.outcome(), Some(&Outcome::Interrupted));
     }
 
     #[test]
     fn hostile_progress_numbers() {
-        let mut p = PromptProgress::new("p", ["1"]);
-        p.apply(&WsEvent::Executing { prompt_id: Some("p".into()), node: Some("1".into()) });
-        p.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some("1".into()), value: u64::MAX, max: 0 });
+        let mut p = PromptProgress::new("p", ["1"]).unwrap();
+        p.apply(&WsEvent::Executing { prompt_id: Some("p".into()), node: Some("1".into()) }).unwrap();
+        p.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some("1".into()), value: u64::MAX, max: 0 }).unwrap();
         assert_eq!(p.fraction(), 0.0);
-        p.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some("1".into()), value: 50, max: 10 });
+        p.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some("1".into()), value: 50, max: 10 }).unwrap();
         assert_eq!(p.fraction(), 1.0);
-        assert_eq!(PromptProgress::new("p", Vec::<String>::new()).fraction(), 0.0);
-        let mut many = PromptProgress::new("p", ["1", "2"]);
-        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: (0..10).map(|n| format!("x{n}")).collect() });
+        assert_eq!(PromptProgress::new("p", Vec::<String>::new()).unwrap().fraction(), 0.0);
+        let mut many = PromptProgress::new("p", ["1", "2"]).unwrap();
+        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: (0..10).map(|n| format!("x{n}")).collect() }).unwrap();
         assert_eq!(many.fraction(), 0.0, "nodes outside the workflow don't count");
-        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: vec!["1".into()] });
+        many.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: vec!["1".into()] }).unwrap();
         assert_eq!(many.fraction(), 0.5);
+    }
+    fn output(node: &str, name: &str) -> WsEvent {
+        WsEvent::Executed {
+            prompt_id: "p".into(),
+            node: node.into(),
+            files: vec![FileRef { filename: name.into(), subfolder: String::new(), kind: "output".into() }],
+            output: Value::Null,
+        }
+    }
+
+    #[test]
+    fn long_expanded_node_streams_do_not_accumulate_completed_ids() {
+        let mut progress = PromptProgress::new("p", ["known"]).unwrap();
+        for id in 0..20_000 {
+            let node = format!("expanded{id}");
+            progress.apply(&WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: vec![node.clone()] }).unwrap();
+            progress.apply(&WsEvent::Executing { prompt_id: Some("p".into()), node: Some(node.clone()) }).unwrap();
+            progress.apply(&WsEvent::Progress { prompt_id: Some("p".into()), node: Some(node), value: 1, max: 1 }).unwrap();
+        }
+        assert!(progress.done.is_empty());
+        assert_eq!(progress.fraction(), 0.0);
+        assert!(progress.retained_bytes < 2048);
+        progress.apply(&WsEvent::Success { prompt_id: "p".into() }).unwrap();
+        assert!(progress.done.is_empty());
+    }
+
+    #[test]
+    fn repeated_outputs_are_idempotent_but_distinct_node_file_associations_survive() {
+        let mut progress = PromptProgress::new("p", ["1", "2"]).unwrap();
+        progress.apply(&output("1", "a.png")).unwrap();
+        let bytes = progress.retained_bytes;
+        for _ in 0..20_000 {
+            progress.apply(&output("1", "a.png")).unwrap();
+        }
+        assert_eq!(progress.outputs.len(), 1);
+        assert_eq!(progress.retained_bytes, bytes);
+        progress.apply(&output("2", "a.png")).unwrap();
+        progress.apply(&output("1", "b.png")).unwrap();
+        assert_eq!(progress.outputs.len(), 3);
+        assert_eq!(progress.done.len(), 2);
+    }
+
+    #[test]
+    fn constructor_bounds_identifiers_count_and_even_duplicate_iterator_work() {
+        let limits = Limits { nodes: 1, bytes: 800, scanned: 2, ..Limits::default() };
+        assert!(PromptProgress::with_limits("p", ["1"], limits).is_ok());
+        assert!(PromptProgress::with_limits("p", ["1", "2"], limits).is_err());
+        assert!(PromptProgress::with_limits("p", ["1", "1", "1"], limits).is_err());
+        assert!(PromptProgress::with_limits(&"x".repeat(800), ["1"], limits).is_err());
+        assert!(PromptProgress::with_limits("p", ["x".repeat(800)], limits).is_err());
+        let bytes = PromptProgress::new("p", ["1"]).unwrap().retained_bytes;
+        assert!(PromptProgress::with_limits("p", ["1"], Limits { bytes, ..limits }).is_ok());
+        assert!(PromptProgress::with_limits("p", ["1"], Limits { bytes: bytes - 1, ..limits }).is_err());
+    }
+
+    fn assert_limit_preserves_prefix(progress: &PromptProgress, before: &PromptProgress) {
+        let mut expected = before.clone();
+        expected.outcome = Some(Outcome::MetadataLimit);
+        assert_eq!(progress, &expected);
+    }
+
+    #[test]
+    fn output_count_and_byte_limits_preserve_prefix_and_latch_terminal_failure() {
+        let limits = Limits { files: 1, bytes: 4096, ..Limits::default() };
+        let mut progress = PromptProgress::with_limits("p", ["1", "2"], limits).unwrap();
+        let mut event = output("1", "a.png");
+        let WsEvent::Executed { files, .. } = &mut event else { panic!("executed") };
+        files.push(FileRef { filename: "b.png".into(), subfolder: String::new(), kind: "output".into() });
+        let before = progress.clone();
+        assert!(progress.apply(&event).is_err());
+        assert_limit_preserves_prefix(&progress, &before);
+        progress = before.clone();
+        progress.apply(&output("1", "a.png")).unwrap();
+        let before = progress.clone();
+        assert!(progress.apply(&output("2", "b.png")).is_err());
+        assert_limit_preserves_prefix(&progress, &before);
+        progress = before.clone();
+        progress.apply(&output("1", "a.png")).unwrap();
+        let mut progress = PromptProgress::new("p", ["1"]).unwrap();
+        let file = FileRef { filename: "a.png".into(), subfolder: String::new(), kind: "output".into() };
+        let bytes = progress.retained_bytes + association_bytes("1", &file);
+        progress.limits.bytes = bytes;
+        progress.apply(&output("1", "a.png")).unwrap();
+        assert_eq!(progress.retained_bytes, bytes);
+        let before = progress.clone();
+        assert!(progress.apply(&output("1", "b.png")).is_err());
+        assert_limit_preserves_prefix(&progress, &before);
+    }
+
+    #[test]
+    fn oversized_programmatic_event_metadata_is_rejected_before_copies_and_errors_are_safe() {
+        let mut progress = PromptProgress::with_limits("p", ["1"], Limits { bytes: 2048, ..Limits::default() }).unwrap();
+        let secret = "fabricated-private-metadata".repeat(100);
+        for event in [
+            WsEvent::Executing { prompt_id: Some("p".into()), node: Some(secret.clone()) },
+            output("1", &secret),
+            WsEvent::ExecutionCached { prompt_id: "p".into(), nodes: vec![secret.clone()] },
+            WsEvent::ExecutionError { prompt_id: "p".into(), node: Some(secret.clone()), node_type: None, message: "failure".into(), exception_type: None },
+            WsEvent::ExecutionError { prompt_id: "p".into(), node: None, node_type: None, message: secret.clone(), exception_type: None },
+        ] {
+            let mut progress = progress.clone();
+            let before = progress.clone();
+            let error = progress.apply(&event).unwrap_err();
+            assert!(!error.to_string().contains("fabricated-private-metadata"));
+            assert_limit_preserves_prefix(&progress, &before);
+        }
+        let other = WsEvent::Executing { prompt_id: Some("other".into()), node: Some(secret) };
+        assert_eq!(progress.apply(&other), Ok(false));
+        progress.apply(&WsEvent::Executing { prompt_id: Some("p".into()), node: None }).unwrap();
+        assert_eq!(progress.outcome(), Some(&Outcome::Success));
+        assert_eq!(progress.apply(&output("1", "late.png")), Ok(false));
+    }
+
+    #[test]
+    fn file_extraction_is_shallow_bounded_and_fallible() {
+        let repeated = serde_json::json!({"images":vec![serde_json::json!({"filename":"a.png"});crate::MAX_OUTPUT_FILES+1]});
+        assert!(files_in(&repeated).is_err());
+        let oversized = serde_json::json!({"images":[{"filename":"x".repeat(crate::MAX_RETAINED_METADATA_BYTES)}]});
+        assert!(files_in(&oversized).is_err());
+        let many_ignored = serde_json::json!({"ignored":vec![Value::Null;crate::MAX_OUTPUT_ITEMS]});
+        assert!(files_in(&many_ignored).is_err());
+        let mut nested = Value::Null;
+        for _ in 0..50_000 {
+            nested = Value::Array(vec![nested]);
+        }
+        let mut output = serde_json::json!({"images":[{"filename":"a.png"}], "ignored":null});
+        output.as_object_mut().unwrap().insert("ignored".into(), nested);
+        assert_eq!(files_in(&output).unwrap().len(), 1);
+        // The borrowed extractor never recursively clones the unrelated data. The caller owns
+        // destruction of programmatically built deep Values.
+        let mut nested = output.as_object_mut().unwrap().remove("ignored").unwrap();
+        while let Value::Array(mut values) = nested {
+            nested = values.pop().unwrap_or(Value::Null);
+        }
+    }
+    #[test]
+    fn rejected_output_admission_cannot_be_hidden_by_later_success() {
+        for terminal in [WsEvent::Success { prompt_id: "p".into() }, WsEvent::Executing { prompt_id: Some("p".into()), node: None }] {
+            let mut progress = PromptProgress::with_limits("p", ["1"], Limits { files: 1, ..Limits::default() }).unwrap();
+            progress.apply(&output("1", "retained.png")).unwrap();
+            assert!(progress.apply(&output("1", "rejected.png")).is_err());
+            progress.apply(&terminal).unwrap();
+            assert_eq!(progress.outcome(), Some(&Outcome::MetadataLimit), "missing metadata cannot become clean success");
+            assert_eq!(progress.outputs().len(), 1);
+        }
+    }
+
+    #[test]
+    fn oversized_terminal_error_is_a_bounded_terminal_failure() {
+        let mut progress = PromptProgress::with_limits("p", ["1"], Limits { bytes: 1024, ..Limits::default() }).unwrap();
+        let error = WsEvent::ExecutionError { prompt_id: "p".into(), node: None, node_type: None, message: "private-error".repeat(100), exception_type: None };
+        let before = progress.clone();
+        assert!(progress.apply(&error).is_err());
+        assert_limit_preserves_prefix(&progress, &before);
+        assert_eq!(progress.outcome(), Some(&Outcome::MetadataLimit));
+        assert_eq!(progress.apply(&WsEvent::Success { prompt_id: "p".into() }), Ok(false));
+    }
+
+    #[test]
+    fn cached_parser_bounds_count_and_allocated_metadata_before_copying() {
+        let message =
+            serde_json::to_string(&serde_json::json!({"type":"execution_cached","data":{"prompt_id":"p","nodes":vec!["1";crate::MAX_OUTPUT_ITEMS+1]}}))
+                .unwrap();
+        assert!(message.len() < MAX_WS_MESSAGE_BYTES);
+        assert!(parse_text(&message).is_err());
+        let message =
+            serde_json::to_string(&serde_json::json!({"type":"execution_cached","data":{"prompt_id":"p","nodes":vec!["x".repeat(100);60_000]}})).unwrap();
+        assert!(message.len() < MAX_WS_MESSAGE_BYTES);
+        assert!(parse_text(&message).is_err(), "allocated identifier overhead has its own budget");
+        assert!(
+            matches!(parse_text(r#"{"type":"execution_cached","data":{"prompt_id":"p","nodes":["1",2,null]}}"#).unwrap(), WsEvent::ExecutionCached { nodes, .. } if nodes == ["1", "2"])
+        );
     }
 }
