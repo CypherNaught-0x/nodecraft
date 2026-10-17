@@ -36,6 +36,8 @@ pub struct Tokens {
     pub handle_glyph: Color32,
     /// Accent for focus and selection outside cards.
     pub accent: Color32,
+    /// Translucent fill of the box-select rectangle (outlined with `accent`).
+    pub marquee_fill: Color32,
 
     /// Distance between grid dots, at 100% zoom.
     pub grid_spacing: f32,
@@ -76,6 +78,7 @@ pub const DARK: Tokens = Tokens {
     handle_fill: Color32::from_rgb(0x08, 0x08, 0x09),
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
+    marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
     grid_spacing: 20.0,
     grid_dot_radius: 1.0,
     card_radius: 14,
@@ -111,6 +114,7 @@ pub const LIGHT: Tokens = Tokens {
     handle_fill: Color32::from_rgb(0xff, 0xff, 0xff),
     handle_glyph: Color32::from_rgb(0x18, 0x18, 0x1b),
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
+    marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
     ..DARK
 };
 

@@ -1,5 +1,6 @@
 use super::*;
 use egui_kittest::Harness;
+use std::collections::BTreeSet;
 
 fn harness() -> Harness<'static, NodeCraftApp> {
     Harness::builder()
@@ -90,7 +91,7 @@ fn zoomed_card_drag_is_one_world_space_undo_step() {
         let moved = node(h.state()).pos;
         assert!((moved.x - pos.x - 60.0 / zoom).abs() < 1.0, "zoom {zoom}: {moved:?}");
         assert!((moved.y - pos.y + 20.0 / zoom).abs() < 1.0);
-        assert_eq!(h.state().selected, Some(node(h.state()).id));
+        assert!(h.state().selection.contains(node(h.state()).id));
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
         h.run();
         assert_eq!(h.state().session.document(), &before);
@@ -714,4 +715,375 @@ fn title_at_four_times_zoom_remains_when_body_is_below_viewport() {
     h.run();
     assert!(screen(h.state()).min.y > h.state().viewport.max.y);
     assert!(h.query_by_role_and_label(Role::Button, "Rename A QUIET FOREST AT DAWN, SOFT LIGHT THROUGH THE TREES.").is_some());
+}
+
+/// Text A → relay B → relay C, and a lone Text D, at 30% zoom so cards have no body controls.
+fn chain_harness() -> Harness<'static, NodeCraftApp> {
+    let text = PortType { modality: nodecraft_types::Modality::Text, many: false };
+    let port = |name: &str| nodecraft_graph::Port { name: name.into(), port_type: text };
+    let relay = NodeDescriptor {
+        id: "test.relay".into(),
+        label: "Relay".into(),
+        category: Category::Action,
+        inputs: vec![port("in")],
+        outputs: vec![port("out")],
+        params: ParamSchema { params: vec![] },
+        quick_add: None,
+    };
+    let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    kinds.register(Box::new(TestKind(relay))).unwrap();
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Chain").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    for (n, kind, x, y) in [(1, "source.text", 0.0, 0.0), (2, "test.relay", 400.0, 0.0), (3, "test.relay", 800.0, 0.0), (4, "source.text", 0.0, 400.0)] {
+        let mut node = kinds.get(kind).unwrap().descriptor().instantiate(NodeId::from_bytes([n; 16]), &BTreeMap::new()).unwrap();
+        node.pos = nodecraft_graph::Position { x, y };
+        Change::AddNode { canvas, node }.apply(&mut document).unwrap();
+    }
+    for (e, from) in [(10u8, 1u8), (11, 2)] {
+        let edge = nodecraft_graph::Edge {
+            id: nodecraft_types::EdgeId::from_bytes([e; 16]),
+            from: nodecraft_graph::Endpoint { node: NodeId::from_bytes([from; 16]), port: "out".into() },
+            to: nodecraft_graph::Endpoint { node: NodeId::from_bytes([from + 1; 16]), port: "in".into() },
+            order: 0,
+        };
+        Change::Connect { canvas, edge }.apply(&mut document).unwrap();
+    }
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.state_mut().view = CanvasView { pan: Vec2::new(100.0, 100.0), zoom: 0.3 };
+    h.run();
+    h
+}
+fn chain_id(n: u8) -> NodeId {
+    NodeId::from_bytes([n; 16])
+}
+fn ids(ns: &[u8]) -> BTreeSet<NodeId> {
+    ns.iter().map(|n| chain_id(*n)).collect()
+}
+/// Screen point just inside the top-left of card `n`.
+fn card_point(h: &Harness<'static, NodeCraftApp>, n: u8) -> Pos2 {
+    let app = h.state();
+    let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
+    let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
+    app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min + Vec2::splat(6.0)
+}
+fn press(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, button: egui::PointerButton, modifiers: egui::Modifiers) {
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button, pressed, modifiers });
+        h.run();
+    }
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run();
+}
+fn press_card(h: &mut Harness<'static, NodeCraftApp>, n: u8, button: egui::PointerButton, modifiers: egui::Modifiers) {
+    let pos = card_point(h, n);
+    press(h, pos, button, modifiers);
+}
+fn box_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2, modifiers: egui::Modifiers) {
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.run();
+    h.hover_at(from + (to - from) * 0.5);
+    h.run();
+    h.hover_at(to);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers });
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run();
+}
+
+#[test]
+fn click_shift_click_select_all_and_escape() {
+    let mut h = chain_harness();
+    let before = h.state().session.document().clone();
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1]));
+    press_card(&mut h, 2, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2]));
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &ids(&[2]));
+    // Shift-clicking empty canvas keeps the selection; a plain click clears it.
+    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &ids(&[2]));
+    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert!(h.state().selection.is_empty());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 3, 4]));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().selection.is_empty());
+    // Selection is view state: no document change and nothing to undo.
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn shift_drag_box_selects_without_panning_and_plain_drag_still_pans() {
+    let mut h = chain_harness();
+    let pan = h.state().view.pan;
+    let (origin, view) = (h.state().viewport.min, h.state().view);
+    let world = |x: f32, y: f32| view.to_screen(origin, Pos2::new(x, y));
+    let (from, to) = (world(-60.0, -60.0), world(500.0, 50.0));
+    box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2]));
+    assert_eq!(h.state().view.pan, pan);
+    // A second Shift-box adds to the selection.
+    let (from, to) = (world(-60.0, 380.0), world(50.0, 450.0));
+    box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
+    let from = Pos2::new(900.0, 650.0);
+    box_drag(&mut h, from, from + Vec2::new(-40.0, -30.0), egui::Modifiers::NONE);
+    assert!((h.state().view.pan - pan - Vec2::new(-40.0, -30.0)).length() < 1.0);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
+}
+
+#[test]
+fn context_menu_selects_chains_and_kinds() {
+    let mut h = chain_harness();
+    press_card(&mut h, 3, egui::PointerButton::Secondary, egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.nodes(), &ids(&[3]));
+    assert!(h.query_by_label("Select upstream").is_some());
+    // Escape closes the menu but keeps the selection.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_label("Select upstream").is_none());
+    assert_eq!(h.state().selection.nodes(), &ids(&[3]));
+    press_card(&mut h, 3, egui::PointerButton::Secondary, egui::Modifiers::NONE);
+    h.get_by_label("Select upstream").click();
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 3]));
+    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 2, egui::PointerButton::Secondary, egui::Modifiers::NONE);
+    h.get_by_label("Select downstream").click();
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[2, 3]));
+    press_card(&mut h, 4, egui::PointerButton::Secondary, egui::Modifiers::NONE);
+    h.get_by_label("Select all Text nodes").click();
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 4]));
+}
+
+#[test]
+fn selection_drops_removed_nodes() {
+    let mut h = chain_harness();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    assert_eq!(h.state().selection.len(), 4);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": chain_id(3)})).unwrap();
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
+}
+
+#[test]
+fn grabbing_or_right_clicking_a_selected_card_keeps_the_selection() {
+    let mut h = chain_harness();
+    press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press_card(&mut h, 2, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    press_card(&mut h, 2, egui::PointerButton::Secondary, egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2]));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let before = h.state().session.document().clone();
+    let from = card_point(&h, 1);
+    box_drag(&mut h, from, from + Vec2::new(30.0, 15.0), egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 2]));
+    // The drag moved only the grabbed card, as one undo step.
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    let moved =
+        |n: u8| canvas.nodes().get(&chain_id(n)).unwrap().pos != before.canvases().get(&h.state().canvas).unwrap().nodes().get(&chain_id(n)).unwrap().pos;
+    assert!(moved(1) && !moved(2));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn box_selection_is_live_and_escape_cancels_it() {
+    let mut h = chain_harness();
+    press_card(&mut h, 4, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    let pan = h.state().view.pan;
+    let (origin, view) = (h.state().viewport.min, h.state().view);
+    let (from, to) = (view.to_screen(origin, Pos2::new(-60.0, -60.0)), view.to_screen(origin, Pos2::new(100.0, 50.0)));
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
+    h.run();
+    h.hover_at(to);
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[1, 4]));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[4]));
+    // A cancelled box stays cancelled and does not turn into a pan for the rest of the gesture.
+    h.hover_at(to + Vec2::new(200.0, 0.0));
+    h.run();
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::SHIFT });
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run();
+    assert_eq!(h.state().selection.nodes(), &ids(&[4]));
+    assert_eq!(h.state().view.pan, pan);
+}
+
+#[test]
+fn selection_shortcuts_yield_to_text_fields() {
+    let mut h = harness();
+    let id = node(h.state()).id;
+    let rect = screen(h.state());
+    click(&mut h, rect.min + Vec2::splat(4.0));
+    assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+    // Start empty so a leaked ⌘A would visibly select the node.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().selection.is_empty());
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    assert!(h.state().selection.is_empty());
+    click(&mut h, rect.min + Vec2::splat(4.0));
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    // ⌘A went to the text field, and Escape only left it (egui drops focus before the frame).
+    assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().selection.is_empty());
+}
+
+#[test]
+fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
+    use std::borrow::Cow;
+    // Static palette metadata has one parameter; each instance resolves six, so the painted card
+    // is taller than anything the static descriptor implies.
+    struct Tall(NodeDescriptor, NodeDescriptor);
+    impl NodeKind for Tall {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn instance<'a>(&'a self, _: &nodecraft_graph::Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+            Ok(Cow::Borrowed(&self.1))
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+    }
+    let toggle = |n: u32| spec(&format!("p{n}"), ParamControl::Toggle, Value::Bool(false));
+    let short = NodeDescriptor {
+        id: "test.tall".into(),
+        label: "Tall".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        params: ParamSchema { params: vec![toggle(0)] },
+        quick_add: None,
+    };
+    let tall = NodeDescriptor { params: ParamSchema { params: (0..6).map(toggle).collect() }, ..short.clone() };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Tall").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut card = nodecraft_graph::Node::new(NodeId::from_bytes([3; 16]), "test.tall");
+    card.params.insert("p0".into(), Value::Bool(false));
+    Change::AddNode { canvas, node: card }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Tall(short, tall))).unwrap();
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.run();
+    let id = NodeId::from_bytes([3; 16]);
+    let painted = *h.state().painted.get(&id).unwrap();
+    let static_rect = card::world_rect(node(h.state()), h.state().session.kinds().get("test.tall").ok().map(|k| k.descriptor()), h.state().theme.tokens());
+    assert!(painted.height() > static_rect.height() + 10.0, "{painted:?} vs {static_rect:?}");
+    // Simulate eviction, then box only the part of the card below the static height.
+    h.state_mut().schemas.clear();
+    let (origin, view) = (h.state().viewport.min, h.state().view);
+    let lower = Rect::from_min_max(Pos2::new(painted.min.x - 20.0, static_rect.max.y + 4.0), Pos2::new(painted.max.x + 20.0, painted.max.y - 4.0));
+    let geometry = card_geometry(&h.state().painted, h.state().session.kinds(), node(h.state()), h.state().theme.tokens());
+    assert_eq!(geometry, painted);
+    box_drag(&mut h, view.to_screen(origin, lower.min), view.to_screen(origin, lower.max), egui::Modifiers::SHIFT);
+    assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+}
+
+#[test]
+fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
+    use std::borrow::Cow;
+    // The reverse of the tall case: static metadata is tall (six rows), each instance resolves to
+    // one row. Placed just above the viewport, the real card is culled while the static shape
+    // would reach into view.
+    struct Short(NodeDescriptor, NodeDescriptor);
+    impl NodeKind for Short {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn instance<'a>(&'a self, _: &nodecraft_graph::Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+            Ok(Cow::Borrowed(&self.1))
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+    }
+    let toggle = |n: u32| spec(&format!("p{n}"), ParamControl::Toggle, Value::Bool(false));
+    let tall = NodeDescriptor {
+        id: "test.short".into(),
+        label: "Short".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        params: ParamSchema { params: (0..6).map(toggle).collect() },
+        quick_add: None,
+    };
+    let short = NodeDescriptor { params: ParamSchema { params: vec![toggle(0)] }, ..tall.clone() };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Short").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut card = nodecraft_graph::Node::new(NodeId::from_bytes([3; 16]), "test.short");
+    card.params.insert("p0".into(), Value::Bool(false));
+    Change::AddNode { canvas, node: card }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Short(tall, short))).unwrap();
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.run();
+    let t = *h.state().theme.tokens();
+    let static_rect = card::world_rect(node(h.state()), h.state().session.kinds().get("test.short").ok().map(|k| k.descriptor()), &t);
+    let real = card::world_rect(
+        node(h.state()),
+        h.state().session.kinds().get("test.short").ok().and_then(|k| k.resolve_instance(node(h.state())).ok()).as_deref(),
+        &t,
+    );
+    assert!(static_rect.height() > real.height() + 100.0);
+    // Scroll so the real card (and its label and cull margin) is above the top edge, while the
+    // static shape would still reach well into the viewport.
+    let top = real.max.y + 120.0;
+    h.state_mut().view = CanvasView { pan: Vec2::new(300.0, -top), zoom: 1.0 };
+    h.run();
+    assert!(h.state().painted.is_empty(), "the short card must be culled for this test");
+    let (origin, view) = (h.state().viewport.min, h.state().view);
+    let from = view.to_screen(origin, Pos2::new(static_rect.min.x - 10.0, top + 10.0));
+    let to = view.to_screen(origin, Pos2::new(static_rect.max.x + 10.0, (static_rect.max.y - 10.0).max(top + 40.0)));
+    assert!(static_rect.intersects(Rect::from_two_pos(view.to_world(origin, from), view.to_world(origin, to))));
+    box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
+    assert!(h.state().selection.is_empty());
 }
