@@ -43,6 +43,22 @@ so local checks do not require nextest.
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
 | `cargo xtask version [set X.Y.Z]` | print or set the workspace version (Cargo.toml + Cargo.lock) |
 
+`xtask` resolves the invoking workspace at runtime with Cargo's
+[`locate-project --workspace`](https://doc.rust-lang.org/cargo/commands/cargo-locate-project.html),
+including invocation from nested member directories. It validates workspace metadata with
+`--locked --offline` and requires the `xtask` workspace member at `xtask/Cargo.toml` before
+running a task. This read-only metadata preflight does not create or refresh a lockfile;
+subsequent explicit tasks retain their normal Cargo lockfile behavior. The selected canonical root is printed to stderr as `xtask workspace: …`; `version` stdout remains
+parseable. All child checks and version lockfile updates use that same validated root.
+
+Neither compiled-in nor runtime `CARGO_MANIFEST_DIR` selects a checkout: Cargo documents it as
+[package compilation/execution metadata](https://doc.rust-lang.org/cargo/reference/environment-variables.html),
+which may refer to the binary's original package when a target cache is shared. A built xtask
+can therefore be reused from another compatible workspace without checking or modifying the old
+one. Invoke from inside the intended workspace (`cd` there first); invoking its binary from an
+unrelated/outside directory fails instead of falling back. Selecting a workspace with an outer
+`cargo --manifest-path` while remaining outside it is not an xtask root override.
+
 ## Build provenance
 
 Set `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` at build time to stamp `--version` and the
