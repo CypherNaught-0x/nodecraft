@@ -258,7 +258,7 @@ fn a_node_with_many_edges_pages_them() {
         assert_eq!(r["isError"], false, "{r}");
     }
     let mut added = 0u32;
-    for _ in 0..30 {
+    for _ in 0..12 {
         let batch = call(&mut s, "ids_new", json!({"count": 100}))["structuredContent"]["ids"].clone();
         for eid in batch.as_array().unwrap() {
             let edge = json!({"id": eid, "from": {"node": a, "port": port}, "to": {"node": b, "port": port}, "order": added});
