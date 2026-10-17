@@ -207,3 +207,21 @@ fn results_without_a_recorded_hash_and_nodes_without_results_are_never_stale_the
     assert!(!stale_of(&p).contains(&id(1)));
     assert!(input_hash(p.canvases().get(&C).unwrap(), &kinds(), id(42)).is_err());
 }
+
+#[test]
+fn configuration_counts_and_nodes_their_kind_rejects_are_unknown() {
+    let mut p = project();
+    // A configuration change (what a dynamic kind's schema and work come from) makes it stale.
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    node.config.insert("workflow".into(), Value::Text("v2".into()));
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    assert!(stale_of(&p).contains(&id(2)));
+    // A node its kind rejects (a parameter too long for its control) has no hash: unknown, so
+    // it isn't stale itself, though a stale upstream still marks it.
+    let mut q = project();
+    let mut bad = q.canvases().get(&C).unwrap().nodes().get(&id(3)).unwrap().clone();
+    bad.params.insert("style".into(), Value::Text("x".repeat(2000)));
+    Change::SetNode { canvas: C, node: bad }.apply(&mut q).unwrap();
+    assert!(input_hash(q.canvases().get(&C).unwrap(), &kinds(), id(3)).is_err());
+    assert!(stale_of(&q).is_empty());
+}

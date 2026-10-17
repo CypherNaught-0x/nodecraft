@@ -20,8 +20,11 @@ fn stale(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::None { result: json!({ "nodes": nodes }) })
 }
 
+/// Cheap: the canvas and the registry exist. The stale set itself is only computed on dispatch.
 fn enabled_stale(c: &Context<'_>, value: &Value) -> Result<(), Error> {
-    stale(c, value).map(|_| ())
+    let p: StaleParams = params(value)?;
+    c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    c.resources.require::<nodecraft_nodes::Registry>().map(|_| ())
 }
 
 fn stale_schema() -> Value {

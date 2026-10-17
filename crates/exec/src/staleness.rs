@@ -2,10 +2,10 @@
 //! hash differently is stale. Stale nodes are not re-run (that costs money); they are marked, and
 //! *Run with upstream* / *Run all stale* refresh them on request.
 //!
-//! The input hash covers the node's kind, its visible parameters (hidden ones don't affect the
-//! result), and, per input port in noodle order, what feeds it: an upstream source's content, or
-//! the identity of an upstream node's active result. Positions, titles, tags and other nodes'
-//! unrelated edits don't change it.
+//! The input hash covers the node's kind, its configuration (which shapes dynamic kinds' schema
+//! and work), its visible parameters (hidden ones don't affect the result), and, per input port in
+//! noodle order, what feeds it: an upstream source's content, or the identity of an upstream
+//! node's active result. Positions, titles, tags and other nodes' unrelated edits don't change it.
 
 use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::{Category, Registry};
@@ -44,13 +44,30 @@ impl Writer {
 }
 
 /// The parameters that shape a node's result: its visible resolved values when its kind is
-/// installed (hidden ones and defaults as the kind applies them), else what is stored.
-fn shaping_params(kinds: &Registry, node: &Node) -> ParamValues {
-    let Ok(kind) = kinds.get(&node.kind) else { return node.params.clone() };
-    match kind.validate_instance(node, false) {
-        Ok(resolved) => resolved.visible_values().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        Err(_) => node.params.clone(),
+/// installed (hidden ones and defaults as the kind applies them), else what is stored. A node its
+/// kind rejects has no meaningful hash (`Err`), so it is "unknown", never stale.
+fn shaping_params(kinds: &Registry, node: &Node) -> Result<ParamValues, Error> {
+    let Ok(kind) = kinds.get(&node.kind) else { return Ok(node.params.clone()) };
+    let resolved = kind.validate_instance(node, false)?;
+    Ok(resolved.visible_values().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// A node's own recipe: kind, configuration and shaping parameters.
+fn write_node(w: &mut Writer, kinds: &Registry, node: &Node) -> Result<(), Error> {
+    w.text(&node.kind);
+    w.params(&node.config)?;
+    w.params(&shaping_params(kinds, node)?)
+}
+
+/// Incoming edges of every node, built once: target → (port, order, upstream, upstream port).
+type Incoming<'a> = BTreeMap<NodeId, Vec<(&'a str, u32, NodeId, &'a str)>>;
+
+fn incoming(canvas: &Canvas) -> Incoming<'_> {
+    let mut map: Incoming<'_> = BTreeMap::new();
+    for edge in canvas.edges().values() {
+        map.entry(edge.to.node).or_default().push((edge.to.port.as_str(), edge.order, edge.from.node, edge.from.port.as_str()));
     }
+    map
 }
 
 fn is_source(kinds: &Registry, node: &Node) -> bool {
@@ -59,14 +76,17 @@ fn is_source(kinds: &Registry, node: &Node) -> bool {
 
 /// The hash a result of `id` would record if it ran now.
 pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake3, Error> {
+    hash_with(canvas, kinds, &incoming(canvas), id)
+}
+
+fn hash_with(canvas: &Canvas, kinds: &Registry, incoming: &Incoming<'_>, id: NodeId) -> Result<Blake3, Error> {
     let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "node is not on this canvas"))?;
     let mut w = Writer(blake3::Hasher::new());
     w.bytes(DOMAIN);
-    w.text(&node.kind);
-    w.params(&shaping_params(kinds, node))?;
+    write_node(&mut w, kinds, node)?;
     let mut feeds: BTreeMap<&str, Vec<(u32, NodeId, &str)>> = BTreeMap::new();
-    for edge in canvas.edges().values().filter(|e| e.to.node == id) {
-        feeds.entry(edge.to.port.as_str()).or_default().push((edge.order, edge.from.node, edge.from.port.as_str()));
+    for (port, order, from, from_port) in incoming.get(&id).into_iter().flatten() {
+        feeds.entry(port).or_default().push((*order, *from, from_port));
     }
     for port in &node.inputs {
         w.text(&port.name);
@@ -76,11 +96,10 @@ pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake
         for (_, from, from_port) in list {
             w.text(from_port);
             match canvas.nodes().get(&from) {
-                // A source contributes its content: the parameters it emits.
+                // A source contributes its content: its recipe (what it emits).
                 Some(upstream) if is_source(kinds, upstream) => {
                     w.text("source");
-                    w.text(&upstream.kind);
-                    w.params(&shaping_params(kinds, upstream))?;
+                    write_node(&mut w, kinds, upstream)?;
                 }
                 // Anything else contributes the identity of the result it currently lends.
                 Some(upstream) => match upstream.active {
@@ -103,12 +122,13 @@ pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake
 /// transitive, as `planner::plan` expects.
 pub fn stale(canvas: &Canvas, kinds: &Registry) -> BTreeSet<NodeId> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
+    let incoming = incoming(canvas);
     let mut stale: BTreeSet<NodeId> = canvas
         .nodes()
         .values()
         .filter(|node| {
             let recorded = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).and_then(|g| g.input_hash);
-            recorded.is_some_and(|hash| input_hash(canvas, kinds, node.id).is_ok_and(|now| now != hash))
+            recorded.is_some_and(|hash| hash_with(canvas, kinds, &incoming, node.id).is_ok_and(|now| now != hash))
         })
         .map(|node| node.id)
         .collect();

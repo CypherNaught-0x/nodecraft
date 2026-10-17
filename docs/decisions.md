@@ -489,7 +489,8 @@ a choice a later contributor might otherwise undo.
   existing results load; they are never reported stale). The driver stamps it with
   `exec::staleness::input_hash` when it adds a generation; `.ncraft` archives must carry the
   field (#134).
-- **What is hashed:** the node's kind, its *visible* resolved parameters, and per input port in
+- **What is hashed:** the node's kind, its configuration, its *visible* resolved parameters (a node
+  its kind rejects has no hash and counts as unknown), and per input port in
   noodle order an upstream source's content or the id of an upstream node's active result.
   Positions, titles, tags and unrelated nodes don't count. A domain/version tag is mixed in, so a
   change to the recipe makes old hashes unknown rather than wrongly fresh.
