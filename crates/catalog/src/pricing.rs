@@ -125,9 +125,27 @@ impl Pricing {
     }
 }
 
-/// `⌈x × 10⁶⌉` computed exactly from the float's binary value, so no rounding can make a count
-/// cheaper than it is. `None` for negative, non-finite or too-large values.
+/// `⌈x × 10⁶⌉`, never below either reading of the count: the float's exact binary value, or the
+/// shortest decimal that is written into the provider request (which can be slightly larger).
+/// `None` for negative, non-finite or too-large values.
 fn ceil_micros(x: f64) -> Option<u64> {
+    Some(binary_ceil_micros(x)?.max(decimal_ceil_micros(x)?))
+}
+
+/// `⌈d × 10⁶⌉` for `d`, the shortest decimal that reads back as `x` (Rust's `Display`, which never
+/// uses an exponent, the same digits serde writes).
+fn decimal_ceil_micros(x: f64) -> Option<u64> {
+    let text = format!("{x}");
+    let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
+    let whole: u64 = whole.parse().ok()?;
+    let (kept, rest) = fraction.split_at(fraction.len().min(6));
+    let kept: u64 = format!("{kept:0<6}").parse().ok()?;
+    let round_up = u64::from(rest.bytes().any(|b| b != b'0'));
+    whole.checked_mul(1_000_000)?.checked_add(kept)?.checked_add(round_up)
+}
+
+/// `⌈x × 10⁶⌉` computed exactly from the float's binary value.
+fn binary_ceil_micros(x: f64) -> Option<u64> {
     if !x.is_finite() || x < 0.0 {
         return None;
     }
@@ -205,6 +223,10 @@ mod tests {
         assert_eq!(ceil_micros(0.1), Some(100_001));
         // The review's case: plain f64 multiplication would round this down to …020.
         assert_eq!(ceil_micros(10000000000.000021), Some(10_000_000_000_000_021));
+        // The binary value of this count is …0.001953125, but the request says …0.002: quote that.
+        assert_eq!(ceil_micros(10000000000000.002), Some(10_000_000_000_000_002_000));
+        assert_eq!(decimal_ceil_micros(1.0000004), Some(1_000_001));
+        assert_eq!(decimal_ceil_micros(3.0), Some(3_000_000));
         for bad in [-1.0, f64::NAN, f64::INFINITY, 1e300, 1.9e13] {
             assert_eq!(ceil_micros(bad), None, "{bad}");
         }

@@ -301,6 +301,7 @@ fn text_bytes(value: &nodecraft_types::Value) -> usize {
     while let Some(value) = stack.pop() {
         match value {
             nodecraft_types::Value::Text(text) => total = total.saturating_add(text.len()),
+            nodecraft_types::Value::Media(asset) => total = total.saturating_add(asset.mime.as_str().len()),
             nodecraft_types::Value::List(items) => stack.extend(items.iter()),
             _ => {}
         }
@@ -317,6 +318,7 @@ fn short(name: &str) -> String {
 /// Carry parameters over to `to` by name: values the new schema accepts are kept, the rest are
 /// removed or reset and listed, and the new model's defaults fill the gaps.
 pub fn migrate(params: &ParamValues, to: &ModelDescriptor) -> Result<Migration, Error> {
+    to.params.validate()?;
     if params.len() > MAX_MIGRATED_PARAMS {
         return Err(Error::new(ErrorKind::InvalidInput, "too many parameters to carry over"));
     }
