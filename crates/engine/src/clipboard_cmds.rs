@@ -153,7 +153,7 @@ mod tests {
         let before = s.document().clone();
         let mut with_history = node(3);
         let generation = GenerationId::from_bytes([3; 16]);
-        with_history.history.push(Generation { id: generation, outputs: vec![] });
+        with_history.history.push(Generation::new(generation, vec![]));
         with_history.active = Some(generation);
         for params in [
             json!({"canvas": C, "nodes": []}),
