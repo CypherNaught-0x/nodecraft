@@ -460,11 +460,7 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
             }
             Step::Ask(id, request) => {
                 let (reply, answer) = sync_channel(1);
-                match to_ui.try_send(Call {
-                    request,
-                    reply,
-                    deadline: Instant::now().checked_add(timeouts.answer).unwrap_or_else(Instant::now),
-                }) {
+                match to_ui.try_send(Call { request, reply, deadline: Instant::now().checked_add(timeouts.answer).unwrap_or_else(Instant::now) }) {
                     Ok(()) => {
                         wake();
                         match answer.recv_timeout(timeouts.answer) {
