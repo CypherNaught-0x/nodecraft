@@ -3,7 +3,7 @@ use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use nodecraft_engine::commands::Services;
-use nodecraft_engine::secrets::{KeyResults, KeyWorker, MemoryStore, SecretStore, register_key_service, register_key_worker};
+use nodecraft_engine::secrets::{KeyOutcome, KeyResults, KeyWorker, MemoryStore, SecretStore, register_key_service, register_key_worker};
 use nodecraft_graph::Project;
 use nodecraft_types::ProjectId;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ struct State {
     settings: KeySettings,
     changes: Vec<AccountChange>,
     results: Option<KeyResults>,
+    completed: Vec<KeyOutcome>,
 }
 
 const KEY: &str = "sk-proj-abcdefghij1234";
@@ -23,10 +24,19 @@ fn session(services: Services) -> Session {
 }
 
 fn harness(state: State) -> Harness<'static, State> {
-    Harness::builder().with_size(egui::Vec2::new(900.0, 600.0)).build_ui_state(
+    harness_at_dt(state, None)
+}
+fn harness_at_dt(state: State, step_dt: Option<f32>) -> Harness<'static, State> {
+    let mut builder = Harness::builder().with_size(egui::Vec2::new(900.0, 600.0));
+    if let Some(step_dt) = step_dt {
+        builder = builder.with_step_dt(step_dt);
+    }
+    builder.build_ui_state(
         |ui, s: &mut State| {
             if let Some(results) = &s.results {
-                let (changes, _) = s.panel.receive(results.drain());
+                let mut outcomes = std::mem::take(&mut s.completed);
+                outcomes.extend(results.drain());
+                let (changes, _) = s.panel.receive(outcomes);
                 s.changes.extend(changes);
             }
             let changes = s.panel.show(ui.ctx(), &mut s.session, &s.settings, crate::theme::ThemeKind::Dark.tokens());
@@ -45,6 +55,7 @@ fn sync_state(store: Arc<MemoryStore>, accounts: &[&str]) -> State {
         settings: KeySettings { accounts: accounts.iter().map(|a| (*a).to_owned()).collect() },
         changes: vec![],
         results: None,
+        completed: vec![],
     }
 }
 
@@ -129,32 +140,68 @@ fn bad_input_is_reported_without_echoing_the_key() {
     assert!(!notice.is_empty() && !notice.contains("sk-secret"), "{notice}");
 }
 
+/// Hold the actual worker's Save until the test has observed the pending UI state.
+struct ControlledSaveStore {
+    memory: Arc<MemoryStore>,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    exited: std::sync::mpsc::Sender<()>,
+}
+impl SecretStore for ControlledSaveStore {
+    fn get(&self, account: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
+        self.memory.get(account)
+    }
+    fn set(&self, account: &Account, secret: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
+        self.entered.send(()).map_err(|_| nodecraft_engine::secrets::SecretError::Failed("fixture closed".into()))?;
+        self.release.lock().unwrap().recv().map_err(|_| nodecraft_engine::secrets::SecretError::Failed("fixture closed".into()))?;
+        self.memory.set(account, secret)
+    }
+    fn delete(&self, account: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
+        self.memory.delete(account)
+    }
+}
+impl Drop for ControlledSaveStore {
+    fn drop(&mut self) {
+        let _ = self.exited.send(());
+    }
+}
+
 #[test]
 fn keychain_answers_arrive_later_from_the_worker() {
-    let (worker, results) = KeyWorker::spawn(Arc::new(MemoryStore::default())).unwrap();
-    let mut services = Services::default();
-    register_key_worker(&mut services, worker).unwrap();
-    let mut h = harness(State {
-        panel: KeysPanel { open: true, ..KeysPanel::default() },
-        session: session(services),
-        settings: KeySettings::default(),
-        changes: vec![],
-        results: Some(results),
-    });
-    h.run();
+    let memory = Arc::new(MemoryStore::default());
+    let account = Account::new("openai").unwrap();
+    let (entered, entering) = std::sync::mpsc::channel();
+    let (release, releasing) = std::sync::mpsc::channel();
+    let (exited, exiting) = std::sync::mpsc::channel();
+    let store = Arc::new(ControlledSaveStore { memory: Arc::clone(&memory), entered, release: std::sync::Mutex::new(releasing), exited });
+    let mut h = harness_at_dt(worker_state(store, &[]), Some(1.0 / 60.0));
+    h.run_steps(2);
     h.get_by_label("openai").click();
-    h.run();
-    type_into(&mut h, "Key", KEY);
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::PasswordInput, "Key").click();
+    h.run_steps(2);
+    h.event(egui::Event::Text(KEY.into()));
+    h.run_steps(2);
     h.get_by_label("Save").click();
-    h.run();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while h.state().panel.is_waiting() {
-        assert!(std::time::Instant::now() < deadline, "no answer from the keychain thread");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        h.run();
-    }
-    assert_eq!(h.state().panel.rows()[0].1, KeyStatus::Stored("…1234".into()));
-    assert_eq!(h.state().changes, [AccountChange::Remember(Account::new("openai").unwrap())]);
+    h.run_steps(2); // No quiescence requirement while the worker is deliberately blocked.
+    entering.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(h.state().panel.is_waiting());
+    assert!(h.state().panel.key.is_empty(), "Save clears the password before completion");
+    assert!(h.state().changes.is_empty(), "an unfinished write must not remember the account");
+    assert!(memory.get(&account).unwrap().is_none());
+    // More Grid frames cannot manufacture an answer while the backend is held.
+    h.run_steps(2);
+    assert!(h.state().panel.is_waiting());
+    release.send(()).unwrap();
+    wait_for_answer(&mut h);
+    assert_eq!(h.state().panel.rows(), &[(account.clone(), KeyStatus::Stored("…1234".into()))]);
+    assert_eq!(h.state().changes, [AccountChange::Remember(account.clone())]);
+    assert!(h.state().panel.key.is_empty());
+    assert_eq!(memory.get(&account).unwrap().map(|key| key.expose().to_owned()).as_deref(), Some(KEY));
+    assert!(h.query_by_label_contains("abcdefghij").is_none());
+    assert!(h.query_by_label("Stored …1234").is_some());
+    drop(h);
+    exiting.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
 }
 
 #[test]
@@ -191,33 +238,58 @@ fn undo_after_save_and_closing_the_window_never_bring_the_key_back() {
     assert!(h.state().panel.key.is_empty());
 }
 
-/// A keychain that refuses everything (locked, access denied).
-struct Denied;
-impl SecretStore for Denied {
+/// Keep worker completion separate from Grid layout frames. Neither a quick denial nor an
+/// unanswered prompt requires Harness::run to become quiescent within its default four frames.
+struct ControlledStore {
+    entered: std::sync::mpsc::Sender<()>,
+    replies: std::sync::Mutex<std::sync::mpsc::Receiver<Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError>>>,
+    exited: std::sync::mpsc::Sender<()>,
+}
+impl SecretStore for ControlledStore {
     fn get(&self, _: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
-        Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))
+        self.entered.send(()).map_err(|_| nodecraft_engine::secrets::SecretError::Failed("fixture closed".into()))?;
+        self.replies.lock().unwrap().recv().map_err(|_| nodecraft_engine::secrets::SecretError::Failed("fixture closed".into()))?
     }
     fn set(&self, _: &Account, _: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
-        Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))
+        Err(nodecraft_engine::secrets::SecretError::Failed("unexpected fixture write".into()))
     }
     fn delete(&self, _: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
-        Ok(false)
+        Err(nodecraft_engine::secrets::SecretError::Failed("unexpected fixture delete".into()))
     }
 }
-
-/// A keychain that never answers (a prompt nobody clicks).
-struct Hangs;
-impl SecretStore for Hangs {
-    fn get(&self, _: &Account) -> Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError> {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-        Ok(None)
+impl Drop for ControlledStore {
+    fn drop(&mut self) {
+        let _ = self.exited.send(());
     }
-    fn set(&self, _: &Account, _: &nodecraft_engine::secrets::Secret) -> Result<(), nodecraft_engine::secrets::SecretError> {
-        Ok(())
+}
+struct StoreControl {
+    entered: std::sync::mpsc::Receiver<()>,
+    replies: std::sync::mpsc::Sender<Result<Option<nodecraft_engine::secrets::Secret>, nodecraft_engine::secrets::SecretError>>,
+    exited: std::sync::mpsc::Receiver<()>,
+}
+fn controlled_store() -> (Arc<dyn SecretStore>, StoreControl) {
+    let (entered, entering) = std::sync::mpsc::channel();
+    let (replies, replying) = std::sync::mpsc::channel();
+    let (exited, exiting) = std::sync::mpsc::channel();
+    (Arc::new(ControlledStore { entered, replies: std::sync::Mutex::new(replying), exited }), StoreControl { entered: entering, replies, exited: exiting })
+}
+fn wait_for_answer(h: &mut Harness<'static, State>) {
+    assert!(h.state().panel.is_waiting(), "a real request must precede completion");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        // Wait for an actual worker outcome without advancing simulated UI time. A panel
+        // timeout is not evidence that the worker completed and cannot satisfy this wait.
+        let outcomes = h.state().results.as_ref().unwrap().drain();
+        if !outcomes.is_empty() {
+            assert_eq!(outcomes.len(), 1, "exactly the requested operation completed");
+            h.state_mut().completed.extend(outcomes);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "controlled keychain answer never arrived");
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    fn delete(&self, _: &Account) -> Result<bool, nodecraft_engine::secrets::SecretError> {
-        Ok(false)
-    }
+    h.run_steps(2); // Deliver the real outcome through the harness's normal receive callback.
+    assert!(!h.state().panel.is_waiting(), "the worker outcome must match the pending request");
 }
 
 fn worker_state(store: Arc<dyn SecretStore>, accounts: &[&str]) -> State {
@@ -230,39 +302,55 @@ fn worker_state(store: Arc<dyn SecretStore>, accounts: &[&str]) -> State {
         settings: KeySettings { accounts: accounts.iter().map(|a| (*a).to_owned()).collect() },
         changes: vec![],
         results: Some(results),
+        completed: vec![],
     }
 }
 
 #[test]
 fn keychain_errors_and_silence_become_retryable_failures() {
-    let mut h = harness(worker_state(Arc::new(Denied), &["openai"]));
-    h.run();
-    h.get_by_label("Check").click();
-    h.run();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while h.state().panel.is_waiting() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        h.run();
+    let (store, control) = controlled_store();
+    let mut h = harness_at_dt(worker_state(store, &["openai"]), Some(1.0 / 60.0));
+    h.run_steps(2);
+    for _ in 0..2 {
+        h.get_by_label("Check").click();
+        h.run_steps(2);
+        control.entered.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(h.state().panel.is_waiting(), "the controlled call is still awaiting its reply");
+        control.replies.send(Err(nodecraft_engine::secrets::SecretError::Denied("locked".into()))).unwrap();
+        wait_for_answer(&mut h);
+        assert!(
+            matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("unlock the keychain") || why.contains("denied")),
+            "{:?}",
+            h.state().panel.rows()
+        );
+        assert!(h.query_by_label("Check").is_some(), "a denied read can be retried");
+        assert!(h.state().changes.is_empty());
     }
-    assert!(
-        matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("unlock the keychain") || why.contains("denied")),
-        "{:?}",
-        h.state().panel.rows()
-    );
+    drop(h);
+    control.exited.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
 
-    let mut state = worker_state(Arc::new(Hangs), &["openai"]);
+    let (store, control) = controlled_store();
+    let mut state = worker_state(store, &["openai"]);
     state.panel.timeout_s = 0.2;
-    let mut h = harness(state);
-    h.run();
+    // The default 250ms test frame exceeds this fixture's 200ms timeout. Advance
+    // an explicit 60Hz clock so pending and timed-out states are tested separately.
+    let mut h = harness_at_dt(state, Some(1.0 / 60.0));
+    h.run_steps(2);
     h.get_by_label("Check").click();
-    h.run();
+    h.run_steps(2);
+    control.entered.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(h.state().panel.is_waiting());
     for _ in 0..30 {
         h.step();
     }
     assert!(!h.state().panel.is_waiting());
     assert!(matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("No answer")));
     assert!(h.query_by_label("Check").is_some(), "the row can be tried again");
+    assert!(h.state().changes.is_empty());
+    // Release the silent fake and close the worker instead of leaving a sleeping thread.
+    control.replies.send(Ok(None)).unwrap();
+    drop(h);
+    control.exited.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     // A request made and then left with the panel closed still times out.
     let mut panel = KeysPanel { timeout_s: 1.0, ..KeysPanel::default() };
     panel.pending.insert(9, (Account::new("fal").unwrap(), Op::Status, 0.0));
