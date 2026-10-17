@@ -5,6 +5,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 mod changes;
+pub mod layout;
 mod model;
 mod validate;
 

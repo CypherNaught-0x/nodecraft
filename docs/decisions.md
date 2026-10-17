@@ -242,3 +242,30 @@ a choice a later contributor might otherwise undo.
 - Search commands use a scoped live host capability, retaining document/history/event identity.
   Only the exact search editor's current/prior focus permits framing; unrelated editors, menus and
   gestures retain ownership. Opening search never steals an unrelated dirty editor's focus.
+
+## Selected-node auto-format geometry and ordering (#70)
+
+`canvas.auto_format` is an atomic edit, not a host service mutation: one invertible MoveNode
+changeset, no gesture coalescing, and no history/event entry for an unchanged result. A scoped
+`LayoutContext` supplies selection and current logical geometry. Engine Context now exposes the
+Session revision; project/canvas/revision and exact selection membership are checked before
+layout. Custom hosts are trusted to compute view metrics at their zoom and must refresh the
+capability after every document revision. Live `dispatch_layout`/`layout_enabled` build it afresh
+and restore any prior capability on success or error. Raw headless sessions without this explicit
+capability return Unsupported. No dialogs are opened by command dispatch.
+
+Keep two logical size scalars per actual resolved node alongside the existing checked geometry
+cache (at most 10,000 nodes, 80,000 bytes of scalar payload, plus bounded map overhead). Compute
+size while borrowing the validated instance descriptor, never from large f32 Rect differences.
+No new descriptor bodies or instance hooks are retained/performed for formatting. Shared card
+metrics include the clipped title/UNSAVED notice, minimum screen-sized handles and half-stroke.
+
+Use nearest-8 outer y/x keys (ties away from zero), then NodeId; align anchor and cell spans to
+8 world points. Positive left/top decoration insets are added to cell origins. This makes reading
+order stable under mixed insets and f32 conversion across the legal coordinate domain. Reject
+host metrics with an outer span above 1,000,000 points and reject all output when any body
+position exceeds ±10,000,000; never clamp individual results. Reapplication assumes unchanged
+logical geometry/topology/zoom, rather than pretending a position-dependent custom kind cannot
+change its own size. Whole-DAG longest-path ranking uses a stable ordered ready set in
+O((V+E) log V), avoiding repeated transitive searches. Only selected ranks are placed; obstacles
+and edge-crossing optimization are outside this contract.

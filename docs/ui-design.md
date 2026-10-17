@@ -185,3 +185,21 @@ scans progress on rendered frames, and queued framing waits for completion and i
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
 events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+
+### Format selection
+
+The selection toolbar and selected-card context menu offer **Grid** and **Dependency order**.
+Both dispatch `canvas.auto_format` and move selected nodes in one undo step; unselected nodes
+and edges stay fixed. Fit selected remains a separate view command. No layout shortcut is
+reserved. Finish an editor or gesture before opening Format; dirty hidden drafts remain drafts.
+
+Actual resolved instance sizes include the clipped title/UNSAVED line and zoom-aware output
+handle stroke. Auto-format uses `layout_gap` (64 world points) and `layout_button_width` (150
+screen points). Outer cell origins and spans deliberately align to an **8-world-point lattice**;
+this is the layout policy for stable repeated formatting, not coordinate clamping. Positive
+left/top insets are added to each cell origin to position the body. Body positions outside the
+canvas coordinate domain reject the entire action. Grid defaults to ceil(sqrt(selection count));
+programmatic callers can supply columns. Dependency order ranks the whole DAG, including paths
+through unselected nodes, then places selected ranks in left-to-right columns. It does not move
+unselected obstacles or promise optimal edge crossings. Reapplication with unchanged selection,
+zoom, logical extents and topology is a no-op, including at large legal coordinates.

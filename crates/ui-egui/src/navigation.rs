@@ -18,6 +18,8 @@ use std::{
 pub struct Geometry {
     key: Option<(ProjectId, CanvasId, u64, ThemeKind, usize)>,
     pub rects: BTreeMap<NodeId, Rect>,
+    /// Logical size per actual node (two scalars), independent of f32 position cancellation.
+    pub sizes: BTreeMap<NodeId, Vec2>,
     /// Checked instance labels: at most256bytes per actual node; no descriptor bodies retained.
     pub labels: BTreeMap<NodeId, String>,
     pub error: bool,
@@ -29,6 +31,7 @@ impl Geometry {
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
+            self.sizes.clear();
             self.labels.clear();
             self.key = None;
             self.error = true;
@@ -42,12 +45,14 @@ impl Geometry {
         }
         self.key = Some(key);
         self.rects.clear();
+        self.sizes.clear();
         self.labels.clear();
         self.error = false;
         let mut validated = ValidatedDescriptors::default();
         for node in scene.nodes().values() {
             match instance_info(session, node, theme.tokens(), &mut validated) {
-                Ok((rect, label)) => {
+                Ok((rect, size, label)) => {
+                    self.sizes.insert(node.id, size);
                     self.rects.insert(node.id, rect);
                     self.labels.insert(node.id, label);
                 }
@@ -82,7 +87,7 @@ struct ValidatedDescriptors {
     #[cfg(test)]
     validations: usize,
 }
-fn instance_info(session: &Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors) -> Result<(Rect, String), Error> {
+fn instance_info(session: &Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors) -> Result<(Rect, Vec2, String), Error> {
     node.validate_payload()?;
     let kind = session.kinds().get(&node.kind)?;
     let descriptor = kind.instance(node)?;
@@ -107,7 +112,7 @@ fn instance_info(session: &Session, node: &nodecraft_graph::Node, t: &Tokens, va
     if !valid_rect(rect) {
         return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
     }
-    Ok((rect, if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
+    Ok((rect, card::world_size(Some(&descriptor), t), if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
 }
 /// Includes the painted title/unsaved label, body and handles at ordinary zoom. Additional
 /// screen padding in fit accounts for minimum screen-sized text/handles at low zoom.

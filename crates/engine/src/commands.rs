@@ -71,6 +71,8 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
+    /// Revision of this exact document, shared by preview and dispatch.
+    pub revision: u64,
     pub document: &'a Project,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
@@ -117,8 +119,12 @@ pub struct Registry {
 impl Registry {
     pub fn builtins() -> Result<Self, Error> {
         let mut registry = Self::default();
-        for spec in
-            crate::graph_cmds::specs().into_iter().chain(crate::node_cmds::specs()).chain(crate::navigation_cmds::specs()).chain(crate::search_cmds::specs())
+        for spec in crate::graph_cmds::specs()
+            .into_iter()
+            .chain(crate::node_cmds::specs())
+            .chain(crate::navigation_cmds::specs())
+            .chain(crate::search_cmds::specs())
+            .chain(crate::layout_cmds::specs())
         {
             registry.register(spec)?;
         }

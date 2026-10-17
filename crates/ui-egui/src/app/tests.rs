@@ -116,7 +116,9 @@ fn text_edit_commits_without_moving_card_and_can_be_undone() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
     h.run();
     assert_eq!(h.state().view.pan, pan);
-    click(&mut h, Pos2::new(50.0, 50.0));
+    let blank = Pos2::new(50.0, 120.0);
+    assert!(!h.get_by_role_and_label(Role::Button, "Format selection").rect().contains(blank));
+    click(&mut h, blank);
     assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text("Moonlit mountains".into())));
     assert_eq!(node(h.state()).pos, before.pos);
     assert_eq!(card::title(node(h.state()), None), "Moonlit mountains");
@@ -254,9 +256,13 @@ fn conditional_controls_and_choice_labels_follow_schema() {
     assert!(h.query_by_role_and_label(Role::TextInput, "detail").is_some());
     h.get_by_role_and_label(Role::ComboBox, "quality").click();
     h.run();
+    let view = h.state().view;
+    let selection = h.state().selection.clone();
     h.get_by_label("High").click();
     h.run();
     assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().view, view);
+    assert_eq!(h.state().selection, selection);
 }
 #[test]
 fn slider_previews_then_commits_one_undo_step() {
@@ -523,7 +529,9 @@ fn nondefault_canvas_settings_apply_to_graph_backed_shell() {
     h.state_mut().theme = ThemeKind::Light;
     h.state_mut().canvas_prefs = settings.canvas.clone();
     assert_eq!(h.state().theme, ThemeKind::Light);
-    h.hover_at(Pos2::new(50.0, 50.0));
+    let blank = Pos2::new(50.0, 120.0);
+    assert!(!h.get_by_role_and_label(Role::Button, "Format selection").rect().contains(blank));
+    h.hover_at(blank);
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: Vec2::new(0.0, 60.0),
