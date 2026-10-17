@@ -501,7 +501,8 @@ a choice a later contributor might otherwise undo.
   times the jobs the step plans. A paid step whose jobs are planned later is quoted as one job and
   flagged as an estimate (`Quote::estimated`, so the total is not "complete"); the driver checks
   budgets again before each job (#207). Kinds without a model parameter
-  (sources, local actions) are free. Totals are kept per currency and never converted.
+  (sources, local actions) are free, except generation kinds: one with no model to price is
+  unpriced, never free (#219). Totals are kept per currency and never converted.
 - **Caps are conservative.** A capped run is blocked when any step's price is unknown (no model,
   model not in the catalog, usage-based pricing without a count) or is in a different currency
   from the cap; spend in other currencies doesn't count towards a cap. The per-call cap applies
@@ -510,6 +511,14 @@ a choice a later contributor might otherwise undo.
 - **The usage log counts a charge once per provider and idempotency key** (empty keys are refused), keeps the
   newest 100,000 entries while folding evicted spend into running totals so caps never loosen,
   tracks sessions by id, and exports CSV that spreadsheets can't read as formulas.
+- **Totals are kept as charges arrive and saved with the log** (#219). `spent()` can't fail, a
+  charge over a million units is refused, and nothing changes on an error. A saved log keeps its
+  totals (`UsageLogFile`), so reopening a project never forgets evicted spend. Loading checks
+  that the totals cover every listed charge.
+- **Charges have a status** (`Charge`: actual, estimate, unresolved). `settle` moves an estimate
+  to the actual cost, or keeps it as unresolved when a job may have been billed. Totals move by
+  the difference; an actual charge is final. Recording the same key again never replaces a
+  charge, so a retry can't change what was billed.
 
 ## 2026-10-17 · Staleness (#75)
 

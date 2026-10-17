@@ -246,6 +246,7 @@ fn the_usage_log_counts_each_charge_once_and_exports_safe_csv() {
         model: model.into(),
         cost: usd(micros),
         idempotency_key: key.into(),
+        status: Charge::Actual,
     };
     assert!(log.record(entry("nodecraft:run:1", 40_000, "now", "test.img")).unwrap());
     // A retry under the same key is the same charge.
@@ -253,15 +254,15 @@ fn the_usage_log_counts_each_charge_once_and_exports_safe_csv() {
     assert!(log.record(entry("nodecraft:old:1", 1_500_000, "earlier", "=HYPERLINK(\"evil\")")).unwrap());
     // An empty key can't tell retries from new charges.
     assert!(log.record(entry("", 1, "now", "x")).is_err());
-    let spent = log.spent("now").unwrap();
+    let spent = log.spent("now");
     assert_eq!(spent.session, [(Currency::USD, usd(40_000))].into_iter().collect());
     assert_eq!(spent.project, [(Currency::USD, usd(1_540_000))].into_iter().collect());
     let csv = log.to_csv();
     let lines: Vec<&str> = csv.split("\r\n").collect();
-    assert_eq!(lines.first(), Some(&"time_ms,session,node,provider,model,amount,currency,idempotency_key"));
-    assert!(lines.get(1).unwrap().contains(",test,test.img,0.04,USD,nodecraft:run:1"));
+    assert_eq!(lines.first(), Some(&"time_ms,session,node,provider,model,amount,currency,status,idempotency_key"));
+    assert!(lines.get(1).unwrap().contains(",test,test.img,0.04,USD,actual,nodecraft:run:1"));
     // Formula-looking text is neutralised and quoted.
-    assert!(lines.get(2).unwrap().contains(",\"'=HYPERLINK(\"\"evil\"\")\",1.5,USD,"));
+    assert!(lines.get(2).unwrap().contains(",\"'=HYPERLINK(\"\"evil\"\")\",1.5,USD,actual,"));
     assert_eq!(log.entries().count(), 2);
 }
 
@@ -297,11 +298,12 @@ fn eviction_never_lowers_what_was_spent() {
             model: "m".into(),
             cost: usd(1),
             idempotency_key: format!("k{n}"),
+            status: Charge::Actual,
         })
         .unwrap();
     }
     assert_eq!(log.entries().count(), MAX_USAGE_ENTRIES);
-    let spent = log.spent("earlier").unwrap();
+    let spent = log.spent("earlier");
     assert_eq!(spent.project.get(&Currency::USD), Some(&usd(u64::try_from(MAX_USAGE_ENTRIES + 10).unwrap())));
     assert_eq!(spent.session.get(&Currency::USD), Some(&usd(10)));
 }
@@ -416,9 +418,137 @@ fn the_same_key_from_another_provider_is_another_charge() {
         model: "m".into(),
         cost: usd(10),
         idempotency_key: "nodecraft:run:1".into(),
+        status: Charge::Actual,
     };
     assert!(log.record(entry("fal")).unwrap());
     assert!(log.record(entry("replicate")).unwrap());
     assert!(!log.record(entry("fal")).unwrap());
-    assert_eq!(log.spent("now").unwrap().session.get(&Currency::USD), Some(&usd(20)));
+    assert_eq!(log.spent("now").session.get(&Currency::USD), Some(&usd(20)));
+}
+
+fn charge(key: &str, micros: u64, status: Charge) -> UsageEntry {
+    UsageEntry {
+        at_ms: 1,
+        session: "now".into(),
+        node: id(2),
+        provider: "fal".into(),
+        model: "m".into(),
+        cost: usd(micros),
+        idempotency_key: key.into(),
+        status,
+    }
+}
+
+#[test]
+fn a_generation_kind_without_a_model_is_never_free() {
+    let mut kinds = kinds();
+    kinds
+        .register(Box::new(Gen(NodeDescriptor {
+            id: "test.opaque".into(),
+            label: "Opaque".into(),
+            category: Category::Generation,
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Image, many: false } }],
+            params: ParamSchema { params: vec![] },
+            quick_add: None,
+        })))
+        .unwrap();
+    let node = kinds.get("test.opaque").unwrap().descriptor().instantiate(id(9), &BTreeMap::new()).unwrap();
+    let (_, price) = price_step(&node, &kinds, &catalog());
+    assert!(matches!(price, Err(Unpriced::Invalid(m)) if m.contains("no model")));
+    // Sources (and other non-generation kinds) without a model stay free.
+    let text = kinds.get("source.text").unwrap().descriptor().instantiate(id(8), &BTreeMap::new()).unwrap();
+    assert_eq!(price_step(&text, &kinds, &catalog()).1, Ok(None));
+}
+
+#[test]
+fn estimates_settle_to_the_actual_cost() {
+    let mut log = UsageLog::default();
+    assert!(log.record(charge("k1", 40_000, Charge::Estimate)).unwrap());
+    assert!(log.record(charge("k2", 40_000, Charge::Estimate)).unwrap());
+    assert_eq!(log.spent("now").session.get(&Currency::USD), Some(&usd(80_000)));
+    // The provider reported less for one, and the other's outcome is unknown.
+    log.settle("fal", "k1", usd(25_000), Charge::Actual).unwrap();
+    log.settle("fal", "k2", usd(40_000), Charge::Unresolved).unwrap();
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(65_000)));
+    // Unresolved can still settle; actual is final.
+    log.settle("fal", "k2", usd(0), Charge::Actual).unwrap();
+    assert_eq!(log.spent("now").session.get(&Currency::USD), Some(&usd(25_000)));
+    assert_eq!(log.settle("fal", "k1", usd(1), Charge::Actual).unwrap_err().kind, ErrorKind::Conflict);
+    assert_eq!(log.settle("fal", "nope", usd(1), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(log.settle("replicate", "k1", usd(1), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound, "keys are per provider");
+    // A recorded retry doesn't replace the estimate: settle does.
+    assert!(log.record(charge("k3", 10, Charge::Estimate)).unwrap());
+    assert!(!log.record(charge("k3", 99, Charge::Actual)).unwrap());
+    assert_eq!(log.entries().find(|e| e.idempotency_key == "k3").map(|e| (e.cost, e.status)), Some((usd(10), Charge::Estimate)));
+    assert!(log.to_csv().contains(",USD,estimate,k3"));
+}
+
+#[test]
+fn settling_works_after_older_entries_leave_the_list() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 3 {
+        log.record(charge(&format!("k{n}"), 1, Charge::Estimate)).unwrap();
+    }
+    let last = format!("k{}", MAX_USAGE_ENTRIES + 2);
+    log.settle("fal", &last, usd(5), Charge::Actual).unwrap();
+    assert_eq!(log.entries().last().map(|e| e.cost), Some(usd(5)));
+    assert_eq!(log.settle("fal", "k0", usd(5), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound, "dropped from the list");
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(u64::try_from(MAX_USAGE_ENTRIES + 2).unwrap() + 5)));
+}
+
+#[test]
+fn hostile_costs_are_refused_and_change_nothing() {
+    let mut log = UsageLog::default();
+    log.record(charge("k1", 10, Charge::Actual)).unwrap();
+    let before = log.clone();
+    assert!(log.record(charge("k2", MAX_CHARGE_MICROS + 1, Charge::Actual)).is_err());
+    assert!(log.record(UsageEntry { provider: "p".repeat(10_000), ..charge("k3", 1, Charge::Actual) }).is_err());
+    log.record(charge("k4", 5, Charge::Estimate)).unwrap();
+    assert!(log.settle("fal", "k4", usd(u64::MAX), Charge::Actual).is_err());
+    assert_eq!(log.entries().count(), before.entries().count() + 1);
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(15)), "spent() never fails and holds");
+    // Many maximal charges can't overflow the totals into an error later on.
+    let mut big = UsageLog::default();
+    for n in 0..1000 {
+        big.record(charge(&format!("b{n}"), MAX_CHARGE_MICROS, Charge::Actual)).unwrap();
+    }
+    assert_eq!(big.spent("now").project.get(&Currency::USD).map(|m| m.micros), Some(1000 * MAX_CHARGE_MICROS));
+}
+
+#[test]
+fn saved_logs_keep_their_totals_and_are_checked_on_load() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 5 {
+        log.record(charge(&format!("k{n}"), 2, Charge::Actual)).unwrap();
+    }
+    log.record(UsageEntry { session: "later".into(), ..charge("e", 7, Charge::Estimate) }).unwrap();
+    let json = serde_json::to_string(&log).unwrap();
+    let back: UsageLog = serde_json::from_str(&json).unwrap();
+    assert!(back == log, "round trip keeps entries and totals");
+    assert_eq!(back.spent("now").project, log.spent("now").project, "evicted spend survives a save: caps don't loosen");
+    let mut back = back;
+    back.settle("fal", "e", usd(3), Charge::Actual).unwrap();
+
+    let file = |entries: serde_json::Value, project: serde_json::Value| {
+        serde_json::json!({"entries": entries, "project": project, "sessions": {"now": project}}).to_string()
+    };
+    let entry = serde_json::to_value(charge("x", 50, Charge::Actual)).unwrap();
+    let usd_total = |micros: u64| serde_json::json!({"USD": usd(micros)});
+    // Totals lower than the listed charges are refused, as are duplicate keys and bad costs.
+    assert!(serde_json::from_str::<UsageLog>(&file(serde_json::json!([entry]), usd_total(10))).is_err());
+    assert!(serde_json::from_str::<UsageLog>(&file(serde_json::json!([entry, entry]), usd_total(100))).is_err());
+    let huge = serde_json::to_value(charge("h", MAX_CHARGE_MICROS + 1, Charge::Actual)).unwrap();
+    assert!(serde_json::from_str::<UsageLog>(&file(serde_json::json!([huge]), usd_total(u64::MAX))).is_err());
+    assert!(serde_json::from_str::<UsageLog>(r#"{"entries": [], "project": {}, "extra": 1}"#).is_err());
+    // A session's totals must cover its charges too.
+    let ok = serde_json::json!({"entries": [entry], "project": usd_total(50), "sessions": {"now": usd_total(50)}}).to_string();
+    assert!(serde_json::from_str::<UsageLog>(&ok).is_ok());
+    let low = serde_json::json!({"entries": [entry], "project": usd_total(50), "sessions": {"now": usd_total(1)}}).to_string();
+    assert!(serde_json::from_str::<UsageLog>(&low).is_err());
+    // Old entries without a status are actual charges.
+    let mut legacy = entry.clone();
+    legacy.as_object_mut().unwrap().remove("status");
+    let loaded: UsageLog = serde_json::from_str(&file(serde_json::json!([legacy]), usd_total(50))).unwrap();
+    assert_eq!(loaded.entries().next().map(|e| e.status), Some(Charge::Actual));
 }

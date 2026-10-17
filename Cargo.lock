@@ -2706,6 +2706,7 @@ dependencies = [
  "nodecraft-nodes",
  "nodecraft-types",
  "proptest",
+ "serde",
  "serde_json",
 ]
 
