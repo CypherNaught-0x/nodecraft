@@ -621,3 +621,18 @@ a choice a later contributor might otherwise undo.
   #162. This change doesn't alter the stored field.
 - This supersedes the #75 entry's "identity of an upstream node's active result" and "old hashes
   become unknown".
+
+## 2026-10-17 · Cost admission and usage-log retention (#214)
+
+- **A guess is admitted provisionally.** `cost::check` returns an `Admission`. When a session or
+  project cap is set, paid steps quoted at one job before their job count is known are listed as
+  `provisional`. The run may start, but those jobs must be held to the caps as they start
+  (`budget::Ledger`, #207). A known empty job list quotes zero.
+- **Charge identity outlives the list.** When an entry leaves the list, a 16-byte digest of its
+  provider and key is kept (saved with the log, up to 250,000 of them). A late retry of it is
+  still the same charge. The boundary is explicit: a retry of a charge more than
+  `MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS` charges old counts again.
+- **Retained bytes are bounded.** Listed entries hold at most 32 MiB of text; the oldest leave
+  first, as at the entry limit. At most 1,024 sessions keep their own totals. Older ones fold into
+  an "earlier sessions" total saved under the empty name, which is reserved, so the project total
+  and the current session's stay exact. The CSV export can stream (`write_csv`).

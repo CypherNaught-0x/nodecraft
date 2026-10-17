@@ -145,7 +145,7 @@ fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resu
     if !resumed {
         let step = StepQuote { node: price.node, models: vec![price.model.clone()], per_job: Ok(Some(estimate)), jobs: 1, jobs_known: true };
         let quote = nodecraft_exec::cost::Quote { steps: vec![step], totals: [(estimate.currency, estimate)].into_iter().collect() };
-        let blocks = check(&quote, &budgets, &log.spent(&budget.session)).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))?;
+        let blocks = check(&quote, &budgets, &log.spent(&budget.session)).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))?.blocks;
         if let Some(block) = blocks.first() {
             return Err(format!("{REFUSAL_PREFIX}{}", block.message()));
         }
