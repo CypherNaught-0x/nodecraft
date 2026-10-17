@@ -6,14 +6,16 @@ harnesses use it.
 
 ## Connecting
 
-The app listens on `127.0.0.1` on a random port, and writes `control.json` into its settings
-folder (with owner-only permissions) holding `{"port", "token", "pid"}`. It removes the file when
+The app listens on `127.0.0.1` on a random port, and writes `control/control.json` into its
+settings folder, holding `{"port", "token", "pid"}`. Both the `control` folder and the file are
+owner-only. It removes the file when
 it quits normally. With in-memory settings (`NODECRAFT_CONFIG_DIR=`), the same JSON is printed to
 stdout instead.
 
 A token file can outlive an app that was killed: check that `pid` is still running before
 connecting. If another instance with `--control` replaces the file, each instance removes only its
-own. The token file is refused in a folder other users can write. Printing to stdout (in-memory
+own. The token file is refused in a folder other users can reach. If the channel can't start,
+the app still opens and logs why. Printing to stdout (in-memory
 settings) is for development: release builds on Windows have no console, and on Linux a
 launcher's stdout may be logged.
 
