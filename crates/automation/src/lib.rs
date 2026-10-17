@@ -4,6 +4,7 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+pub mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod control;
 pub mod mcp;

@@ -60,3 +60,13 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 The issue also asks for a stdio transport. The desktop app has no stdin worth reading, and
 headless stdio automation is `nodecraft-cli mcp`. A stdio control mode is a follow-up (see
 `docs/decisions.md`).
+
+### Live canvas commands
+
+`command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
+`canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
+editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
+live availability for parameterless commands. These operations change only the view, without
+document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
+Classification is shared with MCP; the live host does not grant access to human-only or paid
+commands. Screenshot requests retain their separate asynchronous capture path.
