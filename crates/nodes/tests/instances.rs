@@ -53,7 +53,8 @@ fn instances_derive_ports_and_schema_from_bounded_config_and_own_mode() {
     let kind = Dynamic::new();
     let config = BTreeMap::from([("source.text.v1.label".into(), Value::Text("Configured".into())), ("source.text.v1.input".into(), Value::Bool(true))]);
     let node = kind.instantiate_instance(NodeId::from_bytes([1; 16]), config, &ParamValues::new()).unwrap();
-    assert_eq!(node.title, "Configured");
+    assert!(node.title.is_empty());
+    assert_eq!(kind.resolve_instance(&node).unwrap().label, "Configured");
     assert_eq!(node.inputs.len(), 1);
     assert!(kind.descriptor().validate_node(&node, true).is_err());
     kind.plan(&PlanCtx { node: &node, inputs: &[] }).unwrap();

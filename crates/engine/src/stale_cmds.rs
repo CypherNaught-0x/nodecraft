@@ -1,6 +1,6 @@
 //! Staleness queries (#75): which results no longer match their inputs. Read-only: no document
-//! change and no undo step. Needs the node-kind registry as a host resource (to resolve which
-//! parameters shape a result); without it the command is unsupported.
+//! change and no undo step. Uses the session's authoritative node-kind registry, shared with
+//! editing and rendering, to resolve which parameters shape a result.
 use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_types::{CanvasId, Error, ErrorKind};
 use serde::Deserialize;
@@ -15,8 +15,7 @@ struct StaleParams {
 fn stale(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: StaleParams = params(value)?;
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let kinds = c.resources.require::<nodecraft_nodes::Registry>()?;
-    let nodes: Vec<_> = nodecraft_exec::staleness::stale(canvas, kinds)?.into_iter().collect();
+    let nodes: Vec<_> = nodecraft_exec::staleness::stale(canvas, c.kinds)?.into_iter().collect();
     Ok(Effect::None { result: json!({ "nodes": nodes }) })
 }
 
@@ -24,7 +23,7 @@ fn stale(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 fn enabled_stale(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     let p: StaleParams = params(value)?;
     c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    c.resources.require::<nodecraft_nodes::Registry>().map(|_| ())
+    Ok(())
 }
 
 fn stale_schema() -> Value {
@@ -53,20 +52,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn lists_stale_nodes_read_only_and_needs_the_registry() {
+    fn lists_stale_nodes_read_only_with_the_session_registry() {
         let canvas = CanvasId::from_bytes([1; 16]);
         let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Stale").unwrap();
         Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
         let params = json!({"canvas": canvas});
-        let mut bare = Session::new(project.clone()).unwrap();
-        assert_eq!(bare.dispatch("canvas.stale", &params).unwrap_err().kind, ErrorKind::Unsupported);
-        let mut resources = crate::commands::Resources::default();
-        resources.insert(nodecraft_nodes::Registry::builtins().unwrap());
-        let mut session = Session::new(project).unwrap().with_resources(resources);
+        let mut session = Session::new(project).unwrap();
+        assert!(session.enabled("canvas.stale", &params).is_ok());
+        let before = session.document().clone();
         let revision = session.revision();
         assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
         assert_eq!(session.revision(), revision);
+        assert_eq!(session.document(), &before);
         assert!(!session.can_undo());
+        assert!(!session.can_redo());
+        assert_eq!(session.enabled("canvas.stale", &json!({"canvas": CanvasId::from_bytes([9; 16])})).unwrap_err().kind, ErrorKind::NotFound);
         assert_eq!(session.dispatch("canvas.stale", &json!({"canvas": CanvasId::from_bytes([9; 16])})).unwrap_err().kind, ErrorKind::NotFound);
     }
 
@@ -118,9 +118,7 @@ mod tests {
         Changeset::new(changes).apply(&mut project).unwrap();
         let before = project.clone();
         assert!(nodecraft_exec::staleness::stale(project.canvases().get(&canvas).unwrap(), &kinds).is_err());
-        let mut resources = crate::commands::Resources::default();
-        resources.insert(kinds);
-        let mut session = Session::new(project).unwrap().with_resources(resources);
+        let mut session = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();
         let params = json!({"canvas": canvas});
         let revision = session.revision();
         session.enabled("canvas.stale", &params).unwrap();
@@ -132,5 +130,64 @@ mod tests {
         assert!(session.events_since(revision).unwrap().is_empty());
         assert!(!session.can_undo());
         assert!(!session.can_redo());
+    }
+
+    struct Custom(nodecraft_nodes::NodeDescriptor);
+    impl nodecraft_nodes::NodeKind for Custom {
+        fn descriptor(&self) -> &nodecraft_nodes::NodeDescriptor {
+            &self.0
+        }
+        fn mode(&self, _: &[nodecraft_types::PortType]) -> Option<nodecraft_nodes::ModeId> {
+            nodecraft_nodes::ModeId::new("custom").ok()
+        }
+        fn plan(&self, _: &nodecraft_nodes::PlanCtx<'_>) -> Result<Vec<nodecraft_nodes::JobSpec>, nodecraft_types::Error> {
+            Err(nodecraft_types::Error::new(ErrorKind::Unsupported, "test kind does not run"))
+        }
+    }
+
+    #[test]
+    fn custom_kinds_are_shared_by_stale_queries_and_node_edits_without_resources() {
+        use nodecraft_nodes::NodeKind;
+        use nodecraft_types::{GenerationId, NodeId};
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let id = NodeId::from_bytes([2; 16]);
+        let mut descriptor = nodecraft_nodes::text::kind().descriptor().clone();
+        descriptor.id = "test.custom".into();
+        descriptor.quick_add = None;
+        let mut node = descriptor.instantiate(id, &std::collections::BTreeMap::new()).unwrap();
+        node.params.clear(); // The custom registry must supply the text default when hashing.
+        let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        kinds.register(Box::new(Custom(descriptor))).unwrap();
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Custom stale").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+        let graph = project.canvases().get(&canvas).unwrap();
+        let hash = nodecraft_exec::staleness::input_hash(graph, &kinds, id).unwrap();
+        assert_ne!(hash, nodecraft_exec::staleness::input_hash(graph, &nodecraft_nodes::Registry::builtins().unwrap(), id).unwrap());
+        let generation = GenerationId::from_bytes([3; 16]);
+        Change::AddGeneration {
+            canvas,
+            id,
+            index: 0,
+            generation: nodecraft_graph::Generation { id: generation, outputs: vec![nodecraft_types::Value::Text("result".into())], input_hash: Some(hash) },
+        }
+        .apply(&mut project)
+        .unwrap();
+        Change::SetActiveGeneration { canvas, id, generation: Some(generation) }.apply(&mut project).unwrap();
+        let mut session = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();
+        let params = json!({"canvas": canvas});
+        assert!(session.enabled("canvas.stale", &params).is_ok());
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
+        session.dispatch("node.param_set", &json!({"canvas":canvas,"id":id,"name":"text","value":{"type":"text","value":"changed"}})).unwrap();
+        let before = session.document().clone();
+        let revision = session.revision();
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": [id]}));
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+        assert!(session.can_undo());
+        assert!(!session.can_redo());
+        session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
+        assert!(session.can_redo());
     }
 }

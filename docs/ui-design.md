@@ -26,23 +26,32 @@ same structure with the values inverted.
 | `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
-panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9.
+panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9. Cards are 320 points wide, at least 220 high, with 64 points per
+additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.
 
-## Canvas interaction (M0)
+## Canvas interaction
 
 | Input | Effect |
 |---|---|
 | Drag empty canvas (primary) or drag anywhere (middle or right button) | pan |
-| Two-finger scroll / mouse wheel | pan |
+| Two-finger scroll / mouse wheel | pan on the canvas; scroll parameters over an expanded card |
 | Pinch, or ⌘/Ctrl + scroll | zoom about the pointer (10%–400%) |
 | ⌘/Ctrl + `=` / `-` | zoom about the centre by 1.25× |
 | ⌘/Ctrl + `0`, or click the zoom badge | 100%, centred on the cards |
-| Drag a card | move it; click selects it, click on empty canvas clears the selection |
+| Drag a card background | move through `node.move`, one undo step per gesture; click selects it |
+| Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
+| Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
+| ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
 
-egui's own keyboard UI zoom is turned off so these keys zoom the canvas only.
+egui's own keyboard UI zoom is turned off so these keys zoom the canvas only. Canvas keyboard
+shortcuts yield to focused text fields. Invalid parameter drafts stay visible until corrected or
+cancelled; changing another field does not discard them. Slider drags preview locally and commit
+once on release. Titles default to the first nonempty prompt/text line, or the kind label, and are
+clipped to 64 Unicode characters. Unknown node kinds retain their title and show an unavailable
+message. Asset controls display/remove existing references; file import is tracked separately (#63).
 
 ## Level of detail and performance
 
@@ -50,5 +59,38 @@ egui's own keyboard UI zoom is turned off so these keys zoom the canvas only.
   grid skips every other dot (`canvas::grid_step`), so it never turns into a haze; at most 120,000
   dots are drawn per frame, and they are tiny squares (4 vertices) rather than circles.
 - Card text is laid out at whole-point sizes so continuous zooming doesn't rasterise a new glyph
-  size every frame. Below 35% zoom a card shows only its label; text under 5 pt is not drawn.
+  size every frame. Below 55% zoom a card shows only its label. Labels stay at least 9 screen points even at 15%; body controls appear only at readable scale.
 - Cards outside the viewport are not painted.
+
+## Review corrections for graph cards
+
+Unfocused text fields show a preview of at most 256 characters. The complete graph Value is
+retained, and the full editor/draft is created only when the user focuses a field. Cancelled or
+pristine blurred editors return to previews. Validated instance descriptors and visibility are
+cached lazily for visible nodes per session revision; idle frames borrow supplied/default values.
+Static descriptors share one Arc, and dynamic descriptors plus visibility entries share a 16 MiB
+aggregate view-cache budget with least-recently-used eviction. Culled nodes allocate no schema cache. Four near-1MiB prompts
+have a warm-idle regression and manual release benchmark. A separate exact-1MiB case proves that
+focus/cancel never truncates the unseen tail. Card motion previews in view state and dispatches
+one node.move on release, avoiding full-document work for each pointer sample.
+
+Cards have accessible names and focusable Rename actions; F2 or Enter on a focused card/title
+opens its title editor. Titles use the first nonblank line, trim whitespace and display an
+ellipsis. A whitespace-only explicit title restores the automatic title. Overview labels use a
+9-point minimum screen size and bodies are hidden below 55% zoom. AccessKit control rectangles are
+tested at 2x; LOD/culling tests assert that hidden controls expose no input nodes.
+
+Sliders defer typed changes until Enter/blur and commit pointer drafts on release. Optional
+numeric bounds use text editors instead of invented slider ranges; signed/unsigned integers and
+seeds stay exact decimal values and obey schema steps/maxima. Parameter descriptions become
+label tooltips. Validation uses byte limits; over-limit multibyte drafts show an explicit byte
+limit error and remain editable rather than truncating persisted content.
+
+Undo/redo uses command shortcut metadata (including Ctrl+Y), and does not erase invalid or dirty
+drafts. Escape belongs to the active editor even when egui drops focus first. A dirty field or
+title hidden by zoom/culling remains a draft, with a visible unsaved notice and explicit discard
+action. Hidden conditional fields keep their draft and suppress unresolvable field errors; the
+same notice offers a way to discard. These drafts are not silently committed during rendering.
+
+New sizing tokens cover preview length, editor rows, title minimum size and handle hit/stroke
+sizes. The selected card is painted last. The home bounds are computed only for startup/reset.

@@ -1,0 +1,717 @@
+use super::*;
+use egui_kittest::Harness;
+
+fn harness() -> Harness<'static, NodeCraftApp> {
+    Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap())
+}
+fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
+    app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().next().unwrap()
+}
+fn screen(app: &NodeCraftApp) -> Rect {
+    app.view.rect_to_screen(app.viewport.min, card::world_rect(node(app), None, app.theme.tokens()))
+}
+fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
+    h.hover_at(pos);
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+}
+
+fn double_click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
+    h.hover_at(pos);
+    h.step();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+    }
+}
+
+#[test]
+fn first_frame_centres_graph_at_100_percent() {
+    let h = harness();
+    assert_eq!(h.state().view.zoom, 1.0);
+    assert!((screen(h.state()).center() - h.state().viewport.center()).length() < 1.0);
+}
+
+#[test]
+fn background_pan_and_right_drag_preserve_document() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let pan = h.state().view.pan;
+    h.drag_at(Pos2::new(50.0, 50.0));
+    h.run();
+    h.hover_at(Pos2::new(150.0, 90.0));
+    h.run();
+    h.drop_at(Pos2::new(150.0, 90.0));
+    h.run();
+    assert!((h.state().view.pan - pan - Vec2::new(100.0, 40.0)).length() < 1.0);
+    let pan = h.state().view.pan;
+    let p = screen(h.state()).left_center() + Vec2::new(5.0, 0.0);
+    h.hover_at(p);
+    h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.hover_at(p + Vec2::new(30.0, 20.0));
+    h.run();
+    h.event(egui::Event::PointerButton {
+        pos: p + Vec2::new(30.0, 20.0),
+        button: egui::PointerButton::Secondary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!((h.state().view.pan - pan - Vec2::new(30.0, 20.0)).length() < 1.0);
+}
+
+#[test]
+fn zoomed_card_drag_is_one_world_space_undo_step() {
+    for zoom in [0.5, 1.0, 2.0] {
+        let mut h = harness();
+        h.state_mut().view.zoom = zoom;
+        h.run();
+        let before = h.state().session.document().clone();
+        let pos = node(h.state()).pos;
+        let p = screen(h.state()).left_center() + Vec2::new(5.0 * zoom, 0.0);
+        h.drag_at(p);
+        h.run();
+        h.hover_at(p + Vec2::new(20.0, -10.0));
+        h.run();
+        h.hover_at(p + Vec2::new(60.0, -20.0));
+        h.run();
+        h.drop_at(p + Vec2::new(60.0, -20.0));
+        h.run();
+        let moved = node(h.state()).pos;
+        assert!((moved.x - pos.x - 60.0 / zoom).abs() < 1.0, "zoom {zoom}: {moved:?}");
+        assert!((moved.y - pos.y + 20.0 / zoom).abs() < 1.0);
+        assert_eq!(h.state().selected, Some(node(h.state()).id));
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run();
+        assert_eq!(h.state().session.document(), &before);
+        assert!(!h.state().session.can_undo());
+        h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+        h.run();
+        assert_eq!(node(h.state()).pos, moved);
+    }
+}
+
+#[test]
+fn text_edit_commits_without_moving_card_and_can_be_undone() {
+    let mut h = harness();
+    let before = node(h.state()).clone();
+    let rect = screen(h.state());
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("Moonlit mountains".into()));
+    h.run();
+    // Canvas reset must not steal a text editing shortcut.
+    let pan = h.state().view.pan;
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
+    h.run();
+    assert_eq!(h.state().view.pan, pan);
+    click(&mut h, Pos2::new(50.0, 50.0));
+    assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text("Moonlit mountains".into())));
+    assert_eq!(node(h.state()).pos, before.pos);
+    assert_eq!(card::title(node(h.state()), None), "Moonlit mountains");
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(node(h.state()), &before);
+}
+
+#[test]
+fn title_edit_and_escape_use_view_drafts() {
+    let mut h = harness();
+    let before = node(h.state()).clone();
+    let p = screen(h.state()).left_top() + Vec2::new(50.0, -12.0);
+    // Two clicks with a short interval produce the native double-click path.
+    double_click(&mut h, p);
+    h.run();
+    h.event(egui::Event::Text("Custom name".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(node(h.state()).title, "Custom name");
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(node(h.state()), &before);
+    double_click(&mut h, p);
+    h.run();
+    h.event(egui::Event::Text("Cancelled".into()));
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(node(h.state()), &before);
+}
+
+#[test]
+fn low_zoom_hides_body_controls_and_offscreen_nodes_are_culled() {
+    let mut h = harness();
+    h.state_mut().view.zoom = 0.2;
+    h.run();
+    assert!(h.query_by_role_and_label(Role::TextInput, "Text").is_none());
+    assert!(h.query_by_role_and_label(Role::Button, "Rename A QUIET FOREST AT DAWN, SOFT LIGHT THROUGH THE TREES.").is_some());
+    h.state_mut().view.pan = Vec2::splat(100_000.0);
+    h.run();
+    assert!(h.query_by_role_and_label(Role::TextInput, "Text").is_none());
+    assert!(h.query_by_role_and_label(Role::Button, "Rename A QUIET FOREST AT DAWN, SOFT LIGHT THROUGH THE TREES.").is_none());
+}
+
+use egui::accesskit::Role;
+use egui_kittest::kittest::Queryable;
+use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
+use nodecraft_types::{Choice, Integer, Number, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, VisibleIf};
+
+struct TestKind(NodeDescriptor);
+impl NodeKind for TestKind {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        None
+    }
+    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Err(Error::new(ErrorKind::Unsupported, "test-only kind"))
+    }
+}
+fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
+    ParamSpec { name: name.into(), label: name.into(), description: None, control, required: false, default: Some(default), visible_if: None }
+}
+fn schema_harness(params: Vec<ParamSpec>) -> Harness<'static, NodeCraftApp> {
+    let descriptor = NodeDescriptor {
+        id: "test.controls".into(),
+        label: "Controls".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        params: ParamSchema { params },
+        quick_add: None,
+    };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Controls").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    Change::AddNode { canvas, node: descriptor.instantiate(NodeId::from_bytes([3; 16]), &BTreeMap::new()).unwrap() }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(TestKind(descriptor))).unwrap();
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap())
+}
+fn enter_text(h: &mut Harness<'static, NodeCraftApp>, label: &str, text: &str) {
+    h.get_by_role_and_label(Role::TextInput, label).click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text(text.into()));
+    h.run();
+}
+#[test]
+fn typed_controls_preserve_full_width_values_and_invalid_drafts() {
+    let mut h = schema_harness(vec![
+        spec("count", ParamControl::Integer { min: Some(Integer(i64::MIN)), max: Some(Integer(i64::MAX)), step: Unsigned(1) }, Value::Integer(Integer(0))),
+        spec("seed", ParamControl::Seed { max: None }, Value::Unsigned(Unsigned(0))),
+        spec("enabled", ParamControl::Toggle, Value::Bool(false)),
+    ]);
+    enter_text(&mut h, "count", &i64::MIN.to_string());
+    h.key_press(egui::Key::Enter);
+    h.run();
+    enter_text(&mut h, "seed", &u64::MAX.to_string());
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(node(h.state()).params.get("count"), Some(&Value::Integer(Integer(i64::MIN))));
+    assert_eq!(node(h.state()).params.get("seed"), Some(&Value::Unsigned(Unsigned(u64::MAX))));
+    enter_text(&mut h, "count", "invalid");
+    click(&mut h, Pos2::new(50.0, 50.0));
+    h.get_by_role_and_label(Role::CheckBox, "enabled").click();
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::TextInput, "count").value().as_deref(), Some("invalid"));
+    assert!(h.query_by_label("Enter a value within this parameter's allowed range and step.").is_some());
+    assert_eq!(node(h.state()).params.get("count"), Some(&Value::Integer(Integer(i64::MIN))));
+    assert_eq!(node(h.state()).params.get("enabled"), Some(&Value::Bool(true)));
+}
+#[test]
+fn conditional_controls_and_choice_labels_follow_schema() {
+    let mut conditional = spec("detail", ParamControl::Text { multiline: false, max_bytes: 100 }, Value::Text("Detail".into()));
+    conditional.visible_if = Some(VisibleIf { parameter: "enabled".into(), equals: Value::Bool(true) });
+    let mut h = schema_harness(vec![
+        spec("enabled", ParamControl::Toggle, Value::Bool(false)),
+        conditional,
+        spec(
+            "quality",
+            ParamControl::Choice { options: vec![Choice { value: "low".into(), label: "Low".into() }, Choice { value: "high".into(), label: "High".into() }] },
+            Value::Text("low".into()),
+        ),
+    ]);
+    assert!(h.query_by_role_and_label(Role::TextInput, "detail").is_none());
+    h.get_by_role_and_label(Role::CheckBox, "enabled").click();
+    h.run();
+    assert!(h.query_by_role_and_label(Role::TextInput, "detail").is_some());
+    h.get_by_role_and_label(Role::ComboBox, "quality").click();
+    h.run();
+    h.get_by_label("High").click();
+    h.run();
+    assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+}
+#[test]
+fn slider_previews_then_commits_one_undo_step() {
+    let mut h = schema_harness(vec![spec(
+        "strength",
+        ParamControl::Slider { min: Some(Number::new(0.0).unwrap()), max: Some(Number::new(1.0).unwrap()), step: Number::new(0.01).unwrap() },
+        Value::Number(Number::new(0.5).unwrap()),
+    )]);
+    let before = h.state().session.document().clone();
+    let rect = h.get_by_role_and_label(Role::Slider, "strength").rect();
+    let from = Pos2::new(rect.center().x as f32, rect.center().y as f32);
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(10.0, 0.0));
+    h.run();
+    h.hover_at(from + Vec2::new(25.0, 0.0));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(from + Vec2::new(25.0, 0.0));
+    h.run();
+    assert_ne!(h.state().session.document(), &before);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+}
+#[test]
+fn scrolling_over_collapsed_card_pans_canvas() {
+    let mut h = harness();
+    h.state_mut().view.zoom = 0.2;
+    h.run();
+    let p = screen(h.state()).center();
+    let pan = h.state().view.pan;
+    h.hover_at(p);
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: Vec2::new(0.0, 20.0),
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert!(h.state().view.pan.y > pan.y);
+}
+
+#[test]
+fn focused_zoom_button_does_not_block_document_shortcuts() {
+    let mut h = harness();
+    let before = node(h.state()).clone();
+    let rect = screen(h.state());
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("Mountain".into()));
+    h.run();
+    h.key_press(egui::Key::Tab);
+    h.run();
+    assert_ne!(node(h.state()), &before);
+    h.get_by_role_and_label(Role::Button, "100%").focus();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(node(h.state()), &before);
+    h.state_mut().view.zoom = 2.0;
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
+    h.run();
+    assert_eq!(h.state().view.zoom, 1.0);
+}
+
+#[test]
+fn escape_parameter_draft_preserves_document_and_undo_through_next_frame() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    enter_text(&mut h, "Text", "This draft must be cancelled");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+    h.run();
+    click(&mut h, Pos2::new(50.0, 50.0));
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn low_zoom_15_percent_keeps_named_labels_but_no_body_controls() {
+    let mut h = harness();
+    h.state_mut().view.zoom = 0.15;
+    h.run();
+    assert!(h.query_by_role_and_label(Role::Button, "Rename A QUIET FOREST AT DAWN, SOFT LIGHT THROUGH THE TREES.").is_some());
+    assert!(h.query_by_role_and_label(Role::TextInput, "Text").is_none());
+}
+
+#[test]
+fn accessibility_rect_at_double_zoom_targets_the_actual_control() {
+    let mut h = schema_harness(vec![spec("enabled", ParamControl::Toggle, Value::Bool(false))]);
+    h.state_mut().view.zoom = 2.0;
+    h.state_mut().view.pan = Vec2::new(200.0, 150.0);
+    h.run();
+    let rect = h.get_by_role_and_label(Role::CheckBox, "enabled").rect();
+    click(&mut h, Pos2::new(rect.center().x as f32, rect.center().y as f32));
+    assert_eq!(node(h.state()).params.get("enabled"), Some(&Value::Bool(true)));
+}
+
+#[test]
+fn keyboard_card_rename_and_whitespace_title_restore_automatic_label() {
+    let mut h = harness();
+    h.get_by_role_and_label(Role::Button, "Node A quiet forest at dawn, soft light through the trees.").focus();
+    h.run();
+    h.key_press(egui::Key::F2);
+    h.run();
+    h.event(egui::Event::Text("Keyboard name".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(node(h.state()).title, "Keyboard name");
+    let canvas = h.state().canvas;
+    let id = node(h.state()).id;
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id,"title":"  \n  "})).unwrap();
+    assert!(node(h.state()).title.is_empty());
+    assert_eq!(card::title(node(h.state()), None), "A quiet forest at dawn, soft light through the trees.");
+}
+
+#[test]
+fn invalid_unfocused_draft_survives_unrelated_undo_and_redo() {
+    let mut h = schema_harness(vec![
+        spec("count", ParamControl::Unsigned { min: None, max: Some(Unsigned(u64::MAX)), step: Unsigned(8) }, Value::Unsigned(Unsigned(0))),
+        spec("enabled", ParamControl::Toggle, Value::Bool(false)),
+    ]);
+    enter_text(&mut h, "count", "9");
+    click(&mut h, Pos2::new(50.0, 50.0));
+    h.get_by_role_and_label(Role::CheckBox, "enabled").click();
+    h.run();
+    h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::TextInput, "count").value().as_deref(), Some("9"));
+    h.state_mut().session.dispatch("edit.redo", &serde_json::Value::Null).unwrap();
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::TextInput, "count").value().as_deref(), Some("9"));
+    assert_eq!(node(h.state()).params.get("count"), Some(&Value::Unsigned(Unsigned(0))));
+}
+
+#[test]
+fn hiding_dirty_prompt_marks_unsaved_and_retains_full_draft() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    enter_text(&mut h, "Text", "Unsaved until restored");
+    h.state_mut().view.zoom = 0.15;
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(h.state().editors.values().any(|editor| editor.hidden_dirty));
+    assert!(h.query_by_role_and_label(Role::Button, "Discard drafts").is_some());
+    h.state_mut().view.zoom = 1.0;
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::MultilineTextInput, "Text").value().as_deref(), Some("Unsaved until restored"));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn unbounded_numbers_unsigned_steps_and_seed_max_remain_exact() {
+    let mut h = schema_harness(vec![
+        spec("number", ParamControl::Slider { min: None, max: None, step: Number::new(0.1).unwrap() }, Value::Number(Number::new(0.0).unwrap())),
+        spec("count", ParamControl::Unsigned { min: Some(Unsigned(0)), max: Some(Unsigned(u64::MAX)), step: Unsigned(3) }, Value::Unsigned(Unsigned(0))),
+        spec("seed", ParamControl::Seed { max: Some(Unsigned(u64::from(u32::MAX))) }, Value::Unsigned(Unsigned(0))),
+    ]);
+    enter_text(&mut h, "number", "51.248178375505404");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    enter_text(&mut h, "count", &u64::MAX.to_string());
+    h.key_press(egui::Key::Enter);
+    h.run();
+    enter_text(&mut h, "seed", &(u64::from(u32::MAX) + 1).to_string());
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(node(h.state()).params.get("number"), Some(&Value::Number(Number::new(51.248178375505404).unwrap())));
+    assert_eq!(node(h.state()).params.get("count"), Some(&Value::Unsigned(Unsigned(u64::MAX))));
+    assert_eq!(node(h.state()).params.get("seed"), Some(&Value::Unsigned(Unsigned(0))));
+}
+
+fn large_prompt_harness() -> Harness<'static, NodeCraftApp> {
+    let mut app = NodeCraftApp::headless().unwrap();
+    let canvas = app.canvas;
+    let first = app.session.document().canvases().get(&canvas).unwrap().nodes().values().next().unwrap().id;
+    let mut changes = Vec::new();
+    for index in 0..4u8 {
+        let mut item = nodecraft_nodes::text::kind()
+            .descriptor()
+            .instantiate(if index == 0 { first } else { NodeId::from_bytes([index + 3; 16]) }, &BTreeMap::new())
+            .unwrap();
+        item.pos = nodecraft_graph::Position { x: f32::from(index % 2) * 360.0, y: f32::from(index / 2) * 260.0 };
+        let text = format!("{}TAIL-{index}", "x".repeat(1024 * 1024 - 4096));
+        item.params.insert("text".into(), Value::Text(text));
+        changes.push(if index == 0 { Change::SetNode { canvas, node: item } } else { Change::AddNode { canvas, node: item } });
+    }
+    // Setup through a fresh session keeps the edit/undo assertions independent of fixture creation.
+    let mut document = app.session.document().clone();
+    nodecraft_graph::Changeset::new(changes).apply(&mut document).unwrap();
+    app.session = Session::new(document).unwrap();
+    Harness::builder().with_size(Vec2::new(1000.0, 700.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
+}
+
+#[test]
+fn four_large_prompts_use_lazy_drafts_and_keep_unseen_tail_on_cancel_and_commit() {
+    let mut h = large_prompt_harness();
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(h.state().editors.values().map(EditorState::draft_count).sum::<usize>(), 0);
+    let before = node(h.state()).params.get("text").unwrap().clone();
+    let p = screen(h.state()).min + Vec2::new(50.0, 55.0);
+    click(&mut h, p);
+    h.key_press(egui::Key::End);
+    h.event(egui::Event::Text("cancelled".into()));
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(node(h.state()).params.get("text"), Some(&before));
+    assert!(!h.state().session.can_undo());
+    click(&mut h, p);
+    h.key_press(egui::Key::End);
+    h.event(egui::Event::Text("!".into()));
+    h.run();
+    h.key_press(egui::Key::Tab);
+    h.run();
+    let Value::Text(before) = before else { panic!("text fixture") };
+    assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text(format!("{before}!"))));
+    h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text(before)));
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn typing_slider_value_commits_once_after_enter() {
+    let mut h = schema_harness(vec![spec(
+        "strength",
+        ParamControl::Slider { min: Some(Number::new(0.0).unwrap()), max: Some(Number::new(1.0).unwrap()), step: Number::new(0.01).unwrap() },
+        Value::Number(Number::new(0.5).unwrap()),
+    )]);
+    let before = h.state().session.document().clone();
+    let rect = h.get_by_role_and_label(Role::Slider, "strength").rect();
+    double_click(&mut h, Pos2::new(rect.max.x + 25.0, rect.center().y as f32));
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    for character in ["0", ".", "7", "5"] {
+        h.event(egui::Event::Text(character.into()));
+        h.run();
+        assert_eq!(h.state().session.document(), &before);
+    }
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(node(h.state()).params.get("strength"), Some(&Value::Number(Number::new(0.75).unwrap())));
+    h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn nondefault_canvas_settings_apply_to_graph_backed_shell() {
+    let mut h = harness();
+    let mut settings = NodeCraftSettings::default();
+    settings.appearance.theme = Theme::Light;
+    settings.canvas.scroll = nodecraft_engine::settings::ScrollAction::Zoom;
+    settings.canvas.zoom_speed = 2.0;
+    h.state_mut().theme = ThemeKind::Light;
+    h.state_mut().canvas_prefs = settings.canvas.clone();
+    assert_eq!(h.state().theme, ThemeKind::Light);
+    h.hover_at(Pos2::new(50.0, 50.0));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: Vec2::new(0.0, 60.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    for _ in 0..30 {
+        h.run();
+    }
+    assert!(h.state().view.zoom > 1.5);
+}
+
+#[test]
+#[ignore = "manual release benchmark for four near-1MiB prompts; no timing assertion"]
+fn large_prompt_idle_release_benchmark() {
+    let mut h = large_prompt_harness();
+    for _ in 0..5 {
+        h.step();
+    }
+    let start = std::time::Instant::now();
+    for _ in 0..120 {
+        h.step();
+    }
+    eprintln!("four near-1MiB prompts, 120 warm idle UI frames: {:?}, mean {:?}", start.elapsed(), start.elapsed() / 120);
+    assert_eq!(h.state().editors.values().map(EditorState::draft_count).sum::<usize>(), 0);
+}
+
+#[test]
+fn exact_one_mib_prompt_is_not_truncated_by_preview_focus_or_cancel() {
+    let mut h = large_prompt_harness();
+    let canvas = h.state().canvas;
+    let mut item = node(h.state()).clone();
+    let text = format!("{}UNSEEN-TAIL", "x".repeat(1024 * 1024 - 11));
+    assert_eq!(text.len(), 1024 * 1024);
+    item.params.insert("text".into(), Value::Text(text.clone()));
+    let mut document = h.state().session.document().clone();
+    Change::SetNode { canvas, node: item }.apply(&mut document).unwrap();
+    h.state_mut().session = Session::new(document).unwrap();
+    h.run();
+    let p = screen(h.state()).min + Vec2::new(50.0, 55.0);
+    click(&mut h, p);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text(text)));
+    assert!(!h.state().session.can_undo());
+    assert_eq!(h.state().editors.values().map(EditorState::draft_count).sum::<usize>(), 0);
+}
+
+#[test]
+fn separate_drag_gestures_remain_separate_undo_steps() {
+    let mut h = harness();
+    let before = node(h.state()).pos;
+    for _ in 0..2 {
+        let p = screen(h.state()).left_center() + Vec2::new(5.0, 0.0);
+        h.drag_at(p);
+        h.run();
+        h.hover_at(p + Vec2::new(30.0, 0.0));
+        h.run();
+        h.drop_at(p + Vec2::new(30.0, 0.0));
+        h.run();
+    }
+    assert_eq!(node(h.state()).pos.x, before.x + 60.0);
+    h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(node(h.state()).pos.x, before.x + 30.0);
+    h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(node(h.state()).pos, before);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn settings_constructor_and_exit_preserve_native_store_lifecycle() {
+    let path = std::env::temp_dir().join(format!(
+        "nodecraft-ui-settings-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let (mut store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(path.clone()));
+    store.update(|settings| {
+        settings.appearance.theme = Theme::Light;
+        settings.canvas.scroll = nodecraft_engine::settings::ScrollAction::Zoom;
+        settings.canvas.zoom_speed = 2.5;
+    });
+    let ctx = egui::Context::default();
+    let mut app = NodeCraftApp::with_settings(&ctx, store).unwrap();
+    assert_eq!(app.theme, ThemeKind::Light);
+    assert_eq!(app.canvas_prefs.zoom_speed(), 2.5);
+    assert_eq!(app.canvas_prefs.scroll, nodecraft_engine::settings::ScrollAction::Zoom);
+    eframe::App::on_exit(&mut app);
+    let (restored, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(path.clone()));
+    assert_eq!(restored.get().appearance.theme, Theme::Light);
+    assert_eq!(restored.get().canvas.zoom_speed(), 2.5);
+    drop(restored);
+    drop(app);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+fn large_schema_harness(count: u32, dynamic: bool) -> Harness<'static, NodeCraftApp> {
+    use std::borrow::Cow;
+    struct DynamicLarge(NodeDescriptor);
+    impl NodeKind for DynamicLarge {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn instance<'a>(&'a self, _: &nodecraft_graph::Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+            Ok(Cow::Owned(self.0.clone()))
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+    }
+    let descriptor = NodeDescriptor {
+        id: "test.large_schema".into(),
+        label: "Model".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![],
+        quick_add: None,
+        params: ParamSchema {
+            params: vec![ParamSpec {
+                name: "model".into(),
+                label: "Model".into(),
+                description: None,
+                required: false,
+                default: None,
+                visible_if: None,
+                control: ParamControl::Choice {
+                    options: (0..1200).map(|index| Choice { value: format!("{index}{}", "x".repeat(400)), label: "y".repeat(400) }).collect(),
+                },
+            }],
+        },
+    };
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Schema cache stress").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let changes = (0..count)
+        .map(|index| {
+            let mut node = nodecraft_graph::Node::new(NodeId::from_bytes(u128::from(index).to_be_bytes()), "test.large_schema");
+            if !dynamic {
+                node.pos.x = index as f32 * 400.0;
+            }
+            Change::AddNode { canvas, node }
+        })
+        .collect();
+    nodecraft_graph::Changeset::new(changes).apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    if dynamic {
+        kinds.register(Box::new(DynamicLarge(descriptor))).unwrap();
+    } else {
+        kinds.register(Box::new(TestKind(descriptor))).unwrap();
+    }
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap())
+}
+
+#[test]
+fn ten_thousand_small_nodes_share_large_static_schema_and_culled_nodes_stay_lazy() {
+    let h = large_schema_harness(10_000, false);
+    assert!(h.state().schemas.len() > 1);
+    assert!(h.state().schemas.len() < 20, "only visible candidates should resolve");
+    let first = h.state().schemas.values().next().unwrap();
+    assert!(h.state().schemas.values().all(|entry| Arc::ptr_eq(&entry.descriptor, &first.descriptor)));
+    assert!(cache_bytes(&h.state().schemas) < 5 * 1024 * 1024);
+}
+
+#[test]
+fn owned_dynamic_schema_cache_obeys_aggregate_lru_budget() {
+    let mut h = large_schema_harness(24, true);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(cache_bytes(&h.state().schemas) <= MAX_SCHEMA_CACHE_BYTES);
+    assert!(h.state().schemas.len() < 24, "dynamic descriptors must be evicted rather than multiplied without bound");
+    assert!(h.state().schemas.values().all(|entry| entry.borrowed_identity.is_none()));
+}
+
+#[test]
+fn title_at_four_times_zoom_remains_when_body_is_below_viewport() {
+    let mut h = harness();
+    let position = node(h.state()).pos;
+    h.state_mut().view.zoom = 4.0;
+    h.state_mut().view.pan = Vec2::new(300.0 - position.x * 4.0, 740.0 - position.y * 4.0);
+    h.run();
+    assert!(screen(h.state()).min.y > h.state().viewport.max.y);
+    assert!(h.query_by_role_and_label(Role::Button, "Rename A QUIET FOREST AT DAWN, SOFT LIGHT THROUGH THE TREES.").is_some());
+}

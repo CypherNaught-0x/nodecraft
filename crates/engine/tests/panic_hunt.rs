@@ -1,3 +1,4 @@
+use nodecraft_nodes::NodeKind;
 mod common;
 
 use nodecraft_engine::Session;
@@ -30,11 +31,15 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture"] {
+        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value"] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
         }
+    }
+    for raw in [Value::Null, json!("wrong"), json!({"type":"list","value":[null]}), json!({"type":"number","value":1e100})] {
+        corpus.push(json!({"canvas":common::canvas(),"id":common::node_id(1),"name":"text","value":raw}));
+        corpus.push(json!({"canvas":common::canvas(),"id":common::node_id(1),"title":raw}));
     }
     for id in ids {
         for params in &corpus {
@@ -61,12 +66,19 @@ fn template(id: &str) -> (Session, Value) {
     if id == "edge.connect" {
         nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
     }
+    if id == "node.param_set" {
+        let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(3), &std::collections::BTreeMap::new()).unwrap();
+        source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    }
     let mut session = Session::new(document).unwrap();
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
         "node.remove" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.move" => movement.clone(),
+        "node.title" => json!({"canvas":canvas(),"id":node_id(1),"title":"Renamed"}),
+        "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
         "canvas.stale" => json!({"canvas":canvas()}),
@@ -121,6 +133,7 @@ fn typed_template_panic_hunt() {
             let before = session.document().clone();
             let revision = session.revision();
             let events = session.events_since(0).unwrap();
+            let history = (session.can_undo(), session.can_redo());
             let result = session.dispatch(id, &params);
             match result {
                 Err(error) => {
@@ -134,6 +147,14 @@ fn typed_template_panic_hunt() {
                     successes += 1;
                     let after = session.document().clone();
                     session.document().validate().unwrap();
+                    if id == "canvas.stale" {
+                        // A supported read-only query must not manufacture an undo step.
+                        assert_eq!(session.document(), &before);
+                        assert_eq!(session.revision(), revision);
+                        assert_eq!(session.events_since(0).unwrap(), events);
+                        assert_eq!((session.can_undo(), session.can_redo()), history);
+                        continue;
+                    }
                     let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };
                     session.dispatch(reverse, &Value::Null).unwrap();
                     assert_eq!(session.document(), &before, "{id}");

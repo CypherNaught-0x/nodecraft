@@ -38,8 +38,19 @@ pub const MAX_PAGE: usize = 500;
 pub const MAX_NEW_IDS: usize = 100;
 
 /// Commands an agent may see and run.
-pub const AGENT_COMMANDS: &[&str] =
-    &["node.add", "node.remove", "node.move", "edge.connect", "edge.disconnect", "edit.undo", "edit.redo", "canvas.stale", "keys.status"];
+pub const AGENT_COMMANDS: &[&str] = &[
+    "node.add",
+    "node.remove",
+    "node.move",
+    "node.title",
+    "node.param_set",
+    "edge.connect",
+    "edge.disconnect",
+    "edit.undo",
+    "edit.redo",
+    "canvas.stale",
+    "keys.status",
+];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
 /// agent's context, and `keys.remove` deletes a key with no undo.
 pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove"];

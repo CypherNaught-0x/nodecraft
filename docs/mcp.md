@@ -26,6 +26,11 @@ They go through the same `Session::dispatch` as the app's menus and shortcuts.
 | `canvas_inspect` | Without arguments: the project and its canvases with counts. With `canvas`: a page of its nodes, sorted by id, from `offset`, with the edges into them. A page holds at most `limit` nodes (up to 500) and is also cut short at about 512 KiB; continue from `next_offset`. Nodes over 64 KiB are summarised in pages; read one in full with `canvas` and `node`, which also pages all of that node's edges (`edge_offset`, `next_edge_offset`). A page that couldn't fit all of a node's incoming edges sets `edges_truncated` and names the node in `edges_continue`. |
 | `ids_new` | Up to 100 fresh UUIDs for commands that take a caller-chosen id, such as `node.add`. |
 
+`canvas_inspect` returns stored node titles. An empty title selects the automatic title derived
+from the prompt or kind label in the app; it does not indicate missing node data. Use `node.title`
+to rename a node (empty restores automatic naming), and `node.param_set` to edit a schema
+parameter (null removes its override and restores the default).
+
 A command that fails comes back as a tool result with `isError: true` and a message the model can
 act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC errors.
 
