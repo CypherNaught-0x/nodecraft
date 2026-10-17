@@ -1539,3 +1539,93 @@ fn minimap_owns_drag_started_over_a_covered_output_port() {
     assert_eq!(h.state().session.revision(), revision);
     assert_eq!(h.state().selection, selection);
 }
+
+/// Let half a second pass, so the next clicks start a new click sequence (egui counts clicks
+/// within 0.3 s as one double- or triple-click).
+fn idle(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..30 {
+        h.step();
+    }
+}
+
+fn nodes_of(h: &Harness<'static, NodeCraftApp>, kind: &str) -> Vec<nodecraft_graph::Node> {
+    let app = h.state();
+    app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().filter(|n| n.kind == kind).cloned().collect()
+}
+
+#[test]
+fn quick_add_keys_create_kinds_under_the_pointer_as_one_step() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let at = Pos2::new(800.0, 560.0);
+    h.hover_at(at);
+    h.run();
+    h.key_press(egui::Key::I);
+    h.run();
+    let images = nodes_of(&h, "source.image");
+    assert_eq!(images.len(), 1);
+    let image = images.first().unwrap();
+    // Centred on the pointer, and selected.
+    let world = h.state().view.to_world(h.state().viewport.min, at);
+    let t = h.state().theme.tokens();
+    assert!((image.pos.x - (world.x - t.card_width * 0.5)).abs() < 0.5);
+    assert!((image.pos.y - (world.y - t.card_min_height * 0.5)).abs() < 0.5);
+    assert_eq!(h.state().selection.nodes(), &[image.id].into_iter().collect());
+    // With a modifier held the key is not a quick-add.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+    h.run();
+    assert_eq!(nodes_of(&h, "source.text").len(), 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // Typing in a text field never quick-adds.
+    let rect = screen(h.state());
+    click(&mut h, rect.min + Vec2::new(50.0, 55.0));
+    h.key_press(egui::Key::V);
+    h.event(egui::Event::Text("v".into()));
+    h.run();
+    assert!(nodes_of(&h, "source.video").is_empty());
+}
+
+#[test]
+fn double_click_opens_a_searchable_palette_of_kinds_and_commands() {
+    let mut h = harness();
+    let at = Pos2::new(800.0, 560.0);
+    double_click(&mut h, at);
+    h.run();
+    assert!(h.state().palette.is_some());
+    h.event(egui::Event::Text("aud".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    let audio = nodes_of(&h, "source.audio");
+    assert_eq!(audio.len(), 1);
+    assert!(h.state().palette.is_none());
+    let world = h.state().view.to_world(h.state().viewport.min, at);
+    assert!((audio.first().unwrap().pos.x + h.state().theme.tokens().card_width * 0.5 - world.x).abs() < 0.5);
+
+    // Commands that can run now are listed too: undo the creation from the palette. (The new
+    // card sits under `at`, so open the palette on empty canvas elsewhere.)
+    let empty = Pos2::new(150.0, 600.0);
+    idle(&mut h);
+    double_click(&mut h, empty);
+    h.run();
+    h.event(egui::Event::Text("undo".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(nodes_of(&h, "source.audio").is_empty());
+
+    // Arrow keys move the highlight; Escape closes without creating anything.
+    idle(&mut h);
+    double_click(&mut h, empty);
+    h.run();
+    h.key_press(egui::Key::ArrowDown);
+    h.run();
+    assert_eq!(h.state().palette.as_ref().map(|p| p.highlighted), Some(1));
+    let before = h.state().session.document().clone();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().palette.is_none());
+    assert_eq!(h.state().session.document(), &before);
+}

@@ -786,3 +786,15 @@ a choice a later contributor might otherwise undo.
   with no caps, reserves nothing. When it finishes, fresh or resumed, the cost the provider
   reported is recorded as `actual`, once per provider and key. A report the log refuses as
   implausibly large is left out rather than failing the finished job.
+
+
+## 2026-10-17 · Quick-add and palette (#61)
+
+- **`node.create {canvas, id, kind, pos}`** creates a kind with its default parameters through
+  the node registry, so quick-add keys, the palette and agents share one command; `node.add`
+  stays the low-level "insert this exact node". Ids are supplied by the caller (`crate::ids` in
+  the shell hashes and probes, as for edges).
+- **Quick-add keys come from node kinds' `quick_add` metadata**, not from hard-coded handlers.
+  They fire only without modifiers and outside text fields.
+- **The palette lists commands that are enabled with no parameters right now** (e.g. Undo when
+  there is something to undo); commands that need a target are reached from the canvas or menus.
