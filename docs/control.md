@@ -41,7 +41,8 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
-- A connection must send `hello` within 5 seconds, and it closes on anything else before then.
+- A connection must send `hello` (at most 4 KiB) within 5 seconds in total, and it closes on
+  anything else before then.
   Once authenticated, it closes after 10 minutes of silence. A reply that can't be written within
   30 seconds closes it.
 - A request the client stopped waiting for (it was told `timeout`) is dropped, never run late.

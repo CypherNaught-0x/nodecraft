@@ -105,6 +105,26 @@ fn io_error(path: &std::path::Path, e: std::io::Error) -> Error {
     Error::new(ErrorKind::Unsupported, format!("can't write {}: {e}", path.display()))
 }
 
+/// The private folder for the token file inside `settings`: `control/`, created owner-only (and
+/// made so if it exists, which only its owner can do).
+pub fn private_dir(settings: &std::path::Path) -> Result<std::path::PathBuf, Error> {
+    let dir = settings.join("control");
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(|e| io_error(&dir, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| io_error(&dir, e))?;
+    }
+    Ok(dir)
+}
+
 impl TokenFile {
     /// Writes the file at `path`, readable and writable by the owner only. It is written to a new
     /// sibling file and renamed into place, so an existing file or a symlink at `path` is replaced,
@@ -117,11 +137,8 @@ impl TokenFile {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(dir).map_err(|e| io_error(dir, e))?.permissions().mode();
-            if mode & 0o022 != 0 {
-                return Err(Error::new(
-                    ErrorKind::Unsupported,
-                    format!("{} can be written by other users; the control token won't be kept there", dir.display()),
-                ));
+            if mode & 0o077 != 0 {
+                return Err(Error::new(ErrorKind::Unsupported, format!("{} is open to other users; the control token won't be kept there", dir.display())));
             }
         }
         let temp = dir.join(format!(".control-{}.tmp", std::process::id()));
@@ -353,6 +370,37 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
     Ok(Listener { addr, calls })
 }
 
+/// Longest `hello` line accepted.
+const MAX_HELLO_BYTES: usize = 4096;
+
+/// Reads the `hello` line before `deadline`, at most [`MAX_HELLO_BYTES`]: the read timeout is set
+/// to the time left before every read.
+fn read_hello(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>, deadline: Instant) -> std::io::Result<Line> {
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "handshake took too long"));
+        }
+        reader.get_ref().set_read_timeout(Some(left))?;
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(if buf.is_empty() { Line::Eof } else { Line::Read });
+        }
+        let (take, done) = match chunk.iter().position(|b| *b == b'\n') {
+            Some(i) => (i, true),
+            None => (chunk.len(), false),
+        };
+        if buf.len().saturating_add(take) > MAX_HELLO_BYTES {
+            return Ok(Line::TooLong);
+        }
+        buf.extend_from_slice(chunk.get(..take).unwrap_or_default());
+        reader.consume(if done { take.saturating_add(1) } else { take });
+        if done {
+            return Ok(Line::Read);
+        }
+    }
+}
+
 fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, wake: &(dyn Fn() + Send + Sync), timeouts: Timeouts) {
     // A client must say hello quickly; a silent or slow one can't hold a slot.
     if stream.set_read_timeout(Some(timeouts.handshake)).is_err() || stream.set_write_timeout(Some(timeouts.write)).is_err() {
@@ -367,12 +415,15 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
     };
     let mut connection = Connection::new(token);
     let mut line = Vec::new();
+    // The whole handshake has one deadline: a client trickling bytes can't stretch it.
+    let handshake_ends = Instant::now().checked_add(timeouts.handshake).unwrap_or_else(Instant::now);
     loop {
         line.clear();
         let authed = connection.is_authed();
         // Before hello, anything but a well-formed hello ends the connection.
         let fail = |message: &str| -> bool { send(error_reply(Value::Null, if authed { "invalid_input" } else { "authentication" }, message)) && authed };
-        let text = match mcp::read_line(&mut reader as &mut dyn BufRead, &mut line) {
+        let read = if authed { mcp::read_line(&mut reader as &mut dyn BufRead, &mut line) } else { read_hello(&mut reader, &mut line, handshake_ends) };
+        let text = match read {
             Ok(Line::Eof) | Err(_) => return,
             Ok(Line::TooLong) => {
                 if !fail(&format!("message is larger than {MAX_MESSAGE_BYTES} bytes")) {
@@ -408,7 +459,11 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
             }
             Step::Ask(id, request) => {
                 let (reply, answer) = sync_channel(1);
-                match to_ui.try_send(Call { request, reply, deadline: Instant::now() + timeouts.answer }) {
+                match to_ui.try_send(Call {
+                    request,
+                    reply,
+                    deadline: Instant::now().checked_add(timeouts.answer).unwrap_or_else(|| Instant::now() + Duration::from_secs(3600)),
+                }) {
                     Ok(()) => {
                         wake();
                         match answer.recv_timeout(timeouts.answer) {

@@ -31,14 +31,22 @@ pub struct Controlled {
 
 impl Controlled {
     /// Starts listening and writes the token file into `dir` (`control.json`).
-    pub fn start(app: NodeCraftApp, ctx: &egui::Context, dir: Option<PathBuf>) -> Result<Self, nodecraft_types::Error> {
+    /// On failure the app comes back with the error, so it can still open without the channel.
+    pub fn start(app: NodeCraftApp, ctx: &egui::Context, dir: Option<PathBuf>) -> Result<Self, (Box<NodeCraftApp>, nodecraft_types::Error)> {
+        match Self::listen(ctx, dir) {
+            Ok((listener, token_file)) => Ok(Self { app, listener, shots: Vec::new(), shot_since: None, token_file }),
+            Err(e) => Err((Box::new(app), e)),
+        }
+    }
+
+    fn listen(ctx: &egui::Context, dir: Option<PathBuf>) -> Result<(Listener, Option<(PathBuf, TokenFile)>), nodecraft_types::Error> {
         let token = Token::generate()?;
         let waker = ctx.clone();
         let listener = control::listen(token.clone(), Arc::new(move || waker.request_repaint()))?;
         let file = TokenFile { port: listener.addr.port(), token: token.to_hex(), pid: std::process::id() };
         let token_file = match dir {
             Some(dir) => {
-                let path = dir.join("control.json");
+                let path = control::private_dir(&dir)?.join("control.json");
                 file.write(&path)?;
                 log::info!("control channel on {}; token in {}", listener.addr, path.display());
                 Some((path, file))
@@ -54,7 +62,7 @@ impl Controlled {
                 None
             }
         };
-        Ok(Self { app, listener, shots: Vec::new(), shot_since: None, token_file })
+        Ok((listener, token_file))
     }
 
     /// Answers waiting requests and finished screenshots.

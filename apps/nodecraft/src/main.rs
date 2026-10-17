@@ -48,7 +48,14 @@ fn main() -> ExitCode {
             let dir = store.dir().map(std::path::Path::to_path_buf);
             let app = nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)?;
             if control {
-                return Ok(Box::new(control::Controlled::start(app, &cc.egui_ctx, dir)?));
+                // Without the channel the app still opens; the log says why.
+                return match control::Controlled::start(app, &cc.egui_ctx, dir) {
+                    Ok(controlled) => Ok(Box::new(controlled)),
+                    Err((app, e)) => {
+                        log::error!("control channel not started: {}", e.message);
+                        Ok(app)
+                    }
+                };
             }
             Ok(Box::new(app))
         }),

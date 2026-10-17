@@ -126,7 +126,10 @@ impl Client {
     }
     fn read(&mut self) -> Value {
         let mut line = String::new();
-        self.reader.read_line(&mut line).unwrap();
+        // A reset connection is a closed one.
+        if self.reader.read_line(&mut line).is_err() {
+            return Value::Null;
+        }
         serde_json::from_str(&line).unwrap_or(Value::Null)
     }
 }
@@ -204,8 +207,10 @@ fn unauthenticated_clients_cannot_hold_a_slot() {
     assert_eq!(silent.read(), Value::Null, "closed without a word");
     // A long line, an empty line or non-object params before hello: answered once, then closed.
     let mut long = Client::connect(listener.addr);
-    long.writer.write_all(format!("{}\n", "x".repeat(MAX_MESSAGE_BYTES + 1)).as_bytes()).unwrap();
-    assert_eq!(long.read()["error"]["kind"], "authentication");
+    // The hello line is capped at a few KiB: the server answers and hangs up mid-write.
+    let _ = long.writer.write_all(format!("{}\n", "x".repeat(MAX_MESSAGE_BYTES + 1)).as_bytes());
+    let first = long.read();
+    assert!(first == Value::Null || first["error"]["kind"] == "authentication", "{first}");
     assert_eq!(long.read(), Value::Null);
     let mut empty = Client::connect(listener.addr);
     empty.writer.write_all(b"\n").unwrap();
@@ -214,6 +219,19 @@ fn unauthenticated_clients_cannot_hold_a_slot() {
     let mut params = Client::connect(listener.addr);
     assert_eq!(params.ask(json!({"id": 1, "method": "hello", "params": [token().to_hex()]}))["error"]["kind"], "authentication");
     assert_eq!(params.read(), Value::Null);
+    // Trickling bytes doesn't stretch the handshake.
+    let mut trickle = Client::connect(listener.addr);
+    let started = std::time::Instant::now();
+    let mut closed = false;
+    for _ in 0..20 {
+        if trickle.writer.write_all(b"x").is_err() {
+            closed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(closed || trickle.read() == Value::Null, "dropped within the handshake deadline");
+    assert!(started.elapsed() < Duration::from_secs(5));
     // All slots are free again.
     let mut ok: Vec<Client> = (0..MAX_CONNECTIONS).map(|_| Client::connect(listener.addr)).collect();
     for c in &mut ok {
@@ -264,9 +282,12 @@ fn token_files_replace_links_and_old_files_and_stay_out_of_shared_folders() {
         other.remove_if_ours(&path);
         assert!(!path.exists());
         assert!(!format!("{other:?}").contains(&other.token), "never printed");
-        // A folder other users can write is refused.
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        // A folder other users can reach is refused; the private control folder is made owner-only.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).unwrap();
         assert!(file.write(&path).is_err());
+        let private = private_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&private).unwrap().permissions().mode() & 0o777, 0o700);
+        file.write(&private.join("control.json")).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     std::fs::remove_dir_all(&dir).unwrap();
