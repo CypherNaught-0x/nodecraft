@@ -679,12 +679,12 @@ a choice a later contributor might otherwise undo.
   settle an old charge out of its new total and undercount. Sessions kept for open charges can
   exceed the limit, by at most the number of open charges, until the next new session folds
   them; loading allows that. The session
-  clock forgets folded names, so it stays as small as the session map. Settling or releasing a
-  folded session's entries adjusts the earlier-sessions total, so the project total and the
-  current session's stay exact and a saved log always reloads. (Logs saved before #233 can hold an open charge whose
-  session already folded; if that session id charges again, the old undercount can recur. Session
-  ids are per launch, so this needs an old log and a reused id.) A session id that charges again after
-  being folded starts a fresh session total. Entries with an empty session id were never written
+  clock forgets folded names, so it stays as small as the session map. **Historical folded-charge
+  settlement policy, superseded by #255:** older readers debited earlier totals when a named
+  session no longer covered an open charge; reusing a folded session id could undercount newer
+  spend. The Historical open-charge ownership decision below replaces that fallback with
+  versioned admission, provable normalization and explicit refusal of ambiguous legacy data.
+  A session id that charges again after being folded starts a fresh session total. Entries with an empty session id were never written
   by NodeCraft and are now refused. The CSV export can stream (`write_csv`).
 
 ## 2026-10-17 · Run executor (#231, #210)
@@ -740,3 +740,28 @@ a choice a later contributor might otherwise undo.
   a platform random source.
 - **Inputs on the left, outputs on the right**, spread evenly down the card edge; a single port
   sits at the middle, which keeps the existing `+` handle where it was.
+
+## 2026-10-17 · Historical open-charge ownership (#255)
+
+- Usage-log files now emit `open_session_ownership: 1`. Every retained listed or pending open
+  charge belongs to its named session total; admission checks aggregate coverage, and settlement
+  and release debit only that owner. Folding still protects sessions with open charges. Missing
+  marker or zero denotes legacy data; unsupported versions are refused. Older readers use
+  `deny_unknown_fields` and refuse the new marker rather than silently discard this invariant.
+- Legacy totals do not identify which generation of a reused session owns a charge. When an
+  open charge's currency has zero named-session total, its retained open amount can be moved
+  from earlier totals into that session without changing project spend or any currency total.
+  Multiple keys are aggregated first. Zero-cost opens also receive a named owner. With no earlier
+  spend in that currency, existing named coverage is sufficient. Migration is bounded and saved
+  with the current marker so reopening cannot transfer the amount twice.
+- When both named-session and earlier totals are positive in a nonzero open charge's currency,
+  legacy input is refused. This includes false positives: an open charge really owned by the
+  named session plus unrelated earlier spend is indistinguishable from a folded open charge
+  plus newer closed spend. Neither timestamps nor listed entries prove ownership after eviction.
+  This is a conservative supported-data boundary, not a universal lossless migration.
+- Retain the original refused file. Recovery requires external provider/accounting evidence and
+  offline reconstruction of open-charge ownership and session totals into a validated current
+  record, preserving project/currency conservation; a dedicated reconciliation tool is future
+  work. A refused file cannot first be loaded and settled through the normal UsageLog API.
+  Adding the marker alone, resetting totals, or discarding unresolved charges is not recovery.
+  The loader returns an actionable error and never rewrites the caller's original bytes.

@@ -893,3 +893,5 @@ fn folding_keeps_the_session_count_at_the_limit() {
     assert_eq!(log.sessions.len(), MAX_SESSIONS);
     assert!(log.sessions.contains_key("s3"));
 }
+
+mod legacy255;
