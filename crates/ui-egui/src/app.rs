@@ -152,6 +152,13 @@ fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regi
     painted.get(&node.id).copied().unwrap_or_else(|| card::world_rect(node, kinds.get(&node.kind).ok().map(|kind| kind.descriptor()), t))
 }
 
+/// Cards a dragged noodle can drop on, with their world rects: only cards drawn this frame. A
+/// card that wasn't drawn has no place on screen to drop on, and its static size could put a
+/// phantom input inside the viewport.
+fn drop_targets<'a>(canvas: &'a Canvas, painted: &'a BTreeMap<NodeId, Rect>) -> impl Iterator<Item = (&'a Node, Rect)> + 'a {
+    painted.iter().filter_map(|(id, rect)| canvas.nodes().get(id).map(|node| (node, *rect)))
+}
+
 /// A card's world rect for box selection: as painted this frame, or for a card that wasn't drawn,
 /// its resolved instance rect when the card could reach the box at all (the largest card at its
 /// position). Cards that can't reach it skip the resolution.
@@ -746,8 +753,7 @@ impl NodeCraftApp {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("wiring"))).with_clip_rect(self.viewport);
         // The nearest accepting input within reach wins; failing that, the nearest input explains why.
         let mut best: Option<(bool, f32, &Node, &nodecraft_graph::Port, Pos2)> = None;
-        for node in canvas.nodes().values() {
-            let rect = card_geometry(&self.painted, kinds, node, t);
+        for (node, rect) in drop_targets(canvas, &self.painted) {
             for (index, input) in node.inputs.iter().enumerate() {
                 let at = noodle::anchor(rect, Side::Input, index, node.inputs.len());
                 let ok = accepts(node, input).is_ok();
@@ -783,7 +789,7 @@ impl NodeCraftApp {
         }
         let mut replace: Vec<EdgeId> = wiring.moving.into_iter().collect();
         let order = if input.port_type.many {
-            match occupants.last().map_or(Some(0), |e| e.order.checked_add(1)) {
+            match noodle::next_order(canvas, &to, wiring.moving) {
                 Some(order) => order,
                 None => return (None, Some("This input can't take more connections.".into())),
             }

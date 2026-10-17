@@ -123,9 +123,10 @@ pub fn into_port<'a>(canvas: &'a Canvas, to: &Endpoint) -> Vec<&'a nodecraft_gra
     edges
 }
 
-/// The order for a new edge into a list input: after the last one, or `None` if exhausted.
-pub fn next_order(canvas: &Canvas, to: &Endpoint) -> Option<u32> {
-    into_port(canvas, to).last().map_or(Some(0), |e| e.order.checked_add(1))
+/// The order for a new edge into a list input: after the last one other than `except` (an edge
+/// being rerouted), or `None` if exhausted.
+pub fn next_order(canvas: &Canvas, to: &Endpoint, except: Option<EdgeId>) -> Option<u32> {
+    into_port(canvas, to).into_iter().rev().find(|e| Some(e.id) != except).map_or(Some(0), |e| e.order.checked_add(1))
 }
 
 /// A new edge id, unique across the whole project.
@@ -215,8 +216,8 @@ mod tests {
         let project = project();
         let canvas = project.canvases().get(&C).unwrap();
         assert_eq!(into_port(canvas, &end(2, "list")).len(), 2);
-        assert_eq!(next_order(canvas, &end(2, "list")), Some(6));
-        assert_eq!(next_order(canvas, &end(3, "list")), Some(0));
+        assert_eq!(next_order(canvas, &end(2, "list"), None), Some(6));
+        assert_eq!(next_order(canvas, &end(3, "list"), None), Some(0));
         assert_eq!(modality_phrase(Modality::Image), "an image");
         let a = new_edge_id(&project, &end(1, "out"), &end(3, "list"), 0).unwrap();
         let b = new_edge_id(&project, &end(1, "out"), &end(3, "list"), 1).unwrap();

@@ -1337,3 +1337,24 @@ fn noodles_follow_a_card_while_it_is_dragged_and_commit_on_release() {
     h.run();
     assert!((pos(&h).x - before_pos.x - 60.0 / zoom).abs() < 1.0);
 }
+
+#[test]
+fn only_cards_drawn_this_frame_are_noodle_drop_targets() {
+    // A card off screen isn't painted, so it can't take a drop wherever its static size would
+    // put its inputs.
+    let mut h = harness();
+    h.run();
+    let canvas_id = h.state().canvas;
+    let painted = h.state().painted.clone();
+    let doc = h.state().session.document().clone();
+    let canvas = doc.canvases().get(&canvas_id).unwrap();
+    assert!(canvas.nodes().len() > painted.len() || !painted.is_empty());
+    let targets: Vec<NodeId> = super::drop_targets(canvas, &painted).map(|(node, _)| node.id).collect();
+    assert_eq!(targets, painted.keys().copied().collect::<Vec<_>>());
+    // With nothing painted (every card culled), nothing can be dropped on.
+    assert_eq!(super::drop_targets(canvas, &BTreeMap::new()).count(), 0);
+    // A painted id whose node is gone is skipped.
+    let mut stale = painted.clone();
+    stale.insert(NodeId::from_bytes([0xee; 16]), Rect::from_min_size(Pos2::ZERO, Vec2::splat(10.0)));
+    assert_eq!(super::drop_targets(canvas, &stale).count(), painted.len());
+}
