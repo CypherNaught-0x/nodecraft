@@ -385,7 +385,7 @@ impl Change {
             }
             Self::AddGeneration { canvas, id, index, generation } => {
                 let target = node_mut(project, *canvas, *id)?;
-                if *index > target.history.len() || target.history.len() >= 1024 {
+                if *index > target.history.len() || target.history.len() >= validate::MAX_HISTORY {
                     return Err(validate::invalid("generation index or history length exceeds limits"));
                 }
                 if target.history.iter().any(|entry| entry.id == generation.id) {

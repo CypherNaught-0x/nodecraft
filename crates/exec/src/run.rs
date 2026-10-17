@@ -1,19 +1,25 @@
 //! The run executor (#231): drives a [`RunPlan`] to results. It hands the scheduler the jobs of
 //! every step whose inputs are known, and when a step's jobs have all finished, it assembles the
 //! step's outputs and materialises the steps waiting on it (resolving their inputs from this
-//! run's outputs, within the planner's limits, #210). Each finished step becomes a [`StepResult`]:
-//! a generation stamped with the input hash of what it was actually made from (#75), which the
-//! engine records with [`record_changes`].
+//! run's outputs, within limits, #210). Each finished step becomes a [`StepResult`]: a generation
+//! stamped with the input hash of what it was actually made from (#75), which the engine records
+//! with [`record_changes`].
 //!
-//! Pure and synchronous: the host feeds it the driver's events ([`Run::job_done`],
-//! [`Run::job_failed`]) and adds the jobs it returns. [`SourceRunner`] runs the jobs that need no
+//! Pure and synchronous, and it borrows nothing: the host passes the node kinds to each call,
+//! feeds it the driver's events ([`Run::job_done`], [`Run::job_failed`]), adds the jobs it
+//! returns and cancels the ones it gives up on. [`SourceRunner`] runs the jobs that need no
 //! provider ([`JobSpec::Source`]); other job kinds go to the host's runner via [`Run::work`].
+//!
+//! Host contract: check [`Run::is_finished`] right after [`Run::start`] (a run with nothing to
+//! schedule never sends an event); report jobs the scheduler refused as failed; give job ids no
+//! other scheduled job uses.
 
 use crate::planner::{InputSource, MAX_LIST_ITEMS, MAX_PLAN_INPUT_BYTES, MAX_STEP_INPUT_BYTES, RunPlan, Step, value_bytes};
 use crate::scheduler::{self, JobId, Lane, Outcome, RetryPolicy, Start};
-use nodecraft_graph::{Canvas, Change, Changeset, Generation, Node, Project};
+use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
+use nodecraft_graph::{Canvas, Change, Generation, MAX_HISTORY, MAX_NODE_BYTES, Node};
 use nodecraft_nodes::{InputValue, JobSpec, PlanCtx, Registry};
-use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, ProjectId, Value};
+use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -21,12 +27,37 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub const MAX_STEP_JOBS: usize = MAX_LIST_ITEMS;
 /// Most jobs one run may hand out.
 pub const MAX_RUN_JOBS: usize = 100_000;
-/// Most generations a node keeps (the graph's limit); recording a new one past it drops the
-/// oldest inactive one.
-pub const MAX_HISTORY: usize = 1024;
-
 /// The lane jobs that need no provider run on.
 pub const LOCAL_LANE: &str = "local";
+
+/// Bounds on what materialising deferred steps may copy. The defaults are the planner's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunLimits {
+    /// Items in one list input.
+    pub list_items: usize,
+    /// Bytes of input values one step is planned with.
+    pub step_bytes: usize,
+    /// Bytes of input values materialised across the whole run (the planner counts the inputs
+    /// known up front separately).
+    pub run_bytes: usize,
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        Self { list_items: MAX_LIST_ITEMS, step_bytes: MAX_STEP_INPUT_BYTES, run_bytes: MAX_PLAN_INPUT_BYTES }
+    }
+}
+
+/// How a run is identified and paced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunOptions {
+    /// Identifies the run (random per run): it goes into idempotency keys and generation ids.
+    pub id: [u8; 16],
+    /// The first scheduler job id to use; the host keeps ids unique in its scheduler.
+    pub first_job: u64,
+    pub limits: RunLimits,
+    pub retry: RetryPolicy,
+}
 
 /// A finished step: its node and the generation to record on it.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,10 +73,12 @@ pub struct StepFailure {
     pub reason: String,
 }
 
-/// What changed after an event: jobs to add to the scheduler, steps that finished or failed.
+/// What changed after an event: jobs to add to the scheduler, jobs to cancel (unfinished jobs
+/// of a step that failed), and steps that finished or failed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Progress {
     pub jobs: Vec<scheduler::JobSpec>,
+    pub cancel: Vec<JobId>,
     pub finished: Vec<StepResult>,
     pub failed: Vec<StepFailure>,
 }
@@ -53,21 +86,19 @@ pub struct Progress {
 impl Progress {
     fn absorb(&mut self, other: Progress) {
         self.jobs.extend(other.jobs);
+        self.cancel.extend(other.cancel);
         self.finished.extend(other.finished);
         self.failed.extend(other.failed);
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
-    /// Waiting for the steps it comes after.
-    Waiting,
-    /// Its jobs are out; how many haven't finished yet.
-    Running {
-        left: usize,
-    },
-    /// Finished, with its outputs in `node.outputs` order.
-    Done(Vec<Value>),
+    /// Waiting for this many steps it comes after.
+    Waiting(usize),
+    /// Its jobs are out; this many haven't finished.
+    Running(usize),
+    Done,
     Failed,
 }
 
@@ -76,29 +107,35 @@ struct StepState {
     step: Step,
     status: Status,
     jobs: Vec<JobId>,
+    /// Steps that come after this one.
+    dependents: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug)]
 struct JobState {
     step: NodeId,
     work: JobSpec,
-    /// Its outputs, `(port, value)`, once done.
-    outputs: Option<Vec<(String, Value)>>,
+    done: bool,
+    /// Its outputs, `(port, value)`, until the step assembles them.
+    outputs: Vec<(String, Value)>,
 }
 
 /// One run of a plan. See the module docs.
-pub struct Run<'a> {
+pub struct Run {
     id: [u8; 16],
-    kinds: &'a Registry,
-    canvas: CanvasId,
-    /// The canvas as the run was planned, with this run's results applied as they finish: what
-    /// input hashes are computed against.
-    scratch: Project,
+    canvas_id: CanvasId,
+    /// The canvas as the run was planned: what deferred steps are planned against and input
+    /// hashes are computed on (with this run's own outputs standing in for upstream results).
+    canvas: Canvas,
+    hasher: InputHasher,
     steps: BTreeMap<NodeId, StepState>,
-    order: Vec<NodeId>,
     jobs: BTreeMap<JobId, JobState>,
+    /// Outputs of finished steps, in `node.outputs` order.
+    produced: BTreeMap<NodeId, Vec<Value>>,
+    open_steps: usize,
     next_job: u64,
-    plan_bytes: usize,
+    run_bytes: usize,
+    limits: RunLimits,
     retry: RetryPolicy,
 }
 
@@ -110,51 +147,97 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The changes that record `generation` on `node` and make it active: one undo step. A node at
-/// [`MAX_HISTORY`] first drops its oldest inactive generation.
-pub fn record_changes(canvas: CanvasId, node: &Node, generation: Generation) -> Vec<Change> {
-    let mut changes = Vec::new();
+/// JSON bytes of `value`, counted without a copy (saturating at `usize::MAX`).
+fn json_bytes(value: &impl serde::Serialize) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => usize::MAX,
+    }
+}
+
+/// Room kept below the node size limit for the JSON around the generations.
+const NODE_SLACK: usize = 64 * 1024;
+
+/// The changes that record `generation` on `node` and make it active: one undo step. Give it the
+/// live node right before applying them. To make room, the oldest inactive generations are
+/// dropped: below [`MAX_HISTORY`] entries, and until the node fits its size limit. `Err` when the
+/// result can't be recorded even then.
+pub fn record_changes(canvas: CanvasId, node: &Node, generation: Generation) -> Result<Vec<Change>, Error> {
+    generation.validate().map_err(|e| invalid(format!("the result can't be recorded: {}", e.message)))?;
+    let mut bytes = json_bytes(node).saturating_add(json_bytes(&generation)).saturating_add(NODE_SLACK);
     let mut len = node.history.len();
-    if len >= MAX_HISTORY
-        && let Some(oldest) = node.history.iter().find(|g| Some(g.id) != node.active)
-    {
-        changes.push(Change::RemoveGeneration { canvas, id: node.id, generation: oldest.id });
+    let mut changes = Vec::new();
+    for old in node.history.iter().filter(|g| Some(g.id) != node.active) {
+        if len < MAX_HISTORY && bytes <= MAX_NODE_BYTES {
+            break;
+        }
+        changes.push(Change::RemoveGeneration { canvas, id: node.id, generation: old.id });
         len = len.saturating_sub(1);
+        bytes = bytes.saturating_sub(json_bytes(old));
+    }
+    if len >= MAX_HISTORY || bytes > MAX_NODE_BYTES {
+        return Err(invalid("the result is too large to record on its node"));
     }
     let id = generation.id;
     changes.push(Change::AddGeneration { canvas, id: node.id, index: len, generation });
     changes.push(Change::SetActiveGeneration { canvas, id: node.id, generation: Some(id) });
-    changes
+    Ok(changes)
 }
 
-impl<'a> Run<'a> {
-    /// Starts a run of `plan`, made on `canvas` (`canvas_id`), with node kinds `kinds`. `id`
-    /// identifies the run (random per run): it goes into idempotency keys and generation ids.
-    /// Jobs get scheduler ids from `first_job` on. Returns the run and the jobs to schedule.
-    pub fn start(
-        plan: &RunPlan,
-        canvas_id: CanvasId,
-        canvas: &Canvas,
-        kinds: &'a Registry,
-        id: [u8; 16],
-        first_job: u64,
-        retry: RetryPolicy,
-    ) -> Result<(Self, Progress), Error> {
-        let mut scratch = Project::new(ProjectId::from_bytes(id), "run")?;
-        Change::AddCanvas { canvas: canvas.clone() }.apply(&mut scratch)?;
-        let mut steps = BTreeMap::new();
-        let mut order = Vec::with_capacity(plan.steps.len());
+impl Run {
+    /// Starts a run of `plan`, made on `canvas` (`canvas_id`). Returns the run and the first jobs. `Err` for a malformed plan: a node not
+    /// on the canvas, planned twice, or a step that comes after one not planned before it.
+    pub fn start(plan: &RunPlan, canvas_id: CanvasId, canvas: &Canvas, kinds: &Registry, options: RunOptions) -> Result<(Self, Progress), Error> {
+        let mut steps: BTreeMap<NodeId, StepState> = BTreeMap::new();
         for step in &plan.steps {
             if canvas.nodes().get(&step.node).is_none() {
                 return Err(invalid("a planned node is not on the canvas"));
             }
-            if steps.insert(step.node, StepState { step: step.clone(), status: Status::Waiting, jobs: Vec::new() }).is_some() {
+            if steps.contains_key(&step.node) {
                 return Err(invalid("a node is planned twice"));
             }
-            order.push(step.node);
+            // Steps come in dependency order: everything a step comes after is planned before it.
+            // That also rules out cycles.
+            let mut waiting = 0usize;
+            for before in &step.after {
+                let earlier = steps.get_mut(before).ok_or_else(|| invalid("a step comes after one that isn't planned before it"))?;
+                earlier.dependents.push(step.node);
+                waiting = waiting.saturating_add(1);
+            }
+            steps.insert(step.node, StepState { step: step.clone(), status: Status::Waiting(waiting), jobs: Vec::new(), dependents: Vec::new() });
         }
-        let mut run = Self { id, kinds, canvas: canvas_id, scratch, steps, order, jobs: BTreeMap::new(), next_job: first_job, plan_bytes: 0, retry };
-        let progress = run.advance();
+        let hasher = InputHasher::new(canvas, kinds, MAX_QUERY_BYTES)?;
+        let open_steps = steps.len();
+        let ready: Vec<NodeId> = plan.steps.iter().map(|s| s.node).filter(|n| steps.get(n).is_some_and(|s| s.status == Status::Waiting(0))).collect();
+        let mut run = Self {
+            id: options.id,
+            canvas_id,
+            canvas: canvas.clone(),
+            hasher,
+            steps,
+            jobs: BTreeMap::new(),
+            produced: BTreeMap::new(),
+            open_steps,
+            next_job: options.first_job,
+            run_bytes: 0,
+            limits: options.limits,
+            retry: options.retry,
+        };
+        let mut progress = Progress::default();
+        for node in ready {
+            progress.absorb(run.begin(kinds, node));
+        }
         Ok((run, progress))
     }
 
@@ -165,7 +248,12 @@ impl<'a> Run<'a> {
 
     /// Every step finished or failed.
     pub fn is_finished(&self) -> bool {
-        self.steps.values().all(|s| matches!(s.status, Status::Done(_) | Status::Failed))
+        self.open_steps == 0
+    }
+
+    /// The canvas the run's results go on.
+    pub fn canvas_id(&self) -> CanvasId {
+        self.canvas_id
     }
 
     /// The idempotency key of a job of this run: `nodecraft:<run>:<job>` (ASCII, under 64).
@@ -186,91 +274,83 @@ impl<'a> Run<'a> {
         GenerationId::from_bytes(bytes)
     }
 
-    /// A job finished with `outputs` (`(output port, value)`, in order).
-    pub fn job_done(&mut self, job: JobId, outputs: Vec<(String, Value)>) -> Progress {
+    fn title(&self, node: NodeId) -> String {
+        self.canvas.nodes().get(&node).map_or_else(|| node.to_string(), |n| if n.title.is_empty() { n.kind.clone() } else { n.title.clone() })
+    }
+
+    /// A job finished with `outputs` (`(output port, value)`, in order). Late or repeated reports
+    /// change nothing.
+    pub fn job_done(&mut self, kinds: &Registry, job: JobId, outputs: Vec<(String, Value)>) -> Progress {
         let Some(state) = self.jobs.get_mut(&job) else { return Progress::default() };
-        if state.outputs.is_some() {
+        if state.done {
             return Progress::default();
         }
-        state.outputs = Some(outputs);
+        state.done = true;
         let node = state.step;
-        let mut progress = Progress::default();
-        let left = match self.steps.get_mut(&node) {
-            Some(StepState { status: Status::Running { left }, .. }) => {
-                *left = left.saturating_sub(1);
-                *left
-            }
-            _ => return progress,
-        };
-        if left == 0 {
-            progress.absorb(self.finish(node));
-            progress.absorb(self.advance());
+        let Some(StepState { status: Status::Running(left), .. }) = self.steps.get_mut(&node) else { return Progress::default() };
+        // Keep outputs only while their step can still use them.
+        if let Some(state) = self.jobs.get_mut(&job) {
+            state.outputs = outputs;
         }
-        progress
+        *left = left.saturating_sub(1);
+        if *left > 0 {
+            return Progress::default();
+        }
+        self.finish(kinds, node)
     }
 
-    /// A job failed (for good) or was cancelled: its step fails, and so does everything after it.
+    /// A job failed for good or was cancelled: its step fails (its other jobs are to be
+    /// cancelled), and so does everything after it.
     pub fn job_failed(&mut self, job: JobId, error: &str) -> Progress {
-        let Some(node) = self.jobs.get(&job).map(|j| j.step) else { return Progress::default() };
-        let mut progress = Progress::default();
-        if matches!(self.steps.get(&node).map(|s| &s.status), Some(Status::Running { .. })) {
-            progress.failed.push(self.fail(node, error.to_owned()));
-            progress.absorb(self.advance());
+        let Some(state) = self.jobs.get_mut(&job) else { return Progress::default() };
+        if state.done {
+            return Progress::default();
         }
-        progress
+        state.done = true;
+        let node = state.step;
+        if !matches!(self.steps.get(&node).map(|s| s.status), Some(Status::Running(_))) {
+            return Progress::default();
+        }
+        self.fail(node, error.to_owned())
     }
 
-    fn fail(&mut self, node: NodeId, reason: String) -> StepFailure {
-        if let Some(state) = self.steps.get_mut(&node) {
+    /// Fails `node` and, transitively, every step after it.
+    fn fail(&mut self, node: NodeId, reason: String) -> Progress {
+        let mut progress = Progress::default();
+        let mut queue = vec![(node, reason)];
+        while let Some((node, reason)) = queue.pop() {
+            let Some(state) = self.steps.get_mut(&node) else { continue };
+            if matches!(state.status, Status::Done | Status::Failed) {
+                continue;
+            }
             state.status = Status::Failed;
-        }
-        StepFailure { node, reason }
-    }
-
-    /// Starts every waiting step whose predecessors are done, and fails those whose predecessors
-    /// failed, until nothing changes.
-    fn advance(&mut self) -> Progress {
-        let mut progress = Progress::default();
-        loop {
-            let mut changed = false;
-            for node in self.order.clone() {
-                let Some(state) = self.steps.get(&node) else { continue };
-                if !matches!(state.status, Status::Waiting) {
-                    continue;
-                }
-                let mut blocked_by = None;
-                let mut ready = true;
-                for before in &state.step.after {
-                    match self.steps.get(before).map(|s| &s.status) {
-                        Some(Status::Done(_)) => {}
-                        Some(Status::Failed) => blocked_by = Some(*before),
-                        // A predecessor outside the plan can't finish: the planner never does this.
-                        None => blocked_by = Some(*before),
-                        Some(_) => ready = false,
+            self.open_steps = self.open_steps.saturating_sub(1);
+            let dependents = state.dependents.clone();
+            for job in state.jobs.clone() {
+                if let Some(job_state) = self.jobs.get_mut(&job) {
+                    job_state.outputs = Vec::new();
+                    if !job_state.done {
+                        job_state.done = true;
+                        progress.cancel.push(job);
                     }
                 }
-                if let Some(before) = blocked_by {
-                    progress.failed.push(self.fail(node, format!("skipped: {before} didn't produce a result")));
-                    changed = true;
-                } else if ready {
-                    progress.absorb(self.begin(node));
-                    changed = true;
-                }
             }
-            if !changed {
-                return progress;
-            }
+            progress.failed.push(StepFailure { node, reason });
+            let title = self.title(node);
+            queue.extend(dependents.into_iter().map(|d| (d, format!("skipped: “{title}” didn't produce a result"))));
         }
+        progress
     }
 
     /// Hands out a ready step's jobs: the planned ones, or ones planned now from this run's
     /// outputs. A step with no jobs finishes at once.
-    fn begin(&mut self, node: NodeId) -> Progress {
-        let mut progress = Progress::default();
-        let planned = match self.steps.get(&node).map(|s| s.step.jobs.clone()) {
-            Some(Some(jobs)) => Ok(jobs),
-            Some(None) => self.materialise(node),
-            None => return progress,
+    fn begin(&mut self, kinds: &Registry, node: NodeId) -> Progress {
+        let planned = match self.steps.get_mut(&node) {
+            Some(state) => match state.step.jobs.take() {
+                Some(jobs) => Ok(jobs),
+                None => self.materialise(kinds, node),
+            },
+            None => return Progress::default(),
         };
         let jobs = match planned {
             Ok(jobs) if jobs.len() > MAX_STEP_JOBS => Err(format!("it would run more than {MAX_STEP_JOBS} jobs")),
@@ -279,35 +359,34 @@ impl<'a> Run<'a> {
         };
         let jobs = match jobs {
             Ok(jobs) => jobs,
-            Err(reason) => {
-                progress.failed.push(self.fail(node, reason));
-                return progress;
-            }
+            Err(reason) => return self.fail(node, reason),
         };
+        let mut progress = Progress::default();
         let mut ids = Vec::with_capacity(jobs.len());
         for work in jobs {
             let id = JobId(self.next_job);
-            self.next_job = self.next_job.saturating_add(1);
+            let Some(next) = self.next_job.checked_add(1) else { return self.fail(node, "the run ran out of job ids".into()) };
+            self.next_job = next;
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane: lane(&work), retry: self.retry, idempotency_key: self.key(id) });
-            self.jobs.insert(id, JobState { step: node, work, outputs: None });
+            self.jobs.insert(id, JobState { step: node, work, done: false, outputs: Vec::new() });
             ids.push(id);
         }
         let left = ids.len();
         if let Some(state) = self.steps.get_mut(&node) {
             state.jobs = ids;
-            state.status = Status::Running { left };
+            state.status = Status::Running(left);
         }
         if left == 0 {
-            progress.absorb(self.finish(node));
+            progress.absorb(self.finish(kinds, node));
         }
         progress
     }
 
-    /// Plans a deferred step from this run's outputs, within the planner's limits (#210).
-    fn materialise(&mut self, node: NodeId) -> Result<Vec<JobSpec>, String> {
+    /// Plans a deferred step from this run's outputs, within [`RunLimits`] (#210).
+    fn materialise(&mut self, kinds: &Registry, node: NodeId) -> Result<Vec<JobSpec>, String> {
         let state = self.steps.get(&node).ok_or("the step is gone")?;
         let mut step_bytes = 0usize;
-        let mut plan_bytes = self.plan_bytes;
+        let mut run_bytes = self.run_bytes;
         let mut inputs = Vec::with_capacity(state.step.inputs.len());
         for input in &state.step.inputs {
             let mut values: Vec<Value> = Vec::new();
@@ -320,18 +399,18 @@ impl<'a> Run<'a> {
                     Value::List(items) if splice => items.iter().collect(),
                     other => vec![other],
                 };
-                if input.port_type.many && values.len().saturating_add(items.len()) > MAX_LIST_ITEMS {
-                    return Err(format!("its {} input would have more than {MAX_LIST_ITEMS} items", input.port));
+                if input.port_type.many && values.len().saturating_add(items.len()) > self.limits.list_items {
+                    return Err(format!("its {} input would have more than {} items", input.port, self.limits.list_items));
                 }
                 for item in items {
                     let bytes = value_bytes(item);
                     step_bytes = step_bytes.saturating_add(bytes);
-                    plan_bytes = plan_bytes.saturating_add(bytes);
-                    if step_bytes > MAX_STEP_INPUT_BYTES {
-                        return Err(format!("its inputs are larger than {} MiB", MAX_STEP_INPUT_BYTES / (1024 * 1024)));
+                    run_bytes = run_bytes.saturating_add(bytes);
+                    if step_bytes > self.limits.step_bytes {
+                        return Err(format!("its inputs are larger than {} bytes", self.limits.step_bytes));
                     }
-                    if plan_bytes > MAX_PLAN_INPUT_BYTES {
-                        return Err(format!("the run's inputs are larger than {} MiB", MAX_PLAN_INPUT_BYTES / (1024 * 1024)));
+                    if run_bytes > self.limits.run_bytes {
+                        return Err(format!("the run's inputs are larger than {} bytes", self.limits.run_bytes));
                     }
                     values.push(item.clone());
                 }
@@ -347,46 +426,65 @@ impl<'a> Run<'a> {
             };
             inputs.push(InputValue { port: input.port.clone(), port_type: input.port_type, value });
         }
-        self.plan_bytes = plan_bytes;
-        let canvas = self.scratch.canvases().get(&self.canvas).ok_or("the run's canvas is gone")?;
-        let node = canvas.nodes().get(&node).ok_or("the node is gone")?;
-        let kind = self.kinds.get(&node.kind).map_err(|e| e.message)?;
+        self.run_bytes = run_bytes;
+        let node = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
+        let kind = kinds.get(&node.kind).map_err(|e| e.message)?;
         kind.plan(&PlanCtx { node, inputs: &inputs }).map_err(|e| e.message)
     }
 
     /// The value a finished step produced on `port`.
     fn step_output(&self, node: NodeId, port: &str) -> Result<&Value, String> {
-        let Some(Status::Done(outputs)) = self.steps.get(&node).map(|s| &s.status) else { return Err(format!("{node} hasn't produced a result")) };
-        let canvas = self.scratch.canvases().get(&self.canvas).ok_or("the run's canvas is gone")?;
-        let index =
-            canvas.nodes().get(&node).and_then(|n| n.outputs.iter().position(|p| p.name == port)).ok_or_else(|| format!("{node} has no {port} output"))?;
-        outputs.get(index).ok_or_else(|| format!("{node} has no {port} output"))
+        let outputs = self.produced.get(&node).ok_or_else(|| format!("{} hasn't produced a result", self.title(node)))?;
+        let index = self
+            .canvas
+            .nodes()
+            .get(&node)
+            .and_then(|n| n.outputs.iter().position(|p| p.name == port))
+            .ok_or_else(|| format!("{} has no {port} output", self.title(node)))?;
+        outputs.get(index).ok_or_else(|| format!("{} has no {port} output", self.title(node)))
     }
 
-    /// Assembles a step whose jobs are all done into its result, records it on the run's canvas
-    /// and stamps its input hash.
-    fn finish(&mut self, node: NodeId) -> Progress {
-        let mut progress = Progress::default();
-        match self.assemble(node) {
-            Ok(result) => progress.finished.push(result),
-            Err(reason) => progress.failed.push(self.fail(node, reason)),
+    /// A step whose jobs are all done: its result, then the steps that were waiting on it.
+    fn finish(&mut self, kinds: &Registry, node: NodeId) -> Progress {
+        let result = match self.assemble(kinds, node) {
+            Ok(result) => result,
+            Err(reason) => return self.fail(node, reason),
+        };
+        let mut progress = Progress { finished: vec![result], ..Progress::default() };
+        let dependents = self.steps.get_mut(&node).map(|state| {
+            state.status = Status::Done;
+            state.dependents.clone()
+        });
+        self.open_steps = self.open_steps.saturating_sub(1);
+        for next in dependents.into_iter().flatten() {
+            let ready = match self.steps.get_mut(&next) {
+                Some(StepState { status: Status::Waiting(waiting), .. }) => {
+                    *waiting = waiting.saturating_sub(1);
+                    *waiting == 0
+                }
+                _ => false,
+            };
+            if ready {
+                progress.absorb(self.begin(kinds, next));
+            }
         }
         progress
     }
 
-    fn assemble(&mut self, node: NodeId) -> Result<StepResult, String> {
-        let state = self.steps.get(&node).ok_or("the step is gone")?;
-        let canvas = self.scratch.canvases().get(&self.canvas).ok_or("the run's canvas is gone")?;
-        let target = canvas.nodes().get(&node).ok_or("the node is gone")?;
+    /// Assembles a step's outputs and stamps its input hash.
+    fn assemble(&mut self, kinds: &Registry, node: NodeId) -> Result<StepResult, String> {
+        let target = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
+        let job_ids = self.steps.get(&node).map(|s| s.jobs.clone()).unwrap_or_default();
         let mut per_port: Vec<Vec<Value>> = vec![Vec::new(); target.outputs.len()];
-        for job in &state.jobs {
-            for (port, value) in self.jobs.get(job).and_then(|j| j.outputs.as_ref()).into_iter().flatten() {
-                let index = target.outputs.iter().position(|p| &p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
+        for job in job_ids {
+            let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
+            for (port, value) in outputs {
+                let index = target.outputs.iter().position(|p| p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
                 let slot = per_port.get_mut(index).ok_or("output index out of range")?;
                 if slot.len() >= MAX_LIST_ITEMS {
                     return Err(format!("its {port} output has more than {MAX_LIST_ITEMS} items"));
                 }
-                slot.push(value.clone());
+                slot.push(value);
             }
         }
         let mut outputs = Vec::with_capacity(per_port.len());
@@ -402,16 +500,12 @@ impl<'a> Run<'a> {
                 }
             }
         }
-        // The hash of what it was made from: the run's canvas, with this run's upstream results.
-        let input_hash = crate::staleness::input_hash(canvas, self.kinds, node).ok();
-        let generation = Generation { id: self.generation_id(node), outputs: outputs.clone(), input_hash };
-        // Recording it on the run's canvas checks it fits the document (the engine records the
-        // same changes) and lets downstream steps hash against it.
-        let changes = record_changes(self.canvas, target, generation.clone());
-        Changeset::new(changes).apply(&mut self.scratch).map_err(|e| format!("its result can't be recorded: {}", e.message))?;
-        if let Some(state) = self.steps.get_mut(&node) {
-            state.status = Status::Done(outputs);
-        }
+        // What it was made from: the planned canvas, with this run's upstream outputs. An
+        // over-budget hash is recorded as unknown rather than failing a paid result.
+        let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
+        let generation = Generation { id: self.generation_id(node), outputs, input_hash };
+        generation.validate().map_err(|e| format!("its result can't be recorded: {}", e.message))?;
+        self.produced.insert(node, generation.outputs.clone());
         Ok(StepResult { node, generation })
     }
 }

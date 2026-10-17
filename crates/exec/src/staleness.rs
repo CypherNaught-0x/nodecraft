@@ -145,33 +145,54 @@ fn stored_bytes(node: &Node) -> usize {
 /// A node's recipe digest, or why its kind rejects it (then it has no meaningful hash: unknown).
 type Recipe = Result<[u8; 32], Error>;
 
-/// One query's shared state: the resolved inputs, memoized digests and the byte budget.
-struct Query<'a> {
-    canvas: &'a Canvas,
-    kinds: &'a Registry,
-    incoming: crate::routing::Incoming<'a>,
+/// Resolved feeds of every node, owned so a hasher can outlive the borrow of its canvas:
+/// target → (port, position, upstream, upstream port).
+type Feeds = BTreeMap<NodeId, Vec<(String, u32, NodeId, String)>>;
+
+/// Input hashes over one canvas, reusable across queries: routers are resolved once, and each
+/// node's recipe and each upstream output are digested once (memoized), all charged to one byte
+/// budget. The canvas and kinds are passed to every call and must be the ones it was built with.
+pub struct InputHasher {
+    feeds: Feeds,
+    /// Consumers whose inputs go through an invalid router, and the first such router.
+    invalid: BTreeMap<NodeId, NodeId>,
     recipes: BTreeMap<NodeId, Recipe>,
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
-    outputs: BTreeMap<(NodeId, &'a str), Option<[u8; 32]>>,
+    outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
     meter: Meter,
 }
 
-impl<'a> Query<'a> {
-    fn new(canvas: &'a Canvas, kinds: &'a Registry, budget: usize) -> Result<Self, Error> {
-        Ok(Self {
-            canvas,
-            kinds,
-            incoming: crate::routing::incoming(canvas, kinds)?,
-            recipes: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            meter: Meter { left: budget, hashed: 0 },
-        })
+impl InputHasher {
+    /// A hasher for `canvas` with a byte budget of `budget` across all its queries.
+    pub fn new(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<Self, Error> {
+        let incoming = crate::routing::incoming(canvas, kinds)?;
+        let mut meter = Meter { left: budget, hashed: 0 };
+        let mut feeds: Feeds = BTreeMap::new();
+        for (target, list) in &incoming.feeds {
+            let mut owned = Vec::with_capacity(list.len());
+            for (port, order, from, from_port) in list {
+                // Copying the feed index is work too.
+                meter.charge(VALUE_COST.saturating_add(port.len()).saturating_add(from_port.len()))?;
+                owned.push(((*port).to_owned(), *order, *from, (*from_port).to_owned()));
+            }
+            feeds.insert(*target, owned);
+        }
+        let mut invalid = BTreeMap::new();
+        for ((target, _), router) in &incoming.invalid {
+            invalid.entry(*target).or_insert(*router);
+        }
+        Ok(Self { feeds, invalid, recipes: BTreeMap::new(), outputs: BTreeMap::new(), meter })
+    }
+
+    /// Bytes hashed so far.
+    pub fn hashed(&self) -> usize {
+        self.meter.hashed
     }
 
     /// Kind, configuration and shaping parameters: the visible resolved values when the kind is
     /// installed (hidden ones and defaults as the kind applies them), else what is stored.
     /// Outer `Err`: the query is over budget.
-    fn recipe(&mut self, node: &Node) -> Result<Recipe, Error> {
+    fn recipe(&mut self, kinds: &Registry, node: &Node) -> Result<Recipe, Error> {
         if let Some(recipe) = self.recipes.get(&node.id) {
             return Ok(recipe.clone());
         }
@@ -179,7 +200,7 @@ impl<'a> Query<'a> {
         let mut w = Writer::new();
         w.text(&node.kind);
         w.params(&node.config)?;
-        let recipe = match self.kinds.get(&node.kind) {
+        let recipe = match kinds.get(&node.kind) {
             Err(_) => {
                 w.params(&node.params)?;
                 Ok(w.finish())
@@ -200,17 +221,21 @@ impl<'a> Query<'a> {
         Ok(recipe)
     }
 
-    /// The content of `upstream`'s active result on `port`, or `None` when it has none it can
-    /// lend (no result, or one recorded for another port layout).
-    fn output(&mut self, upstream: &'a Node, port: &'a str) -> Result<Option<[u8; 32]>, Error> {
-        if let Some(digest) = self.outputs.get(&(upstream.id, port)) {
+    /// The content of `upstream`'s result on `port`: `produced` (a run's own outputs, in
+    /// `upstream.outputs` order) when given, else its active result. `None` when it has none it
+    /// can lend (no result, or one recorded for another port layout).
+    fn output(&mut self, upstream: &Node, port: &str, produced: Option<&[Value]>) -> Result<Option<[u8; 32]>, Error> {
+        if let Some(digest) = self.outputs.get(&(upstream.id, port.to_owned())) {
             return Ok(*digest);
         }
-        let active = upstream.active.and_then(|active| upstream.history.iter().find(|g| g.id == active));
+        let outputs = match produced {
+            Some(values) => Some(values),
+            None => upstream.active.and_then(|active| upstream.history.iter().find(|g| g.id == active)).map(|g| g.outputs.as_slice()),
+        };
         // Results are positional; one recorded for a different port layout can't be used.
-        let value = active
-            .filter(|active| active.outputs.len() == upstream.outputs.len())
-            .and_then(|active| upstream.outputs.iter().position(|p| p.name == port).and_then(|i| active.outputs.get(i)));
+        let value = outputs
+            .filter(|outputs| outputs.len() == upstream.outputs.len())
+            .and_then(|outputs| upstream.outputs.iter().position(|p| p.name == port).and_then(|i| outputs.get(i)));
         let digest = match value {
             Some(value) => {
                 let mut w = Writer::new();
@@ -219,28 +244,30 @@ impl<'a> Query<'a> {
             }
             None => None,
         };
-        self.outputs.insert((upstream.id, port), digest);
+        self.outputs.insert((upstream.id, port.to_owned()), digest);
         Ok(digest)
     }
 
-    /// The hash a result of `id` would record if it ran now. Outer `Err`: the node isn't on the
-    /// canvas, or the query is over budget. Inner `Err`: it (or a source feeding it) is rejected
-    /// by its kind, so it has no hash.
-    fn hash(&mut self, id: NodeId) -> Result<Result<Blake3, Error>, Error> {
-        let canvas = self.canvas;
-        // Inputs through an invalid router have no meaningful hash: unknown.
-        if let Some((_, router)) = self.incoming.invalid.range((id, "")..).next().filter(|((target, _), _)| *target == id) {
-            return Ok(Err(Error::new(ErrorKind::InvalidInput, format!("inputs depend on invalid router {router}"))));
+    /// The hash a result of `id` would record if it ran now, with `produced` standing in for the
+    /// active results of the nodes it lists (a run's own outputs, positional). `Ok(None)`: it (or
+    /// a source feeding it) is rejected by its kind, or its inputs go through an invalid router,
+    /// so it has no hash. `Err`: the node isn't on the canvas, or the budget is spent.
+    ///
+    /// A node's output digest is memoized the first time it is read, so give a node's produced
+    /// outputs before hashing anything downstream of it.
+    pub fn hash(&mut self, canvas: &Canvas, kinds: &Registry, id: NodeId, produced: &BTreeMap<NodeId, Vec<Value>>) -> Result<Option<Blake3>, Error> {
+        if self.invalid.contains_key(&id) {
+            return Ok(None);
         }
         let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "node is not on this canvas"))?;
         let mut w = Writer::new();
-        match self.recipe(node)? {
+        match self.recipe(kinds, node)? {
             Ok(recipe) => w.digest(&recipe),
-            Err(rejected) => return Ok(Err(rejected)),
+            Err(_) => return Ok(None),
         }
-        let mut feeds: BTreeMap<&str, Vec<(u32, NodeId, &str)>> = BTreeMap::new();
-        for (port, order, from, from_port) in self.incoming.feeds.get(&id).into_iter().flatten() {
-            feeds.entry(*port).or_default().push((*order, *from, *from_port));
+        let mut feeds: BTreeMap<String, Vec<(u32, NodeId, String)>> = BTreeMap::new();
+        for (port, order, from, from_port) in self.feeds.get(&id).into_iter().flatten() {
+            feeds.entry(port.clone()).or_default().push((*order, *from, from_port.clone()));
         }
         for port in &node.inputs {
             w.text(&port.name);
@@ -250,18 +277,18 @@ impl<'a> Query<'a> {
             for (_, from, from_port) in list {
                 // Each feed costs a little, so huge fan-ins count against the budget too.
                 self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
-                w.text(from_port);
+                w.text(&from_port);
                 match canvas.nodes().get(&from) {
                     // A source contributes its recipe: what it emits.
-                    Some(upstream) if is_source(self.kinds, upstream) => match self.recipe(upstream)? {
+                    Some(upstream) if is_source(kinds, upstream) => match self.recipe(kinds, upstream)? {
                         Ok(recipe) => {
                             w.text("source");
                             w.digest(&recipe);
                         }
-                        Err(rejected) => return Ok(Err(rejected)),
+                        Err(_) => return Ok(None),
                     },
-                    // Anything else contributes the content of the result it currently lends.
-                    Some(upstream) => match self.output(upstream, from_port)? {
+                    // Anything else contributes the content of the result it lends.
+                    Some(upstream) => match self.output(upstream, &from_port, produced.get(&from).map(Vec::as_slice))? {
                         Some(digest) => {
                             w.text("result");
                             w.digest(&digest);
@@ -272,7 +299,7 @@ impl<'a> Query<'a> {
                 }
             }
         }
-        Ok(Ok(Blake3::from_bytes(w.finish())))
+        Ok(Some(Blake3::from_bytes(w.finish())))
     }
 }
 
@@ -284,7 +311,16 @@ fn is_source(kinds: &Registry, node: &Node) -> bool {
 /// its kind rejects it (or a source feeding it), its routers can't be resolved, or the canvas is
 /// too large to hash.
 pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake3, Error> {
-    Query::new(canvas, kinds, MAX_QUERY_BYTES)?.hash(id)?
+    let mut hasher = InputHasher::new(canvas, kinds, MAX_QUERY_BYTES)?;
+    if hasher.invalid.contains_key(&id) {
+        return Err(Error::new(ErrorKind::InvalidInput, "its inputs depend on an invalid router"));
+    }
+    if let Some(node) = canvas.nodes().get(&id)
+        && let Some(Err(rejected)) = hasher.recipe(kinds, node).ok()
+    {
+        return Err(rejected);
+    }
+    hasher.hash(canvas, kinds, id, &BTreeMap::new())?.ok_or_else(|| Error::new(ErrorKind::InvalidInput, "a source feeding it is invalid"))
 }
 
 /// Nodes whose active result is stale: its recorded input hash differs from the current one, or
@@ -299,12 +335,13 @@ pub fn stale(canvas: &Canvas, kinds: &Registry) -> Result<BTreeSet<NodeId>, Erro
 /// [`stale`] with its own byte budget; also returns the bytes hashed.
 fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTreeSet<NodeId>, usize), Error> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
-    let mut query = Query::new(canvas, kinds, budget)?;
+    let mut query = InputHasher::new(canvas, kinds, budget)?;
+    let none = BTreeMap::new();
     let mut stale = BTreeSet::new();
     for node in canvas.nodes().values() {
         let recorded = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).and_then(|g| g.input_hash);
         if let Some(recorded) = recorded
-            && query.hash(node.id)?.is_ok_and(|now| now != recorded)
+            && query.hash(canvas, kinds, node.id, &none)?.is_some_and(|now| now != recorded)
         {
             stale.insert(node.id);
         }

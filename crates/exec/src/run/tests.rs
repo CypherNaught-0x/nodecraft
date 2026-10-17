@@ -1,7 +1,8 @@
 use super::*;
 use crate::planner::{Planned, RunMode, plan};
-use nodecraft_graph::{Edge, Endpoint, Port};
+use nodecraft_graph::{Changeset, Edge, Endpoint, Port, Project};
 use nodecraft_nodes::{Category, ModeId, NodeDescriptor, NodeKind};
+use nodecraft_types::ProjectId;
 use nodecraft_types::{EdgeId, Modality, ParamSchema, PortType};
 use std::collections::BTreeSet;
 
@@ -105,6 +106,10 @@ fn project(nodes: &[(u16, &str, &str)], wires: &[(u16, &str, u16, u32)]) -> Proj
     project
 }
 
+fn opts(id: [u8; 16], first_job: u64, limits: RunLimits) -> RunOptions {
+    RunOptions { id, first_job, limits, retry: RetryPolicy::NEVER }
+}
+
 fn plan_of(project: &Project, requested: &[u16]) -> RunPlan {
     let canvas = project.canvases().get(&C).unwrap();
     match plan(canvas, &kinds(), &RunMode::Selected, &requested.iter().map(|n| id(*n)).collect(), &BTreeSet::new()).unwrap() {
@@ -114,13 +119,13 @@ fn plan_of(project: &Project, requested: &[u16]) -> RunPlan {
 }
 
 /// Runs every job the run hands out (source jobs emit their value), failing those in `fail`.
-fn drive(run: &mut Run<'_>, first: Progress, fail: &BTreeSet<NodeId>) -> (Vec<StepResult>, Vec<StepFailure>, Vec<scheduler::JobSpec>) {
+fn drive(run: &mut Run, kinds: &Registry, first: Progress, fail: &BTreeSet<NodeId>) -> (Vec<StepResult>, Vec<StepFailure>, Vec<scheduler::JobSpec>) {
     let (mut finished, mut failed, mut all) = (first.finished, first.failed, Vec::new());
     let mut queue = first.jobs;
     while let Some(job) = queue.pop() {
         all.push(job.clone());
         let JobSpec::Source { node, output, value } = run.work(job.id).unwrap().clone();
-        let progress = if fail.contains(&node) { run.job_failed(job.id, "provider said no") } else { run.job_done(job.id, vec![(output, value)]) };
+        let progress = if fail.contains(&node) { run.job_failed(job.id, "provider said no") } else { run.job_done(kinds, job.id, vec![(output, value)]) };
         queue.extend(progress.jobs);
         finished.extend(progress.finished);
         failed.extend(progress.failed);
@@ -137,9 +142,9 @@ fn a_chain_runs_deferred_steps_on_upstream_outputs_and_leaves_nothing_stale() {
     let mut p = project(&[(1, "source.text", "fox"), (2, "test.join", ""), (3, "test.join", "")], &[(1, "out", 2, 0), (2, "out", 3, 0)]);
     let kinds = kinds();
     let plan = plan_of(&p, &[2, 3]);
-    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
     assert_eq!(first.jobs.len(), 1, "only 2's jobs are known up front");
-    let (finished, failed, _) = drive(&mut run, first, &BTreeSet::new());
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
     assert!(failed.is_empty(), "{failed:?}");
     assert!(run.is_finished());
     assert_eq!(output(&finished, 2), "(fox)");
@@ -149,7 +154,7 @@ fn a_chain_runs_deferred_steps_on_upstream_outputs_and_leaves_nothing_stale() {
     for result in &finished {
         let node = p.canvases().get(&C).unwrap().nodes().get(&result.node).unwrap().clone();
         assert!(result.generation.input_hash.is_some());
-        Changeset::new(record_changes(C, &node, result.generation.clone())).apply(&mut p).unwrap();
+        Changeset::new(record_changes(C, &node, result.generation.clone()).unwrap()).apply(&mut p).unwrap();
     }
     assert!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
     // Editing the source makes both stale.
@@ -166,8 +171,8 @@ fn fan_in_keeps_noodle_order_and_list_outputs_are_spliced() {
     );
     let kinds = kinds();
     let plan = plan_of(&p, &[2, 4]);
-    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
-    let (finished, failed, _) = drive(&mut run, first, &BTreeSet::new());
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(output(&finished, 2), "a+b", "two jobs assembled into the list output");
     assert_eq!(output(&finished, 4), "(a+b+c)", "spliced, then the second noodle");
@@ -181,12 +186,12 @@ fn a_failed_step_skips_everything_after_it() {
     );
     let kinds = kinds();
     let plan = plan_of(&p, &[2, 3, 4]);
-    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
-    let (finished, failed, jobs) = drive(&mut run, first, &[id(2)].into_iter().collect());
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, failed, jobs) = drive(&mut run, &kinds, first, &[id(2)].into_iter().collect());
     assert!(finished.is_empty());
     assert_eq!(jobs.len(), 1, "nothing after 2 ran");
     assert_eq!(failed.iter().map(|f| f.node).collect::<Vec<_>>(), vec![id(2), id(3), id(4)]);
-    assert!(failed[1].reason.starts_with("skipped"));
+    assert!(failed[1].reason.starts_with("skipped: “test.join”"), "{}", failed[1].reason);
     assert!(run.is_finished());
 }
 
@@ -198,8 +203,8 @@ fn a_list_fanned_in_past_the_item_limit_is_refused_at_run_time() {
     let p = project(&[(1, "source.text", "ab"), (2, "test.split", ""), (3, "test.join", "")], &wires);
     let kinds = kinds();
     let plan = plan_of(&p, &[2, 3]);
-    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
-    let (finished, failed, _) = drive(&mut run, first, &BTreeSet::new());
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
     assert_eq!(finished.iter().map(|r| r.node).collect::<Vec<_>>(), vec![id(2)]);
     assert_eq!(failed.len(), 1);
     assert!(failed[0].reason.contains("more than 4096 items"), "{}", failed[0].reason);
@@ -211,9 +216,9 @@ fn keys_and_generation_ids_are_deterministic_per_run() {
     let kinds = kinds();
     let plan = plan_of(&p, &[2]);
     let start = |run_id| {
-        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, run_id, 7, RetryPolicy::NEVER).unwrap();
+        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(run_id, 7, RunLimits::default())).unwrap();
         let key = first.jobs[0].idempotency_key.clone();
-        let (finished, _, _) = drive(&mut run, first, &BTreeSet::new());
+        let (finished, _, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
         (key, finished[0].generation.id)
     };
     let (key, generation) = start(RUN);
@@ -233,12 +238,12 @@ fn results_that_dont_fit_their_outputs_fail_the_step() {
         vec![("out".to_owned(), Value::Text("a".into())), ("out".to_owned(), Value::Text("b".into()))],
         vec![("nope".to_owned(), Value::Text("a".into()))],
     ] {
-        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
-        let progress = run.job_done(first.jobs[0].id, outputs);
+        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+        let progress = run.job_done(&kinds, first.jobs[0].id, outputs);
         assert_eq!(progress.failed.len(), 1, "{progress:?}");
         // A late or duplicate report changes nothing.
-        assert_eq!(run.job_done(first.jobs[0].id, vec![]), Progress::default());
-        assert_eq!(run.job_done(JobId(999), vec![]), Progress::default());
+        assert_eq!(run.job_done(&kinds, first.jobs[0].id, vec![]), Progress::default());
+        assert_eq!(run.job_done(&kinds, JobId(999), vec![]), Progress::default());
     }
 }
 
@@ -249,7 +254,7 @@ fn recording_a_result_past_the_history_limit_drops_the_oldest_inactive() {
         node.history.push(Generation::new(GenerationId::from_bytes(u128::try_from(n + 1).unwrap().to_be_bytes()), vec![]));
     }
     node.active = node.history.first().map(|g| g.id);
-    let changes = record_changes(C, &node, Generation::new(GenerationId::from_bytes([9; 16]), vec![]));
+    let changes = record_changes(C, &node, Generation::new(GenerationId::from_bytes([9; 16]), vec![])).unwrap();
     assert!(matches!(changes.first(), Some(Change::RemoveGeneration { generation, .. }) if Some(*generation) == node.history.get(1).map(|g| g.id)));
     assert!(matches!(changes.get(1), Some(Change::AddGeneration { index, .. }) if *index == MAX_HISTORY - 1));
 }
@@ -278,7 +283,7 @@ fn a_plan_runs_end_to_end_through_the_scheduler_and_driver() {
     );
     let kinds = kinds();
     let plan = plan_of(&p, &[2, 3, 4]);
-    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
     let runner = SourceRunner::default();
     let mut scheduler = scheduler::Scheduler::new(scheduler::Limits::default());
     for job in &first.jobs {
@@ -293,7 +298,7 @@ fn a_plan_runs_end_to_end_through_the_scheduler_and_driver() {
     let host = runner.clone();
     let events = move |event: scheduler::Event| {
         let progress = match event {
-            scheduler::Event::Done { job } => run.job_done(job, take_outputs(&host.outputs, job)),
+            scheduler::Event::Done { job } => run.job_done(&kinds, job, take_outputs(&host.outputs, job)),
             scheduler::Event::Failed { job, error } => run.job_failed(job, &error),
             scheduler::Event::Cancelled { job } => run.job_failed(job, "cancelled"),
             _ => Progress::default(),
@@ -303,10 +308,14 @@ fn a_plan_runs_end_to_end_through_the_scheduler_and_driver() {
                 host.register(job.id, work.clone());
             }
         }
-        if !progress.jobs.is_empty()
-            && let Some(handle) = &handle
-        {
-            drop(handle.add(progress.jobs));
+        if let Some(handle) = &handle {
+            if !progress.cancel.is_empty() {
+                let _ = handle.cancel(scheduler::CancelScope::Jobs(progress.cancel.clone()));
+            }
+            if !progress.jobs.is_empty() {
+                // Sent at once; a refusal would be reported back as failed jobs.
+                drop(handle.add(progress.jobs));
+            }
         }
         collected.lock().unwrap().extend(progress.finished);
         if run.is_finished() {
@@ -327,7 +336,7 @@ fn too_many_jobs_are_refused_and_a_step_with_none_finishes_at_once() {
     let p = project(&[(1, "source.text", &long), (2, "test.split", ""), (3, "source.text", ""), (4, "test.split", "")], &[(1, "out", 2, 0), (3, "out", 4, 0)]);
     let kinds = kinds();
     let plan = plan_of(&p, &[2, 4]);
-    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, RUN, 1, RetryPolicy::NEVER).unwrap();
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
     assert!(first.jobs.is_empty());
     assert_eq!(first.failed.iter().map(|f| f.node).collect::<Vec<_>>(), vec![id(2)]);
     assert!(first.failed[0].reason.contains("more than 4096 jobs"));
@@ -335,4 +344,160 @@ fn too_many_jobs_are_refused_and_a_step_with_none_finishes_at_once() {
     assert_eq!(first.finished.iter().map(|r| (r.node, r.generation.outputs.clone())).collect::<Vec<_>>(), vec![(id(4), vec![Value::List(vec![])])]);
     assert!(run.is_finished());
     assert_eq!(run.job_failed(JobId(1), "late"), Progress::default());
+}
+
+/// Text in, text out, through `n` jobs that each emit a piece: lets a test fail one of several.
+struct Pieces(NodeDescriptor);
+impl NodeKind for Pieces {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("pieces").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok((0..3).map(|n| JobSpec::Source { node: ctx.node.id, output: "items".into(), value: Value::Text(n.to_string()) }).collect())
+    }
+}
+
+#[test]
+fn fan_out_runs_every_branch_and_a_failed_job_cancels_its_siblings() {
+    // 1 → 2 → {3, 4}: both branches run on 2's output.
+    let p = project(
+        &[(1, "source.text", "fox"), (2, "test.join", ""), (3, "test.join", ""), (4, "test.join", "")],
+        &[(1, "out", 2, 0), (2, "out", 3, 0), (2, "out", 4, 0)],
+    );
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2, 3, 4]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+    assert!(failed.is_empty());
+    assert_eq!((output(&finished, 3), output(&finished, 4)), ("((fox))".into(), "((fox))".into()));
+
+    // A three-job step: one job fails; the two others are to be cancelled, and a late report
+    // from one of them changes nothing.
+    let mut kinds = kinds;
+    let pieces = NodeDescriptor {
+        id: "test.pieces".into(),
+        label: "Pieces".into(),
+        category: Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: TEXT }],
+        outputs: vec![Port { name: "items".into(), port_type: LIST }],
+        params: ParamSchema::default(),
+        quick_add: None,
+    };
+    kinds.register(Box::new(Pieces(pieces))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([3; 16]), "Pieces").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut p).unwrap();
+    let text =
+        kinds.get("source.text").unwrap().descriptor().instantiate(id(1), &[("text".to_owned(), Value::Text("x".into()))].into_iter().collect()).unwrap();
+    let node = kinds.get("test.pieces").unwrap().descriptor().instantiate(id(2), &Default::default()).unwrap();
+    let wire =
+        Edge { id: EdgeId::from_bytes([5; 16]), from: Endpoint { node: id(1), port: "out".into() }, to: Endpoint { node: id(2), port: "in".into() }, order: 0 };
+    Changeset::new(vec![Change::AddNode { canvas: C, node: text }, Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge: wire }])
+        .apply(&mut p)
+        .unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let Planned::Ready(plan) = crate::planner::plan(canvas, &kinds, &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new()).unwrap() else {
+        panic!()
+    };
+    let (mut run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let ids: Vec<JobId> = first.jobs.iter().map(|j| j.id).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(run.job_done(&kinds, ids[0], vec![("items".into(), Value::Text("0".into()))]).finished.is_empty());
+    let progress = run.job_failed(ids[1], "no");
+    assert_eq!(progress.cancel, vec![ids[2]]);
+    assert_eq!(progress.failed.len(), 1);
+    assert_eq!(run.job_done(&kinds, ids[2], vec![]), Progress::default());
+    assert!(run.is_finished());
+}
+
+#[test]
+fn byte_limits_apply_at_run_time() {
+    let p = project(&[(1, "source.text", "abcdef"), (2, "test.split", ""), (3, "test.join", "")], &[(1, "out", 2, 0), (2, "items", 3, 0)]);
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2, 3]);
+    let each = crate::planner::value_bytes(&Value::Text("a".into()));
+    for (limits, says) in [
+        (RunLimits { step_bytes: each * 5, ..RunLimits::default() }, "its inputs are larger"),
+        (RunLimits { run_bytes: each * 5, ..RunLimits::default() }, "the run's inputs are larger"),
+        (RunLimits { list_items: 5, ..RunLimits::default() }, "more than 5 items"),
+    ] {
+        let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
+        let (_, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].reason.contains(says), "{}", failed[0].reason);
+    }
+}
+
+#[test]
+fn hashes_match_staleness_through_routers_and_splicing() {
+    // 1 "ab" → split 2 → router 5 → join 3 (list, spliced through the router).
+    let p = project(&[(1, "source.text", "ab"), (2, "test.split", ""), (3, "test.join", "")], &[(1, "out", 2, 0)]);
+    let kinds = kinds();
+    let mut p = p;
+    let router = kinds
+        .get(nodecraft_nodes::router::ID)
+        .unwrap()
+        .instantiate_instance(id(5), nodecraft_nodes::router::config(Modality::Text), &Default::default())
+        .unwrap();
+    let wire = |e: u8, from: (u16, &str), to: (u16, &str)| Edge {
+        id: EdgeId::from_bytes([e; 16]),
+        from: Endpoint { node: id(from.0), port: from.1.into() },
+        to: Endpoint { node: id(to.0), port: to.1.into() },
+        order: 0,
+    };
+    Changeset::new(vec![
+        Change::AddNode { canvas: C, node: router },
+        Change::Connect { canvas: C, edge: wire(40, (2, "items"), (5, "in")) },
+        Change::Connect { canvas: C, edge: wire(41, (5, "out"), (3, "in")) },
+    ])
+    .apply(&mut p)
+    .unwrap();
+    let plan = plan_of(&p, &[2, 3]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+    assert!(failed.is_empty(), "{failed:?}");
+    for result in &finished {
+        let node = p.canvases().get(&C).unwrap().nodes().get(&result.node).unwrap().clone();
+        Changeset::new(record_changes(C, &node, result.generation.clone()).unwrap()).apply(&mut p).unwrap();
+    }
+    assert!(finished.iter().all(|r| r.generation.input_hash.is_some()));
+    assert!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
+}
+
+#[test]
+fn malformed_plans_are_refused_and_an_empty_run_is_finished_at_once() {
+    let p = project(&[(1, "source.text", "fox"), (2, "test.join", ""), (3, "test.join", "")], &[(1, "out", 2, 0), (2, "out", 3, 0)]);
+    let kinds = kinds();
+    let canvas = p.canvases().get(&C).unwrap();
+    let plan = plan_of(&p, &[2, 3]);
+    // Out of order (3 before the step it comes after), a self-dependency, a duplicate.
+    let mut reversed = plan.clone();
+    reversed.steps.reverse();
+    let mut selfish = plan.clone();
+    selfish.steps[0].after.push(id(2));
+    let mut twice = plan.clone();
+    twice.steps.push(plan.steps[0].clone());
+    for bad in [reversed, selfish, twice] {
+        assert!(Run::start(&bad, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).is_err());
+    }
+    let (run, first) = Run::start(&RunPlan { steps: vec![], edges: vec![] }, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    assert!(run.is_finished() && first == Progress::default());
+}
+
+#[test]
+fn recording_a_large_result_drops_old_generations_until_it_fits() {
+    let big = |n: u8| Generation::new(GenerationId::from_bytes([n; 16]), vec![Value::Text("x".repeat(1_000_000))]);
+    let mut node = Node::new(id(1), "test.join");
+    for n in 1..=8 {
+        node.history.push(big(n));
+    }
+    node.active = Some(GenerationId::from_bytes([8; 16]));
+    let changes = record_changes(C, &node, big(9)).unwrap();
+    let removed: Vec<_> = changes.iter().filter_map(|c| if let Change::RemoveGeneration { generation, .. } = c { Some(*generation) } else { None }).collect();
+    assert!(!removed.is_empty() && !removed.contains(&GenerationId::from_bytes([8; 16])), "the active one stays");
+    assert_eq!(removed.first(), Some(&GenerationId::from_bytes([1; 16])), "oldest first");
+    // A result larger than a node can hold can't be recorded at all.
+    assert!(record_changes(C, &node, Generation::new(GenerationId::from_bytes([10; 16]), vec![Value::Text("x".repeat(MAX_NODE_BYTES))])).is_err());
 }

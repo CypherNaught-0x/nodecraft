@@ -8,6 +8,8 @@ pub const MAX_CHANGES: usize = 10_000;
 pub const MAX_VALUE_DEPTH: usize = 32;
 pub const MAX_VALUE_ITEMS: usize = 4096;
 pub const MAX_NODE_BYTES: usize = 8 * 1024 * 1024;
+/// Most generations a node keeps.
+pub const MAX_HISTORY: usize = 1024;
 pub const MAX_CHANGESET_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PROJECT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_CANVASES: usize = 64;
@@ -35,6 +37,14 @@ pub(crate) fn byte_budget(value: &impl serde::Serialize, limit: usize) -> Result
         }
     }
     serde_json::to_writer(Counter(limit), value).map_err(|_| invalid("serialized data exceeds byte limit"))
+}
+
+impl Generation {
+    /// Whether this result could be recorded: its values within the document's limits and its
+    /// size within a node's.
+    pub fn validate(&self) -> Result<(), Error> {
+        generation(self)
+    }
 }
 
 pub(crate) fn generation(generation: &Generation) -> Result<(), Error> {
@@ -104,7 +114,7 @@ pub(crate) fn node(node: &Node) -> Result<(), Error> {
     }
     text(&node.title, 4096)?;
     position(node.pos)?;
-    if node.params.len() > 256 || node.config.len() > 256 || node.history.len() > 1024 {
+    if node.params.len() > 256 || node.config.len() > 256 || node.history.len() > MAX_HISTORY {
         return Err(invalid("node exceeds parameter or history limits"));
     }
     for (name, param) in node.params.iter().chain(node.config.iter()) {

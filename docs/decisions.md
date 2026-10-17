@@ -675,24 +675,30 @@ a choice a later contributor might otherwise undo.
 
 ## 2026-10-17 · Run executor (#231, #210)
 
-- **`exec::run::Run` drives a `RunPlan` to results.** It is a pure, synchronous state machine:
-  the host feeds it driver events (`job_done`, `job_failed`) and adds the jobs it returns to the
-  scheduler. Scheduler dependencies aren't used. A step starts when every step it comes after
-  is done, and fails ("skipped") when one failed.
+- **`exec::run::Run` drives a `RunPlan` to results.** It is a pure, synchronous state machine
+  that borrows nothing. The host passes the node kinds to each call, feeds it driver events
+  (`job_done`, `job_failed`), adds the jobs it returns and cancels the ones in
+  `Progress::cancel`: the unfinished jobs of a step that failed. Steps start in dependency order,
+  tracked per step (Kahn's algorithm, linear in the plan). A plan whose steps aren't in that
+  order is refused, which also rules out cycles. A step after a failed one fails as "skipped".
 - **Deferred steps are planned from the run's own outputs**, by calling `NodeKind::plan` once
-  their predecessors finish. List outputs are spliced into list inputs. The planner's limits
-  apply before anything is copied: 4,096 items per list input, 64 MiB per step and 256 MiB per
-  run (#210). On top of those, a step may plan at most 4,096 jobs and a run 100,000.
+  their predecessors finish. List outputs are spliced into list inputs. `RunLimits` apply before
+  anything is copied; they default to the planner's 4,096 items per list input and 64 MiB per
+  step, plus 256 MiB per run for inputs materialised at run time (#210). A step may plan at most
+  4,096 jobs and a run 100,000.
 - **Step outputs are positional.** A job reports `(output port, value)` pairs. A list port
   collects its values in job order; a single port must get exactly one value, or the step fails.
-- **Results are stamped with the inputs actually used.** The run keeps a scratch copy of the
-  canvas as planned and applies its own results as they finish. A step's `input_hash` is computed
-  on that copy, so the producer side of #75 is right even if the user edits the canvas mid-run.
-  Recording the result there also checks it fits the document.
+- **Results are stamped with the inputs actually used.** The run keeps the canvas as planned,
+  with routers resolved once, and an `staleness::InputHasher` that memoizes digests. A step's
+  `input_hash` is computed with the run's own upstream outputs standing in for those nodes'
+  results. It matches what `staleness` computes once the results are recorded, and edits the
+  user makes mid-run don't change what the run hashes.
 - **Generation ids and keys are deterministic per run.** A generation id is derived from the
   run id and the node; a key is `nodecraft:<run hex>:<job>`, which is ASCII and under 64 bytes.
-- **The engine records a result** with `record_changes`: `AddGeneration` plus
-  `SetActiveGeneration` as one undo step, dropping the oldest inactive generation at the
-  1,024-entry history limit.
+  Job ids come from the host, which keeps them unique in its scheduler.
+- **The engine records a result** with `record_changes`, given the live node: `AddGeneration`
+  plus `SetActiveGeneration` as one undo step per result. To make room, it drops the oldest
+  inactive generations, both at the 1,024-entry history limit and until the node fits its 8 MiB
+  limit. A result too large for any node is reported as unrecordable, never silently dropped.
 - `SourceRunner` runs `JobSpec::Source` jobs. Provider jobs plug in through the host's runner
   via `Run::work`.
