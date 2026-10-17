@@ -279,6 +279,8 @@ pub struct Scheduler {
     paused: bool,
     next_seq: u64,
     events: VecDeque<Event>,
+    #[cfg(test)]
+    dependency_inspections: std::cell::Cell<usize>,
 }
 
 /// Longest backoff between attempts, whatever the policy says.
@@ -297,6 +299,8 @@ impl Scheduler {
             paused: false,
             next_seq: 0,
             events: VecDeque::new(),
+            #[cfg(test)]
+            dependency_inspections: std::cell::Cell::new(0),
         }
     }
 
@@ -370,7 +374,16 @@ impl Scheduler {
             return;
         }
         let pending = job.pending_deps;
-        let blocked = job.spec.deps.iter().find(|d| self.jobs.get(d).is_some_and(|dj| dj.state.is_finished() && dj.state != JobState::Done)).copied();
+        let blocked = job
+            .spec
+            .deps
+            .iter()
+            .find(|d| {
+                #[cfg(test)]
+                self.dependency_inspections.set(self.dependency_inspections.get().saturating_add(1));
+                self.jobs.get(d).is_some_and(|dj| dj.state.is_finished() && dj.state != JobState::Done)
+            })
+            .copied();
         if let Some(b) = blocked {
             self.finish(id, JobState::Skipped { because: b });
         } else if pending == 0 {
@@ -437,7 +450,11 @@ impl Scheduler {
                         && dj.state == JobState::Waiting
                     {
                         dj.pending_deps = dj.pending_deps.saturating_sub(1);
-                        self.settle(d);
+                        // Successful inputs cannot introduce a blocked dependency. Check the
+                        // full list only when the final normalized prerequisite completes.
+                        if dj.pending_deps == 0 {
+                            self.settle(d);
+                        }
                     }
                 }
             }
@@ -768,6 +785,76 @@ mod tests {
         assert_eq!(events.iter().filter(|e| matches!(e, Event::Queued { .. })).count(), 3);
         assert_eq!(events.last(), Some(&Event::Done { job: JobId(3) }));
         assert!(s.drain_events().is_empty());
+    }
+
+    #[test]
+    fn shared_fan_in_success_inspects_dependencies_only_on_final_prerequisite() {
+        const ROOTS: u64 = 256;
+        const SINKS: u64 = 4;
+        let mut scheduler = Scheduler::new(Limits { global: ROOTS as usize, default_per_lane: ROOTS as usize, per_lane: HashMap::new() });
+        // Duplicate input IDs are legal; pending counts and dependent notifications normalize them.
+        let deps: Vec<u64> = (0..ROOTS).flat_map(|id| [id, id]).collect();
+        let mut jobs: Vec<JobSpec> = (0..ROOTS).map(|id| job(id, &[], "roots")).collect();
+        jobs.extend((ROOTS..ROOTS + SINKS).map(|id| job(id, &deps, "sinks")));
+        scheduler.add(jobs).unwrap();
+        assert_eq!(scheduler.start_ready(0).len(), ROOTS as usize);
+        scheduler.dependency_inspections.set(0);
+        for id in 0..ROOTS {
+            scheduler.report(JobId(id), Outcome::Done, 0).unwrap();
+            if id + 1 < ROOTS {
+                assert_eq!(scheduler.summary().waiting, SINKS as usize);
+                assert!(scheduler.start_ready(0).is_empty(), "fan-in cannot start early");
+            }
+        }
+        // Count actual settle predicate inspections, excluding setup. One scan per sink,
+        // linear in its stored dependency list, instead of a scan after every prerequisite.
+        let inspections = scheduler.dependency_inspections.get();
+        assert_eq!(inspections, deps.len() * SINKS as usize);
+        assert_eq!(ids(&scheduler.start_ready(0)), (ROOTS..ROOTS + SINKS).collect::<Vec<_>>());
+        for id in ROOTS..ROOTS + SINKS {
+            scheduler.report(JobId(id), Outcome::Done, 0).unwrap();
+        }
+        assert!(scheduler.is_idle());
+    }
+
+    #[test]
+    fn fan_in_waits_through_retry_then_releases_once() {
+        let mut scheduler = sched();
+        scheduler.add(vec![JobSpec { retry: RetryPolicy::default(), ..job(1, &[], "a") }, job(2, &[], "a"), job(3, &[1, 1, 2], "a")]).unwrap();
+        assert_eq!(ids(&scheduler.start_ready(0)), [1, 2]);
+        scheduler.report(JobId(2), Outcome::Done, 0).unwrap();
+        scheduler.report(JobId(1), Outcome::Failed { error: "busy".into(), transient: true }, 0).unwrap();
+        assert_eq!(scheduler.state(JobId(3)), Some(&JobState::Waiting));
+        let wake = scheduler.next_wakeup_ms().unwrap();
+        assert_eq!(ids(&scheduler.start_ready(wake)), [1]);
+        scheduler.report(JobId(1), Outcome::Done, wake).unwrap();
+        assert_eq!(ids(&scheduler.start_ready(wake)), [3]);
+        assert!(scheduler.start_ready(wake).is_empty());
+        scheduler.report(JobId(3), Outcome::Done, wake).unwrap();
+        assert!(scheduler.is_idle());
+        let events = scheduler.drain_events();
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::Started { job: JobId(3), .. })).count(), 1);
+    }
+
+    #[test]
+    fn fan_in_failure_or_cancellation_still_skips_and_requeues() {
+        for outcome in [Outcome::Failed { error: "blocked".into(), transient: false }, Outcome::Cancelled] {
+            let mut scheduler = sched();
+            scheduler.add(vec![job(1, &[], "a"), job(2, &[], "a"), job(3, &[1, 2], "a")]).unwrap();
+            assert_eq!(ids(&scheduler.start_ready(0)), [1, 2]);
+            scheduler.report(JobId(1), Outcome::Done, 0).unwrap();
+            assert_eq!(scheduler.state(JobId(3)), Some(&JobState::Waiting));
+            scheduler.report(JobId(2), outcome, 0).unwrap();
+            assert_eq!(scheduler.state(JobId(3)), Some(&JobState::Skipped { because: JobId(2) }));
+            assert!(scheduler.is_idle());
+            scheduler.requeue(&[(JobId(2), "retry:2".into()), (JobId(3), "retry:3".into())]).unwrap();
+            assert_eq!(scheduler.state(JobId(3)), Some(&JobState::Waiting));
+            assert_eq!(ids(&scheduler.start_ready(0)), [2]);
+            scheduler.report(JobId(2), Outcome::Done, 0).unwrap();
+            assert_eq!(ids(&scheduler.start_ready(0)), [3]);
+            scheduler.report(JobId(3), Outcome::Done, 0).unwrap();
+            assert!(scheduler.is_idle());
+        }
     }
 
     #[test]
