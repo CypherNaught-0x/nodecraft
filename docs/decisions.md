@@ -672,3 +672,27 @@ a choice a later contributor might otherwise undo.
   session's stay exact and a saved log always reloads. A session id that charges again after
   being folded starts a fresh session total. Entries with an empty session id were never written
   by NodeCraft and are now refused. The CSV export can stream (`write_csv`).
+
+## 2026-10-17 · Run executor (#231, #210)
+
+- **`exec::run::Run` drives a `RunPlan` to results.** It is a pure, synchronous state machine:
+  the host feeds it driver events (`job_done`, `job_failed`) and adds the jobs it returns to the
+  scheduler. Scheduler dependencies aren't used. A step starts when every step it comes after
+  is done, and fails ("skipped") when one failed.
+- **Deferred steps are planned from the run's own outputs**, by calling `NodeKind::plan` once
+  their predecessors finish. List outputs are spliced into list inputs. The planner's limits
+  apply before anything is copied: 4,096 items per list input, 64 MiB per step and 256 MiB per
+  run (#210). On top of those, a step may plan at most 4,096 jobs and a run 100,000.
+- **Step outputs are positional.** A job reports `(output port, value)` pairs. A list port
+  collects its values in job order; a single port must get exactly one value, or the step fails.
+- **Results are stamped with the inputs actually used.** The run keeps a scratch copy of the
+  canvas as planned and applies its own results as they finish. A step's `input_hash` is computed
+  on that copy, so the producer side of #75 is right even if the user edits the canvas mid-run.
+  Recording the result there also checks it fits the document.
+- **Generation ids and keys are deterministic per run.** A generation id is derived from the
+  run id and the node; a key is `nodecraft:<run hex>:<job>`, which is ASCII and under 64 bytes.
+- **The engine records a result** with `record_changes`: `AddGeneration` plus
+  `SetActiveGeneration` as one undo step, dropping the oldest inactive generation at the
+  1,024-entry history limit.
+- `SourceRunner` runs `JobSpec::Source` jobs. Provider jobs plug in through the host's runner
+  via `Run::work`.

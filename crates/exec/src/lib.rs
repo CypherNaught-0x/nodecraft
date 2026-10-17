@@ -10,5 +10,6 @@ pub mod cost;
 pub mod driver;
 pub mod planner;
 pub mod routing;
+pub mod run;
 pub mod scheduler;
 pub mod staleness;

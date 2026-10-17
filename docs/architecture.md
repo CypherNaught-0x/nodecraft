@@ -25,7 +25,7 @@ every CI run, and fails on an unregistered crate.
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
 | L2 | `actions` | deterministic image/video/text actions (CPU reference, rayon) | graph, media |
-| L3 | `exec` | planner (routers, batches, techniques → job DAG), scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
+| L3 | `exec` | planner (routers, batches, techniques → job DAG), run executor, scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |
 | L3 | `gpu` | wgpu actions, custom WGSL actions, 3D preview renderer | actions |
 | L3 | `format` | `.ncraft` files, content-addressed asset store, atomic saves, migrations | graph |
