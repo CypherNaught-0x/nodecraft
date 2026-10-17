@@ -12,9 +12,12 @@ a choice a later contributor might otherwise undo.
   tools, since they are the user's published units.
 - **Sans-IO server.** `automation::mcp::McpServer::handle` maps one JSON-RPC message to its reply;
   `serve` adds the stdio framing. The bridge and HTTP transports reuse the same handler.
-- **Some commands are for people only** (`HUMAN_ONLY`): commands that take a secret
-  (`keys.set`) or destroy something with no undo (`keys.remove`). They are hidden from listing
-  and refused when run.
+- **Every command is classified for automation**: `AGENT_COMMANDS` may be listed and run, and
+  `HUMAN_ONLY` never is. `HUMAN_ONLY` holds commands that take a secret (`keys.set`) or destroy
+  something with no undo (`keys.remove`). An unclassified command is hidden, and a test fails
+  until it is classified, so adding a command forces the decision.
+- **Replies are size-capped, not just counted**: `canvas_inspect` pages stop at about 512 KiB,
+  and large nodes are summarised and fetched one at a time.
 - **Ids come from the host.** Commands take caller-chosen ids, so `ids_new` hands out UUIDs from a
   host-supplied random source; the CLI seeds it from the standard library's per-process random
   keys.

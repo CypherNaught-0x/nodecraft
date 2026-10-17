@@ -74,7 +74,11 @@ fn main() -> ExitCode {
             println!("nodecraft-cli {}", nodecraft_engine::build_info::long_version());
             ExitCode::SUCCESS
         }
-        Some("mcp") => mcp(),
+        Some("mcp") if args.len() == 1 => mcp(),
+        Some("mcp") => {
+            eprintln!("error: `mcp` takes no options yet (serving over stdio is the default)\n\n{USAGE}");
+            ExitCode::FAILURE
+        }
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");
             ExitCode::SUCCESS

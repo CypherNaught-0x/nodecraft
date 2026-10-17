@@ -2638,6 +2638,7 @@ dependencies = [
  "nodecraft-engine",
  "nodecraft-graph",
  "nodecraft-types",
+ "serde",
  "serde_json",
 ]
 

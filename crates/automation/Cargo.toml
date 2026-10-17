@@ -14,4 +14,5 @@ workspace = true
 nodecraft-engine = { workspace = true }
 nodecraft-graph = { workspace = true }
 nodecraft-types = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

@@ -9,6 +9,13 @@ use serde_json::{Value, json};
 fn an_mcp_client_session() {
     let mut child =
         Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).arg("mcp").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    // A server that stops answering fails the test instead of hanging it.
+    let pid = child.id();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        eprintln!("mcp server {pid} timed out");
+        std::process::exit(1);
+    });
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut ask = |id: i64, method: &str, params: Value| -> Value {
@@ -33,4 +40,11 @@ fn an_mcp_client_session() {
     drop(ask);
     drop(stdin);
     assert!(child.wait().unwrap().success(), "closing stdin ends the server cleanly");
+}
+
+#[test]
+fn unknown_mcp_options_are_refused() {
+    let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["mcp", "--bridge"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("takes no options"));
 }

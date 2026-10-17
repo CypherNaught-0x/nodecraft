@@ -1,7 +1,8 @@
 //! The MCP server through its JSON-RPC surface: what a client sees.
 
 use nodecraft_automation::blank_session;
-use nodecraft_automation::mcp::{HUMAN_ONLY, MAX_MESSAGE_BYTES, McpServer, ServeEnd, serve};
+use nodecraft_automation::mcp::{AGENT_COMMANDS, HUMAN_ONLY, MAX_MESSAGE_BYTES, McpServer, PAGE_BUDGET_BYTES, ServeEnd, serve};
+use nodecraft_engine::commands::Registry;
 use nodecraft_types::{CanvasId, ProjectId};
 use serde_json::{Value, json};
 
@@ -101,7 +102,7 @@ fn tool_failures_are_results_the_model_can_read() {
         (json!({"id": "keys.set", "params": {"account": "openai", "key": "sk-secret-1234567890"}}), "only be run by a person"),
         (json!({"id": "keys.remove", "params": {"account": "openai"}}), "only be run by a person"),
         (json!({"id": "nope.nope"}), "unknown command"),
-        (json!({"id": "node.add", "params": {"canvas": CANVAS}}), ""),
+        (json!({"id": "node.add", "params": {"canvas": CANVAS}}), "node"),
         (json!({}), "needs the command `id`"),
     ] {
         let r = call(&mut s, "command_run", args.clone());
@@ -146,11 +147,96 @@ fn stdio_framing() {
         json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}),
         json!({"jsonrpc": "2.0", "id": 3, "method": "ping"})
     );
+    // A tiny buffer makes lines span many reads.
+    let mut reader = std::io::BufReader::with_capacity(7, input.as_bytes());
     let mut out = Vec::new();
-    assert!(matches!(serve(&mut s, &mut input.as_bytes(), &mut out), ServeEnd::Closed));
+    assert!(matches!(serve(&mut s, &mut reader, &mut out), ServeEnd::Closed));
     let replies: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(replies.len(), 4, "{replies:?}");
     assert_eq!(replies[0]["id"], 1);
     assert_eq!(replies[1]["error"]["code"], -32600, "an oversized line is skipped with an error");
     assert_eq!((replies[2]["id"].as_i64(), replies[3]["id"].as_i64()), (Some(2), Some(3)), "CRLF and a last line without a newline");
+}
+
+#[test]
+fn every_command_is_classified_for_automation() {
+    // Adding a command means deciding whether agents may run it: put it in AGENT_COMMANDS or
+    // HUMAN_ONLY (crates/automation/src/mcp.rs).
+    for spec in Registry::builtins().unwrap().specs() {
+        let (agent, human) = (AGENT_COMMANDS.contains(&spec.id), HUMAN_ONLY.contains(&spec.id));
+        assert!(agent != human, "{} must be in exactly one of AGENT_COMMANDS and HUMAN_ONLY", spec.id);
+    }
+}
+
+#[test]
+fn ready_is_only_reported_for_parameterless_commands() {
+    let mut s = server();
+    let list = call(&mut s, "command_list", json!({}))["structuredContent"]["commands"].clone();
+    let get = |id: &str| list.as_array().unwrap().iter().find(|c| c["id"] == id).unwrap().clone();
+    assert!(get("node.add").get("ready").is_none(), "needs params: no verdict");
+    assert!(get("keys.status").get("ready").is_none());
+    assert_eq!(get("edit.redo")["ready"], false);
+}
+
+#[test]
+fn pages_stay_small_and_big_nodes_are_summarised() {
+    let mut s = server();
+    let ids = call(&mut s, "ids_new", json!({"count": 12}))["structuredContent"]["ids"].clone();
+    let big = "x".repeat(200 * 1024);
+    for id in ids.as_array().unwrap() {
+        let r = call(
+            &mut s,
+            "command_run",
+            json!({"id": "node.add", "params": {"canvas": CANVAS, "node": {"id": id, "kind": "text", "params": {"text": {"type": "text", "value": big}}}}}),
+        );
+        assert_eq!(r["isError"], false, "{r}");
+    }
+    let page = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS}));
+    let text = page["content"][0]["text"].as_str().unwrap();
+    assert!(text.len() < 2 * PAGE_BUDGET_BYTES, "{} bytes", text.len());
+    let body = &page["structuredContent"];
+    assert_eq!(body["nodes"].as_array().unwrap().len(), 12, "summaries are small, so all fit");
+    assert!(body["nodes"][0]["summarised"].is_string());
+    let first = body["nodes"][0]["id"].clone();
+    let full = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS, "node": first}));
+    assert_eq!(full["structuredContent"]["node"]["params"]["text"]["value"].as_str().map(str::len), Some(big.len()), "one node in full");
+    assert_eq!(call(&mut s, "canvas_inspect", json!({"node": first}))["isError"], true, "node needs its canvas");
+}
+
+#[test]
+fn many_medium_nodes_are_paged_by_size() {
+    let mut s = server();
+    let ids = call(&mut s, "ids_new", json!({"count": 60}))["structuredContent"]["ids"].clone();
+    let medium = "y".repeat(40 * 1024);
+    for id in ids.as_array().unwrap() {
+        call(
+            &mut s,
+            "command_run",
+            json!({"id": "node.add", "params": {"canvas": CANVAS, "node": {"id": id, "kind": "text", "params": {"text": {"type": "text", "value": medium}}}}}),
+        );
+    }
+    let mut offset = 0;
+    let mut seen = 0;
+    loop {
+        let page = call(&mut s, "canvas_inspect", json!({"canvas": CANVAS, "offset": offset, "limit": 500}))["structuredContent"].clone();
+        let n = page["nodes"].as_array().unwrap().len();
+        assert!((1..60).contains(&n), "cut short by size: {n}");
+        seen += n;
+        match page["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(seen, 60, "every node on some page");
+}
+
+#[test]
+fn malformed_envelopes() {
+    let mut s = server();
+    let r: Value = serde_json::from_str(&s.handle(r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#).unwrap()).unwrap();
+    assert_eq!(r["error"]["code"], -32600);
+    let mut out = Vec::new();
+    serve(&mut s, &mut &b"\xff\xfe\n"[..], &mut out);
+    let r: Value = serde_json::from_slice(out.split(|b| *b == b'\n').next().unwrap()).unwrap();
+    assert_eq!(r["error"]["code"], -32700, "invalid UTF-8 is a parse error");
 }

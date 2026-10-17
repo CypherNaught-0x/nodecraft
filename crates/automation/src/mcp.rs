@@ -3,32 +3,43 @@
 //! [`McpServer`] is sans-IO: [`McpServer::handle`] takes one JSON-RPC message and returns the
 //! reply, if any. [`serve`] runs it over newline-delimited JSON (the MCP stdio transport).
 //!
-//! The tools are generic, so they track the command registry without a second list:
-//! - `command_list`: the commands an agent may run, with their parameter schemas and whether each
-//!   is enabled right now;
+//! The tools are generic, so they track the command registry without a second implementation:
+//! - `command_list`: the commands an agent may run, with their parameter schemas;
 //! - `command_run`: runs one command through the same `Session::dispatch` as the UI;
-//! - `canvas_inspect`: the project's canvases, or one canvas's nodes and edges, paged;
+//! - `canvas_inspect`: the project's canvases, one canvas's nodes and edges (paged, size-capped),
+//!   or one node in full;
 //! - `ids_new`: fresh ids for commands that take caller-supplied ids (`node.add`).
 //!
-//! Commands in [`HUMAN_ONLY`] (setting or removing API keys) are never listed or run here.
+//! Every command is classified: [`AGENT_COMMANDS`] may be listed and run, [`HUMAN_ONLY`] never.
+//! An unclassified command stays hidden, and a test fails until it is classified.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 
 use nodecraft_engine::Session;
-use nodecraft_engine::commands::CommandSpec;
+use nodecraft_graph::Edge;
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::{Map, Value, json};
 
 /// Protocol revisions this server speaks, newest first.
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-/// Longest message accepted, in bytes.
-pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Longest message accepted, in bytes. The engine takes at most 1 MiB of command parameters, so
+/// this leaves room for the envelope while bounding the memory a parse can take.
+pub const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+/// Rough cap on a `canvas_inspect` page's JSON. The reply carries it twice (structured and as
+/// text), so a page stays around 1 MiB on the wire.
+pub const PAGE_BUDGET_BYTES: usize = 512 * 1024;
+/// Nodes larger than this are summarised in pages; fetch them one at a time with `node`.
+pub const NODE_INLINE_BYTES: usize = 64 * 1024;
 /// Most nodes `canvas_inspect` returns per page.
 pub const MAX_PAGE: usize = 500;
 /// Most ids `ids_new` hands out per call.
 pub const MAX_NEW_IDS: usize = 100;
-/// Commands only a person may run: one takes a secret, which must not pass through an agent, and
-/// one deletes a key with no undo.
+
+/// Commands an agent may see and run.
+pub const AGENT_COMMANDS: &[&str] = &["node.add", "node.remove", "node.move", "edge.connect", "edge.disconnect", "edit.undo", "edit.redo", "keys.status"];
+/// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
+/// agent's context, and `keys.remove` deletes a key with no undo.
 pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove"];
 
 const PARSE_ERROR: i64 = -32700;
@@ -43,12 +54,11 @@ pub type IdSource = Box<dyn FnMut() -> [u8; 16]>;
 pub struct McpServer {
     session: Session,
     new_id: IdSource,
-    initialized: bool,
 }
 
-/// Whether automation may see and run `spec`.
-pub fn visible(spec: &CommandSpec) -> bool {
-    !HUMAN_ONLY.contains(&spec.id)
+/// Whether automation may see and run the command `id`.
+pub fn visible(id: &str) -> bool {
+    AGENT_COMMANDS.contains(&id)
 }
 
 fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
@@ -77,6 +87,10 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
 
+fn internal() -> Error {
+    Error::new(ErrorKind::Internal, "the canvas can't be serialised")
+}
+
 fn object_schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
@@ -86,7 +100,7 @@ fn tools() -> Value {
         {
             "name": "command_list",
             "title": "List commands",
-            "description": "Lists the NodeCraft commands you can run with command_run: id, label, parameter schema and whether it can run right now (with the reason when not). Filter with `query` (matches id or label).",
+            "description": "Lists the NodeCraft commands you can run with command_run: id, label and parameter schema. Commands without parameters also say whether they can run right now (for example edit.undo when there is nothing to undo). Filter with `query` (matches id or label).",
             "inputSchema": object_schema(json!({"query": {"type": "string", "maxLength": 200}}), &[]),
             "annotations": {"readOnlyHint": true, "openWorldHint": false}
         },
@@ -100,9 +114,10 @@ fn tools() -> Value {
         {
             "name": "canvas_inspect",
             "title": "Inspect the project",
-            "description": "Without `canvas`: the project and its canvases with node and edge counts. With `canvas`: that canvas's nodes (paged by `offset` and `limit`, sorted by id) and the edges touching them.",
+            "description": "Without arguments: the project and its canvases with node and edge counts. With `canvas`: a page of that canvas's nodes (sorted by id, from `offset`, at most `limit`, and cut short to keep the reply small; continue from `next_offset`) with the edges into them. Nodes too large for a page are summarised; read one in full with `canvas` and `node`.",
             "inputSchema": object_schema(json!({
                 "canvas": {"type": "string", "description": "Canvas id (UUID)"},
+                "node": {"type": "string", "description": "Node id (UUID): return just this node, in full"},
                 "offset": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE}
             }), &[]),
@@ -118,9 +133,14 @@ fn tools() -> Value {
     ])
 }
 
+/// Bytes of `value` as JSON.
+fn json_len(value: &impl serde::Serialize) -> Result<usize, Error> {
+    serde_json::to_vec(value).map(|v| v.len()).map_err(|_| internal())
+}
+
 impl McpServer {
     pub fn new(session: Session, new_id: IdSource) -> Self {
-        Self { session, new_id, initialized: false }
+        Self { session, new_id }
     }
 
     pub fn session(&self) -> &Session {
@@ -141,34 +161,32 @@ impl McpServer {
     }
 
     fn handle_value(&mut self, message: Value) -> Option<Value> {
-        let Some(obj) = message.as_object() else {
+        let Value::Object(mut obj) = message else {
             // JSON-RPC batches were removed from MCP in 2025-06-18.
             return Some(rpc_error(Value::Null, INVALID_REQUEST, "expected a single JSON-RPC message object"));
         };
-        let id = obj.get("id").cloned();
-        let Some(method) = obj.get("method").and_then(Value::as_str) else {
-            // A response to a request we never sent, or garbage: answer requests, ignore the rest.
-            return match id {
-                Some(id) if !obj.contains_key("result") && !obj.contains_key("error") => Some(rpc_error(id, INVALID_REQUEST, "missing method")),
-                _ => None,
-            };
+        let id = obj.remove("id");
+        let is_reply = obj.contains_key("result") || obj.contains_key("error");
+        let method = match obj.remove("method") {
+            Some(Value::String(m)) => m,
+            // A response to a request we never sent: nothing to do.
+            _ if is_reply => return None,
+            _ => return id.map(|id| rpc_error(id, INVALID_REQUEST, "missing method")),
         };
-        let params = obj.get("params").cloned().unwrap_or(Value::Object(Map::new()));
-        let Some(id) = id else {
-            // Notifications: `notifications/initialized`, `notifications/cancelled`, …
-            if method == "notifications/initialized" {
-                self.initialized = true;
-            }
-            return None;
-        };
+        // Notifications (`notifications/initialized`, `notifications/cancelled`, …) get no reply.
+        let id = id?;
         if !(id.is_string() || id.is_i64() || id.is_u64()) {
             return Some(rpc_error(Value::Null, INVALID_REQUEST, "the request id must be a string or an integer"));
         }
-        let reply = match method {
+        if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return Some(rpc_error(id, INVALID_REQUEST, "expected \"jsonrpc\": \"2.0\""));
+        }
+        let params = obj.remove("params").unwrap_or(Value::Object(Map::new()));
+        let reply = match method.as_str() {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tools()})),
-            "tools/call" => self.call(&params),
+            "tools/call" => self.call(params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {}", other.chars().take(64).collect::<String>()))),
         };
         Some(match reply {
@@ -188,16 +206,20 @@ impl McpServer {
         })
     }
 
-    fn call(&mut self, params: &Value) -> Result<Value, (i64, String)> {
-        let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "tools/call needs a tool name".to_owned()))?;
-        let args = match params.get("arguments") {
-            None | Some(Value::Null) => Value::Object(Map::new()),
-            Some(v @ Value::Object(_)) => v.clone(),
+    fn call(&mut self, params: Value) -> Result<Value, (i64, String)> {
+        let Value::Object(mut params) = params else { return Err((INVALID_PARAMS, "tools/call params must be an object".into())) };
+        let name = match params.remove("name") {
+            Some(Value::String(n)) => n,
+            _ => return Err((INVALID_PARAMS, "tools/call needs a tool name".into())),
+        };
+        let args = match params.remove("arguments") {
+            None | Some(Value::Null) => Map::new(),
+            Some(Value::Object(args)) => args,
             Some(_) => return Err((INVALID_PARAMS, "tool arguments must be an object".into())),
         };
-        let result = match name {
+        let result = match name.as_str() {
             "command_list" => self.command_list(&args),
-            "command_run" => self.command_run(&args),
+            "command_run" => self.command_run(args),
             "canvas_inspect" => self.canvas_inspect(&args),
             "ids_new" => self.ids_new(&args),
             other => return Err((INVALID_PARAMS, format!("unknown tool {}", other.chars().take(64).collect::<String>()))),
@@ -208,50 +230,66 @@ impl McpServer {
         })
     }
 
-    fn command_list(&self, args: &Value) -> Result<Value, Error> {
+    fn command_list(&self, args: &Map<String, Value>) -> Result<Value, Error> {
         let query = args.get("query").and_then(Value::as_str).unwrap_or_default().to_lowercase();
         let commands: Vec<Value> = self
             .session
             .registry()
             .specs()
-            .filter(|s| visible(s))
+            .filter(|s| visible(s.id))
             .filter(|s| query.is_empty() || s.id.contains(&query) || s.label.to_lowercase().contains(&query))
             .map(|s| {
-                // `enabled` is checked with empty params: commands that need params say why.
-                let enabled = self.session.enabled(s.id, &json!({}));
-                json!({
-                    "id": s.id,
-                    "label": s.label,
-                    "params_schema": (s.input_schema)(),
-                    "params_doc": s.params_doc,
-                    "ready": enabled.is_ok(),
-                    "not_ready_because": enabled.err().map(|e| e.message),
-                })
+                let schema = (s.input_schema)();
+                let takes_params = schema.get("required").and_then(Value::as_array).is_some_and(|r| !r.is_empty());
+                let mut entry = json!({"id": s.id, "label": s.label, "params_schema": schema, "params_doc": s.params_doc});
+                // Whether a command can run depends on its params; only parameterless ones are
+                // checked here, so `ready` always means the same thing.
+                if !takes_params {
+                    let enabled = self.session.enabled(s.id, &json!({}));
+                    entry["ready"] = json!(enabled.is_ok());
+                    if let Err(e) = enabled {
+                        entry["not_ready_because"] = json!(e.message);
+                    }
+                }
+                entry
             })
             .collect();
         Ok(json!({"commands": commands}))
     }
 
-    fn command_run(&mut self, args: &Value) -> Result<Value, Error> {
-        let id = args.get("id").and_then(Value::as_str).ok_or_else(|| invalid("command_run needs the command `id`"))?;
-        let spec = self.session.registry().get(id)?;
-        if !visible(spec) {
+    fn command_run(&mut self, mut args: Map<String, Value>) -> Result<Value, Error> {
+        let id = match args.remove("id") {
+            Some(Value::String(id)) => id,
+            _ => return Err(invalid("command_run needs the command `id`")),
+        };
+        self.session.registry().get(&id)?;
+        if !visible(&id) {
             return Err(Error::new(ErrorKind::Unsupported, format!("{id} can only be run by a person in the app")));
         }
-        let params = args.get("params").cloned().unwrap_or(Value::Object(Map::new()));
-        let result = self.session.dispatch(id, &params)?;
+        let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
+        let result = self.session.dispatch(&id, &params)?;
         Ok(json!({"result": result, "revision": self.session.revision()}))
     }
 
-    fn canvas_inspect(&self, args: &Value) -> Result<Value, Error> {
+    fn canvas_inspect(&self, args: &Map<String, Value>) -> Result<Value, Error> {
         let project = self.session.document();
         let Some(canvas) = args.get("canvas") else {
+            if args.contains_key("node") {
+                return Err(invalid("`node` needs its `canvas`"));
+            }
             let canvases: Vec<Value> =
                 project.canvases().values().map(|c| json!({"id": c.id(), "title": c.title(), "nodes": c.nodes().len(), "edges": c.edges().len()})).collect();
             return Ok(json!({"project": {"id": project.id(), "title": project.title()}, "canvases": canvases, "revision": self.session.revision()}));
         };
         let id: CanvasId = canvas.as_str().ok_or_else(|| invalid("`canvas` must be a canvas id string"))?.parse()?;
         let canvas = project.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with that id"))?;
+        let revision = self.session.revision();
+        if let Some(node) = args.get("node") {
+            let node: NodeId = node.as_str().ok_or_else(|| invalid("`node` must be a node id string"))?.parse()?;
+            let node = canvas.nodes().get(&node).ok_or_else(|| Error::new(ErrorKind::NotFound, "no node with that id on this canvas"))?;
+            let edges: Vec<&Edge> = canvas.edges().values().filter(|e| e.to.node == node.id || e.from.node == node.id).collect();
+            return Ok(json!({"node": node, "edges": edges, "revision": revision}));
+        }
         let number = |key: &str, default: usize| -> Result<usize, Error> {
             match args.get(key) {
                 None => Ok(default),
@@ -260,21 +298,55 @@ impl McpServer {
         };
         let offset = number("offset", 0)?;
         let limit = number("limit", 100)?.clamp(1, MAX_PAGE);
-        let nodes: Vec<_> = canvas.nodes().values().skip(offset).take(limit).collect();
-        let ids: std::collections::BTreeSet<NodeId> = nodes.iter().map(|n| n.id).collect();
-        let edges: Vec<_> = canvas.edges().values().filter(|e| ids.contains(&e.from.node) || ids.contains(&e.to.node)).collect();
-        let next = offset.saturating_add(nodes.len());
+        // Each edge is listed with the node it enters, so paging lists every edge once.
+        let mut incoming: BTreeMap<NodeId, Vec<&Edge>> = BTreeMap::new();
+        for e in canvas.edges().values() {
+            incoming.entry(e.to.node).or_default().push(e);
+        }
+        let mut nodes = Vec::new();
+        let mut edges: Vec<&Edge> = Vec::new();
+        let mut used = 0usize;
+        let mut edges_truncated = false;
+        let mut taken = 0usize;
+        for node in canvas.nodes().values().skip(offset).take(limit) {
+            let full = serde_json::to_value(node).map_err(|_| internal())?;
+            let entry = if json_len(&full)? > NODE_INLINE_BYTES {
+                json!({"id": node.id, "kind": node.kind, "title": node.title, "pos": node.pos, "params": node.params.keys().collect::<Vec<_>>(), "history": node.history.len(), "summarised": "too large for a page; read it with `node`"})
+            } else {
+                full
+            };
+            let into = incoming.get(&node.id).map(Vec::as_slice).unwrap_or_default();
+            let cost = json_len(&entry)?.saturating_add(json_len(&into)?);
+            if taken > 0 && used.saturating_add(cost) > PAGE_BUDGET_BYTES {
+                break;
+            }
+            used = used.saturating_add(json_len(&entry)?);
+            nodes.push(entry);
+            // A first node with more incoming edges than a page holds gets as many as fit.
+            for e in into {
+                let n = json_len(e)?;
+                if used.saturating_add(n) > PAGE_BUDGET_BYTES {
+                    edges_truncated = true;
+                    break;
+                }
+                used = used.saturating_add(n);
+                edges.push(e);
+            }
+            taken = taken.saturating_add(1);
+        }
+        let next = offset.saturating_add(taken);
         let more = next < canvas.nodes().len();
         Ok(json!({
-            "canvas": {"id": canvas.id(), "title": canvas.title(), "nodes_total": canvas.nodes().len()},
-            "nodes": serde_json::to_value(&nodes).map_err(|_| Error::new(ErrorKind::Internal, "nodes can't be serialised"))?,
-            "edges": serde_json::to_value(&edges).map_err(|_| Error::new(ErrorKind::Internal, "edges can't be serialised"))?,
+            "canvas": {"id": canvas.id(), "title": canvas.title(), "nodes_total": canvas.nodes().len(), "edges_total": canvas.edges().len()},
+            "nodes": nodes,
+            "edges": serde_json::to_value(&edges).map_err(|_| internal())?,
+            "edges_truncated": edges_truncated,
             "next_offset": more.then_some(next),
-            "revision": self.session.revision(),
+            "revision": revision,
         }))
     }
 
-    fn ids_new(&mut self, args: &Value) -> Result<Value, Error> {
+    fn ids_new(&mut self, args: &Map<String, Value>) -> Result<Value, Error> {
         let count = match args.get("count") {
             None => 1,
             Some(v) => v.as_u64().filter(|n| (1..=MAX_NEW_IDS as u64).contains(n)).ok_or_else(|| invalid(format!("`count` must be 1–{MAX_NEW_IDS}")))?,
@@ -299,33 +371,27 @@ pub enum ServeEnd {
     Io(std::io::Error),
 }
 
-/// Serves MCP over newline-delimited JSON until the input ends: the stdio transport. A line
-/// longer than [`MAX_MESSAGE_BYTES`] is skipped with an error reply instead of being buffered.
+/// Serves MCP over newline-delimited JSON until the input ends: the stdio transport. Messages are
+/// handled one at a time, in order. A line longer than [`MAX_MESSAGE_BYTES`] is skipped with an
+/// error reply instead of being buffered.
 pub fn serve(server: &mut McpServer, input: &mut dyn BufRead, output: &mut dyn Write) -> ServeEnd {
     let mut line = Vec::new();
     loop {
         line.clear();
-        match read_line(input, &mut line) {
+        let reply = match read_line(input, &mut line) {
             Ok(Line::Eof) => return ServeEnd::Closed,
-            Ok(Line::TooLong) => {
-                let reply = rpc_error(Value::Null, INVALID_REQUEST, format!("message is larger than {MAX_MESSAGE_BYTES} bytes")).to_string();
-                if let Err(e) = writeln!(output, "{reply}").and_then(|()| output.flush()) {
-                    return ServeEnd::Io(e);
-                }
-            }
-            Ok(Line::Read) => {
-                let text = String::from_utf8_lossy(&line);
-                let text = text.trim();
-                if text.is_empty() {
-                    continue;
-                }
-                if let Some(reply) = server.handle(text)
-                    && let Err(e) = writeln!(output, "{reply}").and_then(|()| output.flush())
-                {
-                    return ServeEnd::Io(e);
-                }
-            }
+            Ok(Line::TooLong) => Some(rpc_error(Value::Null, INVALID_REQUEST, format!("message is larger than {MAX_MESSAGE_BYTES} bytes")).to_string()),
+            Ok(Line::Read) => match std::str::from_utf8(&line) {
+                Ok(text) if text.trim().is_empty() => None,
+                Ok(text) => server.handle(text.trim()),
+                Err(_) => Some(rpc_error(Value::Null, PARSE_ERROR, "the message isn't valid UTF-8").to_string()),
+            },
             Err(e) => return ServeEnd::Io(e),
+        };
+        if let Some(reply) = reply
+            && let Err(e) = writeln!(output, "{reply}").and_then(|()| output.flush())
+        {
+            return ServeEnd::Io(e);
         }
     }
 }
