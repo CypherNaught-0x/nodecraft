@@ -93,32 +93,44 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec {
             id: "canvas.search_next",
             label: "Next canvas search result",
-            shortcut: Some("Enter"),
+            shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{}; next result with wrapping; one pending request waits for the current scan generation.",
+            params_doc: "{}; next result with wrapping; Enter applies only in the search field; one pending request waits for the current scan generation.",
             enabled: |c, v| action(c, v, "next").map(|_| ()),
             run: |c, v| action(c, v, "next"),
         },
         CommandSpec {
             id: "canvas.search_previous",
             label: "Previous canvas search result",
-            shortcut: Some("Shift+Enter"),
+            shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{}; previous result with wrapping after the current scan completes.",
+            params_doc: "{}; previous result with wrapping after the current scan completes; Shift+Enter applies only in the search field.",
             enabled: |c, v| action(c, v, "previous").map(|_| ()),
             run: |c, v| action(c, v, "previous"),
         },
         CommandSpec {
             id: "canvas.search_close",
             label: "Close canvas search",
-            shortcut: Some("Escape"),
+            shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{}; close live search while retaining query and current selection.",
+            params_doc: "{}; close live search while retaining query and current selection; Escape applies only while search owns input.",
             enabled: |c, v| action(c, v, "close").map(|_| ()),
             run: |c, v| action(c, v, "close"),
         },
     ]
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn field_only_keys_are_not_global_shortcuts() {
+        for spec in super::specs() {
+            if spec.id != "canvas.search_open" {
+                assert!(spec.shortcut.is_none());
+                assert!(spec.alternate_shortcuts.is_empty());
+            }
+        }
+    }
 }
