@@ -336,6 +336,13 @@ pub fn migrate(params: &ParamValues, to: &ModelDescriptor) -> Result<Migration, 
             None => removed.push(short(name)),
         }
     }
+    // Absent and reset parameters use defaults; retained values override them. Measure those
+    // defaults by reference too, before constructing the owned map passed to the resolver.
+    for spec in &to.params.params {
+        if !keep.contains(&&spec.name) {
+            bytes = bytes.saturating_add(spec.default.as_ref().map_or(0, text_bytes));
+        }
+    }
     if bytes > MAX_MIGRATED_BYTES {
         return Err(Error::new(ErrorKind::InvalidInput, "parameters are too large to carry over"));
     }

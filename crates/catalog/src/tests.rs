@@ -189,6 +189,107 @@ fn bad_catalog_files_are_rejected_with_a_reason() {
     assert_eq!(catalog.merge(Catalog::builtin().unwrap()).unwrap_err().kind, ErrorKind::Conflict);
 }
 
+fn migration_text_model(default_bytes: usize) -> ModelDescriptor {
+    let mut model = catalog().get("comfyui.flux-dev").unwrap().clone();
+    model.params.params = ["defaulted", "supplied"]
+        .into_iter()
+        .map(|name| nodecraft_types::ParamSpec {
+            name: name.into(),
+            label: name.into(),
+            description: None,
+            control: nodecraft_types::ParamControl::Text { multiline: true, max_bytes: MAX_MIGRATED_BYTES },
+            required: false,
+            default: (name == "defaulted").then(|| Value::Text("d".repeat(default_bytes))),
+            visible_if: None,
+        })
+        .collect();
+    model
+}
+
+#[test]
+fn migration_admits_effective_defaults_before_copying_retained_values() {
+    let model = migration_text_model(600 * 1024);
+    model.params.validate().unwrap();
+    for reset in [false, true] {
+        let mut params = ParamValues::from([("supplied".into(), Value::Text("s".repeat(600 * 1024)))]);
+        if reset {
+            params.insert("defaulted".into(), Value::Bool(false));
+        }
+        // The catalog admission error distinguishes this from the resolver's later rejection,
+        // which used to happen only after cloning the supplied value into the retained map.
+        let error = migrate(&params, &model).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert_eq!(error.message, "parameters are too large to carry over");
+    }
+}
+
+#[test]
+fn migration_effective_default_budget_is_inclusive_and_preserves_notices() {
+    let default_bytes = 600 * 1024;
+    let model = migration_text_model(default_bytes);
+    for reset in [false, true] {
+        let mut params =
+            ParamValues::from([("supplied".into(), Value::Text("s".repeat(MAX_MIGRATED_BYTES - default_bytes))), ("obsolete".into(), Value::Bool(true))]);
+        if reset {
+            params.insert("defaulted".into(), Value::Bool(false));
+        }
+        let migration = migrate(&params, &model).unwrap();
+        assert_eq!(migration.params.get("defaulted"), Some(&Value::Text("d".repeat(default_bytes))));
+        assert_eq!(migration.params.get("supplied"), params.get("supplied"));
+        assert_eq!(migration.removed, ["obsolete"]);
+        assert_eq!(migration.reset, if reset { vec!["defaulted"] } else { vec![] });
+        if let Some(Value::Text(text)) = params.get_mut("supplied") {
+            text.push('s');
+        }
+        assert_eq!(migrate(&params, &model).unwrap_err().message, "parameters are too large to carry over");
+    }
+}
+
+#[test]
+fn migration_counts_valid_overrides_instead_of_their_defaults() {
+    let model = migration_text_model(600 * 1024);
+    let params = ParamValues::from([
+        ("defaulted".into(), Value::Text("override".into())),
+        ("supplied".into(), Value::Text("s".repeat(MAX_MIGRATED_BYTES - "override".len()))),
+    ]);
+    let migration = migrate(&params, &model).unwrap();
+    assert_eq!(migration.params, params);
+    assert!(migration.removed.is_empty());
+    assert!(migration.reset.is_empty());
+}
+
+#[test]
+fn migration_includes_default_asset_mime_in_the_effective_budget() {
+    let mut model = migration_text_model(0);
+    let asset = Value::Media(nodecraft_types::AssetRef {
+        hash: nodecraft_types::Blake3::from_bytes([0; 32]),
+        mime: "image/png".parse().unwrap(),
+        meta: Default::default(),
+    });
+    let spec = model.params.params.first_mut().unwrap();
+    spec.control = nodecraft_types::ParamControl::Asset { modality: Modality::Image };
+    spec.default = Some(asset.clone());
+    model.params.validate().unwrap();
+    for reset in [false, true] {
+        let mut params = ParamValues::from([("supplied".into(), Value::Text("s".repeat(MAX_MIGRATED_BYTES - "image/png".len())))]);
+        if reset {
+            params.insert("defaulted".into(), Value::Bool(false));
+        }
+        assert_eq!(migrate(&params, &model).unwrap().params.get("defaulted"), Some(&asset));
+        if let Some(Value::Text(text)) = params.get_mut("supplied") {
+            text.push('s');
+        }
+        assert_eq!(migrate(&params, &model).unwrap_err().message, "parameters are too large to carry over");
+    }
+}
+
+#[test]
+fn migration_still_validates_the_destination_schema_before_defaults() {
+    let mut model = migration_text_model(0);
+    model.params.params.first_mut().unwrap().default = Some(Value::Bool(false));
+    assert_eq!(migrate(&ParamValues::new(), &model).unwrap_err().message, "parameter value does not match its control type or bounds");
+}
+
 proptest! {
     #[test]
     fn arbitrary_text_never_panics(text in ".{0,2048}") {
