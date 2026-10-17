@@ -4,6 +4,21 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · ComfyUI provider (#9, part 2)
+
+- **Prompt ids are salted per install** (`prompt_id_for(salt, key, attempt)`): the same job always
+  maps to the same id on one install, and never to another install's on a shared server. The
+  salt is random and stored once in settings.
+- **A submit checks the server first** (queue, then history): a queued, running or successful
+  prompt is reused, so a retried submit never queues twice; a failed one moves to a new attempt
+  id. Servers that ignore client-chosen ids lose this check.
+- **The queue is read before the history**, and the history again when a prompt is in neither, so
+  a run finishing between reads isn't reported as lost.
+- **Checks before uploads:** value overrides and `check()` against `/object_info` run before any
+  input is uploaded; uploads are named by content hash, so overwriting is harmless.
+- **Only `output` files are results;** a preview-only workflow fails with a clear message. Unknown
+  file types are skipped; a text page served for a binary file is refused (proxy login pages).
+
 ## 2026-10-17 · LLM endpoints (#10)
 
 - **Two wire dialects** cover every chat endpoint in scope: OpenAI Chat Completions (OpenAI,
