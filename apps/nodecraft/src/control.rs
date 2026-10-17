@@ -112,7 +112,7 @@ impl Controlled {
             if call.expired() {
                 continue;
             }
-            match control::answer(&mut self.app.session, &call.request) {
+            match answer(&mut self.app, ctx, &call.request) {
                 Some(result) => call.reply(result),
                 None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
                     if self.shots.is_empty() {
@@ -153,3 +153,50 @@ impl eframe::App for Controlled {
         self.app.clear_color(visuals)
     }
 }
+
+// Keep the production UI-thread dispatch independently testable without a native window.
+fn answer(app: &mut NodeCraftApp, ctx: &egui::Context, request: &Request) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
+    control::answer_with(&mut LiveCommands { app, ctx }, request)
+}
+struct LiveCommands<'a> {
+    app: &'a mut NodeCraftApp,
+    ctx: &'a egui::Context,
+}
+fn navigation(id: &str) -> bool {
+    // Routing only: the shared automation gate has already classified command.run.
+    matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
+}
+impl LiveCommands<'_> {
+    fn navigation_idle(&self) -> Result<(), nodecraft_types::Error> {
+        // The internal minimap bridge permits its own pan intents during a drag. External
+        // requests must not use that exemption to steal the pointer's active gesture.
+        if self.app.navigation.pointer_owned || self.app.navigation.drag.is_some() {
+            return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Conflict, "a canvas gesture owns navigation"));
+        }
+        Ok(())
+    }
+}
+impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
+    fn session(&self) -> &nodecraft_engine::Session {
+        &self.app.session
+    }
+    fn enabled(&mut self, id: &str, params: &serde_json::Value) -> Result<(), nodecraft_types::Error> {
+        if navigation(id) {
+            self.navigation_idle()?;
+            self.app.navigation_enabled(self.ctx, id, params)
+        } else {
+            self.app.session.enabled(id, params)
+        }
+    }
+    fn dispatch(&mut self, id: &str, params: &serde_json::Value) -> Result<serde_json::Value, nodecraft_types::Error> {
+        if navigation(id) {
+            self.navigation_idle()?;
+            self.app.dispatch_navigation(self.ctx, id, params)
+        } else {
+            self.app.session.dispatch(id, params)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
