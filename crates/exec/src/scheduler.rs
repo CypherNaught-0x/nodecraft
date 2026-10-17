@@ -9,6 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 
+mod storage;
+pub use storage::StorageLimits;
+use storage::{StoredSpec, Usage};
+
 /// Cap on jobs held by one scheduler (a batch of batches must not exhaust memory).
 pub const MAX_JOBS: usize = 100_000;
 /// Cap on dependencies of one job.
@@ -28,6 +32,12 @@ impl fmt::Display for JobId {
 /// `comfy:http://gpu-box:8188`), `local` for deterministic actions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Lane(pub String);
+
+impl std::borrow::Borrow<str> for Lane {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
 
 impl Lane {
     pub fn new(name: impl Into<String>) -> Self {
@@ -104,7 +114,7 @@ impl Default for Limits {
 }
 
 impl Limits {
-    fn lane(&self, lane: &Lane) -> usize {
+    fn lane(&self, lane: &str) -> usize {
         self.per_lane.get(lane).copied().unwrap_or(self.default_per_lane).max(1)
     }
 }
@@ -190,6 +200,15 @@ pub enum Event {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SchedulerError {
+    /// Invalid lower-only storage configuration.
+    InvalidStorageLimits,
+    /// Incoming allocated buffers exceed the separate hard spare-capacity policy.
+    InputCapacityBudget,
+    DependencyBudget,
+    MetadataBudget,
+    LaneBudget,
+    KeyBudget,
+    TooManyRequeueEntries,
     DuplicateJob(JobId),
     UnknownDependency {
         job: JobId,
@@ -217,6 +236,13 @@ pub enum SchedulerError {
 impl fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidStorageLimits => f.write_str("invalid scheduler storage limits"),
+            Self::InputCapacityBudget => f.write_str("scheduler input allocation capacity budget exceeded"),
+            Self::DependencyBudget => f.write_str("scheduler dependency storage budget exceeded"),
+            Self::MetadataBudget => f.write_str("scheduler job metadata budget exceeded"),
+            Self::LaneBudget => f.write_str("scheduler lane byte budget exceeded"),
+            Self::KeyBudget => f.write_str("scheduler idempotency key byte budget exceeded"),
+            Self::TooManyRequeueEntries => f.write_str("too many scheduler requeue entries"),
             Self::DuplicateJob(j) => write!(f, "{j} was added twice"),
             Self::UnknownDependency { job, dep } => write!(f, "{job} depends on {dep}, which isn't scheduled"),
             Self::Cycle(j) => write!(f, "{j} depends on itself through a cycle"),
@@ -234,14 +260,14 @@ impl std::error::Error for SchedulerError {}
 
 #[derive(Debug)]
 struct Job {
-    spec: JobSpec,
+    spec: StoredSpec,
     state: JobState,
     /// Order of addition; ready jobs start in this order.
     seq: u64,
     /// Attempts started so far.
     attempts: u32,
     pending_deps: usize,
-    dependents: Vec<JobId>,
+    dependents: BTreeSet<JobId>,
 }
 
 /// Counts of jobs by state.
@@ -267,14 +293,16 @@ impl Summary {
 #[derive(Debug)]
 pub struct Scheduler {
     limits: Limits,
+    storage_limits: StorageLimits,
+    storage_used: Usage,
     jobs: HashMap<JobId, Job>,
     /// Ready jobs per lane, by addition order. Lanes are few (one per provider or server), so
     /// starting a job looks at each lane's head only: no scan over all jobs.
-    ready: HashMap<Lane, BTreeMap<u64, JobId>>,
+    ready: HashMap<Box<str>, BTreeMap<u64, JobId>>,
     /// Jobs in backoff by the time they become ready.
     backoff: BTreeSet<(u64, u64, JobId)>,
     running_total: usize,
-    running_per_lane: HashMap<Lane, usize>,
+    running_per_lane: HashMap<Box<str>, usize>,
     unfinished: usize,
     paused: bool,
     next_seq: u64,
@@ -288,7 +316,21 @@ pub const MAX_RETRY_DELAY_MS: u64 = 60 * 60 * 1000;
 
 impl Scheduler {
     pub fn new(limits: Limits) -> Self {
+        Self::make(limits, StorageLimits::default())
+    }
+
+    /// Lower-only job-spec storage budgets, independent of concurrency configuration.
+    pub fn with_storage_limits(limits: Limits, storage: StorageLimits) -> Result<Self, SchedulerError> {
+        if !storage.valid() {
+            return Err(SchedulerError::InvalidStorageLimits);
+        }
+        Ok(Self::make(limits, storage))
+    }
+
+    fn make(limits: Limits, storage_limits: StorageLimits) -> Self {
         Self {
+            storage_limits,
+            storage_used: Usage::default(),
             limits: Limits { global: limits.global.max(1), ..limits },
             jobs: HashMap::new(),
             ready: HashMap::new(),
@@ -310,6 +352,9 @@ impl Scheduler {
         if self.jobs.len().saturating_add(specs.len()) > MAX_JOBS {
             return Err(SchedulerError::TooManyJobs { limit: MAX_JOBS });
         }
+        crate::payload::outer(specs.capacity())?;
+        crate::payload::add(&specs)?;
+        let retained = self.storage_limits.preflight(self.storage_used, &specs)?;
         let mut new_ids = HashSet::new();
         for s in &specs {
             if self.jobs.contains_key(&s.id) || !new_ids.insert(s.id) {
@@ -326,6 +371,7 @@ impl Scheduler {
         }
         let topo = topological(&specs, &new_ids)?;
 
+        self.storage_used = retained;
         // Valid. Insert in the given order (that order decides who starts first) …
         for spec in specs {
             let id = spec.id;
@@ -342,10 +388,10 @@ impl Scheduler {
                     && !dep.state.is_finished()
                 {
                     pending += 1;
-                    dep.dependents.push(id);
+                    dep.dependents.insert(id);
                 }
             }
-            self.jobs.insert(id, Job { spec, state: JobState::Waiting, seq, attempts: 0, pending_deps: pending, dependents: Vec::new() });
+            self.jobs.insert(id, Job { spec: spec.into(), state: JobState::Waiting, seq, attempts: 0, pending_deps: pending, dependents: BTreeSet::new() });
             self.unfinished += 1;
             self.events.push_back(Event::Queued { job: id });
         }
@@ -356,7 +402,7 @@ impl Scheduler {
             deps.dedup();
             for d in deps {
                 if let Some(dep) = self.jobs.get_mut(&d) {
-                    dep.dependents.push(*id);
+                    dep.dependents.insert(*id);
                 }
             }
         }
@@ -425,8 +471,8 @@ impl Scheduler {
             let Some(job) = self.jobs.get_mut(&id) else { break };
             job.attempts = job.attempts.saturating_add(1);
             let attempt = job.attempts;
-            let lane = job.spec.lane.clone();
-            let idempotency_key = job.spec.idempotency_key.clone();
+            let lane = Lane::new(job.spec.lane.as_ref());
+            let idempotency_key = job.spec.idempotency_key.to_string();
             self.set_state(id, JobState::Running { attempt, cancel_requested: false });
             self.events.push_back(Event::Started { job: id, attempt });
             started.push(Start { job: id, lane, attempt, idempotency_key });
@@ -444,7 +490,7 @@ impl Scheduler {
         match outcome {
             Outcome::Done => {
                 self.finish(id, JobState::Done);
-                let dependents = self.jobs.get(&id).map(|j| j.dependents.clone()).unwrap_or_default();
+                let dependents: Vec<JobId> = self.jobs.get(&id).map(|j| j.dependents.iter().copied().collect()).unwrap_or_default();
                 for d in dependents {
                     if let Some(dj) = self.jobs.get_mut(&d)
                         && dj.state == JobState::Waiting
@@ -525,6 +571,18 @@ impl Scheduler {
     /// generation instead of replaying the failed one. Their inputs must be done, unfinished, or
     /// requeued in the same call (pass skipped downstream jobs along with the failed one).
     pub fn requeue(&mut self, jobs: &[(JobId, String)]) -> Result<(), SchedulerError> {
+        if jobs.len() > MAX_JOBS {
+            return Err(SchedulerError::TooManyRequeueEntries);
+        }
+        // Validate all submitted keys, including overwritten duplicate IDs, before map allocation.
+        let mut source_bytes = 0usize;
+        for (_, key) in jobs {
+            self.storage_limits.key(key.len())?;
+            source_bytes = source_bytes.checked_add(key.len()).ok_or(SchedulerError::MetadataBudget)?;
+            if source_bytes > self.storage_limits.metadata_bytes {
+                return Err(SchedulerError::MetadataBudget);
+            }
+        }
         let targets: HashSet<JobId> = jobs.iter().map(|(id, _)| *id).collect();
         let keys: HashMap<JobId, &String> = jobs.iter().map(|(id, k)| (*id, k)).collect();
         for id in &targets {
@@ -538,21 +596,33 @@ impl Scheduler {
                 return Err(SchedulerError::InputNotRequeued { job: *id, dep: *dep });
             }
         }
+        // Last duplicate key wins, as before. Subtract and add once per distinct target.
+        let mut metadata = self.storage_used.metadata;
+        for id in &targets {
+            if let Some(job) = self.jobs.get(id) {
+                metadata = metadata.saturating_sub(job.spec.idempotency_key.len());
+            }
+        }
+        for key in keys.values() {
+            metadata = metadata.checked_add(key.len()).ok_or(SchedulerError::MetadataBudget)?;
+        }
+        self.storage_limits.check(Usage { metadata, ..self.storage_used })?;
         let mut order: Vec<JobId> = targets.iter().copied().collect();
         order.sort_by_key(|id| self.jobs.get(id).map_or(u64::MAX, |j| j.seq));
+        self.storage_used.metadata = metadata;
         for id in &order {
             if let Some(job) = self.jobs.get_mut(id) {
                 job.state = JobState::Waiting;
                 job.attempts = 0;
                 if let Some(key) = keys.get(id) {
-                    job.spec.idempotency_key = (*key).clone();
+                    job.spec.idempotency_key = key.as_str().into();
                 }
                 self.unfinished += 1;
                 self.events.push_back(Event::Queued { job: *id });
             }
         }
         for id in &order {
-            let deps: Vec<JobId> = self.jobs.get(id).map(|j| j.spec.deps.clone()).unwrap_or_default();
+            let deps: Vec<JobId> = self.jobs.get(id).map(|j| j.spec.deps.to_vec()).unwrap_or_default();
             let mut pending = 0;
             let mut unique = deps;
             unique.sort_unstable();
@@ -562,9 +632,7 @@ impl Scheduler {
                     && dep.state != JobState::Done
                 {
                     pending += 1;
-                    if !dep.dependents.contains(id) {
-                        dep.dependents.push(*id);
-                    }
+                    dep.dependents.insert(*id);
                 }
             }
             if let Some(job) = self.jobs.get_mut(id) {
@@ -580,14 +648,25 @@ impl Scheduler {
     /// Drops finished jobs from memory (a long session's queue). Their ids can't be named as
     /// dependencies afterwards.
     pub fn forget_finished(&mut self) {
+        let previous_len = self.jobs.len();
         self.jobs.retain(|_, j| !j.state.is_finished());
+        if self.jobs.len() == previous_len {
+            return;
+        }
         // Remaining jobs must not point at forgotten ones: an id may be reused by a new job. An
         // unfinished job's finished inputs are all Done (a failed one would have skipped it), so
         // dropping them from `deps` loses nothing.
         let live: HashSet<JobId> = self.jobs.keys().copied().collect();
         for job in self.jobs.values_mut() {
             job.dependents.retain(|d| live.contains(d));
-            job.spec.deps.retain(|d| live.contains(d));
+            if job.spec.deps.iter().any(|d| !live.contains(d)) {
+                job.spec.deps = job.spec.deps.iter().copied().filter(|d| live.contains(d)).collect();
+            }
+        }
+        self.storage_used = Usage::default();
+        for job in self.jobs.values() {
+            self.storage_used.dependencies += job.spec.deps.len();
+            self.storage_used.metadata += job.spec.lane.len() + job.spec.idempotency_key.len();
         }
     }
 
@@ -766,6 +845,201 @@ mod tests {
 
     fn sched() -> Scheduler {
         Scheduler::new(Limits::default())
+    }
+
+    fn tiny_job(id: u64, deps: &[u64]) -> JobSpec {
+        JobSpec { idempotency_key: String::from("k"), ..job(id, deps, "a") }
+    }
+
+    fn bounded(storage: StorageLimits) -> Scheduler {
+        Scheduler::with_storage_limits(Limits::default(), storage).unwrap()
+    }
+
+    fn assert_rejected_unchanged(s: &mut Scheduler, jobs: Vec<JobSpec>, expected: SchedulerError) {
+        // Includes indexes, counters, sequence, events and charged storage, not just job count.
+        let before = format!("{s:?}");
+        assert_eq!(s.add(jobs), Err(expected));
+        assert_eq!(format!("{s:?}"), before);
+    }
+
+    #[test]
+    fn aggregate_storage_exact_limits_duplicates_and_atomic_rejection() {
+        let limits = StorageLimits { dependencies: 2, metadata_bytes: 6, lane_bytes: 3, key_bytes: 3 };
+        let mut s = bounded(limits);
+        s.add(vec![tiny_job(1, &[])]).unwrap();
+        s.add(vec![tiny_job(2, &[1, 1])]).unwrap();
+        assert_eq!(s.storage_used, Usage { dependencies: 2, metadata: 4 });
+        assert_eq!(s.jobs.get(&JobId(1)).unwrap().dependents.len(), 1);
+        assert_rejected_unchanged(&mut s, vec![tiny_job(3, &[1])], SchedulerError::DependencyBudget);
+        s.add(vec![tiny_job(3, &[])]).unwrap();
+        assert_eq!(s.storage_used.metadata, 6);
+        assert_rejected_unchanged(&mut s, vec![tiny_job(4, &[])], SchedulerError::MetadataBudget);
+        let mut invalid = tiny_job(4, &[]);
+        invalid.lane = Lane::new("safe-lane-too-long");
+        assert_rejected_unchanged(&mut s, vec![invalid], SchedulerError::LaneBudget);
+        let mut invalid = tiny_job(4, &[]);
+        invalid.idempotency_key = "safe-key-too-long".into();
+        assert_rejected_unchanged(&mut s, vec![invalid], SchedulerError::KeyBudget);
+        assert!(Scheduler::with_storage_limits(Limits::default(), StorageLimits { dependencies: usize::MAX, ..limits }).is_err());
+    }
+
+    #[test]
+    fn spare_capacities_are_separate_from_logical_limits_and_storage_is_normalized() {
+        let limits = StorageLimits { dependencies: 1, metadata_bytes: 22, lane_bytes: 1, key_bytes: 10 };
+        let mut s = bounded(limits);
+        let mut first = tiny_job(1, &[]);
+        first.lane.0 = String::with_capacity(2048);
+        first.lane.0.push('a');
+        first.idempotency_key = String::with_capacity(2048);
+        first.idempotency_key.push_str("0123456789");
+        first.deps = Vec::with_capacity(5);
+        s.add(vec![first]).unwrap();
+        let mut second = tiny_job(2, &[1]);
+        second.deps.reserve(10);
+        second.idempotency_key = "abcdefghij".into();
+        s.add(vec![second]).unwrap();
+        assert_eq!(s.storage_used, Usage { dependencies: 1, metadata: 22 });
+        assert_eq!(s.jobs.get(&JobId(1)).unwrap().spec.idempotency_key.as_ref(), "0123456789");
+        assert_eq!(s.jobs.get(&JobId(2)).unwrap().spec.deps.as_ref(), &[JobId(1)]);
+        s.cancel(CancelScope::All);
+        let mut replacement = String::with_capacity(2048);
+        replacement.push_str("new-key-01");
+        s.requeue(&[(JobId(1), replacement), (JobId(2), "new-key-02".into())]).unwrap();
+        assert_eq!(s.storage_used, Usage { dependencies: 1, metadata: 22 });
+        assert_eq!(s.jobs.get(&JobId(1)).unwrap().spec.idempotency_key.as_ref(), "new-key-01");
+    }
+
+    #[test]
+    fn hostile_capacity_rejection_is_atomic_and_count_precedes_inspection() {
+        let mut s = sched();
+        let mut hostile = tiny_job(1, &[]);
+        hostile.idempotency_key = String::with_capacity(StorageLimits::HARD.key_bytes * crate::payload::CAPACITY_FACTOR + 1);
+        assert_rejected_unchanged(&mut s, vec![hostile], SchedulerError::InputCapacityBudget);
+        let mut hostile = tiny_job(1, &[]);
+        hostile.idempotency_key = String::with_capacity(StorageLimits::HARD.key_bytes * crate::payload::CAPACITY_FACTOR + 1);
+        let mut excessive = vec![tiny_job(1, &[]); MAX_JOBS + 1];
+        excessive[0] = hostile;
+        assert_rejected_unchanged(&mut s, excessive, SchedulerError::TooManyJobs { limit: MAX_JOBS });
+    }
+
+    #[test]
+    fn push_built_ten_thousand_jobs_with_ninety_inputs_fit_logical_budget() {
+        for pushed in [true, false] {
+            let specs: Vec<JobSpec> = (0u64..10_000)
+                .map(|id| {
+                    let deps = if pushed {
+                        let mut deps = Vec::new();
+                        for dep in 0..id.min(90) {
+                            deps.push(JobId(dep));
+                        }
+                        deps
+                    } else {
+                        (0..id.min(90)).map(JobId).collect()
+                    };
+                    JobSpec { deps, ..tiny_job(id, &[]) }
+                })
+                .collect();
+            assert_eq!(specs.iter().map(|s| s.deps.len()).sum::<usize>(), 895_905);
+            if pushed {
+                assert!(specs.iter().map(|s| s.deps.capacity()).sum::<usize>() > StorageLimits::HARD.dependencies);
+            }
+            let mut s = sched();
+            s.add(specs).unwrap();
+            assert_eq!(s.storage_used, Usage { dependencies: 895_905, metadata: 20_000 });
+            assert_eq!(s.jobs.len(), 10_000);
+        }
+    }
+
+    #[test]
+    fn forgetting_preserves_unaffected_dependency_allocations() {
+        let mut s = sched();
+        s.add(vec![tiny_job(1, &[]), tiny_job(2, &[1]), tiny_job(3, &[]), tiny_job(4, &[3])]).unwrap();
+        let original = s.jobs.get(&JobId(2)).unwrap().spec.deps.as_ptr();
+        s.forget_finished();
+        assert_eq!(s.jobs.get(&JobId(2)).unwrap().spec.deps.as_ptr(), original);
+        // Only the independent root 3 finishes; job 4 loses its input, job 2 keeps its box.
+        s.start_ready(0);
+        s.report(JobId(3), Outcome::Done, 0).unwrap();
+        s.forget_finished();
+        assert_eq!(s.jobs.get(&JobId(2)).unwrap().spec.deps.as_ptr(), original);
+        assert!(s.jobs.get(&JobId(4)).unwrap().spec.deps.is_empty());
+        assert_eq!(s.storage_used.dependencies, 1);
+        s.forget_finished();
+        assert_eq!(s.jobs.get(&JobId(2)).unwrap().spec.deps.as_ptr(), original);
+    }
+
+    #[test]
+    fn requeue_storage_replacements_are_atomic_and_duplicate_last_key_wins() {
+        let mut s = bounded(StorageLimits { dependencies: 2, metadata_bytes: 6, lane_bytes: 3, key_bytes: 3 });
+        s.add(vec![tiny_job(1, &[]), tiny_job(2, &[1])]).unwrap();
+        s.cancel(CancelScope::All);
+        let before = format!("{s:?}");
+        assert_eq!(s.requeue(&[(JobId(1), "xxx".into()), (JobId(2), "yyy".into())]), Err(SchedulerError::MetadataBudget));
+        assert_eq!(format!("{s:?}"), before);
+        assert_eq!(s.requeue(&[(JobId(1), "too-long".into()), (JobId(1), "k".into())]), Err(SchedulerError::KeyBudget));
+        assert_eq!(format!("{s:?}"), before);
+        // Input policy is diagnosed before unknown IDs or state, without mutating anything.
+        assert_eq!(s.requeue(&[(JobId(999), "too-long".into())]), Err(SchedulerError::KeyBudget));
+        assert_eq!(format!("{s:?}"), before);
+        let excessive = vec![(JobId(1), String::new()); MAX_JOBS + 1];
+        assert_eq!(s.requeue(&excessive), Err(SchedulerError::TooManyRequeueEntries));
+        assert_eq!(format!("{s:?}"), before);
+        s.requeue(&[(JobId(1), "xx".into()), (JobId(1), "z".into()), (JobId(2), "yyy".into())]).unwrap();
+        assert_eq!(s.storage_used.metadata, 6);
+        assert_eq!(s.jobs.get(&JobId(1)).unwrap().spec.idempotency_key.as_ref(), "z");
+        assert_eq!(s.jobs.get(&JobId(1)).unwrap().dependents.len(), 1);
+        assert_eq!(s.start_ready(0).first().unwrap().idempotency_key, "z");
+    }
+
+    #[test]
+    fn forget_releases_forward_metadata_and_reverse_storage_across_child_waves() {
+        let mut s = bounded(StorageLimits { dependencies: 8, metadata_bytes: 18, lane_bytes: 1, key_bytes: 1 });
+        s.add(vec![tiny_job(1, &[])]).unwrap();
+        for _ in 0..32 {
+            s.add((2..=9).map(|id| tiny_job(id, &[1])).collect()).unwrap();
+            assert_eq!(s.storage_used, Usage { dependencies: 8, metadata: 18 });
+            assert_eq!(s.jobs.get(&JobId(1)).unwrap().dependents.len(), 8);
+            s.cancel(CancelScope::Jobs((2..=9).map(JobId).collect()));
+            s.forget_finished();
+            assert_eq!(s.storage_used, Usage { dependencies: 0, metadata: 2 });
+            assert!(s.jobs.get(&JobId(1)).unwrap().dependents.is_empty());
+            s.drain_events();
+        }
+        s.add(vec![tiny_job(2, &[1, 1])]).unwrap();
+        s.start_ready(0);
+        s.report(JobId(1), Outcome::Done, 0).unwrap();
+        s.forget_finished();
+        assert_eq!(s.storage_used, Usage { dependencies: 0, metadata: 2 });
+        assert!(s.jobs.get(&JobId(2)).unwrap().spec.deps.is_empty());
+        s.add(vec![tiny_job(1, &[2])]).unwrap(); // forgotten ID safely reused
+        assert_eq!(s.storage_used.dependencies, 1);
+    }
+
+    #[test]
+    fn representative_ten_thousand_node_workflow_preserves_metadata_and_order() {
+        let mut s = sched();
+        let specs = (0u64..10_000)
+            .map(|id| {
+                let deps: Vec<u64> = (id.saturating_sub(8)..id).collect();
+                JobSpec { idempotency_key: format!("nodecraft:public-run:{id}"), ..job(id, &deps, "comfy:http://public-gpu:8188") }
+            })
+            .collect();
+        s.add(specs).unwrap();
+        assert!(s.storage_used.dependencies < 80_000);
+        let mut completed = 0;
+        while !s.is_idle() {
+            let starts = s.start_ready(0);
+            assert!(!starts.is_empty());
+            for start in starts {
+                assert_eq!(start.job, JobId(completed));
+                assert_eq!(start.idempotency_key, format!("nodecraft:public-run:{completed}"));
+                assert_eq!(start.lane.0, "comfy:http://public-gpu:8188");
+                s.report(start.job, Outcome::Done, 0).unwrap();
+                completed += 1;
+            }
+            s.drain_events();
+        }
+        assert_eq!(completed, 10_000);
     }
 
     #[test]
@@ -1136,7 +1410,7 @@ mod tests {
                 assert!(running.len() <= limits.global);
                 for lane in lanes {
                     let on = running.iter().filter(|r| r.lane.0 == lane).count();
-                    assert!(on <= limits.lane(&Lane::new(lane)), "lane {lane}: {on}");
+                    assert!(on <= limits.lane(lane), "lane {lane}: {on}");
                 }
                 if steps == 3
                     && let Some(rest) = late.take()
