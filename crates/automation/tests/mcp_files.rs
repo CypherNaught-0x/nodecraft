@@ -85,7 +85,7 @@ fn storage_enabled_file_commands_are_hidden_and_refused_without_io_or_state_chan
         assert_eq!(reply["content"][0]["text"], format!("unsupported: {id} can only be run by a person in the app"));
         assert!(!reply.to_string().contains(location));
         assert_eq!(storage.0.borrow().calls, [0; 6]);
-        let session = server.session();
+        let session = server.session().expect("this test uses the local MCP backend");
         assert_eq!(
             (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision()),
             before
@@ -94,11 +94,17 @@ fn storage_enabled_file_commands_are_hidden_and_refused_without_io_or_state_chan
     }
     // Existing history still replays, and a normal allowed edit reaches persistence.
     assert_eq!(call(&mut server, "command_run", json!({"id":"edit.redo"}))["isError"], false);
-    assert_eq!(server.session().document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().pos.x, 2.0);
+    assert_eq!(
+        server.session().expect("this test uses the local MCP backend").document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().pos.x,
+        2.0
+    );
     assert_eq!(call(&mut server, "command_run", json!({"id":"edit.undo"}))["isError"], false);
-    assert_eq!(server.session().document(), &before.0);
+    assert_eq!(server.session().expect("this test uses the local MCP backend").document(), &before.0);
     assert_eq!(call(&mut server, "command_run", json!({"id":"node.move","params":movement(3)}))["isError"], false);
-    assert_eq!(server.session().document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().pos.x, 3.0);
+    assert_eq!(
+        server.session().expect("this test uses the local MCP backend").document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().pos.x,
+        3.0
+    );
     assert_eq!(storage.0.borrow().calls, [0, 0, 0, 3, 0, 0]);
 }
 
