@@ -35,13 +35,86 @@ struct CachedSchema {
     last_used: u64,
 }
 
-fn cache_bytes(cache: &BTreeMap<NodeId, CachedSchema>) -> usize {
+/// Resolved instance schemas of the cards on screen, with the byte total kept up to date on every
+/// insert and remove (shared descriptors counted once), so a cache miss costs O(log n) rather
+/// than a scan of every entry. Edits invalidate entries by document revision.
+#[derive(Default)]
+struct SchemaCache {
+    entries: BTreeMap<NodeId, CachedSchema>,
+    /// Borrowed descriptors shared between entries: (descriptor, bytes, entries using it).
+    shared: BTreeMap<usize, (Arc<nodecraft_nodes::NodeDescriptor>, usize, usize)>,
+    bytes: usize,
+}
+
+impl SchemaCache {
+    /// Bytes an entry adds on its own (overhead, visibility names, an owned descriptor).
+    fn own_bytes(entry: &CachedSchema) -> usize {
+        let names = entry.visible.iter().map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
+        let owned = if entry.borrowed_identity.is_none() { entry.descriptor_bytes } else { 0 };
+        256usize.saturating_add(names).saturating_add(owned)
+    }
+    fn get(&self, id: &NodeId) -> Option<&CachedSchema> {
+        self.entries.get(id)
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &CachedSchema> {
+        self.entries.values()
+    }
+    #[cfg(test)]
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+    fn insert(&mut self, id: NodeId, entry: CachedSchema) {
+        self.remove(&id);
+        self.bytes = self.bytes.saturating_add(Self::own_bytes(&entry));
+        if let Some(identity) = entry.borrowed_identity {
+            let slot = self.shared.entry(identity).or_insert_with(|| (Arc::clone(&entry.descriptor), entry.descriptor_bytes, 0));
+            if slot.2 == 0 {
+                self.bytes = self.bytes.saturating_add(slot.1);
+            }
+            slot.2 = slot.2.saturating_add(1);
+        }
+        self.entries.insert(id, entry);
+    }
+    fn remove(&mut self, id: &NodeId) {
+        let Some(entry) = self.entries.remove(id) else { return };
+        self.bytes = self.bytes.saturating_sub(Self::own_bytes(&entry));
+        if let Some(identity) = entry.borrowed_identity
+            && let Some(slot) = self.shared.get_mut(&identity)
+        {
+            slot.2 = slot.2.saturating_sub(1);
+            if slot.2 == 0 {
+                self.bytes = self.bytes.saturating_sub(slot.1);
+                self.shared.remove(&identity);
+            }
+        }
+    }
+    fn retain(&mut self, keep: impl Fn(&NodeId) -> bool) {
+        let gone: Vec<NodeId> = self.entries.keys().filter(|id| !keep(id)).copied().collect();
+        for id in gone {
+            self.remove(&id);
+        }
+    }
+}
+
+/// The cache's byte total, recomputed from scratch (tests check the running total against it).
+#[cfg(test)]
+fn cache_bytes(cache: &SchemaCache) -> usize {
     let mut shared = BTreeSet::new();
-    cache.values().fold(0usize, |total, entry| {
-        let bytes = if shared.insert(Arc::as_ptr(&entry.descriptor) as usize) { entry.descriptor_bytes } else { 0 };
-        // Include conservative per-entry/tree/string overhead, not just shared descriptor text.
-        total.saturating_add(bytes).saturating_add(256).saturating_add(entry.visible.iter().map(|name| name.len().saturating_add(96)).sum::<usize>())
-    })
+    let total = cache.entries.values().fold(0usize, |total, entry| {
+        let descriptor = match entry.borrowed_identity {
+            Some(identity) if !shared.insert(identity) => 0,
+            Some(_) => entry.descriptor_bytes,
+            None => 0,
+        };
+        total.saturating_add(SchemaCache::own_bytes(entry)).saturating_add(descriptor)
+    });
+    assert_eq!(total, cache.bytes, "running schema-cache total drifted");
+    total
 }
 pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> Option<usize> {
     struct Counter(usize);
@@ -62,9 +135,9 @@ pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> 
     // Conservative heap accounting for Vec/String/enum/tree overhead beyond wire text.
     counter.0.checked_mul(4).filter(|bytes| *bytes <= MAX_SCHEMA_CACHE_BYTES)
 }
-fn cached_schema<'a>(cache: &'a mut BTreeMap<NodeId, CachedSchema>, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
+fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
     if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision()) {
-        if let Some(entry) = cache.get_mut(&node.id) {
+        if let Some(entry) = cache.entries.get_mut(&node.id) {
             entry.last_used = clock;
         }
         return cache.get(&node.id);
@@ -79,8 +152,8 @@ fn cached_schema<'a>(cache: &'a mut BTreeMap<NodeId, CachedSchema>, session: &Se
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
             // of one dynamic kind remain distinct; the registry outlives this view cache.
             let identity = descriptor as *const nodecraft_nodes::NodeDescriptor as usize;
-            if let Some(shared) = cache.values().find(|entry| entry.borrowed_identity == Some(identity)) {
-                (Arc::clone(&shared.descriptor), Some(identity), shared.descriptor_bytes)
+            if let Some((shared, bytes, _)) = cache.shared.get(&identity) {
+                (Arc::clone(shared), Some(identity), *bytes)
             } else {
                 let bytes = descriptor_bytes(descriptor)?;
                 (Arc::new(descriptor.clone()), Some(identity), bytes)
@@ -92,8 +165,8 @@ fn cached_schema<'a>(cache: &'a mut BTreeMap<NodeId, CachedSchema>, session: &Se
         }
     };
     cache.insert(node.id, CachedSchema { descriptor, visible, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock });
-    while cache_bytes(cache) > MAX_SCHEMA_CACHE_BYTES {
-        let oldest = cache.iter().filter(|(id, _)| **id != node.id).min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id);
+    while cache.bytes > MAX_SCHEMA_CACHE_BYTES {
+        let oldest = cache.entries.iter().filter(|(id, _)| **id != node.id).min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id);
         if let Some(id) = oldest {
             cache.remove(&id);
         } else {
@@ -224,7 +297,7 @@ pub struct NodeCraftApp {
     palette: Option<Palette>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
-    schemas: BTreeMap<NodeId, CachedSchema>,
+    schemas: SchemaCache,
     cache_clock: u64,
     next_gesture: u64,
     centred: bool,
@@ -331,7 +404,7 @@ impl NodeCraftApp {
             wiring: None,
             palette: None,
             text_focused: false,
-            schemas: BTreeMap::new(),
+            schemas: SchemaCache::default(),
             cache_clock: 0,
             next_gesture: 0,
             centred: false,
@@ -525,7 +598,7 @@ impl NodeCraftApp {
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
-            self.schemas.retain(|id, _| canvas.nodes().contains_key(id));
+            self.schemas.retain(|id| canvas.nodes().contains_key(id));
             self.selection.retain_existing(canvas);
             // Selected cards draw last, on top.
             let selected = self.selection.clone();
@@ -1179,5 +1252,7 @@ impl eframe::App for NodeCraftApp {
     }
 }
 
+#[cfg(test)]
+mod perf;
 #[cfg(test)]
 mod tests;

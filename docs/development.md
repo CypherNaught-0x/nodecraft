@@ -34,6 +34,11 @@ checksums together from the `.sha256` files published beside the archives on the
 [official nextest release](https://github.com/nextest-rs/nextest/releases). `cargo xtask ci` continues to use `cargo test`
 so local checks do not require nextest.
 
+## Benchmarks
+
+- `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`: canvas frame time over
+  200- and 1,000-node graphs (see `docs/ui-design.md`, "Level of detail and performance").
+
 ## xtask
 
 | Command | Does |
