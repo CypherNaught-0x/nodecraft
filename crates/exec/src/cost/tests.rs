@@ -552,3 +552,39 @@ fn saved_logs_keep_their_totals_and_are_checked_on_load() {
     let loaded: UsageLog = serde_json::from_str(&file(serde_json::json!([legacy]), usd_total(50))).unwrap();
     assert_eq!(loaded.entries().next().map(|e| e.status), Some(Charge::Actual));
 }
+
+#[test]
+fn review_regressions_for_219() {
+    // A saved file can't claim totals that block later charges or sit outside the project.
+    let load = |v: serde_json::Value| serde_json::from_str::<UsageLog>(&v.to_string());
+    let max = Money::new(Currency::USD, u64::MAX);
+    assert!(load(serde_json::json!({"entries": [], "project": {"USD": max}, "sessions": {"s": {"USD": max}}})).is_err());
+    let eur = Money::new(Currency::EUR, 5);
+    assert!(load(serde_json::json!({"entries": [], "project": {}, "sessions": {"other": {"EUR": eur}}})).is_err());
+    assert!(load(serde_json::json!({"entries": [], "project": {"EUR": eur}, "sessions": {"other": {"EUR": eur}}})).is_ok());
+    let entry = serde_json::to_value(charge("x", 50, Charge::Actual)).unwrap();
+    let mut extra = entry.clone();
+    extra.as_object_mut().unwrap().insert("surprise".into(), serde_json::json!(1));
+    assert!(load(serde_json::json!({"entries": [extra], "project": {"USD": usd(50)}, "sessions": {"now": {"USD": usd(50)}}})).is_err());
+
+    // Settling can't change currency or go back to an estimate.
+    let mut log = UsageLog::default();
+    log.record(charge("k", 40_000, Charge::Estimate)).unwrap();
+    assert_eq!(log.settle("fal", "k", Money::new(Currency::EUR, 1), Charge::Actual).unwrap_err().kind, ErrorKind::CurrencyMismatch);
+    assert!(log.settle("fal", "k", usd(1), Charge::Estimate).is_err());
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(40_000)));
+
+    // A certainly unbilled job is released, and its key can be reserved again.
+    log.record(charge("after", 7, Charge::Estimate)).unwrap();
+    log.release("fal", "k").unwrap();
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(7)));
+    assert!(log.record(charge("k", 40_000, Charge::Estimate)).unwrap(), "the key is free again");
+    log.settle("fal", "after", usd(6), Charge::Actual).unwrap();
+    log.settle("fal", "k", usd(30_000), Charge::Actual).unwrap();
+    assert_eq!(log.spent("now").session.get(&Currency::USD), Some(&usd(30_006)));
+    assert_eq!(log.release("fal", "k").unwrap_err().kind, ErrorKind::Conflict, "actual charges are final");
+    assert_eq!(log.release("fal", "nope").unwrap_err().kind, ErrorKind::NotFound);
+    // Still saves and loads after a release.
+    let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert!(back == log);
+}

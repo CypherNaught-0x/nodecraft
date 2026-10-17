@@ -286,6 +286,7 @@ impl Charge {
 
 /// One charged job.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UsageEntry {
     /// Milliseconds since the Unix epoch.
     pub at_ms: u64,
@@ -306,6 +307,8 @@ pub const MAX_USAGE_ENTRIES: usize = 100_000;
 /// Largest single charge accepted, in micro-units (a million units of any currency). Anything
 /// larger is a provider or file error, and accepting it would push the totals towards overflow.
 pub const MAX_CHARGE_MICROS: u64 = 1_000_000 * 1_000_000;
+/// Largest total a saved log may claim: room for a million maximal charges, far from overflow.
+pub const MAX_TOTAL_MICROS: u64 = MAX_CHARGE_MICROS * 1_000_000;
 /// Longest session id, provider, model or key text accepted.
 const MAX_TEXT: usize = 512;
 
@@ -401,13 +404,8 @@ impl UsageLog {
         Ok(true)
     }
 
-    /// Changes a recorded charge's cost and status: an estimate becomes the actual cost, or is
-    /// kept as unresolved. A charge already settled as actual is final. Totals move by the
-    /// difference; nothing changes on an error.
-    pub fn settle(&mut self, provider: &str, idempotency_key: &str, cost: Money, status: Charge) -> Result<(), Error> {
-        if cost.micros > MAX_CHARGE_MICROS {
-            return Err(Error::new(ErrorKind::InvalidInput, "a charge is larger than any job could cost"));
-        }
+    /// The listed, unsettled entry for a key and its index.
+    fn open_entry(&self, provider: &str, idempotency_key: &str) -> Result<(usize, &UsageEntry), Error> {
         let seq = *self
             .keys
             .get(&(provider.to_owned(), idempotency_key.to_owned()))
@@ -416,6 +414,26 @@ impl UsageLog {
         let entry = self.entries.get(index).ok_or_else(|| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
         if entry.status == Charge::Actual {
             return Err(Error::new(ErrorKind::Conflict, "that charge is already settled"));
+        }
+        Ok((index, entry))
+    }
+
+    /// Changes a recorded estimate's cost and status: it becomes the actual cost, or stays
+    /// charged as unresolved. A charge already settled as actual is final, and the currency can't
+    /// change. Totals move by the difference; nothing changes on an error.
+    ///
+    /// `NotFound` means the entry already left the list: its estimate stays in the totals (the
+    /// conservative outcome). Don't `record` it again, which would count it twice.
+    pub fn settle(&mut self, provider: &str, idempotency_key: &str, cost: Money, status: Charge) -> Result<(), Error> {
+        if cost.micros > MAX_CHARGE_MICROS {
+            return Err(Error::new(ErrorKind::InvalidInput, "a charge is larger than any job could cost"));
+        }
+        if status == Charge::Estimate {
+            return Err(Error::new(ErrorKind::InvalidInput, "settle to an actual or unresolved charge"));
+        }
+        let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        if cost.currency != entry.cost.currency {
+            return Err(Error::new(ErrorKind::CurrencyMismatch, "a charge can't change currency when it settles"));
         }
         let mut project = self.project.clone();
         sub_from(&mut project, entry.cost)?;
@@ -430,6 +448,24 @@ impl UsageLog {
             entry.cost = cost;
             entry.status = status;
         }
+        Ok(())
+    }
+
+    /// Removes an unsettled charge for a job the provider certainly never billed (a rejected key,
+    /// invalid input), taking it out of the totals and freeing its key for a later attempt.
+    pub fn release(&mut self, provider: &str, idempotency_key: &str) -> Result<(), Error> {
+        let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        let mut project = self.project.clone();
+        sub_from(&mut project, entry.cost)?;
+        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
+        sub_from(&mut session, entry.cost)?;
+        let name = entry.session.clone();
+        self.project = project;
+        self.sessions.insert(name, session);
+        self.entries.remove(index);
+        // Later entries moved up one: renumber the index (rare, so a rebuild is fine).
+        self.first_seq = 0;
+        self.keys = self.entries.iter().enumerate().map(|(i, e)| ((e.provider.clone(), e.idempotency_key.clone()), i as u64)).collect();
         Ok(())
     }
 
@@ -504,6 +540,25 @@ impl TryFrom<UsageLogFile> for UsageLog {
         }
         if !listed_sessions.iter().all(|(name, sums)| covers(file.sessions.get(*name), sums)) {
             return Err(bad("a session's totals don't cover its charges"));
+        }
+        if file.sessions.keys().any(|name| name.len() > MAX_TEXT) {
+            return Err(bad("a session id is too long"));
+        }
+        // Every charge counts in its session and the project, so the project is exactly the sum
+        // of the sessions; totals far below overflow keep later charges recordable.
+        let mut summed = Totals::new();
+        for totals in file.sessions.values() {
+            for money in totals.values() {
+                add_to(&mut summed, *money)?;
+            }
+        }
+        summed.retain(|_, m| m.micros > 0);
+        let nonzero: Totals = file.project.iter().filter(|(_, m)| m.micros > 0).map(|(c, m)| (*c, *m)).collect();
+        if summed != nonzero {
+            return Err(bad("the project total isn't the sum of its sessions"));
+        }
+        if file.project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
+            return Err(bad("a total is larger than any project could spend"));
         }
         Ok(Self { entries: file.entries.into(), keys, first_seq: 0, project: file.project, sessions: file.sessions })
     }
