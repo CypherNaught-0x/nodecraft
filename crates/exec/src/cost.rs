@@ -3,16 +3,18 @@
 //!
 //! Everything here is pure. A node is paid when its kind has a model parameter
 //! ([`ParamControl::Model`]); its price is the chosen catalog model's price per job times the jobs
-//! the step plans. Nodes without a model parameter (sources, local actions) are free. Totals are
+//! the step plans. Nodes without a model parameter (sources, local actions) are free, except
+//! generation kinds, which can't be priced without one. Totals are
 //! kept per currency (never converted), and a step whose price isn't known blocks any capped run,
 //! so a budget can't be passed by a quote that was silently incomplete.
 
 use crate::planner::RunPlan;
 use nodecraft_catalog::{Catalog, ModelDescriptor, Pricing};
 use nodecraft_graph::{Canvas, Node};
-use nodecraft_nodes::Registry;
+use nodecraft_nodes::{Category, Registry};
 use nodecraft_types::{Currency, Error, ErrorKind, Money, NodeId, ParamControl, ParamValues, Value};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, VecDeque};
 
 /// Why a step has no price yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +117,10 @@ fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Vec<String>,
     };
     let mut models = Vec::new();
     let mut total: Option<Money> = None;
+    // A generation kind that names no model calls something we can't price: never "free".
+    if descriptor.category == Category::Generation && !descriptor.params.params.iter().any(|spec| spec.control == ParamControl::Model) {
+        return (models, Err(Unpriced::Invalid(format!("the {} node kind has no model to price", node.kind))));
+    }
     for spec in descriptor.params.params.iter().filter(|spec| spec.control == ParamControl::Model) {
         let id = match node.params.get(&spec.name) {
             Some(Value::Text(id)) if !id.is_empty() => id.clone(),
@@ -254,8 +260,33 @@ pub struct Spent {
     pub project: BTreeMap<Currency, Money>,
 }
 
+/// How settled a charge is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Charge {
+    /// What the provider reported, or the estimate for a job that finished without a report.
+    #[default]
+    Actual,
+    /// The quoted price, held while the job runs; settled later.
+    Estimate,
+    /// The job may have been billed but its outcome is unknown (a lost submit, a run given up
+    /// on): charged at the estimate so caps hold.
+    Unresolved,
+}
+
+impl Charge {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Actual => "actual",
+            Self::Estimate => "estimate",
+            Self::Unresolved => "unresolved",
+        }
+    }
+}
+
 /// One charged job.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UsageEntry {
     /// Milliseconds since the Unix epoch.
     pub at_ms: u64,
@@ -267,58 +298,183 @@ pub struct UsageEntry {
     pub cost: Money,
     /// The idempotency key the provider was charged under, so a retry shows as one charge.
     pub idempotency_key: String,
+    #[serde(default)]
+    pub status: Charge,
 }
 
 /// Most entries kept; older ones leave the list (export them first) but stay in the totals.
 pub const MAX_USAGE_ENTRIES: usize = 100_000;
+/// Largest single charge accepted, in micro-units (a million units of any currency). Anything
+/// larger is a provider or file error, and accepting it would push the totals towards overflow.
+pub const MAX_CHARGE_MICROS: u64 = 1_000_000 * 1_000_000;
+/// Largest total a saved log may claim: room for a million maximal charges, far from overflow.
+pub const MAX_TOTAL_MICROS: u64 = MAX_CHARGE_MICROS * 1_000_000;
+/// Longest session id, provider, model or key text accepted.
+const MAX_TEXT: usize = 512;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+type Totals = BTreeMap<Currency, Money>;
+
+/// The usage log and the totals it implies. Totals cover every charge ever recorded, including
+/// entries that have left the list, so caps never loosen; they are saved with the log.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(try_from = "UsageLogFile", into = "UsageLogFile")]
 pub struct UsageLog {
     entries: VecDeque<UsageEntry>,
-    /// `(provider, idempotency key)` of `entries`, for constant-time duplicate checks; keys are
-    /// only unique per provider.
-    keys: BTreeSet<(String, String)>,
-    /// Spend of entries that left the list: per session and in total, so caps never loosen.
-    evicted_sessions: BTreeMap<String, BTreeMap<Currency, Money>>,
-    evicted_total: BTreeMap<Currency, Money>,
+    /// `(provider, idempotency key)` → sequence number of its entry; keys are only unique per
+    /// provider. An entry's index is its sequence number minus `first_seq`.
+    keys: BTreeMap<(String, String), u64>,
+    first_seq: u64,
+    project: Totals,
+    sessions: BTreeMap<String, Totals>,
 }
 
-fn add_to(map: &mut BTreeMap<Currency, Money>, amount: Money) -> Result<(), Error> {
+/// Logs are equal when they list the same charges with the same totals (the key index is
+/// derived from the entries).
+impl PartialEq for UsageLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries && self.project == other.project && self.sessions == other.sessions
+    }
+}
+impl Eq for UsageLog {}
+
+/// How a usage log is saved: the listed entries and the totals.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageLogFile {
+    pub entries: Vec<UsageEntry>,
+    pub project: Totals,
+    #[serde(default)]
+    pub sessions: BTreeMap<String, Totals>,
+}
+
+fn add_to(map: &mut Totals, amount: Money) -> Result<(), Error> {
     let total = map.entry(amount.currency).or_insert_with(|| Money::zero(amount.currency));
     *total = total.checked_add(amount)?;
     Ok(())
 }
 
+fn sub_from(map: &mut Totals, amount: Money) -> Result<(), Error> {
+    let total = map.get_mut(&amount.currency).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing a currency"))?;
+    *total = total.checked_sub(amount)?;
+    Ok(())
+}
+
+fn check_entry(entry: &UsageEntry) -> Result<(), Error> {
+    let bad = |m: &str| Err(Error::new(ErrorKind::InvalidInput, m.to_owned()));
+    if entry.idempotency_key.is_empty() {
+        return bad("a usage entry needs an idempotency key");
+    }
+    if [&entry.session, &entry.provider, &entry.model, &entry.idempotency_key].iter().any(|t| t.len() > MAX_TEXT) {
+        return bad("a usage entry's text is too long");
+    }
+    if entry.cost.micros > MAX_CHARGE_MICROS {
+        return bad("a charge is larger than any job could cost");
+    }
+    Ok(())
+}
+
 impl UsageLog {
     /// Record a charge. Returns `false` when its idempotency key was already recorded (a retry is
-    /// the same charge). An empty key is refused, since it couldn't tell retries from new charges.
-    /// (A key whose entry already left the list counts again; export before that.)
+    /// the same charge; use [`UsageLog::settle`] to change it). An empty key is refused, since it
+    /// couldn't tell retries from new charges, and so is an implausibly large cost. Nothing changes
+    /// on an error. (A key whose entry already left the list counts again; export before that.)
     pub fn record(&mut self, entry: UsageEntry) -> Result<bool, Error> {
-        if entry.idempotency_key.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidInput, "a usage entry needs an idempotency key"));
-        }
+        check_entry(&entry)?;
         let key = (entry.provider.clone(), entry.idempotency_key.clone());
-        if self.keys.contains(&key) {
+        if self.keys.contains_key(&key) {
             return Ok(false);
         }
-        if self.entries.len() >= MAX_USAGE_ENTRIES
-            && let Some(oldest) = self.entries.front()
-        {
-            // Compute the new totals first, so an overflow leaves the log as it was.
-            let mut total = self.evicted_total.clone();
-            add_to(&mut total, oldest.cost)?;
-            let mut session = self.evicted_sessions.get(&oldest.session).cloned().unwrap_or_default();
-            add_to(&mut session, oldest.cost)?;
-            let oldest_session = oldest.session.clone();
-            if let Some(oldest) = self.entries.pop_front() {
-                self.keys.remove(&(oldest.provider, oldest.idempotency_key));
-            }
-            self.evicted_total = total;
-            self.evicted_sessions.insert(oldest_session, session);
+        // New totals first, so an overflow leaves the log as it was.
+        let mut project = self.project.clone();
+        add_to(&mut project, entry.cost)?;
+        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
+        add_to(&mut session, entry.cost)?;
+        // The same ceiling a saved log is held to, so every log that records can be reloaded.
+        if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
+            return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
         }
-        self.keys.insert(key);
+        let seq = self.first_seq.checked_add(self.entries.len() as u64).ok_or_else(|| Error::new(ErrorKind::Overflow, "usage log sequence overflow"))?;
+        if self.entries.len() >= MAX_USAGE_ENTRIES
+            && let Some(oldest) = self.entries.pop_front()
+        {
+            // The totals already include it.
+            self.keys.remove(&(oldest.provider, oldest.idempotency_key));
+            self.first_seq = self.first_seq.saturating_add(1);
+        }
+        self.project = project;
+        self.sessions.insert(entry.session.clone(), session);
+        self.keys.insert(key, seq);
         self.entries.push_back(entry);
         Ok(true)
+    }
+
+    /// The listed, unsettled entry for a key and its index.
+    fn open_entry(&self, provider: &str, idempotency_key: &str) -> Result<(usize, &UsageEntry), Error> {
+        let seq = *self
+            .keys
+            .get(&(provider.to_owned(), idempotency_key.to_owned()))
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, "no listed charge has that key (it may have been exported and dropped)"))?;
+        let index = usize::try_from(seq.saturating_sub(self.first_seq)).map_err(|_| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
+        let entry = self.entries.get(index).ok_or_else(|| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
+        if entry.status == Charge::Actual {
+            return Err(Error::new(ErrorKind::Conflict, "that charge is already settled"));
+        }
+        Ok((index, entry))
+    }
+
+    /// Changes a recorded estimate's cost and status: it becomes the actual cost, or stays
+    /// charged as unresolved. A charge already settled as actual is final, and the currency can't
+    /// change. Totals move by the difference; nothing changes on an error.
+    ///
+    /// `NotFound` means the entry already left the list: its estimate stays in the totals (the
+    /// conservative outcome). Don't `record` it again, which would count it twice.
+    pub fn settle(&mut self, provider: &str, idempotency_key: &str, cost: Money, status: Charge) -> Result<(), Error> {
+        if cost.micros > MAX_CHARGE_MICROS {
+            return Err(Error::new(ErrorKind::InvalidInput, "a charge is larger than any job could cost"));
+        }
+        if status == Charge::Estimate {
+            return Err(Error::new(ErrorKind::InvalidInput, "settle to an actual or unresolved charge"));
+        }
+        let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        if cost.currency != entry.cost.currency {
+            return Err(Error::new(ErrorKind::CurrencyMismatch, "a charge can't change currency when it settles"));
+        }
+        let mut project = self.project.clone();
+        sub_from(&mut project, entry.cost)?;
+        add_to(&mut project, cost)?;
+        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
+        sub_from(&mut session, entry.cost)?;
+        add_to(&mut session, cost)?;
+        let name = entry.session.clone();
+        self.project = project;
+        self.sessions.insert(name, session);
+        if let Some(entry) = self.entries.get_mut(index) {
+            entry.cost = cost;
+            entry.status = status;
+        }
+        Ok(())
+    }
+
+    /// Removes an unsettled charge for a job the provider certainly never billed (a rejected key,
+    /// invalid input), taking it out of the totals and freeing its key for a later attempt.
+    /// Only an estimate can be released: an unresolved charge may have been billed.
+    pub fn release(&mut self, provider: &str, idempotency_key: &str) -> Result<(), Error> {
+        let (index, entry) = self.open_entry(provider, idempotency_key)?;
+        if entry.status != Charge::Estimate {
+            return Err(Error::new(ErrorKind::Conflict, "only an estimate can be released; this charge may have been billed"));
+        }
+        let mut project = self.project.clone();
+        sub_from(&mut project, entry.cost)?;
+        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
+        sub_from(&mut session, entry.cost)?;
+        let name = entry.session.clone();
+        self.project = project;
+        self.sessions.insert(name, session);
+        self.entries.remove(index);
+        // Later entries moved up one: renumber the index (rare, so a rebuild is fine).
+        self.first_seq = 0;
+        self.keys = self.entries.iter().enumerate().map(|(i, e)| ((e.provider.clone(), e.idempotency_key.clone()), i as u64)).collect();
+        Ok(())
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &UsageEntry> {
@@ -327,21 +483,14 @@ impl UsageLog {
 
     /// Totals per currency for `session` and for the whole project, including entries that have
     /// left the list.
-    pub fn spent(&self, session: &str) -> Result<Spent, Error> {
-        let mut spent = Spent { session: self.evicted_sessions.get(session).cloned().unwrap_or_default(), project: self.evicted_total.clone() };
-        for entry in &self.entries {
-            add_to(&mut spent.project, entry.cost)?;
-            if entry.session == session {
-                add_to(&mut spent.session, entry.cost)?;
-            }
-        }
-        Ok(spent)
+    pub fn spent(&self, session: &str) -> Spent {
+        Spent { session: self.sessions.get(session).cloned().unwrap_or_default(), project: self.project.clone() }
     }
 
     /// The listed entries as CSV (RFC 4180), safe to open in a spreadsheet: text cells that could
     /// be read as formulas are prefixed with an apostrophe.
     pub fn to_csv(&self) -> String {
-        let mut out = String::from("time_ms,session,node,provider,model,amount,currency,idempotency_key\r\n");
+        let mut out = String::from("time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n");
         for e in &self.entries {
             let amount = format_money(e.cost);
             let amount = amount.split_once(' ').map_or(amount.as_str(), |(n, _)| n).to_owned();
@@ -353,12 +502,73 @@ impl UsageLog {
                 cell(&e.model),
                 amount,
                 String::from(e.cost.currency),
+                e.status.as_str().to_owned(),
                 cell(&e.idempotency_key),
             ];
             out.push_str(&row.join(","));
             out.push_str("\r\n");
         }
         out
+    }
+}
+
+impl From<UsageLog> for UsageLogFile {
+    fn from(log: UsageLog) -> Self {
+        Self { entries: log.entries.into(), project: log.project, sessions: log.sessions }
+    }
+}
+
+/// A saved log is checked like new input: bounded, keyed, and with totals that cover its
+/// entries (a file can't claim less was spent than it lists).
+impl TryFrom<UsageLogFile> for UsageLog {
+    type Error = Error;
+
+    fn try_from(file: UsageLogFile) -> Result<Self, Error> {
+        let bad = |m: &str| Error::new(ErrorKind::InvalidInput, format!("usage log: {m}"));
+        if file.entries.len() > MAX_USAGE_ENTRIES {
+            return Err(bad("too many entries"));
+        }
+        let mut listed = Totals::new();
+        let mut listed_sessions: BTreeMap<&str, Totals> = BTreeMap::new();
+        let mut keys = BTreeMap::new();
+        for (seq, entry) in file.entries.iter().enumerate() {
+            check_entry(entry)?;
+            if keys.insert((entry.provider.clone(), entry.idempotency_key.clone()), seq as u64).is_some() {
+                return Err(bad("an idempotency key appears twice"));
+            }
+            add_to(&mut listed, entry.cost)?;
+            add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
+        }
+        let covers = |totals: Option<&Totals>, sums: &Totals| {
+            sums.iter().all(|(currency, sum)| sum.micros == 0 || totals.and_then(|t| t.get(currency)).is_some_and(|t| t.micros >= sum.micros))
+        };
+        let consistent = |totals: &Totals| totals.iter().all(|(currency, money)| money.currency == *currency);
+        if !covers(Some(&file.project), &listed) || !consistent(&file.project) || !file.sessions.values().all(consistent) {
+            return Err(bad("the totals don't cover the listed charges"));
+        }
+        if !listed_sessions.iter().all(|(name, sums)| covers(file.sessions.get(*name), sums)) {
+            return Err(bad("a session's totals don't cover its charges"));
+        }
+        if file.sessions.keys().any(|name| name.len() > MAX_TEXT) {
+            return Err(bad("a session id is too long"));
+        }
+        // Every charge counts in its session and the project, so the project is exactly the sum
+        // of the sessions; totals far below overflow keep later charges recordable.
+        let mut summed = Totals::new();
+        for totals in file.sessions.values() {
+            for money in totals.values() {
+                add_to(&mut summed, *money)?;
+            }
+        }
+        summed.retain(|_, m| m.micros > 0);
+        let nonzero: Totals = file.project.iter().filter(|(_, m)| m.micros > 0).map(|(c, m)| (*c, *m)).collect();
+        if summed != nonzero {
+            return Err(bad("the project total isn't the sum of its sessions"));
+        }
+        if file.project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
+            return Err(bad("a total is larger than any project could spend"));
+        }
+        Ok(Self { entries: file.entries.into(), keys, first_seq: 0, project: file.project, sessions: file.sessions })
     }
 }
 
