@@ -1,20 +1,87 @@
 //! Shared command contract. Handlers inspect immutable state and return changesets; only
 //! `Session` commits them, records undo and publishes events. Handlers must not perform I/O.
 
-use std::collections::BTreeMap;
+use std::{
+    any::{Any, TypeId},
+    collections::{BTreeMap, HashMap},
+};
 
 use nodecraft_graph::{Changeset, Project};
 use nodecraft_types::{Error, ErrorKind};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+/// Host-owned immutable snapshots/capabilities. No settings persistence or job queue is implied.
+/// Inject resources when constructing a session; handlers return effects rather than mutating them.
+#[derive(Default)]
+pub struct Resources {
+    values: HashMap<TypeId, Box<dyn Any>>,
+}
+impl Resources {
+    pub fn insert<T: Any>(&mut self, value: T) {
+        self.values.insert(TypeId::of::<T>(), Box::new(value));
+    }
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        self.values.get(&TypeId::of::<T>()).and_then(|value| value.downcast_ref())
+    }
+    pub fn require<T: Any>(&self) -> Result<&T, Error> {
+        self.get().ok_or_else(|| Error::new(ErrorKind::Unsupported, "required host capability is unavailable"))
+    }
+}
+
+type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
+
+/// Host services run only after a handler returns a Service effect. The session guards and
+/// bounds requests/results and invokes at most once without automatic retries. External effects
+/// may already be committed on an error, invalid response or panic: hosts own atomicity,
+/// idempotency and reconciliation. Only document/history preservation is the session's guarantee.
+#[derive(Default)]
+pub struct Services {
+    handlers: BTreeMap<&'static str, ServiceHandler>,
+}
+impl Services {
+    pub fn register(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        validate_id(id)?;
+        if self.handlers.contains_key(id) {
+            return Err(Error::new(ErrorKind::Conflict, "host service is already registered"));
+        }
+        self.handlers.insert(id, Box::new(handler));
+        Ok(())
+    }
+    pub fn contains(&self, id: &str) -> bool {
+        self.handlers.contains_key(id)
+    }
+    pub(crate) fn invoke(&mut self, id: &str, request: &Value) -> Result<Value, Error> {
+        let handler = self.handlers.get_mut(id).ok_or_else(|| Error::new(ErrorKind::Unsupported, "required host service is unavailable"))?;
+        handler(request)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Preview,
+    Dispatch,
+}
+
 pub struct Context<'a> {
     pub document: &'a Project,
     pub can_undo: bool,
     pub can_redo: bool,
+    pub resources: &'a Resources,
+    pub services: &'a Services,
+    pub phase: Phase,
+}
+impl Context<'_> {
+    /// Builtins preview the full graph for `enabled()`. Dispatch still invokes every enabled
+    /// hook, but stages graph validation once after the handler returns its changeset.
+    pub fn preview_changes(&self, changes: &Changeset) -> Result<(), Error> {
+        if self.phase == Phase::Preview { changes.validate(self.document) } else { Ok(()) }
+    }
 }
 
 pub enum Effect {
+    Service { capability: &'static str, request: Value },
+    None { result: Value },
     Edit { changes: Changeset, result: Value, gesture: Option<String> },
     Undo,
     Redo,
@@ -26,6 +93,9 @@ pub struct CommandSpec {
     pub label: &'static str,
     /// Platform-independent shortcut spelling; frontends map Command to their primary modifier.
     pub shortcut: Option<&'static str>,
+    pub alternate_shortcuts: &'static [&'static str],
+    /// JSON Schema returned on demand for forms and MCP inputSchema.
+    pub input_schema: fn() -> Value,
     pub params_doc: &'static str,
     pub enabled: fn(&Context<'_>, &Value) -> Result<(), Error>,
     pub run: fn(&Context<'_>, &Value) -> Result<Effect, Error>,
@@ -46,12 +116,7 @@ impl Registry {
     }
 
     pub fn register(&mut self, spec: CommandSpec) -> Result<(), Error> {
-        if spec.id.len() > 128
-            || !spec.id.contains('.')
-            || spec.id.split('.').any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
-        {
-            return Err(invalid("command id must contain lowercase dotted names"));
-        }
+        validate_id(spec.id)?;
         if self.commands.contains_key(spec.id) {
             return Err(Error::new(ErrorKind::Conflict, "command id is already registered"));
         }
@@ -66,6 +131,16 @@ impl Registry {
     pub fn get(&self, id: &str) -> Result<&CommandSpec, Error> {
         self.commands.get(id).ok_or_else(|| Error::new(ErrorKind::NotFound, "unknown command id"))
     }
+}
+
+fn validate_id(id: &str) -> Result<(), Error> {
+    if id.len() > 128
+        || !id.contains('.')
+        || id.split('.').any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'))
+    {
+        return Err(invalid("command/service id must contain lowercase dotted names (letters, digits and underscores)"));
+    }
+    Ok(())
 }
 
 pub(crate) fn invalid(message: &'static str) -> Error {
@@ -133,6 +208,67 @@ pub(crate) fn validate_json(root: &Value) -> Result<(), Error> {
 
 pub(crate) fn params<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
     validate_json(value)?;
-    // Avoid echoing values from serde diagnostics; command input may contain secrets.
-    serde_json::from_value(value.clone()).map_err(|_| invalid("invalid command parameters; consult the command params documentation"))
+    serde_path_to_error::deserialize(value).map_err(|error| {
+        // Never echo raw serde diagnostics, enum variants or caller-controlled map keys.
+        let diagnostic = error.inner().to_string();
+        let category = if diagnostic.starts_with("missing field") {
+            "missing field"
+        } else if diagnostic.starts_with("unknown field") {
+            "unknown field"
+        } else if diagnostic.starts_with("invalid type") {
+            "wrong type"
+        } else {
+            "invalid value"
+        };
+        let mut path = String::from("params");
+        for segment in error.path().iter().take(64) {
+            match segment {
+                serde_path_to_error::Segment::Seq { index } => path.push_str(&format!("[{index}]")),
+                serde_path_to_error::Segment::Map { key } if safe_field(key) => {
+                    path.push('.');
+                    path.push_str(key);
+                }
+                _ => path.push_str(".<field>"),
+            }
+        }
+        if category == "missing field"
+            && let Some(field) = diagnostic.strip_prefix("missing field `").and_then(|s| s.split('`').next()).filter(|s| safe_field(s))
+        {
+            path.push('.');
+            path.push_str(field);
+        }
+        Error::new(ErrorKind::InvalidInput, format!("{path}: {category}; consult the command input schema"))
+    })
+}
+fn safe_field(field: &str) -> bool {
+    matches!(
+        field,
+        "canvas"
+            | "node"
+            | "id"
+            | "kind"
+            | "title"
+            | "pos"
+            | "x"
+            | "y"
+            | "params"
+            | "inputs"
+            | "outputs"
+            | "history"
+            | "active"
+            | "tag"
+            | "field"
+            | "name"
+            | "port_type"
+            | "modality"
+            | "many"
+            | "edge"
+            | "from"
+            | "to"
+            | "port"
+            | "order"
+            | "gesture"
+            | "type"
+            | "value"
+    )
 }

@@ -26,7 +26,18 @@ fn session() -> Session {
     }
     Change::SetActiveGeneration { canvas: canvas(), id: node_id(1), generation: Some(generation(1).id) }.apply(&mut document).unwrap();
     let mut registry = Registry::builtins().unwrap();
-    registry.register(CommandSpec { id: "test.generations", label: "Generation edits", shortcut: None, params_doc: "Changeset", enabled, run: edit }).unwrap();
+    registry
+        .register(CommandSpec {
+            id: "test.generations",
+            alternate_shortcuts: &[],
+            input_schema: || json!({"type":"object"}),
+            label: "Generation edits",
+            shortcut: None,
+            params_doc: "Changeset",
+            enabled,
+            run: edit,
+        })
+        .unwrap();
     Session::with_registry(document, registry).unwrap()
 }
 fn dispatch(session: &mut Session, changes: Vec<Change>) -> Result<Value, Error> {

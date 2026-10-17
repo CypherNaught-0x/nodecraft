@@ -204,19 +204,37 @@ it with `graph` nodes rendered by the same card painter.
 `engine::Session` now owns a validated `Project`, its command registry, undo/redo stacks and
 revision notifications. Frontends call `enabled(id, &params)` for a disabled reason and
 `dispatch(id, &params)` for a JSON result. `registry().specs()` exposes stable IDs, labels,
-shortcuts and typed parameter documentation. Initial commands live in `graph_cmds::specs()`:
+shortcuts, alternate bindings, machine-readable JSON Schema and typed parameter documentation. Initial commands live in `graph_cmds::specs()`:
 `node.add`, `node.remove`, `node.move`, `edge.connect`, `edge.disconnect`, `edit.undo` and
 `edit.redo`. IDs in parameters are caller-supplied; node creation currently accepts detached
 graph data until the node-kind registry supplies templates. Handlers inspect an immutable
-context and return changesets; they cannot directly mutate the live document.
+context and return effects; they cannot directly mutate the live document. Hosts may inject typed
+immutable resources for selection/settings snapshots or explicit capabilities; missing resources
+return Unsupported. Handlers may return `Effect::Service` with a capability id and bounded JSON request. The session
+invokes an injected host callback under its guard, bounds the response and leaves document/history/
+events alone. Missing services return Unsupported; the host owns external atomicity/idempotency,
+and no retry is automatic. A callback error, invalid response or panic can occur after an external
+side effect commits; hosts must reconcile it. The session guarantees only document/history/event
+preservation, not rollback of external effects. This seam does not itself implement settings persistence or job enqueue.
+`Effect::None` returns a bounded result without document, history, revision or event changes.
+Consecutive effective moves coalesce across redundant pointer samples and non-document effects.
+Selection deletion belongs to the canvas selection command; single-node removal has no Delete
+binding. Frontends can map redo's Ctrl+Y alternate in addition to its primary shortcut.
 
 Dispatch bounds JSON nesting, item count and text bytes before recursive deserialization.
-It stages graph edits and their inverse before publication. Native panic unwinding returns an
+Dispatch invokes every custom enabled hook. Builtin graph enabled checks preview the graph only
+in `Phase::Preview`; dispatch defers that graph work to one `Changeset::stage` transaction.
+The staged draft and inverse publish together. Borrowed canonical replay accounting reserves the
+AddNode restore spelling and the complete changeset envelope, avoiding a second undo/redo staging
+pass. Parameter decoding borrows JSON and reports allowlisted field paths and error categories,
+never raw input values or arbitrary map keys. Native panic unwinding returns an
 internal error while preserving document/history/events; abort-only targets still depend on
 validation. History limits and explicit drag tokens are specified in `decisions.md`. Each
 subscriber calls `events_since(cursor)` and advances its own cursor to the last notification;
 an expired cursor requires reading the current document and revision again. These notifications
-are an invalidation log, not a persistence or collaboration journal. Granular generation edits
+are an invalidation log, not a persistence or collaboration journal. Applied changeset events
+remain dependent on a separately bounded journal/subscriber API: attaching full payloads to 256
+notifications would otherwise multiply the 64 MiB graph transaction cap. Granular generation edits
 use the same command effect path: undo retains only the affected entry or active selection,
 and both the inverse and the canonical redo must fit the engine history budget before dispatch
 publishes any document, history or event change.
