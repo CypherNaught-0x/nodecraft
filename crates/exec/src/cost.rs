@@ -477,6 +477,12 @@ impl UsageLog {
         Ok(())
     }
 
+    /// The listed charge for `(provider, idempotency_key)`, if any.
+    pub fn charge(&self, provider: &str, idempotency_key: &str) -> Option<&UsageEntry> {
+        let seq = *self.keys.get(&(provider.to_owned(), idempotency_key.to_owned()))?;
+        self.entries.get(usize::try_from(seq.checked_sub(self.first_seq)?).ok()?)
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &UsageEntry> {
         self.entries.iter()
     }
