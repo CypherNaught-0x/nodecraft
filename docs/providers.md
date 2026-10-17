@@ -48,14 +48,26 @@ provider acceptance and possible billing. Cancellation set before the engine sta
 cancellation while its future is pending may already have reached the provider and keeps the
 estimate as an unresolved charge. Constructing a submit future itself may have side effects.
 
-The current HTTP contract returns `ProviderError` without delivery-stage evidence. Local JSON
-encoding failures and unreadable replies both use `Malformed`; connection failures and dropped
-replies share `Network`. Redirect failures may follow earlier requests. Those generic kinds
-cannot prove that a submission was never accepted, so ambiguous failures stay conservative.
-A transport distinction would need explicit evidence that nothing was sent, preserved across
-redirects and composed by adapters with any earlier requests. This requires a separate transport
-contract change tracked in [#250](https://github.com/CypherNaught-0x/nodecraft/issues/250); no
-message text or connection-error heuristic establishes nonbilling here.
+The evidence-aware submission path separates request delivery from whole-operation
+nonacceptance. Native reqwest request building can prove a request was not executed; once
+`execute` is invoked, every later error is unknown, including connection failures and redirects.
+Responses, status errors, parsing, body limits and stream sink failures cannot undo possible
+delivery. Browser fetch stages remain unknown.
+
+Only the audited LLM Provider path can currently certify a whole submission: local validation
+or a native pre-execute build failure, with no earlier possible delivery or outstanding work.
+Legacy Provider and Http implementations default to unknown before their future constructors
+are called, for **all** error kinds. Comfy remains conservative because submission may query
+history/queue/catalogs, upload inputs and dispatch a prompt. A generic Auth, RateLimited or
+UnsupportedInput error is not proof of nonbilling; provider-specific refusal attestations are
+not implemented. This intentionally keeps more legacy failures charged as unresolved.
+
+Scopes are invocation-local, monotonic and closed once finalized. Unknown or dropped child
+work cannot certify another request, and a later local failure cannot erase an earlier ambiguous
+reservation. There are no public positive proof constructors. These are audited adapter
+contracts, not a sandbox for unrelated side effects in arbitrary Rust code. Direct chat/HTTP
+Result APIs and the usage log format are unchanged. No message text, HTTP status or connection
+heuristic establishes nonbilling.
 
 ## Live tests
 
