@@ -1086,6 +1086,8 @@ fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
     assert!(static_rect.intersects(Rect::from_two_pos(view.to_world(origin, from), view.to_world(origin, to))));
     box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
     assert!(h.state().selection.is_empty());
+}
+
 #[test]
 fn the_keys_button_opens_the_keys_panel() {
     let mut h = harness();
