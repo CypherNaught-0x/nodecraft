@@ -14,6 +14,7 @@ workspace = true
 nodecraft-nodes = { workspace = true }
 nodecraft-catalog = { workspace = true }
 nodecraft-actions = { workspace = true }
+nodecraft-types = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]

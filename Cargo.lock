@@ -2506,6 +2506,7 @@ dependencies = [
  "nodecraft-actions",
  "nodecraft-catalog",
  "nodecraft-nodes",
+ "nodecraft-types",
 ]
 
 [[package]]

@@ -4,6 +4,21 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Cost quotes and budgets (#76)
+
+- **One ledger per session, in one currency** (`exec::budget::Ledger`): per-call, per-session and
+  per-project caps (the project's earlier spend comes from the project file). Amounts are
+  `types::Money`, compared with `checked_cmp` so currencies never mix.
+- **Reserve before start, settle at the end.** A job's estimate is reserved before it is
+  submitted, so jobs running in parallel can't together overshoot a cap; a job that would break a
+  cap fails with a clear, non-retried error and never reaches the provider. A job that ran is
+  charged its actual cost, or its estimate when the provider reports none (until #195); one that
+  failed after reaching the provider is charged its estimate, since it may have been billed; one
+  that never reached it is released.
+- **Unpriced jobs** are refused while any cap is set, unless the user allows them.
+- **Quotes** price a whole run up front and name the first cap it would break.
+- **The usage log exports as RFC 4180 CSV**, with formula-like cells prefixed by `'`.
+
 ## 2026-10-17 · LLM endpoints (#10)
 
 - **Two wire dialects** cover every chat endpoint in scope: OpenAI Chat Completions (OpenAI,
