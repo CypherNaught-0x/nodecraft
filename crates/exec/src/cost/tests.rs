@@ -202,37 +202,37 @@ fn budgets_block_overruns_unknown_prices_and_other_currencies() {
     let priced = Quote { steps: full.steps.iter().filter(|s| s.per_job.is_ok()).cloned().collect(), totals: full.totals.clone() };
     assert!(priced.is_complete());
     let none = Budgets::default();
-    assert!(check(&full, &none, &Spent::default()).unwrap().is_empty());
+    assert!(check(&full, &none, &Spent::default()).unwrap().blocks.is_empty());
     // Per call: 0.12 is over a 0.10 cap.
     let per_call = Budgets { per_call: Some(usd(100_000)), ..Budgets::default() };
     assert_eq!(
-        check(&priced, &per_call, &Spent::default()).unwrap(),
+        check(&priced, &per_call, &Spent::default()).unwrap().blocks,
         vec![Block::Over { scope: Scope::PerCall, node: Some(id(2)), limit: usd(100_000), would_be: usd(120_000) }]
     );
     // Session: 0.45 already spent plus 0.12 is over 0.50; 0.30 spent is fine.
     let session = Budgets { session: Some(usd(500_000)), ..Budgets::default() };
     let spent = |micros| Spent { session: [(Currency::USD, usd(micros))].into_iter().collect(), project: BTreeMap::new() };
-    let blocks = check(&priced, &session, &spent(450_000)).unwrap();
+    let blocks = check(&priced, &session, &spent(450_000)).unwrap().blocks;
     assert_eq!(blocks, vec![Block::Over { scope: Scope::Session, node: None, limit: usd(500_000), would_be: usd(570_000) }]);
     assert_eq!(blocks.first().unwrap().message(), "This would exceed the session budget: 0.57 USD of 0.5 USD.");
-    assert!(check(&priced, &session, &spent(300_000)).unwrap().is_empty());
+    assert!(check(&priced, &session, &spent(300_000)).unwrap().blocks.is_empty());
     // Exactly at the cap is allowed.
-    assert!(check(&priced, &session, &spent(380_000)).unwrap().is_empty());
+    assert!(check(&priced, &session, &spent(380_000)).unwrap().blocks.is_empty());
     // A run that costs nothing isn't blocked even when the budget is already used up.
     let free = Quote { steps: priced.steps.iter().filter(|s| s.node == id(1)).cloned().collect(), totals: BTreeMap::new() };
-    assert!(check(&free, &session, &spent(600_000)).unwrap().is_empty());
+    assert!(check(&free, &session, &spent(600_000)).unwrap().blocks.is_empty());
     // Session and project caps together, each against its own spend.
     let both = Budgets { session: Some(usd(1_000_000)), project: Some(usd(2_000_000)), per_call: None };
     let spent_both = Spent { session: [(Currency::USD, usd(100_000))].into_iter().collect(), project: [(Currency::USD, usd(1_950_000))].into_iter().collect() };
     assert_eq!(
-        check(&priced, &both, &spent_both).unwrap(),
+        check(&priced, &both, &spent_both).unwrap().blocks,
         vec![Block::Over { scope: Scope::Project, node: None, limit: usd(2_000_000), would_be: usd(2_070_000) }]
     );
     // Unknown prices block any capped run.
-    assert!(check(&full, &session, &Spent::default()).unwrap().iter().any(|b| matches!(b, Block::Unknown { scope: Scope::Session, .. })));
+    assert!(check(&full, &session, &Spent::default()).unwrap().blocks.iter().any(|b| matches!(b, Block::Unknown { scope: Scope::Session, .. })));
     // A EUR cap can't be compared with a USD price.
     let euro = Budgets { project: Some(Money::new(Currency::EUR, 10_000_000)), ..Budgets::default() };
-    assert!(matches!(check(&priced, &euro, &Spent::default()).unwrap().as_slice(), [Block::Currency { scope: Scope::Project, .. }]));
+    assert!(matches!(check(&priced, &euro, &Spent::default()).unwrap().blocks.as_slice(), [Block::Currency { scope: Scope::Project, .. }]));
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn a_step_costs_its_per_job_price_times_its_jobs() {
     assert!(matches!(overflow.total(), Err(Unpriced::Invalid(_))));
     // The per-call cap applies per job, so three 0.04 jobs pass a 0.05 cap.
     let quote = Quote { steps: vec![step], totals: [(Currency::USD, usd(120_000))].into_iter().collect() };
-    assert!(check(&quote, &Budgets { per_call: Some(usd(50_000)), ..Budgets::default() }, &Spent::default()).unwrap().is_empty());
+    assert!(check(&quote, &Budgets { per_call: Some(usd(50_000)), ..Budgets::default() }, &Spent::default()).unwrap().blocks.is_empty());
 }
 
 #[test]
@@ -397,12 +397,19 @@ fn deferred_paid_steps_are_estimates_and_currency_mismatches_block() {
     assert_eq!(quote.estimated().collect::<Vec<_>>(), vec![id(3)]);
     assert!(quote.unpriced().next().is_none());
     assert!(!quote.is_complete());
+    // Under a session cap the guess passes only provisionally: the real jobs are checked as they
+    // start. Without aggregate caps there is nothing to be provisional about.
+    let capped = check(&quote, &Budgets { session: Some(usd(10_000_000)), ..Budgets::default() }, &Spent::default()).unwrap();
+    assert!(capped.allowed() && !capped.is_final());
+    assert_eq!(capped.provisional, vec![id(3)]);
+    let uncapped = check(&quote, &Budgets { per_call: Some(usd(10_000_000)), ..Budgets::default() }, &Spent::default()).unwrap();
+    assert!(uncapped.is_final());
     // A EUR model under USD caps: per-call and session both refuse to compare.
     let (project, plan) = generators(&[(2, "test.gen", &[("model", "test.eur")]), (3, "test.gen", &[("model", "test.img")])]);
     let mixed = super::quote(&plan, project.canvases().get(&C).unwrap(), &kinds(), &catalog()).unwrap();
     assert_eq!(mixed.totals.len(), 2);
     let caps = Budgets { per_call: Some(usd(1_000_000)), session: Some(usd(10_000_000)), project: None };
-    let blocks = check(&mixed, &caps, &Spent::default()).unwrap();
+    let blocks = check(&mixed, &caps, &Spent::default()).unwrap().blocks;
     assert!(blocks.iter().any(|b| matches!(b, Block::Currency { scope: Scope::PerCall, .. })));
     assert!(blocks.iter().any(|b| matches!(b, Block::Currency { scope: Scope::Session, .. })));
 }
@@ -493,8 +500,20 @@ fn settling_works_after_older_entries_leave_the_list() {
     let last = format!("k{}", MAX_USAGE_ENTRIES + 2);
     log.settle("fal", &last, usd(5), Charge::Actual).unwrap();
     assert_eq!(log.entries().last().map(|e| e.cost), Some(usd(5)));
-    assert_eq!(log.settle("fal", "k0", usd(5), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound, "dropped from the list");
-    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(u64::try_from(MAX_USAGE_ENTRIES + 2).unwrap() + 5)));
+    // k0 left the list while open: it is pending, so it still settles (#228), once.
+    assert_eq!(log.charge("fal", "k0").map(|e| e.status), Some(Charge::Estimate));
+    log.settle("fal", "k0", usd(5), Charge::Actual).unwrap();
+    assert_eq!(log.settle("fal", "k0", usd(5), Charge::Actual).unwrap_err().kind, ErrorKind::NotFound, "settled and retired");
+    assert!(!log.record(charge("k0", 1, Charge::Actual)).unwrap(), "a retry is still the same charge");
+    // An unsettled pending estimate can be released.
+    log.release("fal", "k1").unwrap();
+    assert!(log.charge("fal", "k1").is_none());
+    assert_eq!(log.spent("now").project.get(&Currency::USD), Some(&usd(u64::try_from(MAX_USAGE_ENTRIES + 3).unwrap() + 4 + 4 - 1)));
+    // Pending charges are saved and checked on load.
+    let json = serde_json::to_string(&log).unwrap();
+    let back: UsageLog = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, log);
+    assert_eq!(back.charge("fal", "k2").map(|e| e.status), Some(Charge::Estimate));
 }
 
 #[test]
@@ -609,4 +628,206 @@ fn charges_are_found_after_releases_and_eviction() {
     assert!(full.charge("fal", "k0").is_none(), "evicted");
     let last = format!("k{}", MAX_USAGE_ENTRIES + 1);
     assert_eq!(full.charge("fal", &last).map(|e| e.idempotency_key.clone()), Some(last));
+}
+
+fn entry(session: &str, key: &str, cost: u64) -> UsageEntry {
+    UsageEntry {
+        at_ms: 0,
+        session: session.into(),
+        node: id(2),
+        provider: "t".into(),
+        model: "m".into(),
+        cost: usd(cost),
+        idempotency_key: key.into(),
+        status: Charge::Actual,
+    }
+}
+
+#[test]
+fn a_known_empty_job_list_quotes_nothing() {
+    let (project, mut plan) = setup();
+    let step = plan.steps.iter_mut().find(|s| s.node == id(2)).unwrap();
+    step.jobs = Some(Vec::new());
+    let quote = quote(&plan, project.canvases().get(&C).unwrap(), &kinds(), &catalog()).unwrap();
+    let step = quote.steps.iter().find(|s| s.node == id(2)).unwrap();
+    assert_eq!((step.jobs, step.jobs_known), (0, true));
+    assert_eq!(step.total(), Ok(Some(usd(0))));
+}
+
+#[test]
+fn a_retry_of_a_charge_that_left_the_list_is_not_charged_again() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 5 {
+        assert!(log.record(entry("s", &format!("k{n}"), 1)).unwrap());
+    }
+    let before = log.spent("s");
+    // k0..k4 left the list, but a late retry of one is still the same charge.
+    assert!(!log.record(entry("s", "k0", 1)).unwrap());
+    assert_eq!(log.spent("s"), before);
+    // The retired identities survive saving and loading.
+    let json = serde_json::to_string(&log).unwrap();
+    let mut back: UsageLog = serde_json::from_str(&json).unwrap();
+    assert!(!back.record(entry("s", "k3", 1)).unwrap());
+    assert_eq!(back, log);
+    // A file can't list a charge it also says retired, or garble an identity.
+    let mut file: UsageLogFile = serde_json::from_str(&json).unwrap();
+    file.retired.push("zz".into());
+    assert!(UsageLog::try_from(file).is_err());
+}
+
+#[test]
+fn listed_text_and_sessions_are_bounded_without_losing_spend() {
+    let mut log = UsageLog::default();
+    // Long keys: the text bound evicts before the entry count does.
+    let long = "k".repeat(500);
+    let per_entry = 1 + 1 + 1 + 500 + 8;
+    let fit = MAX_LISTED_TEXT / per_entry;
+    for n in 0..fit + 10 {
+        log.record(entry("s", &format!("{n:08}{long}"), 1)).unwrap();
+    }
+    assert!(log.entries().count() <= fit);
+    assert_eq!(log.spent("s").project.get(&Currency::USD), Some(&usd(u64::try_from(fit + 10).unwrap())));
+    // Many short sessions: old ones fold into the earlier-sessions total; the project total and
+    // the current session's stay exact, and the log still reloads.
+    let mut log = UsageLog::default();
+    for n in 0..MAX_SESSIONS + 50 {
+        log.record(entry(&format!("session-{n:05}"), &format!("k{n}"), 2)).unwrap();
+    }
+    let json = serde_json::to_string(&log).unwrap();
+    let file: UsageLogFile = serde_json::from_str(&json).unwrap();
+    assert!(file.sessions.len() <= MAX_SESSIONS);
+    let last = format!("session-{:05}", MAX_SESSIONS + 49);
+    assert_eq!(log.spent(&last).session.get(&Currency::USD), Some(&usd(2)));
+    assert_eq!(log.spent(&last).project.get(&Currency::USD), Some(&usd(2 * u64::try_from(MAX_SESSIONS + 50).unwrap())));
+    let back: UsageLog = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, log);
+    // The earlier-sessions name is reserved.
+    assert!(log.record(entry(EARLIER_SESSIONS, "x", 1)).is_err());
+}
+
+#[test]
+fn csv_streams_the_same_rows() {
+    let mut log = UsageLog::default();
+    log.record(entry("s", "=k1", 5)).unwrap();
+    let mut streamed = Vec::new();
+    log.write_csv(&mut streamed).unwrap();
+    assert_eq!(String::from_utf8(streamed).unwrap(), log.to_csv());
+    assert!(log.to_csv().contains("'=k1"));
+}
+
+#[test]
+fn a_provisional_admission_is_caught_when_the_step_expands_past_the_cap() {
+    let deferred = StepQuote { node: id(3), models: vec!["test.img".into()], per_job: Ok(Some(usd(40_000))), jobs: 1, jobs_known: false };
+    let quote = Quote { steps: vec![deferred.clone()], totals: [(Currency::USD, usd(40_000))].into_iter().collect() };
+    let caps = Budgets { session: Some(usd(100_000)), ..Budgets::default() };
+    let admission = check(&quote, &caps, &Spent::default()).unwrap();
+    assert!(admission.allowed() && !admission.is_final(), "one guessed job fits, provisionally");
+    // The step's jobs turn out to be three: 0.12 is past the 0.10 cap, so checking the real jobs
+    // (as job-time enforcement does) refuses it.
+    let expanded = StepQuote { jobs: 3, jobs_known: true, ..deferred };
+    let quote = Quote { steps: vec![expanded], totals: [(Currency::USD, usd(120_000))].into_iter().collect() };
+    let admission = check(&quote, &caps, &Spent::default()).unwrap();
+    assert!(matches!(admission.blocks.as_slice(), [Block::Over { scope: Scope::Session, .. }]));
+}
+
+fn estimate(session: &str, key: &str, cost: u64) -> UsageEntry {
+    UsageEntry { status: Charge::Estimate, ..entry(session, key, cost) }
+}
+
+#[test]
+fn a_folded_session_with_listed_charges_settles_reloads_and_charges_again() {
+    let mut log = UsageLog::default();
+    // "a" (sorting first) holds an open estimate and an actual charge, then goes quiet.
+    log.record(estimate("a", "a-open", 10)).unwrap();
+    log.record(estimate("a", "a-free", 4)).unwrap();
+    log.record(entry("a", "a-done", 5)).unwrap();
+    for n in 0..MAX_SESSIONS {
+        log.record(entry(&format!("s{n:05}"), &format!("k{n}"), 1)).unwrap();
+    }
+    assert!(log.spent("a").session.is_empty(), "a was folded");
+    // Settling and releasing a's charges adjust the earlier-sessions total.
+    log.settle("t", "a-open", usd(7), Charge::Actual).unwrap();
+    log.release("t", "a-free").unwrap();
+    // a charges again: a fresh session total; the project total stays exact.
+    log.record(entry("a", "a-new", 3)).unwrap();
+    assert_eq!(log.spent("a").session.get(&Currency::USD), Some(&usd(3)));
+    let project = 7 + 5 + 3 + u64::try_from(MAX_SESSIONS).unwrap();
+    assert_eq!(log.spent("a").project.get(&Currency::USD), Some(&usd(project)));
+    // And the log the app saved reloads.
+    let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert_eq!(back, log);
+}
+
+#[test]
+fn folding_picks_the_least_recently_charged_session() {
+    let mut log = UsageLog::default();
+    // "a" sorts first but keeps charging; the oldest quiet session folds instead.
+    for n in 0..MAX_SESSIONS - 1 {
+        log.record(entry(&format!("s{n:05}"), &format!("k{n}"), 1)).unwrap();
+        if n % 100 == 0 {
+            log.record(entry("a", &format!("a{n}"), 1)).unwrap();
+        }
+    }
+    log.record(entry("new", "new", 1)).unwrap();
+    assert!(log.spent("a").session.get(&Currency::USD).is_some_and(|m| m.micros > 0), "a is active and keeps its total");
+    assert!(log.spent("s00000").session.is_empty(), "the least recently charged session folded");
+}
+
+#[test]
+fn retired_identities_are_validated_released_keys_are_free_and_old_ones_are_forgotten() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 1 {
+        log.record(entry("s", &format!("k{n}"), 1)).unwrap();
+    }
+    let json = serde_json::to_string(&log).unwrap();
+    let file: UsageLogFile = serde_json::from_str(&json).unwrap();
+    let retired = file.retired.first().cloned().unwrap();
+    // A duplicate identity, an uppercase one, and one that is also listed are refused.
+    let mut dup = file.clone();
+    dup.retired.push(retired.clone());
+    assert!(UsageLog::try_from(dup).is_err());
+    let mut upper = file.clone();
+    upper.retired = vec![retired.to_uppercase()];
+    assert!(UsageLog::try_from(upper).is_err());
+    let mut listed = file.clone();
+    listed.retired.push(super::hex(&super::retired_id("t", &format!("k{}", MAX_USAGE_ENTRIES))));
+    assert!(UsageLog::try_from(listed).is_err());
+    // A released estimate isn't retired: its key can be charged again.
+    log.record(estimate("s", "maybe", 2)).unwrap();
+    log.release("t", "maybe").unwrap();
+    assert!(log.record(entry("s", "maybe", 2)).unwrap());
+    // Past MAX_RETIRED_KEYS, the oldest identities are forgotten (the documented boundary).
+    let mut big = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS + 1 {
+        big.record(entry("s", &format!("k{n}"), 1)).unwrap();
+    }
+    assert!(big.record(entry("s", "k0", 1)).unwrap(), "forgotten: counts again");
+    assert!(!big.record(entry("s", "k5", 1)).unwrap(), "still remembered");
+}
+
+#[test]
+fn a_step_that_runs_no_jobs_blocks_nothing() {
+    let unpriced = StepQuote { node: id(4), models: vec![], per_job: Err(Unpriced::NoModel), jobs: 0, jobs_known: true };
+    let quote = Quote { steps: vec![unpriced], totals: BTreeMap::new() };
+    assert!(quote.is_complete());
+    let caps = Budgets { per_call: Some(usd(1)), session: Some(usd(1)), project: Some(usd(1)) };
+    assert!(check(&quote, &caps, &Spent::default()).unwrap().is_final());
+}
+
+#[test]
+fn settling_respects_the_total_ceiling() {
+    let mut log = UsageLog::default();
+    // Fill the project close to its ceiling with maximal charges, then try to settle above it.
+    let full = MAX_TOTAL_MICROS / MAX_CHARGE_MICROS;
+    for n in 0..full - 1 {
+        log.record(UsageEntry { cost: usd(MAX_CHARGE_MICROS), ..entry("s", &format!("big{n}"), 0) }).unwrap();
+    }
+    log.record(UsageEntry { status: Charge::Estimate, ..entry("s", "last", 1) }).unwrap();
+    let before = log.clone();
+    assert!(log.settle("t", "last", usd(MAX_CHARGE_MICROS), Charge::Actual).is_ok());
+    let mut over = before.clone();
+    over.record(UsageEntry { status: Charge::Estimate, ..entry("s", "more", 1) }).unwrap();
+    let snapshot = over.clone();
+    assert_eq!(over.settle("t", "more", usd(MAX_CHARGE_MICROS), Charge::Actual).unwrap_err().kind, ErrorKind::Overflow);
+    assert_eq!(over, snapshot, "nothing changed");
 }
