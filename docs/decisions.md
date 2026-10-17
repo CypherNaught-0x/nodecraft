@@ -4,6 +4,16 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Provider keys in the keychain (#80)
+
+- **Keys live only in the OS keychain**, service `io.github.cyphernaught0x.nodecraft`, one
+  account per provider (`openai`, `comfyui:<server>`), through `keyring` pinned exactly (it wraps
+  the platform APIs; we add no `unsafe`). The browser build has no keychain yet: it uses an
+  in-memory store until per-origin storage with a notice (M10).
+- **`Secret` never prints its value** (`Debug`/`Display` show `…abcd`), refuses multi-line or
+  oversized pastes, and keychain errors never echo stored bytes.
+- **Keys are tested for free** (listing models), never with a paid generation.
+- The settings UI and `keys.*` commands follow the command registry (#52).
 ## 2026-10-17 · ComfyUI provider (#9, part 2)
 
 - **Prompt ids are salted per install** (`prompt_id_for(salt, key, attempt)`): the same job always
