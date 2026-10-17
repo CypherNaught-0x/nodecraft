@@ -54,8 +54,8 @@ fn serve_stdio(server: &mut McpServer) -> ExitCode {
 
 /// The token file the app writes: `control/control.json` in its settings folder.
 fn default_token_file() -> Option<std::path::PathBuf> {
-    let (store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Auto);
-    store.dir().map(|dir| dir.join("control").join("control.json"))
+    // Resolved only: the CLI must not create, probe or repair the app's settings folder.
+    nodecraft_engine::settings::settings_dir().map(|dir| dir.join("control").join("control.json"))
 }
 
 fn bridge(token_file: Option<&str>) -> ExitCode {

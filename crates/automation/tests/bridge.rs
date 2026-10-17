@@ -80,3 +80,27 @@ fn a_local_server_has_no_screenshot_tool_and_bad_bridges_fail_clearly() {
     let missing = Client::from_token_file(std::path::Path::new("/nonexistent/control.json")).err().unwrap();
     assert!(missing.message.contains("--control"), "{}", missing.message);
 }
+
+#[test]
+fn the_bridge_reconnects_after_the_app_closes_an_idle_connection() {
+    let token = Token::generate().unwrap();
+    let timeouts = control::Timeouts { idle: Duration::from_millis(300), ..control::Timeouts::default() };
+    let listener = control::listen_with(token.clone(), Arc::new(|| {}), timeouts).unwrap();
+    let addr = listener.addr;
+    std::thread::spawn(move || {
+        let mut session = blank_session(ProjectId::from_bytes([1; 16]), CANVAS).unwrap();
+        while let Ok(call) = listener.calls.recv_timeout(Duration::from_secs(30)) {
+            if let Some(result) = control::answer(&mut session, &call.request) {
+                call.reply(result);
+            }
+        }
+    });
+    let mut client = Client::connect(addr, &token.to_hex()).unwrap();
+    assert!(client.call("state.get", serde_json::Map::new()).is_ok());
+    std::thread::sleep(Duration::from_millis(800));
+    // The app closed the idle connection: this call fails (and is not resent)...
+    let lost = client.call("state.get", serde_json::Map::new());
+    // ...and the next one reconnects.
+    let next = client.call("state.get", serde_json::Map::new());
+    assert!(next.is_ok(), "reconnected: {lost:?} then {next:?}");
+}

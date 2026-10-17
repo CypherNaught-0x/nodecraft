@@ -26,8 +26,10 @@ own. The agent's edits appear on the canvas live and can be undone there, and a 
 returns the window as an MCP image. The bridge reads the app's token file:
 `control/control.json` in the app's settings folder, unless another path follows `--bridge`. It
 connects through the control channel (`docs/control.md`), so the same command policy applies. If
-the app quits, tools report that the connection was lost; restart the bridge after restarting the
-app.
+the connection drops (the app restarted, or it closed an idle connection), the failed call says
+so and the next call reconnects, re-reading the token file. The CLI only resolves the settings
+folder, never touching it; in portable mode, pass the token file's path if the CLI lives
+elsewhere.
 
 ## Tools
 

@@ -145,6 +145,16 @@ impl KeySettings {
     }
 }
 
+/// The settings folder the app uses, resolved without opening, creating or touching anything (other
+/// tools, such as the CLI, use it to find files the app writes there). `None` when settings are in
+/// memory only. Portable mode is judged by this executable's folder.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn settings_dir() -> Option<std::path::PathBuf> {
+    use craft_settings::Settings;
+    let portable = craft_settings::Portable { markers: NodeCraftSettings::PORTABLE_MARKERS, dir: NodeCraftSettings::PORTABLE_DIR };
+    craft_settings::paths::resolve(NodeCraftSettings::APP_ID, &portable, &Location::Auto, &craft_settings::Probe::default()).dir
+}
+
 /// Opens the settings for `location`. Never fails; problems are in the report.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open(location: Location) -> (SettingsStore, LoadReport) {

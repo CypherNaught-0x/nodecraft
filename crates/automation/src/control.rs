@@ -484,12 +484,28 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
 mod tests;
 
 /// A control-channel client: what `nodecraft-cli mcp --bridge` uses to reach the app.
+///
+/// It reconnects (re-reading the token file, if it came from one) once the app may have closed
+/// the connection as idle, and after a lost connection on the next call. A call that failed is
+/// never resent, so nothing runs twice.
 pub struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     next: u64,
     broken: bool,
+    /// How to connect again.
+    origin: Origin,
+    last_used: Instant,
 }
+
+#[derive(Clone)]
+enum Origin {
+    File(std::path::PathBuf),
+    Addr(SocketAddr, String),
+}
+
+/// Reconnect before a call once the app may have closed the connection as idle.
+const RECONNECT_AFTER: Duration = Duration::from_secs(540);
 
 /// Longest reply the client reads: a screenshot in base64 plus room.
 const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
@@ -505,45 +521,70 @@ impl Client {
             .map_err(|e| Error::new(ErrorKind::NotFound, format!("no control token at {} ({e}); start the app with `nodecraft --control`", path.display())))?;
         let file: TokenFile =
             serde_json::from_str(&text).map_err(|_| Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display())))?;
-        Self::connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)
+        let mut client = Self::connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)?;
+        client.origin = Origin::File(path.to_path_buf());
+        Ok(client)
     }
 
     /// Connects to `addr` and says hello with `token`.
     pub fn connect(addr: SocketAddr, token: &str) -> Result<Self, Error> {
         let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
             .map_err(|e| network(format!("can't reach the app on {addr} ({e}); is it still running with --control?")))?;
-        // The app may take a frame to answer, and a screenshot a few more.
+        // The app answers every request within its answer timeout, so this only fires if it
+        // hangs. A long reply is read in pieces, each with this timeout.
         let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
         stream.set_read_timeout(Some(wait)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
-        let mut client = Self { reader, writer: stream, next: 1, broken: false };
+        let mut client = Self { reader, writer: stream, next: 1, broken: false, origin: Origin::Addr(addr, token.to_owned()), last_used: Instant::now() };
         let mut hello = Map::new();
         hello.insert("token".into(), json!(token));
-        client.call("hello", hello)?;
+        let reply = client.exchange("hello", hello)?;
+        if reply.get("protocol").and_then(Value::as_u64) != Some(u64::from(PROTOCOL)) {
+            return Err(Error::new(ErrorKind::Unsupported, "the app speaks a different control protocol; use a matching nodecraft-cli"));
+        }
         Ok(client)
     }
 
-    /// Sends one request and returns its result, or the app's error.
+    fn reconnect(&mut self) -> Result<(), Error> {
+        let fresh = match self.origin.clone() {
+            Origin::File(path) => Self::from_token_file(&path)?,
+            Origin::Addr(addr, token) => Self::connect(addr, &token)?,
+        };
+        *self = fresh;
+        Ok(())
+    }
+
+    /// Sends one request and returns its result, or the app's error. A connection the app may
+    /// have closed as idle, or one lost on an earlier call, is replaced first.
     pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
-        if self.broken {
-            return Err(network("the connection to the app was lost; restart the bridge"));
+        if self.broken || self.last_used.elapsed() >= RECONNECT_AFTER {
+            self.reconnect().map_err(|e| Error::new(e.kind, format!("lost the connection to the app and couldn't reconnect: {}", e.message)))?;
         }
+        self.last_used = Instant::now();
+        self.exchange(method, params)
+    }
+
+    /// One request and its reply on the current connection.
+    fn exchange(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
         let id = self.next;
         self.next = self.next.saturating_add(1);
         let message = json!({"id": id, "method": method, "params": params});
         let sent = writeln!(self.writer, "{message}").and_then(|()| self.writer.flush());
         if let Err(e) = sent {
             self.broken = true;
-            return Err(network(format!("the app closed the control channel ({e})")));
+            return Err(network(format!("the app closed the control channel ({e}); the next call reconnects")));
         }
         let mut line = Vec::new();
-        let reply = match mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES) {
+        let read = mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES);
+        let reply = match read {
             Ok(Line::Read) => serde_json::from_slice::<Value>(&line).map_err(|_| network("the app sent a malformed reply")),
             Ok(Line::TooLong) => Err(network("the app's reply was too large")),
-            Ok(Line::Eof) => Err(network("the app closed the control channel")),
+            Ok(Line::Eof) => Err(network("the app closed the control channel; the next call reconnects")),
             Err(e) => Err(network(format!("no reply from the app ({e})"))),
         };
-        let reply = match reply {
+        // A screenshot reply is large: don't keep the raw line alongside the parsed one.
+        drop(line);
+        let mut reply = match reply {
             Ok(r) => r,
             Err(e) => {
                 // A lost or out-of-step reply leaves the stream unusable.
@@ -560,6 +601,12 @@ impl Client {
             let message = error.get("message").and_then(Value::as_str).unwrap_or("the app refused the request");
             return Err(Error::new(kind, message));
         }
-        Ok(reply.get("result").cloned().unwrap_or(Value::Null))
+        match reply.as_object_mut().and_then(|o| o.remove("result")) {
+            Some(result) => Ok(result),
+            None => {
+                self.broken = true;
+                Err(network("the app's reply has neither a result nor an error"))
+            }
+        }
     }
 }
