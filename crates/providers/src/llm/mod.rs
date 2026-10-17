@@ -435,7 +435,7 @@ fn usd(cost: f64) -> Option<Money> {
     }
     let micros = cost * 1e6;
     let nearest = micros.round();
-    let micros = if (micros - nearest).abs() <= 1e-6 * nearest.max(1.0) { nearest } else { micros.ceil() };
+    let micros = if (micros - nearest).abs() <= 8.0 * f64::EPSILON * nearest.max(1.0) { nearest } else { micros.ceil() };
     Some(Money::new(Currency::USD, micros as u64))
 }
 

@@ -397,6 +397,8 @@ fn review_regressions() {
     for micros in [123u64, 246, 1, 999_999, 1_234_567] {
         assert_eq!(usd(micros as f64 / 1e6), Some(Money::new(Currency::USD, micros)), "{micros}");
     }
+    assert_eq!(usd(1.000_000_4), Some(Money::new(Currency::USD, 1_000_001)), "large amounts still round up");
+    assert_eq!(usd(12.345_678_4), Some(Money::new(Currency::USD, 12_345_679)));
 }
 
 /// Long streamed replies stay linear: each delta appends in place.
