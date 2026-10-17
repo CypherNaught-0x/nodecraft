@@ -4,6 +4,22 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Provider keys in the keychain (#80)
+
+- **Keys live only in the OS keychain**, service `io.github.cyphernaught0x.nodecraft`, one
+  account per provider (`openai`, `comfyui:<server>`), through `keyring` pinned exactly (it wraps
+  the platform APIs; we add no `unsafe`). The browser build has no keychain yet: it uses an
+  in-memory store until per-origin storage with a notice (M10).
+- **`Secret` never prints its value** (`Debug` shows `Secret(…)`, `Display` at most `…abcd` for
+  long keys), accepts only visible ASCII up to 1 KiB (it travels in HTTP headers; Windows caps
+  keychain entries), and keychain errors never echo stored bytes. The value types live in
+  `providers::secrets` so adapters take a `Secret`; the OS keychain stays in the engine.
+- **Keys are tested for free** (listing models), never with a paid generation.
+- **`keys.set` / `keys.remove` / `keys.status`** are commands with a `keys.store` host service:
+  no document change, no undo step, results only ever show a masked tail. **`keys.set` is never
+  offered to the in-canvas agent or MCP clients**: a key in tool-call parameters would end up in
+  LLM transcripts and logs. Keychain calls can block on a prompt, so the settings UI must run them
+  off the UI thread (#205).
 ## 2026-10-17 · ComfyUI provider (#9, part 2)
 
 - **Prompt ids are salted per install** (`prompt_id_for(salt, key, attempt)`): the same job always

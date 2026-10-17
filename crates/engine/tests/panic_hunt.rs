@@ -78,6 +78,9 @@ fn template(id: &str) -> (Session, Value) {
             session.dispatch("edit.undo", &Value::Null).unwrap();
             json!({})
         }
+        // The keys service isn't registered here: dispatch must fail cleanly, never panic.
+        "keys.set" => json!({"account":"openai","key":"sk-test-123456789"}),
+        "keys.remove" | "keys.status" => json!({"account":"openai"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)

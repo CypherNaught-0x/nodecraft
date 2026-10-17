@@ -53,6 +53,12 @@ impl ApiKey {
     }
 }
 
+impl From<&crate::secrets::Secret> for ApiKey {
+    fn from(secret: &crate::secrets::Secret) -> Self {
+        Self(secret.expose().to_owned())
+    }
+}
+
 impl std::fmt::Debug for ApiKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ApiKey(…)")
