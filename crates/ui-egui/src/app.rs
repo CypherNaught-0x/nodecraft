@@ -143,6 +143,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
     card::world_rect(node, resolved.as_deref(), t)
 }
 
+mod layout;
 mod navigation;
 mod search;
 
@@ -170,6 +171,8 @@ pub struct NodeCraftApp {
     painted: BTreeMap<NodeId, Rect>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
+    /// Exact previous text owner: a disabled Format toolbar must not blur-commit its draft.
+    last_text_focus: Option<egui::Id>,
     schemas: BTreeMap<NodeId, CachedSchema>,
     cache_clock: u64,
     next_gesture: u64,
@@ -260,6 +263,7 @@ impl NodeCraftApp {
             marquee: None,
             painted: BTreeMap::new(),
             text_focused: false,
+            last_text_focus: None,
             schemas: BTreeMap::new(),
             cache_clock: 0,
             next_gesture: 0,
@@ -317,10 +321,13 @@ impl NodeCraftApp {
             }
         }
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks;
+        let layout_blocks = self.layout_overlay(ui);
+        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || layout_blocks;
+        // Any popup owns canvas gestures, but its own card controls must still deliver edits.
+        let canvas_blocks = overlay_blocks || popup_owned;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
-        if !overlay_blocks
+        if !canvas_blocks
             && background.drag_started_by(egui::PointerButton::Primary)
             && shift
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
@@ -337,10 +344,10 @@ impl NodeCraftApp {
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
-        if !overlay_blocks {
+        if !canvas_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
         }
-        if !overlay_blocks && background.clicked() && !shift {
+        if !canvas_blocks && background.clicked() && !shift {
             self.selection.clear();
         }
         let painter = ui.painter_at(viewport);
@@ -349,6 +356,9 @@ impl NodeCraftApp {
         let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
         let mut query = None;
+        let mut layout_mode = None;
+        // The owning context menu may invoke layout; unrelated popups have no such route.
+        let layout_context_ready = self.layout_base_available(ui.ctx());
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
             self.schemas.retain(|id, _| canvas.nodes().contains_key(id));
@@ -386,13 +396,13 @@ impl NodeCraftApp {
                 ) {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
-                    if !overlay_blocks && r.clicked() {
+                    if !canvas_blocks && r.clicked() {
                         if shift {
                             self.selection.toggle(node.id);
                         } else {
                             self.selection.only(node.id);
                         }
-                    } else if !overlay_blocks
+                    } else if !canvas_blocks
                         && (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
                         && !self.selection.contains(node.id)
                     {
@@ -405,6 +415,20 @@ impl NodeCraftApp {
                     }
                     if !overlay_blocks || egui::Popup::is_any_open(ui.ctx()) {
                         r.context_menu(|ui| {
+                            let owner = egui::Popup::context_menu(&r).get_id();
+                            let owned = egui::Popup::is_id_open(ui.ctx(), owner);
+                            ui.label("Format selection");
+                            ui.add_enabled_ui(layout_context_ready && owned, |ui| {
+                                if ui.button("Grid").clicked() {
+                                    layout_mode = Some(("grid", owner));
+                                    ui.close();
+                                }
+                                if ui.button("Dependency order").clicked() {
+                                    layout_mode = Some(("layered", owner));
+                                    ui.close();
+                                }
+                            });
+                            ui.separator();
                             if ui.button("Select upstream").clicked() {
                                 query = Some(SelectQuery::Upstream);
                             }
@@ -417,7 +441,7 @@ impl NodeCraftApp {
                             }
                         });
                     }
-                    if !overlay_blocks && r.drag_started_by(egui::PointerButton::Primary) {
+                    if !canvas_blocks && r.drag_started_by(egui::PointerButton::Primary) {
                         if let Some(serial) = self.next_gesture.checked_add(1) {
                             self.next_gesture = serial;
                             self.drag = Some(Drag { id: node.id, gesture: format!("canvas-drag-{serial}"), pos: node.pos });
@@ -426,7 +450,7 @@ impl NodeCraftApp {
                             self.drag = None;
                         }
                     }
-                    if !overlay_blocks && (r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary)) {
+                    if !canvas_blocks && (r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary)) {
                         pan += r.drag_delta() * self.view.zoom;
                     }
                     // A Choice popup can close while producing its parameter intent over the
@@ -435,7 +459,10 @@ impl NodeCraftApp {
                         result
                             .intents
                             .into_iter()
-                            .filter(|intent| !overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                            .filter(|intent| {
+                                (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                                    && (!canvas_blocks || !matches!(intent, Intent::Move(_)))
+                            })
                             .map(|intent| (node.id, intent)),
                     );
                 }
@@ -472,6 +499,9 @@ impl NodeCraftApp {
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if self.selection != selected_before {
             ui.ctx().request_repaint();
+        }
+        if let Some((mode, owner)) = layout_mode {
+            self.apply_layout_menu(ui.ctx(), mode, owner);
         }
         for (id, intent) in intents {
             let (command, params, editing) = match intent {
@@ -538,6 +568,7 @@ impl NodeCraftApp {
         self.navigation.finish_frame(ui.ctx());
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
+        self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
     }
 }
 fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
