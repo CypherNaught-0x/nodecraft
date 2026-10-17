@@ -13,6 +13,8 @@ pub const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub struct SseParser {
     buffer: Vec<u8>,
+    /// Bytes of `buffer` already searched for a newline (a long line isn't rescanned per chunk).
+    scanned: usize,
     event: Option<String>,
     data: Vec<String>,
 }
@@ -26,7 +28,8 @@ impl SseParser {
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<SseEvent>, String> {
         self.buffer.extend_from_slice(bytes);
         let mut out = Vec::new();
-        while let Some(pos) = self.buffer.iter().position(|b| *b == b'\n') {
+        while let Some(pos) = self.buffer.get(self.scanned..).and_then(|rest| rest.iter().position(|b| *b == b'\n')).map(|p| p + self.scanned) {
+            self.scanned = 0;
             let line: Vec<u8> = self.buffer.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line);
             let line = line.trim_end_matches(['\n', '\r']);
@@ -47,6 +50,7 @@ impl SseParser {
                 _ => {}
             }
         }
+        self.scanned = self.buffer.len();
         let pending = self.buffer.len().saturating_add(self.data.iter().map(String::len).sum::<usize>());
         if pending > MAX_EVENT_BYTES {
             return Err(format!("a streamed event is larger than {MAX_EVENT_BYTES} bytes"));

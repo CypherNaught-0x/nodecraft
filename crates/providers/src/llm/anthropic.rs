@@ -11,6 +11,12 @@ use super::{ChatRequest, ChatResponse, Part, Role, StopReason, StreamState, base
 use crate::{ErrorKind, ProviderError};
 
 pub(super) const VERSION: &str = "2023-06-01";
+
+/// Claude models that reject sampling parameters (`temperature`, `top_p`): the 5-series and later.
+pub(super) fn rejects_sampling(model: &str) -> bool {
+    let m = model.rsplit('/').next().unwrap_or(model);
+    ["claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable", "claude-mythos"].iter().any(|p| m.starts_with(p))
+}
 /// The default model for Anthropic text nodes.
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 
@@ -23,11 +29,10 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
                 Role::User => "user",
                 Role::Assistant => "assistant",
             };
-            // Images go before the text that refers to them.
-            let mut parts: Vec<&Part> = m.parts.iter().collect();
-            parts.sort_by_key(|p| matches!(p, Part::Text(_)));
-            let content: Vec<Value> = parts
-                .into_iter()
+            // The user's order is kept (captions like "Image 1:" sit next to their image).
+            let content: Vec<Value> = m
+                .parts
+                .iter()
                 .map(|p| match p {
                     Part::Text(t) => json!({ "type": "text", "text": t }),
                     Part::Image { mime, bytes } => json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
@@ -36,7 +41,9 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
             json!({ "role": role, "content": content })
         })
         .collect();
-    let mut body = json!({ "model": req.model, "max_tokens": req.max_tokens, "messages": messages });
+    // The Messages API requires max_tokens.
+    let max_tokens = req.max_tokens.unwrap_or(super::DEFAULT_MAX_TOKENS);
+    let mut body = json!({ "model": req.model, "max_tokens": max_tokens, "messages": messages });
     if let Some(system) = &req.system {
         body["system"] = json!(system);
     }
@@ -113,7 +120,7 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
 }
 
 fn error_from(err: &Value, status: Option<u16>) -> ProviderError {
-    let message = err.get("message").and_then(Value::as_str).unwrap_or("request failed").to_owned();
+    let message = crate::error::excerpt(err.get("message").and_then(Value::as_str).unwrap_or("request failed").as_bytes());
     let kind = match err.get("type").and_then(Value::as_str).unwrap_or_default() {
         "invalid_request_error" | "request_too_large" => ErrorKind::UnsupportedInput,
         "authentication_error" | "permission_error" => ErrorKind::Auth,
@@ -162,8 +169,12 @@ mod tests {
         let b = http.body();
         assert_eq!(b["model"], "claude-opus-5-5");
         assert_eq!(b["system"], "be brief");
-        assert_eq!(b["messages"][0]["content"][0], json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"UE5H"}}), "image first");
-        assert_eq!(b["messages"][0]["content"][1], json!({"type":"text","text":"hi"}));
+        assert_eq!(b["messages"][0]["content"][0], json!({"type":"text","text":"hi"}), "the user's order is kept");
+        assert_eq!(b["messages"][0]["content"][1], json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"UE5H"}}));
+        assert_eq!(b["max_tokens"], 100);
+        let unset = body(&ChatRequest { max_tokens: None, ..request() }, false);
+        assert_eq!(unset["max_tokens"], super::super::DEFAULT_MAX_TOKENS, "required by the API");
+        assert!(rejects_sampling("claude-opus-5-5") && rejects_sampling("anthropic/claude-sonnet-5-5") && !rejects_sampling("claude-3-5-haiku"));
         assert!(b.get("temperature").is_none() && b.get("thinking").is_none());
     }
 

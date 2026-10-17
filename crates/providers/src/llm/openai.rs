@@ -6,7 +6,9 @@ use super::sse::SseEvent;
 use super::{ChatRequest, ChatResponse, Part, Role, StopReason, StreamState, base64};
 use crate::{ErrorKind, ProviderError};
 
-pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
+/// `openai` is the OpenAI API itself, which takes `max_completion_tokens` (its reasoning models
+/// reject `max_tokens`); other servers get `max_tokens`, and only when the job sets a limit.
+pub(super) fn body(req: &ChatRequest, stream: bool, openai: bool) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = &req.system {
         messages.push(json!({ "role": "system", "content": system }));
@@ -16,17 +18,27 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
             Role::User => "user",
             Role::Assistant => "assistant",
         };
-        let content: Vec<Value> = m
-            .parts
-            .iter()
-            .map(|p| match p {
-                Part::Text(t) => json!({ "type": "text", "text": t }),
-                Part::Image { mime, bytes } => json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64(bytes)) } }),
-            })
-            .collect();
+        // Text-only messages go as a plain string: some OpenAI-compatible servers accept nothing else.
+        let text_only = m.parts.iter().all(|p| matches!(p, Part::Text(_)));
+        let content = if text_only {
+            Value::String(m.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n\n"))
+        } else {
+            Value::Array(
+                m.parts
+                    .iter()
+                    .map(|p| match p {
+                        Part::Text(t) => json!({ "type": "text", "text": t }),
+                        Part::Image { mime, bytes } => json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64(bytes)) } }),
+                    })
+                    .collect(),
+            )
+        };
         messages.push(json!({ "role": role, "content": content }));
     }
-    let mut body = json!({ "model": req.model, "messages": messages, "max_tokens": req.max_tokens });
+    let mut body = json!({ "model": req.model, "messages": messages });
+    if let Some(n) = req.max_tokens {
+        body[if openai { "max_completion_tokens" } else { "max_tokens" }] = json!(n);
+    }
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
@@ -82,6 +94,8 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
     let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else { return Ok(None) };
     if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
         state.stop = Some(stop(Some(reason))?);
+        // Some servers end the stream without `[DONE]`; a finish reason means the reply is whole.
+        state.finished = true;
     }
     let delta = choice.get("delta").and_then(|d| d.get("content")).and_then(Value::as_str).filter(|t| !t.is_empty());
     if let Some(t) = delta {
@@ -91,32 +105,35 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
 }
 
 fn error_from(status: Option<u16>, err: &Value) -> ProviderError {
-    let message = err.get("message").and_then(Value::as_str).or_else(|| err.as_str()).unwrap_or("request failed").to_owned();
-    let code = err.get("code").and_then(Value::as_str).or_else(|| err.get("type").and_then(Value::as_str)).unwrap_or_default();
-    let kind = match code {
-        "insufficient_quota" => ErrorKind::Budget,
-        "context_length_exceeded" | "invalid_request_error" => ErrorKind::UnsupportedInput,
-        "content_policy_violation" | "content_filter" => ErrorKind::BlockedContent,
-        "model_not_found" => ErrorKind::NotFound,
-        "rate_limit_exceeded" => ErrorKind::RateLimited,
-        _ => match status {
-            Some(s) => ProviderError::from_status(s, b"").kind,
-            None => ErrorKind::Server,
-        },
+    let raw = err.get("message").and_then(Value::as_str).or_else(|| err.as_str()).unwrap_or("request failed");
+    // Bounded and single-line: a hostile server can't flood the UI or logs.
+    let message = crate::error::excerpt(raw.as_bytes());
+    // Only `code`, not `type`: OpenAI's missing-key 401 has type `invalid_request_error`.
+    let code = err.get("code").and_then(Value::as_str).unwrap_or_default();
+    let by_code = match code {
+        "insufficient_quota" => Some(ErrorKind::Budget),
+        "context_length_exceeded" => Some(ErrorKind::UnsupportedInput),
+        "content_policy_violation" | "content_filter" => Some(ErrorKind::BlockedContent),
+        "model_not_found" => Some(ErrorKind::NotFound),
+        "rate_limit_exceeded" => Some(ErrorKind::RateLimited),
+        _ => None,
+    };
+    // The status decides auth, not-found and rate limits; codes refine it (quota on a 429).
+    let kind = match (status, by_code) {
+        (Some(401 | 403), _) => ErrorKind::Auth,
+        (Some(404), _) => ErrorKind::NotFound,
+        (Some(429), Some(ErrorKind::Budget)) => ErrorKind::Budget,
+        (Some(429), _) => ErrorKind::RateLimited,
+        (_, Some(k)) => k,
+        (Some(s), None) => ProviderError::from_status(s, b"").kind,
+        (None, None) => ErrorKind::Server,
     };
     ProviderError::new(kind, message)
 }
 
 pub(super) fn error(status: u16, body: &[u8]) -> ProviderError {
     match serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("error").cloned()) {
-        Some(err) => {
-            let mut e = error_from(Some(status), &err);
-            // A 429 for quota is a budget problem, not a wait-and-retry one.
-            if status == 429 && e.kind != ErrorKind::Budget {
-                e.kind = ErrorKind::RateLimited;
-            }
-            e
-        }
+        Some(err) => error_from(Some(status), &err),
         None => ProviderError::from_status(status, body),
     }
 }
@@ -139,7 +156,13 @@ mod tests {
         let b = http.body();
         assert_eq!(b["messages"][0], json!({"role": "system", "content": "be brief"}));
         assert_eq!(b["messages"][1]["content"][1]["image_url"]["url"], "data:image/png;base64,UE5H");
-        assert_eq!(b["max_tokens"], 100);
+        assert_eq!(b["max_completion_tokens"], 100, "OpenAI itself takes max_completion_tokens");
+        assert!(b.get("max_tokens").is_none());
+        let text_only = body(&ChatRequest { messages: vec![super::super::Message::user("hi")], max_tokens: None, ..request() }, false, false);
+        assert_eq!(text_only["messages"][1]["content"], "hi", "text-only content is a plain string");
+        assert!(text_only.get("max_tokens").is_none(), "no limit unless the job sets one");
+        let other = body(&request(), false, false);
+        assert_eq!(other["max_tokens"], 100);
         assert!(b.get("stream").is_none());
         let local = LlmClient::new(Endpoint::ollama(None), http.clone());
         assert_eq!(local.endpoint().base_url, "http://127.0.0.1:11434/v1");
@@ -166,6 +189,14 @@ mod tests {
         assert_eq!(e(401, r#"{"error":{"message":"bad key","code":"invalid_api_key"}}"#), ErrorKind::Auth);
         assert_eq!(e(404, r#"{"error":{"message":"no such model","code":"model_not_found"}}"#), ErrorKind::NotFound);
         assert_eq!(e(503, "Service Unavailable"), ErrorKind::Busy);
+        assert_eq!(
+            e(401, r#"{"error":{"message":"You didn't provide an API key.","type":"invalid_request_error","code":null}}"#),
+            ErrorKind::Auth,
+            "status wins over type"
+        );
+        assert_eq!(e(400, r#"{"error":{"message":"bad","type":"invalid_request_error","code":null}}"#), ErrorKind::UnsupportedInput);
+        let long = format!(r#"{{"error":{{"message":"{}"}}}}"#, "x".repeat(100_000));
+        assert!(error(500, long.as_bytes()).message.len() <= 300, "messages are capped");
         assert_eq!(e(500, r#"{"error":"boom"}"#), ErrorKind::Server);
     }
 

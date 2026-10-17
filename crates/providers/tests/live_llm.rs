@@ -14,7 +14,13 @@ fn enabled(provider: &str) -> bool {
 }
 
 fn ask(model: &str) -> ChatRequest {
-    ChatRequest { model: model.into(), system: None, messages: vec![Message::user("Reply with the single word: pong")], max_tokens: 64, temperature: None }
+    ChatRequest {
+        model: model.into(),
+        system: None,
+        messages: vec![Message::user("Reply with the single word: pong")],
+        max_tokens: Some(64),
+        temperature: None,
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

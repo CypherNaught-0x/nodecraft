@@ -40,7 +40,7 @@ fn serve(status: &str, content_type: &str, body: &'static str) -> String {
 }
 
 fn req(model: &str) -> ChatRequest {
-    ChatRequest { model: model.into(), system: None, messages: vec![Message::user("hi")], max_tokens: 50, temperature: None }
+    ChatRequest { model: model.into(), system: None, messages: vec![Message::user("hi")], max_tokens: Some(50), temperature: None }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -83,4 +83,27 @@ async fn a_stream_cut_short_is_an_error_and_error_statuses_keep_their_body() {
     let client = LlmClient::new(Endpoint::openai_compatible("x", &format!("{base}/v1"), None), Arc::new(ReqwestHttp::new().unwrap()));
     let e = client.chat_stream(&req("m"), &mut |_| {}).await.unwrap_err();
     assert_eq!(e.kind, nodecraft_providers::ErrorKind::Budget);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_last_event_without_a_blank_line_still_counts() {
+    // Closed right after `[DONE]` with no blank line, and a multibyte character split mid-stream.
+    let base = serve("200 OK", "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"Grüße 🐱\"}}]}\n\ndata: [DONE]");
+    let client = LlmClient::new(Endpoint::openai_compatible("x", &format!("{base}/v1"), None), Arc::new(ReqwestHttp::new().unwrap()));
+    let reply = client.chat_stream(&req("m"), &mut |_| {}).await.unwrap();
+    assert_eq!(reply.text, "Grüße 🐱");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_error_events_end_the_stream() {
+    let base = serve(
+        "200 OK",
+        "text/event-stream",
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+    );
+    let mut endpoint = Endpoint::anthropic(ApiKey::new("test"));
+    endpoint.base_url = format!("{base}/v1");
+    let client = LlmClient::new(endpoint, Arc::new(ReqwestHttp::new().unwrap()));
+    let e = client.chat_stream(&req("claude-opus-5-5"), &mut |_| {}).await.unwrap_err();
+    assert_eq!(e.kind, nodecraft_providers::ErrorKind::Busy);
 }

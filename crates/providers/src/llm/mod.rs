@@ -32,6 +32,12 @@ pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 const MAX_REPLY_BYTES: usize = 8 * 1024 * 1024;
 /// Chat requests can take minutes on large models.
 const CHAT_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+/// Streams run as long as the model writes; the size cap bounds them instead.
+const STREAM_TIMEOUT_MS: u64 = 60 * 60 * 1000;
+/// Upper bound on a streamed reply's bytes, whatever `max_tokens` says.
+const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
+/// Pages of a model list followed before stopping.
+const MAX_MODEL_PAGES: usize = 20;
 
 /// An API key. Never printed: `Debug` shows `ApiKey(…)`.
 #[derive(Clone, PartialEq, Eq)]
@@ -60,7 +66,7 @@ pub enum Dialect {
 }
 
 /// Where to send chat requests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     /// Provider id (`openai`, `ollama`, `anthropic`, …): the scheduler lane and catalog prefix.
     pub id: String,
@@ -68,6 +74,18 @@ pub struct Endpoint {
     /// Base URL including the version path, e.g. `https://api.openai.com/v1`.
     pub base_url: String,
     pub key: Option<ApiKey>,
+}
+
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A gateway URL can carry a key in its query.
+        f.debug_struct("Endpoint")
+            .field("id", &self.id)
+            .field("dialect", &self.dialect)
+            .field("base_url", &crate::http::redact_url(&self.base_url))
+            .field("key", &self.key)
+            .finish()
+    }
 }
 
 impl Endpoint {
@@ -143,8 +161,10 @@ pub struct ChatRequest {
     pub model: String,
     pub system: Option<String>,
     pub messages: Vec<Message>,
-    pub max_tokens: u32,
-    /// `None` leaves the model's default (some models reject sampling parameters).
+    /// Reply length cap. `None` uses the endpoint's own default where it has one (OpenAI-style
+    /// servers), or [`DEFAULT_MAX_TOKENS`] where the API requires a value (Anthropic).
+    pub max_tokens: Option<u32>,
+    /// `None` leaves the model's default. Current Claude models reject sampling parameters.
     pub temperature: Option<f32>,
 }
 
@@ -170,13 +190,33 @@ pub struct ChatResponse {
 const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 impl ChatRequest {
-    fn validate(&self) -> Result<(), ProviderError> {
+    /// Drops empty text parts and checks what both APIs would reject, so the user gets a clear
+    /// error before anything is sent (or billed).
+    fn validate(&mut self, dialect: Dialect) -> Result<(), ProviderError> {
         let bad = |m: String| Err(ProviderError::new(ErrorKind::UnsupportedInput, m));
         if self.model.trim().is_empty() {
             return bad("no model chosen".into());
         }
-        if self.messages.is_empty() {
-            return bad("nothing to send: the conversation is empty".into());
+        for m in &mut self.messages {
+            m.parts.retain(|p| !matches!(p, Part::Text(t) if t.trim().is_empty()));
+        }
+        if self.messages.is_empty() || self.messages.iter().any(|m| m.parts.is_empty()) {
+            return bad("nothing to send: a message has no text or image".into());
+        }
+        if self.messages.iter().any(|m| m.role == Role::Assistant && m.parts.iter().any(|p| matches!(p, Part::Image { .. }))) {
+            return bad("only user messages can carry images".into());
+        }
+        if dialect == Dialect::Anthropic && self.messages.last().is_some_and(|m| m.role == Role::Assistant) {
+            return bad("the conversation must end with a user message".into());
+        }
+        if let Some(t) = self.temperature {
+            let max = if dialect == Dialect::Anthropic { 1.0 } else { 2.0 };
+            if !t.is_finite() || !(0.0..=max).contains(&t) {
+                return bad(format!("temperature must be between 0 and {max}"));
+            }
+            if dialect == Dialect::Anthropic && anthropic::rejects_sampling(&self.model) {
+                return bad(format!("{} doesn't accept a temperature; leave it unset", self.model));
+            }
         }
         let images: Vec<(&String, usize)> = self
             .messages
@@ -240,12 +280,22 @@ impl LlmClient {
     }
 
     fn request(&self, req: &ChatRequest, stream: bool) -> Result<HttpRequest, ProviderError> {
-        req.validate()?;
+        let mut req = req.clone();
+        req.validate(self.endpoint.dialect)?;
+        let req = &req;
         let (path, body) = match self.endpoint.dialect {
-            Dialect::OpenAi => ("chat/completions", openai::body(req, stream)),
+            Dialect::OpenAi => ("chat/completions", openai::body(req, stream, self.endpoint.id == "openai")),
             Dialect::Anthropic => ("messages", anthropic::body(req, stream)),
         };
-        let http = HttpRequest::post_json(self.endpoint.url(path), &body)?.timeout_ms(CHAT_TIMEOUT_MS).max_response_bytes(MAX_REPLY_BYTES);
+        // A stream carries ~200–250 bytes of framing per token: size the cap from the reply length,
+        // so a long, already-billed reply isn't cut off by a cap meant for whole replies.
+        let tokens = u64::from(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).max(1));
+        let (cap, timeout) = if stream {
+            (usize::try_from(tokens.saturating_mul(400)).unwrap_or(usize::MAX).clamp(MAX_REPLY_BYTES, MAX_STREAM_BYTES), STREAM_TIMEOUT_MS)
+        } else {
+            (MAX_REPLY_BYTES, CHAT_TIMEOUT_MS)
+        };
+        let http = HttpRequest::post_json(self.endpoint.url(path), &body)?.timeout_ms(timeout).max_response_bytes(cap);
         Ok(self.auth(http))
     }
 
@@ -301,6 +351,21 @@ impl LlmClient {
         };
         let head = self.http.send_streaming(request, &mut sink).await;
         drop(sink);
+        // A server may close right after the last event without a blank line.
+        if failure.is_none()
+            && head.as_ref().is_ok_and(|h| h.is_success())
+            && let Some(last) = parser.finish()
+        {
+            let flushed = match dialect {
+                Dialect::OpenAi => openai::stream_event(&last, &mut state),
+                Dialect::Anthropic => anthropic::stream_event(&last, &mut state),
+            };
+            match flushed {
+                Ok(Some(text)) => on_text(&text),
+                Ok(None) => {}
+                Err(e) => failure = Some(e),
+            }
+        }
         if let Some(e) = failure {
             return Err(e);
         }
@@ -319,14 +384,29 @@ impl LlmClient {
         })
     }
 
-    /// The model ids the endpoint offers (`GET /models`).
+    /// The model ids the endpoint offers (`GET /models`; Anthropic's list is paged).
     pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
-        let response = self.http.send(self.auth(HttpRequest::get(self.endpoint.url("models")))).await?;
-        let response = self.error_for(response)?;
-        let v: Value = response.json()?;
-        // OpenAI and Anthropic: {"data":[{"id":…}]}; Ollama's native API differs, but /v1/models is OpenAI-shaped.
-        let ids =
-            v.get("data").and_then(Value::as_array).map(|a| a.iter().filter_map(|m| m.get("id")?.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+        let mut ids = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..MAX_MODEL_PAGES {
+            let mut url = self.endpoint.url("models");
+            if self.endpoint.dialect == Dialect::Anthropic {
+                url.push_str("?limit=1000");
+                if let Some(a) = &after {
+                    url.push_str(&format!("&after_id={}", a.chars().filter(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c)).collect::<String>()));
+                }
+            }
+            let response = self.http.send(self.auth(HttpRequest::get(url))).await?;
+            let response = self.error_for(response)?;
+            let v: Value = response.json()?;
+            // OpenAI and Anthropic: {"data":[{"id":…}]}; Ollama and LM Studio serve the same shape on /v1.
+            ids.extend(v.get("data").and_then(Value::as_array).into_iter().flatten().filter_map(|m| m.get("id")?.as_str().map(str::to_owned)));
+            let more = v.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+            after = v.get("last_id").and_then(Value::as_str).map(str::to_owned);
+            if !more || after.is_none() {
+                break;
+            }
+        }
         Ok(ids)
     }
 
@@ -364,14 +444,20 @@ pub fn chat_request(job: &ProviderJob) -> Result<ChatRequest, ProviderError> {
     let mut parts = Vec::new();
     for input in &job.inputs {
         match input {
-            JobInput::Text { role, text } if role == "system" => system = Some(text.clone()),
+            JobInput::Text { role, text } if role == "system" => {
+                // Several system inputs are joined, not silently replaced.
+                system = Some(match system.take() {
+                    Some(prev) => format!("{prev}\n\n{text}"),
+                    None => text.clone(),
+                });
+            }
             JobInput::Text { text, .. } => parts.push(Part::Text(text.clone())),
             JobInput::Media { mime, bytes, .. } => parts.push(Part::Image { mime: mime.clone(), bytes: bytes.clone() }),
         }
     }
-    let max_tokens =
-        job.params.get("max_tokens").and_then(Value::as_u64).map_or(DEFAULT_MAX_TOKENS, |n| u32::try_from(n).unwrap_or(u32::MAX).clamp(1, 128_000));
-    let temperature = job.params.get("temperature").and_then(Value::as_f64).filter(|t| t.is_finite()).map(|t| t.clamp(0.0, 2.0) as f32);
+    let max_tokens = job.params.get("max_tokens").and_then(Value::as_u64).map(|n| u32::try_from(n).unwrap_or(u32::MAX).clamp(1, 128_000));
+    // Range checks happen at send time, per dialect, so a bad value is reported, not altered.
+    let temperature = job.params.get("temperature").and_then(Value::as_f64).filter(|t| t.is_finite()).map(|t| t as f32);
     Ok(ChatRequest { model: job.model.clone(), system, messages: vec![Message { role: Role::User, parts }], max_tokens, temperature })
 }
 
@@ -446,9 +532,24 @@ pub(crate) mod tests {
                 role: Role::User,
                 parts: vec![Part::Text("hi".into()), Part::Image { mime: "image/png".into(), bytes: Arc::from(&b"PNG"[..]) }],
             }],
-            max_tokens: 100,
+            max_tokens: Some(100),
             temperature: Some(0.5),
         }
+    }
+
+    #[test]
+    fn anthropic_model_lists_are_paged() {
+        let pages = Arc::new(Canned {
+            replies: Mutex::new(vec![
+                HttpResponse { status: 200, headers: vec![], body: br#"{"data":[{"id":"claude-b"}],"has_more":false,"last_id":"claude-b"}"#.to_vec() },
+                HttpResponse { status: 200, headers: vec![], body: br#"{"data":[{"id":"claude-a"}],"has_more":true,"last_id":"claude-a"}"#.to_vec() },
+            ]),
+            seen: Mutex::new(vec![]),
+        });
+        let client = LlmClient::new(Endpoint::anthropic(ApiKey::new("k")), pages.clone());
+        assert_eq!(futures::executor::block_on(client.list_models()).unwrap(), ["claude-a", "claude-b"]);
+        let seen = pages.seen.lock().unwrap();
+        assert_eq!(seen[1].url, "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-a");
     }
 
     #[test]
@@ -460,16 +561,43 @@ pub(crate) mod tests {
 
     #[test]
     fn requests_are_validated() {
+        let oa = Dialect::OpenAi;
         let mut r = request();
-        assert!(r.validate().is_ok());
+        assert!(r.validate(oa).is_ok());
         r.messages[0].parts.push(Part::Image { mime: "image/tiff".into(), bytes: Arc::from(&b"x"[..]) });
-        assert_eq!(r.validate().unwrap_err().kind, ErrorKind::UnsupportedInput);
+        assert_eq!(r.validate(oa).unwrap_err().kind, ErrorKind::UnsupportedInput);
         let mut r = request();
         r.messages.clear();
-        assert!(r.validate().is_err());
+        assert!(r.validate(oa).is_err());
         let mut r = request();
         r.messages[0].parts = (0..=MAX_IMAGES).map(|_| Part::Image { mime: "image/png".into(), bytes: Arc::from(&b"x"[..]) }).collect();
-        assert!(r.validate().is_err());
+        assert!(r.validate(oa).is_err());
+        // Empty text is dropped; a message left empty is refused.
+        let mut r = request();
+        r.messages[0].parts = vec![Part::Text("  ".into())];
+        assert!(r.validate(oa).is_err());
+        let mut r = request();
+        r.messages[0].parts.push(Part::Text(String::new()));
+        r.validate(oa).unwrap();
+        assert_eq!(r.messages[0].parts.len(), 2);
+        // Images only from the user; Claude needs the last turn to be the user's.
+        let mut r = request();
+        r.messages[0].role = Role::Assistant;
+        assert!(r.validate(oa).is_err());
+        let mut r = request();
+        r.messages.push(Message { role: Role::Assistant, parts: vec![Part::Text("prefill".into())] });
+        assert!(r.validate(oa).is_ok());
+        assert!(r.validate(Dialect::Anthropic).is_err());
+        // Temperature ranges and models that reject sampling.
+        let mut r = request();
+        r.temperature = Some(1.5);
+        assert!(r.validate(oa).is_ok());
+        r.model = "claude-3-5-haiku".into();
+        assert!(r.validate(Dialect::Anthropic).is_err(), "Anthropic's range is 0–1");
+        r.temperature = Some(0.7);
+        assert!(r.validate(Dialect::Anthropic).is_ok());
+        r.model = "claude-opus-5-5".into();
+        assert!(r.validate(Dialect::Anthropic).unwrap_err().message.contains("doesn't accept a temperature"));
         assert_eq!(format!("{:?}", ApiKey::new("sk-secret")), "ApiKey(…)");
     }
 
@@ -480,16 +608,17 @@ pub(crate) mod tests {
             params: serde_json::json!({"max_tokens": 1e12, "temperature": 9.0}).as_object().cloned().unwrap(),
             inputs: vec![
                 JobInput::Text { role: "system".into(), text: "sys".into() },
+                JobInput::Text { role: "system".into(), text: "more".into() },
                 JobInput::Text { role: "prompt".into(), text: "hello".into() },
                 JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(&b"P"[..]) },
             ],
             idempotency_key: "k".into(),
         };
         let r = chat_request(&job).unwrap();
-        assert_eq!(r.system.as_deref(), Some("sys"));
+        assert_eq!(r.system.as_deref(), Some("sys\n\nmore"), "system inputs are joined");
         assert_eq!(r.messages[0].parts.len(), 2);
-        assert_eq!(r.max_tokens, DEFAULT_MAX_TOKENS, "a non-integer max_tokens falls back to the default");
-        assert_eq!(r.temperature, Some(2.0));
+        assert_eq!(r.max_tokens, None, "a non-integer max_tokens is left to the endpoint");
+        assert_eq!(r.temperature, Some(9.0), "range errors are reported at send time, per dialect");
     }
 
     #[test]
