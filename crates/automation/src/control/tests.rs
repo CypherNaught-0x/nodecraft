@@ -180,7 +180,7 @@ fn connections_are_limited_and_long_lines_skipped() {
         assert!(c.ask(json!({"id": 1, "method": "hello", "params": {"token": token().to_hex()}}))["result"].is_object());
     }
     let mut extra = Client::connect(listener.addr);
-    assert_eq!(extra.read()["error"]["kind"], "busy");
+    assert_eq!(extra.ask(json!({"id": 1, "method": "hello", "params": {"token": token().to_hex()}}))["error"]["kind"], "busy");
     // A line over the limit is refused and the connection carries on.
     let c = held.first_mut().unwrap();
     let long = format!("{}\n", "x".repeat(MAX_MESSAGE_BYTES + 1));
@@ -292,3 +292,5 @@ fn token_files_replace_links_and_old_files_and_stay_out_of_shared_folders() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+mod reconnect;

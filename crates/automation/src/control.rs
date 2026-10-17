@@ -37,6 +37,8 @@ use crate::mcp::{self, Line, MAX_MESSAGE_BYTES};
 pub const PROTOCOL: u32 = 1;
 /// Clients connected at once; more are turned away.
 pub const MAX_CONNECTIONS: usize = 4;
+/// Handshake-only refusals while all normal slots are occupied.
+const MAX_BUSY_HANDSHAKES: usize = 4;
 /// Requests waiting for the UI thread, across all connections.
 const QUEUE: usize = 64;
 /// How long a request waits for the UI thread (a screenshot needs a frame) before it fails.
@@ -316,6 +318,8 @@ pub struct Listener {
     pub addr: SocketAddr,
     /// Requests for the UI thread; drain them every frame.
     pub calls: Receiver<Call>,
+    #[cfg(test)]
+    busy: Arc<AtomicUsize>,
 }
 
 /// Timeouts a listener applies (tests shorten them).
@@ -344,6 +348,9 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
     let addr = socket.local_addr().map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
     let (to_ui, calls) = sync_channel::<Call>(QUEUE);
     let open = Arc::new(AtomicUsize::new(0));
+    let busy = Arc::new(AtomicUsize::new(0));
+    #[cfg(test)]
+    let observed_busy = Arc::clone(&busy);
     std::thread::Builder::new()
         .name("nodecraft-control".into())
         .spawn(move || {
@@ -351,8 +358,15 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
                 let Ok(stream) = stream else { continue };
                 if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     open.fetch_sub(1, Ordering::SeqCst);
-                    let mut stream = stream;
-                    let _ = writeln!(stream, "{}", error_reply(Value::Null, "busy", "too many control connections"));
+                    let Some(slot) = BusySlot::acquire(&busy) else { continue };
+                    let token = token.clone();
+                    let deadline = Instant::now().checked_add(timeouts.handshake).unwrap_or_else(Instant::now);
+                    // A bounded refusal consumes the hello before closing, so a valid client's
+                    // unread hello cannot turn the typed Busy reply into a TCP reset.
+                    let _ = std::thread::Builder::new().name("nodecraft-control-busy".into()).spawn(move || {
+                        let _slot = slot; // Also dropped if spawning fails or this worker unwinds.
+                        refuse_busy(stream, token, deadline);
+                    });
                     continue;
                 }
                 let (token, to_ui, wake, slot) = (token.clone(), to_ui.clone(), Arc::clone(&wake), Arc::clone(&open));
@@ -367,7 +381,52 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
             }
         })
         .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the control listener: {e}")))?;
-    Ok(Listener { addr, calls })
+    Ok(Listener {
+        addr,
+        calls,
+        #[cfg(test)]
+        busy: observed_busy,
+    })
+}
+
+// One shared bounded pool per listener, never a per-connection queue.
+struct BusySlot(Arc<AtomicUsize>);
+impl BusySlot {
+    fn acquire(count: &Arc<AtomicUsize>) -> Option<Self> {
+        // One accepting thread acquires; workers only release. Bound even CAS contention,
+        // and close the candidate if all attempts race with a departing worker.
+        for _ in 0..=MAX_BUSY_HANDSHAKES {
+            let n = count.load(Ordering::SeqCst);
+            if n >= MAX_BUSY_HANDSHAKES {
+                return None;
+            }
+            if count.compare_exchange(n, n.saturating_add(1), Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                return Some(Self(Arc::clone(count)));
+            }
+        }
+        None
+    }
+}
+impl Drop for BusySlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+fn refuse_busy(mut stream: TcpStream, token: Token, deadline: Instant) {
+    let Ok(clone) = stream.try_clone() else { return };
+    let mut reader = BufReader::new(clone);
+    let mut line = Vec::new();
+    if !matches!(read_hello(&mut reader, &mut line, deadline), Ok(Line::Read)) {
+        return;
+    }
+    let Ok(text) = std::str::from_utf8(&line) else { return };
+    let mut handshake = Connection::new(token);
+    let reply = match handshake.step(text.trim()) {
+        Step::Reply(_) if handshake.is_authed() => error_reply(Value::Null, "busy", "too many control connections"),
+        Step::Reply(reply) | Step::Close(reply) => reply,
+        Step::Ask(_, _) => return, // A fresh connection can never queue a request here.
+    };
+    let _ = write_admission(&mut stream, format!("{reply}\n").as_bytes(), deadline);
 }
 
 /// Longest `hello` line accepted.
@@ -489,13 +548,22 @@ mod tests;
 /// the connection as idle, and after a lost connection on the next call. A call that failed is
 /// never resent, so nothing runs twice.
 pub struct Client {
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
+    io: Option<ClientIo>,
     next: u64,
-    broken: bool,
-    /// How to connect again.
     origin: Origin,
     last_used: Instant,
+}
+
+struct ClientIo {
+    reader: BufReader<TcpStream>,
+    writer: TcpStream,
+}
+impl Drop for ClientIo {
+    fn drop(&mut self) {
+        // Both descriptors refer to the same socket. Shutdown wakes the server immediately;
+        // dropping the pair then relinquishes every local handle before replacement admission.
+        let _ = self.writer.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 #[derive(Clone)]
@@ -503,97 +571,148 @@ enum Origin {
     File(std::path::PathBuf),
     Addr(SocketAddr, String),
 }
-
-/// Reconnect before a call once the app may have closed the connection as idle.
 const RECONNECT_AFTER: Duration = Duration::from_secs(540);
-
-/// Longest reply the client reads: a screenshot in base64 plus room.
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_ADMISSION_ATTEMPTS: usize = 64;
 const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
 
 fn network(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Network, message)
 }
+fn admission_deadline() -> Instant {
+    Instant::now().checked_add(ADMISSION_TIMEOUT).unwrap_or_else(Instant::now)
+}
+fn admission_left(deadline: Instant) -> std::io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() { Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "control admission deadline expired")) } else { Ok(left) }
+}
+fn write_admission(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(admission_left(deadline)?))?;
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "control hello couldn't be written")),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
 
 impl Client {
-    /// Connects to the app named by the token file at `path` and says hello.
+    /// Connects to the app named by the token file and authenticates within the network deadline.
     pub fn from_token_file(path: &std::path::Path) -> Result<Self, Error> {
+        Self::from_token_file_until(path, admission_deadline())
+    }
+    fn from_token_file_until(path: &std::path::Path, deadline: Instant) -> Result<Self, Error> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| Error::new(ErrorKind::NotFound, format!("no control token at {} ({e}); start the app with `nodecraft --control`", path.display())))?;
         let file: TokenFile =
             serde_json::from_str(&text).map_err(|_| Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display())))?;
-        let mut client = Self::connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)?;
+        let mut client = Self::connect_until(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token, deadline)?;
         client.origin = Origin::File(path.to_path_buf());
         Ok(client)
     }
 
-    /// Connects to `addr` and says hello with `token`.
+    /// Connect and authenticate within one bounded network-admission deadline.
     pub fn connect(addr: SocketAddr, token: &str) -> Result<Self, Error> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        Self::connect_until(addr, token, admission_deadline())
+    }
+    fn connect_until(addr: SocketAddr, token: &str, deadline: Instant) -> Result<Self, Error> {
+        let left = admission_left(deadline).map_err(|e| network(e.to_string()))?;
+        let stream = TcpStream::connect_timeout(&addr, left)
             .map_err(|e| network(format!("can't reach the app on {addr} ({e}); is it still running with --control?")))?;
-        // The app answers every request within its answer timeout, so this only fires if it
-        // hangs. A long reply is read in pieces, each with this timeout.
-        let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
-        stream.set_read_timeout(Some(wait)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
-        let mut client = Self { reader, writer: stream, next: 1, broken: false, origin: Origin::Addr(addr, token.to_owned()), last_used: Instant::now() };
+        let mut client =
+            Self { io: Some(ClientIo { reader, writer: stream }), next: 1, origin: Origin::Addr(addr, token.to_owned()), last_used: Instant::now() };
         let mut hello = Map::new();
         hello.insert("token".into(), json!(token));
-        let reply = client.exchange("hello", hello)?;
+        let reply = client.exchange_until("hello", hello, Some(deadline))?;
         if reply.get("protocol").and_then(Value::as_u64) != Some(u64::from(PROTOCOL)) {
             return Err(Error::new(ErrorKind::Unsupported, "the app speaks a different control protocol; use a matching nodecraft-cli"));
         }
+        let io = client.io.as_ref().ok_or_else(|| network("the control connection is closed"))?;
+        io.reader
+            .get_ref()
+            .set_read_timeout(Some(ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5))))
+            .and_then(|()| io.writer.set_write_timeout(Some(WRITE_TIMEOUT)))
+            .map_err(|e| network(e.to_string()))?;
         Ok(client)
     }
 
     fn reconnect(&mut self) -> Result<(), Error> {
-        let fresh = match self.origin.clone() {
-            Origin::File(path) => Self::from_token_file(&path)?,
-            Origin::Addr(addr, token) => Self::connect(addr, &token)?,
-        };
-        *self = fresh;
-        Ok(())
+        self.reconnect_with(admission_deadline(), std::thread::sleep)
+    }
+    fn reconnect_with(&mut self, deadline: Instant, mut wait: impl FnMut(Duration)) -> Result<(), Error> {
+        self.io.take(); // Shutdown and drop both old handles BEFORE opening a replacement.
+        let mut delay = Duration::from_millis(10);
+        for attempt in 0..MAX_ADMISSION_ATTEMPTS {
+            admission_left(deadline).map_err(|e| network(e.to_string()))?;
+            let fresh = match &self.origin {
+                Origin::File(path) => Self::from_token_file_until(path, deadline),
+                Origin::Addr(addr, token) => Self::connect_until(*addr, token, deadline),
+            };
+            match fresh {
+                Ok(fresh) => {
+                    *self = fresh;
+                    return Ok(());
+                }
+                Err(e) if e.kind == ErrorKind::Busy && attempt.saturating_add(1) < MAX_ADMISSION_ATTEMPTS => {
+                    // Only hello was attempted. No operation exists to replay here.
+                    let left = admission_left(deadline).map_err(|_| e.clone())?;
+                    wait(delay.min(left));
+                    delay = delay.saturating_mul(2).min(Duration::from_millis(100));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::new(ErrorKind::Busy, "the app's control admission is still busy; try again"))
     }
 
-    /// Sends one request and returns its result, or the app's error. A connection the app may
-    /// have closed as idle, or one lost on an earlier call, is replaced first.
+    /// A possibly sent operation always returns once. Only a subsequent explicit call may
+    /// reconnect; admission retries can only repeat hello, never this operation.
     pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
-        if self.broken || self.last_used.elapsed() >= RECONNECT_AFTER {
+        if self.io.is_none() || self.last_used.elapsed() >= RECONNECT_AFTER {
             self.reconnect().map_err(|e| Error::new(e.kind, format!("lost the connection to the app and couldn't reconnect: {}", e.message)))?;
         }
         self.last_used = Instant::now();
-        self.exchange(method, params)
+        self.exchange_until(method, params, None)
     }
 
-    /// One request and its reply on the current connection.
-    fn exchange(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
+    fn exchange_until(&mut self, method: &str, params: Map<String, Value>, deadline: Option<Instant>) -> Result<Value, Error> {
         let id = self.next;
         self.next = self.next.saturating_add(1);
         let message = json!({"id": id, "method": method, "params": params});
-        let sent = writeln!(self.writer, "{message}").and_then(|()| self.writer.flush());
+        let io = self.io.as_mut().ok_or_else(|| network("the control connection is closed"))?;
+        let sent = match deadline {
+            Some(deadline) => write_admission(&mut io.writer, format!("{message}\n").as_bytes(), deadline),
+            None => writeln!(io.writer, "{message}").and_then(|()| io.writer.flush()),
+        };
         if let Err(e) = sent {
-            self.broken = true;
+            self.io.take();
             return Err(network(format!("the app closed the control channel ({e}); the next call reconnects")));
         }
         let mut line = Vec::new();
-        let read = mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES);
+        let read = match deadline {
+            Some(deadline) => read_hello(&mut io.reader, &mut line, deadline),
+            None => mcp::read_line_capped(&mut io.reader, &mut line, MAX_REPLY_BYTES),
+        };
         let reply = match read {
             Ok(Line::Read) => serde_json::from_slice::<Value>(&line).map_err(|_| network("the app sent a malformed reply")),
             Ok(Line::TooLong) => Err(network("the app's reply was too large")),
             Ok(Line::Eof) => Err(network("the app closed the control channel; the next call reconnects")),
             Err(e) => Err(network(format!("no reply from the app ({e})"))),
         };
-        // A screenshot reply is large: don't keep the raw line alongside the parsed one.
         drop(line);
         let mut reply = match reply {
             Ok(r) => r,
             Err(e) => {
-                // A lost or out-of-step reply leaves the stream unusable.
-                self.broken = true;
+                self.io.take();
                 return Err(e);
             }
         };
         if reply.get("id").and_then(Value::as_u64) != Some(id) && reply.get("id") != Some(&Value::Null) {
-            self.broken = true;
+            self.io.take();
             return Err(network("the app's reply doesn't match the request"));
         }
         if let Some(error) = reply.get("error") {
@@ -604,7 +723,7 @@ impl Client {
         match reply.as_object_mut().and_then(|o| o.remove("result")) {
             Some(result) => Ok(result),
             None => {
-                self.broken = true;
+                self.io.take();
                 Err(network("the app's reply has neither a result nor an error"))
             }
         }

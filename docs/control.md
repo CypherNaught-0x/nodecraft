@@ -51,7 +51,10 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 - A request the client stopped waiting for (it was told `timeout`) is dropped, never run late.
 - A screenshot fails after 10 seconds if the window isn't drawing (for example when minimised).
 
-- At most 4 connections at once.
+- At most 4 normal connections. At capacity, at most 4 additional handshake-only workers consume
+  one bounded hello and return `busy`; excess candidates close immediately. There is also one
+  transient socket being accepted. Refusals never queue or execute a request. Their entire hello
+  and reply share the 5-second handshake deadline and 4 KiB hello cap.
 - Messages are at most 4 MiB.
 - 64 requests may wait for the app, and each waits at most 30 s.
 - The app answers 16 requests per frame.
@@ -60,3 +63,18 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 The issue also asks for a stdio transport. The desktop app has no stdin worth reading, and
 headless stdio automation is `nodecraft-cli mcp`. A stdio control mode is a follow-up (see
 `docs/decisions.md`).
+
+## Bridge reconnect admission
+
+The bridge closes both old socket handles before replacing a connection. It re-reads a token
+file on each replacement attempt. Only a typed `busy` response to replacement `hello` can retry,
+with backoff within one 5-second network-admission deadline and at most 64 attempts. The deadline
+covers connect, whole hello reads/writes and backoff; synchronous filesystem reads are not
+cancellable by this deadline. Token-file input limits remain a separate concern.
+
+A possibly sent command is never resent. A lost reply fails that call and leaves the client
+disconnected; the next explicit call may reconnect. Refused or failed replacement never falls
+back to the old socket. Refusal workers consume the valid hello before closing so unread hello
+bytes do not reset the socket and hide `busy`. Malformed/wrong-token hellos are refused normally;
+pipelined extra bytes are not part of this replacement handshake and may still reset the socket.
+Network/reset/authentication/protocol errors do not trigger automatic admission retries.

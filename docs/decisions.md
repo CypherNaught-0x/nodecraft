@@ -17,6 +17,16 @@ a choice a later contributor might otherwise undo.
   out-of-step reply, the next call reconnects. The call that failed is reported, never resent,
   so a command can't run twice.
 
+## 2026-10-17 · Admission-safe control reconnect (#272)
+
+- Replace only after shutting down and dropping both old socket handles. A failed replacement
+  remains disconnected. Only typed Busy during hello retries, bounded by one network admission
+  deadline and an attempt ceiling; a possibly sent operation always fails once, never replays.
+- The server keeps four normal slots and a separate four-worker refusal pool. Each refusal owns
+  an RAII permit, consumes one bounded hello and writes its refusal under one absolute handshake
+  deadline, without queuing work. This prevents unread hello bytes losing Busy to a TCP reset.
+  Extra candidates close immediately; the accept thread never waits for a refusal handshake.
+
 ## 2026-10-17 · Control channel (#115)
 
 - **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.
