@@ -117,7 +117,9 @@ pub struct Registry {
 impl Registry {
     pub fn builtins() -> Result<Self, Error> {
         let mut registry = Self::default();
-        for spec in crate::graph_cmds::specs().into_iter().chain(crate::node_cmds::specs()).chain(crate::navigation_cmds::specs()) {
+        for spec in
+            crate::graph_cmds::specs().into_iter().chain(crate::node_cmds::specs()).chain(crate::navigation_cmds::specs()).chain(crate::search_cmds::specs())
+        {
             registry.register(spec)?;
         }
         Ok(registry)
