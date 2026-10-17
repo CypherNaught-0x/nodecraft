@@ -151,6 +151,18 @@ enum SelectQuery {
     Kind(String),
 }
 
+/// A kind's `quick_add` binding: one ASCII letter or digit, optionally after `Shift+`.
+/// Anything else (Escape, arrows, other modifiers, non-ASCII) is not bound.
+fn quick_add_key(spec: &str) -> Option<(egui::Modifiers, egui::Key)> {
+    let (modifiers, key) = match spec.strip_prefix("Shift+") {
+        Some(key) => (egui::Modifiers::SHIFT, key),
+        None => (egui::Modifiers::NONE, spec),
+    };
+    let mut chars = key.chars();
+    let single = chars.next().filter(|c| c.is_ascii_alphanumeric() && chars.next().is_none())?;
+    egui::Key::from_name(&single.to_ascii_uppercase().to_string()).map(|key| (modifiers, key))
+}
+
 /// A card's world rect: as painted this frame, or (for cards not drawn, e.g. off screen) from the
 /// kind's static descriptor.
 fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
@@ -336,7 +348,8 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let selected_before = self.selection.clone();
-        if !canvas::text_input_focused(ui.ctx()) {
+        // Canvas keys yield to text fields and to the open palette (whose query may lose focus).
+        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() {
             let command = ui.input_mut(|input| {
                 self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
                     spec.shortcut
@@ -378,16 +391,23 @@ impl NodeCraftApp {
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 self.selection.replace(canvas.nodes().keys().copied().collect());
             }
-            // Quick-add: a kind's `quick_add` key, unmodified, creates it under the pointer.
-            if self.palette.is_none() && !self.text_focused {
+            // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
+            // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
+            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx());
+            if !self.text_focused && !busy {
+                let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
+                    self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
                 let pressed = ui.input_mut(|i| {
-                    if !i.modifiers.is_none() {
-                        return None;
-                    }
-                    self.session.kinds().descriptors().find_map(|d| {
-                        let key = d.quick_add.as_deref().and_then(egui::Key::from_name)?;
-                        i.consume_key(egui::Modifiers::NONE, key).then(|| d.id.clone())
-                    })
+                    let found = i.events.iter().find_map(|event| match event {
+                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
+                            bindings.iter().find(|(m, k, _)| k == key && m == modifiers).map(|(m, k, kind)| (*m, *k, kind.clone()))
+                        }
+                        _ => None,
+                    });
+                    let (modifiers, key, kind) = found?;
+                    // Consume every event of that key, repeats included.
+                    i.events.retain(|event| !matches!(event, egui::Event::Key { key: k, modifiers: m, .. } if *k == key && *m == modifiers));
+                    Some(kind)
                 });
                 if let Some(kind) = pressed {
                     let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
@@ -427,8 +447,13 @@ impl NodeCraftApp {
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
+        let view_before = self.view;
         if !overlay_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+        }
+        // The palette creates at the world point it opened on; once the view moves, close it.
+        if self.view != view_before {
+            self.palette = None;
         }
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);

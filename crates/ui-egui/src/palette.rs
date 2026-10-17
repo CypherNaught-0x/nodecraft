@@ -121,12 +121,15 @@ impl Palette {
                             .desired_width(f32::INFINITY)
                             .char_limit(128),
                     );
-                    if self.focus {
+                    // Keep typing going to the query, even after a click on the popup's padding.
+                    if self.focus || ui.ctx().memory(|m| m.focused().is_none()) {
                         edit.request_focus();
                         self.focus = false;
                     }
                     if edit.changed() {
                         self.highlighted = 0;
+                        // The list below was filtered before this keystroke; show the new one.
+                        ui.ctx().request_repaint();
                     }
                     if matches.is_empty() {
                         ui.label(egui::RichText::new("Nothing matches").color(t.text_muted));
@@ -137,7 +140,8 @@ impl Palette {
                             None => entry.label.clone(),
                         };
                         let response = ui.add(egui::Button::selectable(row == self.highlighted, text).min_size(Vec2::new(ui.available_width(), 0.0)));
-                        if response.hovered() {
+                        // Follow the pointer only when it moves, so resting it doesn't fight ↑/↓.
+                        if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
                             self.highlighted = row;
                         }
                         if response.clicked() {

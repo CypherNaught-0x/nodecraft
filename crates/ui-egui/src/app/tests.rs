@@ -1629,3 +1629,86 @@ fn double_click_opens_a_searchable_palette_of_kinds_and_commands() {
     assert!(h.state().palette.is_none());
     assert_eq!(h.state().session.document(), &before);
 }
+
+#[test]
+fn quick_add_bindings_are_single_letters_or_digits() {
+    assert_eq!(quick_add_key("T"), Some((egui::Modifiers::NONE, egui::Key::T)));
+    assert_eq!(quick_add_key("t"), Some((egui::Modifiers::NONE, egui::Key::T)));
+    assert_eq!(quick_add_key("Shift+T"), Some((egui::Modifiers::SHIFT, egui::Key::T)));
+    assert_eq!(quick_add_key("3"), Some((egui::Modifiers::NONE, egui::Key::Num3)));
+    for bad in ["Escape", "Enter", "Space", "TT", "Á", "Ctrl+T", "Shift+", "", "+"] {
+        assert_eq!(quick_add_key(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn held_quick_add_keys_do_not_repeat() {
+    let mut h = harness();
+    h.hover_at(Pos2::new(800.0, 560.0));
+    h.run();
+    for repeat in [false, true, true, true] {
+        h.event(egui::Event::Key { key: egui::Key::T, physical_key: None, pressed: true, repeat, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+    // The first press made one node; the repeats made none.
+    assert_eq!(nodes_of(&h, "source.text").len(), 2);
+}
+
+#[test]
+fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
+    let mut h = harness();
+    let id = node(h.state()).id;
+    double_click(&mut h, Pos2::new(150.0, 600.0));
+    h.run();
+    // (Double-clicking empty canvas clears the selection, so select while the palette is open.)
+    h.state_mut().selection.only(id);
+    let corner = h.state().palette.as_ref().map(|p| p.screen).unwrap();
+    // A click on the popup's padding takes focus off the query, but the palette stays open...
+    click(&mut h, corner + Vec2::splat(3.0));
+    assert!(h.state().palette.is_some());
+    // ...and Backspace, Delete, ⌘A or Escape still don't touch the canvas selection or nodes.
+    for key in [egui::Key::Backspace, egui::Key::Delete] {
+        h.key_press(key);
+        h.run();
+    }
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().contains_key(&id));
+    assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
+    // Scrolling the canvas moves the view, so the palette closes rather than create elsewhere.
+    h.hover_at(Pos2::new(600.0, 100.0));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: Vec2::new(0.0, 40.0),
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert!(h.state().palette.is_none());
+}
+
+#[test]
+fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clickable() {
+    let mut h = chain_harness();
+    h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
+    h.run();
+    let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
+    double_click(&mut h, a + (b - a) * 0.5);
+    h.run();
+    assert!(h.state().palette.is_none());
+    idle(&mut h);
+    let on_card = card_point(&h, 2);
+    double_click(&mut h, on_card);
+    h.run();
+    assert!(h.state().palette.is_none());
+    idle(&mut h);
+    double_click(&mut h, Pos2::new(900.0, 650.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    h.event(egui::Event::Text("vid".into()));
+    h.run();
+    h.get_by_label_contains("Video").click();
+    h.run();
+    assert_eq!(nodes_of(&h, "source.video").len(), 1);
+    assert!(h.state().palette.is_none());
+}
