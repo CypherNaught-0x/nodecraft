@@ -4,6 +4,34 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+## 2026-10-17 · Budgets at job time (#207)
+
+- **Reserve before submit.** `engine::jobs::ProviderRunner::with_budget` checks each priced job
+  against the caps with `cost::check`. The current spend counts every reservation still open, so
+  jobs running in parallel can't together overshoot a cap. The job is then recorded in the usage
+  log as an `estimate`. A refusal is a non-transient failure starting with `budget: `
+  (`is_budget_refusal`), so the scheduler never retries it, and it never reaches the provider.
+- **Adopt what already ran.** A job resumed from a stored handle is recorded without a cap check:
+  the spend already happened, and refusing would hide it.
+- **Settle by what may have been billed.**
+  - A finished job settles to the provider's reported cost in the estimate's currency, otherwise
+    to the estimate.
+  - A job the provider certainly never billed (refused at submit: a bad key, invalid input,
+    cancelled before start) is released.
+  - A job that got a handle, or whose submit was lost to a timeout, network or server error,
+    keeps its reservation while a retry can come. When it is forgotten, settled, or requeued
+    under a fresh key, it is charged its estimate as `unresolved`.
+- **The host closes what the scheduler gave up on.** The driver doesn't report to the runner,
+  so hosts call `ProviderRunner::settle` on terminal failures and cancellations, and `forget` when
+  dropping finished jobs (see the method docs). A settle or forget that arrives while the job is
+  running waits until its run ends. Estimates left open without a stored handle are settled as
+  unresolved when a project is reopened.
+- **A generation the provider reports as failed is assumed unbilled.** It keeps one reservation
+  under its key, and a retry settles it once. Most providers don't bill failures; a provider that
+  does would be undercounted by one estimate per failed attempt.
+- **Free and local work isn't charged**: jobs without a `JobPrice` skip the budget. A job with an
+  unknown price runs uncharged without caps and is refused under any cap.
+
 ## 2026-10-17 · MCP server (#116)
 
 - **Generic tools, not one per command.** `command_list` and `command_run` follow the engine
@@ -596,3 +624,27 @@ a choice a later contributor might otherwise undo.
 - Overview labels remain readable, controls appear only at readable scale, and named keyboard
   Rename actions complement double-click. Settings store lifecycle and scroll preferences remain
   intact in the graph-backed shell. Selection expansion remains owned by #58/PR144.
+
+
+## 2026-10-17 · Staleness hashes content, within a budget (#213)
+
+- **Upstream results count by content, not id.** A consumer's input hash covers the digest of
+  the upstream active result's output on the port it reads. Result ids aren't immutable: `SetNode`
+  can rewrite a result's outputs under the same id, or it can be removed and re-added. With
+  content hashing, that makes downstream results stale, while an identical re-run upstream keeps
+  them fresh. A result recorded for another port layout counts as "empty", as the planner
+  treats it.
+- **One query, bounded work.** Each node's recipe and each upstream output is digested once per
+  query (memoized). Values are streamed into the hasher instead of being serialized. Every byte
+  is charged against a 256 MiB budget (`staleness::MAX_QUERY_BYTES`), and a canvas past it gets an
+  actionable error from `stale` and `canvas.stale`.
+- **Older recipes read as stale, deliberately.** The stored hash is still a bare Blake3 (no
+  format change), and its domain tag moved to `v2`. A result stamped under another tag can't be
+  told from one whose inputs changed, so it is reported stale: we never show a result as fresh
+  when we can't vouch for it. The producer that stamps hashes isn't wired yet, so no saved
+  project carries `v1` hashes.
+- **`input_hash` is a new semantic field in saved generations.** Archive and journal versions
+  that accept it, and the guards that make old readers reject it, are coordinated in #134 and
+  #162. This change doesn't alter the stored field.
+- This supersedes the #75 entry's "identity of an upstream node's active result" and "old hashes
+  become unknown".

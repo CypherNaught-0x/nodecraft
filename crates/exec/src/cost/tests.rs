@@ -591,3 +591,22 @@ fn review_regressions_for_219() {
     let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     assert!(back == log);
 }
+
+#[test]
+fn charges_are_found_after_releases_and_eviction() {
+    let mut log = UsageLog::default();
+    for n in 0..5 {
+        log.record(charge(&format!("k{n}"), 1, Charge::Estimate)).unwrap();
+    }
+    log.release("fal", "k1").unwrap();
+    assert!(log.charge("fal", "k1").is_none());
+    assert_eq!(log.charge("fal", "k3").map(|e| e.idempotency_key.as_str()), Some("k3"), "renumbered after the release");
+    assert!(log.charge("other", "k3").is_none());
+    let mut full = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 2 {
+        full.record(charge(&format!("k{n}"), 1, Charge::Actual)).unwrap();
+    }
+    assert!(full.charge("fal", "k0").is_none(), "evicted");
+    let last = format!("k{}", MAX_USAGE_ENTRIES + 1);
+    assert_eq!(full.charge("fal", &last).map(|e| e.idempotency_key.clone()), Some(last));
+}
