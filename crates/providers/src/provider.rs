@@ -74,6 +74,14 @@ pub enum Output {
     },
 }
 
+/// What [`Provider::submit`] returns: queue-style APIs hand back a handle to poll; synchronous
+/// ones (chat, OpenAI Images, TTS) finish within the request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Submission {
+    Queued(JobHandle),
+    Finished(Vec<Output>),
+}
+
 /// Where a job is, from [`Provider::poll`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobProgress {
@@ -97,8 +105,9 @@ pub trait Provider: MaybeSendSync {
     /// Stable lowercase id (`fal`, `replicate`, `comfyui`); also the scheduler lane prefix.
     fn id(&self) -> &str;
 
-    /// Starts a job. Must not wait for it to finish (beyond what the API forces).
-    fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<JobHandle, ProviderError>>;
+    /// Starts a job. Queue-style APIs return [`Submission::Queued`] without waiting; synchronous
+    /// APIs return [`Submission::Finished`].
+    fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>>;
 
     /// Reports how a submitted job is doing.
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>>;
@@ -123,7 +132,9 @@ pub trait CancelSignal: MaybeSendSync {
     fn cancelled(&self) -> BoxFuture<'_, ()>;
 }
 
-/// Waiting, as providers see it; the engine wraps the app's runtime.
-pub trait Sleep: MaybeSendSync {
+/// Time, as providers see it; the engine wraps the app's runtime (exec's `Runtime`).
+pub trait Clock: MaybeSendSync {
     fn sleep(&self, ms: u64) -> BoxFuture<'static, ()>;
+    /// Milliseconds on a monotonic clock (any origin).
+    fn now_ms(&self) -> u64;
 }

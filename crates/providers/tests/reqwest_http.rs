@@ -67,13 +67,66 @@ async fn replies_over_the_cap_are_refused() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn redirects_to_another_origin_are_not_followed() {
-    let (other, other_heads) = serve(vec![response("200 OK", "", b"leaked")]);
-    let (url, _heads) = serve(vec![response("302 Found", &format!("Location: {other}/steal\r\n"), b"")]);
+async fn cross_origin_redirects_are_followed_without_credentials() {
+    let (other, other_heads) = serve(vec![response("200 OK", "", b"file")]);
+    let (url, heads) = serve(vec![response("302 Found", &format!("Location: {other}/file\r\n"), b"")]);
     let http = ReqwestHttp::new().unwrap();
-    let r = http.send(HttpRequest::get(url).header("X-API-Key", "secret")).await.unwrap();
-    assert_eq!(r.status, 302, "the redirect is returned, not followed");
-    assert!(other_heads.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "the other host saw no request");
+    let r = http.send(HttpRequest::get(url).secret_header("X-Vendor-Key", "secret").header("Authorization", "Bearer secret2")).await.unwrap();
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"file"[..]));
+    assert!(heads.recv().unwrap().to_ascii_lowercase().contains("x-vendor-key: secret"), "the origin got its key");
+    let away = other_heads.recv().unwrap().to_ascii_lowercase();
+    assert!(!away.contains("secret"), "the other host got no credentials: {away}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn same_origin_redirects_keep_headers_and_hops_are_capped() {
+    let (url, heads) = serve(vec![response("307 Temporary Redirect", "Location: /v2\r\n", b""), response("200 OK", "", b"ok")]);
+    let http = ReqwestHttp::new().unwrap();
+    let r = http.send(HttpRequest::get(format!("{url}/v1")).secret_header("X-Vendor-Key", "k")).await.unwrap();
+    assert_eq!(r.body, b"ok");
+    heads.recv().unwrap();
+    assert!(heads.recv().unwrap().to_ascii_lowercase().contains("x-vendor-key: k"));
+
+    let looping: Vec<Vec<u8>> = (0..10).map(|_| response("302 Found", "Location: /again\r\n", b"")).collect();
+    let (url, _heads) = serve(looping);
+    let e = http.send(HttpRequest::get(url)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Malformed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn streamed_bodies_without_a_length_are_capped() {
+    // No Content-Length: the cap must trip while reading, not up front.
+    let mut raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+    raw.extend(std::iter::repeat_n(b'x', 50_000));
+    let (url, _heads) = serve(vec![raw]);
+    let http = ReqwestHttp::new().unwrap();
+    let e = http.send(HttpRequest::get(url).max_response_bytes(1000)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Malformed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn slow_servers_time_out() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let _held = listener.accept();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    });
+    let http = ReqwestHttp::new().unwrap();
+    let e = http.send(HttpRequest::get(url).timeout_ms(200)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Timeout);
+    assert!(e.is_transient());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn downloads_through_the_transport_are_capped_and_hashed() {
+    let png = b"\x89PNG\r\n\x1a\nIMAGEDATA";
+    let (url, _h) = serve(vec![response("200 OK", "", png), response("200 OK", "", png)]);
+    let http = ReqwestHttp::new().unwrap();
+    let d = nodecraft_providers::fetch_output(&http, &url, Some(nodecraft_media::MediaKind::Image), 1024).await.unwrap();
+    assert_eq!(d.hash, nodecraft_media::ContentHash::of(png));
+    let e = nodecraft_providers::fetch_output(&http, &url, None, 4).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Malformed);
 }
 
 #[tokio::test(flavor = "current_thread")]

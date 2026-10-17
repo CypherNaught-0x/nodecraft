@@ -1,109 +1,179 @@
 //! The machinery queue-style providers share: submit, poll until done, cancel, and download
-//! outputs with size caps and type checks.
+//! outputs with size caps, type checks and content hashes.
+
+use std::fmt;
 
 use futures::FutureExt;
 
 use crate::http::{Http, HttpRequest};
-use crate::provider::{CancelSignal, JobProgress, Output, Provider, ProviderJob, Sleep};
+use crate::provider::{BoxFuture, CancelSignal, Clock, JobProgress, Output, Provider, ProviderJob, Submission};
 use crate::{ErrorKind, JobHandle, ProviderError};
 
-/// How long a job may take overall before it counts as timed out.
+/// How long a job may take overall before it counts as expired.
 pub const DEFAULT_JOB_DEADLINE_MS: u64 = 60 * 60 * 1000;
-/// Consecutive poll failures tolerated before the job fails (each retried after backoff).
-const MAX_POLL_ERRORS: u32 = 5;
+/// How long asking the provider to cancel may take before we stop waiting for it.
+const CANCEL_TIMEOUT_MS: u64 = 15_000;
 
 /// Limits for [`run_to_completion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunLimits {
-    /// Give up (as `Timeout`) after waiting this long in total.
+    /// Give up (as `ErrorKind::Expired`) once this much real time has passed since polling began.
     pub deadline_ms: u64,
     /// Cap on the poll interval the provider may ask for.
     pub max_poll_interval_ms: u64,
+    /// Consecutive transient poll failures tolerated (each retried after backoff).
+    pub max_poll_errors: u32,
 }
 
 impl Default for RunLimits {
     fn default() -> Self {
-        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000 }
+        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5 }
     }
 }
 
 /// What [`run_to_completion`] reports while it waits.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunUpdate {
+    /// The job is with the provider: persist the handle, so a restart or retry resumes it.
     Submitted(JobHandle),
     Progress(JobProgress),
+    /// A poll failed and will be retried (shown as "connection lost, retrying").
+    PollRetry(ProviderError),
 }
 
-/// Submits `job` and polls until it finishes, fails, is cancelled or runs past the deadline.
-///
-/// - Cancellation is checked while waiting; the provider is asked to cancel (best effort) and the
-///   result is `ErrorKind::Cancelled`.
-/// - A failed poll is retried with backoff up to a few times, so a dropped connection while a
-///   long video renders doesn't lose a job that is already paid for.
-/// - `on_update` sees the handle (persist it to resume after a restart) and every progress report.
+/// A failed run. When `handle` is set the job reached the provider (and may be billed, or still
+/// running): a retry must [`resume`] that handle rather than submit again, or it pays twice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunFailure {
+    pub error: ProviderError,
+    pub handle: Option<JobHandle>,
+}
+
+impl RunFailure {
+    fn before_submit(error: ProviderError) -> Self {
+        Self { error, handle: None }
+    }
+
+    /// Worth retrying: transient, and either never submitted or resumable by handle.
+    pub fn is_transient(&self) -> bool {
+        self.error.is_transient()
+    }
+}
+
+impl fmt::Display for RunFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for RunFailure {}
+
+/// Submits `job` and, for queue-style providers, polls until it finishes, fails, is cancelled or
+/// runs past the deadline. Cancellation interrupts waiting and polling alike; the provider is then
+/// asked to stop (time-limited), and the error says if it couldn't be.
 pub async fn run_to_completion(
     provider: &dyn Provider,
     job: &ProviderJob,
     cancel: &dyn CancelSignal,
-    sleep: &dyn Sleep,
+    clock: &dyn Clock,
     limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
-) -> Result<Vec<Output>, ProviderError> {
+) -> Result<Vec<Output>, RunFailure> {
     if cancel.is_cancelled() {
-        return Err(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started"));
+        return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
-    let handle = provider.submit(job).await?;
+    let submitted = race(provider.submit(job), cancel).await;
+    let handle = match submitted {
+        // Cancelled while submitting: we can't know whether the provider accepted it.
+        None => return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"))),
+        Some(Err(e)) => return Err(RunFailure::before_submit(e)),
+        Some(Ok(Submission::Finished(outputs))) => return Ok(outputs),
+        Some(Ok(Submission::Queued(handle))) => handle,
+    };
     on_update(RunUpdate::Submitted(handle.clone()));
-    resume(provider, &handle, cancel, sleep, limits, on_update).await
+    resume(provider, &handle, cancel, clock, limits, on_update).await
 }
 
-/// Polls an already submitted job to the end (after a restart, or a retry whose submit already
-/// went through). See [`run_to_completion`].
+/// Polls an already submitted job to the end (after a restart, or a retry of a failed run that
+/// carries a handle). See [`run_to_completion`].
 pub async fn resume(
     provider: &dyn Provider,
     handle: &JobHandle,
     cancel: &dyn CancelSignal,
-    sleep: &dyn Sleep,
+    clock: &dyn Clock,
     limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
-) -> Result<Vec<Output>, ProviderError> {
-    let mut waited: u64 = 0;
+) -> Result<Vec<Output>, RunFailure> {
+    let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()) };
+    let started = clock.now_ms();
     let mut poll_errors: u32 = 0;
-    let mut interval = provider.poll_interval_ms(&JobProgress::Queued { position: None }).min(limits.max_poll_interval_ms);
+    let max_interval = limits.max_poll_interval_ms.max(1);
+    let mut interval = provider.poll_interval_ms(&JobProgress::Queued { position: None }).clamp(1, max_interval);
     loop {
-        if waited >= limits.deadline_ms {
-            let _ = provider.cancel(handle).await;
-            return Err(ProviderError::new(ErrorKind::Timeout, format!("no result after {} s", waited / 1000)));
+        let elapsed = clock.now_ms().saturating_sub(started);
+        if elapsed >= limits.deadline_ms {
+            let note = stop(provider, handle, clock).await;
+            return Err(fail(ProviderError::new(ErrorKind::Expired, format!("no result after {} s{note}", elapsed / 1000))));
         }
-        // Wait for the next poll, or for cancellation, whichever comes first.
-        let cancelled = {
-            let mut tick = sleep.sleep(interval).fuse();
-            let mut stop = cancel.cancelled().fuse();
-            futures::select! {
-                () = tick => false,
-                () = stop => true,
-            }
+        // Wait for the next poll, then poll; cancellation interrupts either.
+        let wait = interval.min(limits.deadline_ms.saturating_sub(elapsed)).max(1);
+        let polled = race(
+            async {
+                clock.sleep(wait).await;
+                provider.poll(handle).await
+            },
+            cancel,
+        )
+        .await;
+        let Some(polled) = polled else {
+            let note = stop(provider, handle, clock).await;
+            return Err(fail(ProviderError::new(ErrorKind::Cancelled, format!("cancelled{note}"))));
         };
-        if cancelled || cancel.is_cancelled() {
-            let _ = provider.cancel(handle).await;
-            return Err(ProviderError::new(ErrorKind::Cancelled, "cancelled"));
-        }
-        waited = waited.saturating_add(interval);
-        match provider.poll(handle).await {
+        match polled {
             Ok(JobProgress::Done(outputs)) => return Ok(outputs),
-            Ok(JobProgress::Failed(e)) => return Err(e),
+            Ok(JobProgress::Failed(e)) => return Err(fail(e)),
             Ok(progress) => {
                 poll_errors = 0;
-                interval = provider.poll_interval_ms(&progress).clamp(1, limits.max_poll_interval_ms.max(1));
+                interval = provider.poll_interval_ms(&progress).clamp(1, max_interval);
                 on_update(RunUpdate::Progress(progress));
             }
-            Err(e) if e.is_transient() && poll_errors < MAX_POLL_ERRORS => {
+            Err(e) if e.is_transient() && poll_errors < limits.max_poll_errors => {
                 poll_errors += 1;
                 let backoff = e.retry_after_ms.unwrap_or(1000u64.saturating_mul(1 << poll_errors.min(5)));
-                interval = backoff.clamp(1, limits.max_poll_interval_ms.max(1));
+                interval = backoff.clamp(1, max_interval);
+                on_update(RunUpdate::PollRetry(e));
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(fail(e)),
         }
+    }
+}
+
+/// Runs `work` unless `cancel` fires first (`None`).
+async fn race<T>(work: impl std::future::Future<Output = T>, cancel: &dyn CancelSignal) -> Option<T> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    let mut work = std::pin::pin!(work.fuse());
+    let mut stop = cancel.cancelled().fuse();
+    futures::select! {
+        out = work => Some(out),
+        () = stop => None,
+    }
+}
+
+/// Asks the provider to stop the job, for at most [`CANCEL_TIMEOUT_MS`]. Returns a note for the
+/// error message when it couldn't confirm.
+async fn stop(provider: &dyn Provider, handle: &JobHandle, clock: &dyn Clock) -> String {
+    let mut cancel = provider.cancel(handle).fuse();
+    let mut timeout: futures::future::Fuse<BoxFuture<'static, ()>> = clock.sleep(CANCEL_TIMEOUT_MS).fuse();
+    let result = futures::select! {
+        r = cancel => Some(r),
+        () = timeout => None,
+    };
+    match result {
+        Some(Ok(())) => String::new(),
+        Some(Err(e)) => format!("; the provider could not be asked to stop the job ({e}), so it may still run and be billed"),
+        None => "; the provider didn't confirm stopping the job, so it may still run and be billed".into(),
     }
 }
 
@@ -112,47 +182,71 @@ pub async fn resume(
 pub struct Downloaded {
     /// The MIME type sniffed from the bytes (the provider's claim is not trusted).
     pub mime: &'static str,
+    /// BLAKE3 of the bytes: the asset store's key.
+    pub hash: nodecraft_media::ContentHash,
     pub bytes: Vec<u8>,
 }
 
-/// Downloads a file output, capped at `max_bytes`, and checks it is media of the expected
-/// `kind` (an HTML error page served with status 200 is refused, not stored as an "image").
+/// Downloads a file output, capped at `max_bytes`, and checks it: the length matches what the
+/// server announced, and it is media of the `expected` kind (an HTML error page served with 200
+/// is refused rather than stored as an "image"). The result carries its content hash.
 pub async fn fetch_output(http: &dyn Http, url: &str, expected: Option<nodecraft_media::MediaKind>, max_bytes: usize) -> Result<Downloaded, ProviderError> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(ProviderError::new(ErrorKind::Malformed, "the output link is not an http(s) URL"));
     }
     let response = http.send(HttpRequest::get(url).max_response_bytes(max_bytes).timeout_ms(10 * 60 * 1000)).await?.error_for_status()?;
-    let sniffed = nodecraft_media::sniff(&response.body).ok_or_else(|| {
-        ProviderError::new(ErrorKind::Malformed, format!("the downloaded file is not a known media type: {}", crate::error::excerpt(&response.body)))
-    })?;
+    if let Some(announced) = response.header("content-length").and_then(|v| v.trim().parse::<usize>().ok())
+        && announced != response.body.len()
+    {
+        return Err(ProviderError::new(ErrorKind::Network, format!("the download was cut short ({} of {announced} bytes)", response.body.len())));
+    }
+    check_media(&response.body, expected)
+}
+
+/// Checks inline output bytes the same way as downloads ([`Output::Bytes`] mime types are the
+/// provider's claim and are not trusted either).
+pub fn check_media(bytes: &[u8], expected: Option<nodecraft_media::MediaKind>) -> Result<Downloaded, ProviderError> {
+    let sniffed = nodecraft_media::sniff(bytes)
+        .ok_or_else(|| ProviderError::new(ErrorKind::Malformed, format!("the output is not a known media type: {}", crate::error::excerpt(bytes))))?;
     if let Some(kind) = expected
         && sniffed.kind != kind
     {
-        return Err(ProviderError::new(ErrorKind::Malformed, format!("expected {kind:?} but the download is {}", sniffed.mime)));
+        return Err(ProviderError::new(ErrorKind::Malformed, format!("expected {kind:?} but the output is {}", sniffed.mime)));
     }
-    Ok(Downloaded { mime: sniffed.mime, bytes: response.body })
+    Ok(Downloaded { mime: sniffed.mime, hash: nodecraft_media::ContentHash::of(bytes), bytes: bytes.to_vec() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::http::HttpResponse;
-    use crate::provider::BoxFuture;
     use futures::executor::block_on;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    /// A provider whose poll results follow a script.
+    /// A provider whose poll results follow a script; each poll takes `poll_ms` of clock time.
     struct Scripted {
         polls: Mutex<Vec<Result<JobProgress, ProviderError>>>,
         cancelled: AtomicBool,
+        cancel_result: Result<(), ProviderError>,
         submits: AtomicU64,
+        clock: std::sync::Arc<Clocked>,
+        poll_ms: u64,
+        sync: bool,
     }
 
     impl Scripted {
         fn new(mut polls: Vec<Result<JobProgress, ProviderError>>) -> Self {
             polls.reverse();
-            Self { polls: Mutex::new(polls), cancelled: AtomicBool::new(false), submits: AtomicU64::new(0) }
+            Self {
+                polls: Mutex::new(polls),
+                cancelled: AtomicBool::new(false),
+                cancel_result: Ok(()),
+                submits: AtomicU64::new(0),
+                clock: std::sync::Arc::new(Clocked::default()),
+                poll_ms: 0,
+                sync: false,
+            }
         }
     }
 
@@ -160,21 +254,31 @@ mod tests {
         fn id(&self) -> &str {
             "scripted"
         }
-        fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<JobHandle, ProviderError>> {
+        fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
             self.submits.fetch_add(1, Ordering::SeqCst);
             let id = job.idempotency_key.clone();
-            Box::pin(async move { Ok(JobHandle { remote_id: id, data: serde_json::Value::Null }) })
+            let sync = self.sync;
+            Box::pin(async move {
+                if sync {
+                    Ok(Submission::Finished(vec![Output::Text("now".into())]))
+                } else {
+                    Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::Value::Null }))
+                }
+            })
         }
         fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            self.clock.0.fetch_add(self.poll_ms, Ordering::SeqCst);
             let next = self.polls.lock().unwrap().pop().unwrap_or(Ok(JobProgress::Queued { position: None }));
             Box::pin(async move { next })
         }
         fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
             self.cancelled.store(true, Ordering::SeqCst);
-            Box::pin(async { Ok(()) })
+            let r = self.cancel_result.clone();
+            Box::pin(async move { r })
         }
     }
 
+    /// A cancel signal; `cancelled()` really resolves once `fire` is called.
     #[derive(Default)]
     struct Flag(AtomicBool);
     impl CancelSignal for Flag {
@@ -182,17 +286,36 @@ mod tests {
             self.0.load(Ordering::SeqCst)
         }
         fn cancelled(&self) -> BoxFuture<'_, ()> {
-            Box::pin(futures::future::pending())
+            Box::pin(futures::future::poll_fn(move |cx| {
+                if self.0.load(Ordering::SeqCst) {
+                    std::task::Poll::Ready(())
+                } else {
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+            }))
         }
     }
 
-    /// Virtual time: records the total slept.
+    /// Virtual time: `sleep` advances it.
     #[derive(Default)]
-    struct Clock(AtomicU64);
-    impl Sleep for Clock {
+    struct Clocked(AtomicU64);
+    impl Clock for Clocked {
         fn sleep(&self, ms: u64) -> BoxFuture<'static, ()> {
             self.0.fetch_add(ms, Ordering::SeqCst);
             Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Clock for std::sync::Arc<Clocked> {
+        fn sleep(&self, ms: u64) -> BoxFuture<'static, ()> {
+            (**self).sleep(ms)
+        }
+        fn now_ms(&self) -> u64 {
+            (**self).now_ms()
         }
     }
 
@@ -204,54 +327,94 @@ mod tests {
         Ok(JobProgress::Running { fraction: Some(f), message: None, partial: None })
     }
 
+    fn run(p: &Scripted, flag: &Flag, limits: RunLimits, updates: &mut Vec<RunUpdate>) -> Result<Vec<Output>, RunFailure> {
+        block_on(run_to_completion(p, &job(), flag, &p.clock, limits, |u| updates.push(u)))
+    }
+
     #[test]
     fn polls_until_done_and_reports_progress() {
         let p = Scripted::new(vec![Ok(JobProgress::Queued { position: Some(2) }), running(0.5), Ok(JobProgress::Done(vec![Output::Text("hi".into())]))]);
         let mut updates = Vec::new();
-        let out = block_on(run_to_completion(&p, &job(), &Flag::default(), &Clock::default(), RunLimits::default(), |u| updates.push(u))).unwrap();
+        let out = run(&p, &Flag::default(), RunLimits::default(), &mut updates).unwrap();
         assert_eq!(out, vec![Output::Text("hi".into())]);
         assert!(matches!(&updates[0], RunUpdate::Submitted(h) if h.remote_id == "k1"), "the idempotency key reaches the provider");
         assert_eq!(updates.len(), 3);
     }
 
     #[test]
-    fn transient_poll_errors_are_retried_then_give_up() {
-        let net = || Err(ProviderError::new(ErrorKind::Network, "reset"));
-        let p = Scripted::new(vec![net(), net(), Ok(JobProgress::Done(vec![]))]);
-        assert!(block_on(run_to_completion(&p, &job(), &Flag::default(), &Clock::default(), RunLimits::default(), |_| {})).is_ok());
-        let p = Scripted::new((0..10).map(|_| net()).collect());
-        let e = block_on(run_to_completion(&p, &job(), &Flag::default(), &Clock::default(), RunLimits::default(), |_| {})).unwrap_err();
-        assert_eq!(e.kind, ErrorKind::Network);
-        let p = Scripted::new(vec![Err(ProviderError::new(ErrorKind::BlockedContent, "nope"))]);
-        let e = block_on(run_to_completion(&p, &job(), &Flag::default(), &Clock::default(), RunLimits::default(), |_| {})).unwrap_err();
-        assert_eq!(e.kind, ErrorKind::BlockedContent, "permanent errors end at once");
-        assert_eq!(p.submits.load(Ordering::SeqCst), 1, "polling never resubmits");
+    fn synchronous_providers_finish_at_submit() {
+        let p = Scripted { sync: true, ..Scripted::new(vec![]) };
+        let mut updates = Vec::new();
+        assert_eq!(run(&p, &Flag::default(), RunLimits::default(), &mut updates).unwrap(), vec![Output::Text("now".into())]);
+        assert!(updates.is_empty());
     }
 
     #[test]
-    fn failed_jobs_cancellation_and_deadline() {
-        let p = Scripted::new(vec![Ok(JobProgress::Failed(ProviderError::new(ErrorKind::Server, "OOM")))]);
-        assert_eq!(
-            block_on(run_to_completion(&p, &job(), &Flag::default(), &Clock::default(), RunLimits::default(), |_| {})).unwrap_err().kind,
-            ErrorKind::Server
-        );
+    fn transient_poll_errors_are_retried_with_retry_after_then_give_up_with_the_handle() {
+        let mut limited = ProviderError::new(ErrorKind::RateLimited, "slow down");
+        limited.retry_after_ms = Some(7_000);
+        let p = Scripted::new(vec![Err(limited), Ok(JobProgress::Done(vec![]))]);
+        let mut updates = Vec::new();
+        assert!(run(&p, &Flag::default(), RunLimits::default(), &mut updates).is_ok());
+        assert!(matches!(updates.get(1), Some(RunUpdate::PollRetry(_))));
+        assert!(p.clock.now_ms() >= 7_000, "Retry-After was honoured");
 
+        let net = || Err(ProviderError::new(ErrorKind::Network, "reset"));
+        let p = Scripted::new((0..10).map(|_| net()).collect());
+        let f = run(&p, &Flag::default(), RunLimits::default(), &mut Vec::new()).unwrap_err();
+        assert_eq!(f.error.kind, ErrorKind::Network);
+        assert_eq!(f.handle.map(|h| h.remote_id).as_deref(), Some("k1"), "a retry must resume this job, not submit again");
+        assert_eq!(p.submits.load(Ordering::SeqCst), 1, "polling never resubmits");
+
+        let p = Scripted::new(vec![Err(ProviderError::new(ErrorKind::BlockedContent, "nope"))]);
+        assert_eq!(run(&p, &Flag::default(), RunLimits::default(), &mut Vec::new()).unwrap_err().error.kind, ErrorKind::BlockedContent);
+    }
+
+    #[test]
+    fn job_failures_surface_their_kind() {
+        for kind in [ErrorKind::BlockedContent, ErrorKind::Budget, ErrorKind::Server] {
+            let p = Scripted::new(vec![Ok(JobProgress::Failed(ProviderError::new(kind, "x")))]);
+            let f = run(&p, &Flag::default(), RunLimits::default(), &mut Vec::new()).unwrap_err();
+            assert_eq!(f.error.kind, kind);
+            assert!(f.handle.is_some());
+        }
+    }
+
+    #[test]
+    fn cancellation_interrupts_and_reports_failed_provider_cancels() {
         let p = Scripted::new(vec![]);
         let flag = Flag::default();
         flag.0.store(true, Ordering::SeqCst);
-        let e =
-            block_on(resume(&p, &JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }, &flag, &Clock::default(), RunLimits::default(), |_| {}))
-                .unwrap_err();
-        assert_eq!(e.kind, ErrorKind::Cancelled);
-        assert!(p.cancelled.load(Ordering::SeqCst), "the provider is asked to cancel");
+        let f = run(&p, &flag, RunLimits::default(), &mut Vec::new()).unwrap_err();
+        assert_eq!((f.error.kind, f.handle), (ErrorKind::Cancelled, None), "cancelled before submit: nothing to resume");
 
-        let p = Scripted::new(vec![]); // queued forever
-        let clock = Clock::default();
-        let limits = RunLimits { deadline_ms: 10_000, max_poll_interval_ms: 1_000 };
-        let e = block_on(run_to_completion(&p, &job(), &Flag::default(), &clock, limits, |_| {})).unwrap_err();
-        assert_eq!(e.kind, ErrorKind::Timeout);
+        // Cancelled while polling: resume() races the poll against the signal.
+        let p = Scripted { cancel_result: Err(ProviderError::new(ErrorKind::Network, "down")), ..Scripted::new(vec![]) };
+        let flag = Flag::default();
+        let handle = JobHandle { remote_id: "x".into(), data: serde_json::Value::Null };
+        let mut polls = 0;
+        let f = block_on(resume(&p, &handle, &flag, &p.clock, RunLimits::default(), |_| {
+            polls += 1;
+            if polls == 2 {
+                flag.0.store(true, Ordering::SeqCst);
+            }
+        }))
+        .unwrap_err();
+        assert_eq!(f.error.kind, ErrorKind::Cancelled);
+        assert!(p.cancelled.load(Ordering::SeqCst), "the provider is asked to cancel");
+        assert!(f.error.message.contains("may still run and be billed"), "{}", f.error);
+    }
+
+    #[test]
+    fn the_deadline_counts_real_time_and_is_not_retried() {
+        // Each poll takes 4 s of clock time: wall time, not the sum of sleeps, ends the run.
+        let p = Scripted { poll_ms: 4_000, ..Scripted::new(vec![]) };
+        let limits = RunLimits { deadline_ms: 10_000, max_poll_interval_ms: 1_000, ..RunLimits::default() };
+        let f = run(&p, &Flag::default(), limits, &mut Vec::new()).unwrap_err();
+        assert_eq!(f.error.kind, ErrorKind::Expired);
+        assert!(!f.is_transient(), "an expired job may still be running: never resubmit it");
         assert!(p.cancelled.load(Ordering::SeqCst));
-        assert!(clock.0.load(Ordering::SeqCst) >= 10_000);
+        assert!(p.clock.now_ms() < 30_000, "real time ended it (sum-of-sleeps would poll for ~50 s): {}", p.clock.now_ms());
     }
 
     struct FakeHttp(HttpResponse);
@@ -268,17 +431,21 @@ mod tests {
     }
 
     #[test]
-    fn downloads_are_sniffed_and_capped() {
+    fn downloads_are_sniffed_hashed_and_length_checked() {
         let png = FakeHttp(HttpResponse { status: 200, headers: vec![], body: b"\x89PNG\r\n\x1a\n rest".to_vec() });
         let d = block_on(fetch_output(&png, "https://cdn/x", Some(nodecraft_media::MediaKind::Image), 1024)).unwrap();
         assert_eq!(d.mime, "image/png");
-        let e = block_on(fetch_output(&png, "https://cdn/x", Some(nodecraft_media::MediaKind::Video), 1024)).unwrap_err();
-        assert_eq!(e.kind, ErrorKind::Malformed);
+        assert_eq!(d.hash, nodecraft_media::ContentHash::of(b"\x89PNG\r\n\x1a\n rest"));
+        assert_eq!(block_on(fetch_output(&png, "https://cdn/x", Some(nodecraft_media::MediaKind::Video), 1024)).unwrap_err().kind, ErrorKind::Malformed);
         assert!(block_on(fetch_output(&png, "https://cdn/x", None, 4)).is_err(), "size cap");
+        let short = FakeHttp(HttpResponse { status: 200, headers: vec![("content-length".into(), "999".into())], body: b"\x89PNG\r\n\x1a\n".to_vec() });
+        let e = block_on(fetch_output(&short, "https://cdn/x", None, 1024)).unwrap_err();
+        assert!(e.is_transient(), "a truncated download is worth retrying");
         let html = FakeHttp(HttpResponse { status: 200, headers: vec![], body: b"<html><body>\x00error</body></html>".to_vec() });
         assert!(block_on(fetch_output(&html, "https://cdn/x", Some(nodecraft_media::MediaKind::Image), 1024)).is_err());
         let gone = FakeHttp(HttpResponse { status: 404, headers: vec![], body: vec![] });
         assert_eq!(block_on(fetch_output(&gone, "https://cdn/x", None, 1024)).unwrap_err().kind, ErrorKind::NotFound);
         assert!(block_on(fetch_output(&png, "file:///etc/passwd", None, 1024)).is_err());
+        assert!(check_media(b"GIF89a", Some(nodecraft_media::MediaKind::Image)).is_ok());
     }
 }

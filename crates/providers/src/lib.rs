@@ -13,7 +13,8 @@
 //!
 //! `exec` (same layer) can't depend on this crate or the other way round: the engine connects
 //! them by implementing `exec::driver::JobRunner` with [`run_to_completion`], wrapping exec's
-//! `CancelToken` as a [`CancelSignal`] and the app's runtime as [`Sleep`].
+//! `CancelToken` as a [`CancelSignal`] and the app's runtime as a [`Clock`]. A failed run that
+//! carries a handle ([`RunFailure::handle`]) must be resumed, never resubmitted.
 
 mod error;
 pub mod http;
@@ -23,6 +24,6 @@ mod task;
 pub use error::{ErrorKind, ProviderError};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;
-pub use http::{Http, HttpMethod, HttpRequest, HttpResponse, USER_AGENT};
-pub use provider::{BoxFuture, CancelSignal, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Sleep};
-pub use task::{DEFAULT_JOB_DEADLINE_MS, Downloaded, RunLimits, RunUpdate, fetch_output, resume, run_to_completion};
+pub use http::{ChunkSink, Http, HttpMethod, HttpRequest, HttpResponse, MAX_REDIRECTS, USER_AGENT};
+pub use provider::{BoxFuture, CancelSignal, Clock, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Submission};
+pub use task::{DEFAULT_JOB_DEADLINE_MS, Downloaded, RunFailure, RunLimits, RunUpdate, check_media, fetch_output, resume, run_to_completion};

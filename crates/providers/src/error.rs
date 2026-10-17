@@ -29,6 +29,9 @@ pub enum ErrorKind {
     NotFound,
     /// The job was cancelled.
     Cancelled,
+    /// The job ran past its deadline. Not retried: it may still be running (and billing) on the
+    /// provider, so the job's handle should be resumed or cancelled, never resubmitted.
+    Expired,
 }
 
 impl ErrorKind {
@@ -63,6 +66,8 @@ impl ProviderError {
             401 | 403 => ErrorKind::Auth,
             402 => ErrorKind::Budget,
             404 | 410 => ErrorKind::NotFound,
+            // A redirect that wasn't followed (too many hops, or no usable Location).
+            300..=399 => ErrorKind::Malformed,
             408 | 504 => ErrorKind::Timeout,
             429 => ErrorKind::RateLimited,
             503 => ErrorKind::Busy,
@@ -95,6 +100,7 @@ impl fmt::Display for ProviderError {
             ErrorKind::Malformed => "unexpected reply",
             ErrorKind::NotFound => "job not found",
             ErrorKind::Cancelled => "cancelled",
+            ErrorKind::Expired => "took too long",
         };
         write!(f, "{what}: {}", self.message)
     }
@@ -115,6 +121,8 @@ mod tests {
         assert_eq!(k(503), ErrorKind::Busy);
         assert_eq!(k(500), ErrorKind::Server);
         assert_eq!(k(422), ErrorKind::UnsupportedInput);
+        assert_eq!(k(302), ErrorKind::Malformed);
+        assert!(!k(302).is_transient() && !ErrorKind::Expired.is_transient());
         assert!(k(429).is_transient() && k(500).is_transient() && k(504).is_transient());
         assert!(!k(401).is_transient() && !k(402).is_transient() && !k(422).is_transient());
         assert!(!ErrorKind::BlockedContent.is_transient());
