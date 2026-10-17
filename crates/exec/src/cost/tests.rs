@@ -892,7 +892,9 @@ fn folding_keeps_the_session_count_at_the_limit() {
     log.record(UsageEntry { session: "newer".into(), ..charge("kn2", 1, Charge::Actual) }).unwrap();
     assert_eq!(log.sessions.len(), MAX_SESSIONS);
     assert!(log.sessions.contains_key("s3"));
+}
 
+#[test]
 fn saved_pending_charges_are_checked_on_load() {
     let mut log = UsageLog::default();
     for n in 0..MAX_USAGE_ENTRIES + 1 {
@@ -902,8 +904,9 @@ fn saved_pending_charges_are_checked_on_load() {
     let file: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     assert_eq!(file.pending.len(), 1);
     // The same key twice within pending: refused.
+    // (At no cost, so only the duplicate guard can refuse it, not the totals check.)
     let mut twice = file.clone();
-    twice.pending.push(twice.pending[0].clone());
+    twice.pending.push(UsageEntry { cost: usd(0), ..twice.pending[0].clone() });
     assert!(UsageLog::try_from(twice).is_err());
     assert!(UsageLog::try_from(file.clone()).is_ok());
     // Settled, listed too, retired too, or too many: refused.

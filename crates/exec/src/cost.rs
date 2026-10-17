@@ -557,9 +557,6 @@ impl UsageLog {
             // Folded sessions are forgotten by the clock too, so it stays as small as the map.
             self.session_clock.retain(|name, _| sessions.contains_key(name));
             self.sessions = sessions;
-            // Folded sessions need no recency any more; the clock stays as small as the totals.
-            let sessions = &self.sessions;
-            self.session_clock.retain(|name, _| sessions.contains_key(name));
         }
         self.sessions.insert(entry.session.clone(), session);
         self.clock = self.clock.saturating_add(1);
