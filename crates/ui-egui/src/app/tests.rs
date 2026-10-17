@@ -811,9 +811,9 @@ fn click_shift_click_select_all_and_escape() {
     press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &ids(&[2]));
     // Shift-clicking empty canvas keeps the selection; a plain click clears it.
-    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    press(&mut h, Pos2::new(600.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &ids(&[2]));
-    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press(&mut h, Pos2::new(600.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
     assert!(h.state().selection.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     h.run();
@@ -840,7 +840,7 @@ fn shift_drag_box_selects_without_panning_and_plain_drag_still_pans() {
     let (from, to) = (world(-60.0, 380.0), world(50.0, 450.0));
     box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
-    let from = Pos2::new(900.0, 650.0);
+    let from = Pos2::new(600.0, 650.0);
     box_drag(&mut h, from, from + Vec2::new(-40.0, -30.0), egui::Modifiers::NONE);
     assert!((h.state().view.pan - pan - Vec2::new(-40.0, -30.0)).length() < 1.0);
     assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
@@ -861,7 +861,7 @@ fn context_menu_selects_chains_and_kinds() {
     h.get_by_label("Select upstream").click();
     h.run();
     assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 3]));
-    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press(&mut h, Pos2::new(600.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
     press_card(&mut h, 2, egui::PointerButton::Secondary, egui::Modifiers::NONE);
     h.get_by_label("Select downstream").click();
     h.run();

@@ -72,6 +72,16 @@ fn template(id: &str) -> (Session, Value) {
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
     let mut session = Session::new(document).unwrap();
+    if id.starts_with("canvas.") {
+        session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            fit_all: true,
+            fit_selection: true,
+        }));
+        session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
@@ -81,6 +91,8 @@ fn template(id: &str) -> (Session, Value) {
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
+        "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.pan_to" => json!({"x":0,"y":0}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();
             Value::Null
@@ -140,6 +152,12 @@ fn typed_template_panic_hunt() {
                 }
                 Ok(_) => {
                     successes += 1;
+                    if id.starts_with("canvas.") {
+                        assert_eq!(session.document(), &before);
+                        assert_eq!(session.revision(), revision);
+                        assert_eq!(session.events_since(0).unwrap(), events);
+                        continue;
+                    }
                     let after = session.document().clone();
                     session.document().validate().unwrap();
                     let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };

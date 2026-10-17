@@ -39,6 +39,14 @@ pub struct Tokens {
     /// Translucent fill of the box-select rectangle (outlined with `accent`).
     pub marquee_fill: Color32,
 
+    pub navigation_width: f32,
+    pub minimap_height: f32,
+    pub navigation_toolbar_height: f32,
+    pub navigation_margin: f32,
+    pub navigation_gap: f32,
+    pub fit_padding: f32,
+    pub minimap_node_min: f32,
+
     /// Distance between grid dots, at 100% zoom.
     pub grid_spacing: f32,
     /// Grid dot radius, in screen points (dots do not scale with zoom).
@@ -79,6 +87,13 @@ pub const DARK: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
+    navigation_width: 320.0,
+    minimap_height: 160.0,
+    navigation_toolbar_height: 30.0,
+    navigation_margin: 16.0,
+    navigation_gap: 6.0,
+    fit_padding: 24.0,
+    minimap_node_min: 2.0,
     grid_spacing: 20.0,
     grid_dot_radius: 1.0,
     card_radius: 14,

@@ -132,6 +132,15 @@ impl Session {
         !self.redo.entries.is_empty()
     }
 
+    /// Replace a host-owned capability without discarding other injected resources.
+    /// A host may scope a live view snapshot to one enabled/dispatch call and restore it after.
+    pub fn swap_resource<T: std::any::Any>(&mut self, value: Option<T>) -> Option<T> {
+        self.resources.swap(value)
+    }
+    /// Add a host callback without replacing services supplied by another frontend.
+    pub fn register_host_service(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        self.services.register(id, handler)
+    }
     pub fn with_resources(mut self, resources: Resources) -> Self {
         self.resources = resources;
         self

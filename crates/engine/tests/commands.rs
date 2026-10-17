@@ -200,12 +200,13 @@ fn panicking_handlers_and_atomic_graph_failures_preserve_document_history_and_ev
 #[test]
 fn registration_rejects_invalid_or_duplicate_stable_ids() {
     let mut registry = Registry::builtins().unwrap();
+    let builtin_count = registry.specs().count();
     let spec = *registry.get("node.move").unwrap();
     assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(registry.specs().count(), 9);
+    assert_eq!(registry.specs().count(), builtin_count);
 }
 
 fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
