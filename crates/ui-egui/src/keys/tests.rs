@@ -113,7 +113,7 @@ fn listed_accounts_are_checked_only_on_request_and_removal_asks_first() {
     h.run();
     assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none());
     assert_eq!(h.state().panel.rows().len(), 1);
-    assert_eq!(h.state().changes, [AccountChange::Forget(Account::new("openai").unwrap())]);
+    assert_eq!(h.state().changes, [AccountChange::Forget(Account::new("fal").unwrap()), AccountChange::Forget(Account::new("openai").unwrap())]);
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn keychain_errors_and_silence_become_retryable_failures() {
         h.step();
     }
     assert!(!h.state().panel.is_waiting());
-    assert!(matches!(&h.state().panel.rows()[0].1, KeyStatus::Failed(why) if why.contains("No answer")));
+    assert!(matches!(&h.state().panel.rows()[0].1, KeyStatus::Unknown));
     assert!(h.query_by_label("Check").is_some(), "the row can be tried again");
     assert!(h.state().changes.is_empty());
     // Release the silent fake and close the worker instead of leaving a sleeping thread.
@@ -353,14 +353,17 @@ fn keychain_errors_and_silence_become_retryable_failures() {
     control.exited.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     // A request made and then left with the panel closed still times out.
     let mut panel = KeysPanel { timeout_s: 1.0, ..KeysPanel::default() };
-    panel.pending.insert(9, (Account::new("fal").unwrap(), Op::Status, 0.0));
+    let mut request = panel.ledger.begin(Op::Status, &Account::new("fal").unwrap(), 0.0).unwrap();
+    request.remote = Some(9);
+    panel.ledger.retain(request);
     panel.tick(0.5);
     assert!(panel.is_waiting());
     panel.tick(2.0);
     assert!(!panel.is_waiting());
-    // Its late answer is not this panel's any more.
+    // A timeout does not give up ownership; its definitive answer still reconciles.
     let late = nodecraft_engine::secrets::KeyOutcome { id: 9, account: "fal".into(), result: Ok(serde_json::json!({"stored": true, "masked": "…"})) };
     let (changes, others) = panel.receive(vec![late]);
-    assert!(changes.is_empty() && others.len() == 1);
-    assert!(matches!(&panel.rows()[0].1, KeyStatus::Failed(_)));
+    assert_eq!(changes, vec![AccountChange::Remember(Account::new("fal").unwrap())]);
+    assert!(others.is_empty());
+    assert!(matches!(&panel.rows()[0].1, KeyStatus::Stored(_)));
 }

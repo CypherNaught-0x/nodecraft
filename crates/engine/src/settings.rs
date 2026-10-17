@@ -139,6 +139,18 @@ impl KeySettings {
         }
     }
 
+    /// Remembers an account or reports refusal, for hosts that must not claim an unlisted key
+    /// was saved successfully. Existing accounts remain valid replacements at capacity.
+    pub fn try_remember(&mut self, account: &crate::secrets::Account) -> Result<(), nodecraft_types::Error> {
+        let known = self.accounts();
+        if !known.contains(account) && known.len() >= Self::MAX_ACCOUNTS {
+            return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "the remembered key-account limit is full"));
+        }
+        self.accounts = known.into_iter().map(|a| a.as_str().to_owned()).collect();
+        self.remember(account);
+        Ok(())
+    }
+
     /// Removes `account` from the list.
     pub fn forget(&mut self, account: &crate::secrets::Account) {
         self.accounts = self.accounts().into_iter().filter(|a| a != account).map(|a| a.as_str().to_owned()).collect();
@@ -329,5 +341,17 @@ mod tests {
         write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
         let (store, _) = open_in(dir.path());
         assert_eq!(store.get().keys.accounts().len(), 1);
+    }
+    #[test]
+    fn checked_key_remembering_reports_full_capacity_and_allows_replacements() {
+        let mut keys = KeySettings { accounts: (0..64).map(|n| format!("account{n}")).collect() };
+        let before = keys.clone();
+        assert!(keys.try_remember(&crate::secrets::Account::new("extra").unwrap()).is_err());
+        assert_eq!(keys, before);
+        assert!(keys.try_remember(&crate::secrets::Account::new("account0").unwrap()).is_ok());
+        assert_eq!(keys, before);
+        keys.forget(&crate::secrets::Account::new("account0").unwrap());
+        assert!(keys.try_remember(&crate::secrets::Account::new("extra").unwrap()).is_ok());
+        assert_eq!(keys.accounts().len(), 64);
     }
 }

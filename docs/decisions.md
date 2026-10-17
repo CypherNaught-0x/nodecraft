@@ -751,3 +751,18 @@ a choice a later contributor might otherwise undo.
 - Shift+1/2 fit all/selected; Shift+M toggles the map without macOS's Command+M conflict. Editors,
   popups and existing gestures own their input. A minimap drag freezes its world mapping and owns
   pointer release outside its bounds. Visibility is session-local, not serialized settings.
+## 2026-10-17 · Keychain result ownership and account admission (#240)
+
+- **Timeout means unknown, not cancelled.** A bounded 128-entry ledger keeps accepted request
+  metadata without secret bytes until a definitive operation-specific result. Row display
+  sequence and successful-state sequence are separate. The native worker executes serially;
+  matching id+account delivery may be reordered without reversing successful mutation effects.
+  Completed-success tombstones survive while an older accepted request still needs them.
+- **Reserve remembered capacity before writes.** The union of remembered accounts and distinct
+  unresolved additions cannot exceed 64. Timeout holds a slot; a failed addition releases it;
+  removal keeps a later unresolved addition's slot. Session shadow state changes immediately,
+  including synchronous replies. Host reconciliation uses checked settings admission and one
+  canonical snapshot; persistence failure leaves names in memory with a separate retry notice.
+- **Bound display state without losing accepted work.** Rows are capped at 224 (64 remembered,
+  128 accepted, 32 transient); only unprotected transient rows are evicted. Request and sequence
+  metadata are pruned only when no pending, remembered or retained-row ownership remains.

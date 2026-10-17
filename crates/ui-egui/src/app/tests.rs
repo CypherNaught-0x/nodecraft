@@ -1539,3 +1539,45 @@ fn minimap_owns_drag_started_over_a_covered_output_port() {
     assert_eq!(h.state().session.revision(), revision);
     assert_eq!(h.state().selection, selection);
 }
+
+#[test]
+fn key_account_host_reports_capacity_and_retries_failed_settings_save() {
+    use crate::keys::AccountChange;
+    use nodecraft_engine::secrets::Account;
+    use nodecraft_engine::settings::{KeySettings, Location, SaveStatus, open};
+    let a = Account::new("openai").unwrap();
+    let mut app = NodeCraftApp::headless().unwrap();
+    app.key_accounts = KeySettings { accounts: (0..64).map(|n| format!("account{n}")).collect() };
+    app.save_accounts(vec![AccountChange::Remember(a.clone())]);
+    assert!(!app.key_accounts.accounts().contains(&a));
+    assert!(app.keys.notice.as_deref().is_some_and(|n| n.contains("could not be remembered")));
+    // A real deterministic filesystem failure retains the in-memory canonical names.
+    let dir = std::env::temp_dir().join(format!("nodecraft-key240-host-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let (mut store, _) = open(Location::Dir(dir.clone()));
+    store.flush().unwrap();
+    let mut app = NodeCraftApp::headless().unwrap();
+    app.store = Some(store);
+    app.keys.open = true;
+    app.save_accounts(vec![AccountChange::Remember(a.clone())]);
+    let config = dir.join("config.toml");
+    std::fs::remove_file(&config).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    let error = app.store.as_mut().unwrap().flush().unwrap_err();
+    app.key_settings_status(&SaveStatus::Failed(error));
+    assert!(app.key_accounts.accounts().contains(&a));
+    assert!(app.store.as_ref().unwrap().get().keys.accounts().contains(&a));
+    let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("could not be saved").is_some());
+    std::fs::remove_dir(&config).unwrap();
+    h.state_mut().store.as_mut().unwrap().flush().unwrap();
+    h.state_mut().key_settings_status(&SaveStatus::Saved);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("could not be saved").is_none());
+    let (reloaded, _) = open(Location::Dir(dir.clone()));
+    assert_eq!(reloaded.get().keys.accounts(), vec![a]);
+    drop(h);
+    drop(reloaded);
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -146,3 +146,20 @@ params)` (and `navigation_enabled`) to compute current geometry, selection and f
 install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
 headless Session has no live capability and returns Unsupported. Existing services/resources are
 preserved. The older 100% reset button and shortcut retain their existing view-only path.
+## Keychain outcomes and remembered capacity (#240)
+
+Keychain requests show Waiting, then Outcome unknown if an unlock prompt outlasts the UI
+clock. Timeout does not cancel an OS operation. Accepted requests remain correlated while the
+panel is closed; a late store/removal still updates remembered account names. Only the latest
+request controls a row's display, while successful observations reconcile in serial worker
+execution order. An older successful store is retained when a newer request fails; a newer
+successful removal is not undone by stale delivery. Check can reconcile a stored or missing
+account snapshot, without automatic reads at startup.
+
+The 64 remembered-account slots include distinct pending additions, even after timeout. Replacing
+an account needs no extra slot. Further requests are refused before dispatch when the 128-request
+ledger is full; accepted operations are never evicted. Transient rows are bounded separately,
+with scrolling for longer lists. Immediate replies update admission before host persistence.
+A settings-capacity refusal says the key exists but is unremembered, rather than showing Stored.
+A disk-save failure keeps session state and shows a separate retry notice; retry success clears
+that notice. Typed keys and text undo are cleared on submission and closing as before.

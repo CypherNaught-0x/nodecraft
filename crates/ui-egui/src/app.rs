@@ -208,6 +208,8 @@ pub struct NodeCraftApp {
     /// The API keys panel, and the accounts it lists (from settings).
     pub keys: crate::keys::KeysPanel,
     pub key_accounts: nodecraft_engine::settings::KeySettings,
+    #[cfg(not(target_arch = "wasm32"))]
+    key_settings_dirty: bool,
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
@@ -313,6 +315,8 @@ impl NodeCraftApp {
             centred: false,
             keys: crate::keys::KeysPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            key_settings_dirty: false,
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
         })
@@ -729,18 +733,42 @@ impl NodeCraftApp {
         if changes.is_empty() {
             return;
         }
-        let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
-            for change in &changes {
-                match change {
-                    crate::keys::AccountChange::Remember(account) => keys.remember(account),
-                    crate::keys::AccountChange::Forget(account) => keys.forget(account),
+        let before = self.key_accounts.clone();
+        for change in changes {
+            match change {
+                crate::keys::AccountChange::Remember(account) => {
+                    if self.key_accounts.try_remember(&account).is_err() {
+                        self.keys.remember_refused(&self.key_accounts, &account);
+                    }
                 }
+                crate::keys::AccountChange::Forget(account) => self.key_accounts.forget(&account),
             }
-        };
-        apply(&mut self.key_accounts);
+        }
+        if self.key_accounts == before {
+            return;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
-            store.update(|settings| apply(&mut settings.keys));
+            let keys = self.key_accounts.clone();
+            store.update(|settings| settings.keys = keys);
+            self.key_settings_dirty = true;
+            if store.is_read_only() {
+                self.keys.settings_read_only();
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn key_settings_status(&mut self, status: &nodecraft_engine::settings::SaveStatus) {
+        if !self.key_settings_dirty {
+            return;
+        }
+        match status {
+            nodecraft_engine::settings::SaveStatus::Failed(_) => self.keys.settings_failed(),
+            nodecraft_engine::settings::SaveStatus::Saved => {
+                self.key_settings_dirty = false;
+                self.keys.settings_saved();
+            }
+            _ => {}
         }
     }
     /// Paint the noodle being dragged and, once the pointer is released, choose the command it
@@ -891,10 +919,12 @@ impl eframe::App for NodeCraftApp {
                 log::info!("keychain answered request {} for {}", outcome.id, outcome.account);
             }
             self.save_accounts(changes);
-            if self.keys.is_waiting() {
+            if self.keys.has_unresolved() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut settings_status = None;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             let tick = store.tick(std::time::Instant::now());
@@ -904,9 +934,14 @@ impl eframe::App for NodeCraftApp {
             for moved in store.take_moved_aside() {
                 log::warn!("settings file was damaged and moved to {}", moved.display());
             }
+            settings_status = Some(tick.status);
             if let Some(deadline) = tick.next_deadline {
                 ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(status) = settings_status {
+            self.key_settings_status(&status);
         }
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
