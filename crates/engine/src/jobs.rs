@@ -127,6 +127,9 @@ fn close(budget: &JobBudget, r: &Reserved) {
 
 /// Reserves (or adopts) a priced job's estimate. `Err` is the refusal message.
 fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resumed: bool) -> Result<Option<Reserved>, String> {
+    if budget.session.is_empty() {
+        return Err(format!("{REFUSAL_PREFIX}the budget has no session id, so charges can't be recorded (a host setup error)"));
+    }
     let budgets = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let mut log = lock_log(budget);
     let maybe_billed = resumed;
@@ -863,5 +866,14 @@ mod tests {
         // A later run isn't hit by flags from the dropped one.
         runner.register(JobId(1), priced(Arc::new(Reports(None)), Some(100_000)));
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+    }
+
+    #[test]
+    fn a_budget_without_a_session_id_refuses_paid_jobs() {
+        let (runner, budget) = budgeted(Some(1_000_000));
+        let runner = runner.with_budget(JobBudget { session: String::new(), ..budget });
+        runner.register(JobId(1), priced(Arc::new(Reports(None)), Some(10)));
+        let refused = block_on(runner.run(job(1), CancelToken::default()));
+        assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
     }
 }
