@@ -24,7 +24,7 @@ every CI run, and fails on an unregistered crate.
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph |
-| L2 | `actions` | deterministic image/video/text actions (CPU reference, rayon) | graph |
+| L2 | `actions` | deterministic image/video/text actions (CPU reference, rayon) | graph, media |
 | L3 | `exec` | planner (routers, batches, techniques → job DAG), scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |
 | L3 | `gpu` | wgpu actions, custom WGSL actions, 3D preview renderer | actions |
@@ -42,6 +42,7 @@ flowchart BT
   media --> graph
   types --> comfy
   graph --> nodes & catalog & actions
+  media --> actions
   comfy --> nodes & providers
   nodes --> exec
   catalog --> exec & providers

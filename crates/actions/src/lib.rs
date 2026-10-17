@@ -3,3 +3,6 @@
 //! NodeCraft actions: deterministic image, video and text actions (CPU reference).
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
+
+/// Bounded deterministic CPU image operations.
+pub mod image;
