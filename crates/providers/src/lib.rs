@@ -18,6 +18,8 @@
 
 mod error;
 pub mod http;
+#[cfg(feature = "llm")]
+pub mod llm;
 mod provider;
 mod task;
 
