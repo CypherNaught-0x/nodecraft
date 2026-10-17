@@ -382,10 +382,20 @@ mod tests {
         }
         assert!(refused, "results can't pile up without bound");
         assert!(!results.drain().is_empty());
-        // Dropping both halves ends the thread; queued work is discarded without panicking.
+        // Without its results reader the thread stops, and new requests say so.
+        drop(results);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})) {
+                Err(e) if e.kind == ErrorKind::Internal => break,
+                _ => {
+                    assert!(std::time::Instant::now() < deadline, "the worker thread never stopped");
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
         drop(services);
         drop(worker);
-        drop(results);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

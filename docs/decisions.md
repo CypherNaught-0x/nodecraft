@@ -83,7 +83,7 @@ a choice a later contributor might otherwise undo.
   offered to the in-canvas agent or MCP clients**: a key in tool-call parameters would end up in
   LLM transcripts and logs. Keychain calls can block on a prompt, so the app registers the
   service through `secrets::KeyWorker` (#205): the request is checked at once, run on a
-  keychain thread, and answered through `KeyWorker::results` under the `pending` id it
+  keychain thread, and answered through `KeyResults::drain` under the `pending` id it
   returned. In the app, `keys.*` commands therefore answer `{pending: id}`. The host holds the
   single `KeyResults` and routes each outcome by id to whoever asked (the keys panel, the in-app
   agent), and both queues are bounded. Headless hosts keep the synchronous service. Settings list the accounts that have
