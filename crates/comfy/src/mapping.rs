@@ -103,8 +103,50 @@ pub struct Exposed {
 
 /// Proposes inputs and outputs for `workflow`. Only literal inputs are proposed (connected ones
 /// are internal to the workflow); node classes missing from `catalog` are skipped (check the
-/// workflow first). Inputs come in node order, then the server's input order.
-pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Exposed {
+/// workflow first). Inputs come in node order, then the server's input order. Returns an error
+/// before copying values or repeated catalog metadata beyond the shared JSON resource limits.
+pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed, crate::ComfyError> {
+    let mut budget = crate::json_bounds::Budget::default();
+    workflow.validate_budget(&mut budget, 0)?;
+    // Catalog data is bounded when parsed, but a workflow may reuse its metadata many times.
+    // Charge every proposed copy before building the exposure list.
+    for (id, node) in &workflow.nodes {
+        let Some(info) = catalog.get(&node.class_type) else { continue };
+        let label = node.title.as_deref().unwrap_or(&info.display_name);
+        for spec in info.inputs.iter().filter(|spec| spec.is_widget()) {
+            if matches!(node.inputs.get(&spec.name), Some(InputValue::Link { .. })) {
+                continue;
+            }
+            if let Some(InputValue::Value(value)) = node.inputs.get(&spec.name) {
+                budget.value(value, 1)?;
+            }
+            budget.container(12, 0)?;
+            for text in [id.as_str(), spec.name.as_str(), label, spec.name.as_str(), spec.tooltip.as_deref().unwrap_or("")] {
+                budget.text(text, 1)?;
+            }
+            match &spec.kind {
+                InputKind::Combo { options, default, upload } => {
+                    // Upload combos expose Media, so their directory listing is not copied.
+                    if upload.is_none() {
+                        budget.container(options.len(), 1)?;
+                        for option in options {
+                            budget.text(option, 2)?;
+                        }
+                    }
+                    if let Some(default) = default {
+                        budget.text(default, 1)?;
+                    }
+                }
+                InputKind::String { default: Some(default), .. } => budget.text(default, 1)?,
+                _ => {}
+            }
+        }
+        if info.output_node {
+            budget.container(3, 0)?;
+            budget.text(id, 1)?;
+            budget.text(label, 1)?;
+        }
+    }
     let negative = negative_encoders(workflow);
     let mut out = Exposed::default();
     for id in workflow.ids() {
@@ -164,7 +206,7 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Exposed {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Nodes whose output feeds an input named `negative` (the negative prompt's encoder).
@@ -232,7 +274,7 @@ mod tests {
     #[test]
     fn proposes_prompts_sampler_settings_and_models() {
         let (wf, c) = setup();
-        let ex = discover(&wf, &c);
+        let ex = discover(&wf, &c).unwrap();
         let find = |node: &str, input: &str| ex.inputs.iter().find(|i| i.node == node && i.input == input).unwrap();
         let pos = find("6", "text");
         assert_eq!((pos.role, pos.label.as_str()), (InputRole::Prompt, "Positive"));
@@ -258,7 +300,7 @@ mod tests {
     fn image_loaders_become_media_inputs() {
         let (_, c) = setup();
         let wf = ApiWorkflow::parse(br#"{"1":{"class_type":"LoadImage","inputs":{"image":"example.png"}},"2":{"class_type":"PreviewImage","inputs":{"images":["1",0]}},"3":{"class_type":"Unknown","inputs":{}}}"#, None).unwrap();
-        let ex = discover(&wf, &c);
+        let ex = discover(&wf, &c).unwrap();
         assert_eq!(ex.inputs.len(), 1);
         assert_eq!(ex.inputs[0].kind, ExposedKind::Media(Media::Image));
         assert_eq!(ex.inputs[0].role, InputRole::MediaInput);

@@ -173,6 +173,7 @@ impl Server {
     }
 
     fn post_json(&self, path: &str, json: &serde_json::Value) -> Result<Request, ComfyError> {
+        crate::json_bounds::Budget::default().value(json, 0)?;
         let bytes = serde_json::to_vec(json).map_err(|e| ComfyError::Malformed { what: "request", message: e.to_string() })?;
         Ok(self.request(Method::Post, self.url(path)?, Body::Json(bytes)))
     }
@@ -194,6 +195,13 @@ impl Server {
 
     /// `POST /queue` deleting pending prompts (cancel before they start).
     pub fn delete_from_queue(&self, prompt_ids: &[String]) -> Result<Request, ComfyError> {
+        let mut budget = crate::json_bounds::Budget::default();
+        budget.container(1, 0)?;
+        budget.key("delete", 1)?;
+        budget.container(prompt_ids.len(), 1)?;
+        for id in prompt_ids {
+            budget.text(id, 2)?;
+        }
         self.post_json("queue", &serde_json::json!({ "delete": prompt_ids }))
     }
 
@@ -201,6 +209,12 @@ impl Server {
     /// request when another one is running), which is what a shared server needs; without it,
     /// whatever is running stops.
     pub fn interrupt(&self, prompt_id: Option<&str>) -> Result<Request, ComfyError> {
+        let mut budget = crate::json_bounds::Budget::default();
+        budget.container(usize::from(prompt_id.is_some()), 0)?;
+        if let Some(id) = prompt_id {
+            budget.key("prompt_id", 1)?;
+            budget.text(id, 1)?;
+        }
         let body = match prompt_id {
             Some(id) => serde_json::json!({ "prompt_id": id }),
             None => serde_json::json!({}),
@@ -217,7 +231,7 @@ impl Server {
 
     /// `POST /prompt`: queue a workflow. Parse the reply with [`crate::parse_prompt_response`].
     pub fn prompt(&self, prompt: &crate::PromptRequest) -> Result<Request, ComfyError> {
-        self.post_json("prompt", &prompt.to_json())
+        self.post_json("prompt", &prompt.to_json()?)
     }
 
     /// `GET /view`: download an output, temp or input file.
@@ -380,7 +394,7 @@ mod tests {
         assert_private_debug(&request, &[secret.as_bytes(), b"fabricated-header-secret"]);
         let output = format!("{request:?}");
         assert!(output.contains("Post") && output.contains("http://127.0.0.1:8188") && output.contains("Authorization"));
-        let expected = serde_json::to_vec(&prompt.to_json()).unwrap();
+        let expected = serde_json::to_vec(&prompt.to_json().unwrap()).unwrap();
         assert!(output.contains(&format!("Json {{ byte_len: {} }}", expected.len())));
         assert_eq!(request, original);
         assert_eq!(request.body, Body::Json(expected));

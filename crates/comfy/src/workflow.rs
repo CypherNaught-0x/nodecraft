@@ -24,12 +24,21 @@ const MAX_LINK_HOPS: usize = 256;
 const FRONTEND_ONLY: &[&str] = &["Note", "MarkdownNote", "Reroute", "PrimitiveNode", "SetNode", "GetNode"];
 
 /// The value of one input in an API workflow.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum InputValue {
     /// Connected to output `output` of node `node`.
     Link { node: String, output: u32 },
     /// A literal value.
     Value(Value),
+}
+
+impl std::fmt::Debug for InputValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Link { .. } => f.write_str("Link"),
+            Self::Value(value) => f.debug_tuple("Value").field(&crate::json_bounds::kind(value)).finish(),
+        }
+    }
 }
 
 impl InputValue {
@@ -120,7 +129,60 @@ impl ApiWorkflow {
     }
 
     /// The API-format JSON the server's `/prompt` takes, also what "Open in ComfyUI" exports.
-    pub fn to_json(&self) -> Value {
+    /// Validates the shared JSON depth/item/byte limits before cloning any literal value.
+    pub fn to_json(&self) -> Result<Value, ComfyError> {
+        self.validate_budget(&mut crate::json_bounds::Budget::default(), 0)?;
+        Ok(self.to_json_validated())
+    }
+
+    pub(crate) fn validate_budget(&self, budget: &mut crate::json_bounds::Budget, depth: usize) -> Result<(), ComfyError> {
+        self.validate_budget_with(budget, depth, None)
+    }
+
+    fn validate_budget_with(&self, budget: &mut crate::json_bounds::Budget, depth: usize, replacement: Option<(&str, &str, &Value)>) -> Result<(), ComfyError> {
+        if self.nodes.len() > MAX_NODES {
+            return Err(ComfyError::InvalidWorkflow("workflow exceeds the 10000-node limit".into()));
+        }
+        budget.container(self.nodes.len(), depth)?;
+        for (id, node) in &self.nodes {
+            budget.key(id, depth + 1)?;
+            budget.container(if node.title.is_some() { 3 } else { 2 }, depth + 1)?;
+            budget.key("class_type", depth + 2)?;
+            budget.text(&node.class_type, depth + 2)?;
+            budget.key("inputs", depth + 2)?;
+            let replacement = replacement.filter(|(target, _, _)| *target == id);
+            let added = replacement.filter(|(_, name, _)| !node.inputs.contains_key(*name));
+            budget.container(node.inputs.len().saturating_add(usize::from(added.is_some())), depth + 2)?;
+            if let Some((_, name, value)) = added {
+                budget.key(name, depth + 3)?;
+                budget.value(value, depth + 3)?;
+            }
+            for (name, input) in &node.inputs {
+                budget.key(name, depth + 3)?;
+                if let Some((_, _, value)) = replacement.filter(|(_, target, _)| *target == name) {
+                    budget.value(value, depth + 3)?;
+                    continue;
+                }
+                match input {
+                    InputValue::Value(value) => budget.value(value, depth + 3)?,
+                    InputValue::Link { node, output } => {
+                        budget.container(2, depth + 3)?;
+                        budget.text(node, depth + 4)?;
+                        budget.value(&Value::from(*output), depth + 4)?;
+                    }
+                }
+            }
+            if let Some(title) = &node.title {
+                budget.key("_meta", depth + 2)?;
+                budget.container(1, depth + 2)?;
+                budget.key("title", depth + 3)?;
+                budget.text(title, depth + 3)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn to_json_validated(&self) -> Value {
         let mut out = Map::new();
         for (id, node) in &self.nodes {
             let inputs: Map<String, Value> = node.inputs.iter().map(|(k, v)| (k.clone(), v.to_json())).collect();
@@ -144,6 +206,17 @@ impl ApiWorkflow {
 
     /// Sets a literal input value, checked against the server's description of the input.
     pub fn set_input(&mut self, catalog: &NodeCatalog, node: &str, input: &str, value: Value) -> Result<(), ComfyError> {
+        if let Err(error) = crate::json_bounds::Budget::default().value(&value, 0) {
+            crate::json_bounds::dispose(value);
+            return Err(error);
+        }
+        // Selectors may be copied into an error even when the node does not exist.
+        let mut selectors = crate::json_bounds::Budget::default();
+        selectors.text(node, 0)?;
+        selectors.text(input, 0)?;
+        // Validate both the current tree (safe replacement/drop) and its prospective aggregate.
+        self.validate_budget(&mut crate::json_bounds::Budget::default(), 0)?;
+        self.validate_budget_with(&mut crate::json_bounds::Budget::default(), 0, Some((node, input, &value)))?;
         let err = |message: String| ComfyError::InvalidInput { node: node.into(), input: input.into(), message };
         let n = self.nodes.get_mut(node).ok_or_else(|| err("no such node in the workflow".into()))?;
         let info = catalog.get(&n.class_type).ok_or_else(|| ComfyError::MissingNodes(vec![n.class_type.clone()]))?;
@@ -159,6 +232,34 @@ impl ApiWorkflow {
     /// card instead of a server error.
     pub fn check(&self, catalog: &NodeCatalog) -> CheckReport {
         let mut report = CheckReport::default();
+        let mut budget = crate::json_bounds::Budget::default();
+        let preflight = (|| -> Result<(), ComfyError> {
+            self.validate_budget(&mut budget, 0)?;
+            for (id, node) in &self.nodes {
+                let Some(info) = catalog.get(&node.class_type) else { continue };
+                budget.container(info.inputs.len(), 0)?;
+                for spec in &info.inputs {
+                    // Every input can produce a report row with copied context.
+                    budget.text(id, 1)?;
+                    budget.text(&spec.name, 1)?;
+                    budget.bytes(256)?;
+                    if let Some(InputValue::Link { node: from, output }) = node.inputs.get(&spec.name) {
+                        if let Some(kind) = self.nodes.get(from).and_then(|src| catalog.get(&src.class_type)).and_then(|src| src.outputs.get(*output as usize))
+                        {
+                            budget.text(&kind.kind, 1)?;
+                        }
+                        if let InputKind::Link(kind) = &spec.kind {
+                            budget.text(kind, 1)?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = preflight {
+            report.problems.push(InputProblem { node: "-".into(), input: "-".into(), message: error.to_string() });
+            return report;
+        }
         let mut missing = HashSet::new();
         for id in self.ids() {
             let Some(node) = self.nodes.get(id) else { continue };
@@ -267,13 +368,13 @@ struct UiInput {
     link: Option<i64>,
 }
 
-enum Source {
+enum Source<'a> {
     Link {
-        node: String,
+        node: &'a str,
         output: u32,
     },
     /// A value from a PrimitiveNode, with its own "control after generate" mode.
-    Value(Value, Option<String>),
+    Value(&'a Value, Option<String>),
 }
 
 /// ComfyUI writes ids as numbers; newer files may use strings.
@@ -323,6 +424,7 @@ impl ApiWorkflow {
     /// modes) and warnings about the conversion. The UI format needs the server's `catalog`.
     pub fn convert(bytes: &[u8], catalog: Option<&NodeCatalog>) -> Result<Conversion, ComfyError> {
         let v: Value = crate::error::parse_json("workflow", bytes, MAX_WORKFLOW_BYTES)?;
+        crate::json_bounds::Budget::default().value(&v, 0)?;
         if v.get("nodes").is_some_and(Value::is_array) {
             let catalog = catalog.ok_or_else(|| {
                 ComfyError::InvalidWorkflow("this is a ComfyUI editor (UI) workflow; connect to a server to convert it, or export it in API format".into())
@@ -374,7 +476,7 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
     let setters: HashMap<String, i64> =
         nodes.values().filter(|n| n.class == "SetNode").filter_map(|n| Some((first_widget(n)?, n.inputs.first()?.link?))).collect();
 
-    let resolve = |link: i64| -> Option<Source> {
+    let resolve = |link: i64| -> Option<Source<'_>> {
         let mut current = link;
         let mut seen = HashSet::new();
         for _ in 0..MAX_LINK_HOPS {
@@ -390,7 +492,7 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
             } else if origin.class == "PrimitiveNode" {
                 let widgets = origin.widgets.as_array()?;
                 let mode = widgets.get(1).and_then(Value::as_str).filter(|s| SEED_CONTROLS.contains(s)).map(str::to_owned);
-                return widgets.first().cloned().map(|v| Source::Value(v, mode));
+                return widgets.first().map(|v| Source::Value(v, mode));
             } else if origin.mode == MODE_MUTED {
                 return None;
             } else if origin.mode == MODE_BYPASS {
@@ -400,12 +502,15 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                 let same_slot = origin.inputs.get(*slot as usize).filter(|i| &i.kind == ty && i.link.is_some());
                 current = same_slot.or_else(|| origin.inputs.iter().find(|i| &i.kind == ty && i.link.is_some()))?.link?;
             } else {
-                return Some(Source::Link { node: origin_id.clone(), output: *slot });
+                return Some(Source::Link { node: origin_id.as_str(), output: *slot });
             }
         }
         None
     };
 
+    // Source bytes are bounded, but shared primitive values and catalog metadata can be
+    // copied into many consumers. Charge the retained output before each clone.
+    let mut output_budget = crate::json_bounds::Budget::default();
     let mut conversion = Conversion::default();
     let mut missing: Vec<String> = Vec::new();
     let mut ids: Vec<&String> = nodes.keys().collect();
@@ -431,6 +536,12 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
             }
             continue;
         };
+        output_budget.container(info.inputs.len().saturating_add(node.inputs.len()), 0)?;
+        output_budget.text(&node.id, 1)?;
+        output_budget.text(&node.class, 1)?;
+        if let Some(title) = &node.title {
+            output_budget.text(title, 1)?;
+        }
         let mut inputs = BTreeMap::new();
         let saved = node.widgets.as_array();
         let mut positional = saved.map(|a| a.iter().peekable());
@@ -457,7 +568,7 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
             if spec.is_widget() {
                 match (&mut positional, &node.widgets) {
                     (Some(values), _) => {
-                        widget_value = values.next().cloned();
+                        widget_value = values.next();
                         if widget_value.is_some() {
                             consumed += 1;
                         }
@@ -471,21 +582,39 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                             own_mode = Some(mode);
                         }
                     }
-                    (None, Value::Object(by_name)) => widget_value = by_name.get(&spec.name).cloned(),
+                    (None, Value::Object(by_name)) => widget_value = by_name.get(&spec.name),
                     _ => {}
                 }
             }
             // The editor's seed mode belongs to whatever supplies the value: a primitive's own mode,
             // none for a live connection, else the node's saved one.
             let (value, mode) = match linked {
-                Some(Source::Link { node, output }) => (Some(InputValue::Link { node, output }), None),
-                Some(Source::Value(v, mode)) => (Some(InputValue::Value(v)), mode),
-                None => (widget_value.map(InputValue::Value), own_mode),
+                Some(Source::Link { node, output }) => {
+                    output_budget.text(node, 4)?;
+                    (Some(InputValue::Link { node: node.into(), output }), None)
+                }
+                Some(Source::Value(v, mode)) => {
+                    output_budget.value(v, 3)?;
+                    (Some(InputValue::Value(v.clone())), mode)
+                }
+                None => {
+                    let value = match widget_value {
+                        Some(value) => {
+                            output_budget.value(value, 3)?;
+                            Some(InputValue::Value(value.clone()))
+                        }
+                        None => None,
+                    };
+                    (value, own_mode)
+                }
             };
             if let Some(mode) = mode {
+                output_budget.text(id, 1)?;
+                output_budget.text(&spec.name, 1)?;
                 conversion.controls.insert((id.clone(), spec.name.clone()), mode);
             }
             if let Some(value) = value {
+                output_budget.key(&spec.name, 3)?;
                 inputs.insert(spec.name.clone(), value);
             }
         }
@@ -507,7 +636,9 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                 && info.input(&input.name).is_none()
                 && let Some(Source::Link { node, output }) = input.link.and_then(resolve)
             {
-                inputs.insert(input.name.clone(), InputValue::Link { node, output });
+                output_budget.key(&input.name, 3)?;
+                output_budget.text(node, 4)?;
+                inputs.insert(input.name.clone(), InputValue::Link { node: node.into(), output });
             }
         }
         conversion.workflow.nodes.insert(node.id.clone(), ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() });
@@ -518,6 +649,7 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
     if conversion.workflow.nodes.is_empty() {
         return Err(ComfyError::InvalidWorkflow("the workflow has no nodes the server can run".into()));
     }
+    conversion.workflow.validate_budget(&mut crate::json_bounds::Budget::default(), 0)?;
     Ok(conversion)
 }
 
@@ -540,7 +672,7 @@ mod tests {
         assert_eq!(ks.inputs["model"], InputValue::Link { node: "10".into(), output: 0 });
         assert_eq!(ks.inputs["steps"], InputValue::Value(json!(20)));
         assert_eq!(wf.nodes["6"].title.as_deref(), Some("Positive"));
-        let again = ApiWorkflow::parse(&serde_json::to_vec(&wf.to_json()).unwrap(), None).unwrap();
+        let again = ApiWorkflow::parse(&serde_json::to_vec(&wf.to_json().unwrap()).unwrap(), None).unwrap();
         assert_eq!(again, wf);
         assert!(wf.check(&catalog()).is_ok(), "{:?}", wf.check(&catalog()));
     }

@@ -14,6 +14,7 @@
 mod error;
 #[cfg(test)]
 mod fixtures;
+mod json_bounds;
 mod mapping;
 mod object_info;
 mod ordered;
@@ -24,6 +25,7 @@ mod workflow;
 mod ws;
 
 pub use error::{ComfyError, NodeError};
+pub use json_bounds::{MAX_JSON_BYTES, MAX_JSON_DEPTH, MAX_JSON_ITEMS};
 pub use mapping::{Exposed, ExposedInput, ExposedKind, ExposedOutput, InputRole, Media, discover};
 pub use object_info::{InputKind, InputSpec, MAX_OBJECT_INFO_BYTES, NodeCatalog, NodeInfo, OutputSpec};
 pub use prompt::{PromptRequest, Queued, parse_prompt_response};
