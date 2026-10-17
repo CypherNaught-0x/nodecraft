@@ -675,7 +675,8 @@ a choice a later contributor might otherwise undo.
   "earlier sessions" total saved under the reserved empty name. Two kinds of session never fold:
   the one charging, and any with an open charge (#233). Otherwise a reused session id would
   settle an old charge out of its new total and undercount. Sessions kept for open charges can
-  exceed the limit, by at most the number of open charges, and loading allows that. The session
+  exceed the limit, by at most the number of open charges, until the next new session folds
+  them; loading allows that. The session
   clock forgets folded names, so it stays as small as the session map. Settling or releasing a
   folded session's entries adjusts the earlier-sessions total, so the project total and the
   current session's stay exact and a saved log always reloads. (Logs saved before #233 can hold an open charge whose
