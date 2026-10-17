@@ -118,8 +118,12 @@ impl JobRunner for ProviderRunner {
             let Some(mut queued) = queued else {
                 return Outcome::Failed { error: format!("{} has no provider job registered", start.job), transient: false };
             };
-            // The scheduler's key wins: requeued jobs get a fresh one.
+            // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
+            // step so `forget` finds the handle stored under it.
             queued.job.idempotency_key = start.idempotency_key.clone();
+            if let Some(registered) = lock().jobs.get_mut(&start.job) {
+                registered.job.idempotency_key = start.idempotency_key.clone();
+            }
             let signal = TokenSignal(cancel);
             let job_id = start.job;
             let key = start.idempotency_key.clone();
