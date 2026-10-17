@@ -63,7 +63,7 @@ fn resource_edges_and_amplification() {
     assert_eq!(split("abc", &SplitMode::Chars(1), tiny), Err(TextError::ItemLimit));
     assert_eq!(split("123456789", &SplitMode::Chars(9), tiny), Err(TextError::InputLimit));
     assert_eq!(replace("aaa", &rep(MatchMode::Literal("a".into()), "bb"), tiny), Err(TextError::OutputLimit));
-    assert_eq!(replace("aaa", &rep(MatchMode::Literal("a".into()), ""), tiny), Err(TextError::ItemLimit));
+    assert_eq!(replace("aaa", &rep(MatchMode::Literal("a".into()), ""), tiny).unwrap(), "");
     assert_eq!(replace("abcd", &rep(MatchMode::Regex("(.*)".into()), "$1$1"), Limits { output_bytes: 7, ..l() }), Err(TextError::OutputLimit));
     assert_eq!(fill_template("{{x}}{{x}}", &BTreeMap::from([("x".into(), "ab".into())]), Limits { output_bytes: 3, ..l() }), Err(TextError::OutputLimit));
     assert_eq!(concat(&["a".into(), "b".into()], &ConcatOptions { separator: "xx".into(), ..Default::default() }, tiny), Err(TextError::OutputLimit));
@@ -104,7 +104,7 @@ proptest! {
 fn work_caps_prevent_zero_output_and_suffix_rescan_amplification() {
     let input = "a".repeat(1025);
     let options = rep(MatchMode::Regex("a".into()), &"$missing".repeat(2048));
-    assert_eq!(replace(&input, &options, l()), Err(TextError::WorkLimit));
+    assert_eq!(replace(&input, &options, l()).unwrap(), "");
     let literal_input = "a".repeat(MAX_ITEMS);
     assert_eq!(replace(&literal_input, &rep(MatchMode::Literal("a".into()), "b"), l()).unwrap(), "b".repeat(MAX_ITEMS));
     let input = "A".repeat(16_384);
@@ -121,4 +121,54 @@ fn explicit_bounded_search_preserves_regex_iterator_semantics() {
             assert_eq!(replace(input, &rep(MatchMode::Regex(pattern.into()), "!"), l()).unwrap(), re.replace_all(input, "!"));
         }
     }
+}
+
+#[test]
+fn ordinary_large_regex_and_literal_workloads_remain_usable() {
+    let input = format!("{}\n", "a".repeat(63)).repeat(4096);
+    assert_eq!(input.len(), 256 * 1024);
+    assert_eq!(split(&input, &SplitMode::Regex("\n".into()), l()).unwrap().len(), 4097);
+    let input = format!("{} ", "a".repeat(49)).repeat(4000);
+    assert_eq!(replace(&input, &rep(MatchMode::Regex(r"\s+".into()), " "), l()).unwrap(), input);
+    let mut input = format!("{}\n", "a".repeat(63)).repeat(16_383);
+    input.push_str(&"a".repeat(62));
+    assert_eq!(input.len() + 2, MAX_INPUT_BYTES); // Pattern and replacement share the input cap.
+    assert_eq!(split(&input, &SplitMode::Regex("\n".into()), l()).unwrap().len(), MAX_ITEMS);
+    assert_eq!(replace(&input, &rep(MatchMode::Regex("\n".into()), " "), l()).unwrap(), input.replace('\n', " "));
+    let input = "\n".repeat(MAX_INPUT_BYTES - 1);
+    assert_eq!(replace(&input, &rep(MatchMode::Literal("\n".into()), ""), Limits { items: 0, ..l() }).unwrap(), "");
+    let input = "a".repeat(16_384);
+    assert_eq!(replace(&input, &rep(MatchMode::Regex("a+b|a".into()), ""), l()), Err(TextError::WorkLimit));
+}
+#[test]
+fn whole_word_matches_punctuation_edges_and_preserves_valid_alternatives() {
+    for term in ["C#", "C++", "#tag", "e.g.", "é#", "#猫"] {
+        let input = format!("{term} ({term}) x{term} {term}x _{term} {term}_ 猫{term} {term}\u{301}");
+        let expected = format!("! (!) x{term} {term}x _{term} {term}_ 猫{term} {term}\u{301}");
+        for pattern in [MatchMode::Literal(term.into()), MatchMode::Regex(format!("({})", regex::escape(term)))] {
+            let mut options = rep(pattern, "!");
+            options.whole_word = true;
+            assert_eq!(replace(&input, &options, l()).unwrap(), expected);
+        }
+    }
+    let mut options = rep(MatchMode::Regex(r"(C\+\+)".into()), "<$1>");
+    options.whole_word = true;
+    assert_eq!(replace("C++ xC++ C++x", &options, l()).unwrap(), "<C++> xC++ C++x");
+    let mut alternatives = rep(MatchMode::Regex("(foo|foobar)".into()), "<$1>");
+    alternatives.whole_word = true;
+    assert_eq!(replace("foobar foo xfoobar", &alternatives, l()).unwrap(), "<foobar> <foo> xfoobar");
+    let mut options = rep(MatchMode::Literal("ß".into()), "!");
+    options.case_sensitive = false;
+    assert_eq!(replace("ß SS", &options, l()).unwrap(), "! SS");
+}
+#[test]
+fn replacement_validation_is_eager_and_expansion_work_is_bounded() {
+    for input in ["a", "b", ""] {
+        for replacement in ["${", "${name", "${}", "${a{b}"] {
+            assert_eq!(replace(input, &rep(MatchMode::Regex("a".into()), replacement), l()), Err(TextError::InvalidReplacement));
+        }
+    }
+    assert_eq!(replace("a", &rep(MatchMode::Literal("a".into()), "${"), l()).unwrap(), "${");
+    let options = rep(MatchMode::Regex("(a?)".into()), &"$1".repeat(MAX_ITEMS));
+    assert_eq!(replace(&"b".repeat(65), &options, l()), Err(TextError::WorkLimit));
 }

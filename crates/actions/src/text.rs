@@ -1,5 +1,5 @@
 //! Pure text actions. See `docs/text-actions.md` for wire and boundary semantics.
-use regex::{Captures, Regex, RegexBuilder};
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -9,7 +9,7 @@ pub const MAX_ITEMS: usize = 16_384;
 pub const MAX_FIELDS: usize = 1024;
 pub const MAX_PATTERN_BYTES: usize = 8192;
 pub const MAX_SEARCH_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_REPLACEMENT_SCAN_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_REPLACEMENT_STEPS: usize = 1024 * 1024;
 
 /// Budgets may be lowered, never raised above the hard ceilings. Bytes are UTF-8 bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +54,7 @@ pub enum TextError {
     PatternLimit,
     WorkLimit,
     InvalidPattern,
+    InvalidReplacement,
     InvalidTemplate,
     MissingField,
     FieldLimit,
@@ -69,6 +70,7 @@ impl std::fmt::Display for TextError {
             Self::EmptySeparator => "text separator must not be empty",
             Self::WorkLimit => "text search or replacement work budget exceeded",
             Self::PatternLimit => "regex pattern byte budget exceeded",
+            Self::InvalidReplacement => "regex replacement syntax is invalid",
             Self::InvalidPattern => "regex pattern is invalid or exceeds compilation limits",
             Self::InvalidTemplate => "template syntax is invalid",
             Self::MissingField => "template field is missing",
@@ -178,18 +180,61 @@ fn charge(used: &mut usize, bytes: usize, maximum: usize) -> Result<(), TextErro
     }
     Ok(())
 }
-// An iterator next may search twice to suppress adjacent empty matches. Charge both
-// remaining suffixes before calling it; keep the full haystack for anchor semantics.
-fn search_charge(used: &mut usize, input_len: usize, previous: usize) -> Result<(), TextError> {
-    let bytes = input_len.saturating_sub(previous).saturating_add(1).saturating_mul(2);
-    charge(used, bytes, MAX_SEARCH_BYTES)
+// Keep full-haystack iterators so anchors and adjacent-empty suppression retain regex semantics.
+// Finite-width searches can inspect at most B bytes past a candidate start, plus UTF-8
+// assertion context. Total forward advancement is charged once, not once per suffix.
+struct SearchBudget {
+    used: usize,
+    lookahead: Option<usize>,
 }
-fn compile(pattern: &str, case_sensitive: bool, whole_word: bool) -> Result<Regex, TextError> {
+impl SearchBudget {
+    fn new(pattern: &str, case_sensitive: bool, input_len: usize) -> Result<Self, TextError> {
+        use regex_syntax::hir::HirKind;
+        let hir = regex_syntax::ParserBuilder::new()
+            .nest_limit(64)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .parse(pattern)
+            .map_err(|_| TextError::InvalidPattern)?;
+        let root = uncapture(&hir);
+        let lookahead = hir.properties().maximum_len().or_else(|| {
+            if let HirKind::Repetition(rep) = root.kind() {
+                // Only a top-level repeated single atom: no trailing failure or alternative
+                // can keep searching a suffix after a short successful match (a+b|a).
+                match uncapture(&rep.sub).kind() {
+                    HirKind::Class(_) => Some(4),
+                    HirKind::Literal(lit) if std::str::from_utf8(&lit.0).ok().is_some_and(|s| s.chars().count() == 1) => Some(4),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        });
+        let mut budget = Self { used: 0, lookahead };
+        if lookahead.is_some() {
+            charge(&mut budget.used, input_len.saturating_add(1).saturating_mul(2), MAX_SEARCH_BYTES)?;
+        }
+        Ok(budget)
+    }
+    fn next(&mut self, input_len: usize, previous: usize) -> Result<(), TextError> {
+        let bytes = match self.lookahead {
+            Some(width) => width.saturating_add(8).saturating_mul(2),
+            None => input_len.saturating_sub(previous).saturating_add(1).saturating_mul(2),
+        };
+        charge(&mut self.used, bytes, MAX_SEARCH_BYTES)
+    }
+}
+fn uncapture(mut hir: &regex_syntax::hir::Hir) -> &regex_syntax::hir::Hir {
+    while let regex_syntax::hir::HirKind::Capture(cap) = hir.kind() {
+        hir = &cap.sub;
+    }
+    hir
+}
+fn compile(pattern: &str, case_sensitive: bool) -> Result<Regex, TextError> {
     if pattern.len() > MAX_PATTERN_BYTES {
         return Err(TextError::PatternLimit);
     }
-    let wrapped = if whole_word { format!(r"\b(?:{pattern})\b") } else { pattern.to_owned() };
-    RegexBuilder::new(&wrapped)
+    RegexBuilder::new(pattern)
         .case_insensitive(!case_sensitive)
         .size_limit(1024 * 1024)
         .dfa_size_limit(256 * 1024)
@@ -216,12 +261,12 @@ pub fn split(input: &str, mode: &SplitMode, limits: Limits) -> Result<Vec<String
             }
         }
         SplitMode::Regex(s) => {
-            let re = compile(s, true, false)?;
+            let re = compile(s, true)?;
             let mut matches = re.find_iter(input);
             let mut previous = 0usize;
-            let mut work = 0usize;
+            let mut work = SearchBudget::new(s, true, input.len())?;
             loop {
-                search_charge(&mut work, input.len(), previous)?;
+                work.next(input.len(), previous)?;
                 let Some(found) = matches.next() else {
                     break;
                 };
@@ -303,33 +348,46 @@ pub fn replace(input: &str, options: &ReplaceOptions, limits: Limits) -> Result<
         return Err(TextError::PatternLimit);
     }
     let escaped = if captures { pattern.to_owned() } else { regex::escape(pattern) };
-    let re = compile(&escaped, options.case_sensitive, options.whole_word)?;
+    // Half-boundaries constrain neighbors without requiring a word-valued edge.
+    // Keep assertions inside the regex so valid alternative matches are still tried.
+    let effective = if options.whole_word { format!(r"\b{{start-half}}(?:{escaped})\b{{end-half}}") } else { escaped };
+    let re = compile(&effective, options.case_sensitive)?;
+    let replacement = if captures { Some(parse_replacement(&options.replacement, &re)?) } else { None };
+    let mut search = if captures { Some(SearchBudget::new(&effective, options.case_sensitive, input.len())?) } else { None };
     let mut out = String::new();
     let mut previous = 0usize;
+    let mut searched = 0usize;
     let mut matches = re.captures_iter(input);
     let mut index = 0usize;
-    let mut search_work = 0usize;
     let mut replacement_work = 0usize;
     loop {
-        // A fixed escaped literal has no greedy suffix alternatives; ordinary literal
-        // replacement remains governed by input, output and match budgets.
-        if captures {
-            search_charge(&mut search_work, input.len(), previous)?;
+        if let Some(search) = &mut search {
+            search.next(input.len(), searched)?;
         }
         let Some(caps) = matches.next() else {
             break;
         };
-        if index >= limits.items {
-            return Err(TextError::ItemLimit);
-        }
-        index = index.saturating_add(1);
         if captures {
-            charge(&mut replacement_work, options.replacement.len(), MAX_REPLACEMENT_SCAN_BYTES)?;
+            if index >= limits.items {
+                return Err(TextError::ItemLimit);
+            }
+            index = index.saturating_add(1);
         }
         let found = caps.get(0).ok_or(TextError::InvalidPattern)?;
+        searched = found.end();
         append(&mut out, input.get(previous..found.start()).ok_or(TextError::InvalidPattern)?, limits)?;
-        if captures {
-            expand(&mut out, &options.replacement, &caps, limits)?;
+        if let Some(tokens) = &replacement {
+            for token in tokens {
+                charge(&mut replacement_work, 1, MAX_REPLACEMENT_STEPS)?;
+                match token {
+                    Replacement::Text(value) => append(&mut out, value, limits)?,
+                    Replacement::Capture(index) => {
+                        if let Some(value) = caps.get(*index) {
+                            append(&mut out, value.as_str(), limits)?;
+                        }
+                    }
+                }
+            }
         } else {
             append(&mut out, &options.replacement, limits)?;
         }
@@ -338,34 +396,58 @@ pub fn replace(input: &str, options: &ReplaceOptions, limits: Limits) -> Result<
     append(&mut out, input.get(previous..).ok_or(TextError::InvalidPattern)?, limits)?;
     Ok(out)
 }
-fn expand(out: &mut String, replacement: &str, caps: &Captures<'_>, limits: Limits) -> Result<(), TextError> {
+enum Replacement<'a> {
+    Text(&'a str),
+    Capture(usize),
+}
+fn replacement_push<'a>(tokens: &mut Vec<Replacement<'a>>, token: Replacement<'a>) -> Result<(), TextError> {
+    if tokens.len() >= MAX_ITEMS {
+        return Err(TextError::WorkLimit);
+    }
+    tokens.push(token);
+    Ok(())
+}
+fn parse_replacement<'a>(replacement: &'a str, re: &Regex) -> Result<Vec<Replacement<'a>>, TextError> {
+    let names: BTreeMap<_, _> = re.capture_names().enumerate().filter_map(|(i, name)| name.map(|name| (name, i))).collect();
+    let mut tokens = Vec::new();
     let mut rest = replacement;
     while let Some(pos) = rest.find('$') {
-        append(out, rest.get(..pos).ok_or(TextError::InvalidPattern)?, limits)?;
-        rest = rest.get(pos.saturating_add(1)..).ok_or(TextError::InvalidPattern)?;
+        if pos > 0 {
+            replacement_push(&mut tokens, Replacement::Text(rest.get(..pos).ok_or(TextError::InvalidReplacement)?))?;
+        }
+        rest = rest.get(pos.saturating_add(1)..).ok_or(TextError::InvalidReplacement)?;
         if let Some(next) = rest.strip_prefix('$') {
-            append(out, "$", limits)?;
+            replacement_push(&mut tokens, Replacement::Text("$"))?;
             rest = next;
             continue;
         }
         let (name, next) = if let Some(inner) = rest.strip_prefix('{') {
-            let end = inner.find('}').ok_or(TextError::InvalidPattern)?;
-            (inner.get(..end).ok_or(TextError::InvalidPattern)?, inner.get(end.saturating_add(1)..).ok_or(TextError::InvalidPattern)?)
+            let end = inner.find('}').ok_or(TextError::InvalidReplacement)?;
+            let name = inner.get(..end).ok_or(TextError::InvalidReplacement)?;
+            if name.is_empty() || name.contains('{') {
+                return Err(TextError::InvalidReplacement);
+            }
+            (name, inner.get(end.saturating_add(1)..).ok_or(TextError::InvalidReplacement)?)
         } else {
             let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
-            (rest.get(..end).ok_or(TextError::InvalidPattern)?, rest.get(end..).ok_or(TextError::InvalidPattern)?)
+            (rest.get(..end).ok_or(TextError::InvalidReplacement)?, rest.get(end..).ok_or(TextError::InvalidReplacement)?)
         };
         if name.is_empty() {
-            append(out, "$", limits)?;
+            replacement_push(&mut tokens, Replacement::Text("$"))?;
         } else {
-            let value = if name.bytes().all(|c| c.is_ascii_digit()) { name.parse::<usize>().ok().and_then(|i| caps.get(i)) } else { caps.name(name) };
-            if let Some(value) = value {
-                append(out, value.as_str(), limits)?;
+            let index =
+                if name.bytes().all(|c| c.is_ascii_digit()) { name.parse::<usize>().ok().filter(|i| *i < re.captures_len()) } else { names.get(name).copied() };
+            // Unknown references resolve to empty once, not repeatedly for every match.
+            if let Some(index) = index {
+                replacement_push(&mut tokens, Replacement::Capture(index))?;
             }
         }
         rest = next;
     }
-    append(out, rest, limits)
+    if !rest.is_empty() {
+        replacement_push(&mut tokens, Replacement::Text(rest))?;
+    }
+    Ok(tokens)
 }
 pub fn concat(inputs: &[String], options: &ConcatOptions, limits: Limits) -> Result<String, TextError> {
     let limits = limits.validate()?;

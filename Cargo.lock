@@ -2619,6 +2619,7 @@ dependencies = [
  "proptest",
  "rayon",
  "regex",
+ "regex-syntax",
  "serde",
  "serde_json",
 ]
