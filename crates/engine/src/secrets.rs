@@ -108,32 +108,142 @@ pub(crate) enum KeyRequest {
     Status { account: String },
 }
 
-/// Registers the `keys` host service on `services`, backed by `store`. Keychain calls can block
-/// on an unlock prompt and `Session::dispatch` runs services synchronously, so the settings UI
-/// must hand them to a worker thread (#205).
+/// A key request, checked: what to do to which account.
+enum KeyOp {
+    Set(Secret),
+    Remove,
+    Status,
+}
+
+/// Parses and checks a request without touching the keychain, so bad input fails at once.
+fn parse(request: &Value) -> Result<(Account, KeyOp), Error> {
+    let request: KeyRequest = serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "malformed key request"))?;
+    Ok(match request {
+        KeyRequest::Set { account, key } => (Account::new(&account).map_err(to_error)?, KeyOp::Set(Secret::new(&key).map_err(to_error)?)),
+        KeyRequest::Remove { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Remove),
+        KeyRequest::Status { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Status),
+    })
+}
+
+/// Runs a checked request against `store` (this is where a keychain prompt can block).
+fn execute(store: &dyn SecretStore, account: &Account, op: &KeyOp) -> Result<Value, Error> {
+    match op {
+        KeyOp::Set(secret) => {
+            store.set(account, secret).map_err(to_error)?;
+            Ok(json!({ "stored": true, "masked": secret.masked() }))
+        }
+        KeyOp::Remove => Ok(json!({ "removed": store.delete(account).map_err(to_error)? })),
+        KeyOp::Status => {
+            let found = store.get(account).map_err(to_error)?;
+            Ok(json!({ "stored": found.is_some(), "masked": found.map(|s| s.masked()) }))
+        }
+    }
+}
+
+/// Registers the `keys` host service on `services`, answering synchronously from `store`. For
+/// headless hosts (CLI, MCP) where a keychain prompt may block the call; the app uses
+/// [`register_key_worker`] so the window never freezes.
 pub fn register_key_service(services: &mut Services, store: Arc<dyn SecretStore>) -> Result<(), Error> {
     let store = Mutex::new(store);
     services.register(KEY_SERVICE, move |request: &Value| {
-        let request: KeyRequest = serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "malformed key request"))?;
+        let (account, op) = parse(request)?;
         let store = store.lock().unwrap_or_else(PoisonError::into_inner);
-        match request {
-            KeyRequest::Set { account, key } => {
-                let account = Account::new(&account).map_err(to_error)?;
-                let secret = Secret::new(&key).map_err(to_error)?;
-                store.set(&account, &secret).map_err(to_error)?;
-                Ok(json!({ "stored": true, "masked": secret.masked() }))
-            }
-            KeyRequest::Remove { account } => {
-                let account = Account::new(&account).map_err(to_error)?;
-                Ok(json!({ "removed": store.delete(&account).map_err(to_error)? }))
-            }
-            KeyRequest::Status { account } => {
-                let account = Account::new(&account).map_err(to_error)?;
-                let found = store.get(&account).map_err(to_error)?;
-                Ok(json!({ "stored": found.is_some(), "masked": found.map(|s| s.masked()) }))
+        execute(store.as_ref(), &account, &op)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use worker::{KeyOutcome, KeyResults, KeyWorker, register_key_worker};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod worker {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+
+    /// Requests waiting for the keychain; more are refused as busy.
+    const QUEUE: usize = 64;
+
+    struct Job {
+        id: u64,
+        account: Account,
+        op: KeyOp,
+    }
+
+    /// The result of a request handed to the [`KeyWorker`].
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct KeyOutcome {
+        /// The `pending` id the service returned.
+        pub id: u64,
+        pub account: String,
+        /// Same shape as the synchronous service's result; errors never contain the key.
+        pub result: Result<Value, Error>,
+    }
+
+    /// Runs keychain calls on their own thread, so an unlock or access prompt never blocks the
+    /// thread that dispatches commands (the UI). The submitting side; results go to the one
+    /// [`KeyResults`] returned with it.
+    pub struct KeyWorker {
+        jobs: SyncSender<Job>,
+        next: AtomicU64,
+    }
+
+    /// Where a [`KeyWorker`]'s results arrive. There is exactly one, held by the host, which routes
+    /// each outcome by its `pending` id to whoever asked (the keys panel, the in-app agent). Both
+    /// queues are bounded: a host that stops reading makes new requests fail as busy.
+    pub struct KeyResults(Receiver<KeyOutcome>);
+
+    impl KeyResults {
+        /// Results that have arrived since the last call, in request order (never blocks).
+        pub fn drain(&self) -> Vec<KeyOutcome> {
+            self.0.try_iter().collect()
+        }
+    }
+
+    impl KeyWorker {
+        /// Starts the worker thread over `store`. Once both halves are dropped, queued requests
+        /// are discarded; a keychain call already running (for example waiting on a prompt)
+        /// still finishes first, and its result is dropped.
+        pub fn spawn(store: Arc<dyn SecretStore>) -> Result<(Arc<Self>, KeyResults), Error> {
+            let (jobs, inbox) = sync_channel::<Job>(QUEUE);
+            let (outbox, done) = sync_channel::<KeyOutcome>(QUEUE);
+            std::thread::Builder::new()
+                .name("nodecraft-keychain".into())
+                .spawn(move || {
+                    for job in inbox {
+                        // A keychain backend that panics fails this request, not the worker.
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(store.as_ref(), &job.account, &job.op)))
+                            .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "the keychain call failed unexpectedly")));
+                        if outbox.send(KeyOutcome { id: job.id, account: job.account.as_str().to_owned(), result }).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the keychain worker: {e}")))?;
+            Ok((Arc::new(Self { jobs, next: AtomicU64::new(1) }), KeyResults(done)))
+        }
+
+        fn submit(&self, account: Account, op: KeyOp) -> Result<u64, Error> {
+            let id = self.next.fetch_add(1, Ordering::Relaxed);
+            match self.jobs.try_send(Job { id, account, op }) {
+                Ok(()) => Ok(id),
+                Err(TrySendError::Full(_)) => Err(Error::new(ErrorKind::Busy, "the keychain is still answering earlier requests; try again")),
+                Err(TrySendError::Disconnected(_)) => Err(Error::new(ErrorKind::Internal, "the keychain worker has stopped")),
             }
         }
-    })
+    }
+
+    /// Registers the `keys` host service so that it checks the request, queues it on `worker`
+    /// and returns `{"pending": id}` at once; the result arrives through [`KeyResults::drain`]
+    /// with the same id. So in the app, `keys.*` commands answer `{"pending": id}`; headless hosts
+    /// (CLI, MCP) use [`register_key_service`] and answer directly.
+    pub fn register_key_worker(services: &mut Services, worker: Arc<KeyWorker>) -> Result<(), Error> {
+        services.register(KEY_SERVICE, move |request: &Value| {
+            let (account, op) = parse(request)?;
+            let id = worker.submit(account, op)?;
+            Ok(json!({ "pending": id }))
+        })
+    }
 }
 
 /// Checks a chat endpoint's key with a request that costs nothing (listing models). Some servers
@@ -161,6 +271,131 @@ mod tests {
         assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": true}));
         assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap(), json!({"stored": false, "masked": null}));
         assert!(services.invoke(KEY_SERVICE, &json!({"op": "drop_all"})).is_err());
+    }
+
+    /// A keychain that takes a while to answer (an unlock prompt).
+    #[cfg(not(target_arch = "wasm32"))]
+    struct Slow(MemoryStore, std::time::Duration);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl SecretStore for Slow {
+        fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError> {
+            std::thread::sleep(self.1);
+            self.0.get(account)
+        }
+        fn set(&self, account: &Account, secret: &Secret) -> Result<(), SecretError> {
+            std::thread::sleep(self.1);
+            self.0.set(account, secret)
+        }
+        fn delete(&self, account: &Account) -> Result<bool, SecretError> {
+            std::thread::sleep(self.1);
+            self.0.delete(account)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait(results: &KeyResults, id: u64) -> KeyOutcome {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let mut arrived = results.drain();
+            assert!(arrived.iter().all(|o| o.id <= id), "results come in request order");
+            if let Some(done) = arrived.iter().position(|o| o.id == id).map(|i| arrived.swap_remove(i)) {
+                return done;
+            }
+            assert!(std::time::Instant::now() < deadline, "no result for {id}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_worker_answers_later_without_blocking_the_caller() {
+        let (worker, results) = KeyWorker::spawn(Arc::new(Slow(MemoryStore::default(), std::time::Duration::from_millis(300)))).unwrap();
+        let mut services = Services::default();
+        register_key_worker(&mut services, Arc::clone(&worker)).unwrap();
+        let pending = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-proj-abcdefghij1234"})).unwrap();
+        assert!(results.drain().is_empty(), "the call returned before the keychain answered");
+        let id = pending["pending"].as_u64().unwrap();
+        let done = wait(&results, id);
+        assert_eq!(done.result, Ok(json!({"stored": true, "masked": "…1234"})));
+        assert_eq!(done.account, "openai");
+        let status = services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap()["pending"].as_u64().unwrap();
+        assert_eq!(wait(&results, status).result, Ok(json!({"stored": true, "masked": "…1234"})));
+        // Bad input fails at once, without queueing, and never echoes the key.
+        let bad = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-secret with space"})).unwrap_err();
+        assert!(!bad.to_string().contains("sk-secret"));
+        assert!(services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "Not Valid", "key": "x"})).is_err());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_full_queue_is_busy_and_a_panicking_keychain_fails_one_request() {
+        struct Panics;
+        impl SecretStore for Panics {
+            fn get(&self, _: &Account) -> Result<Option<Secret>, SecretError> {
+                panic!("backend bug")
+            }
+            fn set(&self, _: &Account, _: &Secret) -> Result<(), SecretError> {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                Ok(())
+            }
+            fn delete(&self, _: &Account) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+        }
+        let (worker, results) = KeyWorker::spawn(Arc::new(Panics)).unwrap();
+        let mut services = Services::default();
+        register_key_worker(&mut services, Arc::clone(&worker)).unwrap();
+        let first = services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap()["pending"].as_u64().unwrap();
+        assert_eq!(wait(&results, first).result.unwrap_err().kind, ErrorKind::Internal);
+        // The worker survived the panic.
+        let next = services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap()["pending"].as_u64().unwrap();
+        assert_eq!(wait(&results, next).result, Ok(json!({"removed": true})));
+        let mut busy = false;
+        for _ in 0..200 {
+            if let Err(e) = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-1234567890"})) {
+                assert_eq!(e.kind, ErrorKind::Busy);
+                busy = true;
+                break;
+            }
+        }
+        assert!(busy, "a slow keychain eventually refuses more work instead of queueing without bound");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn unread_results_make_requests_busy_and_dropping_the_worker_stops_it() {
+        let (worker, results) = KeyWorker::spawn(Arc::new(MemoryStore::default())).unwrap();
+        let mut services = Services::default();
+        register_key_worker(&mut services, Arc::clone(&worker)).unwrap();
+        // Nobody reads the results: both bounded queues fill, then requests are refused.
+        let mut refused = false;
+        for _ in 0..1000 {
+            match services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})) {
+                Ok(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                Err(e) => {
+                    assert_eq!(e.kind, ErrorKind::Busy);
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(refused, "results can't pile up without bound");
+        assert!(!results.drain().is_empty());
+        // Without its results reader the thread stops, and new requests say so.
+        drop(results);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})) {
+                Err(e) if e.kind == ErrorKind::Internal => break,
+                _ => {
+                    assert!(std::time::Instant::now() < deadline, "the worker thread never stopped");
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+        drop(services);
+        drop(worker);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
