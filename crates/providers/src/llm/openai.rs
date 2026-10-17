@@ -3,8 +3,26 @@
 use serde_json::{Value, json};
 
 use super::sse::SseEvent;
-use super::{ChatRequest, ChatResponse, Part, Role, StopReason, StreamState, base64};
+use super::{ChatRequest, ChatResponse, MAX_REPLY_BLOCKS, Part, Role, StopReason, StreamState, base64, tool_input};
+use crate::provider::Usage;
 use crate::{ErrorKind, ProviderError};
+
+/// Text-only content goes as a plain string: some OpenAI-compatible servers accept nothing else.
+fn content(parts: &[&Part]) -> Value {
+    if parts.iter().all(|p| matches!(p, Part::Text(_))) {
+        return Value::String(parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n\n"));
+    }
+    Value::Array(
+        parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Text(t) => Some(json!({ "type": "text", "text": t })),
+                Part::Image { mime, bytes } => Some(json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64(bytes)) } })),
+                _ => None,
+            })
+            .collect(),
+    )
+}
 
 /// `openai` is the OpenAI API itself, which takes `max_completion_tokens` (its reasoning models
 /// reject `max_tokens`); other servers get `max_tokens`, and only when the job sets a limit.
@@ -14,28 +32,61 @@ pub(super) fn body(req: &ChatRequest, stream: bool, openai: bool) -> Value {
         messages.push(json!({ "role": "system", "content": system }));
     }
     for m in &req.messages {
-        let role = match m.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
-        };
-        // Text-only messages go as a plain string: some OpenAI-compatible servers accept nothing else.
-        let text_only = m.parts.iter().all(|p| matches!(p, Part::Text(_)));
-        let content = if text_only {
-            Value::String(m.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n\n"))
-        } else {
-            Value::Array(
-                m.parts
+        match m.role {
+            Role::User => {
+                // Tool results are `tool` messages, which must come straight after the calls.
+                for p in &m.parts {
+                    if let Part::ToolResult { id, content, is_error } = p {
+                        // The API has no error flag; say it in the text.
+                        let content = if *is_error { format!("Error: {content}") } else { content.clone() };
+                        messages.push(json!({ "role": "tool", "tool_call_id": id, "content": content }));
+                    }
+                }
+                let rest: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_) | Part::Image { .. })).collect();
+                if !rest.is_empty() {
+                    messages.push(json!({ "role": "user", "content": content(&rest) }));
+                }
+            }
+            Role::Assistant => {
+                let texts: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_))).collect();
+                let calls: Vec<Value> = m
+                    .parts
                     .iter()
-                    .map(|p| match p {
-                        Part::Text(t) => json!({ "type": "text", "text": t }),
-                        Part::Image { mime, bytes } => json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64(bytes)) } }),
+                    .filter_map(|p| match p {
+                        Part::ToolUse { id, name, input } => {
+                            // Arguments that weren't JSON go back as they came.
+                            let arguments = match input {
+                                Value::String(raw) => raw.clone(),
+                                other => other.to_string(),
+                            };
+                            Some(json!({ "id": id, "type": "function", "function": { "name": name, "arguments": arguments } }))
+                        }
+                        _ => None,
                     })
-                    .collect(),
-            )
-        };
-        messages.push(json!({ "role": role, "content": content }));
+                    .collect();
+                let mut msg = json!({ "role": "assistant", "content": if texts.is_empty() { Value::Null } else { content(&texts) } });
+                if !calls.is_empty() {
+                    msg["tool_calls"] = Value::Array(calls);
+                }
+                messages.push(msg);
+            }
+        }
     }
     let mut body = json!({ "model": req.model, "messages": messages });
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                let mut function = json!({ "name": t.name, "description": t.description, "parameters": t.input_schema });
+                if t.strict {
+                    function["strict"] = json!(true);
+                }
+                json!({ "type": "function", "function": function })
+            })
+            .collect();
+        body["tools"] = Value::Array(tools);
+    }
     if let Some(n) = req.max_tokens {
         body[if openai { "max_completion_tokens" } else { "max_tokens" }] = json!(n);
     }
@@ -53,6 +104,7 @@ fn stop(reason: Option<&str>) -> Result<StopReason, ProviderError> {
     Ok(match reason {
         None | Some("stop") => StopReason::EndTurn,
         Some("length") => StopReason::MaxTokens,
+        Some("tool_calls" | "function_call") => StopReason::ToolUse,
         Some("content_filter") => return Err(ProviderError::new(ErrorKind::BlockedContent, "the reply was withheld by the provider's content filter")),
         Some(other) => StopReason::Other(other.to_owned()),
     })
@@ -62,19 +114,45 @@ fn malformed(what: &str) -> ProviderError {
     ProviderError::new(ErrorKind::Malformed, what.to_owned())
 }
 
+fn usage(u: Option<&Value>) -> Usage {
+    Usage {
+        input_tokens: u.and_then(|u| u.get("prompt_tokens")).and_then(Value::as_u64),
+        output_tokens: u.and_then(|u| u.get("completion_tokens")).and_then(Value::as_u64),
+        cost: None,
+    }
+}
+
+/// Arguments arrive as a JSON string; some local servers send the object itself.
+fn arguments(v: Option<&Value>) -> Value {
+    match v {
+        Some(Value::String(raw)) => tool_input(raw),
+        Some(Value::Null) | None => tool_input(""),
+        Some(other) => other.clone(),
+    }
+}
+
 pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
     let v: Value = serde_json::from_slice(body).map_err(|e| malformed(&format!("chat reply: {e}")))?;
     let choice = v.get("choices").and_then(|c| c.get(0)).ok_or_else(|| malformed("chat reply without choices"))?;
-    let text = choice.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let message = choice.get("message");
     let stop = stop(choice.get("finish_reason").and_then(Value::as_str))?;
-    let usage = v.get("usage");
-    Ok(ChatResponse {
-        text,
-        stop,
-        input_tokens: usage.and_then(|u| u.get("prompt_tokens")).and_then(Value::as_u64),
-        output_tokens: usage.and_then(|u| u.get("completion_tokens")).and_then(Value::as_u64),
-        reported_cost_usd: None,
-    })
+    let mut parts = Vec::new();
+    let text = message.and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or_default();
+    if !text.is_empty() {
+        parts.push(Part::Text(text.to_owned()));
+    }
+    let calls = message.and_then(|m| m.get("tool_calls")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    if calls.len() > MAX_REPLY_BLOCKS {
+        return Err(malformed("the reply has too many tool calls"));
+    }
+    for (i, call) in calls.iter().enumerate() {
+        let function = call.get("function");
+        let name =
+            function.and_then(|f| f.get("name")).and_then(Value::as_str).filter(|n| !n.is_empty()).ok_or_else(|| malformed("a tool call without a name"))?;
+        let id = call.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).map_or_else(|| format!("call_{i}"), str::to_owned);
+        parts.push(Part::ToolUse { id, name: name.to_owned(), input: arguments(function.and_then(|f| f.get("arguments"))) });
+    }
+    Ok(ChatResponse::new(parts, stop, usage(v.get("usage"))))
 }
 
 /// Handles one streamed event; returns new text, if any.
@@ -87,9 +165,8 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
     if let Some(err) = v.get("error") {
         return Err(error_from(None, err));
     }
-    if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
-        state.input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
-        state.output_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
+    if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
+        state.usage = usage(Some(u));
     }
     let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else { return Ok(None) };
     if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
@@ -97,11 +174,49 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
         // Some servers end the stream without `[DONE]`; a finish reason means the reply is whole.
         state.finished = true;
     }
-    let delta = choice.get("delta").and_then(|d| d.get("content")).and_then(Value::as_str).filter(|t| !t.is_empty());
-    if let Some(t) = delta {
+    let delta = choice.get("delta");
+    // Tool calls stream as pieces keyed by index: the id and name first, then the arguments.
+    let calls = delta.and_then(|d| d.get("tool_calls")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    for (i, call) in calls.iter().enumerate() {
+        let index = call.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
+        let block = state.block(index, || json!({ "id": "", "name": "" }))?;
+        if let Some(id) = call.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+            block.value["id"] = json!(id);
+        }
+        let function = call.get("function");
+        if let Some(name) = function.and_then(|f| f.get("name")).and_then(Value::as_str).filter(|n| !n.is_empty()) {
+            // Most servers send the name once; some repeat it on every piece, a few split it.
+            let known = block.value["name"].as_str().unwrap_or_default().to_owned();
+            if known != name {
+                block.value["name"] = json!(format!("{known}{name}"));
+            }
+        }
+        match function.and_then(|f| f.get("arguments")) {
+            Some(Value::String(piece)) => block.args.push_str(piece),
+            Some(Value::Null) | None => {}
+            Some(whole) => block.args = whole.to_string(),
+        }
+    }
+    let text = delta.and_then(|d| d.get("content")).and_then(Value::as_str).filter(|t| !t.is_empty());
+    if let Some(t) = text {
         state.text.push_str(t);
     }
-    Ok(delta.map(str::to_owned))
+    Ok(text.map(str::to_owned))
+}
+
+/// The streamed reply's parts: its text, then its tool calls in index order.
+pub(super) fn stream_parts(state: &mut StreamState) -> Vec<Part> {
+    let mut parts = Vec::new();
+    let text = std::mem::take(&mut state.text);
+    if !text.is_empty() {
+        parts.push(Part::Text(text));
+    }
+    for (index, block) in std::mem::take(&mut state.blocks) {
+        let name = block.value["name"].as_str().unwrap_or_default().to_owned();
+        let id = block.value["id"].as_str().filter(|id| !id.is_empty()).map_or_else(|| format!("call_{index}"), str::to_owned);
+        parts.push(Part::ToolUse { id, name, input: tool_input(&block.args) });
+    }
+    parts
 }
 
 fn error_from(status: Option<u16>, err: &Value) -> ProviderError {
@@ -171,7 +286,7 @@ mod tests {
     #[test]
     fn replies_and_finish_reasons() {
         let r = parse(br#"{"choices":[{"message":{"content":"Hi"},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":7}}"#).unwrap();
-        assert_eq!((r.text.as_str(), r.stop, r.input_tokens, r.output_tokens), ("Hi", StopReason::MaxTokens, Some(5), Some(7)));
+        assert_eq!((r.text.as_str(), r.stop, r.usage.input_tokens, r.usage.output_tokens), ("Hi", StopReason::MaxTokens, Some(5), Some(7)));
         assert_eq!(parse(br#"{"choices":[{"message":{"content":null},"finish_reason":"content_filter"}]}"#).unwrap_err().kind, ErrorKind::BlockedContent);
         assert_eq!(parse(br#"{"choices":[]}"#).unwrap_err().kind, ErrorKind::Malformed);
         assert_eq!(parse(b"<html>").unwrap_err().kind, ErrorKind::Malformed);
@@ -209,7 +324,7 @@ mod tests {
         assert_eq!(stream_event(&ev(r#"{"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"#), &mut s).unwrap().as_deref(), Some("lo"));
         stream_event(&ev(r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#), &mut s).unwrap();
         stream_event(&ev("[DONE]"), &mut s).unwrap();
-        assert_eq!((s.text.as_str(), s.finished, s.output_tokens), ("Hello", true, Some(2)));
+        assert_eq!((s.text.as_str(), s.finished, s.usage.output_tokens), ("Hello", true, Some(2)));
         assert_eq!(stream_event(&ev(r#"{"error":{"message":"overloaded","code":"rate_limit_exceeded"}}"#), &mut s).unwrap_err().kind, ErrorKind::RateLimited);
         assert!(stream_event(&ev("{"), &mut s).is_err());
     }

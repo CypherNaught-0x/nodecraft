@@ -40,7 +40,7 @@ fn serve(status: &str, content_type: &str, body: &'static str) -> String {
 }
 
 fn req(model: &str) -> ChatRequest {
-    ChatRequest { model: model.into(), system: None, messages: vec![Message::user("hi")], max_tokens: Some(50), temperature: None }
+    ChatRequest { model: model.into(), system: None, messages: vec![Message::user("hi")], max_tokens: Some(50), temperature: None, tools: vec![] }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -69,7 +69,7 @@ async fn anthropic_stream() {
     endpoint.base_url = format!("{base}/v1");
     let client = LlmClient::new(endpoint, Arc::new(ReqwestHttp::new().unwrap()));
     let reply = client.chat_stream(&req("claude-opus-5-5"), &mut |_| {}).await.unwrap();
-    assert_eq!((reply.text.as_str(), reply.input_tokens, reply.output_tokens), ("Bonjour", Some(5), Some(3)));
+    assert_eq!((reply.text.as_str(), reply.usage.input_tokens, reply.usage.output_tokens), ("Bonjour", Some(5), Some(3)));
 }
 
 #[tokio::test(flavor = "current_thread")]

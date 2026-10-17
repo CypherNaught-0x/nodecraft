@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use nodecraft_types::Money;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -27,6 +28,9 @@ pub trait MaybeSendSync {}
 impl<T: ?Sized> MaybeSendSync for T {}
 
 /// One input handed to a model.
+///
+/// Chat models read text inputs in order as a conversation: `system` text is the system prompt,
+/// `assistant` text is an earlier reply, and any other role (`prompt`, `user`, …) is the user's.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobInput {
     /// A text input in a role such as `prompt`, `negative_prompt` or `system`.
@@ -74,12 +78,36 @@ pub enum Output {
     },
 }
 
+/// What a job used, as far as the provider reports it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    /// What the provider says the job cost (LiteLLM, for example). `None` when it doesn't say;
+    /// budgets then charge the estimate.
+    pub cost: Option<Money>,
+}
+
+/// A finished job: its outputs and what it used.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Completed {
+    pub outputs: Vec<Output>,
+    pub usage: Usage,
+}
+
+impl Completed {
+    /// Outputs with no usage reported.
+    pub fn new(outputs: Vec<Output>) -> Self {
+        Self { outputs, usage: Usage::default() }
+    }
+}
+
 /// What [`Provider::submit`] returns: queue-style APIs hand back a handle to poll; synchronous
 /// ones (chat, OpenAI Images, TTS) finish within the request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Submission {
     Queued(JobHandle),
-    Finished(Vec<Output>),
+    Finished(Completed),
 }
 
 /// Where a job is, from [`Provider::poll`].
@@ -95,7 +123,7 @@ pub enum JobProgress {
         message: Option<String>,
         partial: Option<Output>,
     },
-    Done(Vec<Output>),
+    Done(Completed),
     Failed(ProviderError),
 }
 

@@ -5,22 +5,29 @@
 //!   and LiteLLM (which also reports per-request spend);
 //! - [`Dialect::Anthropic`]: the Anthropic Messages API.
 //!
-//! [`LlmClient`] sends a [`ChatRequest`] (text and images) and returns a [`ChatResponse`], either
-//! whole or streamed token by token, and implements [`Provider`] so text jobs go through the same
-//! queue as everything else.
+//! [`LlmClient`] sends a [`ChatRequest`] (a conversation of text, images, tool calls and tool
+//! results, plus the tools the model may call) and returns a [`ChatResponse`], either whole or
+//! streamed token by token. The reply comes back as a [`Message`] to append to the conversation
+//! as it is, so the next turn carries everything the model produced (including Claude's thinking
+//! blocks, which must be sent back unchanged). [`LlmClient`] also implements [`Provider`], so text
+//! jobs go through the same queue as everything else.
 
 mod anthropic;
 mod openai;
 pub mod sse;
+#[cfg(test)]
+mod turns_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use nodecraft_types::{Currency, Money};
 use serde_json::Value;
 
 use crate::http::{Http, HttpRequest};
-use crate::provider::{BoxFuture, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission};
+use crate::provider::{BoxFuture, Completed, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission, Usage};
 use crate::{ErrorKind, ProviderError};
 
 /// Cap on images per request and on their total size (before base64).
@@ -38,6 +45,14 @@ const STREAM_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 /// Pages of a model list followed before stopping.
 const MAX_MODEL_PAGES: usize = 20;
+/// Most tools a request may offer (OpenAI's limit).
+pub const MAX_TOOLS: usize = 128;
+/// Most content blocks (or tool calls) a reply may carry.
+const MAX_REPLY_BLOCKS: usize = 1024;
+/// Longest tool name both APIs accept.
+const MAX_TOOL_NAME: usize = 64;
+/// Longest tool call id accepted in a conversation.
+const MAX_TOOL_ID: usize = 256;
 
 /// An API key. Never printed: `Debug` shows `ApiKey(…)`.
 #[derive(Clone, PartialEq, Eq)]
@@ -143,10 +158,31 @@ pub enum Role {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {
     Text(String),
-    /// PNG, JPEG, GIF or WebP.
+    /// PNG, JPEG, GIF or WebP (user messages only).
     Image {
         mime: String,
         bytes: Arc<[u8]>,
+    },
+    /// A call the model made to one of the request's tools (assistant messages only). `input` is
+    /// the parsed arguments; when a server sends arguments that aren't JSON, it is the raw text as
+    /// a string, which fails any object schema: validate it before running the tool.
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    /// The answer to a [`Part::ToolUse`] of the previous assistant message (user messages only).
+    ToolResult {
+        id: String,
+        content: String,
+        is_error: bool,
+    },
+    /// A block only the dialect that produced it understands, such as Claude's thinking blocks.
+    /// Sent back unchanged in later turns (the model keeps its reasoning only if they are), and
+    /// left out when the conversation goes to an endpoint of the other dialect.
+    Opaque {
+        dialect: Dialect,
+        block: Value,
     },
 }
 
@@ -160,6 +196,38 @@ impl Message {
     pub fn user(text: impl Into<String>) -> Self {
         Self { role: Role::User, parts: vec![Part::Text(text.into())] }
     }
+
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self { role: Role::Assistant, parts: vec![Part::Text(text.into())] }
+    }
+
+    /// The text parts, joined.
+    pub fn text(&self) -> String {
+        self.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect()
+    }
+}
+
+/// A tool the model may call. The model picks whether to call one (`auto`): current Claude models
+/// reject forcing a call, so say in the prompt when a tool should be used, and check the reply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tool {
+    /// ASCII letters, digits, `_` and `-`, at most 64 characters.
+    pub name: String,
+    pub description: String,
+    /// A JSON Schema for the arguments; must be an object schema.
+    pub input_schema: Value,
+    /// Asks the endpoint to guarantee arguments that match the schema (OpenAI's and Anthropic's
+    /// strict mode). OpenAI then requires every property to be listed in `required` and
+    /// `additionalProperties: false`. Not sent unless set, since some local servers reject it.
+    pub strict: bool,
+}
+
+/// A tool call in a reply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToolCall<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub input: &'a Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +240,8 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// `None` leaves the model's default. Current Claude models reject sampling parameters.
     pub temperature: Option<f32>,
+    /// Tools the model may call; empty for plain chat.
+    pub tools: Vec<Tool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,17 +250,43 @@ pub enum StopReason {
     EndTurn,
     /// The reply hit `max_tokens` and is cut off.
     MaxTokens,
+    /// The model is waiting for the results of its tool calls.
+    ToolUse,
     Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatResponse {
+    /// The reply's text parts, joined.
     pub text: String,
+    /// The whole reply as an assistant message: append it to the conversation as it is.
+    pub message: Message,
     pub stop: StopReason,
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    /// Spend reported by the endpoint (LiteLLM's `x-litellm-response-cost`), in USD.
-    pub reported_cost_usd: Option<f64>,
+    /// Token counts, and the spend the endpoint reports (LiteLLM's `x-litellm-response-cost`).
+    pub usage: Usage,
+}
+
+impl ChatResponse {
+    fn new(parts: Vec<Part>, stop: StopReason, usage: Usage) -> Self {
+        let message = Message { role: Role::Assistant, parts };
+        Self { text: message.text(), message, stop, usage }
+    }
+
+    /// The tool calls the model made, in order.
+    pub fn tool_calls(&self) -> impl Iterator<Item = ToolCall<'_>> {
+        self.message.parts.iter().filter_map(|p| match p {
+            Part::ToolUse { id, name, input } => Some(ToolCall { id, name, input }),
+            _ => None,
+        })
+    }
+}
+
+/// Parses streamed or returned tool arguments; see [`Part::ToolUse`].
+fn tool_input(raw: &str) -> Value {
+    if raw.trim().is_empty() {
+        return Value::Object(Default::default());
+    }
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
 }
 
 const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -204,14 +300,34 @@ impl ChatRequest {
             return bad("no model chosen".into());
         }
         for m in &mut self.messages {
-            m.parts.retain(|p| !matches!(p, Part::Text(t) if t.trim().is_empty()));
+            m.parts.retain(|p| match p {
+                Part::Text(t) => !t.trim().is_empty(),
+                Part::Opaque { dialect: d, .. } => *d == dialect,
+                _ => true,
+            });
         }
         if self.messages.is_empty() || self.messages.iter().any(|m| m.parts.is_empty()) {
             return bad("nothing to send: a message has no text or image".into());
         }
-        if self.messages.iter().any(|m| m.role == Role::Assistant && m.parts.iter().any(|p| matches!(p, Part::Image { .. }))) {
-            return bad("only user messages can carry images".into());
+        for m in &self.messages {
+            for p in &m.parts {
+                let ok = match p {
+                    Part::Image { .. } | Part::ToolResult { .. } => m.role == Role::User,
+                    Part::ToolUse { .. } => m.role == Role::Assistant,
+                    Part::Text(_) | Part::Opaque { .. } => true,
+                };
+                if !ok {
+                    let what = match p {
+                        Part::Image { .. } => "only user messages can carry images",
+                        Part::ToolResult { .. } => "only user messages can carry tool results",
+                        _ => "only assistant messages can carry tool calls",
+                    };
+                    return bad(what.into());
+                }
+            }
         }
+        check_tool_pairs(&self.messages)?;
+        check_tools(&self.tools)?;
         if dialect == Dialect::Anthropic && self.messages.last().is_some_and(|m| m.role == Role::Assistant) {
             return bad("the conversation must end with a user message".into());
         }
@@ -230,7 +346,7 @@ impl ChatRequest {
             .flat_map(|m| &m.parts)
             .filter_map(|p| match p {
                 Part::Image { mime, bytes } => Some((mime, bytes.len())),
-                Part::Text(_) => None,
+                _ => None,
             })
             .collect();
         if images.len() > MAX_IMAGES {
@@ -245,6 +361,67 @@ impl ChatRequest {
         }
         Ok(())
     }
+}
+
+/// Every tool call is answered in the next message, and every result answers a call in the
+/// previous one: both APIs refuse a conversation that breaks this.
+fn check_tool_pairs(messages: &[Message]) -> Result<(), ProviderError> {
+    let bad = |m: String| Err(ProviderError::new(ErrorKind::UnsupportedInput, m));
+    let calls =
+        |m: &Message| -> HashSet<String> { m.parts.iter().filter_map(|p| if let Part::ToolUse { id, .. } = p { Some(id.clone()) } else { None }).collect() };
+    let results =
+        |m: &Message| -> Vec<String> { m.parts.iter().filter_map(|p| if let Part::ToolResult { id, .. } = p { Some(id.clone()) } else { None }).collect() };
+    let mut open: HashSet<String> = HashSet::new();
+    for m in messages {
+        for p in &m.parts {
+            let (Part::ToolUse { id, .. } | Part::ToolResult { id, .. }) = p else { continue };
+            if id.is_empty() || id.len() > MAX_TOOL_ID {
+                return bad("a tool call id is empty or too long".into());
+            }
+        }
+        let answered = results(m);
+        if let Some(stray) = answered.iter().find(|id| !open.contains(*id)) {
+            return bad(format!("the tool result for {:?} doesn't answer a call in the previous message", stray.chars().take(64).collect::<String>()));
+        }
+        if open.iter().any(|id| !answered.contains(id)) {
+            return bad("every tool call needs its result in the next message".into());
+        }
+        open = calls(m);
+    }
+    if !open.is_empty() {
+        return bad("every tool call needs its result in the next message".into());
+    }
+    Ok(())
+}
+
+fn check_tools(tools: &[Tool]) -> Result<(), ProviderError> {
+    let bad = |m: String| Err(ProviderError::new(ErrorKind::UnsupportedInput, m));
+    if tools.len() > MAX_TOOLS {
+        return bad(format!("{} tools is more than the {MAX_TOOLS} a request may offer", tools.len()));
+    }
+    let mut seen = HashSet::new();
+    for t in tools {
+        let ok = !t.name.is_empty() && t.name.len() <= MAX_TOOL_NAME && t.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !ok {
+            return bad(format!(
+                "{:?} isn't a valid tool name (letters, digits, _ and -, at most {MAX_TOOL_NAME})",
+                t.name.chars().take(80).collect::<String>()
+            ));
+        }
+        if !seen.insert(t.name.as_str()) {
+            return bad(format!("two tools are named {}", t.name));
+        }
+        if !t.input_schema.is_object() || t.input_schema.get("type").and_then(Value::as_str) != Some("object") {
+            return bad(format!("the {} tool's input schema must be an object schema", t.name));
+        }
+    }
+    Ok(())
+}
+
+/// A reported USD spend as money, rounded up to the micro-dollar so a charge is never free.
+fn usd(cost: f64) -> Option<Money> {
+    // Bounded before the cast: NaN, negative and absurd amounts are ignored.
+    (cost.is_finite() && (0.0..1e12).contains(&cost)).then(|| Money::new(Currency::USD, (cost * 1e6).ceil() as u64))
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -334,7 +511,7 @@ impl LlmClient {
             Dialect::OpenAi => openai::parse(&response.body)?,
             Dialect::Anthropic => anthropic::parse(&response.body)?,
         };
-        reply.reported_cost_usd = cost;
+        reply.usage.cost = cost;
         Ok(reply)
     }
 
@@ -391,13 +568,12 @@ impl LlmClient {
         if !state.finished {
             return Err(ProviderError::new(ErrorKind::Network, "the reply stream ended early"));
         }
-        Ok(ChatResponse {
-            text: state.text,
-            stop: state.stop.unwrap_or(StopReason::EndTurn),
-            input_tokens: state.input_tokens,
-            output_tokens: state.output_tokens,
-            reported_cost_usd: cost,
-        })
+        let parts = match dialect {
+            Dialect::OpenAi => openai::stream_parts(&mut state),
+            Dialect::Anthropic => anthropic::stream_parts(&mut state),
+        };
+        let stop = state.stop.take().unwrap_or(StopReason::EndTurn);
+        Ok(ChatResponse::new(parts, stop, Usage { cost, ..state.usage }))
     }
 
     /// The model ids the endpoint offers (`GET /models`; Anthropic's list is paged).
@@ -426,6 +602,22 @@ impl LlmClient {
         Ok(ids)
     }
 
+    /// What a LiteLLM proxy's key has spent, and its budget (`GET /key/info`), for the budgets
+    /// panel. Other endpoints don't report spend: they answer with an error.
+    pub async fn litellm_key_info(&self) -> Result<KeySpend, ProviderError> {
+        if self.endpoint.dialect != Dialect::OpenAi {
+            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "only LiteLLM proxies report key spend"));
+        }
+        let root = self.endpoint.base_url.trim_end_matches('/');
+        let root = root.strip_suffix("/v1").unwrap_or(root);
+        let response = self.http.send(self.auth(HttpRequest::get(format!("{root}/key/info")).max_response_bytes(1024 * 1024))).await?;
+        let response = self.error_for(response)?;
+        let v: Value = response.json()?;
+        let info = v.get("info").ok_or_else(|| ProviderError::new(ErrorKind::Malformed, "key info without `info`"))?;
+        let amount = |k: &str| info.get(k).and_then(Value::as_f64).and_then(usd);
+        Ok(KeySpend { spent: amount("spend"), max_budget: amount("max_budget") })
+    }
+
     fn error_for(&self, response: crate::http::HttpResponse) -> Result<crate::http::HttpResponse, ProviderError> {
         if response.is_success() {
             return Ok(response);
@@ -439,42 +631,77 @@ impl LlmClient {
     }
 }
 
+/// A LiteLLM key's spend and budget, in USD; `None` where the proxy doesn't say (no budget set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeySpend {
+    pub spent: Option<Money>,
+    pub max_budget: Option<Money>,
+}
+
 /// What a stream has accumulated.
 #[derive(Debug, Default)]
 pub(crate) struct StreamState {
+    /// The text so far (OpenAI; Anthropic keeps text in its blocks too).
     text: String,
     stop: Option<StopReason>,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
+    usage: Usage,
     finished: bool,
+    /// Content blocks (Anthropic) or tool calls (OpenAI) by the index the server gives them.
+    blocks: BTreeMap<u64, StreamBlock>,
 }
 
-fn reported_cost(headers: &[(String, String)]) -> Option<f64> {
-    headers.iter().find(|(n, _)| n == "x-litellm-response-cost").and_then(|(_, v)| v.trim().parse::<f64>().ok()).filter(|c| c.is_finite() && *c >= 0.0)
+/// A block being streamed: its JSON so far, and the tool arguments, which arrive as text.
+#[derive(Debug, Default)]
+pub(crate) struct StreamBlock {
+    value: Value,
+    args: String,
 }
 
-/// Turns a provider job into a chat request: `system` and `prompt` text inputs, image inputs,
-/// and the `max_tokens` / `temperature` params.
+impl StreamState {
+    /// The block at `index`, created from `start` if new. Bounded: a hostile server can't make
+    /// endless blocks.
+    fn block(&mut self, index: u64, start: impl FnOnce() -> Value) -> Result<&mut StreamBlock, ProviderError> {
+        if !self.blocks.contains_key(&index) && self.blocks.len() >= MAX_REPLY_BLOCKS {
+            return Err(ProviderError::new(ErrorKind::Malformed, format!("the reply has more than {MAX_REPLY_BLOCKS} parts")));
+        }
+        Ok(self.blocks.entry(index).or_insert_with(|| StreamBlock { value: start(), args: String::new() }))
+    }
+}
+
+fn reported_cost(headers: &[(String, String)]) -> Option<Money> {
+    headers.iter().find(|(n, _)| n == "x-litellm-response-cost").and_then(|(_, v)| v.trim().parse::<f64>().ok()).and_then(usd)
+}
+
+/// Turns a provider job into a chat request: the conversation from its inputs (`system` text,
+/// earlier `assistant` replies, and the user's text and images, in order; see [`JobInput`]), and
+/// the `max_tokens` / `temperature` params.
 pub fn chat_request(job: &ProviderJob) -> Result<ChatRequest, ProviderError> {
     let mut system = None;
-    let mut parts = Vec::new();
+    let mut messages: Vec<Message> = Vec::new();
     for input in &job.inputs {
-        match input {
+        let (role, part) = match input {
             JobInput::Text { role, text } if role == "system" => {
                 // Several system inputs are joined, not silently replaced.
                 system = Some(match system.take() {
                     Some(prev) => format!("{prev}\n\n{text}"),
                     None => text.clone(),
                 });
+                continue;
             }
-            JobInput::Text { text, .. } => parts.push(Part::Text(text.clone())),
-            JobInput::Media { mime, bytes, .. } => parts.push(Part::Image { mime: mime.clone(), bytes: bytes.clone() }),
+            JobInput::Text { role, text } if role == "assistant" => (Role::Assistant, Part::Text(text.clone())),
+            JobInput::Text { text, .. } => (Role::User, Part::Text(text.clone())),
+            JobInput::Media { mime, bytes, .. } => (Role::User, Part::Image { mime: mime.clone(), bytes: bytes.clone() }),
+        };
+        // Consecutive inputs of one role make one message.
+        match messages.last_mut() {
+            Some(last) if last.role == role => last.parts.push(part),
+            _ => messages.push(Message { role, parts: vec![part] }),
         }
     }
     let max_tokens = job.params.get("max_tokens").and_then(Value::as_u64).map(|n| u32::try_from(n).unwrap_or(u32::MAX).clamp(1, 128_000));
     // Range checks happen at send time, per dialect, so a bad value is reported, not altered.
     let temperature = job.params.get("temperature").and_then(Value::as_f64).filter(|t| t.is_finite()).map(|t| t as f32);
-    Ok(ChatRequest { model: job.model.clone(), system, messages: vec![Message { role: Role::User, parts }], max_tokens, temperature })
+    Ok(ChatRequest { model: job.model.clone(), system, messages, max_tokens, temperature, tools: Vec::new() })
 }
 
 /// Text generations finish within one request, so `submit` returns the result directly
@@ -488,7 +715,7 @@ impl Provider for LlmClient {
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(async move {
             let reply = self.chat(&chat_request(job)?).await?;
-            Ok(Submission::Finished(vec![Output::Text(reply.text)]))
+            Ok(Submission::Finished(Completed { outputs: vec![Output::Text(reply.text)], usage: reply.usage }))
         })
     }
 
@@ -550,6 +777,7 @@ pub(crate) mod tests {
             }],
             max_tokens: Some(100),
             temperature: Some(0.5),
+            tools: vec![],
         }
     }
 
@@ -652,11 +880,14 @@ pub(crate) mod tests {
             idempotency_key: "k".into(),
         };
         let done = futures::executor::block_on(client.submit(&job)).unwrap();
-        assert_eq!(done, Submission::Finished(vec![Output::Text("Hello!".into())]));
+        let Submission::Finished(done) = done else { panic!("queued") };
+        assert_eq!(done.outputs, vec![Output::Text("Hello!".into())]);
+        assert_eq!((done.usage.input_tokens, done.usage.output_tokens), (Some(3), Some(2)), "usage reaches the job result");
+        assert_eq!(done.usage.cost, Some(Money::new(Currency::USD, 1200)));
         let costed = Canned::with_headers(200, r#"{"choices":[{"message":{"content":"x"}}]}"#, vec![("x-litellm-response-cost".into(), "0.0012".into())]);
         let proxy = LlmClient::new(Endpoint::litellm("http://proxy:4000", None), costed);
         let reply = futures::executor::block_on(proxy.chat(&chat_request(&job).unwrap())).unwrap();
-        assert_eq!(reply.reported_cost_usd, Some(0.0012), "LiteLLM spend is reported");
+        assert_eq!(reply.usage.cost, Some(Money::new(Currency::USD, 1200)), "LiteLLM spend is reported");
         assert_eq!(http.request().url, "http://proxy:4000/v1/chat/completions");
         assert_eq!(client.id(), "litellm");
     }

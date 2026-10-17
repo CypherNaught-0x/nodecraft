@@ -2741,6 +2741,7 @@ dependencies = [
  "nodecraft-catalog",
  "nodecraft-comfy",
  "nodecraft-media",
+ "nodecraft-types",
  "reqwest",
  "serde",
  "serde_json",

@@ -7,7 +7,8 @@
 use serde_json::{Value, json};
 
 use super::sse::SseEvent;
-use super::{ChatRequest, ChatResponse, Part, Role, StopReason, StreamState, base64};
+use super::{ChatRequest, ChatResponse, Dialect, MAX_REPLY_BLOCKS, Part, Role, StopReason, StreamState, base64, tool_input};
+use crate::provider::Usage;
 use crate::{ErrorKind, ProviderError};
 
 pub(super) const VERSION: &str = "2023-06-01";
@@ -23,6 +24,23 @@ pub(super) fn rejects_sampling(model: &str) -> bool {
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 
 pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
+    let block = |p: &Part| match p {
+        Part::Text(t) => json!({ "type": "text", "text": t }),
+        Part::Image { mime, bytes } => json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
+        // Claude's own calls always carry an object; arguments from another server that weren't
+        // JSON can't be sent as tool input.
+        Part::ToolUse { id, name, input } => {
+            json!({ "type": "tool_use", "id": id, "name": name, "input": if input.is_object() { input.clone() } else { json!({}) } })
+        }
+        Part::ToolResult { id, content, is_error } => {
+            let mut b = json!({ "type": "tool_result", "tool_use_id": id, "content": content });
+            if *is_error {
+                b["is_error"] = json!(true);
+            }
+            b
+        }
+        Part::Opaque { block, .. } => block.clone(),
+    };
     let messages: Vec<Value> = req
         .messages
         .iter()
@@ -31,15 +49,11 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
                 Role::User => "user",
                 Role::Assistant => "assistant",
             };
-            // The user's order is kept (captions like "Image 1:" sit next to their image).
-            let content: Vec<Value> = m
-                .parts
-                .iter()
-                .map(|p| match p {
-                    Part::Text(t) => json!({ "type": "text", "text": t }),
-                    Part::Image { mime, bytes } => json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
-                })
-                .collect();
+            // The user's order is kept (captions like "Image 1:" sit next to their image), except
+            // that tool results must come first.
+            let results = m.parts.iter().filter(|p| matches!(p, Part::ToolResult { .. }));
+            let others = m.parts.iter().filter(|p| !matches!(p, Part::ToolResult { .. }));
+            let content: Vec<Value> = results.chain(others).map(block).collect();
             json!({ "role": role, "content": content })
         })
         .collect();
@@ -48,6 +62,21 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
     let mut body = json!({ "model": req.model, "max_tokens": max_tokens, "messages": messages });
     if let Some(system) = &req.system {
         body["system"] = json!(system);
+    }
+    if !req.tools.is_empty() {
+        // No `tool_choice`: the default is `auto`, and current models reject forcing a call.
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                let mut tool = json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema });
+                if t.strict {
+                    tool["strict"] = json!(true);
+                }
+                tool
+            })
+            .collect();
+        body["tools"] = Value::Array(tools);
     }
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
@@ -62,6 +91,7 @@ fn stop(reason: Option<&str>) -> Result<StopReason, ProviderError> {
     Ok(match reason {
         None | Some("end_turn") | Some("stop_sequence") => StopReason::EndTurn,
         Some("max_tokens") => StopReason::MaxTokens,
+        Some("tool_use") => StopReason::ToolUse,
         Some("refusal") => return Err(ProviderError::new(ErrorKind::BlockedContent, "Claude declined this request")),
         Some(other) => StopReason::Other(other.to_owned()),
     })
@@ -71,44 +101,98 @@ fn malformed(what: &str) -> ProviderError {
     ProviderError::new(ErrorKind::Malformed, what.to_owned())
 }
 
+/// A finished content block as a part: text and tool calls are understood, everything else
+/// (thinking, redacted thinking, server tool blocks) is kept as it came. `args` is a streamed
+/// tool call's input text.
+fn part(block: Value, args: Option<&str>) -> Option<Part> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => Some(Part::Text(block.get("text").and_then(Value::as_str).filter(|t| !t.is_empty())?.to_owned())),
+        Some("tool_use") => {
+            let id = block.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let name = block.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let input = match args {
+                Some(raw) if !raw.trim().is_empty() => tool_input(raw),
+                _ => block.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
+            };
+            Some(Part::ToolUse { id, name, input })
+        }
+        _ => Some(Part::Opaque { dialect: Dialect::Anthropic, block }),
+    }
+}
+
 pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
     let v: Value = serde_json::from_slice(body).map_err(|e| malformed(&format!("messages reply: {e}")))?;
     let content = v.get("content").and_then(Value::as_array).ok_or_else(|| malformed("messages reply without content"))?;
     // Stop reason first: a refusal must not surface partial text as a result.
     let stop = stop(v.get("stop_reason").and_then(Value::as_str))?;
-    let text: String =
-        content.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("text")).filter_map(|b| b.get("text").and_then(Value::as_str)).collect();
+    if content.len() > MAX_REPLY_BLOCKS {
+        return Err(malformed("the reply has too many parts"));
+    }
+    let parts = content.iter().filter_map(|b| part(b.clone(), None)).collect();
     let usage = v.get("usage");
-    Ok(ChatResponse {
-        text,
-        stop,
+    let usage = Usage {
         input_tokens: usage.and_then(|u| u.get("input_tokens")).and_then(Value::as_u64),
         output_tokens: usage.and_then(|u| u.get("output_tokens")).and_then(Value::as_u64),
-        reported_cost_usd: None,
-    })
+        cost: None,
+    };
+    Ok(ChatResponse::new(parts, stop, usage))
+}
+
+/// Appends `piece` to the string field `key` of a streamed block.
+fn append(block: &mut Value, key: &str, piece: &str) {
+    if let Some(obj) = block.as_object_mut() {
+        let mut s = obj.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+        s.push_str(piece);
+        obj.insert(key.to_owned(), Value::String(s));
+    }
 }
 
 pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Option<String>, ProviderError> {
     let v: Value = serde_json::from_str(&e.data).map_err(|err| malformed(&format!("stream event: {err}")))?;
     let kind = v.get("type").and_then(Value::as_str).or(e.event.as_deref()).unwrap_or_default();
+    let index = v.get("index").and_then(Value::as_u64).unwrap_or(0);
     match kind {
         "message_start" => {
-            state.input_tokens = v.get("message").and_then(|m| m.get("usage")).and_then(|u| u.get("input_tokens")).and_then(Value::as_u64);
+            state.usage.input_tokens = v.get("message").and_then(|m| m.get("usage")).and_then(|u| u.get("input_tokens")).and_then(Value::as_u64);
+            Ok(None)
+        }
+        "content_block_start" => {
+            let start = v.get("content_block").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+            state.block(index, || start)?;
             Ok(None)
         }
         "content_block_delta" => {
-            let delta = v.get("delta");
-            if delta.and_then(|d| d.get("type")).and_then(Value::as_str) != Some("text_delta") {
-                return Ok(None); // thinking, tool input, citations
+            let Some(delta) = v.get("delta") else { return Ok(None) };
+            let piece = |key: &str| delta.get(key).and_then(Value::as_str).unwrap_or_default();
+            match delta.get("type").and_then(Value::as_str).unwrap_or_default() {
+                "text_delta" => {
+                    let text = piece("text");
+                    append(&mut state.block(index, || json!({ "type": "text", "text": "" }))?.value, "text", text);
+                    state.text.push_str(text);
+                    Ok((!text.is_empty()).then(|| text.to_owned()))
+                }
+                "input_json_delta" => {
+                    state.block(index, || json!({ "type": "tool_use" }))?.args.push_str(piece("partial_json"));
+                    Ok(None)
+                }
+                "thinking_delta" => {
+                    append(&mut state.block(index, || json!({ "type": "thinking", "thinking": "" }))?.value, "thinking", piece("thinking"));
+                    Ok(None)
+                }
+                "signature_delta" => {
+                    let block = state.block(index, || json!({ "type": "thinking", "thinking": "" }))?;
+                    if let Some(obj) = block.value.as_object_mut() {
+                        obj.insert("signature".into(), json!(piece("signature")));
+                    }
+                    Ok(None)
+                }
+                _ => Ok(None), // citations, future deltas
             }
-            let text = delta.and_then(|d| d.get("text")).and_then(Value::as_str).unwrap_or_default();
-            state.text.push_str(text);
-            Ok((!text.is_empty()).then(|| text.to_owned()))
         }
         "message_delta" => {
             state.stop = Some(stop(v.get("delta").and_then(|d| d.get("stop_reason")).and_then(Value::as_str))?);
             if let Some(n) = v.get("usage").and_then(|u| u.get("output_tokens")).and_then(Value::as_u64) {
-                state.output_tokens = Some(n);
+                state.usage.output_tokens = Some(n);
             }
             Ok(None)
         }
@@ -117,8 +201,13 @@ pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Opti
             Ok(None)
         }
         "error" => Err(error_from(v.get("error").unwrap_or(&Value::Null), None)),
-        _ => Ok(None), // ping, content_block_start/stop, future events
+        _ => Ok(None), // ping, content_block_stop, future events
     }
+}
+
+/// The streamed reply's parts, in block order.
+pub(super) fn stream_parts(state: &mut StreamState) -> Vec<Part> {
+    std::mem::take(&mut state.blocks).into_values().filter_map(|b| part(b.value, Some(&b.args))).collect()
 }
 
 fn error_from(err: &Value, status: Option<u16>) -> ProviderError {
@@ -183,7 +272,7 @@ mod tests {
     #[test]
     fn replies() {
         let r = parse(br#"{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"Hello "},{"type":"text","text":"there"}],"stop_reason":"max_tokens","usage":{"input_tokens":4,"output_tokens":9}}"#).unwrap();
-        assert_eq!((r.text.as_str(), r.stop, r.output_tokens), ("Hello there", StopReason::MaxTokens, Some(9)));
+        assert_eq!((r.text.as_str(), r.stop, r.usage.output_tokens), ("Hello there", StopReason::MaxTokens, Some(9)));
         let refused = parse(br#"{"content":[{"type":"text","text":"partial"}],"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}}"#)
             .unwrap_err();
         assert_eq!(refused.kind, ErrorKind::BlockedContent);
@@ -226,7 +315,7 @@ mod tests {
             }
         }
         assert_eq!(pieces, ["Hel", "lo"]);
-        assert_eq!((s.text.as_str(), s.finished, s.input_tokens, s.output_tokens), ("Hello", true, Some(12), Some(12)));
+        assert_eq!((s.text.as_str(), s.finished, s.usage.input_tokens, s.usage.output_tokens), ("Hello", true, Some(12), Some(12)));
         let err = stream_event(&ev("error", r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#), &mut s).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Busy);
         let refusal = stream_event(&ev("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"refusal"}}"#), &mut s).unwrap_err();

@@ -26,7 +26,7 @@ use serde_json::{Map, Value};
 use nodecraft_comfy::{self as comfy, ApiWorkflow, ComfyError, FileRef, HistoryEntry, InputKind, NodeCatalog, PromptRequest, QueueState, Server, UploadKind};
 
 use crate::http::{Http, HttpMethod, HttpRequest, HttpResponse};
-use crate::provider::{BoxFuture, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission};
+use crate::provider::{BoxFuture, Completed, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission};
 use crate::{ErrorKind, ProviderError};
 
 /// Cap on one downloaded output file.
@@ -417,7 +417,7 @@ impl Provider for ComfyProvider {
                 Known::Pending(i) => Ok(JobProgress::Queued { position: u32::try_from(i.saturating_add(1)).ok() }),
                 Known::Running => Ok(JobProgress::Running { fraction: None, message: None, partial: None }),
                 Known::Finished(entry) => match finished(&entry) {
-                    Ok(files) => Ok(JobProgress::Done(self.download(&files).await?)),
+                    Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
                     Err(e) => Ok(JobProgress::Failed(e)),
                 },
                 // Not queued, running or in history: the server restarted (history is in memory).
@@ -616,7 +616,7 @@ mod tests {
         // Running at the queue read; history then shows it done.
         FakeServer::set(&server.queue, &[EMPTY_QUEUE]);
         FakeServer::set(&server.history, &[&history_ok("abc", r#"[{"filename":"o.png","subfolder":"","type":"output"}]"#)]);
-        assert!(matches!(block_on(p.poll(&handle_for("abc"))).unwrap(), JobProgress::Done(o) if o.len() == 1));
+        assert!(matches!(block_on(p.poll(&handle_for("abc"))).unwrap(), JobProgress::Done(o) if o.outputs.len() == 1));
     }
 
     #[test]
@@ -632,7 +632,7 @@ mod tests {
             &server.history,
             &[&history_ok("abc", r#"[{"filename":"a.png","subfolder":"","type":"output"},{"filename":"p.png","subfolder":"","type":"temp"}]"#)],
         );
-        let JobProgress::Done(outputs) = block_on(p.poll(&handle_for("abc"))).unwrap() else { panic!("not done") };
+        let JobProgress::Done(Completed { outputs, .. }) = block_on(p.poll(&handle_for("abc"))).unwrap() else { panic!("not done") };
         assert_eq!(outputs.len(), 1, "previews (temp) are not outputs");
         assert!(matches!(&outputs[0], Output::Bytes { mime, .. } if mime == "image/png"));
     }
