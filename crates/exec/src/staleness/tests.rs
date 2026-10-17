@@ -88,7 +88,7 @@ fn stamp(project: &mut Project, kinds: &Registry, n: u8) {
     let hash = input_hash(project.canvases().get(&C).unwrap(), kinds, id(n)).unwrap();
     let serial = project.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().history.len();
     let g = generation(n.wrapping_mul(16).wrapping_add(u8::try_from(serial).unwrap()));
-    let result = Generation { id: g, outputs: vec![Value::Text(format!("result {n}"))], input_hash: Some(hash) };
+    let result = Generation { id: g, outputs: vec![Value::Text(format!("result {n}.{serial}"))], input_hash: Some(hash) };
     Changeset::new(vec![
         Change::AddGeneration { canvas: C, id: id(n), index: serial, generation: result },
         Change::SetActiveGeneration { canvas: C, id: id(n), generation: Some(g) },
@@ -224,4 +224,169 @@ fn configuration_counts_and_nodes_their_kind_rejects_are_unknown() {
     Change::SetNode { canvas: C, node: bad }.apply(&mut q).unwrap();
     assert!(input_hash(q.canvases().get(&C).unwrap(), &kinds(), id(3)).is_err());
     assert!(stale_of(&q).is_empty());
+}
+
+/// Replaces node `n`'s active result outputs in place, keeping its id and recorded hash.
+fn rewrite_active(project: &mut Project, n: u8, outputs: Vec<Value>) {
+    let mut node = project.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().clone();
+    let active = node.active.unwrap();
+    node.history.iter_mut().find(|g| g.id == active).unwrap().outputs = outputs;
+    Change::SetNode { canvas: C, node }.apply(project).unwrap();
+}
+
+#[test]
+fn a_result_rewritten_under_the_same_id_makes_downstream_stale() {
+    let mut p = project();
+    rewrite_active(&mut p, 2, vec![Value::Text("something else".into())]);
+    // 2's own inputs didn't change; 3 was built on different content.
+    assert_eq!(stale_of(&p), [id(3)].into_iter().collect());
+    // Removed and re-added under the same id with other content: the same.
+    let mut q = project();
+    let node = q.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    let old = node.history.last().unwrap().clone();
+    Changeset::new(vec![
+        Change::SetActiveGeneration { canvas: C, id: id(2), generation: None },
+        Change::RemoveGeneration { canvas: C, id: id(2), generation: old.id },
+        Change::AddGeneration { canvas: C, id: id(2), index: 0, generation: Generation { outputs: vec![Value::Text("swapped".into())], ..old.clone() } },
+        Change::SetActiveGeneration { canvas: C, id: id(2), generation: Some(old.id) },
+    ])
+    .apply(&mut q)
+    .unwrap();
+    assert_eq!(stale_of(&q), [id(3)].into_iter().collect());
+}
+
+#[test]
+fn an_identical_rerun_upstream_keeps_downstream_fresh() {
+    let mut p = project();
+    let same = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().history.last().unwrap().outputs.clone();
+    let g = generation(200);
+    Changeset::new(vec![
+        Change::AddGeneration { canvas: C, id: id(2), index: 1, generation: Generation::new(g, same) },
+        Change::SetActiveGeneration { canvas: C, id: id(2), generation: Some(g) },
+    ])
+    .apply(&mut p)
+    .unwrap();
+    assert!(stale_of(&p).is_empty());
+}
+
+/// A two-output generator: the hash of a consumer covers only the output port it reads.
+struct Pair(NodeDescriptor);
+impl NodeKind for Pair {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("pair").ok()
+    }
+    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn only_the_selected_upstream_output_counts() {
+    let mut kinds = kinds();
+    kinds
+        .register(Box::new(Pair(NodeDescriptor {
+            id: "test.pair".into(),
+            label: "Pair".into(),
+            category: Category::Generation,
+            inputs: vec![],
+            outputs: vec![Port { name: "a".into(), port_type: TEXT }, Port { name: "b".into(), port_type: TEXT }],
+            params: ParamSchema::default(),
+            quick_add: None,
+        })))
+        .unwrap();
+    let mut p = project();
+    let pair = kinds.get("test.pair").unwrap().descriptor().instantiate(id(5), &Default::default()).unwrap();
+    let g = generation(150);
+    let reads_b =
+        Edge { id: EdgeId::from_bytes([20; 16]), from: Endpoint { node: id(5), port: "b".into() }, to: Endpoint { node: id(3), port: "in".into() }, order: 1 };
+    Changeset::new(vec![
+        Change::AddNode { canvas: C, node: pair },
+        Change::AddGeneration { canvas: C, id: id(5), index: 0, generation: Generation::new(g, vec![Value::Text("A".into()), Value::Text("B".into())]) },
+        Change::SetActiveGeneration { canvas: C, id: id(5), generation: Some(g) },
+        Change::Connect { canvas: C, edge: reads_b },
+    ])
+    .apply(&mut p)
+    .unwrap();
+    stamp(&mut p, &kinds, 3);
+    let check = |p: &Project| stale(p.canvases().get(&C).unwrap(), &kinds).unwrap();
+    assert!(check(&p).is_empty());
+    let mut q = p.clone();
+    rewrite_active(&mut q, 5, vec![Value::Text("A changed".into()), Value::Text("B".into())]);
+    assert!(check(&q).is_empty(), "3 reads only b");
+    rewrite_active(&mut q, 5, vec![Value::Text("A".into()), Value::Text("B changed".into())]);
+    assert_eq!(check(&q), [id(3)].into_iter().collect());
+}
+
+#[test]
+fn a_large_source_fanned_out_is_hashed_once_and_oversized_queries_are_refused() {
+    let kinds = kinds();
+    let mut p = project();
+    // Close to the text node's limit, feeding 2,000 stamped generators.
+    let big = "x".repeat(1_000_000);
+    let mut source = p.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
+    source.params.insert("text".into(), Value::Text(big.clone()));
+    let mut changes = vec![Change::SetNode { canvas: C, node: source }];
+    let gen_id = |i: u16| NodeId::from_bytes(u128::from(0x1000u32 + u32::from(i)).to_be_bytes());
+    for i in 0..2000u16 {
+        let node = kinds.get("test.gen").unwrap().descriptor().instantiate(gen_id(i), &Default::default()).unwrap();
+        changes.push(Change::AddNode { canvas: C, node });
+        let edge = Edge {
+            id: EdgeId::from_bytes(u128::from(0x9000u32 + u32::from(i)).to_be_bytes()),
+            from: Endpoint { node: id(1), port: "out".into() },
+            to: Endpoint { node: gen_id(i), port: "in".into() },
+            order: 0,
+        };
+        changes.push(Change::Connect { canvas: C, edge });
+    }
+    Changeset::new(changes).apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let hash = input_hash(canvas, &kinds, gen_id(0)).unwrap();
+    let mut stamps = Vec::new();
+    for i in 0..2000u16 {
+        let g = GenerationId::from_bytes(u128::from(0x5000u32 + u32::from(i)).to_be_bytes());
+        stamps.push(Change::AddGeneration {
+            canvas: C,
+            id: gen_id(i),
+            index: 0,
+            generation: Generation { id: g, outputs: vec![Value::Text("r".into())], input_hash: Some(hash) },
+        });
+        stamps.push(Change::SetActiveGeneration { canvas: C, id: gen_id(i), generation: Some(g) });
+    }
+    Changeset::new(stamps).apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let (stale_set, hashed) = stale_within(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
+    // Only the fixture's 2 and 3 (stamped before the source changed) are stale.
+    assert_eq!(stale_set, [id(2), id(3)].into_iter().collect());
+    // The megabyte is charged once, not 2,000 times.
+    assert!(hashed >= big.len() && hashed < 2 * big.len(), "hashed {hashed} bytes");
+    // With a budget smaller than the canvas, the query is refused rather than run.
+    assert_eq!(stale_within(canvas, &kinds, 500_000).unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn results_stamped_under_an_older_recipe_are_stale() {
+    let mut p = project();
+    // A hash made under another domain tag (an older recipe) can't be told from changed inputs.
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    let active = node.active.unwrap();
+    node.history.iter_mut().find(|g| g.id == active).unwrap().input_hash = Some(Blake3::from_bytes(*blake3::hash(b"nodecraft.input-hash.v1 ...").as_bytes()));
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    assert_eq!(stale_of(&p), [id(2), id(3)].into_iter().collect());
+}
+
+#[test]
+fn a_result_recorded_for_another_port_layout_counts_as_empty() {
+    let mut p = project();
+    // 2's active result has two outputs for its one port: unusable, like no result.
+    rewrite_active(&mut p, 2, vec![Value::Text("a".into()), Value::Text("b".into())]);
+    assert_eq!(stale_of(&p), [id(3)].into_iter().collect());
+    let empty = {
+        let mut q = project();
+        Change::SetActiveGeneration { canvas: C, id: id(2), generation: None }.apply(&mut q).unwrap();
+        input_hash(q.canvases().get(&C).unwrap(), &kinds(), id(3)).unwrap()
+    };
+    assert_eq!(input_hash(p.canvases().get(&C).unwrap(), &kinds(), id(3)).unwrap(), empty);
 }
