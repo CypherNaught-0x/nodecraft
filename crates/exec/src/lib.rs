@@ -3,3 +3,6 @@
 //! NodeCraft exec: run planner, scheduler, queue, cancellation and cost quotes.
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
+
+pub mod driver;
+pub mod scheduler;
