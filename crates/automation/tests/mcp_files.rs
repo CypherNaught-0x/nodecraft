@@ -101,3 +101,49 @@ fn storage_enabled_file_commands_are_hidden_and_refused_without_io_or_state_chan
     assert_eq!(server.session().document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().pos.x, 3.0);
     assert_eq!(storage.0.borrow().calls, [0, 0, 0, 3, 0, 0]);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn control_shares_file_refusal_before_storage_and_preserves_history() {
+    use nodecraft_automation::control::{Request, answer};
+    let canvas = CanvasId::from_bytes([11; 16]);
+    let node = NodeId::from_bytes([12; 16]);
+    let mut project = Project::new(ProjectId::from_bytes([13; 16]), "Control storage").unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }, Change::AddNode { canvas, node: Node::new(node, "source.text") }])
+        .apply(&mut project)
+        .unwrap();
+    let storage = CountingStorage::default();
+    let mut session = Session::with_storage(Snapshot { project, assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+    let movement = |x| json!({"canvas":canvas,"id":node,"pos":{"x":x,"y":0}});
+    session.dispatch("node.move", &movement(1)).unwrap();
+    session.dispatch("node.move", &movement(2)).unwrap();
+    session.dispatch("edit.undo", &json!({})).unwrap();
+    let location = "PRIVATE_control_storage_destination.ncraft";
+    session.dispatch("file.save_as", &json!({"location":location})).unwrap();
+    let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision());
+    storage.0.borrow_mut().calls = [0; 6];
+    let listed = answer(&mut session, &Request::ListCommands(Default::default())).unwrap().unwrap();
+    for (id, params) in
+        [("file.open", json!({"location":location,"discard_dirty":true})), ("file.save", json!({})), ("file.save_as", json!({"location":location}))]
+    {
+        assert!(!listed["commands"].as_array().unwrap().iter().any(|command| command["id"] == id));
+        let request = Request::RunCommand(json!({"id":id,"params":params}).as_object().unwrap().clone());
+        let error = answer(&mut session, &request).unwrap().unwrap_err();
+        assert_eq!(error.kind, nodecraft_types::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), format!("{id} can only be run by a person in the app"));
+        assert!(!error.to_string().contains(location));
+        assert_eq!(storage.0.borrow().calls, [0; 6]);
+        assert_eq!(
+            (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision()),
+            before
+        );
+        assert!(session.can_undo() && session.can_redo());
+    }
+    for arguments in [json!({"id":"edit.redo"}), json!({"id":"edit.undo"}), json!({"id":"node.move","params":movement(3)})] {
+        answer(&mut session, &Request::RunCommand(arguments.as_object().unwrap().clone())).unwrap().unwrap();
+    }
+    assert_eq!(session.document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().pos.x, 3.0);
+    assert_eq!(storage.0.borrow().calls, [0, 0, 0, 3, 0, 0]);
+    session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(session.document(), &before.0);
+}

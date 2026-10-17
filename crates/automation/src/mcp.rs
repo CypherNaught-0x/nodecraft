@@ -64,7 +64,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
 ];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
 /// agent's context, and `keys.remove` deletes a key with no undo. File commands remain human-only
-/// until MCP enforces allowed read/write roots (#116); native path canonicalization is not
+/// until MCP/control enforce allowed read/write roots (#116); native path canonicalization is not
 /// filesystem authorization. Engine/native callers retain their existing file access.
 pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove", "file.open", "file.save", "file.save_as"];
 
