@@ -18,6 +18,7 @@ impl Registry {
             registry.register(Box::new(kind))?;
         }
         registry.register(Box::new(crate::router::kind()))?;
+        registry.register(Box::new(crate::note::kind()))?;
         Ok(registry)
     }
 

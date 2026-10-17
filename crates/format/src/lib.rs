@@ -8,11 +8,13 @@ mod archive;
 mod assets;
 mod compatibility;
 pub mod journal;
+mod legacy;
 pub mod storage;
 #[cfg(any(test, feature = "validation-metrics"))]
 mod validation_metrics;
 #[cfg(any(test, feature = "validation-metrics"))]
 pub use validation_metrics::{ValidationMetrics, take_validation_metrics};
+mod v2;
 
 pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, encode, validate_v1_project};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes};

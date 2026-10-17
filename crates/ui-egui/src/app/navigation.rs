@@ -21,7 +21,7 @@ impl NodeCraftApp {
             || canvas::text_input_focused(ctx)
             || self.wiring.is_some()
             || self.drag.is_some()
-            || self.marquee.is_some();
+            || self.marquee.is_some() || self.comments.drag.is_some() || self.comments.gesture_cancelled;
         let dragging = ctx.dragged_id().is_some() || self.navigation.drag.is_some();
         let fit_all = self.navigation.geometry.bounds(None, t).is_some();
         let fit_selection = self.navigation.geometry.bounds(Some(&self.selection), t).is_some();
@@ -156,6 +156,8 @@ impl NodeCraftApp {
                 canvas_gesture: self.wiring.is_some()
                     || self.drag.is_some()
                     || self.marquee.is_some()
+                    || self.comments.drag.is_some()
+                    || self.comments.gesture_cancelled
                     || (ui.ctx().dragged_id().is_some() && !self.navigation.pointer_owned),
                 tokens: self.theme.tokens(),
             },

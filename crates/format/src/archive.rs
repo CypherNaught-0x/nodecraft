@@ -10,7 +10,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -69,6 +69,10 @@ fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
+    decode_versioned(bytes).map(|(snapshot, _)| snapshot)
+}
+
+pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
     let entries = preflight(bytes)?;
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| invalid("invalid project ZIP directory"))?;
     if archive.len() != entries {
@@ -108,7 +112,7 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
     crate::compatibility::validate(json)?;
     let manifest: Manifest = serde_json::from_slice(json).map_err(|_| invalid("invalid project graph or manifest"))?;
     assets.validate_project(&manifest.project)?;
-    Ok(Snapshot { project: manifest.project, assets, epoch: manifest.epoch })
+    Ok((Snapshot { project: manifest.project, assets, epoch: manifest.epoch }, version.version))
 }
 
 pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
@@ -241,10 +245,14 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
     Ok(count)
 }
 
-/// No older format has been published. Add an explicit tested migration here before v2;
-/// never parse unknown graph variants first or invent a lossy legacy conversion.
+/// V1 roots acquire only defaulted canvas-anchor/thread fields. Gate its exact old model
+/// before typed parsing, so a legacy header cannot disguise v2-only fields or variants.
 fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
-    if from == VERSION {
+    if from == 1 {
+        crate::legacy::validate(json)?;
+        Ok(json)
+    } else if from == VERSION {
+        crate::v2::validate(json)?;
         Ok(json)
     } else {
         Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))

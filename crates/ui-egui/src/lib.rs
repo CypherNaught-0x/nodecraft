@@ -10,6 +10,7 @@ pub mod card;
 pub mod clipboard;
 pub mod ids;
 pub mod keys;
+pub mod comments;
 pub mod navigation;
 pub mod noodle;
 pub mod palette;

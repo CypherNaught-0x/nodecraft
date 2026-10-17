@@ -229,7 +229,14 @@ fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
     let changes = (0..17_u8)
         .map(|n| Change::PutComment {
             canvas: canvas(),
-            comment: nodecraft_graph::Comment { id: nodecraft_types::CommentId::from_bytes([n; 16]), text: "x".repeat(1024 * 1024), pos: Position::default() },
+            comment: nodecraft_graph::Comment {
+                id: nodecraft_types::CommentId::from_bytes([n; 16]),
+                text: "x".repeat(1024 * 1024),
+                pos: Position::default(),
+                node: None,
+                replies: vec![],
+                resolved: false,
+            },
         })
         .collect();
     Ok(Effect::Edit { changes: Changeset::new(changes), result: Value::Null, gesture: None })

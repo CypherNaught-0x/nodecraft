@@ -31,7 +31,23 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges", "location", "discard_dirty"] {
+        for field in [
+            "canvas",
+            "id",
+            "pos",
+            "node",
+            "edge",
+            "gesture",
+            "title",
+            "name",
+            "value",
+            "replace", "nodes", "edges", "location",
+            "discard_dirty",
+            "text",
+            "reply",
+            "resolved",
+            "expected_revision",
+        ] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
@@ -75,6 +91,13 @@ fn template(id: &str) -> (Session, Value) {
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
+    let root = nodecraft_types::CommentId::from_bytes([10; 16]);
+    let reply = nodecraft_types::CommentId::from_bytes([11; 16]);
+    if id.starts_with("comment.") {
+        let mut comment = nodecraft_graph::Comment::new(root, "Original", nodecraft_graph::Position::default());
+        comment.replies.push(nodecraft_graph::CommentReply { id: reply, text: "Reply".into() });
+        nodecraft_graph::Change::PutComment { canvas: canvas(), comment }.apply(&mut document).unwrap();
+    }
     let mut session = if id.starts_with("file.") {
         let mut storage = nodecraft_format::MemoryStorage::default();
         let snapshot = nodecraft_format::Snapshot { project: document.clone(), assets: Default::default(), epoch: 0 };
@@ -110,8 +133,27 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if matches!(id, "comment.open" | "comment.compose" | "canvas.comments_toggle") {
+        session.swap_resource(Some(nodecraft_engine::comment_cmds::CommentContext {
+            project: session.document().id(),
+            canvas: canvas(),
+            revision: session.revision(),
+            blocked: false,
+        }));
+        session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
+        "comment.create" => json!({"canvas":canvas(),"id":nodecraft_types::CommentId::from_bytes([20;16]),"text":"New","pos":{"x":1,"y":2}}),
+        "comment.edit" => json!({"canvas":canvas(),"id":root,"text":"Edited"}),
+        "comment.reply" => json!({"canvas":canvas(),"id":root,"reply":nodecraft_types::CommentId::from_bytes([12;16]),"text":"New reply"}),
+        "comment.reply_remove" => json!({"canvas":canvas(),"id":root,"reply":reply}),
+        "comment.move" => json!({"canvas":canvas(),"id":root,"pos":{"x":12,"y":24},"node":node_id(1)}),
+        "comment.resolve" => json!({"canvas":canvas(),"id":root,"resolved":true}),
+        "comment.remove" => json!({"canvas":canvas(),"id":root}),
+        "comment.open" => json!({"id":root}),
+        "comment.compose" => json!({"pos":{"x":12,"y":24}}),
+        "canvas.comments_toggle" => json!({}),
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
         "node.remove" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.move" => movement.clone(),
@@ -203,6 +245,9 @@ fn typed_template_panic_hunt() {
                             | "canvas.fit_selection"
                             | "canvas.minimap_toggle"
                             | "canvas.pan_to"
+                            | "canvas.comments_toggle"
+                            | "comment.open"
+                            | "comment.compose"
                             | "canvas.stale"
                             | "canvas.search_open"
                             | "canvas.search_query"

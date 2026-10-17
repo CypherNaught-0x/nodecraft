@@ -15,6 +15,9 @@ pub const MAX_PROJECT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_CANVASES: usize = 64;
 pub(crate) const MAX_NODES: usize = 10_000;
 pub(crate) const MAX_EDGES: usize = 50_000;
+pub const MAX_COMMENT_BYTES: usize = 1024 * 1024;
+pub const MAX_REPLY_BYTES: usize = 64 * 1024;
+pub const MAX_COMMENT_REPLIES: usize = 256;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_PORTS: usize = 256;
 
@@ -47,6 +50,27 @@ impl Generation {
     }
 }
 
+/// Count a bounded encoded payload before retaining it in a generated inverse.
+pub(crate) fn encoded_bytes(value: &impl serde::Serialize, limit: usize) -> Result<usize, Error> {
+    struct Counter {
+        bytes: usize,
+        limit: usize,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes =
+                self.bytes.checked_add(bytes.len()).filter(|total| *total <= self.limit).ok_or_else(|| std::io::Error::other("document byte limit"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter { bytes: 0, limit };
+    serde_json::to_writer(&mut counter, value).map_err(|_| invalid("serialized data exceeds byte limit"))?;
+    Ok(counter.bytes)
+}
+
 pub(crate) fn generation(generation: &Generation) -> Result<(), Error> {
     generation_values(generation)?;
     byte_budget(generation, MAX_NODE_BYTES)
@@ -68,6 +92,26 @@ pub(crate) fn invalid(message: &str) -> Error {
 
 pub(crate) fn text(value: &str, limit: usize) -> Result<(), Error> {
     if value.len() > limit { Err(invalid("text exceeds the document limit")) } else { Ok(()) }
+}
+
+pub(crate) fn comment(comment: &crate::Comment) -> Result<(), Error> {
+    position(comment.pos)?;
+    if comment.replies.len() > MAX_COMMENT_REPLIES {
+        return Err(invalid("thread exceeds reply limit"));
+    }
+    let mut bytes = comment.text.len();
+    let mut ids = BTreeSet::from([comment.id]);
+    for reply in &comment.replies {
+        text(&reply.text, MAX_REPLY_BYTES)?;
+        bytes = bytes.saturating_add(reply.text.len());
+        if !ids.insert(reply.id) {
+            return Err(invalid("duplicate message id"));
+        }
+    }
+    if bytes > MAX_COMMENT_BYTES {
+        return Err(invalid("thread exceeds text limit"));
+    }
+    Ok(())
 }
 
 pub(crate) fn position(pos: Position) -> Result<(), Error> {
@@ -195,9 +239,11 @@ impl Project {
                     return Err(invalid("duplicate tag id across canvases"));
                 }
             }
-            for id in canvas.comments.keys() {
-                if !comments.insert(*id) {
-                    return Err(invalid("duplicate comment id across canvases"));
+            for root in canvas.comments.values() {
+                for id in std::iter::once(root.id).chain(root.replies.iter().map(|reply| reply.id)) {
+                    if !comments.insert(id) {
+                        return Err(invalid("duplicate message id across project"));
+                    }
                 }
             }
             if nodes.len() > MAX_NODES || edges.len() > MAX_EDGES || fields.len() > MAX_NODES || tags.len() > MAX_NODES || comments.len() > MAX_NODES {
@@ -231,12 +277,17 @@ impl Canvas {
             }
             text(&tag.title, 4096)?;
         }
+        let mut message_count = 0usize;
         for (id, comment) in &self.comments {
+            message_count = message_count.saturating_add(1).saturating_add(comment.replies.len());
+            if message_count > MAX_NODES {
+                return Err(invalid("canvas exceeds message limit"));
+            }
             if *id != comment.id {
                 return Err(invalid("comment map key does not match its id"));
             }
-            text(&comment.text, MAX_TEXT_BYTES)?;
-            position(comment.pos)?;
+            self::comment(comment)?;
+            comment.world_position(self)?;
         }
         for (id, item) in &self.nodes {
             if *id != item.id {

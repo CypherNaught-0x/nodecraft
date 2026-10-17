@@ -10,7 +10,7 @@ use nodecraft_graph::{Change, Changeset, Project};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
 
-use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_json};
+use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_input_json, validate_json};
 
 /// Enough to undo building a 1,000-node graph (about 3,000 steps, #65); the byte budget below is
 /// what bounds memory.
@@ -103,6 +103,7 @@ impl PersistentAdmission {
 /// The panic guard stages edits before publication; native unwinding preserves the live state.
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
 pub struct Session {
+    view_identity: std::sync::Arc<()>,
     document: Project,
     registry: Registry,
     kinds: nodecraft_nodes::Registry,
@@ -118,6 +119,8 @@ pub struct Session {
     persistence: Option<crate::persistence::Persistence>,
     status_revision: u64,
     admission_identity: Arc<()>,
+    #[cfg(test)]
+    replay_limit: usize,
 }
 
 impl Session {
@@ -132,6 +135,7 @@ impl Session {
     pub fn with_registries(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry) -> Result<Self, Error> {
         document.validate()?;
         Ok(Self {
+            view_identity: std::sync::Arc::new(()),
             document,
             registry,
             kinds,
@@ -147,7 +151,14 @@ impl Session {
             persistence: None,
             status_revision: 0,
             admission_identity: Arc::new(()),
+            #[cfg(test)]
+            replay_limit: MAX_HISTORY_BYTES,
         })
+    }
+
+    /// Non-persistent host identity; retained tokens prevent address reuse across Session replacement.
+    pub fn view_identity(&self) -> std::sync::Arc<()> {
+        std::sync::Arc::clone(&self.view_identity)
     }
 
     pub fn document(&self) -> &Project {
@@ -243,7 +254,7 @@ impl Session {
     /// Returns an actionable reason when disabled; never mutates the session.
     pub fn enabled(&self, id: &str, params: &Value) -> Result<(), Error> {
         guard(|| {
-            validate_json(params)?;
+            validate_input_json(params)?;
             let spec = self.registry.get(id)?;
             let context = self.context(Phase::Preview);
             (spec.enabled)(&context, params)?;
@@ -267,7 +278,7 @@ impl Session {
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
         let effect = guard(|| {
-            validate_json(params)?;
+            validate_input_json(params)?;
             let context = self.context(Phase::Dispatch);
             (spec.enabled)(&context, params)?;
             (spec.run)(&context, params)
@@ -358,6 +369,27 @@ impl Session {
         }
     }
 
+    fn replay_limit(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.replay_limit
+        }
+        #[cfg(not(test))]
+        {
+            MAX_HISTORY_BYTES
+        }
+    }
+    fn validate_actual_redo(&self, redo: Option<&Changeset>) -> Result<(), Error> {
+        if let Some(redo) = redo {
+            redo.validate_replay_budget(self.replay_limit().saturating_sub(12))?;
+            history_bytes(redo)?;
+            if self.persistence.is_some() {
+                nodecraft_format::journal::validate_replay(redo, &self.assets)?;
+            }
+        }
+        Ok(())
+    }
+
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
         self.context(Phase::Dispatch).editable()?;
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
@@ -367,7 +399,9 @@ impl Session {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let (document, inverse) = changes.stage(&self.document)?;
+                let staged = changes.stage_certified(&self.document)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 // Graph canonical sizing includes the operation array. History stores the full
                 // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
                 changes.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12))?;
@@ -383,12 +417,16 @@ impl Session {
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let staged = entry.inverse.stage_certified(&self.document)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let staged = entry.inverse.stage_certified(&self.document)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
             Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } => {
@@ -479,6 +517,71 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn actual_pin_redo_over_history_limit_preserves_session_and_journal() {
+        use nodecraft_format::{MemoryStorage, ProjectStorage, StorageLocation};
+        use nodecraft_graph::{Comment, Position};
+        use nodecraft_types::CommentId;
+        use std::{cell::RefCell, rc::Rc};
+        #[derive(Clone, Default)]
+        struct Shared(Rc<RefCell<MemoryStorage>>);
+        impl ProjectStorage for Shared {
+            fn load(&mut self, p: &StorageLocation) -> Result<Vec<u8>, Error> {
+                self.0.borrow_mut().load(p)
+            }
+            fn save(&mut self, p: &StorageLocation, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().save(p, b)
+            }
+            fn checkpoint(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().checkpoint(b)
+            }
+            fn append(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().append(b)
+            }
+        }
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let id = CommentId::from_bytes([3; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Budget").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::PutComment { canvas, comment: Comment::new(id, "Root", Position::default()) }.apply(&mut project).unwrap();
+        let node = Node::new(NodeId::from_bytes([2; 16]), "source.text");
+        let forward =
+            Changeset::new(vec![Change::SetCommentPin { canvas, id, node: Some(node.id), pos: Position { x: 1.0, y: 2.0 } }, Change::AddNode { canvas, node }]);
+        let staged = forward.stage_certified(&project).unwrap();
+        let redo = staged.actual_redo.unwrap();
+        let cap = history_bytes(&redo).unwrap() - 1;
+        forward.validate_replay_budget(cap - 12).unwrap();
+        assert!(history_bytes(&staged.inverse).unwrap() <= cap);
+        let storage = Shared::default();
+        let mut session =
+            Session::with_storage(Snapshot { project: project.clone(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+        session
+            .registry
+            .register(crate::commands::CommandSpec {
+                id: "test.pin_budget",
+                label: "Pin budget",
+                shortcut: None,
+                alternate_shortcuts: &[],
+                input_schema: || json!({}),
+                params_doc: "{}",
+                enabled: |_, _| Ok(()),
+                run: |c, _| Ok(Effect::Edit { changes: c.resources.require::<Changeset>()?.clone(), result: Value::Null, gesture: None }),
+            })
+            .unwrap();
+        session.resources.insert(forward);
+        session.replay_limit = cap;
+        let journal = storage.0.borrow().recovery.clone();
+        assert!(session.dispatch("test.pin_budget", &json!({})).is_err());
+        assert_eq!(session.document(), &project);
+        assert_eq!(session.revision(), 0);
+        assert!(!session.can_undo() && !session.can_redo());
+        assert!(session.events.is_empty());
+        assert_eq!(storage.0.borrow().recovery, journal);
+        session.replay_limit = cap + 1;
+        session.dispatch("test.pin_budget", &json!({})).unwrap();
+        assert_eq!(session.revision(), 1);
+    }
+
+    #[test]
     fn non_document_effect_works_at_exhausted_document_revision() {
         fn enabled(_: &Context<'_>, _: &Value) -> Result<(), Error> {
             Ok(())
@@ -512,7 +615,7 @@ mod tests {
         let canvas = CanvasId::from_bytes([1; 16]);
         let node = Node::new(NodeId::from_bytes([2; 16]), "test.text");
         let changes = Changeset::new(vec![Change::AddNode { canvas, node: node.clone() }]);
-        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![] }]);
+        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![], pins: vec![] }]);
         let full = history_bytes(&restore).unwrap();
         assert!(changes.validate_replay_budget(full - 12).is_ok());
         assert!(changes.validate_replay_budget(full - 13).is_err());
@@ -695,6 +798,9 @@ mod tests {
                         id: CommentId::from_bytes([value["n"].as_u64().unwrap() as u8; 16]),
                         text: "x".repeat(usize::try_from(value["len"].as_u64().unwrap()).unwrap()),
                         pos: Default::default(),
+                        node: None,
+                        replies: vec![],
+                        resolved: false,
                     },
                 },
                 "node" => {
