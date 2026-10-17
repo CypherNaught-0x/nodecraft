@@ -11,8 +11,13 @@
 //!
 //! **Bounded work:** one query digests each node's recipe and each upstream output once
 //! (memoized), streams values into the hasher instead of serializing them, and charges their
-//! bytes, and a small cost per feed, against a shared budget ([`MAX_QUERY_BYTES`]); a canvas
-//! past it is refused, not hashed for minutes.
+//! effective payloads (including omitted/hidden defaults), names and a small cost per feed
+//! against a shared admission budget ([`MAX_QUERY_BYTES`]). Text counts exactly; scalar/media
+//! JSON reserves conservative upper bounds, so a query may refuse before its exact JSON bytes
+//! reach the cap. A canvas past the budget is refused before parameter resolution copies it.
+//! Dynamic instance/validation hooks own their internal allocations. Descriptor defaults are
+//! admitted before authoritative validation; additional/transformed effective values returned by
+//! custom validators are admitted before hashing. Native hooks may allocate before returning.
 //!
 //! **Recipe versions:** the hash starts with a domain tag ([`DOMAIN`]). The stored hash carries no
 //! version, so after a change to the recipe an old result can't be told from one whose inputs
@@ -28,7 +33,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// an older tag are then reported stale (see the module docs).
 pub const DOMAIN: &[u8] = b"nodecraft.input-hash.v2";
 
-/// Most bytes one staleness query may hash (recipes, parameters and upstream outputs, each once).
+/// Admission budget for recipes, resolved values and upstream outputs, each once.
+/// Scalar/media JSON uses conservative encoded-size reservations, not exact bytes hashed.
 pub const MAX_QUERY_BYTES: usize = 256 * 1024 * 1024;
 
 /// Fixed cost charged per value on top of its payload, so huge lists of tiny values count too.
@@ -38,15 +44,23 @@ fn too_large() -> Error {
     Error::new(ErrorKind::InvalidInput, "the canvas holds too much data to check for stale results; split it into smaller canvases")
 }
 
-/// Bytes left in a query's budget, and bytes hashed so far.
+/// Bytes left in a query's budget, and admission bytes charged so far.
 struct Meter {
     left: usize,
     hashed: usize,
+    refused: bool,
 }
 
 impl Meter {
     fn charge(&mut self, bytes: usize) -> Result<(), Error> {
-        self.left = self.left.checked_sub(bytes).ok_or_else(too_large)?;
+        if self.refused {
+            return Err(too_large());
+        }
+        let Some(left) = self.left.checked_sub(bytes) else {
+            self.refused = true;
+            return Err(too_large());
+        };
+        self.left = left;
         self.hashed = self.hashed.saturating_add(bytes);
         Ok(())
     }
@@ -74,29 +88,30 @@ impl Writer {
     fn digest(&mut self, digest: &[u8; 32]) {
         self.0.update(digest);
     }
-    /// A value, streamed (iteratively: lists nest): a tag, then text as length-prefixed bytes,
-    /// lists as their length then items, and scalars and media through their short canonical
-    /// JSON (bounded by the node size limit). Each value and its text are charged to `meter`
-    /// before they are hashed; `None` when the caller already charged them.
-    fn value(&mut self, value: &Value, mut meter: Option<&mut Meter>) -> Result<(), Error> {
-        let mut charge = |bytes: usize| meter.as_deref_mut().map_or(Ok(()), |m| m.charge(bytes));
-        let mut stack = vec![value];
-        while let Some(value) = stack.pop() {
-            charge(VALUE_COST)?;
+    /// A value, streamed with the v2 spelling unchanged. Charge the complete borrowed
+    /// payload before serialization; scalar/media JSON reserves a conservative upper bound.
+    fn value(&mut self, value: &Value, meter: Option<&mut Meter>) -> Result<(), Error> {
+        if let Some(meter) = meter {
+            charge_value(meter, value)?;
+        }
+        let mut stack = vec![std::slice::from_ref(value).iter()];
+        while let Some(items) = stack.last_mut() {
+            let Some(value) = items.next() else {
+                stack.pop();
+                continue;
+            };
             match value {
                 Value::Text(text) => {
-                    charge(text.len())?;
                     self.text("t");
                     self.text(text);
                 }
                 Value::List(items) => {
                     self.text("l");
                     self.len(items.len());
-                    stack.extend(items.iter().rev());
+                    stack.push(items.iter());
                 }
                 other => {
                     let json = serde_json::to_vec(other).map_err(|_| Error::new(ErrorKind::Internal, "a value couldn't be hashed"))?;
-                    charge(json.len())?;
                     self.text("v");
                     self.bytes(&json);
                 }
@@ -104,7 +119,7 @@ impl Writer {
         }
         Ok(())
     }
-    /// A parameter whose bytes were charged already ([`stored_bytes`]).
+    /// A parameter whose stored or omitted-default payload was admitted already.
     fn param(&mut self, name: &str, value: &Value) -> Result<(), Error> {
         self.text(name);
         self.value(value, None)
@@ -121,25 +136,42 @@ impl Writer {
     }
 }
 
-/// Approximate bytes of a node's stored parameters and configuration: charged once, before its
-/// kind resolves (and copies) them and before they are hashed. (Defaults the kind fills in come
-/// from its schema, which is small and bounded.)
-fn stored_bytes(node: &Node) -> usize {
-    node.params.iter().chain(node.config.iter()).fold(0usize, |sum, (name, value)| {
-        let mut total = sum.saturating_add(name.len());
-        let mut stack = vec![value];
-        while let Some(value) = stack.pop() {
-            total = total.saturating_add(VALUE_COST).saturating_add(match value {
-                Value::Text(text) => text.len(),
-                Value::List(items) => {
-                    stack.extend(items.iter());
-                    0
-                }
-                _ => 0,
-            });
+/// Preflight borrowed values before a proportional clone/JSON allocation. Text payloads
+/// count exactly; scalar JSON reserves128 bytes (tag/envelope plus at most a finite number
+/// or20 decimal digits). Media reserves512 bytes for the tag, digest, metadata keys and
+/// six maximal integers, plus six bytes per MIME byte for worst-case JSON escaping.
+/// Mime is independently capped at1024 bytes. These upper bounds deliberately overcharge
+/// short encodings. Keep the traversal stack proportional to depth, not list length.
+fn charge_value(meter: &mut Meter, value: &Value) -> Result<(), Error> {
+    let mut stack = vec![std::slice::from_ref(value).iter()];
+    while let Some(items) = stack.last_mut() {
+        let Some(value) = items.next() else {
+            stack.pop();
+            continue;
+        };
+        meter.charge(VALUE_COST)?;
+        match value {
+            Value::Text(text) => meter.charge(text.len())?,
+            Value::List(items) => stack.push(items.iter()),
+            Value::Media(asset) => meter.charge(512usize.saturating_add(asset.mime.as_str().len().saturating_mul(6)))?,
+            _ => meter.charge(128)?,
         }
-        total
-    })
+    }
+    Ok(())
+}
+
+/// Stored payload is admitted once before the kind's instance hook. It covers hidden
+/// overrides too: schema resolution retains/copies them even though they aren't hashed.
+fn charge_stored(meter: &mut Meter, node: &Node) -> Result<(), Error> {
+    meter.charge(node.kind.len())?;
+    for port in &node.inputs {
+        meter.charge(port.name.len())?;
+    }
+    for (name, value) in node.params.iter().chain(node.config.iter()) {
+        meter.charge(name.len())?;
+        charge_value(meter, value)?;
+    }
+    Ok(())
 }
 
 /// A node's recipe digest, or why its kind rejects it (then it has no meaningful hash: unknown).
@@ -151,7 +183,9 @@ type Feeds = BTreeMap<NodeId, Vec<(String, u32, NodeId, String)>>;
 
 /// Input hashes over one canvas, reusable across queries: routers are resolved once, and each
 /// node's recipe and each upstream output are digested once (memoized), all charged to one byte
-/// budget. The canvas and kinds are passed to every call and must be the ones it was built with.
+/// budget. Once an admission exceeds that shared budget, subsequent hashes return the budget
+/// error; node-local invalidity does not end the query. The canvas and kinds are passed to every
+/// call and must be the ones it was built with.
 pub struct InputHasher {
     feeds: Feeds,
     /// Consumers whose inputs go through an invalid router, and the first such router.
@@ -166,7 +200,7 @@ impl InputHasher {
     /// A hasher for `canvas` with a byte budget of `budget` across all its queries.
     pub fn new(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<Self, Error> {
         let incoming = crate::routing::incoming(canvas, kinds)?;
-        let mut meter = Meter { left: budget, hashed: 0 };
+        let mut meter = Meter { left: budget, hashed: 0, refused: false };
         let mut feeds: Feeds = BTreeMap::new();
         for (target, list) in &incoming.feeds {
             let mut owned = Vec::with_capacity(list.len());
@@ -184,7 +218,7 @@ impl InputHasher {
         Ok(Self { feeds, invalid, recipes: BTreeMap::new(), outputs: BTreeMap::new(), meter })
     }
 
-    /// Bytes hashed so far.
+    /// Admission bytes charged so far, including scalar/media reservations and the feed index.
     pub fn hashed(&self) -> usize {
         self.meter.hashed
     }
@@ -196,7 +230,7 @@ impl InputHasher {
         if let Some(recipe) = self.recipes.get(&node.id) {
             return Ok(recipe.clone());
         }
-        self.meter.charge(stored_bytes(node))?;
+        charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
         w.text(&node.kind);
         w.params(&node.config)?;
@@ -205,15 +239,58 @@ impl InputHasher {
                 w.params(&node.params)?;
                 Ok(w.finish())
             }
-            Ok(kind) => match kind.validate_instance(node, false) {
+            Ok(kind) => match kind.resolve_instance(node) {
                 Err(rejected) => Err(rejected),
-                Ok(resolved) => {
-                    let visible: Vec<_> = resolved.visible_values().collect();
-                    w.len(visible.len());
-                    for (name, value) in visible {
-                        w.param(name, value)?;
+                Ok(descriptor) => {
+                    if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
+                        Err(Error::new(ErrorKind::InvalidInput, "node ports do not match its instance descriptor"))
+                    } else {
+                        // An instance hook owns its bounded schema construction; this admission
+                        // precedes resolution's clones of defaults and supplied values. Hidden
+                        // defaults count too because resolution retains them in the values map.
+                        let mut admitted_defaults = BTreeMap::new();
+                        for spec in &descriptor.params.params {
+                            self.meter.charge(spec.name.len())?; // visibility-set keys
+                            if !node.params.contains_key(&spec.name)
+                                && let Some(value) = &spec.default
+                            {
+                                self.meter.charge(spec.name.len())?; // new values-map key
+                                charge_value(&mut self.meter, value)?;
+                            }
+                            admitted_defaults.insert(spec.name.as_str(), spec.default.as_ref());
+                        }
+                        // Compatibility: validate_instance is authoritative and overridable.
+                        // The default hook resolves the instance again, only after successful
+                        // preflight. Native custom hooks own allocations made before returning.
+                        match kind.validate_instance(node, false) {
+                            Err(rejected) => Err(rejected),
+                            Ok(resolved) => {
+                                for (name, value) in &resolved.values {
+                                    let admitted = node.params.get(name).or_else(|| admitted_defaults.get(name.as_str()).copied().flatten());
+                                    if admitted.is_none() {
+                                        self.meter.charge(name.len())?;
+                                    }
+                                    // Compare only the corresponding already-admitted value:
+                                    // its validated depth/size bounds equality's traversal. Never
+                                    // recursively inspect an arbitrary hook payload on its own.
+                                    if admitted != Some(value) {
+                                        charge_value(&mut self.meter, value)?;
+                                    }
+                                }
+                                for name in &resolved.visible {
+                                    if !admitted_defaults.contains_key(name.as_str()) {
+                                        self.meter.charge(name.len())?;
+                                    }
+                                }
+                                let visible: Vec<_> = resolved.visible_values().collect();
+                                w.len(visible.len());
+                                for (name, value) in visible {
+                                    w.param(name, value)?;
+                                }
+                                Ok(w.finish())
+                            }
+                        }
                     }
-                    Ok(w.finish())
                 }
             },
         };
@@ -256,6 +333,11 @@ impl InputHasher {
     /// A node's output digest is memoized the first time it is read, so give a node's produced
     /// outputs before hashing anything downstream of it.
     pub fn hash(&mut self, canvas: &Canvas, kinds: &Registry, id: NodeId, produced: &BTreeMap<NodeId, Vec<Value>>) -> Result<Option<Blake3>, Error> {
+        // A shared admission failure ends this query, including memoized lookups. Node-local
+        // invalidity never sets this flag. A successful exact-budget query may still reuse caches.
+        if self.meter.refused {
+            return Err(too_large());
+        }
         if self.invalid.contains_key(&id) {
             return Ok(None);
         }
@@ -311,12 +393,16 @@ fn is_source(kinds: &Registry, node: &Node) -> bool {
 /// its kind rejects it (or a source feeding it), its routers can't be resolved, or the canvas is
 /// too large to hash.
 pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake3, Error> {
-    let mut hasher = InputHasher::new(canvas, kinds, MAX_QUERY_BYTES)?;
+    input_hash_within(canvas, kinds, id, MAX_QUERY_BYTES)
+}
+
+fn input_hash_within(canvas: &Canvas, kinds: &Registry, id: NodeId, budget: usize) -> Result<Blake3, Error> {
+    let mut hasher = InputHasher::new(canvas, kinds, budget)?;
     if hasher.invalid.contains_key(&id) {
         return Err(Error::new(ErrorKind::InvalidInput, "its inputs depend on an invalid router"));
     }
     if let Some(node) = canvas.nodes().get(&id)
-        && let Some(Err(rejected)) = hasher.recipe(kinds, node).ok()
+        && let Err(rejected) = hasher.recipe(kinds, node)?
     {
         return Err(rejected);
     }
@@ -332,7 +418,7 @@ pub fn stale(canvas: &Canvas, kinds: &Registry) -> Result<BTreeSet<NodeId>, Erro
     stale_within(canvas, kinds, MAX_QUERY_BYTES).map(|(stale, _)| stale)
 }
 
-/// [`stale`] with its own byte budget; also returns the bytes hashed.
+/// [`stale`] with its own admission budget; also returns charged bytes (including reservations).
 fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTreeSet<NodeId>, usize), Error> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
     let mut query = InputHasher::new(canvas, kinds, budget)?;

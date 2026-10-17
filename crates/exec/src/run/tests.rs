@@ -577,3 +577,52 @@ fn a_long_chain_of_steps_without_jobs_finishes_without_recursion() {
     assert_eq!(first.finished.len(), usize::from(N) + 1);
     assert!(first.jobs.is_empty() && first.failed.is_empty());
 }
+
+#[test]
+fn omitted_defaults_match_materialized_stamps_and_budget_refusal_retains_results() {
+    use nodecraft_types::{ParamControl, ParamSpec};
+    let mut kinds = kinds();
+    let mut descriptor = kinds.get("test.join").unwrap().descriptor().clone();
+    descriptor.id = "test.default_join".into();
+    descriptor.params.params.push(ParamSpec {
+        name: "prompt".into(),
+        label: "Prompt".into(),
+        description: None,
+        control: ParamControl::Text { multiline: true, max_bytes: 1_000_000 },
+        required: false,
+        default: Some(Value::Text("x".repeat(600_000))),
+        visible_if: None,
+    });
+    kinds.register(Box::new(Join(descriptor))).unwrap();
+    let mut p = project(&[(1, "source.text", "fox"), (2, "test.join", ""), (3, "test.join", "")], &[(1, "out", 2, 0), (2, "out", 3, 0)]);
+    for n in [2, 3] {
+        let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().clone();
+        node.kind = "test.default_join".into();
+        assert!(node.params.is_empty());
+        Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    }
+    let plan = match plan(p.canvases().get(&C).unwrap(), &kinds, &RunMode::Selected, &[id(2), id(3)].into_iter().collect(), &BTreeSet::new()).unwrap() {
+        Planned::Ready(plan) => plan,
+        other => panic!("unexpected plan {other:?}"),
+    };
+    for budget in [crate::staleness::MAX_QUERY_BYTES, 1_000_000] {
+        let canvas = p.canvases().get(&C).unwrap();
+        let (mut run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+        run.hasher = crate::staleness::InputHasher::new(canvas, &kinds, budget).unwrap();
+        let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+        assert!(failed.is_empty());
+        assert_eq!(finished.len(), 2, "hash refusal must not discard completed work");
+        assert!(finished[0].generation.input_hash.is_some());
+        if budget == 1_000_000 {
+            assert!(finished[1].generation.input_hash.is_none(), "unavailable stamp is recorded honestly");
+        } else {
+            let mut recorded = p.clone();
+            for result in finished {
+                let node = recorded.canvases().get(&C).unwrap().nodes().get(&result.node).unwrap().clone();
+                assert!(result.generation.input_hash.is_some());
+                Changeset::new(record_changes(C, &node, result.generation).unwrap()).apply(&mut recorded).unwrap();
+            }
+            assert!(crate::staleness::stale(recorded.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
+        }
+    }
+}
