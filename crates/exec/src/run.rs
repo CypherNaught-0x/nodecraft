@@ -14,7 +14,7 @@
 //! schedule never sends an event); report jobs the scheduler refused as failed; give job ids no
 //! other scheduled job uses.
 
-use crate::planner::{InputSource, MAX_LIST_ITEMS, MAX_PLAN_INPUT_BYTES, MAX_STEP_INPUT_BYTES, RunPlan, Step, value_bytes};
+use crate::planner::{InputSource, MAX_LIST_ITEMS, MAX_PLAN_INPUT_BYTES, MAX_STEP_INPUT_BYTES, RunPlan, Step};
 use crate::scheduler::{self, JobId, Lane, Outcome, RetryPolicy, Start};
 use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
 use nodecraft_graph::{Canvas, Change, Generation, MAX_HISTORY, MAX_NODE_BYTES, Node};
@@ -38,7 +38,8 @@ pub struct RunLimits {
     /// Bytes of input values one step is planned with.
     pub step_bytes: usize,
     /// Bytes of input values materialised across the whole run (the planner counts the inputs
-    /// known up front separately).
+    /// known up front separately). Complete preflight precedes copying; admitted copies stay
+    /// charged even if the kind subsequently rejects planning.
     pub run_bytes: usize,
 }
 
@@ -135,6 +136,10 @@ pub struct Run {
     open_steps: usize,
     next_job: u64,
     run_bytes: usize,
+    #[cfg(test)]
+    copied_input_bytes: std::cell::Cell<usize>,
+    #[cfg(test)]
+    preflight_stack_peak: std::cell::Cell<usize>,
     limits: RunLimits,
     retry: RetryPolicy,
 }
@@ -234,6 +239,10 @@ impl Run {
             open_steps,
             next_job: options.first_job,
             run_bytes: 0,
+            #[cfg(test)]
+            copied_input_bytes: std::cell::Cell::new(0),
+            #[cfg(test)]
+            preflight_stack_peak: std::cell::Cell::new(0),
             limits: options.limits,
             retry: options.retry,
         };
@@ -404,49 +413,98 @@ impl Run {
         let state = self.steps.get(&node).ok_or("the step is gone")?;
         let mut step_bytes = 0usize;
         let mut run_bytes = self.run_bytes;
-        let mut inputs = Vec::with_capacity(state.step.inputs.len());
+        // Sources are immutable throughout this synchronous call. Validate the complete shape
+        // and budget using borrowed slices before copying any accepted prefix of a failing step.
         for input in &state.step.inputs {
-            let mut values: Vec<Value> = Vec::new();
+            let mut count = 0usize;
             for source in &input.from {
-                let (value, splice) = match source {
-                    InputSource::Value(value) => (value, false),
-                    InputSource::Step { node: up, port, list } => (self.step_output(*up, port)?, *list && input.port_type.many),
-                };
-                let items: Vec<&Value> = match value {
-                    Value::List(items) if splice => items.iter().collect(),
-                    other => vec![other],
-                };
-                if input.port_type.many && values.len().saturating_add(items.len()) > self.limits.list_items {
+                let items = self.input_items(source, input.port_type.many)?;
+                count = count.checked_add(items.len()).ok_or("too many input values")?;
+                if input.port_type.many && count > self.limits.list_items {
                     return Err(format!("its {} input would have more than {} items", input.port, self.limits.list_items));
                 }
                 for item in items {
-                    let bytes = value_bytes(item);
-                    step_bytes = step_bytes.saturating_add(bytes);
-                    run_bytes = run_bytes.saturating_add(bytes);
-                    if step_bytes > self.limits.step_bytes {
-                        return Err(format!("its inputs are larger than {} bytes", self.limits.step_bytes));
-                    }
-                    if run_bytes > self.limits.run_bytes {
-                        return Err(format!("the run's inputs are larger than {} bytes", self.limits.run_bytes));
-                    }
-                    values.push(item.clone());
+                    self.admit_input(item, &mut step_bytes, &mut run_bytes)?;
                 }
             }
-            let value = if input.port_type.many {
-                Value::List(values)
-            } else {
-                let mut values = values.into_iter();
-                match (values.next(), values.next()) {
-                    (Some(value), None) => value,
-                    _ => return Err(format!("its {} input takes one value", input.port)),
+            if !input.port_type.many && count != 1 {
+                return Err(format!("its {} input takes one value", input.port));
+            }
+        }
+        // This copy pass is admitted in full. Keep its charge even if kind planning rejects it.
+        self.run_bytes = run_bytes;
+        let mut inputs = Vec::with_capacity(state.step.inputs.len());
+        for input in &state.step.inputs {
+            let mut values = Vec::new();
+            for source in &input.from {
+                for item in self.input_items(source, input.port_type.many)? {
+                    values.push(item.clone());
+                    #[cfg(test)]
+                    self.copied_input_bytes.set(self.copied_input_bytes.get().saturating_add(crate::planner::value_bytes(item)));
                 }
-            };
+            }
+            let value = if input.port_type.many { Value::List(values) } else { values.into_iter().next().ok_or("the preflight input is gone")? };
             inputs.push(InputValue { port: input.port.clone(), port_type: input.port_type, value });
         }
-        self.run_bytes = run_bytes;
         let node = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
         let kind = kinds.get(&node.kind).map_err(|e| e.message)?;
         kind.plan(&PlanCtx { node, inputs: &inputs }).map_err(|e| e.message)
+    }
+
+    /// The planner's logical value size, but with scratch space bounded by depth, not list
+    /// width. Check graph limits before the later recursive clone and stop on byte overflow.
+    fn admit_input(&self, root: &Value, step_bytes: &mut usize, run_bytes: &mut usize) -> Result<(), String> {
+        let mut stack = vec![std::slice::from_ref(root).iter()];
+        let mut seen = 0usize;
+        #[cfg(test)]
+        self.preflight_stack_peak.set(self.preflight_stack_peak.get().max(stack.len()));
+        while let Some(items) = stack.last_mut() {
+            let Some(value) = items.next() else {
+                stack.pop();
+                continue;
+            };
+            seen = seen.saturating_add(1);
+            if seen > nodecraft_graph::MAX_VALUE_ITEMS {
+                return Err("input value exceeds the document item limit".into());
+            }
+            let payload = match value {
+                Value::Text(text) => text.len(),
+                Value::Media(asset) => asset.mime.as_str().len().checked_add(64).ok_or("input byte count overflowed")?,
+                _ => 0,
+            };
+            let bytes = std::mem::size_of::<Value>().checked_add(payload).ok_or("input byte count overflowed")?;
+            *step_bytes = step_bytes.checked_add(bytes).ok_or("its input byte count overflowed")?;
+            *run_bytes = run_bytes.checked_add(bytes).ok_or("the run's input byte count overflowed")?;
+            if *step_bytes > self.limits.step_bytes {
+                return Err(format!("its inputs are larger than {} bytes", self.limits.step_bytes));
+            }
+            if *run_bytes > self.limits.run_bytes {
+                return Err(format!("the run's inputs are larger than {} bytes", self.limits.run_bytes));
+            }
+            if let Value::List(children) = value
+                && !children.is_empty()
+            {
+                if stack.len() > nodecraft_graph::MAX_VALUE_DEPTH {
+                    return Err("input value exceeds the document depth limit".into());
+                }
+                stack.push(children.iter());
+                #[cfg(test)]
+                self.preflight_stack_peak.set(self.preflight_stack_peak.get().max(stack.len()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Splice a list output without allocating a temporary collection of references.
+    fn input_items<'a>(&'a self, source: &'a InputSource, many: bool) -> Result<&'a [Value], String> {
+        let (value, splice) = match source {
+            InputSource::Value(value) => (value, false),
+            InputSource::Step { node, port, list } => (self.step_output(*node, port)?, *list && many),
+        };
+        Ok(match value {
+            Value::List(items) if splice => items.as_slice(),
+            other => std::slice::from_ref(other),
+        })
     }
 
     /// The value a finished step produced on `port`.
