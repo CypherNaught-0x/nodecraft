@@ -11,8 +11,23 @@ claude mcp add nodecraft -- nodecraft-cli mcp      # Claude Code
 For other clients, configure a stdio server that runs `nodecraft-cli` with the argument `mcp`.
 
 The server starts with a new, empty project with one canvas. Opening and saving project files
-arrives with the project format (#54), confined to the read/write roots you allow. Bridging to a
-running app, streamable HTTP and the in-app server setting are still to come (#116).
+arrives with the project format (#54), confined to the read/write roots you allow. Streamable HTTP
+and the in-app server setting are still to come (#116).
+
+## Bridge to the running app
+
+```sh
+nodecraft --control                          # start the app with its control channel
+claude mcp add nodecraft -- nodecraft-cli mcp --bridge
+```
+
+With `--bridge`, the MCP server works on the app the user has open instead of a project of its
+own. The agent's edits appear on the canvas live and can be undone there, and a `screenshot` tool
+returns the window as an MCP image. The bridge reads the app's token file:
+`control/control.json` in the app's settings folder, unless another path follows `--bridge`. It
+connects through the control channel (`docs/control.md`), so the same command policy applies. If
+the app quits, tools report that the connection was lost; restart the bridge after restarting the
+app.
 
 ## Tools
 

@@ -482,3 +482,84 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
 
 #[cfg(test)]
 mod tests;
+
+/// A control-channel client: what `nodecraft-cli mcp --bridge` uses to reach the app.
+pub struct Client {
+    reader: BufReader<TcpStream>,
+    writer: TcpStream,
+    next: u64,
+    broken: bool,
+}
+
+/// Longest reply the client reads: a screenshot in base64 plus room.
+const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
+
+fn network(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::Network, message)
+}
+
+impl Client {
+    /// Connects to the app named by the token file at `path` and says hello.
+    pub fn from_token_file(path: &std::path::Path) -> Result<Self, Error> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| Error::new(ErrorKind::NotFound, format!("no control token at {} ({e}); start the app with `nodecraft --control`", path.display())))?;
+        let file: TokenFile =
+            serde_json::from_str(&text).map_err(|_| Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display())))?;
+        Self::connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)
+    }
+
+    /// Connects to `addr` and says hello with `token`.
+    pub fn connect(addr: SocketAddr, token: &str) -> Result<Self, Error> {
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+            .map_err(|e| network(format!("can't reach the app on {addr} ({e}); is it still running with --control?")))?;
+        // The app may take a frame to answer, and a screenshot a few more.
+        let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
+        stream.set_read_timeout(Some(wait)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
+        let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
+        let mut client = Self { reader, writer: stream, next: 1, broken: false };
+        let mut hello = Map::new();
+        hello.insert("token".into(), json!(token));
+        client.call("hello", hello)?;
+        Ok(client)
+    }
+
+    /// Sends one request and returns its result, or the app's error.
+    pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
+        if self.broken {
+            return Err(network("the connection to the app was lost; restart the bridge"));
+        }
+        let id = self.next;
+        self.next = self.next.saturating_add(1);
+        let message = json!({"id": id, "method": method, "params": params});
+        let sent = writeln!(self.writer, "{message}").and_then(|()| self.writer.flush());
+        if let Err(e) = sent {
+            self.broken = true;
+            return Err(network(format!("the app closed the control channel ({e})")));
+        }
+        let mut line = Vec::new();
+        let reply = match mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES) {
+            Ok(Line::Read) => serde_json::from_slice::<Value>(&line).map_err(|_| network("the app sent a malformed reply")),
+            Ok(Line::TooLong) => Err(network("the app's reply was too large")),
+            Ok(Line::Eof) => Err(network("the app closed the control channel")),
+            Err(e) => Err(network(format!("no reply from the app ({e})"))),
+        };
+        let reply = match reply {
+            Ok(r) => r,
+            Err(e) => {
+                // A lost or out-of-step reply leaves the stream unusable.
+                self.broken = true;
+                return Err(e);
+            }
+        };
+        if reply.get("id").and_then(Value::as_u64) != Some(id) && reply.get("id") != Some(&Value::Null) {
+            self.broken = true;
+            return Err(network("the app's reply doesn't match the request"));
+        }
+        if let Some(error) = reply.get("error") {
+            let kind = error.get("kind").cloned().and_then(|k| serde_json::from_value::<ErrorKind>(k).ok()).unwrap_or(ErrorKind::Internal);
+            let message = error.get("message").and_then(Value::as_str).unwrap_or("the app refused the request");
+            return Err(Error::new(kind, message));
+        }
+        Ok(reply.get("result").cloned().unwrap_or(Value::Null))
+    }
+}

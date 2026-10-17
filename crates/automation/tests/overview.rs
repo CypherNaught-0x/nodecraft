@@ -55,7 +55,7 @@ fn escaped_maximum_overview_is_paginated_within_encoded_budget() {
     }
     let expected: Vec<_> = (1..=64).map(|n| CanvasId::from_bytes([n; 16]).to_string()).collect();
     assert_eq!(seen, expected);
-    assert_eq!(server.session().revision(), 0);
+    assert_eq!(server.session().unwrap().revision(), 0);
 }
 
 #[test]
