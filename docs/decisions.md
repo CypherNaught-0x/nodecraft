@@ -4,6 +4,29 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+
+## 2026-10-17 · Control channel (#115)
+
+- **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.
+  It writes `control.json` (port, a 32-byte random token, pid) into the settings folder, readable
+  by the owner only. Every connection starts with `hello` and the token, compared in constant
+  time, or it is closed.
+- **The UI thread owns the session.** Connection threads only parse and authenticate. Requests
+  reach the UI thread through a bounded queue and are answered against the session the window
+  shows, so changes appear live and go through the same undo path. The app crate holds the glue
+  (`apps/nodecraft/src/control.rs`), since `ui-egui` and `automation` share a layer.
+- **One automation policy.** The control channel reuses MCP's command listing, running and
+  inspection (`AGENT_COMMANDS`/`HUMAN_ONLY`, bounded pages), so it can't do more than an agent
+  can.
+- **Screenshots** come from egui's viewport screenshot, encoded as PNG by `media::encode_png`. They
+  are encoded off the UI thread, and they fail when the window doesn't draw.
+- **Hostile local clients.** The handshake is short, everything but `hello` is refused before
+  authentication, and read and write timeouts apply. Requests the client gave up on are never
+  run late. The token file is written through a new file and a rename, never through a link, and
+  is refused in a shared folder.
+- **Stdio is deferred.** A GUI app has no useful stdin, and headless stdio automation already
+  exists as `nodecraft-cli mcp`. A stdio control mode would serve the same protocol over the CLI
+  later.
 ## 2026-10-17 · Budgets at job time (#207)
 
 - **Reserve before submit.** `engine::jobs::ProviderRunner::with_budget` checks each priced job
@@ -754,3 +777,27 @@ a choice a later contributor might otherwise undo.
   admitted, its bytes count toward `RunLimits::run_bytes` even if the node kind subsequently
   refuses to plan. Independent steps may use only the remaining allowance; existing per-step
   and per-list limits, ordering and failure propagation remain in force.
+
+## 2026-10-17 · Live canvas navigation (#62)
+
+- Navigation stays shell view state. Stable engine commands produce bounded service intents, with
+  no graph changes, history or events. The app bridge supplies a fresh scoped capability and
+  restores any previous resource even on dispatch failure; raw headless dispatch is Unsupported.
+- Fit and minimap geometry resolve real instances once per revision and retain only bounded node
+  rectangles. They never rely on the evictable visible-card schema cache or static palette metadata.
+  The minimum zoom makes very spread graphs best effort, with an explicit notice.
+- Shift+1/2 fit all/selected; Shift+M toggles the map without macOS's Command+M conflict. Editors,
+  popups and existing gestures own their input. A minimap drag freezes its world mapping and owns
+  pointer release outside its bounds. Visibility is session-local, not serialized settings.
+
+## 2026-10-17 · Provider identity and unreserved costs in budgeted jobs (#228)
+
+- **Handles belong to the provider that issued them.** The runner keys stored handles by
+  provider and idempotency key, and `restore_handle` takes the provider. A job moved to another
+  provider under the same key never resumes the first one's handle. Its fresh submission is held
+  to the caps, and the old attempt's reservation is closed first, as `unresolved` if it may have
+  been billed.
+- **A reported cost counts even with nothing reserved.** A priced job with no estimate, running
+  with no caps, reserves nothing. When it finishes, fresh or resumed, the cost the provider
+  reported is recorded as `actual`, once per provider and key. A report the log refuses as
+  implausibly large is left out rather than failing the finished job.

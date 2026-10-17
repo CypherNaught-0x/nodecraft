@@ -375,3 +375,80 @@ fn a_node_with_many_edges_pages_them() {
     }
     assert_eq!(seen, added as usize);
 }
+
+#[test]
+fn navigation_commands_are_discoverable_but_require_a_live_view_host() {
+    let mut s = server();
+    let list = call(&mut s, "command_list", json!({"query":"canvas."}));
+    let commands = list["structuredContent"]["commands"].as_array().unwrap();
+    let before = s.session().document().clone();
+    let revision = s.session().revision();
+    for (id, params) in
+        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
+    {
+        let entry = commands.iter().find(|entry| entry["id"] == id).unwrap();
+        assert_eq!(entry["params_schema"], (s.session().registry().get(id).unwrap().input_schema)());
+        if id != "canvas.pan_to" {
+            assert_eq!(entry["ready"], false);
+        }
+        let error = s.session().enabled(id, &params).unwrap_err();
+        assert_eq!(error.kind, nodecraft_types::ErrorKind::Unsupported);
+        let result = call(&mut s, "command_run", json!({"id":id,"params":params}));
+        assert_eq!(result["isError"], true, "{result}");
+        assert!(result["content"][0]["text"].as_str().unwrap().contains("unsupported"));
+        assert_eq!(s.session().document(), &before);
+        assert_eq!(s.session().revision(), revision);
+        assert!(!s.session().can_undo() && !s.session().can_redo());
+        assert!(s.session().events_since(revision).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn navigation_dispatch_uses_explicit_live_host_without_document_mutations() {
+    use nodecraft_engine::commands::Resources;
+    use nodecraft_engine::navigation_cmds::{NavigationContext, SERVICE};
+    use std::{cell::RefCell, rc::Rc};
+    let mut session = blank_session(ProjectId::from_bytes([1; 16]), CANVAS).unwrap();
+    let mut resources = Resources::default();
+    resources.insert(NavigationContext { canvas: CANVAS, viewport_available: true, blocked: false, fit_all: true, fit_selection: true });
+    session = session.with_resources(resources);
+    let requests = Rc::new(RefCell::new(Vec::<Value>::new()));
+    let recorded = Rc::clone(&requests);
+    session
+        .register_host_service(SERVICE, move |request| {
+            recorded.borrow_mut().push(request.clone());
+            Ok(json!({"accepted":true}))
+        })
+        .unwrap();
+    let before = session.document().clone();
+    let revision = session.revision();
+    for (id, params) in
+        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
+    {
+        session.enabled(id, &params).unwrap();
+    }
+    let mut s = McpServer::new(session, Box::new(|| [7; 16]));
+    let list = call(&mut s, "command_list", json!({"query":"canvas."}));
+    for id in ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle"] {
+        let entry = list["structuredContent"]["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap();
+        assert_eq!(entry["ready"], true);
+    }
+    for (id, params) in
+        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
+    {
+        let result = call(&mut s, "command_run", json!({"id":id,"params":params}));
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(result["structuredContent"]["result"], json!({"accepted":true}));
+        assert_eq!(s.session().document(), &before);
+        assert_eq!(s.session().revision(), revision);
+        assert!(!s.session().can_undo() && !s.session().can_redo());
+        assert!(s.session().events_since(revision).unwrap().is_empty());
+    }
+    assert_eq!(
+        *requests.borrow(),
+        vec![json!({"action":"fit_all"}), json!({"action":"fit_selection"}), json!({"action":"minimap_toggle"}), json!({"action":"pan_to","x":10.0,"y":20.0})]
+    );
+    let rejected = call(&mut s, "command_run", json!({"id":"canvas.pan_to","params":{"x":1e13,"y":0}}));
+    assert_eq!(rejected["isError"], true);
+    assert_eq!(requests.borrow().len(), 4, "invalid params never reach the host");
+}

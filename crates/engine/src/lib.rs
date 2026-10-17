@@ -11,6 +11,7 @@ pub mod edge_cmds;
 pub mod graph_cmds;
 pub mod jobs;
 pub mod keys_cmds;
+pub mod navigation_cmds;
 pub mod node_cmds;
 pub mod secrets;
 pub mod session;

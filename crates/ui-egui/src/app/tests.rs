@@ -821,9 +821,9 @@ fn click_shift_click_select_all_and_escape() {
     press_card(&mut h, 1, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &ids(&[2]));
     // Shift-clicking empty canvas keeps the selection; a plain click clears it.
-    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    press(&mut h, Pos2::new(600.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &ids(&[2]));
-    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press(&mut h, Pos2::new(600.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
     assert!(h.state().selection.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     h.run();
@@ -850,7 +850,7 @@ fn shift_drag_box_selects_without_panning_and_plain_drag_still_pans() {
     let (from, to) = (world(-60.0, 380.0), world(50.0, 450.0));
     box_drag(&mut h, from, to, egui::Modifiers::SHIFT);
     assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
-    let from = Pos2::new(900.0, 650.0);
+    let from = Pos2::new(600.0, 650.0);
     box_drag(&mut h, from, from + Vec2::new(-40.0, -30.0), egui::Modifiers::NONE);
     assert!((h.state().view.pan - pan - Vec2::new(-40.0, -30.0)).length() < 1.0);
     assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 4]));
@@ -871,7 +871,7 @@ fn context_menu_selects_chains_and_kinds() {
     h.get_by_label("Select upstream").click();
     h.run();
     assert_eq!(h.state().selection.nodes(), &ids(&[1, 2, 3]));
-    press(&mut h, Pos2::new(900.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
+    press(&mut h, Pos2::new(600.0, 650.0), egui::PointerButton::Primary, egui::Modifiers::NONE);
     press_card(&mut h, 2, egui::PointerButton::Secondary, egui::Modifiers::NONE);
     h.get_by_label("Select downstream").click();
     h.run();
@@ -1357,4 +1357,185 @@ fn only_cards_drawn_this_frame_are_noodle_drop_targets() {
     let mut stale = painted.clone();
     stale.insert(NodeId::from_bytes([0xee; 16]), Rect::from_min_size(Pos2::ZERO, Vec2::splat(10.0)));
     assert_eq!(super::drop_targets(canvas, &stale).count(), painted.len());
+}
+
+#[test]
+fn navigation_overlay_preserves_choice_popup_pointer_commit_and_undo() {
+    let mut h = schema_harness(vec![spec(
+        "quality",
+        ParamControl::Choice { options: vec![Choice { value: "low".into(), label: "Low".into() }, Choice { value: "high".into(), label: "High".into() }] },
+        Value::Text("low".into()),
+    )]);
+    h.get_by_role_and_label(Role::ComboBox, "quality").click();
+    h.run();
+    assert!(egui::Popup::is_any_open(&h.ctx));
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    let option = h.get_by_label("High").rect().center();
+    h.state_mut().view.pan += map.center() - option;
+    h.run();
+    let option = h.get_by_label("High").rect().center();
+    assert!(map.contains(option), "real Choice option must overlap the minimap: {option:?} vs {map:?}");
+    let camera = h.state().view;
+    let document = h.state().session.document().clone();
+    let selection = h.state().selection.clone();
+    // Separate real pointer down/up frames; no accessibility action or fabricated intent.
+    h.hover_at(option);
+    h.event(egui::Event::PointerButton { pos: option, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.event(egui::Event::PointerButton { pos: option, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(!egui::Popup::is_any_open(&h.ctx));
+    assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().session.revision(), 1, "one parameter commit");
+    assert_eq!(h.state().view, camera);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().navigation.drag.is_none());
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document);
+    assert!(!h.state().session.can_undo());
+    assert_eq!(h.state().view, camera);
+}
+
+#[test]
+fn secret_editor_owns_shifted_navigation_events_and_key_service_survives_navigation_host() {
+    use nodecraft_engine::secrets::{Account, MemoryStore, SecretStore, register_key_service};
+    let store = Arc::new(MemoryStore::default());
+    let mut services = nodecraft_engine::commands::Services::default();
+    register_key_service(&mut services, Arc::clone(&store) as Arc<dyn SecretStore>).unwrap();
+    let app = NodeCraftApp::with_services(services).unwrap();
+    let mut h = Harness::builder().with_size(Vec2::new(1100.0, 800.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "API keys").click();
+    h.run();
+    h.get_by_label("openai").click();
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").click();
+    h.run();
+    h.event(egui::Event::Text("sk-proj-integration-fixture1234".into()));
+    h.run();
+    let view = h.state().view;
+    let visible = h.state().navigation.visible;
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let selection = h.state().selection.clone();
+    for (logical, physical, text) in
+        [(egui::Key::Exclamationmark, egui::Key::Num1, "!"), (egui::Key::Num2, egui::Key::Num2, "@"), (egui::Key::M, egui::Key::M, "M")]
+    {
+        h.event(egui::Event::Key { key: logical, physical_key: Some(physical), pressed: true, repeat: false, modifiers: egui::Modifiers::SHIFT });
+        h.event(egui::Event::Text(text.into()));
+        h.run();
+        h.event(egui::Event::Key { key: logical, physical_key: Some(physical), pressed: false, repeat: false, modifiers: egui::Modifiers::SHIFT });
+        h.run();
+        assert_eq!(h.state().view, view);
+        assert_eq!(h.state().navigation.visible, visible);
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().selection, selection);
+        assert!(!h.state().session.can_undo() && !h.state().session.can_redo());
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_err());
+    }
+    h.get_by_label("Save").click();
+    h.run();
+    let stored = store.get(&Account::new("openai").unwrap()).unwrap().unwrap();
+    assert!(stored.expose() == "sk-proj-integration-fixture1234!@M", "secret editor retained its text while navigation stayed inactive");
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+}
+
+#[test]
+fn active_wire_gesture_crosses_minimap_without_navigation_and_commits_once() {
+    let mut h = chain_harness();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let view = h.state().view;
+    let from = port_point(&h, 1, noodle::Side::Output);
+    let target = port_point(&h, 3, noodle::Side::Input);
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map.center();
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(20.0, 0.0));
+    h.run();
+    assert!(h.state().wiring.is_some());
+    let ctx = h.ctx.clone();
+    for (id, params) in
+        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":0,"y":0}))]
+    {
+        assert!(h.state_mut().navigation_enabled(&ctx, id, &params).is_err());
+        assert!(h.state_mut().dispatch_navigation(&ctx, id, &params).is_err());
+    }
+    h.event(egui::Event::Key {
+        key: egui::Key::Exclamationmark,
+        physical_key: Some(egui::Key::Num1),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::SHIFT,
+    });
+    h.run();
+    h.event(egui::Event::Key {
+        key: egui::Key::Exclamationmark,
+        physical_key: Some(egui::Key::Num1),
+        pressed: false,
+        repeat: false,
+        modifiers: egui::Modifiers::SHIFT,
+    });
+    h.run();
+    for point in [map, target] {
+        h.hover_at(point);
+        h.run();
+        assert!(h.state().wiring.is_some());
+        assert!(!h.state().navigation.pointer_owned && h.state().navigation.drag.is_none());
+        assert_eq!(h.state().view, view);
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+    }
+    h.drop_at(target);
+    h.run();
+    assert!(h.state().wiring.is_none());
+    assert_eq!(links(&h), [link(1, 2), link(1, 3)].into_iter().collect());
+    assert_eq!(h.state().session.revision(), revision + 1);
+    let connected = h.state().session.document().clone();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run();
+    assert_eq!(h.state().session.document(), &document);
+    h.state_mut().session.dispatch("edit.redo", &json!({})).unwrap();
+    h.run();
+    assert_eq!(h.state().session.document(), &connected);
+}
+
+#[test]
+fn minimap_owns_drag_started_over_a_covered_output_port() {
+    let mut h = chain_harness();
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map.center();
+    let port = port_point(&h, 4, noodle::Side::Output);
+    let delta = (map - port) / h.state().view.zoom;
+    let canvas = h.state().canvas;
+    let position = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&chain_id(4)).unwrap().pos;
+    h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas,"id":chain_id(4),"pos":{"x":position.x+delta.x,"y":position.y+delta.y}})).unwrap();
+    h.run();
+    assert!(port_point(&h, 4, noodle::Side::Output).distance(map) < 1.0, "fixture must cover a real painted port");
+    assert!(h.state().painted.contains_key(&chain_id(4)));
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let selection = h.state().selection.clone();
+    h.hover_at(map);
+    h.run();
+    h.drag_at(map);
+    h.run();
+    h.hover_at(map + Vec2::new(20.0, 10.0));
+    h.run();
+    assert!(h.state().navigation.pointer_owned);
+    assert!(h.state().wiring.is_none());
+    let target = port_point(&h, 3, noodle::Side::Input);
+    h.hover_at(target);
+    h.run();
+    h.drop_at(target);
+    h.run();
+    assert!(h.state().wiring.is_none());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().selection, selection);
 }

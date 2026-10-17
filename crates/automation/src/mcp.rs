@@ -54,6 +54,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
     "canvas.stale",
+    "canvas.fit_all",
+    "canvas.fit_selection",
+    "canvas.minimap_toggle",
+    "canvas.pan_to",
     "keys.status",
 ];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
@@ -186,6 +190,133 @@ fn edge_page<'a>(edges: &[&'a Edge], offset: usize, budget: usize) -> Result<(Ve
     Ok((page, (next < edges.len()).then_some(next)))
 }
 
+pub(crate) fn command_list(session: &Session, args: &Map<String, Value>) -> Result<Value, Error> {
+    let query = args.get("query").and_then(Value::as_str).unwrap_or_default().to_lowercase();
+    let commands: Vec<Value> = session
+        .registry()
+        .specs()
+        .filter(|s| visible(s.id))
+        .filter(|s| query.is_empty() || s.id.contains(&query) || s.label.to_lowercase().contains(&query))
+        .map(|s| {
+            let schema = (s.input_schema)();
+            let takes_params = schema.get("required").and_then(Value::as_array).is_some_and(|r| !r.is_empty());
+            let mut entry = json!({"id": s.id, "label": s.label, "params_schema": schema, "params_doc": s.params_doc});
+            // Whether a command can run depends on its params; only parameterless ones are
+            // checked here, so `ready` always means the same thing.
+            if !takes_params {
+                let enabled = session.enabled(s.id, &json!({}));
+                entry["ready"] = json!(enabled.is_ok());
+                if let Err(e) = enabled {
+                    entry["not_ready_because"] = json!(e.message);
+                }
+            }
+            entry
+        })
+        .collect();
+    Ok(json!({"commands": commands}))
+}
+
+pub(crate) fn command_run(session: &mut Session, mut args: Map<String, Value>) -> Result<Value, Error> {
+    let id = match args.remove("id") {
+        Some(Value::String(id)) => id,
+        _ => return Err(invalid("command_run needs the command `id`")),
+    };
+    session.registry().get(&id)?;
+    if !visible(&id) {
+        let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
+        return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
+    }
+    let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
+    let result = session.dispatch(&id, &params)?;
+    Ok(json!({"result": result, "revision": session.revision()}))
+}
+
+pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Result<Value, Error> {
+    let project = session.document();
+    let number = |key: &str, default: usize| -> Result<usize, Error> {
+        match args.get(key) {
+            None => Ok(default),
+            Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| invalid(format!("`{key}` must be a non-negative integer"))),
+        }
+    };
+    let Some(canvas) = args.get("canvas") else {
+        if args.contains_key("node") {
+            return Err(invalid("`node` needs its `canvas`"));
+        }
+        if args.contains_key("edge_offset") {
+            return Err(invalid("`edge_offset` needs `canvas` and `node`"));
+        }
+        let offset = number("offset", 0)?;
+        let limit = number("limit", 100)?;
+        if !(1..=MAX_PAGE).contains(&limit) {
+            return Err(invalid(format!("`limit` must be 1–{MAX_PAGE}")));
+        }
+        return overview::page(project, offset, limit, session.revision(), PAGE_BUDGET_BYTES);
+    };
+    let id: CanvasId = canvas.as_str().ok_or_else(|| invalid("`canvas` must be a canvas id string"))?.parse()?;
+    let canvas = project.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with that id"))?;
+    let revision = session.revision();
+    if let Some(node) = args.get("node") {
+        let node: NodeId = node.as_str().ok_or_else(|| invalid("`node` must be a node id string"))?.parse()?;
+        let node = canvas.nodes().get(&node).ok_or_else(|| Error::new(ErrorKind::NotFound, "no node with that id on this canvas"))?;
+        // The node in full (the graph caps it at 8 MiB); its edges in pages, by edge id.
+        let touching: Vec<&Edge> = canvas.edges().values().filter(|e| e.to.node == node.id || e.from.node == node.id).collect();
+        let (edges, next) = edge_page(&touching, number("edge_offset", 0)?, PAGE_BUDGET_BYTES)?;
+        return Ok(json!({"node": node, "edges": edges, "edges_total": touching.len(), "next_edge_offset": next, "revision": revision}));
+    }
+    let offset = number("offset", 0)?;
+    let limit = number("limit", 100)?.clamp(1, MAX_PAGE);
+    // Each edge is listed with the node it enters, so paging lists every edge once.
+    let mut incoming: BTreeMap<NodeId, Vec<&Edge>> = BTreeMap::new();
+    for e in canvas.edges().values() {
+        incoming.entry(e.to.node).or_default().push(e);
+    }
+    let mut nodes = Vec::new();
+    let mut edges: Vec<&Edge> = Vec::new();
+    let mut used = 0usize;
+    let mut edges_truncated = false;
+    let mut taken = 0usize;
+    let mut truncated_at: Option<NodeId> = None;
+    for node in canvas.nodes().values().skip(offset).take(limit) {
+        let entry = if json_len(node)? > NODE_INLINE_BYTES {
+            json!({"id": node.id, "kind": node.kind, "title": node.title, "pos": node.pos, "params": node.params.keys().collect::<Vec<_>>(), "history": node.history.len(), "summarised": "too large for a page; read it with `node`"})
+        } else {
+            serde_json::to_value(node).map_err(|_| internal())?
+        };
+        let into = incoming.get(&node.id).map(Vec::as_slice).unwrap_or_default();
+        let cost = json_len(&entry)?.saturating_add(json_len(&into)?);
+        if taken > 0 && used.saturating_add(cost) > PAGE_BUDGET_BYTES {
+            break;
+        }
+        used = used.saturating_add(json_len(&entry)?);
+        nodes.push(entry);
+        // A first node with more incoming edges than a page holds gets as many as fit; the
+        // rest are read with `node`.
+        for e in into {
+            let n = json_len(e)?;
+            if used.saturating_add(n) > PAGE_BUDGET_BYTES {
+                edges_truncated = true;
+                truncated_at = Some(node.id);
+                break;
+            }
+            used = used.saturating_add(n);
+            edges.push(e);
+        }
+        taken = taken.saturating_add(1);
+    }
+    let next = offset.saturating_add(taken);
+    let more = next < canvas.nodes().len();
+    Ok(json!({
+        "canvas": {"id": canvas.id(), "title": canvas.title(), "nodes_total": canvas.nodes().len(), "edges_total": canvas.edges().len()},
+        "nodes": nodes,
+        "edges": serde_json::to_value(&edges).map_err(|_| internal())?,
+        "edges_truncated": edges_truncated,
+        "edges_continue": truncated_at.map(|n| json!({"node": n, "hint": "read all of this node's edges with canvas_inspect `node` (paged by `edge_offset`)"})),
+        "next_offset": more.then_some(next),
+        "revision": revision,
+    }))
+}
+
 impl McpServer {
     pub fn new(session: Session, new_id: IdSource) -> Self {
         Self { session, new_id }
@@ -266,9 +397,9 @@ impl McpServer {
             Some(_) => return Err((INVALID_PARAMS, "tool arguments must be an object".into())),
         };
         let result = match name.as_str() {
-            "command_list" => self.command_list(&args),
-            "command_run" => self.command_run(args),
-            "canvas_inspect" => self.canvas_inspect(&args),
+            "command_list" => command_list(&self.session, &args),
+            "command_run" => command_run(&mut self.session, args),
+            "canvas_inspect" => canvas_inspect(&self.session, &args),
             "ids_new" => self.ids_new(&args),
             other => return Err((INVALID_PARAMS, format!("unknown tool {}", other.chars().take(64).collect::<String>()))),
         };
@@ -276,134 +407,6 @@ impl McpServer {
             Ok(v) => tool_ok(v),
             Err(e) => tool_err(&e),
         })
-    }
-
-    fn command_list(&self, args: &Map<String, Value>) -> Result<Value, Error> {
-        let query = args.get("query").and_then(Value::as_str).unwrap_or_default().to_lowercase();
-        let commands: Vec<Value> = self
-            .session
-            .registry()
-            .specs()
-            .filter(|s| visible(s.id))
-            .filter(|s| query.is_empty() || s.id.contains(&query) || s.label.to_lowercase().contains(&query))
-            .map(|s| {
-                let schema = (s.input_schema)();
-                let takes_params = schema.get("required").and_then(Value::as_array).is_some_and(|r| !r.is_empty());
-                let mut entry = json!({"id": s.id, "label": s.label, "params_schema": schema, "params_doc": s.params_doc});
-                // Whether a command can run depends on its params; only parameterless ones are
-                // checked here, so `ready` always means the same thing.
-                if !takes_params {
-                    let enabled = self.session.enabled(s.id, &json!({}));
-                    entry["ready"] = json!(enabled.is_ok());
-                    if let Err(e) = enabled {
-                        entry["not_ready_because"] = json!(e.message);
-                    }
-                }
-                entry
-            })
-            .collect();
-        Ok(json!({"commands": commands}))
-    }
-
-    fn command_run(&mut self, mut args: Map<String, Value>) -> Result<Value, Error> {
-        let id = match args.remove("id") {
-            Some(Value::String(id)) => id,
-            _ => return Err(invalid("command_run needs the command `id`")),
-        };
-        self.session.registry().get(&id)?;
-        if !visible(&id) {
-            let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
-            return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
-        }
-        let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
-        let result = self.session.dispatch(&id, &params)?;
-        Ok(json!({"result": result, "revision": self.session.revision()}))
-    }
-
-    fn canvas_inspect(&self, args: &Map<String, Value>) -> Result<Value, Error> {
-        let project = self.session.document();
-        let number = |key: &str, default: usize| -> Result<usize, Error> {
-            match args.get(key) {
-                None => Ok(default),
-                Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| invalid(format!("`{key}` must be a non-negative integer"))),
-            }
-        };
-        let Some(canvas) = args.get("canvas") else {
-            if args.contains_key("node") {
-                return Err(invalid("`node` needs its `canvas`"));
-            }
-            if args.contains_key("edge_offset") {
-                return Err(invalid("`edge_offset` needs `canvas` and `node`"));
-            }
-            let offset = number("offset", 0)?;
-            let limit = number("limit", 100)?;
-            if !(1..=MAX_PAGE).contains(&limit) {
-                return Err(invalid(format!("`limit` must be 1–{MAX_PAGE}")));
-            }
-            return overview::page(project, offset, limit, self.session.revision(), PAGE_BUDGET_BYTES);
-        };
-        let id: CanvasId = canvas.as_str().ok_or_else(|| invalid("`canvas` must be a canvas id string"))?.parse()?;
-        let canvas = project.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with that id"))?;
-        let revision = self.session.revision();
-        if let Some(node) = args.get("node") {
-            let node: NodeId = node.as_str().ok_or_else(|| invalid("`node` must be a node id string"))?.parse()?;
-            let node = canvas.nodes().get(&node).ok_or_else(|| Error::new(ErrorKind::NotFound, "no node with that id on this canvas"))?;
-            // The node in full (the graph caps it at 8 MiB); its edges in pages, by edge id.
-            let touching: Vec<&Edge> = canvas.edges().values().filter(|e| e.to.node == node.id || e.from.node == node.id).collect();
-            let (edges, next) = edge_page(&touching, number("edge_offset", 0)?, PAGE_BUDGET_BYTES)?;
-            return Ok(json!({"node": node, "edges": edges, "edges_total": touching.len(), "next_edge_offset": next, "revision": revision}));
-        }
-        let offset = number("offset", 0)?;
-        let limit = number("limit", 100)?.clamp(1, MAX_PAGE);
-        // Each edge is listed with the node it enters, so paging lists every edge once.
-        let mut incoming: BTreeMap<NodeId, Vec<&Edge>> = BTreeMap::new();
-        for e in canvas.edges().values() {
-            incoming.entry(e.to.node).or_default().push(e);
-        }
-        let mut nodes = Vec::new();
-        let mut edges: Vec<&Edge> = Vec::new();
-        let mut used = 0usize;
-        let mut edges_truncated = false;
-        let mut taken = 0usize;
-        let mut truncated_at: Option<NodeId> = None;
-        for node in canvas.nodes().values().skip(offset).take(limit) {
-            let entry = if json_len(node)? > NODE_INLINE_BYTES {
-                json!({"id": node.id, "kind": node.kind, "title": node.title, "pos": node.pos, "params": node.params.keys().collect::<Vec<_>>(), "history": node.history.len(), "summarised": "too large for a page; read it with `node`"})
-            } else {
-                serde_json::to_value(node).map_err(|_| internal())?
-            };
-            let into = incoming.get(&node.id).map(Vec::as_slice).unwrap_or_default();
-            let cost = json_len(&entry)?.saturating_add(json_len(&into)?);
-            if taken > 0 && used.saturating_add(cost) > PAGE_BUDGET_BYTES {
-                break;
-            }
-            used = used.saturating_add(json_len(&entry)?);
-            nodes.push(entry);
-            // A first node with more incoming edges than a page holds gets as many as fit; the
-            // rest are read with `node`.
-            for e in into {
-                let n = json_len(e)?;
-                if used.saturating_add(n) > PAGE_BUDGET_BYTES {
-                    edges_truncated = true;
-                    truncated_at = Some(node.id);
-                    break;
-                }
-                used = used.saturating_add(n);
-                edges.push(e);
-            }
-            taken = taken.saturating_add(1);
-        }
-        let next = offset.saturating_add(taken);
-        let more = next < canvas.nodes().len();
-        Ok(json!({
-            "canvas": {"id": canvas.id(), "title": canvas.title(), "nodes_total": canvas.nodes().len(), "edges_total": canvas.edges().len()},
-            "nodes": nodes,
-            "edges": serde_json::to_value(&edges).map_err(|_| internal())?,
-            "edges_truncated": edges_truncated,
-            "edges_continue": truncated_at.map(|n| json!({"node": n, "hint": "read all of this node's edges with canvas_inspect `node` (paged by `edge_offset`)"})),
-            "next_offset": more.then_some(next),
-            "revision": revision,
-        }))
     }
 
     fn ids_new(&mut self, args: &Map<String, Value>) -> Result<Value, Error> {
@@ -456,7 +459,7 @@ pub fn serve(server: &mut McpServer, input: &mut dyn BufRead, output: &mut dyn W
     }
 }
 
-enum Line {
+pub(crate) enum Line {
     Read,
     TooLong,
     Eof,
@@ -464,7 +467,7 @@ enum Line {
 
 /// Reads one line into `buf`, keeping at most [`MAX_MESSAGE_BYTES`]; the rest of a longer line
 /// is read and dropped.
-fn read_line(input: &mut dyn BufRead, buf: &mut Vec<u8>) -> std::io::Result<Line> {
+pub(crate) fn read_line(input: &mut dyn BufRead, buf: &mut Vec<u8>) -> std::io::Result<Line> {
     let mut too_long = false;
     let mut any = false;
     loop {

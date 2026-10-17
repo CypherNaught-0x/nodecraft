@@ -76,6 +76,16 @@ fn template(id: &str) -> (Session, Value) {
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
     let mut session = Session::new(document).unwrap();
+    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to") {
+        session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            fit_all: true,
+            fit_selection: true,
+        }));
+        session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
@@ -91,6 +101,8 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
         }
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
+        "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.pan_to" => json!({"x":0,"y":0}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();
             Value::Null
@@ -154,16 +166,15 @@ fn typed_template_panic_hunt() {
                 }
                 Ok(_) => {
                     successes += 1;
-                    let after = session.document().clone();
-                    session.document().validate().unwrap();
-                    if id == "canvas.stale" {
-                        // A supported read-only query must not manufacture an undo step.
+                    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to" | "canvas.stale") {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
                         assert_eq!(session.events_since(0).unwrap(), events);
                         assert_eq!((session.can_undo(), session.can_redo()), history);
                         continue;
                     }
+                    let after = session.document().clone();
+                    session.document().validate().unwrap();
                     let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };
                     session.dispatch(reverse, &Value::Null).unwrap();
                     assert_eq!(session.document(), &before, "{id}");

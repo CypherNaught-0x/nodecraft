@@ -72,11 +72,63 @@ impl CanvasView {
         }
     }
 
+    /// Center a finite world point. f64 intermediates avoid overflow in hostile geometry.
+    pub fn center_on(&mut self, viewport: Rect, x: f64, y: f64) -> bool {
+        if !valid_rect(viewport)
+            || viewport.width() <= 0.0
+            || viewport.height() <= 0.0
+            || !x.is_finite()
+            || !y.is_finite()
+            || !self.zoom.is_finite()
+            || self.zoom <= 0.0
+        {
+            return false;
+        }
+        let pan = [f64::from(viewport.width()) * 0.5 - x * f64::from(self.zoom), f64::from(viewport.height()) * 0.5 - y * f64::from(self.zoom)];
+        if pan.iter().any(|v| !v.is_finite() || v.abs() > f64::from(f32::MAX)) {
+            return false;
+        }
+        self.pan = Vec2::new(pan.first().copied().unwrap_or(0.0) as f32, pan.get(1).copied().unwrap_or(0.0) as f32);
+        true
+    }
+    /// Fit world bounds with screen-space padding. The result reports when MIN_ZOOM prevents
+    /// containment; it is a centered best effort then, never a promise to fit arbitrary extents.
+    pub fn fit(&mut self, viewport: Rect, bounds: Rect, padding: f32) -> Option<FitResult> {
+        if !valid_rect(viewport) || !valid_rect(bounds) || !padding.is_finite() || padding < 0.0 {
+            return None;
+        }
+        let width = f64::from(viewport.max.x) - f64::from(viewport.min.x) - 2.0 * f64::from(padding);
+        let height = f64::from(viewport.max.y) - f64::from(viewport.min.y) - 2.0 * f64::from(padding);
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let bw = (f64::from(bounds.max.x) - f64::from(bounds.min.x)).max(1.0);
+        let bh = (f64::from(bounds.max.y) - f64::from(bounds.min.y)).max(1.0);
+        let wanted = (width / bw).min(height / bh);
+        let zoom = wanted.clamp(f64::from(MIN_ZOOM), f64::from(MAX_ZOOM)) as f32;
+        let center = [(f64::from(bounds.min.x) + f64::from(bounds.max.x)) * 0.5, (f64::from(bounds.min.y) + f64::from(bounds.max.y)) * 0.5];
+        let mut next = *self;
+        next.zoom = zoom;
+        if !next.center_on(viewport, center.first().copied().unwrap_or(0.0), center.get(1).copied().unwrap_or(0.0)) {
+            return None;
+        }
+        *self = next;
+        Some(FitResult { clamped: wanted < f64::from(MIN_ZOOM) })
+    }
+
     /// 100% zoom with the world point `center` in the middle of `viewport`.
     pub fn reset(&mut self, viewport: Rect, center: Pos2) {
         self.zoom = 1.0;
         self.pan = viewport.size() * 0.5 - center.to_vec2();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FitResult {
+    pub clamped: bool,
+}
+pub fn valid_rect(rect: Rect) -> bool {
+    rect.min.is_finite() && rect.max.is_finite() && rect.min.x <= rect.max.x && rect.min.y <= rect.max.y
 }
 
 /// World distance between painted grid dots: the token spacing, doubled until the dots are at
@@ -293,5 +345,47 @@ mod tests {
             let dots = (viewport.width() / step + 2.0) * (viewport.height() / step + 2.0);
             assert!(dots < MAX_DOTS as f32, "zoom {zoom}: {dots}");
         }
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+    #[test]
+    fn fit_contains_centers_and_clamps_across_aspect_ratios() {
+        for size in [Vec2::new(1000.0, 700.0), Vec2::new(500.0, 1000.0), Vec2::new(2000.0, 300.0)] {
+            let viewport = Rect::from_min_size(Pos2::new(23.0, 41.0), size);
+            for bounds in [Rect::from_min_max(Pos2::new(-800.0, -50.0), Pos2::new(1200.0, 450.0)), Rect::from_min_max(Pos2::new(1.0, 1.0), Pos2::new(1.0, 1.0))]
+            {
+                let mut view = CanvasView::default();
+                let result = view.fit(viewport, bounds, 24.0).unwrap();
+                assert!(!result.clamped);
+                let screen = view.rect_to_screen(viewport.min, bounds);
+                assert!(viewport.shrink(23.9).contains_rect(screen), "{screen:?} {viewport:?}");
+                assert!((screen.center() - viewport.center()).length() < 0.01);
+                assert!((MIN_ZOOM..=MAX_ZOOM).contains(&view.zoom));
+            }
+        }
+        let mut view = CanvasView::default();
+        let huge = Rect::from_min_max(Pos2::new(-f32::MAX, -f32::MAX), Pos2::new(f32::MAX, f32::MAX));
+        assert!(view.fit(Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.0)), huge, 20.0).unwrap().clamped);
+        assert_eq!(view.zoom, MIN_ZOOM);
+        assert!(view.pan.is_finite());
+    }
+    #[test]
+    fn invalid_fit_or_pan_never_changes_view() {
+        let good = Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.0));
+        for (viewport, bounds, padding) in
+            [(Rect::NOTHING, good, 0.0), (good, Rect::NOTHING, 0.0), (good, good, f32::NAN), (good, good, 250.0), (good, good, -1.0)]
+        {
+            let mut view = CanvasView::default();
+            let old = view;
+            assert!(view.fit(viewport, bounds, padding).is_none());
+            assert_eq!(view, old);
+        }
+        let mut view = CanvasView::default();
+        let old = view;
+        assert!(!view.center_on(good, f64::INFINITY, 0.0));
+        assert_eq!(view, old);
     }
 }

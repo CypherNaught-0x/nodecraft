@@ -60,5 +60,10 @@ server waits until the prompt is answered.
 A longer line is skipped with an error reply instead of being buffered. Messages must be UTF-8
 JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 
+Navigation commands (`canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.pan_to`) are discoverable but require a scoped live canvas host. The standalone stdio
+session reports them unavailable and returns Unsupported when run; they never open a window
+or change the document.
+
 Paid operations (running generations) aren't exposed yet. When they arrive, they will show their
 cost first and respect the session's budget (plan §4.8, #207).
