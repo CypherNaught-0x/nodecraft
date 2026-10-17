@@ -44,6 +44,11 @@ pub struct StepQuote {
 }
 
 impl StepQuote {
+    /// The step is known to run no jobs.
+    pub fn runs_nothing(&self) -> bool {
+        self.jobs_known && self.jobs == 0
+    }
+
     /// The step's price: per job times jobs.
     pub fn total(&self) -> Result<Option<Money>, Unpriced> {
         match &self.per_job {
@@ -61,9 +66,10 @@ pub struct Quote {
 }
 
 impl Quote {
-    /// Steps without a known price; while any remain the total is partial.
+    /// Steps without a known price; while any remain the total is partial. A step known to run
+    /// no jobs costs nothing, priced or not.
     pub fn unpriced(&self) -> impl Iterator<Item = (NodeId, Unpriced)> + '_ {
-        self.steps.iter().filter_map(|step| step.total().err().map(|why| (step.node, why)))
+        self.steps.iter().filter(|step| !step.runs_nothing()).filter_map(|step| step.total().err().map(|why| (step.node, why)))
     }
     /// Paid steps quoted before their jobs are known (one job assumed).
     pub fn estimated(&self) -> impl Iterator<Item = NodeId> + '_ {
@@ -229,7 +235,8 @@ impl Admission {
     pub fn allowed(&self) -> bool {
         self.blocks.is_empty()
     }
-    /// The run may start and the check covered its whole cost.
+    /// The run may start and nothing was admitted provisionally (every capped step's job count
+    /// was known, or no session or project cap applies). Unpriced steps under no cap still pass.
     pub fn is_final(&self) -> bool {
         self.blocks.is_empty() && self.provisional.is_empty()
     }
@@ -240,7 +247,7 @@ impl Admission {
 pub fn check(quote: &Quote, budgets: &Budgets, spent: &Spent) -> Result<Admission, Error> {
     let mut blocks = Vec::new();
     if let Some(limit) = budgets.per_call {
-        for step in &quote.steps {
+        for step in quote.steps.iter().filter(|step| !step.runs_nothing()) {
             match &step.per_job {
                 Err(_) => blocks.push(Block::Unknown { scope: Scope::PerCall, node: step.node }),
                 Ok(None) => {}
@@ -342,8 +349,10 @@ pub const MAX_LISTED_TEXT: usize = 32 * 1024 * 1024;
 /// Past this many, the oldest identity is forgotten: a retry of a charge more than
 /// `MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS` charges old counts again (the documented boundary).
 pub const MAX_RETIRED_KEYS: usize = 250_000;
-/// Most sessions with their own totals; older sessions fold into one "earlier sessions" total
-/// (saved under the empty name), which still counts for the project.
+/// Most sessions with their own totals. Past it, the least recently charged session (never the
+/// one charging) folds into one "earlier sessions" total, saved under the empty name, which still
+/// counts for the project. A session id that charges again after being folded starts a fresh
+/// session total: sessions are per launch, and one 1,024 sessions dormant is over.
 pub const MAX_SESSIONS: usize = 1024;
 /// The session name the folded totals of earlier sessions are kept under.
 pub const EARLIER_SESSIONS: &str = "";
@@ -367,6 +376,10 @@ pub struct UsageLog {
     retired_set: BTreeSet<Retired>,
     /// Text bytes of the listed entries (see [`MAX_LISTED_TEXT`]).
     text_bytes: usize,
+    /// When each session last charged (a counter, not saved: rebuilt from the listed entries), so
+    /// folding picks the least recently used.
+    session_clock: BTreeMap<String, u64>,
+    clock: u64,
 }
 
 /// A retired charge's identity: 16 bytes of a hash of its provider and key.
@@ -383,6 +396,35 @@ fn retired_id(provider: &str, idempotency_key: &str) -> Retired {
     id
 }
 
+/// Takes `amount` out of session `name`'s totals; what its own total no longer holds (it was
+/// folded into the earlier sessions') comes out of [`EARLIER_SESSIONS`].
+fn take_from_session(sessions: &mut BTreeMap<String, Totals>, name: &str, amount: Money) -> Result<(), Error> {
+    let own = sessions.get(name).and_then(|t| t.get(&amount.currency)).map_or(0, |m| m.micros);
+    let from_own = own.min(amount.micros);
+    if from_own > 0
+        && let Some(totals) = sessions.get_mut(name)
+    {
+        sub_from(totals, Money::new(amount.currency, from_own))?;
+    }
+    let rest = amount.micros.saturating_sub(from_own);
+    if rest > 0 {
+        let earlier = sessions.get_mut(EARLIER_SESSIONS).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing a session"))?;
+        sub_from(earlier, Money::new(amount.currency, rest))?;
+    }
+    Ok(())
+}
+
+/// Adds `amount` to session `name`'s totals, or to [`EARLIER_SESSIONS`] when it was folded.
+fn give_to_session(sessions: &mut BTreeMap<String, Totals>, name: &str, amount: Money) -> Result<(), Error> {
+    let target = if sessions.contains_key(name) { name } else { EARLIER_SESSIONS };
+    add_to(sessions.entry(target.to_owned()).or_default(), amount)
+}
+
+/// The two sessions a change to an entry of `name` can touch, copied so the change is atomic.
+fn touched_sessions(sessions: &BTreeMap<String, Totals>, name: &str) -> BTreeMap<String, Totals> {
+    [name, EARLIER_SESSIONS].into_iter().filter_map(|n| sessions.get(n).map(|t| (n.to_owned(), t.clone()))).collect()
+}
+
 fn entry_text(entry: &UsageEntry) -> usize {
     [&entry.session, &entry.provider, &entry.model, &entry.idempotency_key].iter().fold(0usize, |sum, t| sum.saturating_add(t.len()))
 }
@@ -392,7 +434,7 @@ fn hex(id: &Retired) -> String {
 }
 
 fn unhex(text: &str) -> Option<Retired> {
-    if text.len() != 32 || !text.is_ascii() {
+    if text.len() != 32 || !text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return None;
     }
     let mut id = [0u8; 16];
@@ -474,6 +516,9 @@ impl UsageLog {
         if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
         }
+        // A new session past the limit folds the least recently used one (into a copy, so an error
+        // leaves the log as it was).
+        let folded = if self.sessions.contains_key(&entry.session) { None } else { self.folded_sessions(&entry.session)? };
         // Nothing below can fail: the log changes from here on.
         let text = entry_text(&entry);
         while self.entries.len() >= MAX_USAGE_ENTRIES || (!self.entries.is_empty() && self.text_bytes.saturating_add(text) > MAX_LISTED_TEXT) {
@@ -481,10 +526,12 @@ impl UsageLog {
         }
         let seq = self.first_seq.saturating_add(self.entries.len() as u64);
         self.project = project;
-        if !self.sessions.contains_key(&entry.session) {
-            self.fold_earlier_sessions(&entry.session);
+        if let Some(sessions) = folded {
+            self.sessions = sessions;
         }
         self.sessions.insert(entry.session.clone(), session);
+        self.clock = self.clock.saturating_add(1);
+        self.session_clock.insert(entry.session.clone(), self.clock);
         self.keys.insert(key, seq);
         self.text_bytes = self.text_bytes.saturating_add(text);
         self.entries.push_back(entry);
@@ -509,19 +556,30 @@ impl UsageLog {
         }
     }
 
-    /// Makes room for a new session's totals: past [`MAX_SESSIONS`], the totals of sessions other
-    /// than `current` move into [`EARLIER_SESSIONS`] (the project total is unchanged).
-    fn fold_earlier_sessions(&mut self, current: &str) {
-        while self.sessions.len() >= MAX_SESSIONS {
-            let Some(name) = self.sessions.keys().find(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS).cloned() else { return };
-            let Some(totals) = self.sessions.remove(&name) else { return };
-            let earlier = self.sessions.entry(EARLIER_SESSIONS.to_owned()).or_default();
+    /// The session totals with room for `current`'s: `None` when there is room already; past
+    /// [`MAX_SESSIONS`], the least recently charged sessions other than `current` move into
+    /// [`EARLIER_SESSIONS`] (the project total is unchanged).
+    fn folded_sessions(&self, current: &str) -> Result<Option<BTreeMap<String, Totals>>, Error> {
+        if self.sessions.len() < MAX_SESSIONS {
+            return Ok(None);
+        }
+        let mut sessions = self.sessions.clone();
+        while sessions.len() >= MAX_SESSIONS {
+            let Some(name) = sessions
+                .keys()
+                .filter(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS)
+                .min_by_key(|name| (self.session_clock.get(name.as_str()).copied().unwrap_or(0), name.as_str()))
+                .cloned()
+            else {
+                break;
+            };
+            let totals = sessions.remove(&name).unwrap_or_default();
+            let earlier = sessions.entry(EARLIER_SESSIONS.to_owned()).or_default();
             for money in totals.into_values() {
-                // Each folded total is already counted in the project total, which is bounded far
-                // below overflow, so this sum can't overflow.
-                let _ = add_to(earlier, money);
+                add_to(earlier, money)?;
             }
         }
+        Ok(Some(sessions))
     }
 
     /// The listed, unsettled entry for a key and its index.
@@ -558,12 +616,11 @@ impl UsageLog {
         let mut project = self.project.clone();
         sub_from(&mut project, entry.cost)?;
         add_to(&mut project, cost)?;
-        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
-        sub_from(&mut session, entry.cost)?;
-        add_to(&mut session, cost)?;
-        let name = entry.session.clone();
+        let mut sessions = touched_sessions(&self.sessions, &entry.session);
+        take_from_session(&mut sessions, &entry.session, entry.cost)?;
+        give_to_session(&mut sessions, &entry.session, cost)?;
         self.project = project;
-        self.sessions.insert(name, session);
+        self.sessions.extend(sessions);
         if let Some(entry) = self.entries.get_mut(index) {
             entry.cost = cost;
             entry.status = status;
@@ -581,11 +638,10 @@ impl UsageLog {
         }
         let mut project = self.project.clone();
         sub_from(&mut project, entry.cost)?;
-        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
-        sub_from(&mut session, entry.cost)?;
-        let name = entry.session.clone();
+        let mut sessions = touched_sessions(&self.sessions, &entry.session);
+        take_from_session(&mut sessions, &entry.session, entry.cost)?;
         self.project = project;
-        self.sessions.insert(name, session);
+        self.sessions.extend(sessions);
         if let Some(removed) = self.entries.remove(index) {
             self.text_bytes = self.text_bytes.saturating_sub(entry_text(&removed));
         }
@@ -698,20 +754,18 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if !covers(Some(&file.project), &listed) || !consistent(&file.project) || !file.sessions.values().all(consistent) {
             return Err(bad("the totals don't cover the listed charges"));
         }
-        // A listed session without totals of its own was folded into the earlier sessions'.
-        let mut folded = Totals::new();
+        // What a listed session's own total doesn't cover was folded into the earlier sessions'
+        // total (a session folded, then charging again, keeps only its new charges).
+        let mut shortfall = Totals::new();
         for (name, sums) in &listed_sessions {
-            match file.sessions.get(*name) {
-                Some(totals) if !covers(Some(totals), sums) => return Err(bad("a session's totals don't cover its charges")),
-                Some(_) => {}
-                None => {
-                    for money in sums.values() {
-                        add_to(&mut folded, *money)?;
-                    }
+            for (currency, sum) in sums {
+                let own = file.sessions.get(*name).and_then(|t| t.get(currency)).map_or(0, |m| m.micros);
+                if sum.micros > own {
+                    add_to(&mut shortfall, Money::new(*currency, sum.micros - own))?;
                 }
             }
         }
-        if !covers(file.sessions.get(EARLIER_SESSIONS), &folded) {
+        if !covers(file.sessions.get(EARLIER_SESSIONS), &shortfall) {
             return Err(bad("a session's totals don't cover its charges"));
         }
         if keys.keys().any(|(provider, key)| retired_set.contains(&retired_id(provider, key))) {
@@ -736,7 +790,23 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if file.project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(bad("a total is larger than any project could spend"));
         }
-        Ok(Self { entries: file.entries.into(), keys, first_seq: 0, project: file.project, sessions: file.sessions, retired, retired_set, text_bytes })
+        let mut session_clock = BTreeMap::new();
+        for (seq, entry) in file.entries.iter().enumerate() {
+            session_clock.insert(entry.session.clone(), (seq as u64).saturating_add(1));
+        }
+        let clock = file.entries.len() as u64;
+        Ok(Self {
+            entries: file.entries.into(),
+            keys,
+            first_seq: 0,
+            project: file.project,
+            sessions: file.sessions,
+            retired,
+            retired_set,
+            text_bytes,
+            session_clock,
+            clock,
+        })
     }
 }
 

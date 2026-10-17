@@ -626,13 +626,19 @@ a choice a later contributor might otherwise undo.
 
 - **A guess is admitted provisionally.** `cost::check` returns an `Admission`. When a session or
   project cap is set, paid steps quoted at one job before their job count is known are listed as
-  `provisional`. The run may start, but those jobs must be held to the caps as they start
-  (`budget::Ledger`, #207). A known empty job list quotes zero.
+  `provisional`: the run may start, but the check didn't cover their real cost. The guarantee is
+  job-time enforcement in `engine::jobs` (#207, #222), which checks each job as it starts. A known
+  empty job list quotes zero and blocks nothing.
 - **Charge identity outlives the list.** When an entry leaves the list, a 16-byte digest of its
-  provider and key is kept (saved with the log, up to 250,000 of them). A late retry of it is
+  provider and key is kept (saved with the log, up to 250,000 of them), so a late retry of it is
   still the same charge. The boundary is explicit: a retry of a charge more than
   `MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS` charges old counts again.
-- **Retained bytes are bounded.** Listed entries hold at most 32 MiB of text; the oldest leave
-  first, as at the entry limit. At most 1,024 sessions keep their own totals. Older ones fold into
-  an "earlier sessions" total saved under the empty name, which is reserved, so the project total
-  and the current session's stay exact. The CSV export can stream (`write_csv`).
+- **Retained bytes are bounded.** Listed entries hold at most 32 MiB of text, and the oldest
+  leave first, as at the entry limit. With long fields that is about 16,000 entries. An open
+  estimate pushed off the list stays charged at its estimate, which is conservative. At most
+  1,024 sessions keep their own totals. The least recently charged one (never the one charging)
+  folds into an "earlier sessions" total saved under the reserved empty name. Settling or
+  releasing a folded session's entries adjusts that total, so the project total and the current
+  session's stay exact and a saved log always reloads. A session id that charges again after
+  being folded starts a fresh session total. Entries with an empty session id were never written
+  by NodeCraft and are now refused. The CSV export can stream (`write_csv`).

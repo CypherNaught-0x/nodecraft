@@ -717,3 +717,87 @@ fn a_provisional_admission_is_caught_when_the_step_expands_past_the_cap() {
     let admission = check(&quote, &caps, &Spent::default()).unwrap();
     assert!(matches!(admission.blocks.as_slice(), [Block::Over { scope: Scope::Session, .. }]));
 }
+
+fn estimate(session: &str, key: &str, cost: u64) -> UsageEntry {
+    UsageEntry { status: Charge::Estimate, ..entry(session, key, cost) }
+}
+
+#[test]
+fn a_folded_session_with_listed_charges_settles_reloads_and_charges_again() {
+    let mut log = UsageLog::default();
+    // "a" (sorting first) holds an open estimate and an actual charge, then goes quiet.
+    log.record(estimate("a", "a-open", 10)).unwrap();
+    log.record(estimate("a", "a-free", 4)).unwrap();
+    log.record(entry("a", "a-done", 5)).unwrap();
+    for n in 0..MAX_SESSIONS {
+        log.record(entry(&format!("s{n:05}"), &format!("k{n}"), 1)).unwrap();
+    }
+    assert!(log.spent("a").session.is_empty(), "a was folded");
+    // Settling and releasing a's charges adjust the earlier-sessions total.
+    log.settle("t", "a-open", usd(7), Charge::Actual).unwrap();
+    log.release("t", "a-free").unwrap();
+    // a charges again: a fresh session total; the project total stays exact.
+    log.record(entry("a", "a-new", 3)).unwrap();
+    assert_eq!(log.spent("a").session.get(&Currency::USD), Some(&usd(3)));
+    let project = 7 + 5 + 3 + u64::try_from(MAX_SESSIONS).unwrap();
+    assert_eq!(log.spent("a").project.get(&Currency::USD), Some(&usd(project)));
+    // And the log the app saved reloads.
+    let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert_eq!(back, log);
+}
+
+#[test]
+fn folding_picks_the_least_recently_charged_session() {
+    let mut log = UsageLog::default();
+    // "a" sorts first but keeps charging; the oldest quiet session folds instead.
+    for n in 0..MAX_SESSIONS - 1 {
+        log.record(entry(&format!("s{n:05}"), &format!("k{n}"), 1)).unwrap();
+        if n % 100 == 0 {
+            log.record(entry("a", &format!("a{n}"), 1)).unwrap();
+        }
+    }
+    log.record(entry("new", "new", 1)).unwrap();
+    assert!(log.spent("a").session.get(&Currency::USD).is_some_and(|m| m.micros > 0), "a is active and keeps its total");
+    assert!(log.spent("s00000").session.is_empty(), "the least recently charged session folded");
+}
+
+#[test]
+fn retired_identities_are_validated_released_keys_are_free_and_old_ones_are_forgotten() {
+    let mut log = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + 1 {
+        log.record(entry("s", &format!("k{n}"), 1)).unwrap();
+    }
+    let json = serde_json::to_string(&log).unwrap();
+    let file: UsageLogFile = serde_json::from_str(&json).unwrap();
+    let retired = file.retired.first().cloned().unwrap();
+    // A duplicate identity, an uppercase one, and one that is also listed are refused.
+    let mut dup = file.clone();
+    dup.retired.push(retired.clone());
+    assert!(UsageLog::try_from(dup).is_err());
+    let mut upper = file.clone();
+    upper.retired = vec![retired.to_uppercase()];
+    assert!(UsageLog::try_from(upper).is_err());
+    let mut listed = file.clone();
+    listed.retired.push(super::hex(&super::retired_id("t", &format!("k{}", MAX_USAGE_ENTRIES))));
+    assert!(UsageLog::try_from(listed).is_err());
+    // A released estimate isn't retired: its key can be charged again.
+    log.record(estimate("s", "maybe", 2)).unwrap();
+    log.release("t", "maybe").unwrap();
+    assert!(log.record(entry("s", "maybe", 2)).unwrap());
+    // Past MAX_RETIRED_KEYS, the oldest identities are forgotten (the documented boundary).
+    let mut big = UsageLog::default();
+    for n in 0..MAX_USAGE_ENTRIES + MAX_RETIRED_KEYS + 1 {
+        big.record(entry("s", &format!("k{n}"), 1)).unwrap();
+    }
+    assert!(big.record(entry("s", "k0", 1)).unwrap(), "forgotten: counts again");
+    assert!(!big.record(entry("s", "k5", 1)).unwrap(), "still remembered");
+}
+
+#[test]
+fn a_step_that_runs_no_jobs_blocks_nothing() {
+    let unpriced = StepQuote { node: id(4), models: vec![], per_job: Err(Unpriced::NoModel), jobs: 0, jobs_known: true };
+    let quote = Quote { steps: vec![unpriced], totals: BTreeMap::new() };
+    assert!(quote.is_complete());
+    let caps = Budgets { per_call: Some(usd(1)), session: Some(usd(1)), project: Some(usd(1)) };
+    assert!(check(&quote, &caps, &Spent::default()).unwrap().is_final());
+}
