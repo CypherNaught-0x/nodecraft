@@ -448,7 +448,7 @@ fn usable_outputs(node: &Node) -> Option<&[Value]> {
 
 /// Approximate in-memory size of a value, iteratively (lists can nest): every value, container
 /// or not, costs its own storage, plus its text or media metadata.
-fn value_bytes(value: &Value) -> usize {
+pub(crate) fn value_bytes(value: &Value) -> usize {
     let mut total = 0usize;
     let mut stack = vec![value];
     while let Some(value) = stack.pop() {
