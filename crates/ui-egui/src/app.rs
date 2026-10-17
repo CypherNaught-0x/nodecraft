@@ -129,8 +129,8 @@ fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regi
 /// its resolved instance rect when the card could reach the box at all (the largest card at its
 /// position). Cards that can't reach it skip the resolution.
 fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, world: Rect, t: &theme::Tokens) -> Rect {
-    if let Some(rect) = painted.get(&node.id) {
-        return *rect;
+    if painted.contains_key(&node.id) {
+        return card_geometry(painted, kinds, node, t);
     }
     let largest = Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, t.card_max_height));
     if !largest.intersects(world) {
