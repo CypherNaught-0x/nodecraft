@@ -7,6 +7,7 @@
 pub mod app;
 pub mod canvas;
 pub mod card;
+pub mod keys;
 pub mod selection;
 pub mod theme;
 
