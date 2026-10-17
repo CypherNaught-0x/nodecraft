@@ -40,6 +40,23 @@ same request.
 - **Usage**: token counts and any reported cost are in `ChatResponse::usage`. For jobs they are in
   the `Completed` result that `run_to_completion` returns.
 
+## Submission certainty
+
+`RunFailure::uncertain` describes an interrupted or ambiguous submit with no returned handle.
+A false value alone does not establish that a run was unbilled: a handle independently proves
+provider acceptance and possible billing. Cancellation set before the engine starts reserves nothing;
+cancellation while its future is pending may already have reached the provider and keeps the
+estimate as an unresolved charge. Constructing a submit future itself may have side effects.
+
+The current HTTP contract returns `ProviderError` without delivery-stage evidence. Local JSON
+encoding failures and unreadable replies both use `Malformed`; connection failures and dropped
+replies share `Network`. Redirect failures may follow earlier requests. Those generic kinds
+cannot prove that a submission was never accepted, so ambiguous failures stay conservative.
+A transport distinction would need explicit evidence that nothing was sent, preserved across
+redirects and composed by adapters with any earlier requests. This requires a separate transport
+contract change tracked in [#250](https://github.com/CypherNaught-0x/nodecraft/issues/250); no
+message text or connection-error heuristic establishes nonbilling here.
+
 ## Live tests
 
 Live smoke tests are opt-in and never run in CI. Each costs a few tokens:
