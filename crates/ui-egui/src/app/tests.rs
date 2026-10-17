@@ -1712,3 +1712,19 @@ fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clicka
     assert_eq!(nodes_of(&h, "source.video").len(), 1);
     assert!(h.state().palette.is_none());
 }
+
+#[test]
+fn enter_right_after_typing_chooses_from_the_typed_query() {
+    let mut h = harness();
+    let texts = nodes_of(&h, "source.text").len();
+    double_click(&mut h, Pos2::new(800.0, 560.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    // Queued together (the harness may still deliver them a frame apart): ↵ chooses from "vid".
+    h.event(egui::Event::Text("vid".into()));
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert_eq!(nodes_of(&h, "source.video").len(), 1);
+    assert_eq!(nodes_of(&h, "source.text").len(), texts, "not the empty query's first row");
+    assert!(h.state().palette.is_none());
+}

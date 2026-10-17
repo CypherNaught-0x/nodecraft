@@ -100,9 +100,6 @@ impl Palette {
             self.highlighted = self.highlighted.saturating_sub(1);
         }
         self.highlighted = self.highlighted.min(shown.saturating_sub(1));
-        if enter && let Some(entry) = matches.get(self.highlighted) {
-            return Outcome::Chosen(entry.target.clone());
-        }
         // The double-click that opened the palette must not count as a click elsewhere.
         let first_frame = self.focus;
         let mut chosen = None;
@@ -152,6 +149,15 @@ impl Palette {
         });
         if let Some(target) = chosen {
             return Outcome::Chosen(target);
+        }
+        // ↵ chooses from the query as it is after this frame's typing (a paste and ↵ can arrive
+        // in the same frame), not the list filtered before it.
+        if enter {
+            let fresh = filter(entries, &self.query);
+            let row = self.highlighted.min(fresh.len().min(MAX_ROWS).saturating_sub(1));
+            if let Some(entry) = fresh.get(row) {
+                return Outcome::Chosen(entry.target.clone());
+            }
         }
         if !first_frame && area.response.clicked_elsewhere() {
             return Outcome::Closed;
