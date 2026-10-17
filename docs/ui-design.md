@@ -26,9 +26,11 @@ same structure with the values inverted.
 | `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 | `danger` | `#f06a5f` | `#c4372b` | errors and failed states in chrome |
+| `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
+| `wire_audio` / `_mesh` / `_document` | `#e07a5a` / `#8fc35a` / `#a0a0a8` | `#b0482a` / `#4f8a1f` / `#6b6b74` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
-panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9. Cards are 320 points wide, at least 220 high, with 64 points per
+panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per
 additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
@@ -48,13 +50,20 @@ selected border more visible than the resting one, in both themes.
 | Shift-drag empty canvas | box select: cards the box touches join the selection (live while dragging); Escape cancels the box |
 | Click empty canvas, or Escape outside text fields | clear the selection (Escape closes an open menu or cancels a box select first) |
 | ⌘/Ctrl+A outside text fields | select every node on the canvas |
+| Drag from a card's `+` output | draw a noodle; inputs that accept it get a ring. Drop on an input to connect (`edge.connect`); a single input that is already fed swaps its noodle in the same undo step (`edge.rewire`). One output fans out to any number of inputs |
+| Drag from a connected input | pick up its (last) noodle: drop it on another input to reroute (`edge.rewire`), or on empty canvas to disconnect |
+| Escape while dragging a noodle | drop it without changing anything |
+| Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
+| Delete or Backspace outside text fields | delete the selected nodes and noodles in one undo step (`canvas.delete`) |
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
 | Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
 | ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
 
 egui's own keyboard UI zoom is turned off so these keys zoom the canvas only. Canvas keyboard
-shortcuts yield to focused text fields. Selection is shell view state: it never changes the document
+shortcuts yield to focused text fields. Invalid drops (different modality, a list into a single input, a node into itself, a loop, or a
+second copy of an existing connection)
+change nothing and say why in the notice. Selection is shell view state: it never changes the document
 or the undo history, and ids of removed nodes drop out of it. Grabbing or right-clicking a card
 that is already selected keeps the rest of the selection; dragging still moves only the grabbed card
 (moving a group is a separate change). Invalid parameter drafts stay visible until corrected or

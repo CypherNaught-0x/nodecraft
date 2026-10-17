@@ -205,7 +205,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(registry.specs().count(), 13, "7 graph, 2 node editing, 3 keys.* commands and canvas.stale");
+    assert_eq!(registry.specs().count(), 15, "7 graph, 2 node editing, 2 edge, 3 keys.* commands and canvas.stale");
 }
 
 fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {

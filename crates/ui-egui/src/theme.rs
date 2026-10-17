@@ -40,6 +40,13 @@ pub struct Tokens {
     pub marquee_fill: Color32,
     /// Errors and failed states in chrome (not the accent, which reads as a highlight).
     pub danger: Color32,
+    /// Noodle and port colours by the modality they carry.
+    pub wire_text: Color32,
+    pub wire_image: Color32,
+    pub wire_video: Color32,
+    pub wire_audio: Color32,
+    pub wire_mesh: Color32,
+    pub wire_document: Color32,
 
     /// Distance between grid dots, at 100% zoom.
     pub grid_spacing: f32,
@@ -64,6 +71,19 @@ pub struct Tokens {
     pub handle_stroke: f32,
     pub preview_chars: usize,
     pub text_rows: usize,
+    /// Noodle stroke width (screen points; wider when selected).
+    pub wire_width: f32,
+    pub wire_width_selected: f32,
+    /// Radius of an input port dot on a card's left edge, and its smallest on-screen radius.
+    pub port_radius: f32,
+    pub port_min_radius: f32,
+    /// Input port ring width (screen points).
+    pub port_stroke: f32,
+    /// Extra width of the `card_stroke_selected` halo under a selected noodle.
+    pub wire_halo: f32,
+    /// The ring around inputs that accept the noodle being dragged: gap outside the port, width.
+    pub drop_ring_gap: f32,
+    pub drop_ring_width: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -82,6 +102,12 @@ pub const DARK: Tokens = Tokens {
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
     danger: Color32::from_rgb(0xf0, 0x6a, 0x5f),
+    wire_text: Color32::from_rgb(0xd9, 0xb4, 0x5a),
+    wire_image: Color32::from_rgb(0x5a, 0xa7, 0xe0),
+    wire_video: Color32::from_rgb(0xc6, 0x78, 0xdd),
+    wire_audio: Color32::from_rgb(0xe0, 0x7a, 0x5a),
+    wire_mesh: Color32::from_rgb(0x8f, 0xc3, 0x5a),
+    wire_document: Color32::from_rgb(0xa0, 0xa0, 0xa8),
     grid_spacing: 20.0,
     grid_dot_radius: 1.0,
     card_radius: 14,
@@ -101,6 +127,14 @@ pub const DARK: Tokens = Tokens {
     handle_stroke: 1.5,
     preview_chars: 256,
     text_rows: 6,
+    wire_width: 2.0,
+    wire_width_selected: 3.5,
+    port_radius: 5.0,
+    port_min_radius: 3.0,
+    port_stroke: 2.0,
+    wire_halo: 2.0,
+    drop_ring_gap: 3.0,
+    drop_ring_width: 1.5,
 };
 
 pub const LIGHT: Tokens = Tokens {
@@ -119,8 +153,28 @@ pub const LIGHT: Tokens = Tokens {
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
     danger: Color32::from_rgb(0xc4, 0x37, 0x2b),
+    wire_text: Color32::from_rgb(0x9a, 0x74, 0x14),
+    wire_image: Color32::from_rgb(0x1f, 0x6f, 0xb0),
+    wire_video: Color32::from_rgb(0x8a, 0x3f, 0xb0),
+    wire_audio: Color32::from_rgb(0xb0, 0x48, 0x2a),
+    wire_mesh: Color32::from_rgb(0x4f, 0x8a, 0x1f),
+    wire_document: Color32::from_rgb(0x6b, 0x6b, 0x74),
     ..DARK
 };
+
+impl Tokens {
+    pub fn wire(&self, modality: nodecraft_types::Modality) -> Color32 {
+        use nodecraft_types::Modality;
+        match modality {
+            Modality::Text => self.wire_text,
+            Modality::Image => self.wire_image,
+            Modality::Video => self.wire_video,
+            Modality::Audio => self.wire_audio,
+            Modality::Mesh => self.wire_mesh,
+            Modality::Document => self.wire_document,
+        }
+    }
+}
 
 impl ThemeKind {
     pub fn tokens(self) -> &'static Tokens {
@@ -196,6 +250,23 @@ mod tests {
             let dots = contrast(t.grid_dot, t.canvas_bg);
             assert!((1.2..3.0).contains(&dots), "{kind:?} grid contrast {dots}");
             assert!(contrast(t.card_stroke_selected, t.canvas_bg) > contrast(t.card_stroke, t.canvas_bg), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn noodles_stand_out_and_modalities_differ() {
+        use nodecraft_types::Modality;
+        let all = [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document];
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            for (i, a) in all.iter().enumerate() {
+                // WCAG non-text contrast against both the canvas and card fill.
+                assert!(contrast(t.wire(*a), t.canvas_bg) >= 3.0, "{kind:?} {a:?}");
+                assert!(contrast(t.wire(*a), t.card_fill) >= 3.0, "{kind:?} {a:?} on card");
+                for b in all.iter().skip(i + 1) {
+                    assert_ne!(t.wire(*a), t.wire(*b), "{kind:?} {a:?} {b:?}");
+                }
+            }
         }
     }
 }

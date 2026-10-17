@@ -1,5 +1,9 @@
 //! Graph-backed cards. Widgets keep only drafts; all accepted edits become engine commands.
-use crate::{canvas::CanvasView, theme::Tokens};
+use crate::{
+    canvas::CanvasView,
+    noodle::{self, Side},
+    theme::Tokens,
+};
 use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use nodecraft_graph::{Node, Position};
 use nodecraft_nodes::NodeDescriptor;
@@ -44,15 +48,16 @@ pub enum Intent {
 pub struct CardResponse {
     pub response: egui::Response,
     pub intents: Vec<Intent>,
+    /// Port handles by side and port name, for starting and rerouting noodles.
+    pub ports: Vec<(Side, String, egui::Response)>,
 }
 
 pub fn text_px(size: f32, zoom: f32) -> Option<f32> {
     let px = (size * zoom).round();
     (px.is_finite() && px >= MIN_TEXT_PX).then_some(px)
 }
-pub fn handle_center(rect: Rect) -> Pos2 {
-    rect.right_center()
-}
+/// Pointer slop around a port, in screen points, so small dots stay easy to grab when zoomed out.
+pub const PORT_HIT: f32 = 10.0;
 
 /// Automatic titles are derived view data, never written back during rendering.
 pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
@@ -244,16 +249,29 @@ pub fn show(
     if view.zoom < BODY_MIN_ZOOM {
         editor.mark_hidden();
     }
-    let c = handle_center(rect);
+    let mut ports = Vec::new();
+    let hit = PORT_HIT / view.zoom;
+    for (index, port) in node.inputs.iter().enumerate() {
+        let c = noodle::anchor(rect, Side::Input, index, node.inputs.len());
+        let radius = t.port_radius.max(t.port_min_radius / view.zoom);
+        ui.painter().circle(c, radius, t.card_fill, Stroke::new(t.port_stroke / view.zoom, t.wire(port.port_type.modality)));
+        let r = ui.interact(Rect::from_center_size(c, Vec2::splat(radius + hit) * 2.0), ui.id().with(("in", &port.name)), Sense::drag());
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} input", port.name)));
+        ports.push((Side::Input, port.name.clone(), r.on_hover_text(&port.name)));
+    }
     let radius = t.handle_radius.max(t.handle_min_screen_radius / view.zoom);
-    if !node.outputs.is_empty() {
-        ui.painter().circle(c, radius, t.handle_fill, Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
+    for (index, port) in node.outputs.iter().enumerate() {
+        let c = noodle::anchor(rect, Side::Output, index, node.outputs.len());
+        ui.painter().circle(c, radius, t.handle_fill, Stroke::new(t.handle_stroke / view.zoom, t.wire(port.port_type.modality)));
         for axis in [Vec2::X, Vec2::Y] {
             let arm = axis * radius * 0.5;
             ui.painter().line_segment([c - arm, c + arm], Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
         }
+        let r = ui.interact(Rect::from_center_size(c, Vec2::splat(radius + hit) * 2.0), ui.id().with(("out", &port.name)), Sense::drag());
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} output", port.name)));
+        ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
-    Some(CardResponse { response, intents })
+    Some(CardResponse { response, intents, ports })
 }
 
 fn control(
@@ -477,10 +495,6 @@ mod tests {
         assert_eq!(text_px(13.0, 1.07), Some(14.0));
         assert_eq!(text_px(13.0, 0.3), None);
         assert_eq!(text_px(13.0, f32::NAN), None);
-    }
-    #[test]
-    fn handle_sits_on_the_right_edge() {
-        assert_eq!(handle_center(Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(200.0, 100.0))), Pos2::new(210.0, 70.0));
     }
     #[test]
     fn titles_are_unicode_safe_and_explicit_titles_win() {

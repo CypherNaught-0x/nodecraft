@@ -718,3 +718,16 @@ a choice a later contributor might otherwise undo.
   `unresolved`. A run cancelled before its submit, and refusals (`Auth`, `UnsupportedInput`,
   `BlockedContent`, `Budget`, `RateLimited`, `Busy`), are certain, so their reservations are
   released.
+
+## 2026-10-17 · Noodles (#59)
+
+- **Multi-change canvas edits are their own commands.** Replacing the noodle on a fed single
+  input, rerouting one, and deleting a selection must each be one undo step and all-or-nothing,
+  so `edge.rewire` (remove up to two edges, connect one) and `canvas.delete` (edges, then nodes)
+  build a single changeset instead of the shell dispatching several commands.
+- **The shell makes edge ids by hashing** the endpoints, the session revision and a probe counter,
+  and checks them against every canvas. `types` takes no randomness and the shell has no portable
+  random source on wasm yet. CRDT sync (#119) needs peer-unique ids and should replace this with
+  a platform random source.
+- **Inputs on the left, outputs on the right**, spread evenly down the card edge; a single port
+  sits at the middle, which keeps the existing `+` handle where it was.
