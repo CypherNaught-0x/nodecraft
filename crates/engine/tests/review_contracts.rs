@@ -153,7 +153,7 @@ fn all_builtin_schemas_declare_required_properties_and_shortcuts() {
     for spec in session.registry().specs() {
         let schema = (spec.input_schema)();
         assert_eq!(schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
-        if spec.id.starts_with("edit.") {
+        if spec.id.starts_with("edit.") || spec.id == "file.save" {
             assert_eq!(schema["anyOf"][0]["type"], "null");
         } else {
             assert_eq!(schema["type"], "object");

@@ -40,6 +40,7 @@ blake3 = { version = "1.8", default-features = false, features = ["std"] }
 egui = { version = "0.36", default-features = false }   # the version craft-ui builds against
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 image = { version = "0.25", default-features = false }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -50,6 +51,7 @@ tempfile = "3"
 uuid = { version = "1", default-features = false, features = ["serde"] }
 mime = "0.3"
 proptest = "1"
+zip = { version = "9.0.4", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

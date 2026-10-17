@@ -188,3 +188,88 @@ From [storytold/craft-libs](https://github.com/storytold/craft-libs), pinned to 
 `nodecraft_engine::build_info` reports the workspace version plus the commit and build date baked
 in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging scripts and CI).
 `nodecraft --version` and `nodecraft-cli --version` print it.
+
+
+## Project persistence (#54)
+
+`format::Snapshot` combines a validated graph, immutable content-addressed `AssetStore`, and a
+checkpoint epoch. `encode`/`decode` are platform-independent stored-ZIP codecs; they never extract
+paths or decode media. The version gate precedes graph deserialization. ZIP directory/local-header
+validation runs before the ZIP library allocates its directory. Only `project.json` and canonical
+`assets/<lowercase-blake3>` regular entries are accepted, with matching lengths, CRCs and hashes.
+Unknown JSON fields are tolerated; optional graph collections default empty. IDs, kinds and format
+version remain required. Unsupported versions produce an update error.
+
+Initial limits are 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per asset and 48 MiB
+aggregate media. Codec bytes are currently buffered; cloned asset stores share immutable buffers.
+Saving includes only assets referenced by node parameters or generation history, including lists.
+Large-project lazy disk storage is a later optimization: do not simply increase these memory caps.
+Format v1 excludes ZIP64, compression, encryption, directory entries, archive comments and extra
+fields. These restrictions make the bounded interchange surface explicit.
+
+Hosts construct `Session::with_storage(snapshot, storage)`. A `ProjectStorage` instance belongs to
+one session. Native hosts provide `NativeStorage` with a private, session-unique recovery path;
+an OS lock on a persistent sibling file prevents concurrent writers and releases on process exit.
+Native paths retain `PathBuf`; command parameters use UTF8 filesystem paths (native) or opaque
+keys (web). Browser hosts implement `ProjectStorage`; `MemoryStorage` supports deterministic tests.
+The desktop/CLI adapters will supply these services when they connect their document sessions.
+
+`file.open`, `file.save` and `file.save_as` use the same registry/dispatcher as graph commands and
+never open dialogs. Open fully validates the archive and creates its recovery checkpoint before
+publishing a replacement session document; it resets undo/redo and preserves monotonic event
+cursors. Discarding a dirty document requires explicit `discard_dirty: true`. A successful save
+updates location and savepoint after atomic publication and breaks drag coalescing. Undo entries
+carry content state IDs, so undo/redo to the saved state clears dirty even though revision increases.
+`file_status()` plus `status_revision()` notify hosts of save/dirty/recovery changes independently
+of `DocChanged`; saving does not manufacture document edits.
+
+Recovery files contain a complete checkpoint plus append-only, BLAKE3-checked changeset frames.
+Every edit, undo, redo and intermediate coalesced move is appended to the OS before publication.
+Native recovery keeps its append handle open and a worker group-syncs pending bytes every 250 ms,
+plus scheduler/filesystem latency. This bounds the ordinary power-loss window without syncing
+every pointer sample. Save and explicit clean close flush synchronously. Worker failures latch
+and surface on append/flush; an edit whose append fails does not publish.
+Newly referenced asset bytes accompany the first frame that needs them. Frames are sequence- and
+checkpoint-bound, at most 64 MiB; the journal is capped at 128 MiB and requires saving when full.
+Replay validates graph and asset references after every frame. Before accepting an edit, the
+session preflights canonical forward/inverse replay with max sequence digits, the Record envelope
+and every retained asset as potentially additional after a checkpoint. Full binary headers count
+toward the64MiB frame limit, so accepted undo/redo cannot become oversized after saving an empty
+or smaller document. An incomplete/zero-filled final append or checksum-bad final frame yields an explicit truncated-tail
+flag and the validated prefix. Checksum corruption before later nonzero data, valid-checksum semantic
+corruption, reordered or stale frames fail recovery. Recovery never skips a corrupt middle frame.
+An ambiguous append failure preserves live state and disables edits until a successful save
+replaces the journal. `NativeStorage::recover` reads the recoverable snapshot; constructing a new
+session from it writes a fresh checkpoint and presents it as untitled/dirty, requiring an explicit
+save destination. Recovery selection/presentation belongs to the host; it never silently overwrites
+a newer saved project.
+
+`craft-atomic` writes same-directory staging files, syncs before publication and replaces the
+destination. A storage save error means unpublished. Its directory sync after rename is best effort,
+so success means published, not a guarantee against hardware failure. A recovery-checkpoint failure
+after a published save returns `{saved: true, recovery_ready: false}`, records the saved location
+and state, and disables edits until another save repairs recovery. Hosts must surface that status.
+
+
+### Persistence integration boundaries and tracked storage work
+
+Save encodes once: its archive slice is reused from the new checkpoint. Open decodes once and
+reuses the validated archive bytes for checkpointing. After a save, asset GC preserves references
+from both the live document and bounded undo/redo payloads; discarded redo assets can then be
+reclaimed. Hosts must call `Session::close_recovery` on a clean close (or explicit dirty discard)
+to flush and remove recovery; dropping a dirty session intentionally leaves recovery available.
+Native project destinations have canonical sibling OS locks retained for the storage lifetime,
+with at most 64 destination locks per session; another session receives Busy instead of overwriting.
+Format checks ZIP parser entry-count agreement. `types::Blake3` is canonical for project/journal
+references; format's `canonical_hash`/`media_hash` bridge the standalone media cache key without
+illegal orphan From implementations. Known MIME signatures and dimensions from available bounded image probes are
+verified against bytes. Duration/sample-rate/channel/page metadata remains advisory until the
+[media milestones](plan.md#7-roadmap) provide the corresponding bounded probes.
+
+The bounded buffered M1 codec does **not** yet satisfy [plan 4.6's large-project requirement](plan.md#46-storage)
+that assets stay on disk and load lazily. This remains tracked in [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54:
+a file-backed AssetSource, streaming archive/checkpoint paths, large video limits and ZIP64 need
+a separate format/asset-store design before increasing memory caps. The current 16 MiB/48 MiB limits
+are operational limits, not a claim of large-video support. Format v1 has no published predecessor;
+the explicit migration seam rejects older/future versions before typed graph decoding. A real
+migration and fixture must land before writing v2; no invented lossy v0 migration is applied.

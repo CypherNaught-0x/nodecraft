@@ -30,7 +30,7 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture"] {
+        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "location", "discard_dirty"] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
@@ -61,7 +61,21 @@ fn template(id: &str) -> (Session, Value) {
     if id == "edge.connect" {
         nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
     }
-    let mut session = Session::new(document).unwrap();
+    let mut session = if id.starts_with("file.") {
+        let mut storage = nodecraft_format::MemoryStorage::default();
+        let snapshot = nodecraft_format::Snapshot { project: document.clone(), assets: Default::default(), epoch: 0 };
+        nodecraft_format::ProjectStorage::save(
+            &mut storage,
+            &nodecraft_format::StorageLocation::from_command("template.ncraft".into()).unwrap(),
+            &nodecraft_format::encode(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let mut session = Session::with_storage(snapshot, Box::new(storage)).unwrap();
+        session.dispatch("file.save_as", &json!({"location":"template.ncraft"})).unwrap();
+        session
+    } else {
+        Session::new(document).unwrap()
+    };
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
@@ -78,6 +92,9 @@ fn template(id: &str) -> (Session, Value) {
             session.dispatch("edit.undo", &Value::Null).unwrap();
             json!({})
         }
+        "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
+        "file.save" => Value::Null,
+        "file.save_as" => json!({"location":"new.ncraft"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
@@ -130,6 +147,10 @@ fn typed_template_panic_hunt() {
                     successes += 1;
                     let after = session.document().clone();
                     session.document().validate().unwrap();
+                    if id.starts_with("file.") {
+                        assert_eq!(after, before);
+                        continue;
+                    }
                     let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };
                     session.dispatch(reverse, &Value::Null).unwrap();
                     assert_eq!(session.document(), &before, "{id}");

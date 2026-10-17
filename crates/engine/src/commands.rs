@@ -70,6 +70,7 @@ pub struct Context<'a> {
     pub resources: &'a Resources,
     pub services: &'a Services,
     pub phase: Phase,
+    pub file: crate::file_cmds::FileStatus,
 }
 impl Context<'_> {
     /// Builtins preview the full graph for `enabled()`. Dispatch still invokes every enabled
@@ -80,6 +81,8 @@ impl Context<'_> {
 }
 
 pub enum Effect {
+    Open { location: nodecraft_format::StorageLocation, discard_dirty: bool },
+    Save { location: Option<nodecraft_format::StorageLocation> },
     Service { capability: &'static str, request: Value },
     None { result: Value },
     Edit { changes: Changeset, result: Value, gesture: Option<String> },
@@ -109,7 +112,7 @@ pub struct Registry {
 impl Registry {
     pub fn builtins() -> Result<Self, Error> {
         let mut registry = Self::default();
-        for spec in crate::graph_cmds::specs() {
+        for spec in crate::graph_cmds::specs().into_iter().chain(crate::file_cmds::specs()) {
             registry.register(spec)?;
         }
         Ok(registry)
@@ -270,5 +273,7 @@ fn safe_field(field: &str) -> bool {
             | "gesture"
             | "type"
             | "value"
+            | "location"
+            | "discard_dirty"
     )
 }
