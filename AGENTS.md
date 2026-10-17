@@ -216,4 +216,5 @@ that drive real pointer and key events through the canvas.
 | Installing (incl. unsigned builds) | `docs/install.md` |
 | Status | `ROADMAP.md` (update it when a milestone task lands) |
 | MCP server and its tools | `docs/mcp.md` |
+| Control channel (`nodecraft --control`) | `docs/control.md` |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |

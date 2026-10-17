@@ -4,6 +4,8 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod control;
 pub mod mcp;
 
 use nodecraft_engine::Session;

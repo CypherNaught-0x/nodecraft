@@ -16,7 +16,7 @@ mod thumb;
 
 pub use error::MediaError;
 pub use hash::ContentHash;
-pub use image_io::{ColorModel, ImageMeta, Limits, decode_image, probe_image};
+pub use image_io::{ColorModel, ImageMeta, Limits, decode_image, encode_png, probe_image};
 pub use sniff::{MediaKind, Sniffed, sniff};
 pub use thumb::{Thumbnail, ThumbnailCache, fit_within, thumbnail};
 

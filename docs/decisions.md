@@ -4,6 +4,21 @@ Decisions others will build on, newest first. The product-level ones are in
 [`plan.md`](plan.md) §6; this log records the ones taken while building. Add an entry when you make
 a choice a later contributor might otherwise undo.
 
+
+## 2026-10-17 · Control channel (#115)
+
+- **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.
+  It writes `control.json` (port, a 32-byte random token, pid) into the settings folder, readable
+  by the owner only. Every connection starts with `hello` and the token, compared in constant
+  time, or it is closed.
+- **The UI thread owns the session.** Connection threads only parse and authenticate. Requests
+  reach the UI thread through a bounded queue and are answered against the session the window
+  shows, so changes appear live and go through the same undo path. The app crate holds the glue
+  (`apps/nodecraft/src/control.rs`), since `ui-egui` and `automation` share a layer.
+- **One automation policy.** The control channel reuses MCP's command listing, running and
+  inspection (`AGENT_COMMANDS`/`HUMAN_ONLY`, bounded pages), so it can't do more than an agent
+  can.
+- **Screenshots** come from egui's viewport screenshot, encoded as PNG by `media::encode_png`.
 ## 2026-10-17 · Budgets at job time (#207)
 
 - **Reserve before submit.** `engine::jobs::ProviderRunner::with_budget` checks each priced job

@@ -1,0 +1,346 @@
+//! The control channel (#115): drive the running app from another process over local JSON.
+//!
+//! `nodecraft --control` listens on 127.0.0.1 (a random port) and writes a token file (see
+//! [`TokenFile`]) that only the user can read. A client connects, sends one request per line and
+//! gets one reply per line:
+//!
+//! ```text
+//! → {"id": 1, "method": "hello", "params": {"token": "…"}}
+//! ← {"id": 1, "result": {"app": "nodecraft", "version": "…", "protocol": 1}}
+//! → {"id": 2, "method": "command.run", "params": {"id": "node.add", "params": {…}}}
+//! ← {"id": 2, "result": {"result": {…}, "revision": 3}}
+//! ```
+//!
+//! Every connection must start with `hello` and the token; anything else closes it. Methods:
+//! `commands.list`, `command.run`, `state.get`, `canvas.inspect` (the same bounded pages as the
+//! MCP server) and `screenshot` (a PNG of the window). Commands go through the session the window
+//! shows, so the user sees each change, and the same automation classification as MCP applies
+//! (people-only commands are refused).
+//!
+//! Connection threads only parse and authenticate; every request is answered on the UI thread,
+//! which owns the session ([`Call`], [`answer`]). A screenshot is answered a frame later.
+
+use std::io::{BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use nodecraft_engine::Session;
+use nodecraft_types::{Error, ErrorKind};
+use serde_json::{Map, Value, json};
+
+use crate::mcp::{self, Line, MAX_MESSAGE_BYTES};
+
+/// The protocol version `hello` reports.
+pub const PROTOCOL: u32 = 1;
+/// Clients connected at once; more are turned away.
+pub const MAX_CONNECTIONS: usize = 4;
+/// Requests waiting for the UI thread, across all connections.
+const QUEUE: usize = 64;
+/// How long a request waits for the UI thread (a screenshot needs a frame) before it fails.
+pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest screenshot sent, in bytes of PNG.
+pub const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
+
+/// The shared secret a client must present. 32 random bytes, shown as hex.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Token([u8; 32]);
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Token(…)")
+    }
+}
+
+impl Token {
+    /// A token from the operating system's random source.
+    pub fn generate() -> Result<Self, Error> {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(|e| Error::new(ErrorKind::Unsupported, format!("no random source for the control token: {e}")))?;
+        Ok(Self(bytes))
+    }
+
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn to_hex(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Whether `presented` is this token, compared in constant time.
+    pub fn matches(&self, presented: &str) -> bool {
+        let expected = self.to_hex();
+        if presented.len() != expected.len() {
+            return false;
+        }
+        presented.bytes().zip(expected.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+    }
+}
+
+/// What the app writes for clients: where to connect and the token. Written with owner-only
+/// permissions; delete it when the app exits.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TokenFile {
+    pub port: u16,
+    pub token: String,
+    pub pid: u32,
+}
+
+impl TokenFile {
+    /// Writes the file at `path`, readable and writable by the owner only.
+    pub fn write(&self, path: &std::path::Path) -> Result<(), Error> {
+        let text = serde_json::to_string(self).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path).map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't write {}: {e}", path.display())))?;
+        // An existing file keeps its old mode on open; make sure it is the owner's only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
+        }
+        file.write_all(text.as_bytes()).map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))
+    }
+}
+
+/// A request the UI thread answers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    ListCommands(Map<String, Value>),
+    RunCommand(Map<String, Value>),
+    State,
+    Inspect(Map<String, Value>),
+    Screenshot,
+}
+
+/// A request waiting for the UI thread, with the way back to its connection.
+pub struct Call {
+    pub request: Request,
+    reply: SyncSender<Result<Value, Error>>,
+}
+
+impl Call {
+    /// Sends the answer back (the client may have gone; that's fine).
+    pub fn reply(self, answer: Result<Value, Error>) {
+        let _ = self.reply.send(answer);
+    }
+}
+
+/// Answers every request except [`Request::Screenshot`] (which needs the window: the host takes
+/// one and calls [`screenshot_answer`]). `None` for a screenshot.
+pub fn answer(session: &mut Session, request: &Request) -> Option<Result<Value, Error>> {
+    Some(match request {
+        Request::ListCommands(args) => mcp::command_list(session, args),
+        Request::RunCommand(args) => mcp::command_run(session, args.clone()),
+        Request::Inspect(args) => mcp::canvas_inspect(session, args),
+        Request::State => mcp::canvas_inspect(session, &Map::new()).map(|mut overview| {
+            if let Some(o) = overview.as_object_mut() {
+                o.insert("can_undo".into(), json!(session.can_undo()));
+                o.insert("can_redo".into(), json!(session.can_redo()));
+            }
+            overview
+        }),
+        Request::Screenshot => return None,
+    })
+}
+
+/// A screenshot reply from the window's RGBA pixels.
+pub fn screenshot_answer(width: u32, height: u32, rgba: &[u8]) -> Result<Value, Error> {
+    let png =
+        nodecraft_media::encode_png(width, height, rgba, &nodecraft_media::Limits::default()).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
+    if png.len() > MAX_SCREENSHOT_BYTES {
+        return Err(Error::new(ErrorKind::Unsupported, "the screenshot is too large to send"));
+    }
+    Ok(json!({"mime": "image/png", "width": width, "height": height, "data": base64(&png)}))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
+    for chunk in bytes.chunks(3) {
+        let b = [chunk.first().copied().unwrap_or(0), chunk.get(1).copied().unwrap_or(0), chunk.get(2).copied().unwrap_or(0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for (i, shift) in [18u32, 12, 6, 0].into_iter().enumerate() {
+            out.push(if i <= chunk.len() { char::from(T.get(((n >> shift) & 63) as usize).copied().unwrap_or(b'A')) } else { '=' });
+        }
+    }
+    out
+}
+
+/// What a connection does with one line.
+#[derive(Debug, PartialEq)]
+pub enum Step {
+    /// Send this reply.
+    Reply(Value),
+    /// Ask the UI thread, then reply under this id.
+    Ask(Value, Request),
+    /// Send this reply and close the connection.
+    Close(Value),
+}
+
+fn error_reply(id: Value, kind: &str, message: &str) -> Value {
+    json!({"id": id, "error": {"kind": kind, "message": message}})
+}
+
+fn error_value(id: Value, e: &Error) -> Value {
+    let kind = serde_json::to_value(e.kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_else(|| "internal".into());
+    json!({"id": id, "error": {"kind": kind, "message": e.message}})
+}
+
+/// One connection's protocol state: unauthenticated until a correct `hello`.
+pub struct Connection {
+    token: Token,
+    authed: bool,
+}
+
+impl Connection {
+    pub fn new(token: Token) -> Self {
+        Self { token, authed: false }
+    }
+
+    /// Parses one request line.
+    pub fn step(&mut self, line: &str) -> Step {
+        let Ok(Value::Object(mut message)) = serde_json::from_str::<Value>(line) else {
+            let reply = error_reply(Value::Null, "invalid_input", "expected one JSON object per line");
+            return if self.authed { Step::Reply(reply) } else { Step::Close(reply) };
+        };
+        let id = match message.remove("id") {
+            Some(id @ (Value::String(_) | Value::Number(_))) => id,
+            _ => Value::Null,
+        };
+        let method = message.remove("method").and_then(|m| m.as_str().map(str::to_owned)).unwrap_or_default();
+        let params = match message.remove("params") {
+            Some(Value::Object(p)) => p,
+            None | Some(Value::Null) => Map::new(),
+            Some(_) => return Step::Reply(error_reply(id, "invalid_input", "params must be an object")),
+        };
+        if !self.authed {
+            let presented = params.get("token").and_then(Value::as_str).unwrap_or_default();
+            if method == "hello" && self.token.matches(presented) {
+                self.authed = true;
+                return Step::Reply(json!({"id": id, "result": {"app": "nodecraft", "version": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL}}));
+            }
+            return Step::Close(error_reply(id, "authentication", "start with hello and the token from the token file"));
+        }
+        let request = match method.as_str() {
+            "hello" => return Step::Reply(json!({"id": id, "result": {"app": "nodecraft", "version": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL}})),
+            "commands.list" => Request::ListCommands(params),
+            "command.run" => Request::RunCommand(params),
+            "state.get" => Request::State,
+            "canvas.inspect" => Request::Inspect(params),
+            "screenshot" => Request::Screenshot,
+            other => return Step::Reply(error_reply(id, "not_found", &format!("unknown method {}", other.chars().take(64).collect::<String>()))),
+        };
+        Step::Ask(id, request)
+    }
+}
+
+/// The listening side, held by the app.
+pub struct Listener {
+    pub addr: SocketAddr,
+    /// Requests for the UI thread; drain them every frame.
+    pub calls: Receiver<Call>,
+}
+
+/// Listens on 127.0.0.1 (a random port). `wake` is called when a request arrives, so the app can
+/// repaint and answer it.
+pub fn listen(token: Token, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Listener, Error> {
+    let socket = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't listen for control: {e}")))?;
+    let addr = socket.local_addr().map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
+    let (to_ui, calls) = sync_channel::<Call>(QUEUE);
+    let open = Arc::new(AtomicUsize::new(0));
+    std::thread::Builder::new()
+        .name("nodecraft-control".into())
+        .spawn(move || {
+            for stream in socket.incoming() {
+                let Ok(stream) = stream else { continue };
+                if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    let mut stream = stream;
+                    let _ = writeln!(stream, "{}", error_reply(Value::Null, "busy", "too many control connections"));
+                    continue;
+                }
+                let (token, to_ui, wake, slot) = (token.clone(), to_ui.clone(), Arc::clone(&wake), Arc::clone(&open));
+                let spawned = std::thread::Builder::new().name("nodecraft-control-conn".into()).spawn(move || {
+                    serve_connection(stream, token, &to_ui, wake.as_ref());
+                    slot.fetch_sub(1, Ordering::SeqCst);
+                });
+                if spawned.is_err() {
+                    // The thread never ran, so give its slot back.
+                    open.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+        })
+        .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the control listener: {e}")))?;
+    Ok(Listener { addr, calls })
+}
+
+fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, wake: &(dyn Fn() + Send + Sync)) {
+    let Ok(reader) = stream.try_clone() else { return };
+    let mut reader = BufReader::new(reader);
+    let writer = Mutex::new(stream);
+    let send = |value: Value| -> bool {
+        let mut w = writer.lock().unwrap_or_else(PoisonError::into_inner);
+        writeln!(w, "{value}").and_then(|()| w.flush()).is_ok()
+    };
+    let mut connection = Connection::new(token);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let text = match mcp::read_line(&mut reader as &mut dyn BufRead, &mut line) {
+            Ok(Line::Eof) | Err(_) => return,
+            Ok(Line::TooLong) => {
+                if !send(error_reply(Value::Null, "invalid_input", &format!("message is larger than {MAX_MESSAGE_BYTES} bytes"))) {
+                    return;
+                }
+                continue;
+            }
+            Ok(Line::Read) => match std::str::from_utf8(&line) {
+                Ok(t) if t.trim().is_empty() => continue,
+                Ok(t) => t.trim().to_owned(),
+                Err(_) => {
+                    if !send(error_reply(Value::Null, "invalid_input", "the message isn't valid UTF-8")) {
+                        return;
+                    }
+                    continue;
+                }
+            },
+        };
+        let reply = match connection.step(&text) {
+            Step::Reply(v) => v,
+            Step::Close(v) => {
+                send(v);
+                return;
+            }
+            Step::Ask(id, request) => {
+                let (reply, answer) = sync_channel(1);
+                match to_ui.try_send(Call { request, reply }) {
+                    Ok(()) => {
+                        wake();
+                        match answer.recv_timeout(ANSWER_TIMEOUT) {
+                            Ok(Ok(result)) => json!({"id": id, "result": result}),
+                            Ok(Err(e)) => error_value(id, &e),
+                            Err(RecvTimeoutError::Timeout) => error_reply(id, "timeout", "the app didn't answer in time"),
+                            Err(RecvTimeoutError::Disconnected) => error_reply(id, "internal", "the app dropped the request"),
+                        }
+                    }
+                    Err(_) => error_reply(id, "busy", "the app is still answering earlier requests; try again"),
+                }
+            }
+        };
+        if !send(reply) {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
