@@ -16,7 +16,11 @@ nodecraft-providers = { workspace = true }
 nodecraft-gpu = { workspace = true }
 nodecraft-format = { workspace = true }
 craft-settings = { workspace = true }
-serde = { workspace = true }
+nodecraft-graph.workspace = true
+nodecraft-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
