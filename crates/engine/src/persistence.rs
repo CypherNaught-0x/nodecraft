@@ -1,0 +1,119 @@
+use crate::{file_cmds::FileStatus, session::guard};
+use nodecraft_format::{AssetStore, ProjectStorage, Snapshot, StorageLocation, journal};
+use nodecraft_graph::{Changeset, Project};
+use nodecraft_types::{Blake3, Error, ErrorKind};
+use std::collections::BTreeSet;
+
+pub(crate) struct Persistence {
+    storage: Box<dyn ProjectStorage>,
+    location: Option<StorageLocation>,
+    saved_state: Option<u64>,
+    epoch: u64,
+    checkpoint: Blake3,
+    assets: BTreeSet<Blake3>,
+    sequence: u64,
+    journal_bytes: usize,
+    recovery_required: bool,
+    closed: bool,
+}
+
+impl Persistence {
+    pub fn new(storage: Box<dyn ProjectStorage>, snapshot: &Snapshot) -> Result<Self, Error> {
+        let checkpoint = journal::checkpoint(snapshot)?;
+        let mut state = Self {
+            storage,
+            location: None,
+            saved_state: None,
+            epoch: snapshot.epoch,
+            checkpoint: checkpoint.identity,
+            assets: checkpoint.assets.clone(),
+            sequence: 0,
+            journal_bytes: 0,
+            recovery_required: true,
+            closed: false,
+        };
+        guard(|| state.storage.checkpoint(&checkpoint.bytes))?;
+        state.adopt(checkpoint);
+        Ok(state)
+    }
+    fn adopt(&mut self, checkpoint: journal::Checkpoint) {
+        self.checkpoint = checkpoint.identity;
+        self.assets = checkpoint.assets;
+        self.sequence = 0;
+        self.journal_bytes = checkpoint.bytes.len();
+        self.recovery_required = false;
+    }
+    pub fn status(&self, state: u64) -> FileStatus {
+        FileStatus {
+            available: !self.closed,
+            location: self.location.clone(),
+            dirty: self.saved_state != Some(state),
+            recovery_required: self.recovery_required,
+        }
+    }
+    pub fn append(&mut self, changes: &Changeset, document: &Project, assets: &AssetStore) -> Result<(), Error> {
+        if self.closed {
+            return Err(Error::new(ErrorKind::Conflict, "session recovery was closed"));
+        }
+        if self.recovery_required {
+            return Err(Error::new(ErrorKind::Conflict, "recovery journal needs a checkpoint; save before editing"));
+        }
+        let referenced = assets.validate_project(document)?;
+        let additional = referenced.difference(&self.assets).copied().collect();
+        let sequence = self.sequence.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "recovery sequence overflow"))?;
+        let frame = journal::frame(self.checkpoint, sequence, changes, assets, &additional)?;
+        let bytes = self.journal_bytes.saturating_add(frame.len());
+        if bytes > journal::MAX_JOURNAL_BYTES {
+            return Err(Error::new(ErrorKind::Conflict, "recovery journal is full; save before editing"));
+        }
+        // An append failure is ambiguous: preserve the live document and latch before the call.
+        self.recovery_required = true;
+        guard(|| self.storage.append(&frame))?;
+        self.recovery_required = false;
+        self.assets.extend(additional);
+        self.sequence = sequence;
+        self.journal_bytes = bytes;
+        Ok(())
+    }
+    pub fn save(&mut self, document: &Project, assets: &AssetStore, state: u64, location: Option<StorageLocation>) -> Result<bool, Error> {
+        let location = location.or_else(|| self.location.clone()).ok_or_else(|| Error::new(ErrorKind::Conflict, "save_as needs an explicit location"))?;
+        let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
+        let snapshot = Snapshot { project: document.clone(), assets: assets.clone(), epoch };
+        let checkpoint = journal::checkpoint(&snapshot)?;
+        // Saving the complete live snapshot can repair an ambiguous/failed recovery stream.
+        // Attempt its durability boundary, then replace it with the new durable checkpoint.
+        let _ = guard(|| self.storage.flush());
+        guard(|| self.storage.save(&location, checkpoint.archive()?))?;
+        // The destination is published. A subsequent recovery failure must not turn a successful
+        // save into a misleading error or leave the location/savepoint pointing at the old file.
+        self.location = Some(location);
+        self.saved_state = Some(state);
+        self.epoch = epoch;
+        self.recovery_required = true;
+        if guard(|| self.storage.checkpoint(&checkpoint.bytes)).is_ok() {
+            self.adopt(checkpoint);
+        }
+        Ok(!self.recovery_required)
+    }
+    pub fn open(&mut self, location: StorageLocation, state: u64) -> Result<Snapshot, Error> {
+        let bytes = guard(|| self.storage.load(&location))?;
+        let (snapshot, checkpoint) = journal::checkpoint_from_archive(bytes)?;
+        guard(|| self.storage.checkpoint(&checkpoint.bytes))?;
+        self.adopt(checkpoint);
+        self.location = Some(location);
+        self.saved_state = Some(state);
+        self.epoch = snapshot.epoch;
+        Ok(snapshot)
+    }
+    pub fn close(&mut self, state: u64, discard_dirty: bool) -> Result<(), Error> {
+        if self.saved_state != Some(state) && !discard_dirty {
+            return Err(Error::new(ErrorKind::Conflict, "save changes or explicitly discard them before closing recovery"));
+        }
+        self.recovery_required = true;
+        guard(|| self.storage.flush())?;
+        guard(|| self.storage.discard())?;
+        self.closed = true;
+        self.recovery_required = true;
+        Ok(())
+    }
+}

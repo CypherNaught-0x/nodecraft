@@ -80,16 +80,25 @@ pub struct Context<'a> {
     pub resources: &'a Resources,
     pub services: &'a Services,
     pub phase: Phase,
+    pub file: crate::file_cmds::FileStatus,
 }
 impl Context<'_> {
+    /// Persistent sessions must repair recovery before any edit, including newly registered
+    /// node commands. In-memory sessions have no recovery latch and remain editable.
+    pub fn ensure_editable(&self) -> Result<(), Error> {
+        if self.file.recovery_required { Err(Error::new(ErrorKind::Conflict, "recovery journal needs a checkpoint; save before editing")) } else { Ok(()) }
+    }
     /// Builtins preview the full graph for `enabled()`. Dispatch still invokes every enabled
     /// hook, but stages graph validation once after the handler returns its changeset.
     pub fn preview_changes(&self, changes: &Changeset) -> Result<(), Error> {
+        self.ensure_editable()?;
         if self.phase == Phase::Preview { changes.validate(self.document) } else { Ok(()) }
     }
 }
 
 pub enum Effect {
+    Open { location: nodecraft_format::StorageLocation, discard_dirty: bool },
+    Save { location: Option<nodecraft_format::StorageLocation> },
     Service { capability: &'static str, request: Value },
     None { result: Value },
     Edit { changes: Changeset, result: Value, gesture: Option<String> },
@@ -125,6 +134,7 @@ impl Registry {
             .chain(crate::navigation_cmds::specs())
             .chain(crate::search_cmds::specs())
             .chain(crate::layout_cmds::specs())
+            .chain(crate::file_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -286,5 +296,7 @@ fn safe_field(field: &str) -> bool {
             | "gesture"
             | "type"
             | "value"
+            | "location"
+            | "discard_dirty"
     )
 }

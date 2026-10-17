@@ -73,6 +73,7 @@ fn run(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Edit { changes, result, gesture: None })
 }
 fn enabled(c: &Context<'_>, v: &Value) -> Result<(), Error> {
+    c.ensure_editable()?;
     if let Effect::Edit { changes, .. } = run(c, v)? {
         c.preview_changes(&changes)?;
     }

@@ -51,6 +51,7 @@ tempfile = "3"
 uuid = { version = "1", default-features = false, features = ["serde"] }
 mime = "0.3"
 proptest = "1"
+zip = { version = "9.0.4", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

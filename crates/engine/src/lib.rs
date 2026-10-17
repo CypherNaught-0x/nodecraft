@@ -7,11 +7,14 @@
 pub mod build_info;
 mod command_schemas;
 pub mod commands;
+pub mod file_cmds;
 pub mod graph_cmds;
 pub mod layout_cmds;
 pub mod navigation_cmds;
 pub mod node_cmds;
 pub mod search_cmds;
+
+mod persistence;
 pub mod session;
 pub mod settings;
 

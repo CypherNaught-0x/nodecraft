@@ -66,6 +66,7 @@ fn edit(change: Change) -> Effect {
     Effect::Edit { changes: Changeset::new(vec![change]), result: Json::Null, gesture: None }
 }
 fn enabled(c: &Context<'_>, v: &Json, run: fn(&Context<'_>, &Json) -> Result<Effect, Error>) -> Result<(), Error> {
+    c.ensure_editable()?;
     if let Effect::Edit { changes, .. } = run(c, v)? {
         c.preview_changes(&changes)?;
     }
