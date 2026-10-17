@@ -25,7 +25,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nodecraft_engine::Session;
 use nodecraft_types::{Error, ErrorKind};
@@ -41,6 +41,11 @@ pub const MAX_CONNECTIONS: usize = 4;
 const QUEUE: usize = 64;
 /// How long a request waits for the UI thread (a screenshot needs a frame) before it fails.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a new connection may take to say `hello`.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an authenticated connection may stay silent, and a reply may take to send.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Largest screenshot sent, in bytes of PNG.
 pub const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -81,33 +86,67 @@ impl Token {
 }
 
 /// What the app writes for clients: where to connect and the token. Written with owner-only
-/// permissions; delete it when the app exits.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// permissions; delete it when the app exits. A client should check that `pid` is alive: a file
+/// left by a killed app names a port nobody listens on.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TokenFile {
     pub port: u16,
     pub token: String,
     pub pid: u32,
 }
 
+impl std::fmt::Debug for TokenFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenFile").field("port", &self.port).field("token", &"…").field("pid", &self.pid).finish()
+    }
+}
+
+fn io_error(path: &std::path::Path, e: std::io::Error) -> Error {
+    Error::new(ErrorKind::Unsupported, format!("can't write {}: {e}", path.display()))
+}
+
 impl TokenFile {
-    /// Writes the file at `path`, readable and writable by the owner only.
+    /// Writes the file at `path`, readable and writable by the owner only. It is written to a new
+    /// sibling file and renamed into place, so an existing file or a symlink at `path` is replaced,
+    /// never written through, and a reader never sees a half-written file. On Unix, a folder that
+    /// other users can write is refused.
     pub fn write(&self, path: &std::path::Path) -> Result<(), Error> {
         let text = serde_json::to_string(self).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir).map_err(|e| io_error(dir, e))?.permissions().mode();
+            if mode & 0o022 != 0 {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    format!("{} can be written by other users; the control token won't be kept there", dir.display()),
+                ));
+            }
+        }
+        let temp = dir.join(format!(".control-{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&temp);
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(path).map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't write {}: {e}", path.display())))?;
-        // An existing file keeps its old mode on open; make sure it is the owner's only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
+        let written = options.open(&temp).and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.sync_all()));
+        if let Err(e) = written.and_then(|()| std::fs::rename(&temp, path)) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(io_error(path, e));
         }
-        file.write_all(text.as_bytes()).map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))
+        Ok(())
+    }
+
+    /// Removes the file at `path` if it is still this one (another instance may have replaced it).
+    pub fn remove_if_ours(&self, path: &std::path::Path) {
+        let ours = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<TokenFile>(&t).ok()).is_some_and(|f| &f == self);
+        if ours {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -125,9 +164,16 @@ pub enum Request {
 pub struct Call {
     pub request: Request,
     reply: SyncSender<Result<Value, Error>>,
+    deadline: Instant,
 }
 
 impl Call {
+    /// The client stopped waiting (and was told it timed out): don't run it, or a retry would run
+    /// a command twice.
+    pub fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
     /// Sends the answer back (the client may have gone; that's fine).
     pub fn reply(self, answer: Result<Value, Error>) {
         let _ = self.reply.send(answer);
@@ -206,6 +252,10 @@ impl Connection {
         Self { token, authed: false }
     }
 
+    pub fn is_authed(&self) -> bool {
+        self.authed
+    }
+
     /// Parses one request line.
     pub fn step(&mut self, line: &str) -> Step {
         let Ok(Value::Object(mut message)) = serde_json::from_str::<Value>(line) else {
@@ -220,6 +270,7 @@ impl Connection {
         let params = match message.remove("params") {
             Some(Value::Object(p)) => p,
             None | Some(Value::Null) => Map::new(),
+            Some(_) if !self.authed => return Step::Close(error_reply(id, "authentication", "start with hello and the token from the token file")),
             Some(_) => return Step::Reply(error_reply(id, "invalid_input", "params must be an object")),
         };
         if !self.authed {
@@ -250,9 +301,28 @@ pub struct Listener {
     pub calls: Receiver<Call>,
 }
 
+/// Timeouts a listener applies (tests shorten them).
+#[derive(Debug, Clone, Copy)]
+pub struct Timeouts {
+    pub handshake: Duration,
+    pub idle: Duration,
+    pub write: Duration,
+    pub answer: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self { handshake: HANDSHAKE_TIMEOUT, idle: IDLE_TIMEOUT, write: WRITE_TIMEOUT, answer: ANSWER_TIMEOUT }
+    }
+}
+
 /// Listens on 127.0.0.1 (a random port). `wake` is called when a request arrives, so the app can
 /// repaint and answer it.
 pub fn listen(token: Token, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Listener, Error> {
+    listen_with(token, wake, Timeouts::default())
+}
+
+pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Timeouts) -> Result<Listener, Error> {
     let socket = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't listen for control: {e}")))?;
     let addr = socket.local_addr().map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
     let (to_ui, calls) = sync_channel::<Call>(QUEUE);
@@ -270,7 +340,7 @@ pub fn listen(token: Token, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Listene
                 }
                 let (token, to_ui, wake, slot) = (token.clone(), to_ui.clone(), Arc::clone(&wake), Arc::clone(&open));
                 let spawned = std::thread::Builder::new().name("nodecraft-control-conn".into()).spawn(move || {
-                    serve_connection(stream, token, &to_ui, wake.as_ref());
+                    serve_connection(stream, token, &to_ui, wake.as_ref(), timeouts);
                     slot.fetch_sub(1, Ordering::SeqCst);
                 });
                 if spawned.is_err() {
@@ -283,7 +353,11 @@ pub fn listen(token: Token, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Listene
     Ok(Listener { addr, calls })
 }
 
-fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, wake: &(dyn Fn() + Send + Sync)) {
+fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, wake: &(dyn Fn() + Send + Sync), timeouts: Timeouts) {
+    // A client must say hello quickly; a silent or slow one can't hold a slot.
+    if stream.set_read_timeout(Some(timeouts.handshake)).is_err() || stream.set_write_timeout(Some(timeouts.write)).is_err() {
+        return;
+    }
     let Ok(reader) = stream.try_clone() else { return };
     let mut reader = BufReader::new(reader);
     let writer = Mutex::new(stream);
@@ -295,26 +369,38 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
     let mut line = Vec::new();
     loop {
         line.clear();
+        let authed = connection.is_authed();
+        // Before hello, anything but a well-formed hello ends the connection.
+        let fail = |message: &str| -> bool { send(error_reply(Value::Null, if authed { "invalid_input" } else { "authentication" }, message)) && authed };
         let text = match mcp::read_line(&mut reader as &mut dyn BufRead, &mut line) {
             Ok(Line::Eof) | Err(_) => return,
             Ok(Line::TooLong) => {
-                if !send(error_reply(Value::Null, "invalid_input", &format!("message is larger than {MAX_MESSAGE_BYTES} bytes"))) {
+                if !fail(&format!("message is larger than {MAX_MESSAGE_BYTES} bytes")) {
                     return;
                 }
                 continue;
             }
             Ok(Line::Read) => match std::str::from_utf8(&line) {
-                Ok(t) if t.trim().is_empty() => continue,
+                Ok(t) if t.trim().is_empty() && authed => continue,
+                Ok(t) if t.trim().is_empty() => {
+                    fail("start with hello and the token from the token file");
+                    return;
+                }
                 Ok(t) => t.trim().to_owned(),
                 Err(_) => {
-                    if !send(error_reply(Value::Null, "invalid_input", "the message isn't valid UTF-8")) {
+                    if !fail("the message isn't valid UTF-8") {
                         return;
                     }
                     continue;
                 }
             },
         };
-        let reply = match connection.step(&text) {
+        let was_authed = connection.is_authed();
+        let step = connection.step(&text);
+        if !was_authed && connection.is_authed() && reader.get_ref().set_read_timeout(Some(timeouts.idle)).is_err() {
+            return;
+        }
+        let reply = match step {
             Step::Reply(v) => v,
             Step::Close(v) => {
                 send(v);
@@ -322,10 +408,10 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
             }
             Step::Ask(id, request) => {
                 let (reply, answer) = sync_channel(1);
-                match to_ui.try_send(Call { request, reply }) {
+                match to_ui.try_send(Call { request, reply, deadline: Instant::now() + timeouts.answer }) {
                     Ok(()) => {
                         wake();
-                        match answer.recv_timeout(ANSWER_TIMEOUT) {
+                        match answer.recv_timeout(timeouts.answer) {
                             Ok(Ok(result)) => json!({"id": id, "result": result}),
                             Ok(Err(e)) => error_value(id, &e),
                             Err(RecvTimeoutError::Timeout) => error_reply(id, "timeout", "the app didn't answer in time"),

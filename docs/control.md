@@ -11,6 +11,12 @@ folder (with owner-only permissions) holding `{"port", "token", "pid"}`. It remo
 it quits normally. With in-memory settings (`NODECRAFT_CONFIG_DIR=`), the same JSON is printed to
 stdout instead.
 
+A token file can outlive an app that was killed: check that `pid` is still running before
+connecting. If another instance with `--control` replaces the file, each instance removes only its
+own. The token file is refused in a folder other users can write. Printing to stdout (in-memory
+settings) is for development: release builds on Windows have no console, and on Linux a
+launcher's stdout may be logged.
+
 Messages are newline-delimited JSON, one request and one reply per line, each with the same
 `id`. A connection must begin with `hello` and the token; anything else closes it.
 
@@ -35,8 +41,18 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
+- A connection must send `hello` within 5 seconds, and it closes on anything else before then.
+  Once authenticated, it closes after 10 minutes of silence. A reply that can't be written within
+  30 seconds closes it.
+- A request the client stopped waiting for (it was told `timeout`) is dropped, never run late.
+- A screenshot fails after 10 seconds if the window isn't drawing (for example when minimised).
+
 - At most 4 connections at once.
 - Messages are at most 4 MiB.
 - 64 requests may wait for the app, and each waits at most 30 s.
 - The app answers 16 requests per frame.
 - Up to 4 screenshots can be pending, each at most 64 MiB of PNG.
+
+The issue also asks for a stdio transport. The desktop app has no stdin worth reading, and
+headless stdio automation is `nodecraft-cli mcp`. A stdio control mode is a follow-up (see
+`docs/decisions.md`).

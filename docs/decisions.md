@@ -18,7 +18,15 @@ a choice a later contributor might otherwise undo.
 - **One automation policy.** The control channel reuses MCP's command listing, running and
   inspection (`AGENT_COMMANDS`/`HUMAN_ONLY`, bounded pages), so it can't do more than an agent
   can.
-- **Screenshots** come from egui's viewport screenshot, encoded as PNG by `media::encode_png`.
+- **Screenshots** come from egui's viewport screenshot, encoded as PNG by `media::encode_png`. They
+  are encoded off the UI thread, and they fail when the window doesn't draw.
+- **Hostile local clients.** The handshake is short, everything but `hello` is refused before
+  authentication, and read and write timeouts apply. Requests the client gave up on are never
+  run late. The token file is written through a new file and a rename, never through a link, and
+  is refused in a shared folder.
+- **Stdio is deferred.** A GUI app has no useful stdin, and headless stdio automation already
+  exists as `nodecraft-cli mcp`. A stdio control mode would serve the same protocol over the CLI
+  later.
 ## 2026-10-17 · Budgets at job time (#207)
 
 - **Reserve before submit.** `engine::jobs::ProviderRunner::with_budget` checks each priced job
