@@ -3,7 +3,7 @@
 //! inputs through [`incoming`], so a router adds no step, no cost and no hash of its own.
 
 use nodecraft_graph::Canvas;
-use nodecraft_nodes::router;
+use nodecraft_nodes::{Registry, router};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,6 +21,18 @@ pub const MAX_RESOLUTION_STEPS: usize = 4_000_000;
 /// position orders feeds within the port.
 pub type Feed<'a> = (&'a str, u32, NodeId, &'a str);
 
+/// Resolved inputs and validation facts, shared by planning and hashing.
+#[derive(Debug)]
+pub struct Incoming<'a> {
+    pub feeds: BTreeMap<NodeId, Vec<Feed<'a>>>,
+    /// Original wired ports, indexed once even when resolution produces no feeds.
+    pub wired: BTreeSet<(NodeId, &'a str)>,
+    /// One deterministic invalid router per affected consumer port. Valid feeds on the same
+    /// port must not hide this failure. Reasons are fixed-size and stored once per router.
+    pub invalid: BTreeMap<(NodeId, &'a str), NodeId>,
+    pub invalid_routers: BTreeMap<NodeId, &'static str>,
+}
+
 /// Whether `id` is a router.
 pub fn is_router(canvas: &Canvas, id: NodeId) -> bool {
     canvas.nodes().get(&id).is_some_and(|node| node.kind == router::ID)
@@ -36,15 +48,30 @@ fn too_large() -> Error {
 ///
 /// Each router's sources are resolved once, routers before the routers they feed (Kahn's order),
 /// so the cost is linear in the entries built, not in the number of paths through routers.
-pub fn incoming(canvas: &Canvas) -> Result<BTreeMap<NodeId, Vec<Feed<'_>>>, Error> {
+pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>, Error> {
+    let mut wired = BTreeSet::new();
     let mut raw: BTreeMap<NodeId, Vec<Feed<'_>>> = BTreeMap::new();
     for edge in canvas.edges().values() {
+        wired.insert((edge.to.node, edge.to.port.as_str()));
         raw.entry(edge.to.node).or_default().push((edge.to.port.as_str(), edge.order, edge.from.node, edge.from.port.as_str()));
     }
     for feeds in raw.values_mut() {
         feeds.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
     }
     let routers: BTreeSet<NodeId> = canvas.nodes().values().filter(|n| n.kind == router::ID).map(|n| n.id).collect();
+    let invalid_routers: BTreeMap<NodeId, &'static str> = routers
+        .iter()
+        .filter_map(|id| {
+            let node = canvas.nodes().get(id)?;
+            let reason = match kinds.get(&node.kind) {
+                Err(_) => "router kind is not installed",
+                Ok(kind) if kind.validate_instance(node, true).is_err() => "router configuration or stored ports do not match its installed kind",
+                Ok(_) => return None,
+            };
+            Some((*id, reason))
+        })
+        .collect();
+    let mut failures: BTreeMap<NodeId, NodeId> = BTreeMap::new();
     // Kahn's order over router → router edges. Routers on a cycle (not valid graphs) never become
     // ready and resolve to nothing.
     let mut waiting: BTreeMap<NodeId, usize> = routers.iter().map(|r| (*r, 0)).collect();
@@ -63,6 +90,14 @@ pub fn incoming(canvas: &Canvas) -> Result<BTreeMap<NodeId, Vec<Feed<'_>>>, Erro
     let mut memo: BTreeMap<NodeId, Vec<(NodeId, &str)>> = BTreeMap::new();
     let mut steps = 0usize;
     while let Some(router_id) = ready.pop() {
+        // Inspect every upstream router even after the feed cap: invalid tails cannot vanish.
+        let failure = invalid_routers
+            .contains_key(&router_id)
+            .then_some(router_id)
+            .or_else(|| raw.get(&router_id).into_iter().flatten().find_map(|(_, _, from, _)| failures.get(from).copied()));
+        if let Some(failure) = failure {
+            failures.insert(router_id, failure);
+        }
         let mut list: Vec<(NodeId, &str)> = Vec::new();
         for (_, _, from, from_port) in raw.get(&router_id).into_iter().flatten() {
             if list.len() >= MAX_FEEDS_PER_PORT {
@@ -90,6 +125,7 @@ pub fn incoming(canvas: &Canvas) -> Result<BTreeMap<NodeId, Vec<Feed<'_>>>, Erro
         }
     }
     let mut resolved = BTreeMap::new();
+    let mut invalid = BTreeMap::new();
     for (target, feeds) in &raw {
         // Routers never run, so nothing reads their own inputs.
         if routers.contains(target) {
@@ -99,6 +135,13 @@ pub fn incoming(canvas: &Canvas) -> Result<BTreeMap<NodeId, Vec<Feed<'_>>>, Erro
         let mut current_port = None;
         let (mut position, mut in_port) = (0u32, 0usize);
         for (port, _, from, from_port) in feeds {
+            if let Some(failure) = failures.get(from) {
+                steps = steps.saturating_add(1);
+                if steps > MAX_RESOLUTION_STEPS {
+                    return Err(too_large());
+                }
+                invalid.entry((*target, *port)).or_insert(*failure);
+            }
             if current_port != Some(*port) {
                 current_port = Some(*port);
                 position = 0;
@@ -123,7 +166,7 @@ pub fn incoming(canvas: &Canvas) -> Result<BTreeMap<NodeId, Vec<Feed<'_>>>, Erro
         }
         resolved.insert(*target, out);
     }
-    Ok(resolved)
+    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers })
 }
 
 #[cfg(test)]
