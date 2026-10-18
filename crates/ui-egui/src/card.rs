@@ -88,8 +88,10 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
 pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
-    // The history strip sits under the parameters and is never squeezed out by them.
-    let height = params + history::rows(node) as f32 * t.control_row_height;
+    // The history strip sits under the parameters and is never squeezed out by them; an image
+    // preview sits above them.
+    let preview = if nodecraft_engine::split::image_of(node).is_some() { t.card_preview_height } else { 0.0 };
+    let height = params + preview + history::rows(node) as f32 * t.control_row_height;
     Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, height))
 }
 
@@ -97,6 +99,8 @@ pub struct CardView<'a> {
     pub descriptor: Option<&'a NodeDescriptor>,
     pub visible: Option<&'a BTreeSet<String>>,
     pub preview_pos: Option<Position>,
+    /// The node's image, when it has one (#386).
+    pub image: Option<crate::preview::Preview>,
 }
 
 pub fn cull_margin(t: &Tokens, zoom: f32) -> f32 {
@@ -112,7 +116,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, preview_pos } = card;
+    let CardView { descriptor, visible, preview_pos, image } = card;
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -232,6 +236,11 @@ pub fn show(
                 intents.push(Intent::History(intent));
             }
         }
+        if let Some(image) = image {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, t);
+        }
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
@@ -289,6 +298,31 @@ pub fn show(
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
     Some(CardResponse { response, intents, ports })
+}
+
+/// An image preview fitted in `area`, keeping its aspect; or a placeholder saying why not.
+fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, t: &Tokens) {
+    use crate::preview::Preview;
+    let response = ui.interact(area, ui.id().with("image"), Sense::hover());
+    let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+    match image {
+        Preview::Ready { texture, size } => {
+            let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+            let scale = (area.width() / w).min(area.height() / h);
+            let fitted = Rect::from_center_size(area.center(), Vec2::new(w * scale, h * scale));
+            painter.image(*texture, fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Image {}×{}", size[0], size[1])));
+        }
+        Preview::Pending | Preview::Unavailable(_) => {
+            painter.rect_filled(area, t.card_radius, t.canvas_bg);
+            let text = match image {
+                Preview::Unavailable(why) => *why,
+                _ => "Loading preview…",
+            };
+            painter.text(area.center(), egui::Align2::CENTER_CENTER, text, FontId::proportional(t.body_size), t.text_muted);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, text));
+        }
+    }
 }
 
 fn control(
