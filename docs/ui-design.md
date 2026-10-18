@@ -227,3 +227,7 @@ scans progress on rendered frames, and queued framing waits for completion and i
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
 events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+
+### Colour tags
+
+Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).

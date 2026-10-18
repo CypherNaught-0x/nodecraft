@@ -91,3 +91,5 @@ or change the document.
 
 Paid operations (running generations) aren't exposed yet. When they arrive, they will show their
 cost first and respect the session's budget (plan §4.8, #207).
+
+Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available to agents. Tag-filter view commands remain human-only until the MCP live host routes their scoped view intents.

@@ -221,6 +221,11 @@ impl Search {
         }
         self.identity = Some(identity);
     }
+    pub fn cancel_navigation(&mut self) {
+        self.pending = None;
+        self.frame_request = None;
+    }
+
     pub fn set_query(&mut self, query: &str) -> Result<(), Error> {
         if query.len() > MAX_QUERY_BYTES {
             return Err(Error::new(ErrorKind::InvalidInput, "search query exceeds 1024 UTF-8 bytes"));

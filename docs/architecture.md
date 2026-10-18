@@ -554,3 +554,7 @@ imposing the archive's smaller manifest ceiling on every edit.
 [media-video.md](media-video.md). It depends only on external Rust crates and configured installed
 tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
 is separate. Feature-on wasm exposes an Unsupported host setup path.
+
+### Colour tag mutations and filtering
+
+The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.

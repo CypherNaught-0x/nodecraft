@@ -73,6 +73,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.search_next",
     "canvas.search_previous",
     "canvas.search_close",
+    "tag.put",
+    "tag.remove",
+    "node.tag_set",
     "comment.create",
     "comment.edit",
     "comment.reply",
@@ -108,6 +111,11 @@ pub const HUMAN_ONLY: &[&str] = &[
     "comment.compose",
     "comment.open",
     "canvas.comments_toggle",
+    "canvas.tag_filter_open",
+    "canvas.tag_filter_close",
+    "canvas.tag_filter_set",
+    "canvas.tag_filter_next",
+    "canvas.tag_filter_previous",
 ];
 
 const PARSE_ERROR: i64 = -32700;
