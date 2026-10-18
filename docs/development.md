@@ -70,3 +70,10 @@ unrelated/outside directory fails instead of falling back. Selecting a workspace
 Set `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` at build time to stamp `--version` and the
 About box; the packaging scripts do this (`packaging/env.sh`). Without them a build reports
 `(dev build)`.
+
+
+## Optional video service
+
+See [media-video.md](media-video.md) for explicit installed-tool configuration, a real roundtrip
+consumer, protocol tests and native fixture checks. `cargo test -p nodecraft-media --features video`
+requires no FFmpeg installation; actual codec tests are explicit and never download tools.
