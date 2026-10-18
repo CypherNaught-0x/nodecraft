@@ -58,8 +58,8 @@ a choice a later contributor might otherwise undo.
 - **Settle by what may have been billed.**
   - A finished job settles to the provider's reported cost in the estimate's currency, otherwise
     to the estimate.
-  - A job the provider certainly never billed (refused at submit: a bad key, invalid input,
-    cancelled before start) is released.
+  - Cancellation before invocation or affirmative whole-submit nonacceptance evidence releases
+    a fresh reservation. Generic diagnostic kinds alone do not prove this (see #250 below).
   - A job that got a handle, or whose submit was lost to a timeout, network or server error,
     keeps its reservation while a retry can come. When it is forgotten, settled, or requeued
     under a fresh key, it is charged its estimate as `unresolved`.
@@ -1040,6 +1040,21 @@ a choice a later contributor might otherwise undo.
   revalidates every visible card) stays linear. Tests recompute the total to catch drift.
 - **The benchmark lives with the canvas tests** (`app/perf.rs`, ignored by default) and reports
   mean, p95 and worst frame; re-run it when cards or noodles get richer.
+
+## 2026-10-17 · Submission delivery evidence (#250)
+
+- **Diagnostics do not prove absence of billing.** This supersedes the historical kind-only
+  submit-refusal classifier in #227/#243. Legacy Provider and Http implementations are unknown
+  before invoking their future constructors, including errors named Auth or UnsupportedInput.
+- **A request is not a submission.** Opaque request scopes can prove native construction failed
+  before execute; redirects share sticky possible-delivery state. Only a runner-owned audited
+  operation with no earlier taint or unfinished child can finalize whole-submit nonacceptance.
+  Proofs cannot be cloned, publicly minted or reused across children/invocations. Cancel/drop
+  after invocation remains unknown; a handle independently establishes acceptance.
+- **Useful narrow opt-in.** LLM submission tracks its local construction and single request.
+  Responses, status/parsing/body/sink errors stay unknown. Comfy's multi-request path and browser
+  fetch remain conservative. No generic HTTP refusal attestations, billing wire migration or
+  new retry/idempotency policy. Existing prior uncertainty and captured-attempt ownership win.
 
 ## 2026-10-18 · Run commands: quote, start within budget, record (#201, part 1)
 

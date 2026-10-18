@@ -102,3 +102,17 @@ scenario is not claimed to be ordinary normally admitted concurrent same-key exe
 Both base and sent identities are retained in bounded attempt records; the existing strict
 runner scheduler-base limit remains 64 ASCII bytes. The standalone `sent_key` normalization
 API retains its broader deterministic input support.
+
+## Delivery evidence and strict accounting
+
+Provider failures use the landed whole-submit delivery proof boundary. A fresh reservation
+can be released for pre-invocation cancellation or audited nonacceptance; Auth, UnsupportedInput,
+Budget and other diagnostic names alone never establish that nothing was accepted. A returned
+handle or earlier ambiguous submission keeps its monetary hold even if a later attempt proves
+a local failure. Strict ledger ownership and live-capability checks still apply independently.
+
+A currency-free metadata shell is only retained accounting capacity: reclaiming it after a
+failed unknown-price invocation proves neither billing nor nonbilling and records no zero-cost
+Actual. Completed output still carries its typed accounting result exactly once. See
+[provider delivery contracts](providers.md) for audited LLM/native opt-in and conservative
+legacy, Comfy and browser paths.

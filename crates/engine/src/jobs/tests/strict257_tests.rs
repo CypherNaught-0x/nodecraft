@@ -429,3 +429,37 @@ fn repeated_fresh_transient_keys_keep_only_one_inactive_attempt() {
         assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 1);
     }
 }
+
+#[test]
+fn delivery_evidence_failure_paths_reclaim_unknown_price_metadata_without_fake_money() {
+    use nodecraft_providers::llm::{Dialect, Endpoint, LlmClient};
+    struct NoHttp(AtomicUsize);
+    impl nodecraft_providers::Http for NoHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public fixture")) })
+        }
+    }
+    let (mut runner, budget) = budgeted(None);
+    let delivered = collect(&mut runner);
+    let http = Arc::new(NoHttp(AtomicUsize::new(0)));
+    let client = LlmClient::new(
+        Endpoint { id: "local-proof".into(), dialect: Dialect::OpenAi, base_url: "http://public-fixture.invalid".into(), key: None },
+        http.clone(),
+    );
+    let mut local = priced(Arc::new(client), None);
+    local.job.model.clear();
+    runner.register(JobId(1), local);
+    assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+    assert_eq!(http.0.load(Ordering::SeqCst), 0);
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 0);
+    assert_eq!(budget.log.lock().unwrap().entries().count(), 0);
+    // Legacy Auth is delivery-unknown, not proven free. With no price/report there is no
+    // currency to invent; only the transient metadata capacity can be reclaimed.
+    runner.register(JobId(2), priced(Arc::new(SubmitFails(ErrorKind::Auth)), None));
+    assert!(matches!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 0);
+    assert_eq!(budget.log.lock().unwrap().entries().count(), 0);
+    assert!(budget.log.lock().unwrap().reported_spent("now").project.is_empty());
+    assert!(delivered.lock().unwrap().is_empty(), "failed provider invocation has no completed output to redeliver");
+}
