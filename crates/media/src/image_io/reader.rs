@@ -23,6 +23,12 @@ struct Bounded<R> {
 }
 impl<R: Read> Read for Bounded<R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.position > self.length {
+            let mut state = self.state.get();
+            state.io_failed = true;
+            self.state.set(state);
+            return Err(io::Error::other("image probe position exceeds input"));
+        }
         if out.is_empty() || self.position == self.length {
             return Ok(0);
         }
@@ -33,7 +39,8 @@ impl<R: Read> Read for Bounded<R> {
             self.state.set(state);
             return Err(io::Error::other("image header probe budget exceeded"));
         }
-        let cap = (self.length - self.position).min(remaining).min(64 * 1024).min(out.len() as u64);
+        let available = self.length.checked_sub(self.position).ok_or_else(|| io::Error::other("image probe position exceeds input"))?;
+        let cap = available.min(remaining).min(64 * 1024).min(out.len() as u64);
         let cap = usize::try_from(cap).map_err(|_| io::Error::other("image probe extent overflow"))?;
         let destination = out.get_mut(..cap).ok_or_else(|| io::Error::other("image probe extent mismatch"))?;
         let n = match self.inner.read(destination) {
@@ -228,6 +235,21 @@ mod tests {
         let mut out = Cursor::new(Vec::new());
         image.write_to(&mut out, format).unwrap();
         out.into_inner()
+    }
+    #[test]
+    fn bounded_reader_rejects_invalid_position_without_reading_and_preserves_failed_seek() {
+        let (inner, reads, _) = source(vec![1, 2, 3]);
+        let state = Rc::new(Cell::new(State::default()));
+        let mut reader = Bounded { inner, length: 3, position: 4, state: state.clone() };
+        assert!(reader.read(&mut [0]).is_err());
+        assert!(reader.read(&mut []).is_err());
+        assert!(state.get().io_failed);
+        assert_eq!(reads.get(), 0);
+        reader.position = 3;
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        assert!(reader.seek(SeekFrom::Start(4)).is_err());
+        assert_eq!(reader.position, 3);
+        assert_eq!(reads.get(), 0);
     }
     #[test]
     fn reader_headers_match_existing_metadata_for_every_supported_image() {

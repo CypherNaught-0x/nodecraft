@@ -806,3 +806,36 @@ fn unknown_reader_duplicate_never_repairs_corrupt_indexed_content() {
 mod import_composition147;
 
 mod split_composition342;
+
+#[test]
+fn native_small_save_opens_in_distinct_memory_session_and_keeps_asset_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let native = host(dir.path());
+    let mut original = snapshot(AssetStore::default());
+    let hash = original.assets.insert(b"portable small payload").unwrap();
+    let mut media = Node::new(NodeId::from_bytes([81; 16]), "test.media");
+    media.params.insert("asset".into(), Value::Media(nodecraft_types::AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: Default::default() }));
+    Change::AddNode { canvas: C, node: media }.apply(&mut original.project).unwrap();
+    let mut session = Session::with_storage(original, Box::new(native.clone())).unwrap();
+    session.dispatch("node.move", &movement(7)).unwrap();
+    let destination = dir.path().join("portable.ncraft");
+    session.dispatch("file.save_as", &json!({"location":destination})).unwrap();
+    let bytes = std::fs::read(&destination).unwrap();
+    let decoded = nodecraft_format::decode(&bytes).unwrap();
+    assert_eq!(decoded.project, *session.document());
+    assert_eq!(decoded.assets.get(&hash).unwrap(), b"portable small payload");
+    let mut memory = nodecraft_format::MemoryStorage::default();
+    let location = StorageLocation::Path("portable".into());
+    memory.files.insert(location, bytes);
+    let mut other = Session::with_storage(snapshot(AssetStore::default()), Box::new(memory)).unwrap();
+    other.dispatch("file.open", &json!({"location":"portable","discard_dirty":true})).unwrap();
+    assert_eq!(other.document(), session.document());
+    assert!(!other.can_undo());
+    assert!(!other.can_redo());
+    assert_eq!(other.assets().get(&hash).unwrap(), b"portable small payload");
+    other.dispatch("node.move", &movement(8)).unwrap();
+    other.dispatch("edit.undo", &json!({})).unwrap();
+    other.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(other.assets().get(&hash).unwrap(), b"portable small payload");
+    assert_eq!(native.0.borrow().native.recover().unwrap().snapshot.project, *session.document());
+}

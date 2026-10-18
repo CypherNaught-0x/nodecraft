@@ -14,6 +14,12 @@ The exact same prepared archive bytes feed Save and its recovery checkpoint. A p
 with a failed checkpoint still reports `saved: true`, adopts its savepoint, and requires another
 successful checkpoint before editing.
 
+Native output selects numeric wire v1 when the actual stored-ZIP layout fits every frozen
+small limit and uses no ZIP64 field or footer; otherwise it selects numeric v2. This does not
+change native capability: both outputs stay sealed StreamingV2 plans, and byte-only defaults
+still refuse them before I/O. Native checkpoints retain the 80-byte NCRJ0002 envelope even
+when the embedded archive is v1. Existing numeric-v2 archives remain readable.
+
 Small/default hosts keep frozen v1 and NCRJ0001. V1 is buffered: 16 MiB per asset, 48 MiB total,
 64 MiB archive, 4 MiB manifest, 1,024 assets; frames are 64 MiB, journal 128 MiB. Compatibility
 defaults reject large/lazy plans before reads or byte-method writes. Wasm builds retain this
@@ -145,6 +151,13 @@ persistent references. Proven stored body mismatches are corruption and require 
 checkpoint before append. Outer torn framing returns the validated prefix plus typed damage;
 semantic violations are hard errors. Operational I/O/cancellation/quota and foreign association
 errors are not classified by error message and do not blanket-latch all conflicts.
+
+Native operation serialization uses a nonblocking try_lock: overlapping operations return
+Busy rather than waiting; it does not move synchronous storage I/O off the UI thread. Save
+may retain a private prepared base plus a same-directory publication stage alongside the old
+file, and self-contained recovery keeps its own archive/journal owners. Streaming bounds
+transfer buffers, not total disk copies; off-UI cancellation/progress and copy reduction remain
+separate work.
 
 Actual retained File handles, generation state, cooperative OS locks and the protected owned
 namespace provide lifecycle authority. Same-file equality is a fallible mismatch diagnostic,

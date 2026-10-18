@@ -253,7 +253,8 @@ fn phase(name: &str, root: &Path, host: &TypedOnly, metrics: &StreamMetrics, sta
 fn zip_checks(path: &Path, large: Blake3, tiny: Blake3, bytes: u64, heavy: bool, metrics: &StreamMetrics) -> u32 {
     let input = file_range(path);
     let index = ArchiveIndex::read(&input, &TransferCancel::default(), metrics).unwrap();
-    assert_eq!(index.version(), 2);
+    // Small calibration fits frozen wire1; the real >4GiB proof must remain wire2.
+    assert_eq!(index.version(), if heavy { 2 } else { 1 });
     let large_entry = index.entries().iter().find(|e| e.name == EntryName::Asset(large)).unwrap();
     let tiny_entry = index.entries().iter().find(|e| e.name == EntryName::Asset(tiny)).unwrap();
     assert_eq!(large_entry.data.byte_len(), bytes);
@@ -361,7 +362,8 @@ fn run_roundtrip(bytes: u64, heavy: bool) {
     host_b.0.borrow_mut().extent_cap = bytes.checked_add(16 * 1024 * 1024).unwrap();
     let mut session = Session::with_storage(snapshot(AssetStore::default()), Box::new(host_b.clone())).unwrap();
     session.dispatch("file.open", &json!({"location":original,"discard_dirty":true})).unwrap();
-    assert_eq!(session.assets().context().storage_usage().unwrap().verified, 0, "indexed Open does not verify each body");
+    let expected_verified = if heavy { 0 } else { bytes.checked_add(tiny_bytes.len() as u64).unwrap() };
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, expected_verified, "small v1 Open is eager; heavy v2 bodies remain deferred");
     std::fs::remove_file(&original).unwrap();
     phase("open-private-external-deleted", root.path(), &host_b, &metrics, start);
     session.dispatch("node.move", &movement(9)).unwrap();

@@ -72,6 +72,10 @@ fn native_large_save_and_lazy_open_use_private_immutable_bytes_after_original_de
     let location = StorageLocation::Path(path.clone());
     storage.save_plan(&location, &plan, &cancel, &metrics).unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().len(), plan.byte_len());
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let manifest: serde_json::Value = serde_json::from_reader(zip.by_name("project.json").unwrap()).unwrap();
+    assert_eq!(manifest["version"], 2);
+    drop(zip);
     drop(storage);
     let mut reopened = NativeStorage::new(dir.path().join("recovery-b")).unwrap();
     let context = reopened.asset_context().unwrap();

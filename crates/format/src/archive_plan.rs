@@ -62,9 +62,22 @@ impl ArchivePlan {
                 epoch: u64,
                 project: &'a nodecraft_graph::Project,
             }
-            let json = crate::archive::bounded_json(&Manifest { version: 2, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
-            crate::compatibility::validate(&json)?;
-            let layout = layout(json.len() as u64, assets.values().copied())?;
+            // Storage capability and wire compatibility are independent: keep the native
+            // sealed plan even when its exact stored-ZIP bytes fit the frozen reader.
+            let candidate =
+                crate::archive::bounded_json(&Manifest { version: 1, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
+            crate::compatibility::validate(&candidate)?;
+            let candidate_layout = layout(candidate.len() as u64, assets.values().copied())?;
+            let (version, json, layout) = if small_wire_eligible(&candidate_layout, assets.values().copied())? {
+                (1, candidate, candidate_layout)
+            } else {
+                drop(candidate);
+                let json =
+                    crate::archive::bounded_json(&Manifest { version: 2, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
+                crate::compatibility::validate(&json)?;
+                let layout = layout(json.len() as u64, assets.values().copied())?;
+                (2, json, layout)
+            };
             let workspace = snapshot.assets.context().0.workspace.as_ref().ok_or_else(unsupported)?;
             let sealed = workspace.generate_archive(layout.bytes, cancel, metrics, |output| {
                 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
@@ -91,7 +104,7 @@ impl ArchivePlan {
             })?;
             // Validate the actual finalized grammar and metadata before granting authority.
             let index = crate::zip_index::ArchiveIndex::read(&sealed.range()?, cancel, metrics)?;
-            if index.version() != 2 || index.manifest() != json || index.identity().archive_bytes != layout.bytes {
+            if index.version() != version || index.manifest() != json || index.identity().archive_bytes != layout.bytes {
                 return Err(invalid("prepared archive disagrees with its admitted manifest"));
             }
             let indexed = index
@@ -211,15 +224,18 @@ fn lengths(store: &crate::AssetStore, hashes: &std::collections::BTreeSet<Blake3
 struct Layout {
     bytes: u64,
     zip64_footer: bool,
+    uses_zip64: bool,
 }
 /// Exact stored-ZIP overhead for the pinned writer's canonical ZIP64 size/offset fields.
 #[cfg(not(target_arch = "wasm32"))]
 fn layout(manifest: u64, assets: impl Iterator<Item = u64>) -> Result<Layout, Error> {
     let mut offset = 0u64;
     let mut directory = 0u64;
+    let mut uses_zip64 = false;
     for (name, bytes) in std::iter::once((12u64, manifest)).chain(assets.map(|n| (71u64, n))) {
         let sizes = bytes >= u32::MAX as u64;
         let wide_offset = offset >= u32::MAX as u64;
+        uses_zip64 |= sizes || wide_offset;
         let extra = match (sizes, wide_offset) {
             (false, false) => 0,
             (true, false) => 20,
@@ -234,7 +250,17 @@ fn layout(manifest: u64, assets: impl Iterator<Item = u64>) -> Result<Layout, Er
     if bytes > crate::asset_source::MAX_LARGE_ARCHIVE_BYTES {
         return Err(invalid("archive exceeds 65 GiB limit"));
     }
-    Ok(Layout { bytes, zip64_footer })
+    Ok(Layout { bytes, zip64_footer, uses_zip64: uses_zip64 || zip64_footer })
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn small_wire_eligible(layout: &Layout, assets: impl Iterator<Item = u64>) -> Result<bool, Error> {
+    let mut total = 0u64;
+    let mut individual = true;
+    for bytes in assets {
+        total = add(total, bytes)?;
+        individual &= bytes <= crate::MAX_ASSET_BYTES as u64;
+    }
+    Ok(individual && total <= crate::MAX_TOTAL_ASSET_BYTES as u64 && layout.bytes <= crate::MAX_ARCHIVE_BYTES as u64 && !layout.uses_zip64)
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn add(a: u64, b: u64) -> Result<u64, Error> {
@@ -247,6 +273,25 @@ fn unsupported() -> Error {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    #[test]
+    fn small_wire_policy_uses_exact_limits_and_every_zip64_form() {
+        let classic = |bytes| Layout { bytes, zip64_footer: false, uses_zip64: false };
+        assert!(small_wire_eligible(&classic(crate::MAX_ARCHIVE_BYTES as u64), [crate::MAX_ASSET_BYTES as u64; 3].into_iter()).unwrap());
+        assert!(!small_wire_eligible(&classic(crate::MAX_ARCHIVE_BYTES as u64 + 1), [].into_iter()).unwrap());
+        assert!(!small_wire_eligible(&classic(1), [crate::MAX_ASSET_BYTES as u64 + 1].into_iter()).unwrap());
+        assert!(
+            !small_wire_eligible(&classic(1), [crate::MAX_ASSET_BYTES as u64, crate::MAX_ASSET_BYTES as u64, crate::MAX_ASSET_BYTES as u64, 1].into_iter())
+                .unwrap()
+        );
+        for footer in [false, true] {
+            assert!(!small_wire_eligible(&Layout { bytes: 1, zip64_footer: footer, uses_zip64: true }, [].into_iter()).unwrap());
+        }
+        assert!(small_wire_eligible(&classic(1), [u64::MAX, 1].into_iter()).is_err());
+        // Scalar policy controls above deliberately isolate each cap. With real stored
+        // entries, the other small caps can make the 64 MiB archive boundary unreachable.
+        let real = layout(crate::MAX_MANIFEST_BYTES as u64, [crate::MAX_ASSET_BYTES as u64; 3].into_iter()).unwrap();
+        assert!(small_wire_eligible(&real, [crate::MAX_ASSET_BYTES as u64; 3].into_iter()).unwrap());
+    }
     #[test]
     fn exact_size_and_offset_sentinels_have_explicit_zip64_overhead() {
         let small = layout(2, std::iter::once(3)).unwrap();

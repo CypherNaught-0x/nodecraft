@@ -837,6 +837,54 @@ fn report_shares_legacy_sweep_hooks_and_preserves_unknown_and_stale_semantics() 
 }
 
 #[test]
+fn report_reservation_precedes_recipe_hooks() {
+    let (mut project, kinds, calls) = diagnostic_sources("bounded reason");
+    diagnostic_results(&mut project);
+    let canvas = project.canvases().get(&C).unwrap();
+    assert!(query_stale(canvas, &kinds, MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD - 1, true).is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "refuse output admission before evaluating recipes");
+}
+
+#[test]
+fn report_reservation_precedes_router_validation() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut kinds = Registry::default();
+    kinds
+        .register(Box::new(Validated(
+            Gen(NodeDescriptor {
+                id: "structure.router".into(),
+                label: "Router admission fixture".into(),
+                category: Category::Generation,
+                inputs: vec![],
+                outputs: vec![],
+                quick_add: None,
+                params: ParamSchema::default(),
+            }),
+            calls.clone(),
+        )))
+        .unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Router admission").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    Change::AddNode { canvas: C, node: Node::new(id(10), "structure.router") }.apply(&mut project).unwrap();
+    let canvas = project.canvases().get(&C).unwrap();
+    assert!(query_stale(canvas, &kinds, MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD - 1, true).is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "reservation must precede routing initialization");
+}
+
+#[test]
+fn report_reservation_counts_even_without_recorded_results() {
+    let canvas = Canvas::new(C, "Empty");
+    let kinds = Registry::default();
+    let output = MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD;
+    let (report, charged) = query_stale(&canvas, &kinds, output, true).unwrap();
+    assert_eq!(charged, output);
+    assert_eq!(report.unknown_total, 0);
+    assert_eq!(report.unknown, None);
+    assert!(query_stale(&canvas, &kinds, output - 1, true).is_err());
+    assert_eq!(query_stale(&canvas, &kinds, 0, false).unwrap().1, 0, "legacy sweep does not reserve a diagnostic");
+}
+
+#[test]
 fn report_output_uses_exact_existing_reservation_and_refuses_before_construction() {
     let (mut project, kinds, _) = diagnostic_sources("bounded reason");
     diagnostic_results(&mut project);
@@ -1137,4 +1185,23 @@ fn detailed_source_choice_is_deterministic_and_default_validation_reason_is_reta
     assert_eq!(upstream.kind, direct.kind);
     assert!(upstream.message.ends_with(&direct.message));
     assert!(upstream.message.contains(&id(12).to_string()));
+}
+
+#[test]
+fn report_credit_is_consumed_once_without_double_charge_or_sticky_refusal_escape() {
+    let canvas = Canvas::new(C, "Empty");
+    let kinds = Registry::default();
+    let output = MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD;
+    let mut query = InputHasher::for_report(&canvas, &kinds, output).unwrap();
+    assert_eq!(query.hashed(), output);
+    assert!(query.reported(id(20), InvalidHash::Router(id(1))).is_ok());
+    assert_eq!(query.hashed(), output);
+    assert!(query.reported(id(20), InvalidHash::Router(id(1))).is_err());
+    let copied = query.diagnostic_output_bytes;
+    assert!(query.reported(id(20), InvalidHash::Router(id(1))).is_err());
+    assert_eq!(query.diagnostic_output_bytes, copied);
+    let mut refused = InputHasher::for_report(&canvas, &kinds, output).unwrap();
+    assert!(refused.meter.charge(1).is_err());
+    assert!(refused.reported(id(20), InvalidHash::Router(id(1))).is_err());
+    assert_eq!(refused.diagnostic_output_bytes, 0);
 }

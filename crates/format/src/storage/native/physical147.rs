@@ -94,7 +94,8 @@ fn run_fault(bytes: u64, heavy: bool) {
         let file = File::open(&destination).unwrap();
         let range = crate::NativeAssetWorkspace::input_range(file, a).unwrap();
         let index = ArchiveIndex::read(&range, &cancel, &metrics).unwrap();
-        assert_eq!(index.version(), 2);
+        // Calibration is small-compatible; the separately approved physical path remains wire2.
+        assert_eq!(index.version(), if heavy { 2 } else { 1 });
         assert!(index.entries().iter().any(|e| e.name == crate::zip_index::EntryName::Asset(hash) && e.data.byte_len() == bytes));
     }
     drop(old_checkpoint);

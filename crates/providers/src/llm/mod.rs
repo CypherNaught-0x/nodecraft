@@ -560,7 +560,6 @@ impl LlmClient {
             Ok(())
         };
         let head = self.http.send_streaming(request, &mut sink).await;
-        drop(sink);
         // A server may close right after the last event without a blank line.
         if failure.is_none() && head.as_ref().is_ok_and(|h| h.is_success()) {
             for last in parser.finish() {

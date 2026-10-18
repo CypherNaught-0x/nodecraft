@@ -58,8 +58,10 @@ delivery. Browser fetch stages remain unknown.
 
 A native request-builder failure returns terminal `UnsupportedInput` with the static diagnostic
 `HTTP request could not be constructed`; request URLs, header values and the underlying builder
-error are excluded. This applies to ordinary and streaming requests. Execution, connection and
-timeout errors retain their existing classifications. The audited LLM path releases a fresh
+error are excluded. This applies to ordinary and streaming requests, including a later redirect
+hop. An earlier hop may already have delivered the request: a later builder failure does not
+establish whole-operation nonbilling, erase that uncertainty or release its reservation.
+Execution, connection and timeout errors retain their existing classifications. The audited LLM path releases a fresh
 reservation immediately when its complete submission proves no delivery; earlier ambiguous
 attempts remain charged even when a later attempt fails locally.
 

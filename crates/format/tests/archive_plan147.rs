@@ -41,7 +41,7 @@ fn range(bytes: Vec<u8>) -> AssetRange {
     AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes))), 0, len).unwrap()
 }
 #[test]
-fn native_plan_is_v2_exact_reusable_and_pins_content_through_gc() {
+fn native_small_plan_is_v1_exact_reusable_and_pins_content_through_gc() {
     let (_dir, workspace, mut store) = setup();
     let baseline = workspace.quota().usage().unwrap();
     let mut hashes = Vec::new();
@@ -61,7 +61,13 @@ fn native_plan_is_v2_exact_reusable_and_pins_content_through_gc() {
     assert_eq!(first.len() as u64, plan.byte_len());
     assert_eq!(*blake3::hash(&first).as_bytes(), *plan.digest().hash.as_bytes());
     let index = ArchiveIndex::read(&range(first.clone()), &TransferCancel::default(), &metrics).unwrap();
-    assert_eq!(index.version(), 2);
+    assert_eq!(index.version(), 1);
+    let resident = nodecraft_format::decode(&first).unwrap();
+    assert_eq!(resident.project, snapshot.project);
+    assert_eq!(resident.epoch, snapshot.epoch);
+    for hash in &hashes {
+        assert_eq!(resident.assets.get(hash).unwrap().len(), 4096);
+    }
     let decoded = nodecraft_format::decode_indexed(&index, store.context().clone()).unwrap();
     assert_eq!(decoded.project, snapshot.project);
     assert_eq!(decoded.epoch, 7);
@@ -146,4 +152,59 @@ fn deferred_corruption_and_cached_crc_alias_refuse_before_output_publication() {
     assert_eq!(workspace2.quota().usage().unwrap(), baseline);
     assert!(lazy.assets.open_verified(&asset(hash), &TransferCancel::default(), &StreamMetrics::default()).is_err());
     assert_eq!(workspace2.quota().usage().unwrap(), baseline);
+}
+
+#[test]
+fn empty_native_saved_bytes_open_in_frozen_small_decoder_without_changing_capability() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = nodecraft_format::NativeStorage::new(dir.path().join("recovery")).unwrap();
+    let store = AssetStore::with_context(nodecraft_format::ProjectStorage::asset_context(&storage).unwrap());
+    let snapshot = Snapshot { project: project(&[]), assets: store, epoch: 11 };
+    let cancel = TransferCancel::default();
+    let metrics = StreamMetrics::default();
+    let plan = ArchivePlan::prepare(&snapshot, StorageCapability::StreamingV2, &cancel, &metrics).unwrap();
+    assert_eq!(plan.capability(), StorageCapability::StreamingV2);
+    assert!(plan.small_bytes().is_err());
+    let mut bytes = Vec::new();
+    plan.write_to(&mut bytes, &cancel, &metrics).unwrap();
+    let decoded = nodecraft_format::decode(&bytes).unwrap();
+    assert_eq!(decoded.project, snapshot.project);
+    assert_eq!(decoded.epoch, 11);
+    let checkpoint = nodecraft_format::CheckpointPlan::new(plan.clone()).unwrap();
+    let mut journal = Vec::new();
+    checkpoint.write_to(&mut journal, &cancel, &metrics).unwrap();
+    assert_eq!(&journal[..8], b"NCRJ0002");
+    assert_eq!(&journal[80..], bytes);
+    assert_eq!(checkpoint.archive().digest(), plan.digest());
+}
+
+#[test]
+fn native_wire_selection_does_not_bypass_shared_manifest_or_asset_count_caps() {
+    let (_dir, workspace, mut store) = setup();
+    let mut hashes = Vec::new();
+    for n in 0..nodecraft_format::MAX_ASSETS {
+        hashes.push(store.insert(&(n as u64).to_le_bytes()).unwrap());
+    }
+    let before = store.len();
+    assert!(store.insert(&(nodecraft_format::MAX_ASSETS as u64).to_le_bytes()).is_err());
+    assert_eq!(store.len(), before);
+    let snapshot = Snapshot { project: project(&hashes), assets: store, epoch: 1 };
+    let plan = ArchivePlan::prepare(&snapshot, StorageCapability::StreamingV2, &TransferCancel::default(), &StreamMetrics::default()).unwrap();
+    assert_eq!(plan.asset_lengths().len(), nodecraft_format::MAX_ASSETS);
+    drop((plan, snapshot));
+    workspace.cleanup().unwrap();
+
+    let (_dir, workspace, store) = setup();
+    let mut project = project(&[]);
+    for n in 0..5 {
+        let mut id = [0; 16];
+        id[0] = n;
+        let mut node = Node::new(NodeId::from_bytes(id), "source.text");
+        node.params.insert("text".into(), Value::Text("x".repeat(1024 * 1024)));
+        Change::AddNode { canvas: CanvasId::from_bytes([2; 16]), node }.apply(&mut project).unwrap();
+    }
+    let snapshot = Snapshot { project, assets: store, epoch: 1 };
+    let usage = workspace.quota().usage().unwrap();
+    assert!(ArchivePlan::prepare(&snapshot, StorageCapability::StreamingV2, &TransferCancel::default(), &StreamMetrics::default()).is_err());
+    assert_eq!(workspace.quota().usage().unwrap(), usage);
 }

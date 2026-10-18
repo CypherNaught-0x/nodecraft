@@ -38,27 +38,13 @@ impl Session {
         }
         let native = self.assets.context().supports_large_assets();
         let cap = if native { nodecraft_format::asset_source::MAX_LARGE_ASSET_BYTES } else { nodecraft_format::MAX_ASSET_BYTES as u64 };
-        let mut input_bytes = 0u64;
-        // Validate EVERY descriptor before touching the first source. The checked work
-        // inventory is not a sum-length quota: repeated existing content may exceed it.
+        // Validate EVERY descriptor before touching the first source. Repeated content
+        // is not an aggregate input quota; unique retained bytes are admitted below.
         for source in sources {
             if source.byte_len() > cap {
                 return Err(invalid("import source exceeds this host's per-asset limit"));
             }
-            input_bytes = input_bytes.checked_add(source.byte_len()).ok_or_else(|| invalid("import read-work length overflow"))?;
         }
-        let count = u64::try_from(sources.len()).map_err(|_| invalid("import count exceeds this host"))?;
-        let _read_work_bound = input_bytes
-            .checked_mul(2)
-            .and_then(|n| count.checked_mul(64 * 1024).and_then(|prefix| n.checked_add(prefix)))
-            .and_then(|n| {
-                count
-                    .checked_add(1)
-                    .and_then(|packs| packs.checked_mul(2))
-                    .and_then(|passes| passes.checked_mul(nodecraft_format::asset_source::MAX_LARGE_TOTAL_ASSET_BYTES))
-                    .and_then(|pack| n.checked_add(pack))
-            })
-            .ok_or_else(|| invalid("import read-work counter overflow"))?;
         let mut hashes = Vec::new();
         hashes.try_reserve_exact(sources.len()).map_err(|_| invalid("cannot reserve import results"))?;
         let mut duplicates = Vec::new();

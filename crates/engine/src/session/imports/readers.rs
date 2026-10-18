@@ -16,20 +16,6 @@ impl Session {
             let source = SourceStamp { identity: Arc::clone(&self.admission_identity), revision: self.revision };
             let next_generation = self.execution.next()?;
             let next_identity = Arc::new(());
-            let count = u64::try_from(readers.len()).map_err(|_| invalid("reader import count exceeds this host"))?;
-            let _work_bound = count
-                .checked_mul(2)
-                .and_then(|n| n.checked_mul(nodecraft_format::asset_source::MAX_LARGE_ASSET_BYTES))
-                .and_then(|n| n.checked_add(1))
-                .and_then(|n| count.checked_mul(64 * 1024).and_then(|prefix| n.checked_add(prefix)))
-                .and_then(|n| {
-                    count
-                        .checked_mul(2)
-                        .and_then(|packs| packs.checked_add(1))
-                        .and_then(|packs| packs.checked_mul(2 * nodecraft_format::asset_source::MAX_LARGE_TOTAL_ASSET_BYTES))
-                        .and_then(|pack| n.checked_add(pack))
-                })
-                .ok_or_else(|| invalid("reader import work counter overflow"))?;
             let mut hashes = Vec::new();
             hashes.try_reserve_exact(readers.len()).map_err(|_| invalid("cannot reserve reader import results"))?;
             let mut unique = Vec::new();
