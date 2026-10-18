@@ -17,5 +17,6 @@ pub mod palette;
 pub mod search;
 pub mod selection;
 pub mod theme;
+pub mod turn_into;
 
 pub use app::NodeCraftApp;

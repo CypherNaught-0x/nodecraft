@@ -44,6 +44,7 @@ pub const MAX_NEW_IDS: usize = 100;
 pub const AGENT_COMMANDS: &[&str] = &[
     "node.add",
     "node.create",
+    "node.create_connected",
     "node.remove",
     "node.move",
     "node.title",

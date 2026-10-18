@@ -10,6 +10,7 @@ use crate::{
     palette::{self, Palette},
     selection::{self, Selection},
     theme::{self, ThemeKind, Tokens},
+    turn_into::{self, TurnInto},
 };
 use egui::{Pos2, Rect, Sense, Vec2};
 use nodecraft_engine::{
@@ -301,6 +302,8 @@ pub struct NodeCraftApp {
     painted: BTreeMap<NodeId, Rect>,
     wiring: Option<Wiring>,
     palette: Option<Palette>,
+    /// The "Turn into" menu after a new noodle was dropped on empty canvas.
+    turn_into: Option<TurnInto>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
     schemas: SchemaCache,
@@ -422,6 +425,7 @@ impl NodeCraftApp {
             painted: BTreeMap::new(),
             wiring: None,
             palette: None,
+            turn_into: None,
             text_focused: false,
             schemas: SchemaCache::default(),
             cache_clock: 0,
@@ -449,8 +453,9 @@ impl NodeCraftApp {
         }
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
-        // Canvas keys yield to text fields and to the open palette (whose query may lose focus).
-        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() {
+        // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
+        // or "Turn into" menu (whose letters pick kinds).
+        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
             let command = ui.input_mut(|input| {
                 self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
                     spec.shortcut
@@ -609,9 +614,11 @@ impl NodeCraftApp {
         if !overlay_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
         }
-        // The palette creates at the world point it opened on; once the view moves, close it.
+        // The palette and "Turn into" create at the world point they opened on; once the view
+        // moves, close them.
         if self.view != view_before {
             self.palette = None;
+            self.turn_into = None;
         }
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
@@ -759,6 +766,7 @@ impl NodeCraftApp {
                 let reach = NOODLE_HIT / self.view.zoom;
                 if !curves.iter().any(|(_, curve, _)| noodle::distance(curve, world) <= reach) {
                     self.palette = Some(Palette::new(world, p));
+                    self.turn_into = None;
                 }
             }
             // A noodle whose source node or picked-up edge vanished mid-drag (Delete, undo) is dropped.
@@ -794,8 +802,12 @@ impl NodeCraftApp {
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
-                let (command, notice) = self.wire(ui, canvas, wiring, pointer, t);
+                let (command, notice, turn_into) = self.wire(ui, canvas, wiring, pointer, t);
                 wire_command = command;
+                if turn_into.is_some() {
+                    self.palette = None;
+                    self.turn_into = turn_into;
+                }
                 if notice.is_some() {
                     self.notice = notice;
                 }
@@ -919,6 +931,13 @@ impl NodeCraftApp {
                     Ok(_) => self.notice = None,
                     Err(error) => self.notice = Some(error.message),
                 },
+            }
+        }
+        if let Some(mut open) = self.turn_into.take() {
+            match open.show(ui.ctx(), t) {
+                turn_into::Outcome::Open => self.turn_into = Some(open),
+                turn_into::Outcome::Closed => {}
+                turn_into::Outcome::Chosen(kind) => self.create_connected(&kind, &open),
             }
         }
         self.navigation.finish_frame(ui.ctx());
@@ -1111,6 +1130,27 @@ impl NodeCraftApp {
         }
     }
 
+    /// Creates `kind` where the "Turn into" menu opened, fed by its noodle, as one undo step.
+    fn create_connected(&mut self, kind: &str, menu: &TurnInto) {
+        let t = self.theme.tokens();
+        // The new card's input side sits where the noodle was dropped.
+        let pos = nodecraft_graph::Position { x: menu.world.x, y: menu.world.y - t.card_min_height * 0.5 };
+        let document = self.session.document();
+        let seed = ("turn-into", kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
+        let (Some(id), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
+            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            return;
+        };
+        let params = json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos, "from": menu.from, "edge": edge});
+        match self.session.dispatch("node.create_connected", &params) {
+            Ok(_) => {
+                self.notice = None;
+                self.selection.only(id);
+            }
+            Err(error) => self.notice = Some(error.message),
+        }
+    }
+
     /// What the palette offers: every node kind, then every command that runs without
     /// parameters right now.
     fn palette_entries(&self) -> Vec<palette::Entry> {
@@ -1131,7 +1171,16 @@ impl NodeCraftApp {
 
     /// Paint the noodle being dragged and, once the pointer is released, choose the command it
     /// becomes (and a notice when the drop target can't accept it).
-    fn wire(&self, ui: &egui::Ui, canvas: &Canvas, wiring: &Wiring, pointer: Pos2, t: &Tokens) -> (Option<(&'static str, serde_json::Value)>, Option<String>) {
+    /// One frame of a noodle being dragged: the command its drop runs, a notice explaining a
+    /// refused drop, or the "Turn into" menu for a new noodle dropped on empty canvas.
+    fn wire(
+        &self,
+        ui: &egui::Ui,
+        canvas: &Canvas,
+        wiring: &Wiring,
+        pointer: Pos2,
+        t: &Tokens,
+    ) -> (Option<(&'static str, serde_json::Value)>, Option<String>, Option<TurnInto>) {
         let kinds = self.session.kinds();
         let origin = self.viewport.min;
         let Some(start) = canvas
@@ -1139,7 +1188,7 @@ impl NodeCraftApp {
             .get(&wiring.from.node)
             .and_then(|source| noodle::port_anchor(source, card_geometry(&self.painted, kinds, source, t), Side::Output, &wiring.from.port))
         else {
-            return (None, None);
+            return (None, None, None);
         };
         // Nodes that already feed the source: connecting into any of them would close a loop.
         let feeding = selection::upstream(canvas, &[wiring.from.node].into_iter().collect());
@@ -1191,25 +1240,35 @@ impl NodeCraftApp {
         let stroke = egui::Stroke::new(t.wire_width, t.wire(wiring.port_type.modality));
         painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, stroke));
         if ui.input(|i| i.pointer.primary_down()) {
-            return (None, None);
+            return (None, None, None);
         }
         let Some((node, input, _)) = target else {
-            // Dropping a picked-up noodle on empty canvas disconnects it.
-            return (wiring.moving.map(|id| ("edge.disconnect", json!({"canvas": self.canvas, "id": id}))), None);
+            // Dropping a picked-up noodle on empty canvas disconnects it; a new one asks what
+            // to turn into.
+            if let Some(id) = wiring.moving {
+                return (Some(("edge.disconnect", json!({"canvas": self.canvas, "id": id}))), None, None);
+            }
+            // Only empty canvas: not on a card, and not under an overlay (minimap, search).
+            let on_card = drop_targets(canvas, &self.painted).any(|(_, rect)| rect.contains(world));
+            let on_canvas = self.viewport.contains(pointer) && ui.ctx().layer_id_at(pointer).is_none_or(|layer| layer == ui.layer_id());
+            if on_card || !on_canvas {
+                return (None, None, None);
+            }
+            return (None, None, Some(TurnInto::new(self.session.kinds(), wiring.from.clone(), wiring.port_type, world, pointer)));
         };
         if let Err(message) = accepts(node, input) {
-            return (None, Some(message));
+            return (None, Some(message), None);
         }
         let to = Endpoint { node: node.id, port: input.name.clone() };
         let occupants: Vec<_> = noodle::into_port(canvas, &to).into_iter().filter(|e| Some(e.id) != wiring.moving).collect();
         if wiring.moving.is_some_and(|id| canvas.edges().get(&id).is_some_and(|e| e.to == to)) {
-            return (None, None);
+            return (None, None, None);
         }
         let mut replace: Vec<EdgeId> = wiring.moving.into_iter().collect();
         let order = if input.port_type.many {
             match noodle::next_order(canvas, &to, wiring.moving) {
                 Some(order) => order,
-                None => return (None, Some("This input can't take more connections.".into())),
+                None => return (None, Some("This input can't take more connections.".into()), None),
             }
         } else {
             // A single input swaps its current noodle for the new one, in the same undo step.
@@ -1217,13 +1276,13 @@ impl NodeCraftApp {
             0
         };
         let Some(id) = wiring.moving.or_else(|| noodle::new_edge_id(self.session.document(), &wiring.from, &to, self.session.revision())) else {
-            return (None, Some("Couldn't allocate a connection id; try again.".into()));
+            return (None, Some("Couldn't allocate a connection id; try again.".into()), None);
         };
         let edge = json!({"id": id, "from": wiring.from, "to": to, "order": order});
         if replace.is_empty() {
-            (Some(("edge.connect", json!({"canvas": self.canvas, "edge": edge}))), None)
+            (Some(("edge.connect", json!({"canvas": self.canvas, "edge": edge}))), None, None)
         } else {
-            (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None)
+            (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None, None)
         }
     }
 }
@@ -1326,3 +1385,5 @@ mod history_tests;
 mod perf;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod turn_into_tests;
