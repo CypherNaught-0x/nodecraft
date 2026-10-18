@@ -43,8 +43,7 @@ fn launch(dir: &Scratch, open: Option<PathBuf>) -> Harness<'static, NodeCraftApp
 
 fn add_node(h: &mut Harness<'static, NodeCraftApp>) {
     let canvas = h.state().canvas;
-    let node = nodecraft_graph::Node::new(ADDED, "source.text");
-    h.state_mut().session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap();
+    h.state_mut().session.dispatch("node.create", &json!({"canvas": canvas, "id": ADDED, "kind": "source.text", "pos": {"x": 260.0, "y": 40.0}})).unwrap();
     h.run();
 }
 
@@ -74,7 +73,7 @@ fn recover_brings_the_work_back_unsaved_at_its_file_and_saving_drops_the_copy() 
     crash(&dir, true);
     let mut h = launch(&dir, None);
     assert!(asked(&h));
-    assert!(h.query_by_label_contains("1 unsaved change to").is_some());
+    assert!(h.query_by_label_contains("1 unsaved change to a.ncraft can be recovered").is_some());
     assert!(h.query_by_label_contains("as a.ncraft").is_some(), "names the file it goes back to");
     assert!(!has_added(&h), "nothing changes before the person decides");
     assert_eq!(dir.kept_files(), 1, "the journal is kept until then");
@@ -112,8 +111,8 @@ fn recovered_work_not_yet_saved_survives_a_quit_and_is_offered_again() {
     assert!(has_added(&h));
     // And a crash after recovering, with more edits, offers the newer copy, which holds both.
     let canvas = h.state().canvas;
-    let more = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([81; 16]), "source.text");
-    h.state_mut().session.dispatch("node.add", &json!({"canvas": canvas, "node": more})).unwrap();
+    let more = nodecraft_types::NodeId::from_bytes([81; 16]);
+    h.state_mut().session.dispatch("node.create", &json!({"canvas": canvas, "id": more, "kind": "source.text", "pos": {"x": 0.0, "y": 400.0}})).unwrap();
     h.run();
     drop(h);
     let mut h = launch(&dir, None);
@@ -224,4 +223,24 @@ fn the_open_file_is_recorded_beside_the_journal() {
     h.state_mut().session.dispatch("file.save_as", &json!({"location": location})).unwrap();
     h.run();
     assert_eq!(storage::recorded_location(&dir.journal()), Some(dir.project()));
+}
+
+#[test]
+#[ignore = "manual public-safe PR evidence"]
+fn render_recovery_review_evidence() {
+    let folder = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    let dir = Scratch::new("evidence");
+    crash(&dir, true);
+    let (session, canvas, kept, _) = NodeCraftApp::storage_session(StorageSetup { recovery: dir.journal(), open: None }).unwrap();
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    app.attach_recovery(dir.journal(), kept);
+    let mut h = Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    h.render().unwrap().save(folder.join("prompt.png")).unwrap();
+    h.get_by_label("Recover").click();
+    h.run();
+    h.run();
+    h.render().unwrap().save(folder.join("recovered.png")).unwrap();
 }

@@ -138,7 +138,8 @@ impl NodeCraftApp {
             ui.heading("Recover unsaved work?");
             match &offer.found {
                 Ok(found) => {
-                    let title = quoted(&found.title);
+                    let file = offer.location.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+                    let title = file.clone().unwrap_or_else(|| quoted(&found.title));
                     let what = match found.changes {
                         0 => format!("Unsaved work on {title} can be recovered."),
                         1 => format!("1 unsaved change to {title} can be recovered."),
@@ -150,7 +151,6 @@ impl NodeCraftApp {
                     } else if found.torn {
                         ui.label(egui::RichText::new("The very last change was cut off as NodeCraft closed and can't be recovered.").color(t.text_muted));
                     }
-                    let file = offer.location.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
                     let explain = match &file {
                         Some(file) => format!("Recover opens that work unsaved, as {file}. Start from last save opens {file} as last saved and discards it."),
                         None => "Recover opens that work as an untitled, unsaved project. Start from last save discards it.".to_owned(),
@@ -205,7 +205,7 @@ impl NodeCraftApp {
                 Ok(()) => {
                     log::info!("recovery: recovered {} changes from {name}", found.changes);
                     self.after_document_replaced();
-                    let title = quoted(&found.title);
+                    let title = offer.location.as_ref().and_then(|p| p.file_name()).map_or_else(|| quoted(&found.title), |n| n.to_string_lossy().into_owned());
                     self.notice = Some(if offer.location.is_some() {
                         format!("Recovered {title}. Save to keep it; until then a copy stays in the recovery folder.")
                     } else {
