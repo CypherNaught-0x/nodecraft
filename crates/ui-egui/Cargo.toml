@@ -23,6 +23,7 @@ eframe = { workspace = true, features = ["wgpu", "accesskit"] }
 craft-ui = { workspace = true }
 craft-quit = { workspace = true }
 log = { workspace = true }
+getrandom.workspace = true
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu"] }

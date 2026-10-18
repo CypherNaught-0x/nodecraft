@@ -116,8 +116,8 @@ fn text_edit_commits_without_moving_card_and_can_be_undone() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
     h.run();
     assert_eq!(h.state().view.pan, pan);
-    let blank = Pos2::new(50.0, 120.0);
-    assert!(h.query_by_role_and_label(Role::Button, "Format selection").is_none_or(|button| !button.rect().contains(blank)));
+    // The Comments toolbar now occupies the top-left; this must remain bare canvas.
+    let blank = h.state().viewport.min + Vec2::new(30.0, 120.0);
     click(&mut h, blank);
     assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text("Moonlit mountains".into())));
     assert_eq!(node(h.state()).pos, before.pos);
@@ -229,7 +229,9 @@ fn typed_controls_preserve_full_width_values_and_invalid_drafts() {
     assert_eq!(node(h.state()).params.get("count"), Some(&Value::Integer(Integer(i64::MIN))));
     assert_eq!(node(h.state()).params.get("seed"), Some(&Value::Unsigned(Unsigned(u64::MAX))));
     enter_text(&mut h, "count", "invalid");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // The Comments toolbar now occupies the top-left; this must remain bare canvas.
+    let blank = h.state().viewport.min + Vec2::new(30.0, 120.0);
+    click(&mut h, blank);
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     assert_eq!(h.get_by_role_and_label(Role::TextInput, "count").value().as_deref(), Some("invalid"));
@@ -529,9 +531,8 @@ fn nondefault_canvas_settings_apply_to_graph_backed_shell() {
     h.state_mut().theme = ThemeKind::Light;
     h.state_mut().canvas_prefs = settings.canvas.clone();
     assert_eq!(h.state().theme, ThemeKind::Light);
-    let blank = Pos2::new(50.0, 120.0);
-    assert!(h.query_by_role_and_label(Role::Button, "Format selection").is_none_or(|button| !button.rect().contains(blank)));
-    h.hover_at(blank);
+    // Scroll over bare canvas, below the Comments toolbar.
+    h.hover_at(h.state().viewport.min + Vec2::new(30.0, 120.0));
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: Vec2::new(0.0, 60.0),

@@ -8,6 +8,7 @@ pub mod app;
 pub mod canvas;
 pub mod card;
 pub mod clipboard;
+pub mod comments;
 pub mod history;
 pub mod ids;
 pub mod keys;

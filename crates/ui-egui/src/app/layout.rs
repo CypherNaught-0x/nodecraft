@@ -137,6 +137,8 @@ impl NodeCraftApp {
             || canvas::text_input_focused(ctx)
             || self.drag.is_some()
             || self.reordering.is_some()
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
             || ctx.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
             || self.marquee.is_some()
             || self.wiring.is_some()
@@ -167,7 +169,7 @@ impl NodeCraftApp {
         let area = egui::Area::new(egui::Id::new("selection_format_toolbar"))
             .order(egui::Order::Foreground)
             .movable(false)
-            .fixed_pos(self.viewport.left_top() + Vec2::splat(t.navigation_margin))
+            .fixed_pos(self.viewport.left_top() + Vec2::new(t.navigation_margin + t.comments_button_width + t.navigation_gap, t.navigation_margin))
             .show(&ctx, |ui| {
                 let button =
                     ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(t.layout_button_width, t.navigation_toolbar_height)));
@@ -305,6 +307,19 @@ mod tests {
                 h.render().unwrap().save(folder.join("undo.png")).unwrap();
             }
         }
+    }
+    #[test]
+    fn comments_toolbar_does_not_overlap_format_and_cancelled_pin_blocks_layout() {
+        let mut h = harness();
+        let comments = h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").rect();
+        let format = h.get_by_role_and_label(egui::accesskit::Role::Button, "Format selection").rect();
+        assert!(!comments.intersects(format));
+        let ctx = egui::Context::default();
+        h.state_mut().comments.gesture_cancelled = true;
+        let before = h.state().session.document().clone();
+        assert!(h.state_mut().layout_enabled(&ctx, &json!({"mode":"grid"})).is_err());
+        assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).is_err());
+        assert_eq!(h.state().session.document(), &before);
     }
     #[test]
     fn zoom_independent_ui_and_explicit_headless_geometry_agree_and_reapply_is_noop() {

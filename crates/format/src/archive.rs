@@ -10,7 +10,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -56,6 +56,12 @@ pub fn validate_v1_project(project: &Project) -> Result<(), Error> {
     project.validate()?;
     crate::compatibility::project(project)
 }
+/// Current writer admission for Save availability. The real archive manifest has this same cap;
+/// incremental document edits use bounded replay admission instead of imposing it per edit.
+pub fn validate_current_project(project: &Project) -> Result<(), Error> {
+    project.validate()?;
+    manifest_json(project, u64::MAX).map(|_| ())
+}
 fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
     #[derive(Serialize)]
     struct ManifestRef<'a> {
@@ -63,12 +69,15 @@ fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
         epoch: u64,
         project: &'a Project,
     }
-    let json = bounded_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
-    crate::compatibility::validate(&json)?;
+    let json = bounded_v2_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
     Ok(json)
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
+    decode_versioned(bytes).map(|(snapshot, _)| snapshot)
+}
+
+pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
     let entries = preflight(bytes)?;
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| invalid("invalid project ZIP directory"))?;
     if archive.len() != entries {
@@ -105,10 +114,17 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
     }
     let version: Version = serde_json::from_slice(&json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
     let json = migrate(version.version, &json)?;
-    crate::compatibility::validate(json)?;
     let manifest: Manifest = serde_json::from_slice(json).map_err(|_| invalid("invalid project graph or manifest"))?;
     assets.validate_project(&manifest.project)?;
-    Ok(Snapshot { project: manifest.project, assets, epoch: manifest.epoch })
+    Ok((Snapshot { project: manifest.project, assets, epoch: manifest.epoch }, version.version))
+}
+
+/// Gate the exact serialized roles, so future typed model additions cannot write a
+/// frozen-v2 archive or record that this version's reader refuses to recover.
+pub(crate) fn bounded_v2_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
+    let bytes = bounded_json(value, cap)?;
+    crate::v2::validate(&bytes)?;
+    Ok(bytes)
 }
 
 pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
@@ -224,6 +240,19 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
         if bytes.get(local_name_start..data_start) != Some(name) || data_end > start {
             return Err(invalid("invalid local ZIP entry extent"));
         }
+        if manifest {
+            // Identify an incompatible family before applying small-host asset limits or
+            // decoding graph data. Streaming writers put this bounded entry first.
+            #[derive(Deserialize)]
+            struct Version {
+                version: u32,
+            }
+            let json = bytes.get(data_start..data_end).ok_or_else(|| invalid("invalid manifest extent"))?;
+            let version: Version = serde_json::from_slice(json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
+            if !matches!(version.version, 1 | VERSION) {
+                return Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; use a compatible NodeCraft build"));
+            }
+        }
         ranges.push((offset, data_end));
         cursor = name_end;
     }
@@ -241,10 +270,14 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
     Ok(count)
 }
 
-/// No older format has been published. Add an explicit tested migration here before v2;
-/// never parse unknown graph variants first or invent a lossy legacy conversion.
+/// V1 roots acquire only defaulted canvas-anchor/thread fields. Gate its exact old model
+/// before typed parsing, so a legacy header cannot disguise v2-only fields or variants.
 fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
-    if from == VERSION {
+    if from == 1 {
+        crate::legacy::validate(json)?;
+        Ok(json)
+    } else if from == VERSION {
+        crate::v2::validate(json)?;
         Ok(json)
     } else {
         Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))

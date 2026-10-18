@@ -10,6 +10,7 @@ rust-version = "1.95"
 repository = "https://github.com/CypherNaught-0x/nodecraft"
 
 [workspace.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # internal (layers: docs/architecture.md, enforced by `cargo xtask layers`)
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }

@@ -49,9 +49,8 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
 #[test]
 fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
     let registry = Registry::builtins().unwrap();
-    // The four sources and the router.
-    assert_eq!(registry.descriptors().count(), 5);
-    assert_eq!(registry.compatible(&[]).count(), 5);
+    assert_eq!(registry.descriptors().filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 4);
+    assert_eq!(registry.compatible(&[]).filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 4);
     for (id, modality, key) in [
         ("source.text", Modality::Text, "T"),
         ("source.image", Modality::Image, "I"),
@@ -85,11 +84,19 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
         let kind = registry.get(&descriptor.id).unwrap();
         let node = descriptor.instantiate(NodeId::from_bytes([1; 16]), &ParamValues::new()).unwrap();
         let result = kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] });
-        if descriptor.id == "source.text" {
-            assert_eq!(result.unwrap(), vec![JobSpec::Source { node: node.id, output: "out".into(), value: Value::Text(String::new()) }]);
-        } else {
-            assert!(node.params.is_empty());
-            assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
+        match descriptor.id.as_str() {
+            "source.text" => assert_eq!(result.unwrap(), vec![JobSpec::Source { node: node.id, output: "out".into(), value: Value::Text(String::new()) }]),
+            "structure.note" => {
+                assert_eq!(node.params, ParamValues::from([("text".into(), Value::Text(String::new()))]));
+                assert!(node.inputs.is_empty() && node.outputs.is_empty());
+                assert!(result.unwrap().is_empty());
+            }
+            "structure.router" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
+            "source.image" | "source.video" | "source.audio" => {
+                assert!(node.params.is_empty());
+                assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
+            }
+            id => panic!("add an explicit default-planning contract for builtin {id}"),
         }
     }
 }
@@ -131,6 +138,7 @@ impl NodeKind for Fake {
 #[test]
 fn registry_rejects_duplicates_conflicting_shortcuts_and_bad_descriptors() {
     let mut registry = Registry::builtins().unwrap();
+    let builtin_count = registry.descriptors().count();
     assert_eq!(registry.register(Box::new(nodecraft_nodes::text::kind())).unwrap_err().kind, ErrorKind::Conflict);
     let mut descriptor = nodecraft_nodes::text::kind().descriptor().clone();
     descriptor.id = "other.kind".into();
@@ -140,7 +148,7 @@ fn registry_rejects_duplicates_conflicting_shortcuts_and_bad_descriptors() {
     descriptor.outputs.push(descriptor.outputs.first().unwrap().clone());
     assert_eq!(registry.register(Box::new(Fake(descriptor))).unwrap_err().kind, ErrorKind::InvalidInput);
     assert!(registry.get("unknown").is_err());
-    assert_eq!(registry.descriptors().count(), 5);
+    assert_eq!(registry.descriptors().count(), builtin_count);
 }
 
 #[test]

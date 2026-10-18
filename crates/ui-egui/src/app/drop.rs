@@ -67,6 +67,10 @@ impl NodeCraftApp {
         if dropped.is_empty() {
             return;
         }
+        if self.comments.drag.is_some() || self.comments.gesture_cancelled {
+            self.notice = Some("Finish moving the discussion pin before dropping files.".into());
+            return;
+        }
         let mut skipped = Vec::new();
         let mut read = Vec::new();
         let mut left = MAX_DROP_TOTAL_BYTES;

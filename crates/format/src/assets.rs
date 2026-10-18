@@ -151,7 +151,13 @@ impl AssetStore {
                 | Change::PutTag { .. }
                 | Change::RemoveTag { .. }
                 | Change::PutComment { .. }
-                | Change::RemoveComment { .. } => {}
+                | Change::RemoveComment { .. }
+                | Change::SetCommentText { .. }
+                | Change::SetCommentPin { .. }
+                | Change::SetCommentResolved { .. }
+                | Change::InsertCommentReply { .. }
+                | Change::RemoveCommentReply { .. }
+                | Change::SetCommentReplyText { .. } => {}
             }
         }
         for (id, nodes) in touched {

@@ -203,13 +203,13 @@ fn all_forward_asset_roles_fail_before_append_and_do_not_invalidate_a_valid_prep
                 generation: Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![nested], input_hash: None },
             },
             Change::AddNode { canvas: canvas(), node: node.clone() },
-            Change::RestoreNode { canvas: canvas(), node: node.clone(), edges: vec![] },
+            Change::RestoreNode { canvas: canvas(), node: node.clone(), edges: vec![], pins: vec![] },
             Change::AddCanvas { canvas: asset_canvas(node) },
             Change::SetNode { canvas: canvas(), node: replacement },
         ]);
     }
     let mut config = Node::new(id(1), "source.image");
-    config.config.insert("asset".into(), image(hash));
+    config.config.insert("asset".into(), image(Blake3::from_bytes([99; 32])));
     changes.push(Change::SetNode { canvas: canvas(), node: config });
     for change in changes {
         let params = serde_json::to_value(Changeset::new(vec![change])).unwrap();
@@ -287,7 +287,7 @@ fn register_runtime(session: &mut Session) {
         .unwrap();
 }
 #[test]
-fn actual_run_result_is_owned_and_atomic_across_frozen_v1_refusal() {
+fn actual_run_result_remains_owned_and_persists_stamps_through_v2_admission() {
     use nodecraft_exec::{
         planner::{Planned, RunMode, plan},
         run::{Run, RunLimits, RunOptions},
@@ -323,19 +323,23 @@ fn actual_run_result_is_owned_and_atomic_across_frozen_v1_refusal() {
     let identity = Arc::clone(&persistent.admission_identity);
     let recovery = storage.0.borrow().memory.recovery.clone();
     let status = persistent.file_status();
-    for error in [persistent.enabled("test.record_run", &params).unwrap_err(), persistent.dispatch("test.record_run", &params).unwrap_err()] {
-        assert_eq!(error.kind, ErrorKind::Unsupported);
-        assert!(error.message.contains("format"));
-    }
-    assert_eq!(persistent.document(), &project);
+    persistent.enabled("test.record_run", &params).unwrap();
     assert!(Arc::ptr_eq(&identity, &persistent.admission_identity));
     assert_eq!(persistent.file_status(), status);
-    assert!(!persistent.can_undo());
     unchanged(&persistent, &storage, 0, 0, &recovery);
-    // Rejection does not consume the host-owned paid result or a legitimate preparation.
-    assert_eq!(serde_json::to_value(&result.generation).unwrap(), params);
-    persistent.commit_prepared(proof, "node.move").unwrap();
-    assert_eq!(journal::recover(&storage.0.borrow().memory.recovery).unwrap().snapshot.project, *persistent.document());
+    persistent.dispatch("test.record_run", &params).unwrap();
+    assert!(!Arc::ptr_eq(&identity, &persistent.admission_identity));
+    assert_eq!(serde_json::to_value(&result.generation).unwrap(), params, "the caller still owns the completed stamped result");
+    assert!(persistent.commit_prepared(proof, "node.move").is_err(), "publication invalidates the older legitimate proof");
+    let recorded = persistent.document().clone();
+    assert_eq!(recorded.canvases().get(&canvas()).unwrap().nodes().get(&id(1)).unwrap().history.first(), Some(&result.generation));
+    assert_eq!(journal::recover(&storage.0.borrow().memory.recovery).unwrap().snapshot.project, recorded);
+    persistent.dispatch("edit.undo", &Value::Null).unwrap();
+    assert_eq!(persistent.document(), &project);
+    persistent.dispatch("edit.redo", &Value::Null).unwrap();
+    assert_eq!(persistent.document(), &recorded);
+    persistent.dispatch("file.save_as", &json!({"location":"stamped-v2.ncraft"})).unwrap();
+    assert_eq!(journal::recover(&storage.0.borrow().memory.recovery).unwrap().snapshot.project, recorded);
     let mut memory = Session::new(project.clone()).unwrap();
     register_runtime(&mut memory);
     let identity = Arc::clone(&memory.admission_identity);

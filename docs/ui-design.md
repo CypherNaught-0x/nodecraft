@@ -137,6 +137,16 @@ same notice offers a way to discard. These drafts are not silently committed dur
 New sizing tokens cover preview length, editor rows, title minimum size and handle hit/stroke
 sizes. The selected card is painted last. The home bounds are computed only for startup/reset.
 
+## Discussion markers
+
+Discussion bubbles stay 30 screen points at every zoom, with a 6-point tail, 3-point active ring
+inset, 6-point corner radius and 12-point gap from node decorations. Open bubbles use primary text
+as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
+checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
+uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
+Initial node offsets include the bubble's ring and gap outside the actual card bounds. A selected
+marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed.
+
 ## Minimap and fit navigation
 
 The bottom-right minimap shows actual instance card bodies, highlights selected nodes, and outlines

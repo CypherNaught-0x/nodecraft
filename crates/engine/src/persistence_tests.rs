@@ -1,4 +1,4 @@
-//! Frozen-v1 storage admission must not restrict graph-only sessions or publish partial state.
+//! Current-v2 admission and frozen-v1 reads preserve atomic document/history publication.
 use super::*;
 use crate::commands::CommandSpec;
 use nodecraft_format::{MemoryStorage, StorageLocation, journal};
@@ -83,7 +83,7 @@ fn counts(s: &Storage) -> (usize, usize, usize, usize, usize) {
     let s = s.0.borrow();
     (s.loads, s.saves, s.checkpoints, s.appends, s.flushes)
 }
-fn forbidden() -> Vec<Change> {
+fn v2_additions() -> Vec<Change> {
     let mut result = vec![];
     for value in [
         json!({"type":"bool","value":true}),
@@ -116,17 +116,18 @@ fn forbidden() -> Vec<Change> {
     result
 }
 #[test]
-fn memory_scalar_config_edits_undo_redo_but_storage_rejects_without_any_publication() {
-    let storage = Storage::default();
-    let mut persistent = Session::with_storage(Snapshot { project: project(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
-    register(&mut persistent);
-    for change in forbidden() {
-        let params = serde_json::to_value(Changeset::new(vec![change.clone()])).unwrap();
+fn scalar_config_and_stamped_edits_persist_in_v2_with_exact_undo_redo() {
+    for change in v2_additions() {
+        let storage = Storage::default();
+        let mut persistent = Session::with_storage(Snapshot { project: project(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+        register(&mut persistent);
+        let params = serde_json::to_value(Changeset::new(vec![change])).unwrap();
         let mut memory = Session::new(project()).unwrap();
         register(&mut memory);
-        assert!(memory.enabled("test.edit", &params).is_ok());
+        memory.enabled("test.edit", &params).unwrap();
         memory.dispatch("test.edit", &params).unwrap();
         let edited = memory.document().clone();
+        assert!(nodecraft_format::validate_v1_project(&edited).is_err(), "new semantics must not acquire frozen-v1 meaning");
         memory.dispatch("edit.undo", &Value::Null).unwrap();
         assert_eq!(memory.document(), &project());
         memory.dispatch("edit.redo", &Value::Null).unwrap();
@@ -144,8 +145,7 @@ fn memory_scalar_config_edits_undo_redo_but_storage_rejects_without_any_publicat
         );
         let journal = storage.0.borrow().memory.recovery.clone();
         let count = counts(&storage);
-        assert_eq!(persistent.enabled("test.edit", &params).unwrap_err().kind, ErrorKind::Unsupported);
-        assert_eq!(persistent.dispatch("test.edit", &params).unwrap_err().kind, ErrorKind::Unsupported);
+        persistent.enabled("test.edit", &params).unwrap();
         assert_eq!(
             (
                 persistent.document().clone(),
@@ -162,30 +162,34 @@ fn memory_scalar_config_edits_undo_redo_but_storage_rejects_without_any_publicat
         );
         assert_eq!(storage.0.borrow().memory.recovery, journal);
         assert_eq!(counts(&storage), count);
-        assert!(!persistent.persistence.as_ref().unwrap().status(persistent.state).recovery_required);
+        persistent.dispatch("test.edit", &params).unwrap();
+        assert_eq!(persistent.document(), &edited);
+        assert_eq!(journal::recover(&storage.0.borrow().memory.recovery).unwrap().snapshot.project, edited);
+        persistent.dispatch("edit.undo", &Value::Null).unwrap();
+        assert_eq!(persistent.document(), &project());
+        persistent.dispatch("edit.redo", &Value::Null).unwrap();
+        assert_eq!(persistent.document(), &edited);
+        assert!(!persistent.file_status().recovery_required);
+        persistent.dispatch("file.save_as", &json!({"location":"current-v2"})).unwrap();
+        assert_eq!(journal::recover(&storage.0.borrow().memory.recovery).unwrap().snapshot.project, edited);
     }
-    let legacy = serde_json::to_value(Changeset::new(vec![Change::SetParam {
-        canvas: canvas(),
-        id: node().id,
-        name: "text".into(),
-        value: Some(Wire::Text("legacy".into())),
-    }]))
-    .unwrap();
-    persistent.dispatch("test.edit", &legacy).unwrap();
-    persistent.dispatch("edit.undo", &Value::Null).unwrap();
-    persistent.dispatch("edit.redo", &Value::Null).unwrap();
-    assert_eq!(journal::recover(&storage.0.borrow().memory.recovery).unwrap().snapshot.project, *persistent.document());
 }
 #[test]
 fn constructors_saves_and_failed_opens_reject_before_checkpoint_or_durability_and_keep_state() {
     use std::io::{Cursor, Write};
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
     let mut incompatible = project();
-    forbidden().last().unwrap().apply(&mut incompatible).unwrap();
+    // Current encoding must fail before I/O for an otherwise graph-valid oversized manifest.
+    // Frozen-v1 schema refusals are tested below against an actual v1 archive header.
+    for id in 3..=9 {
+        let mut node = Node::new(NodeId::from_bytes([id; 16]), "source.text");
+        node.config.insert("large".into(), Wire::Text("x".repeat(700 * 1024)));
+        Change::AddNode { canvas: canvas(), node }.apply(&mut incompatible).unwrap();
+    }
     let storage = Storage::default();
     assert_eq!(
         Session::with_storage(Snapshot { project: incompatible.clone(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).err().unwrap().kind,
-        ErrorKind::Unsupported
+        ErrorKind::InvalidInput
     );
     assert_eq!(counts(&storage), (0, 0, 0, 0, 0));
     let mut s = Session::with_storage(Snapshot { project: project(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
@@ -193,8 +197,8 @@ fn constructors_saves_and_failed_opens_reject_before_checkpoint_or_durability_an
     let good = s.document.clone();
     s.document = incompatible;
     let count = counts(&storage);
-    assert_eq!(s.enabled("file.save_as", &json!({"location":"bad"})).unwrap_err().kind, ErrorKind::Unsupported);
-    assert_eq!(s.dispatch("file.save_as", &json!({"location":"bad"})).unwrap_err().kind, ErrorKind::Unsupported);
+    assert_eq!(s.enabled("file.save_as", &json!({"location":"bad"})).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(s.dispatch("file.save_as", &json!({"location":"bad"})).unwrap_err().kind, ErrorKind::InvalidInput);
     assert_eq!(counts(&storage), count);
     s.document = good;
     s.dispatch("node.move", &json!({"canvas":canvas(),"id":node().id,"pos":{"x":3,"y":4},"gesture":"active"})).unwrap();
