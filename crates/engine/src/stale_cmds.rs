@@ -58,7 +58,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: stale_schema,
-        params_doc: "{canvas: CanvasId} -> {nodes: [NodeId], unknown_total, unknown: null|{node, cause, kind, reason}}; stale results, plus the first locally invalid checked result and its actual failing node. Only results with recorded hashes are checked; unknown_total counts those locally invalid results. Read-only.",
+        params_doc: "{canvas: CanvasId} -> {nodes: [NodeId], unknown_total, unknown: null|{node, cause, kind, reason}}; stale results, plus the first locally invalid checked result and its actual failing node. Only results with recorded hashes are checked; unknown_total counts those locally invalid results, including consumers sharing one failing upstream, not unique faulty nodes. A bounded diagnostic is reserved before hashing within the existing query budget. Read-only.",
         enabled: enabled_stale,
         run: stale,
     }]

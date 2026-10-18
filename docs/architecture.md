@@ -61,13 +61,16 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
-- **`testkit` and `provider-testkit` are dev-dependencies only.** The latter has no dependency
-  back to nodes, exec or engine. It exposes the opt-in `providers::mock` implementation and the
+- **Layered consumers use `testkit` and `provider-testkit` as dev-dependencies only.** Apps and
+  tooling keep their existing exemption; standalone media permits neither. The provider facade's
+  workspace dependencies are restricted to providers and types in every dependency kind,
+  including rejection of facade self-edges before generic same-package exemptions. It exposes the opt-in `providers::mock` implementation and the
   same external provider types; lower crates use the facade only in tests. Provider unit tests
   use their local `crate::mock` and local Provider trait to avoid duplicate-crate trait identity.
   The higher testkit preserves `testkit::mock` by reexporting providers directly, without a
   forbidden normal dependency on another testkit crate. Neither testkit class is in the normal
-  wasm sweep; the facade and opt-in mock need explicit wasm feature checks.
+  wasm sweep; `cargo xtask wasm` separately checks the facade and opt-in providers/testkit mock,
+  and refuses the wasm gate if either the normal sweep or that extra invocation fails.
 
 ## Core data types
 

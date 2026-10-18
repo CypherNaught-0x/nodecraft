@@ -396,6 +396,10 @@ impl Drop for RunGuard {
             let settle = owns_running && s.settle_after.remove(&self.job);
             let forget = owns_running && s.forget_after.remove(&self.job);
             let reserved = if settle { s.take_reserved(self.job, &self.attempt) } else { None };
+            // Only a returned retryable failure keeps this captured lease for backoff. Drop/
+            // unwind, success, terminal failure/cancellation or deferred settle/forget retires it;
+            // retire_scheduler still checks Arc identity + invocation, so stale guards cannot
+            // retire a replacement's lease.
             if (!self.returned || !self.retry || settle || forget)
                 && let Some(lease) = &self.scheduler
             {
@@ -478,6 +482,9 @@ impl ProviderRunner {
     /// A same-provider replacement preserves the last scheduler identity until a new Start or
     /// terminal host notification retires it. A proposed key alone cannot end a scheduled retry.
     /// Other registrations and active invocations can also share its handle.
+    /// A different `Provider::id` carries no old scheduler lease or inactive retry permit, so a
+    /// later retry uses the new provider. Active captured invocation/output ownership remains
+    /// protected; a different provider object with the same id is still the same identity here.
     /// An empty key on the same provider leaves the previous scheduler-assigned key in place;
     /// `run` supplies the authoritative key and cleans up if it changes.
     pub fn register(&self, id: JobId, mut job: QueuedJob) {
@@ -825,7 +832,9 @@ impl JobRunner for ProviderRunner {
                     if !s.jobs.get(&job_id).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration)) {
                         return Outcome::Failed { error: format!("{REFUSAL_PREFIX}job registration changed during accounting admission"), transient: false };
                     }
-                    // Only admitted replacement work retires inactive old capabilities.
+                    // Only admitted replacement work retires inactive old capabilities. A refused
+                    // or pre-cancelled different-key Start leaves the older retry permit/lease
+                    // until an admitted Start or host settle/forget; it still counts at the cap.
                     s.metadata.retain(|old, held| held.job != job_id || *old == attempt);
                     // Accounting is fully admitted before replacing the scheduler lifetime.
                     let previous = s.jobs.get_mut(&job_id).and_then(|job| job.scheduler.take());
