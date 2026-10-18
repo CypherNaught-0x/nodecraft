@@ -154,7 +154,7 @@ fn false_policy_preserves_genuine_handle_resume_and_finished_generation_retry() 
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn false_policy_still_retries_actual_audited_no_send_network_failure() {
+fn false_policy_stops_actual_audited_local_build_failure() {
     use nodecraft_providers::llm::{ApiKey, Dialect, Endpoint, LlmClient};
     let http = Arc::new(nodecraft_providers::ReqwestHttp::new().unwrap());
     // Invalid header construction fails before execute; no listener, credentials or network call.
@@ -169,11 +169,11 @@ fn false_policy_still_retries_actual_audited_no_send_network_failure() {
     runner.register(JobId(1), queued);
     let runner = Arc::new(runner);
     let (_, events) = drive(runner.clone());
-    assert_eq!(provider.invocations.load(Ordering::SeqCst), 3);
-    assert_eq!(events.iter().filter(|event| matches!(event, Event::Retrying { .. })).count(), 2);
-    assert_eq!(spent(&budget), 100_000, "legacy transient retention until host terminal settle");
-    // Every error proved no-send: terminal host settlement releases the retained estimate.
-    assert_eq!(statuses(&budget), [Charge::Estimate]);
+    assert_eq!(provider.invocations.load(Ordering::SeqCst), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, Event::Retrying { .. })).count(), 0);
+    assert_eq!(spent(&budget), 0, "terminal local build proof releases immediately");
+    // Host settlement must preserve the immediate release.
+    assert!(statuses(&budget).is_empty());
     runner.settle(JobId(1));
     assert_eq!(spent(&budget), 0);
     assert!(statuses(&budget).is_empty());

@@ -137,7 +137,16 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
         session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
-        session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
+        session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
+    }
+    if id.starts_with("usage.ownership") || id == "usage.reconcile_ownership" {
+        use nodecraft_engine::ownership_cmds::*;
+        // One quarantined group, so adversarial params reach token and holder checks.
+        let legacy: nodecraft_exec::cost::UsageLog =
+            serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+        session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(legacy.clone()))));
+        let log = std::sync::Arc::new(std::sync::Mutex::new(legacy));
+        session.register_host_service(OWNERSHIP_SERVICE, ownership_service(log, std::sync::Arc::new(|| 0))).unwrap();
     }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
@@ -149,6 +158,8 @@ fn template(id: &str) -> (Session, Value) {
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
         "canvas.auto_format" => json!({"mode":"grid"}),
+        // The fixture's inputs take one noodle each, so this is refused; the hunt checks it never panics.
+        "edge.reorder" => json!({"canvas":canvas(),"to":{"node":node_id(2),"port":"in"},"edges":[edge().id]}),
         "canvas.stale" => json!({"canvas":canvas()}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
@@ -166,6 +177,17 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        "perf.start" | "perf.clear" | "perf.report" => json!({}),
+        // Stop needs a running capture; the hunt checks the refusal never panics.
+        "perf.stop" => json!({}),
+        "usage.ownership" => json!({"session":"a","currency":"USD","offset":0,"limit":1}),
+        "usage.reconcile_ownership" => {
+            // A real token for the fixture's group, so mutations reach the holder and exception checks.
+            let legacy: nodecraft_exec::cost::UsageLog =
+                serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+            let token: String = legacy.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
+            json!({"session":"a","currency":"USD","token":token,"holder":"earlier","except":[{"provider":"t","key":"old"}],"only":[{"provider":"t","key":"old"}],"dry_run":true})
+        }
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
         "history.extract" => {
@@ -265,6 +287,12 @@ fn typed_template_panic_hunt() {
                             | "run.quote"
                             | "run.start"
                             | "usage.export_csv"
+                            | "perf.start"
+                            | "perf.stop"
+                            | "perf.clear"
+                            | "perf.report"
+                            | "usage.ownership"
+                            | "usage.reconcile_ownership"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);

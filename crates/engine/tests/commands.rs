@@ -253,6 +253,13 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "history.clear",
         "history.extract",
         "canvas.auto_format",
+        "edge.reorder",
+        "perf.start",
+        "perf.stop",
+        "perf.report",
+        "perf.clear",
+        "usage.ownership",
+        "usage.reconcile_ownership",
     ]
     .into_iter()
     .collect();
@@ -262,7 +269,11 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(registry.specs().count(), 41);
+    assert_eq!(
+        registry.specs().count(),
+        48,
+        "7 graph, 2 node editing, 4 edge, node.create, node.create_connected, canvas.paste, 3 keys, canvas.stale, canvas.auto_format, 4 navigation, 5 search, 3 file, 4 run/usage, 2 usage ownership, 6 history and 4 perf commands"
+    );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
 

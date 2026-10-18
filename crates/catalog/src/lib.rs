@@ -9,9 +9,11 @@
 
 pub mod model;
 pub mod pricing;
+pub mod select;
 
 pub use model::{InputRole, ModeSpec, ModelDescriptor};
 pub use pricing::{Price, Pricing, Unit};
+pub use select::{Choice, Effort, MAX_MULTIPLE, Rejected, Request, Selection};
 
 use nodecraft_types::{Error, ErrorKind, Modality, ParamValues};
 use serde::Deserialize;
@@ -41,6 +43,14 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Construct the same validated catalog from host/test descriptors.
+    pub fn from_models(models: impl IntoIterator<Item = ModelDescriptor>) -> Result<Self, Error> {
+        let mut catalog = Self::default();
+        for model in models {
+            catalog.insert(model)?;
+        }
+        Ok(catalog)
+    }
     /// The catalog shipped with this build.
     pub fn builtin() -> Result<Self, Error> {
         let mut catalog = Self::default();

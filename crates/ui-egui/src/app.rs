@@ -275,9 +275,13 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
     card::world_rect(node, resolved.as_deref(), t)
 }
 
+mod drop;
 mod layout;
+mod metrics;
 mod navigation;
+mod order;
 mod search;
+mod split;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -302,7 +306,15 @@ pub struct NodeCraftApp {
     /// from here, not the evictable schema cache, so it matches what is on screen.
     painted: BTreeMap<NodeId, Rect>,
     wiring: Option<Wiring>,
+    /// The input order badge being dragged: its list input and edge.
+    reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// Image previews on cards (#386).
+    previews: crate::preview::Previews,
+    /// When the last timed frame started, for the frame interval (#151).
+    last_frame: Option<u64>,
+    /// The rows × columns last chosen for "Split into grid".
+    split_size: (u32, u32),
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -386,6 +398,7 @@ impl NodeCraftApp {
         if !session.document().canvases().contains_key(&canvas) {
             return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
         }
+        metrics::install_clock(&mut session);
         let navigation_mailbox = Rc::new(RefCell::new(None));
         let mailbox = Rc::clone(&navigation_mailbox);
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, move |request| {
@@ -427,7 +440,11 @@ impl NodeCraftApp {
             marquee: None,
             painted: BTreeMap::new(),
             wiring: None,
+            reordering: None,
             palette: None,
+            previews: crate::preview::Previews::default(),
+            last_frame: None,
+            split_size: (2, 2),
             turn_into: None,
             text_focused: false,
             last_text_focus: None,
@@ -445,7 +462,15 @@ impl NodeCraftApp {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
     }
+    /// One frame of the canvas, timed for performance capture when it's running (#151).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        let started = self.frame_started();
+        self.show_frame(ui);
+        self.frame_finished(started);
+    }
+
+    fn show_frame(&mut self, ui: &mut egui::Ui) {
+        self.previews.poll(ui.ctx());
         self.cache_clock = self.cache_clock.saturating_add(1);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -633,10 +658,12 @@ impl NodeCraftApp {
         let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
         let mut query = None;
+        let mut split_request = None;
         let mut wire_command = None;
         let mut layout_mode = None;
         // The owning context menu may invoke layout; unrelated popups have no such route.
         let layout_context_ready = self.layout_base_available(ui.ctx());
+        let mut split_after = None;
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
@@ -650,13 +677,20 @@ impl NodeCraftApp {
             {
                 // Cull conservatively before resolving potentially large instance schemas.
                 let position = self.drag.as_ref().filter(|drag| drag.id == node.id).map_or(node.pos, |drag| drag.pos);
-                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height));
+                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height + t.card_preview_height));
                 if !self.view.rect_to_screen(viewport.min, bounds).expand(card::cull_margin(t, self.view.zoom)).intersects(viewport) {
                     if let Some(editor) = self.editors.get_mut(&node.id) {
                         editor.mark_hidden();
                     }
                     continue;
                 }
+                // Only cards on screen at a readable zoom ask for their image (#386).
+                let image = nodecraft_engine::split::image_of(node).filter(|_| self.view.zoom >= card::BODY_MIN_ZOOM).map(|asset| {
+                    let hash = asset.hash;
+                    let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
+                    let assets = self.session.assets();
+                    self.previews.request(ui.ctx(), hash, edge, || assets.get(&hash).map(<[u8]>::to_vec))
+                });
                 let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
                 let editor = self.editors.entry(node.id).or_default();
@@ -668,6 +702,7 @@ impl NodeCraftApp {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
+                        image,
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -717,6 +752,26 @@ impl NodeCraftApp {
                             let label = descriptor.map_or(node.kind.as_str(), |d| d.label.as_str());
                             if ui.button(format!("Select all {label} nodes")).clicked() {
                                 query = Some(SelectQuery::Kind(node.kind.clone()));
+                            }
+                            if nodecraft_engine::split::image_of(node).is_some() {
+                                ui.menu_button("Split into grid", |ui| {
+                                    let (rows, columns) = &mut self.split_size;
+                                    let side = 1..=nodecraft_engine::split::MAX_SIDE;
+                                    ui.add(egui::DragValue::new(rows).range(side.clone()).prefix("Rows: "));
+                                    ui.add(egui::DragValue::new(columns).range(side).prefix("Columns: "));
+                                    let tiles = rows.saturating_mul(*columns);
+                                    let fits = tiles <= nodecraft_engine::split::MAX_TILES;
+                                    let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));
+                                    let button = if fits {
+                                        button
+                                    } else {
+                                        button.on_disabled_hover_text(format!("At most {} tiles", nodecraft_engine::split::MAX_TILES))
+                                    };
+                                    if button.clicked() {
+                                        split_request = Some((node.id, *rows, *columns));
+                                        ui.close();
+                                    }
+                                });
                             }
                         });
                     }
@@ -826,6 +881,15 @@ impl NodeCraftApp {
                     egui::Stroke::new(width, t.wire(*modality)),
                 ));
             }
+            // Badges show where their numbers can be read; dragging one reorders the input.
+            if !overlay_blocks && self.view.zoom >= card::BODY_MIN_ZOOM {
+                let badges = order::Badges { canvas_id: self.canvas, view: &self.view, reordering: &mut self.reordering };
+                let (command, badge_pan) = badges.show(ui, canvas, kinds, &curves, viewport, t);
+                wire_command = command;
+                pan += badge_pan;
+            } else {
+                self.reordering = None;
+            }
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
@@ -845,6 +909,7 @@ impl NodeCraftApp {
                 Some(SelectQuery::Kind(kind)) => self.selection.replace(selection::of_kind(canvas, &kind)),
                 None => {}
             }
+            split_after = split_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -875,6 +940,9 @@ impl NodeCraftApp {
         }
         if !ui.input(|i| i.pointer.primary_down()) {
             self.wiring = None;
+        }
+        if let Some((node, rows, columns)) = split_after {
+            self.split_grid(node, rows, columns, t);
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
@@ -951,6 +1019,7 @@ impl NodeCraftApp {
                     });
                 });
         }
+        self.drop_files(ui, viewport, t);
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
             match open.show(ui.ctx(), &entries, t) {
@@ -958,6 +1027,11 @@ impl NodeCraftApp {
                 palette::Outcome::Closed => {}
                 palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
                 palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
+                    // The report is for reading elsewhere: put it on the clipboard.
+                    Ok(report) if id == "perf.report" => {
+                        ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
+                        self.notice = Some("Performance report copied to the clipboard.".into());
+                    }
                     Ok(_) => self.notice = None,
                     Err(error) => self.notice = Some(error.message),
                 },
@@ -1413,7 +1487,13 @@ impl eframe::App for NodeCraftApp {
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]
+mod order_tests;
+#[cfg(test)]
 mod perf;
+#[cfg(test)]
+mod preview_tests;
+#[cfg(test)]
+mod split_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

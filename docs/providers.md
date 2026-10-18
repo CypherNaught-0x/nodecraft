@@ -8,7 +8,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
-| **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded authenticated downloads; unknown usage price. See below. |
+| **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
@@ -55,6 +55,25 @@ nonacceptance. Native reqwest request building can prove a request was not execu
 `execute` is invoked, every later error is unknown, including connection failures and redirects.
 Responses, status errors, parsing, body limits and stream sink failures cannot undo possible
 delivery. Browser fetch stages remain unknown.
+
+A native request-builder failure returns terminal `UnsupportedInput` with the static diagnostic
+`HTTP request could not be constructed`; request URLs, header values and the underlying builder
+error are excluded. This applies to ordinary and streaming requests, including a later redirect
+hop. An earlier hop may already have delivered the request: a later builder failure does not
+establish whole-operation nonbilling, erase that uncertainty or release its reservation.
+Execution, connection and timeout errors retain their existing classifications. The audited LLM path releases a fresh
+reservation immediately when its complete submission proves no delivery; earlier ambiguous
+attempts remain charged even when a later attempt fails locally.
+
+HTTP middleware must propagate delivery contexts through every relevant request, but context
+forwarding alone is insufficient. A wrapper with side effects outside the inner request,
+including effects when constructing its future or outstanding work, must not promote an inner
+not-sent proof to proof of the whole wrapper attempt. Keep the whole operation unknown or
+discard inner affirmative evidence unless the entire wrapper is audited and all relevant work
+participates in its scope. Existing code has no such side-effecting wrapper. Unaudited wrappers
+default to unknown; observing zero socket accepts or matching an error kind grants no positive
+evidence. This is an adapter contract, not a sandbox or an automatic enforcement guarantee.
+Browser delivery remains conservative.
 
 Only the audited LLM Provider path can currently certify a whole submission: local validation
 or a native pre-execute build failure, with no earlier possible delivery or outstanding work.
@@ -125,6 +144,11 @@ an existing trusted-host local/free bypass; neither Provider nor ProviderRunner 
 partial-price consent. The run.quote/run.start authorized host path owns that consent. No numeric
 pre-submit/capped desktop execution is supplied here. Optional token totals remain counts;
 Usage.cost stays None rather than labelling a standard-rate estimate as an actual provider invoice.
+Malformed or inconsistent optional token usage is discarded as a whole while valid image outputs
+are retained. Missing detail members, invalid count types, overflow and mismatched totals leave
+usage unknown, not zero. This does not bypass JSON/UTF-8, depth, field, value or metadata limits,
+nor base64, MIME, alpha, count, pixel or codec validation. At most 64 JSON fields and 256 values at
+depth 16 are admitted; arbitrary future response expansion is not guaranteed.
 Without an independently supplied estimate or exact monetary cost, current main may produce no
 money ledger row. Do not interpret that absence as zero spend.
 
@@ -134,7 +158,13 @@ failures terminal in the engine, with their original diagnostic and conservative
 Legacy providers keep their existing retry policy; genuine handles and affirmative no-send failures
 retain normal resume/retry semantics. Direct clients, manual requeue/new requests, concurrent callers
 and cold reconstruction can still submit again: a matching local key is not remote deduplication.
-Hosts must disclose prior uncertainty before an explicit new paid attempt. Dropping a pending future
+Hosts must disclose prior uncertainty before an explicit new paid attempt.
+HTTP 429 (rate limited) and 503 (overloaded) remain terminal for uncertain no-handle submissions.
+Retry-After is diagnostic information, not proof of nonacceptance or nonbilling. General provider
+retry recommendations do not establish that stronger guarantee. The 180-second timeout bounds
+local waiting; high quality or larger N can exceed it, losing a possibly paid reply. It does not
+cancel remote work. Builtin wasm refuses before fetch, but the legacy Provider boundary remains
+conservatively uncertain; that refusal carries no whole-submit positive no-send attestation. Dropping a pending future
 stops local waiting only; poll/cancel cannot invent a resumable handle or confirm remote cancellation.
 A custom Http is a trusted Rust implementation, not a sandbox or a positive nonbilling proof.
 
@@ -159,7 +189,8 @@ Inputs use local data URIs only: PNG/JPEG/WebP file bytes before base64 are capp
 claimed MIME and aggregate geometry is checked before sequential codec validation. Images are capped
 at 4096 per edge, 16,777,216 pixels each and 32,000,000 aggregate; codec allocation allowance is
 128 MiB. The complete encoded request is admitted before URI construction. API replies are capped at
-2 MiB, 64 object fields, 256 values and depth 16. A borrowed lexical pass separately budgets the
+2 MiB, 64 non-input object fields plus 32 fields in the ignored root input subtree, 256 aggregate
+values and depth 16. A borrowed lexical pass separately budgets the
 ignored root input echo, complete output, 256 KiB of other encoded string metadata, and 64 KiB of
 framing/scalars/whitespace. Root input/output regions are exclusive; duplicate root regions are refused.
 Before decoding, encoding or submitting, a conservative count reserves the input echo together with the
@@ -172,7 +203,9 @@ two control-heavy maximum text roles plus image and mask) are refused before a p
 input maxima therefore remain subject to this aggregate echo budget as well as the 4 MiB request cap.
 Requested output cardinality is checked before typed deserialization/unescaping; bounded output arrays
 then use ordinary serde parsing, not a custom visitor. No owned echoed-input tree is constructed.
-Unknown echoed inputs/logs are ignored within their separate finite bounds.
+Unknown echoed inputs/logs are ignored within their separate finite bounds. The input field allowance
+covers the pinned 19-property SDXL schema up to the existing 32-parameter admission scale; it does
+not promise arbitrary future schema expansion or increase the raw body/metadata/output budgets.
 
 A versioned handle captures the pinned model, output shape and requested count. Even an immediately
 finished prediction first publishes this handle. Polling and best-effort cancellation use only its
@@ -182,9 +215,31 @@ a retained handle can still incur a second charge. Cancellation is not proof tha
 stopped. Partial nonempty success up to the requested count is accepted; expired outputs are reported
 without automatic paid regeneration.
 
+If a successful create reply fails full prediction admission, a separate complete bounded JSON
+receipt can retain its unique canonical root ID and request one best-effort API cancellation.
+That scanner validates UTF-8, JSON grammar/Unicode escapes, depth 16, 256-byte raw key spellings,
+64-byte scalar spellings and a 128-byte decoded ASCII ID within the same 2 MiB response cap.
+The ID uses fixed storage; bounded semantic decoding also recognizes escaped root ID/status keys
+and status values without an owned JSON tree. Duplicate semantic IDs (even equal ones), nested-only
+IDs, malformed or truncated bodies, excessive depth and missing response bytes cannot supply a
+trustworthy receipt. Duplicate semantic statuses cannot confirm termination. Receipt recovery after
+application field/region rejection never validates outputs; full prediction admission still refuses
+escaped field names, even when the receipt permits cleanup. Only a matching
+complete terminal-status acknowledgment is reported as terminal; HTTP success alone is insufficient.
+The original failure diagnostic retains a safe ID and cancellation disposition for manual inspection.
+It remains visible in the runner/Driver failure record until the host explicitly forgets that record;
+it is not a durable typed resumable handle owner. No second create or output download is sent.
+Cancellation failure, a dropped future/process or an unreceived ID can still leave remote work running.
+An ID containing the configured credential is refused/redacted before handle publication or any
+poll/cancel URL construction; that redacted ID cannot be recovered from the diagnostic. These guards
+are not a sandbox for custom trusted Rust transports. Prior billing remains uncertain even after a
+terminal cancellation status; no refund or whole-submit nonacceptance proof is inferred.
+
 All output URLs are admitted before downloads: HTTPS on replicate.delivery or its subdomains, no
-credentials/fragment/nonstandard port. Bearer-authenticated API and file requests never follow
-redirects. Each file is capped at 16 MiB and its actual HTTP response cap is reduced by the remaining
+credentials/fragment/nonstandard port. Only API requests carry the bearer credential; output delivery
+GETs have no Authorization header. API and delivery requests both refuse redirects, including
+same-origin redirects. Inaccessible/expired links and refused output redirects have download-specific
+diagnostics rather than API-key or create-acceptance advice. Each file is capped at 16 MiB and its actual HTTP response cap is reduced by the remaining
 48 MiB aggregate allowance. PNG/JPEG/WebP bytes are decoded and validated before publishing the whole
 Completed result. No partial result escapes after a late corrupt file. The lifetime budget includes
 API bytes, retained output bytes, a bounded Vec-to-Arc copy and codec allowance; this is not an RSS bound.
@@ -197,3 +252,13 @@ The library does not implement a desktop paid enqueue host. Native no-redirect H
 builtin browser HTTP refuses before fetch. Wasm compilation does not demonstrate browser networking.
 The ignored live smoke test requires both explicit environment opt-ins and fresh human spending
 permission; ordinary tests use synthetic fixtures and local listeners only.
+
+Replicate asks for a 2-second queued/running poll interval, subject to the host's existing maximum
+interval and retry/backoff policy. `Cancel-After` can bound server lifetime from prediction creation
+(5 seconds to 24 hours); it is not the synchronous wait duration or a proof of nonbilling. This
+adapter does not add that header: `RunLimits::deadline_ms` is a local polling deadline that is not
+passed to Provider::submit, so equating those clocks would be misleading. The existing local
+deadline still requests best-effort cancellation when a handle exists. Provider-reported
+`metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
+duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
+nor a typed runtime-usage schema is supplied by this safety follow-up.

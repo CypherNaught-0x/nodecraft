@@ -100,7 +100,7 @@ fn late_range_failure_leaves_history_and_document_unchanged() {
 
 #[test]
 fn changing_layout_invalidates_run_token_but_refusal_and_noop_preserve_it() {
-    use nodecraft_engine::run_cmds::{BudgetState, RUN_SERVICE, RunCatalog};
+    use nodecraft_engine::run_cmds::{BudgetState, RunCatalog, UsageSnapshot};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -113,9 +113,10 @@ fn changing_layout_invalidates_run_token_but_refusal_and_noop_preserve_it() {
     }
     s.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
     s.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
+    s.swap_resource(Some(UsageSnapshot(Arc::new(Default::default()))));
     let calls = Arc::new(AtomicUsize::new(0));
     let called = calls.clone();
-    s.register_host_service(RUN_SERVICE, move |_| {
+    s.register_run_host(move |_| {
         called.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"accepted":true}))
     })

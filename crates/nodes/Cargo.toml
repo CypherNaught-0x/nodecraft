@@ -17,4 +17,5 @@ nodecraft-types.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+nodecraft-provider-testkit = { workspace = true }
 serde_json.workspace = true

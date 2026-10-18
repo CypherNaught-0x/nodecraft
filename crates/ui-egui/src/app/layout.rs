@@ -13,41 +13,43 @@ struct PassiveToolbar {
     focus: egui::Id,
     viewport: Rect,
 }
-fn passive_toolbar(ctx: &egui::Context) {
-    let installed = egui::Id::new("layout_passive_hook");
-    if ctx.data_mut(|d| d.get_temp::<bool>(installed).unwrap_or(false)) {
-        return;
+struct PassiveToolbarInput;
+impl egui::plugin::Plugin for PassiveToolbarInput {
+    fn debug_name(&self) -> &'static str {
+        "layout passive toolbar"
     }
-    ctx.data_mut(|d| d.insert_temp(installed, true));
-    ctx.on_begin_pass(
-        "layout passive toolbar",
-        std::sync::Arc::new(|ctx| {
-            let owner = ctx.data_mut(|d| {
-                let id = egui::Id::new("layout_passive_owner");
-                let owner = d.get_temp::<PassiveToolbar>(id);
-                d.remove::<PassiveToolbar>(id);
-                owner
-            });
-            let Some(owner) = owner else {
-                return;
-            };
-            if egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.focused()) != Some(owner.focus) || ctx.viewport_rect() != owner.viewport {
-                return;
-            }
-            if ctx.input(|i| {
-                let other = [egui::PointerButton::Secondary, egui::PointerButton::Middle, egui::PointerButton::Extra1, egui::PointerButton::Extra2];
-                (i.pointer.primary_pressed() || i.pointer.primary_released())
-                    && !other.into_iter().any(|button| i.pointer.button_down(button))
-                    && !i.events.iter().any(|event| matches!(event, egui::Event::PointerButton { button, .. } if *button != egui::PointerButton::Primary))
-            }) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| owner.rect.contains(p) && ctx.layer_id_at(p) == Some(owner.layer))
-            {
-                ctx.input_mut(|i| {
-                    i.pointer = egui::PointerState::default();
-                    i.events.retain(|e| !matches!(e, egui::Event::PointerButton { button: egui::PointerButton::Primary, .. }));
-                });
-            }
-        }),
-    );
+    fn input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        let owner = ctx.data_mut(|d| {
+            let id = egui::Id::new("layout_passive_owner");
+            let owner = d.get_temp::<PassiveToolbar>(id);
+            d.remove::<PassiveToolbar>(id);
+            owner
+        });
+        let Some(owner) = owner else { return };
+        if egui::Popup::is_any_open(ctx)
+            || ctx.memory(|m| m.focused()) != Some(owner.focus)
+            || input.screen_rect.unwrap_or_else(|| ctx.viewport_rect()) != owner.viewport
+        {
+            return;
+        }
+        let other = [egui::PointerButton::Secondary, egui::PointerButton::Middle, egui::PointerButton::Extra1, egui::PointerButton::Extra2];
+        if ctx.input(|i| other.into_iter().any(|button| i.pointer.button_down(button)))
+            || input.events.iter().any(|event| matches!(event, egui::Event::PointerButton { button, .. } if *button != egui::PointerButton::Primary))
+        {
+            return;
+        }
+        // Remove only toolbar presses/releases, before egui derives PointerState. Motion,
+        // position, velocity, hover and unrelated buttons keep their ordinary lifecycle.
+        input.events.retain(|event| {
+            !matches!(event,
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, .. }
+                if owner.rect.contains(*pos) && ctx.layer_id_at(*pos) == Some(owner.layer)
+            )
+        });
+    }
+}
+fn passive_toolbar(ctx: &egui::Context) {
+    ctx.add_plugin(PassiveToolbarInput);
 }
 impl NodeCraftApp {
     fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> LayoutContext {
@@ -116,6 +118,8 @@ impl NodeCraftApp {
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.drag.is_some()
+            || self.reordering.is_some()
+            || ctx.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
             || self.marquee.is_some()
             || self.wiring.is_some()
             || self.palette.is_some()
@@ -149,7 +153,7 @@ impl NodeCraftApp {
             .show(&ctx, |ui| {
                 let button =
                     ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(t.layout_button_width, t.navigation_toolbar_height)));
-                button.clone().on_hover_text("Arrange selected nodes in one undo step. Finish text editing or gestures first.");
+                button.clone().on_hover_text("Arrange selected nodes in one undo step. Finish text editing or gestures first. Unselected cards stay fixed and may overlap the result. Dependency columns retain ranks through unselected nodes and can have uneven gaps.");
                 egui::Popup::menu(&button).id(popup).show(|ui| {
                     for (label, choice) in [("Grid", "grid"), ("Dependency order", "layered")] {
                         let enabled = self.layout_enabled_scoped(&ctx, &json!({"mode":choice}), Some(popup));
@@ -227,6 +231,61 @@ mod tests {
         for pressed in [true, false] {
             h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
             h.run();
+        }
+    }
+    #[test]
+    #[ignore = "renders public before/grid/undo/dependency evidence; NODECRAFT_LAYOUT_EVIDENCE sets the output directory"]
+    fn render_layout_review_evidence() {
+        let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_LAYOUT_EVIDENCE").unwrap());
+        std::fs::create_dir_all(&folder).unwrap();
+        let base = app();
+        let canvas = base.canvas;
+        let mut document = base.session.document().clone();
+        for (n, x, y) in [(4, 650.0, -20.0), (6, 220.0, 380.0)] {
+            let mut node = base.session.kinds().get("structure.router").unwrap().instantiate_instance(id(n), Default::default(), &Default::default()).unwrap();
+            node.pos = nodecraft_graph::Position { x, y };
+            node.title = if n == 4 { "Refine palette" } else { "Texture study" }.into();
+            if n == 4 {
+                Change::SetNode { canvas, node }.apply(&mut document).unwrap();
+            } else {
+                Change::AddNode { canvas, node }.apply(&mut document).unwrap();
+            }
+        }
+        Change::MoveNode { canvas, id: id(3), pos: nodecraft_graph::Position { x: -100.0, y: 20.0 } }.apply(&mut document).unwrap();
+        Change::MoveNode { canvas, id: id(5), pos: nodecraft_graph::Position { x: -100.0, y: 850.0 } }.apply(&mut document).unwrap();
+        for (n, from, to) in [(10, 3, 4), (11, 4, 6)] {
+            Change::Connect {
+                canvas,
+                edge: nodecraft_graph::Edge {
+                    id: EdgeId::from_bytes([n; 16]),
+                    from: Endpoint { node: id(from), port: "out".into() },
+                    to: Endpoint { node: id(to), port: "in".into() },
+                    order: 0,
+                },
+            }
+            .apply(&mut document)
+            .unwrap();
+        }
+        let mut app = NodeCraftApp::from_session(Session::new(document).unwrap(), canvas).unwrap();
+        app.selection.replace([id(3), id(4), id(6)].into_iter().collect());
+        let mut h = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        h.state_mut().view.zoom = 0.64;
+        h.state_mut().view.pan = Vec2::new(200.0, 80.0);
+        h.run();
+        h.render().unwrap().save(folder.join("before.png")).unwrap();
+        let original = h.state().session.document().clone();
+        for (label, name) in [("Grid", "grid"), ("Dependency order", "dependency")] {
+            let point = h.get_by_role_and_label(egui::accesskit::Role::Button, "Format selection").rect().center();
+            primary_click(&mut h, point);
+            h.get_by_role_and_label(egui::accesskit::Role::Button, label).click();
+            h.run();
+            h.render().unwrap().save(folder.join(format!("{name}.png"))).unwrap();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+            h.run();
+            assert_eq!(h.state().session.document(), &original);
+            if name == "grid" {
+                h.render().unwrap().save(folder.join("undo.png")).unwrap();
+            }
         }
     }
     #[test]
@@ -329,6 +388,48 @@ mod tests {
                 "{other:?} {pressed}: {observations:?}"
             );
         }
+    }
+    #[test]
+    fn passive_toolbar_keeps_pointer_motion_and_hover() {
+        use std::sync::{Arc, Mutex};
+        let mut h = harness();
+        h.get_all_by_role_and_label(egui::accesskit::Role::TextInput, "Text").next().unwrap().click();
+        h.run();
+        let point = h.get_by_role_and_label(egui::accesskit::Role::Button, "Format selection").rect().center();
+        h.hover_at(point - Vec2::new(5.0, 0.0));
+        h.run();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        h.ctx.on_begin_pass(
+            "observe preserved hover",
+            Arc::new(move |ctx| {
+                captured.lock().unwrap().push(ctx.input(|i| (i.pointer.hover_pos(), i.pointer.delta(), i.pointer.primary_pressed())));
+            }),
+        );
+        h.event(egui::Event::PointerMoved(point));
+        h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        assert!(observed.lock().unwrap().iter().any(|(pos, delta, pressed)| *pos == Some(point) && delta.x > 0.0 && !pressed));
+        assert!(canvas::text_input_focused(&h.ctx));
+        h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        assert!(!h.ctx.input(|i| i.pointer.any_down()));
+    }
+    #[test]
+    fn hovered_files_block_layout_until_the_drop_leaves() {
+        let mut h = harness();
+        let before = h.state().session.document().clone();
+        h.input_mut().hovered_files.push(egui::HoveredFile::default());
+        h.step();
+        let ctx = h.ctx.clone();
+        for mode in ["grid", "layered"] {
+            assert!(h.state_mut().layout_enabled(&ctx, &json!({"mode":mode})).is_err());
+            assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":mode})).is_err());
+        }
+        assert_eq!(h.state().session.document(), &before);
+        h.input_mut().hovered_files.clear();
+        h.run();
+        h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).unwrap();
     }
     #[test]
     fn changed_viewport_expires_passive_geometry_before_pointer_input() {

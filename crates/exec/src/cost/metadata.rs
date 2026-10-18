@@ -15,6 +15,7 @@ pub struct UsageMetadata<'a> {
     pub session: &'a str,
     pub node: NodeId,
     pub provider: &'a str,
+    pub instance: Option<nodecraft_types::ProviderInstanceId>,
     pub model: &'a str,
     pub idempotency_key: &'a str,
 }
@@ -25,6 +26,7 @@ struct OwnedMetadata {
     session: String,
     node: NodeId,
     provider: String,
+    instance: Option<nodecraft_types::ProviderInstanceId>,
     model: String,
     key: String,
 }
@@ -112,6 +114,13 @@ impl Shell {
             Payload::Vacant => None,
         }
     }
+    pub(super) fn matches(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> bool {
+        match &self.payload {
+            Payload::Held(m) => m.provider == provider && m.instance == instance && m.key == key,
+            Payload::Actual(e) => e.provider == provider && e.instance == instance && e.idempotency_key == key,
+            Payload::Vacant => false,
+        }
+    }
     fn text(&self) -> usize {
         self.fields().map_or(0, |(s, p, m, k)| s.len().saturating_add(p.len()).saturating_add(m.len()).saturating_add(k.len()))
     }
@@ -137,7 +146,7 @@ impl Clone for Metadata {
             .filter_map(|s| s.entry().map(|e| Shell { serial: s.serial, state: Arc::new(AtomicU8::new(1)), payload: Payload::Actual(e.clone()) }))
             .collect();
         let mut identities: Vec<_> =
-            shells.iter().filter_map(|s| s.entry().map(|e| (ownership::identity(&e.provider, &e.idempotency_key), s.serial))).collect();
+            shells.iter().filter_map(|s| s.entry().map(|e| (ownership::identity_target(&e.provider, e.instance, &e.idempotency_key), s.serial))).collect();
         identities.sort_unstable();
         Self { live: LedgerIdentity(Arc::new(())), shells, identities }
     }
@@ -173,15 +182,15 @@ impl Metadata {
             .filter(|(_, e)| e.cost.currency == currency && session.is_none_or(|s| e.session == s))
             .try_fold(0u64, |n, (_, e)| n.checked_add(e.cost.micros))
     }
-    pub(super) fn lookup(&self, provider: &str, key: &str) -> Option<&Shell> {
-        let id = ownership::identity(provider, key);
+    pub(super) fn lookup(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Option<&Shell> {
+        let id = ownership::identity_target(provider, instance, key);
         let n = self.identities.binary_search_by_key(&id, |p| p.0).ok()?;
         let serial = self.identities.get(n)?.1;
         let s = self.shells.get(self.shells.binary_search_by_key(&serial, |s| s.serial).ok()?)?;
         (s.state.load(Ordering::Acquire) != 2).then_some(s)
     }
-    pub(super) fn charge(&self, provider: &str, key: &str) -> Option<&UsageEntry> {
-        self.lookup(provider, key)?.entry().filter(|e| e.provider == provider && e.idempotency_key == key)
+    pub(super) fn charge(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Option<&UsageEntry> {
+        self.lookup(provider, instance, key)?.entry().filter(|e| e.provider == provider && e.instance == instance && e.idempotency_key == key)
     }
     pub(super) fn sweep(&mut self) {
         self.shells.retain(|s| s.state.load(Ordering::Acquire) != 2);
@@ -282,13 +291,18 @@ impl UsageLog {
             return Err(Error::new(ErrorKind::InvalidInput, "invalid accounting metadata"));
         }
         self.metadata.sweep();
-        if self.ownership(m.provider, m.idempotency_key)? == Some(ChargeOwnership::LegacyUncertain) {
+        if self.ownership_identity(m.provider, m.instance, m.idempotency_key)? == Some(ChargeOwnership::LegacyUncertain) {
             return Err(ownership::uncertain_error());
         }
-        if self.charge(m.provider, m.idempotency_key).is_some() || self.retired_set.contains(&retired_id(m.provider, m.idempotency_key)) {
+        if self.charge_identity(m.provider, m.instance, m.idempotency_key).is_some()
+            || self.retired.contains(&retired_target_id(m.provider, m.instance, m.idempotency_key))
+        {
             return Err(Error::new(ErrorKind::Conflict, "that accounting identity is already recorded"));
         }
-        if self.metadata.lookup(m.provider, m.idempotency_key).is_some() {
+        if let Some(shell) = self.metadata.lookup(m.provider, m.instance, m.idempotency_key) {
+            if !shell.matches(m.provider, m.instance, m.idempotency_key) {
+                return Err(Error::new(ErrorKind::Conflict, "usage identity digest collision"));
+            }
             return Err(Error::new(ErrorKind::Busy, "that accounting identity already has an active metadata reservation"));
         }
         if self.metadata.shells.len() >= MAX_METADATA_SHELLS {
@@ -310,24 +324,30 @@ impl UsageLog {
             session: copy_text(m.session)?,
             node: m.node,
             provider: copy_text(m.provider)?,
+            instance: m.instance,
             model: copy_text(m.model)?,
             key: copy_text(m.idempotency_key)?,
         };
         let state = Arc::new(AtomicU8::new(0));
         // This commit may materialize already-finalized overlays, never pending holds.
+        let retired = self.retired.prepare(self.retirement_batch(evict))?;
         self.flush_metadata()?;
         for _ in 0..evict {
             self.retire_oldest();
         }
+        retired.commit(&mut self.retired);
         shells.append(&mut self.metadata.shells);
         identities.append(&mut self.metadata.identities);
         self.metadata.shells = shells;
         self.metadata.identities = identities;
         self.metadata.shells.push(Shell { serial, state: Arc::clone(&state), payload: Payload::Held(owned) });
-        let id = ownership::identity(m.provider, m.idempotency_key);
+        let id = ownership::identity_target(m.provider, m.instance, m.idempotency_key);
         let at = self.metadata.identities.binary_search_by_key(&id, |p| p.0).unwrap_or_else(|n| n);
         self.metadata.identities.insert(at, (id, serial));
         self.next_order = serial;
+        if m.instance.is_some() {
+            self.provider_identity_version = 1;
+        }
         Ok(MetadataPermit { live: self.metadata.live.clone(), serial, state })
     }
 
@@ -366,7 +386,7 @@ impl UsageLog {
         if cost.micros > MAX_CHARGE_MICROS {
             return Err(F::InvalidReportedMoney);
         }
-        if self.ownership.uncertain.contains(&ownership::identity(&m.provider, &m.key)) {
+        if self.ownership.uncertain.contains(&ownership::identity_target(&m.provider, m.instance, &m.key)) {
             return Err(F::OwnershipConflict);
         }
         let current = self.project.get(&cost.currency).map_or(0, |m| m.micros);
@@ -385,6 +405,7 @@ impl UsageLog {
             session: m.session,
             node: m.node,
             provider: m.provider,
+            instance: m.instance,
             model: m.model,
             idempotency_key: m.key,
             cost,
@@ -427,7 +448,8 @@ impl UsageLog {
             add_to(sessions.entry(e.session.clone()).or_default(), e.cost)?;
         }
         // Build replacement key nodes BEFORE touching existing storage.
-        let keys: BTreeMap<_, _> = self.entries().enumerate().map(|(n, e)| (ownership::identity(&e.provider, &e.idempotency_key), n as u64)).collect();
+        let keys: BTreeMap<_, _> =
+            self.entries().enumerate().map(|(n, e)| (ownership::identity_target(&e.provider, e.instance, &e.idempotency_key), n as u64)).collect();
         rows.extend(self.entry_order.drain(..).zip(self.entries.drain(..)));
         for shell in &mut self.metadata.shells {
             if shell.entry().is_some()
@@ -454,11 +476,20 @@ impl UsageLog {
     }
 }
 
+#[cfg(test)]
+impl Metadata {
+    pub(super) fn replace_first_digest_for_test(&mut self, digest: [u8; 32]) {
+        if let Some(first) = self.identities.first_mut() {
+            first.0 = digest;
+        }
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod allocation_tests {
     use super::*;
     fn m(key: &str) -> UsageMetadata<'_> {
-        UsageMetadata { at_ms: 1, session: "s", provider: "p", model: "m", idempotency_key: key, node: NodeId::from_bytes([1; 16]) }
+        UsageMetadata { instance: None, at_ms: 1, session: "s", provider: "p", model: "m", idempotency_key: key, node: NodeId::from_bytes([1; 16]) }
     }
     fn checked(f: impl FnOnce() -> Result<(), MetadataFinalizeError>, expected: Result<(), MetadataFinalizeError>) {
         let mut result = None;
