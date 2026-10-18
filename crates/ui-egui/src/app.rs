@@ -283,9 +283,9 @@ mod navigation;
 mod order;
 mod search;
 mod split;
-mod tags;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
+mod tags;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
