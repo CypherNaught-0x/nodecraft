@@ -23,7 +23,9 @@ mod ownership;
 use ownership::Ownership;
 pub use ownership::{ChargeOwnership, LegacyGroupEvidence, QuarantineLocation, QuarantinedCharge};
 mod reconcile;
-pub use reconcile::{Holder, MAX_RECONCILE_EXCEPTIONS, OwnershipDecision, OwnershipGroup, OwnershipPlan, OwnershipReconciliation, ReconciledCharge};
+pub use reconcile::{
+    Holder, MAX_RECONCILE_EXCEPTIONS, MAX_STAGE_CHARGES, OwnershipDecision, OwnershipGroup, OwnershipPlan, OwnershipReconciliation, ReconciledCharge,
+};
 
 /// Why a step has no price yet.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -212,3 +212,37 @@ fn a_host_that_refreshes_its_snapshot_can_reconcile_group_after_group() {
     assert_eq!(s.dispatch("usage.ownership", &json!({})).unwrap()["reconciled"], 2);
     assert_eq!(log.lock().unwrap().ownership_groups().count(), 0);
 }
+
+#[test]
+fn a_large_group_is_reconciled_in_stages_with_a_fresh_review_each() {
+    let log = Arc::new(Mutex::new(ambiguous()));
+    let token = |log: &Arc<Mutex<UsageLog>>| {
+        let mut s = session(log, false);
+        s.dispatch("usage.ownership", &json!({"session": "a", "currency": "USD"})).unwrap()["group"]["token"].clone()
+    };
+    let mut s = session(&log, true);
+    let first = token(&log);
+    let staged = json!({"session": "a", "currency": "USD", "token": first, "holder": "earlier", "only": [{"provider": "t", "key": "three"}]});
+    let preview = s
+        .dispatch(
+            "usage.reconcile_ownership",
+            &json!({"session": "a", "currency": "USD", "token": first, "holder": "earlier",
+        "only": [{"provider": "t", "key": "three"}], "dry_run": true}),
+        )
+        .unwrap();
+    assert_eq!((preview["partial"].clone(), preview["charges"].clone()), (json!(true), json!(1)));
+    let record = s.dispatch("usage.reconcile_ownership", &staged).unwrap();
+    assert_eq!((record["partial"].clone(), record["moved_from_earlier"]["micros"].clone()), (json!(true), json!(4)));
+    assert_eq!(log.lock().unwrap().ownership_groups().count(), 1, "the rest stays quarantined");
+    let mut s = session(&log, true);
+    assert_eq!(s.dispatch("usage.reconcile_ownership", &staged).unwrap_err().kind, ErrorKind::Conflict, "the reviewed token is spent");
+    let next = token(&log);
+    let last = s.dispatch("usage.reconcile_ownership", &json!({"session": "a", "currency": "USD", "token": next, "holder": "named"})).unwrap();
+    assert_eq!((last["partial"].clone(), last["charges"].clone()), (json!(false), json!(2)));
+    assert_eq!(log.lock().unwrap().ownership_groups().count(), 0);
+    let empty = json!({"session": "a", "currency": "USD", "token": next, "holder": "named", "only": []});
+    assert_eq!(s.dispatch("usage.reconcile_ownership", &empty).unwrap_err().kind, ErrorKind::InvalidInput);
+    let too_many: Vec<Value> = (0..=MAX_STAGE_CHARGES).map(|n| json!({"provider": "t", "key": n.to_string()})).collect();
+    let err = decision(&json!({"session": "a", "currency": "USD", "token": next, "holder": "named", "only": too_many})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}

@@ -8,6 +8,8 @@
 //!   [`OWNERSHIP_SERVICE`] applies it to the live usage log, which checks the token again, so a
 //!   stale preview or a ledger that changed meanwhile is refused. Agents may review groups like
 //!   any other usage row, but can't run this: the decision needs the person's own records.
+//!   `only: [{provider, key}]` (at most 1000) decides one stage of a large group: just those
+//!   charges, leaving the rest quarantined for later stages, each reviewed against a fresh token.
 //!   `dry_run: true` checks the decision against the host's snapshot and returns the record and
 //!   totals it would produce, changing nothing.
 //!
@@ -19,7 +21,8 @@
 use crate::commands::{CommandSpec, Context, Effect, params};
 use crate::run_cmds::UsageSnapshot;
 use nodecraft_exec::cost::{
-    Charge, Holder, MAX_RECONCILE_EXCEPTIONS, OwnershipDecision, OwnershipGroup, OwnershipReconciliation, QuarantineLocation, UsageLog, format_money,
+    Charge, Holder, MAX_RECONCILE_EXCEPTIONS, MAX_STAGE_CHARGES, OwnershipDecision, OwnershipGroup, OwnershipReconciliation, QuarantineLocation, UsageLog,
+    format_money,
 };
 use nodecraft_types::{Currency, Error, ErrorKind, Money};
 use serde::Deserialize;
@@ -75,6 +78,8 @@ struct DecisionParams {
     #[serde(default)]
     except: Vec<Exception>,
     #[serde(default)]
+    only: Option<Vec<Exception>>,
+    #[serde(default)]
     dry_run: bool,
 }
 
@@ -102,14 +107,17 @@ fn decision_and_mode(value: &Value) -> Result<(OwnershipDecision, bool), Error> 
     if value.get("except").and_then(Value::as_array).is_some_and(|list| list.len() > MAX_RECONCILE_EXCEPTIONS) {
         return Err(invalid("too many exceptions in one ownership decision"));
     }
+    if value.get("only").and_then(Value::as_array).is_some_and(|list| list.len() > MAX_STAGE_CHARGES) {
+        return Err(invalid("too many charges in one ownership stage"));
+    }
     let p = params::<DecisionParams>(value)?;
     let token = unhex(&p.token).ok_or_else(|| invalid("the token must be the 64 hex digits usage.ownership returned"))?;
     let holder = match p.holder {
         HolderParam::Named => Holder::Named,
         HolderParam::Earlier => Holder::Earlier,
     };
-    let decision =
-        OwnershipDecision { session: p.session, currency: p.currency, token, holder, except: p.except.into_iter().map(|e| (e.provider, e.key)).collect() };
+    let pairs = |list: Vec<Exception>| list.into_iter().map(|e| (e.provider, e.key)).collect::<Vec<_>>();
+    let decision = OwnershipDecision { session: p.session, currency: p.currency, token, holder, except: pairs(p.except), only: p.only.map(pairs) };
     Ok((decision, p.dry_run))
 }
 
@@ -140,6 +148,7 @@ fn record_json(record: &OwnershipReconciliation) -> Value {
         "named": named,
         "earlier": record.charges.len().saturating_sub(named),
         "moved_from_earlier": money(record.moved_from_earlier),
+        "partial": record.partial,
         "at_ms": record.at_ms,
     })
 }
@@ -297,6 +306,10 @@ fn page_schema() -> Value {
         "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CHARGES_PER_PAGE}}})
 }
 
+fn charge_ref() -> Value {
+    json!({"type": "object", "additionalProperties": false, "required": ["provider", "key"], "properties": {"provider": {"type": "string"}, "key": {"type": "string"}}})
+}
+
 fn reconcile_schema() -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
         "required": ["session", "currency", "token", "holder"], "properties": {
@@ -304,8 +317,8 @@ fn reconcile_schema() -> Value {
             "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
             "token": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "holder": {"type": "string", "enum": ["named", "earlier"]},
-            "except": {"type": "array", "maxItems": MAX_RECONCILE_EXCEPTIONS, "items": {"type": "object", "additionalProperties": false,
-                "required": ["provider", "key"], "properties": {"provider": {"type": "string"}, "key": {"type": "string"}}}},
+            "except": {"type": "array", "maxItems": MAX_RECONCILE_EXCEPTIONS, "items": charge_ref()},
+            "only": {"type": "array", "minItems": 1, "maxItems": MAX_STAGE_CHARGES, "items": charge_ref()},
             "dry_run": {"type": "boolean"}}})
 }
 
@@ -327,7 +340,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: reconcile_schema,
-            params_doc: "{session, currency, token, holder: named|earlier, except?: [{provider, key}] (≤ 1000), dry_run?: bool}; states which total holds every quarantined charge of the group (`holder`, the listed exceptions the other), as confirmed by a person against their own records. Refused when the group changed since usage.ownership returned `token`, or when the totals at import couldn't have held the charges. `dry_run` returns the record and resulting totals without changing anything. Settles nothing. Human only.",
+            params_doc: "{session, currency, token, holder: named|earlier, except?: [{provider, key}] (≤ 1000), only?: [{provider, key}] (≤ 1000), dry_run?: bool} -> {session, currency, charges, named, earlier, moved_from_earlier, partial, ...}; states which total holds every quarantined charge of the group, or with `only` of just those charges (one stage; `partial` until the last), (`holder`, the listed exceptions the other), as confirmed by a person against their own records. Refused when the group changed since usage.ownership returned `token`, or when the totals at import couldn't have held the charges. `dry_run` returns the record and resulting totals without changing anything. Settles nothing. Human only.",
             enabled: enabled_reconcile,
             run: run_reconcile,
         },

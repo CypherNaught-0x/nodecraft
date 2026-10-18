@@ -23,13 +23,18 @@ turns an unknown cost into zero.
 A person can resolve a group after checking their own provider records (#325):
 `usage.ownership` lists the groups, then one group's evidence, totals and charges with a token;
 `usage.reconcile_ownership` (human only) states which total holds each charge, as a default
-holder plus at most 1,000 exceptions. The decision is refused when the token is stale, when
+holder plus at most 1,000 exceptions. A large group is decided in stages: `only` lists at most
+1,000 charges for one stage, the rest stay quarantined under the same evidence, and each stage
+is reviewed against a fresh token. The decision is refused when the token is stale, when
 named-held charges exceed the named total at import, when earlier-held charges exceed what the
 earlier total held at import or holds now (less what folded sessions' listed charges need
 from it), or when the named total would not cover its open charges. `dry_run: true` reports the
 record and resulting totals first. Earlier-held money moves to the named session with the project unchanged; the charges
 become established and settle or release normally afterwards. Reconciliation itself settles
-nothing. Marker 3 adds the immutable audit records; see
+nothing. Marker 3 adds the immutable audit records, one per stage. On load, a group's stages
+carry its evidence unchanged, their named-held sum stays within the named total at import (the
+group's named floor shrinks by it while the rest is quarantined), and the staged charges plus
+the still-quarantined ones equal the open amount at import, each charge once; see
 [the decision](decisions/2026-10-18-ownership-reconciliation.md).
 
 Unknown-price jobs reserve metadata capacity before invoking the provider. A non-cloneable

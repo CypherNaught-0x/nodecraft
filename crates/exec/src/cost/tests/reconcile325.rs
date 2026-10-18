@@ -23,6 +23,7 @@ fn decide(log: &UsageLog, session: &str, holder: Holder, except: &[&str]) -> Own
         token: log.ownership_group(session, Currency::USD).unwrap().token,
         holder,
         except: except.iter().map(|k| ("t".to_owned(), (*k).to_owned())).collect(),
+        only: None,
     }
 }
 
@@ -185,7 +186,7 @@ fn currencies_are_reconciled_separately() {
     assert!(log.settle("t", "eur", eur(1), Charge::Actual).is_err(), "the other currency stays quarantined");
     assert_eq!(marker(&log), 3);
     let token = log.ownership_group("a", Currency::EUR).unwrap().token;
-    let decision = OwnershipDecision { session: "a".into(), currency: Currency::EUR, token, holder: Holder::Named, except: vec![] };
+    let decision = OwnershipDecision { session: "a".into(), currency: Currency::EUR, token, holder: Holder::Named, except: vec![], only: None };
     log.reconcile_ownership(&decision, 2).unwrap();
     let log = reload(&log);
     assert_eq!(log.reported_spent(EARLIER_SESSIONS).session, BTreeMap::from([(Currency::USD, usd(1)), (Currency::EUR, eur(3))]));
@@ -374,4 +375,184 @@ fn a_dry_run_reports_the_record_and_totals_without_changing_anything() {
 fn group_sizes_are_counted_in_one_pass() {
     let log = legacy(&[("a", "a1", 2), ("a", "a2", 2), ("b", "b1", 2)], &[("a", 4), ("b", 2)], 6);
     assert_eq!(log.ownership_group_sizes(), BTreeMap::from([(("a", Currency::USD), 2), (("b", Currency::USD), 1)]));
+}
+
+fn stage(log: &UsageLog, holder: Holder, except: &[&str], only: &[&str]) -> OwnershipDecision {
+    let mut decision = decide(log, "a", holder, except);
+    decision.only = Some(only.iter().map(|k| ("t".to_owned(), (*k).to_owned())).collect());
+    decision
+}
+
+#[test]
+fn a_group_is_decided_in_stages_with_cumulative_caps() {
+    // Named held 5 ("one" + "two"); "three" and "four" (7) were folded into the earlier total.
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3), ("a", "three", 4), ("a", "four", 3)], &[("a", 5)], 8);
+    let first_token = log.ownership_group("a", Currency::USD).unwrap().token;
+    let record = log.reconcile_ownership(&stage(&log, Holder::Named, &["three"], &["one", "three"]), 1).unwrap();
+    assert!(record.partial);
+    assert_eq!(record.charges.len(), 2);
+    assert_eq!(record.moved_from_earlier, usd(4));
+    assert_eq!(log.ownership("t", "one").unwrap(), Some(ChargeOwnership::Established));
+    assert_eq!(log.ownership("t", "two").unwrap(), Some(ChargeOwnership::LegacyUncertain), "outside the stage");
+    let group = log.ownership_group("a", Currency::USD).unwrap();
+    assert_ne!(group.token, first_token, "every stage is reviewed afresh");
+    assert_eq!(group.charges.len(), 2);
+    assert_eq!((group.max_named, group.max_earlier), (usd(3), usd(4)), "the caps count earlier stages");
+    assert_eq!(group.evidence.original_open, usd(12), "the evidence is kept unchanged");
+    assert_eq!(marker(&log), 3);
+    let mut log = reload(&log);
+    // A stale token, and a named claim beyond what is left of the named cap, change nothing.
+    let mut stale = stage(&log, Holder::Named, &[], &["two"]);
+    stale.token = first_token;
+    assert_eq!(log.reconcile_ownership(&stale, 2).unwrap_err().kind, ErrorKind::Conflict);
+    let before = log.clone();
+    assert_eq!(log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["two", "four"]), 2).unwrap_err().kind, ErrorKind::Conflict);
+    assert_eq!(log, before);
+    // The last stage closes the group.
+    let last = log.reconcile_ownership(&stage(&log, Holder::Named, &["four"], &["two", "four"]), 2).unwrap();
+    assert!(!last.partial);
+    assert_eq!(log.ownership_groups().count(), 0);
+    assert_eq!(log.ownership_reconciliations().len(), 2);
+    assert_eq!(log.reported_spent("a").session.get(&Currency::USD), Some(&usd(12)));
+    assert_eq!(log.reported_spent(EARLIER_SESSIONS).session.get(&Currency::USD), Some(&usd(1)));
+    assert_eq!(log.reported_spent("a").project.get(&Currency::USD), Some(&usd(13)));
+    let log = reload(&log);
+    assert_eq!(log.ownership_reconciliations()[1], last);
+}
+
+#[test]
+fn a_whole_group_decision_after_a_stage_covers_only_what_is_left() {
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3), ("a", "three", 4)], &[("a", 5)], 6);
+    log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["one"]), 1).unwrap();
+    let record = log.reconcile_ownership(&decide(&log, "a", Holder::Named, &["three"]), 2).unwrap();
+    assert!(!record.partial);
+    let keys: BTreeSet<&str> = record.charges.iter().map(|c| c.idempotency_key.as_str()).collect();
+    assert_eq!(keys, BTreeSet::from(["two", "three"]));
+    reload(&log);
+}
+
+#[test]
+fn malformed_stages_change_nothing() {
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3), ("a", "three", 4)], &[("a", 5)], 6);
+    let before = log.clone();
+    let too_many: Vec<String> = (0..=MAX_STAGE_CHARGES).map(|n| n.to_string()).collect();
+    let too_many: Vec<&str> = too_many.iter().map(String::as_str).collect();
+    for (except, only) in [
+        (vec![], vec![]),
+        (vec![], vec!["one", "one"]),
+        (vec![], vec!["missing"]),
+        (vec!["two"], vec!["one"]), // the exception is outside the stage
+        (vec![], too_many),
+    ] {
+        let err = log.reconcile_ownership(&stage(&log, Holder::Named, &except, &only), 1).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "{except:?} {}", only.len());
+        assert_eq!(log, before);
+    }
+}
+
+#[test]
+fn a_staged_named_charge_can_be_released_while_the_group_stays_quarantined() {
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3)], &[("a", 5)], 6);
+    log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["one"]), 1).unwrap();
+    log.release("t", "one").unwrap();
+    let log = reload(&log);
+    assert_eq!(log.reported_spent("a").session.get(&Currency::USD), Some(&usd(3)));
+    assert_eq!(log.ownership_group("a", Currency::USD).unwrap().max_named, usd(3));
+}
+
+#[test]
+fn tampered_stages_are_refused() {
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3), ("a", "three", 4)], &[("a", 5)], 6);
+    log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["one"]), 1).unwrap();
+    let staged: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert!(UsageLog::try_from(staged.clone()).is_ok());
+    log.reconcile_ownership(&decide(&log, "a", Holder::Named, &["three"]), 2).unwrap();
+    let closed: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert!(UsageLog::try_from(closed.clone()).is_ok());
+    let edits: Vec<(&str, &UsageLogFile, Edit)> = vec![
+        ("a stage marked complete while its group is quarantined", &staged, Box::new(|f| f.ownership_reconciliations[0].partial = false)),
+        ("a stage whose evidence differs from its group", &staged, Box::new(|f| f.ownership_reconciliations[0].evidence.original_named = usd(4))),
+        ("a stage's amount changed", &staged, Box::new(|f| f.ownership_reconciliations[0].charges[0].cost = usd(1))),
+        (
+            "one charge in two stages",
+            &closed,
+            Box::new(|f| {
+                let first = f.ownership_reconciliations[0].charges[0].clone();
+                f.ownership_reconciliations[1].charges.push(first);
+            }),
+        ),
+        (
+            "a quarantined group with nothing left in it",
+            &closed,
+            Box::new(|f| {
+                f.ownership_reconciliations[1].partial = true;
+                let evidence = f.ownership_reconciliations[1].evidence.clone();
+                f.legacy_groups.push(evidence);
+            }),
+        ),
+        ("the closing record marked partial", &closed, Box::new(|f| f.ownership_reconciliations[1].partial = true)),
+        ("a stage after the group closed", &closed, Box::new(|f| f.ownership_reconciliations.swap(0, 1))),
+        ("stages of one group with different evidence", &closed, Box::new(|f| f.ownership_reconciliations[0].evidence.original_named = usd(4))),
+        ("closed stages short of the open amount", &closed, Box::new(|f| f.ownership_reconciliations[1].charges.retain(|c| c.idempotency_key != "two"))),
+    ];
+    for (what, base, edit) in edits {
+        let mut file = base.clone();
+        edit(&mut file);
+        assert!(UsageLog::try_from(file).is_err(), "{what}");
+    }
+}
+
+#[test]
+fn named_placements_are_capped_across_stages_on_load() {
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3), ("a", "three", 1)], &[("a", 5)], 6);
+    log.reconcile_ownership(&stage(&log, Holder::Named, &["three"], &["one", "three"]), 1).unwrap();
+    log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["two"]), 2).unwrap();
+    let file: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    assert!(UsageLog::try_from(file.clone()).is_ok());
+    // Each record alone stays within the named 5; together they would place 6 there.
+    let mut over = file;
+    over.ownership_reconciliations[0].charges.iter_mut().for_each(|c| c.holder = Holder::Named);
+    over.ownership_reconciliations[0].moved_from_earlier = usd(0);
+    assert!(UsageLog::try_from(over).is_err());
+}
+
+#[test]
+fn staged_charges_settle_from_either_holder_and_reload() {
+    let mut log = legacy(&[("a", "one", 2), ("a", "two", 3), ("a", "three", 4)], &[("a", 5)], 6);
+    log.reconcile_ownership(&stage(&log, Holder::Named, &["three"], &["one", "three"]), 1).unwrap();
+    let mut log = reload(&log);
+    log.settle("t", "one", usd(1), Charge::Actual).unwrap();
+    log.settle("t", "three", usd(4), Charge::Unresolved).unwrap();
+    let mut log = reload(&log);
+    assert_eq!(log.reported_spent("a").session.get(&Currency::USD), Some(&usd(8)));
+    log.settle("t", "three", usd(2), Charge::Actual).unwrap();
+    let log = reload(&log);
+    assert_eq!(log.reported_spent("a").session.get(&Currency::USD), Some(&usd(6)));
+    assert_eq!(log.ownership_group("a", Currency::USD).unwrap().charges.len(), 1, "\"two\" is still quarantined");
+}
+
+#[test]
+fn evicted_charges_can_be_staged_and_reload_from_pending() {
+    let log = legacy(&[("a", "one", 2), ("a", "two", 3)], &[("a", 5)], 6);
+    let mut file: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    let index = file.entries.iter().position(|e| e.idempotency_key == "one").unwrap();
+    let evicted = file.entries.remove(index);
+    file.uncertain_listed = file.entries.iter().enumerate().filter(|(_, e)| e.idempotency_key == "two").map(|(i, _)| i as u32).collect();
+    file.quarantined.push(evicted);
+    let mut log = UsageLog::try_from(file).unwrap();
+    log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["one"]), 1).unwrap();
+    assert_eq!(log.pending().map(|e| e.idempotency_key.as_str()).collect::<Vec<_>>(), ["one"]);
+    let mut log = reload(&log);
+    log.settle("t", "one", usd(2), Charge::Actual).unwrap();
+    let log = reload(&log);
+    assert_eq!(log.pending().count(), 0);
+    assert_eq!(log.ownership_group("a", Currency::USD).unwrap().charges.len(), 1);
+}
+
+#[test]
+fn a_stage_of_one_group_does_not_spend_another_groups_review() {
+    let mut log = legacy(&[("a", "a1", 2), ("a", "a2", 2), ("b", "b1", 2)], &[("a", 4), ("b", 2)], 4);
+    let b_token = log.ownership_group("b", Currency::USD).unwrap().token;
+    log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["a1"]), 1).unwrap();
+    assert_eq!(log.ownership_group("b", Currency::USD).unwrap().token, b_token, "named-only stages leave the earlier total alone");
 }

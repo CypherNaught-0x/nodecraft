@@ -4,12 +4,19 @@
   until someone who has checked their own provider records states, for every charge of one
   (session, currency) group, whether its money sits in the named session's total or in the
   folded earlier-sessions total. Nothing infers it from amounts, timestamps or coverage.
-- **Whole groups, bounded decisions.** A decision covers every charge of a group: one default
-  holder plus at most 1,000 exceptions. The group's evidence invariant (its open sum equals the
-  retained uncertain charges) never has to describe a half-reconciled group.
+- **Bounded decisions, staged when large.** A decision covers every charge still quarantined in
+  a group (one default holder plus at most 1,000 exceptions) or, with `only`, just the listed
+  charges (at most 1,000): one stage. A balanced split of a group larger than the exception
+  limit is decided stage by stage, each against a fresh review token. Every stage is its own
+  immutable record carrying the group's evidence unchanged; the group stays quarantined until
+  its last stage. Caps are cumulative: named-held charges across a group's stages fit the named
+  total at import, earlier-held ones across every stage of the currency fit what the earlier
+  total held at import. Load checks conservation exactly: a group's staged charges plus its
+  still-quarantined ones equal its open amount at import (quarantined charges can't settle),
+  each charge once, and a closed group's stages end in one complete record.
 - **Bound to what was reviewed.** `usage.ownership` returns a token over the group's evidence,
   charges (identity, amount, status, location), the named, earlier and established-open totals
-  the reconciliation count and how much the earlier total can still give (which also moves when
+  the number of this group's stages and how much the earlier total can still give (which also moves when
   another session's listed charges change, so such a change makes a review stale). `usage.reconcile_ownership` is refused when the token no
   longer matches; the host service checks it again against the live log.
 - **Refused when the import evidence contradicts it.** Named-held charges must fit within the
@@ -30,8 +37,17 @@
   instead of rejecting the moved earlier money as corruption. Logs without records keep marker
   1 or 2 and are saved byte for byte as before. Marker 3 is permanent once a record exists:
   records are never removed.
-- **Host contract.** The host registers `ownership_cmds::ownership_service` over its live log;
-  after a success it saves the log and replaces the `UsageSnapshot` resource, or later reviews
-  are refused as stale. No app host registers it yet (the desktop run host is #201).
+- **Host contract (a foundation, not yet a feature).** The host registers
+  `ownership_cmds::ownership_service` over its live log; after a success it saves the log
+  durably and replaces the `UsageSnapshot` resource, or later reviews are refused as stale. The
+  in-memory change succeeds before the save, so until a host makes the save part of the
+  success boundary (#384), a failed save can lose a confirmed decision; nothing is double
+  counted, the group is simply quarantined again on the next load. The human-confirmation step
+  is the host's too: `HUMAN_ONLY` keeps agents out, and a host must show the dry-run result
+  and take the person's confirmation before dispatching. No app host registers the service yet
+  (#384), so #325 stays open until one does.
+- **Not a settlement decision.** Reconciling ownership says where money sits; it doesn't
+  settle or release charges whose provider outcome is unknown. That monetary decision (#332)
+  is separate.
 - **Human only.** Agents may list groups (`usage.ownership` shows what `usage.export_csv` already
   does) but `usage.reconcile_ownership` is in `HUMAN_ONLY`.

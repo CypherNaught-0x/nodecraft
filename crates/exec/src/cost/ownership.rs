@@ -155,6 +155,7 @@ impl Ownership {
 
     pub(super) fn admit(file: &mut UsageLogFile) -> Result<Self, Error> {
         let mut result = Self::default();
+        let mut staged = BTreeMap::new();
         let mut open: BTreeMap<&str, Totals> = BTreeMap::new();
         for e in all_entries(file).filter(|e| e.status != Charge::Actual) {
             add_to(open.entry(&e.session).or_default(), e.cost)?;
@@ -206,8 +207,10 @@ impl Ownership {
             let mut shared: BTreeMap<Currency, (Money, Money, Money, u128)> = BTreeMap::new();
             let moved = moved_from_earlier(&file.ownership_reconciliations)?;
             // Reconciled groups came from the same import: their evidence must agree with the
-            // remaining groups' and count towards the original project.
-            let reconciled = file.ownership_reconciliations.iter().map(|r| (&r.evidence, true));
+            // remaining groups' and count towards the original project. A partial stage repeats
+            // its still-quarantined group's evidence (checked in `admit_records`), so only
+            // closed groups count here.
+            let reconciled = file.ownership_reconciliations.iter().filter(|r| !r.partial).map(|r| (&r.evidence, true));
             for (group, done) in file.legacy_groups.iter().map(|g| (g, false)).chain(reconciled) {
                 let c = group.original_open.currency;
                 if group.session.is_empty()
@@ -271,10 +274,15 @@ impl Ownership {
             if file.open_session_ownership == 2 && result.uncertain.is_empty() {
                 return Err(bad("version 2 requires uncertain charges"));
             }
-            super::reconcile::admit_records(&file.ownership_reconciliations, &result.groups, &result.uncertain)?;
+            staged = super::reconcile::admit_records(&file.ownership_reconciliations, &result.groups, &result.uncertain)?;
             for groups in result.groups.values() {
                 for group in groups.values() {
-                    if amount(sums.get(group.session.as_ref()), group.original_open.currency) != group.original_open.micros {
+                    let c = group.original_open.currency;
+                    let done = staged.get(&(Arc::clone(&group.session), c)).map_or(0, |s| s.open);
+                    let retained = u128::from(amount(sums.get(group.session.as_ref()), c));
+                    // A group still quarantined keeps at least one charge; otherwise its stages
+                    // would have closed it.
+                    if retained == 0 || retained + done != u128::from(group.original_open.micros) {
                         return Err(bad("ownership evidence does not match retained uncertainty"));
                     }
                 }
@@ -286,6 +294,14 @@ impl Ownership {
                 return Err(bad("usage identity collision"));
             }
         }
+        // A group's named floor shrinks by what its partial stages placed in the named total:
+        // those charges are established now and counted with the owned open charges.
+        let floor = |name: &str, currency: Currency| -> u128 {
+            result.groups.get(name).and_then(|g| g.get(&currency)).map_or(0, |g| {
+                let placed = staged.get(&(Arc::clone(&g.session), currency)).map_or(0, |s| s.named);
+                u128::from(g.original_named.micros).saturating_sub(placed)
+            })
+        };
         let mut established: BTreeMap<&str, Totals> = BTreeMap::new();
         for e in all_entries(file).filter(|e| e.status != Charge::Actual && !result.is_uncertain(e)) {
             add_to(established.entry(&e.session).or_default(), e.cost)?;
@@ -295,15 +311,14 @@ impl Ownership {
                 return Err(bad("named session is missing for an owned open charge"));
             }
             for money in totals.values() {
-                let floor = result.groups.get(name).and_then(|g| g.get(&money.currency)).map_or(0, |g| g.original_named.micros);
-                if u128::from(amount(file.sessions.get(name), money.currency)) < u128::from(floor) + u128::from(money.micros) {
+                if u128::from(amount(file.sessions.get(name), money.currency)) < floor(name, money.currency) + u128::from(money.micros) {
                     return Err(bad("named session totals do not cover their owned open charges and legacy floor"));
                 }
             }
         }
         for (name, groups) in &result.groups {
             for g in groups.values() {
-                if amount(file.sessions.get(name.as_ref()), g.original_named.currency) < g.original_named.micros {
+                if u128::from(amount(file.sessions.get(name.as_ref()), g.original_named.currency)) < floor(name, g.original_named.currency) {
                     return Err(bad("legacy named floor was reduced"));
                 }
             }

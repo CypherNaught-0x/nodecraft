@@ -15,12 +15,20 @@
 //! charges become ordinary established charges, which can then be settled or released through
 //! the normal paths. Reconciliation itself never settles, releases or refunds anything. The
 //! group's evidence and the decision are kept as an immutable audit record.
+//!
+//! A large group can be decided in stages: a decision with `only` covers just the listed
+//! charges (at most [`MAX_STAGE_CHARGES`]) and leaves the rest quarantined under the same
+//! evidence. Each stage is its own record, reviewed against a fresh token; the caps above are
+//! cumulative across a group's stages, and the stages of a group together account for exactly
+//! its open amount at import, once each.
 use super::ownership::{Identity, identity, identity_target};
 use super::*;
 use std::sync::Arc;
 
 /// Most exceptions one decision lists; everything else takes the decision's default holder.
 pub const MAX_RECONCILE_EXCEPTIONS: usize = 1_000;
+/// Most charges one staged decision (`only`) covers.
+pub const MAX_STAGE_CHARGES: usize = 1_000;
 
 /// Which total holds a quarantined charge's money.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,10 +71,14 @@ pub struct OwnershipReconciliation {
     pub moved_from_earlier: Money,
     /// Milliseconds since the Unix epoch, from the host.
     pub at_ms: u64,
+    /// The group still has quarantined charges after this stage; a later record completes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
-/// A person's decision for one group: every quarantined charge takes `holder`, except the
-/// listed `(provider, idempotency key)`s, which take the other one.
+/// A person's decision for one group: every quarantined charge in scope takes `holder`, except
+/// the listed `(provider, idempotency key)`s, which take the other one. The scope is the whole
+/// group, or only the listed charges when `only` is given (one stage).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnershipDecision {
     pub session: String,
@@ -75,6 +87,8 @@ pub struct OwnershipDecision {
     pub token: [u8; 32],
     pub holder: Holder,
     pub except: Vec<(String, String)>,
+    /// The charges this stage covers; `None` covers every charge still quarantined.
+    pub only: Option<Vec<(String, String)>>,
 }
 
 /// What a person reviews before deciding: the immutable evidence, every quarantined charge of
@@ -90,7 +104,8 @@ pub struct OwnershipGroup<'a> {
     pub earlier_total: Money,
     /// Open charges of this session and currency whose ownership is established.
     pub established_open: Money,
-    /// The most the charges can hold in the named total together.
+    /// The most the charges can hold in the named total together (what the named total held at
+    /// import, less what earlier stages of this group already placed there).
     pub max_named: Money,
     /// The most the charges can hold in the earlier total together.
     pub max_earlier: Money,
@@ -113,8 +128,24 @@ fn bad(message: &str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
 
+fn same_group(record: &OwnershipReconciliation, evidence: &LegacyGroupEvidence) -> bool {
+    record.evidence.session == evidence.session && record.evidence.original_open.currency == evidence.original_open.currency
+}
+
 fn sum(currency: Currency, mut amounts: impl Iterator<Item = u64>) -> Result<Money, Error> {
     amounts.try_fold(Money::zero(currency), |total, micros| total.checked_add(Money::new(currency, micros)))
+}
+
+/// Named-held money earlier stages of a group already placed. A group is quarantined by one
+/// import and never again, so while it is quarantined its records are all partial stages.
+fn staged_named(records: &[OwnershipReconciliation], session: &str, currency: Currency) -> Result<Money, Error> {
+    sum(
+        currency,
+        records
+            .iter()
+            .filter(|r| r.partial && r.evidence.session.as_ref() == session && r.evidence.original_open.currency == currency)
+            .flat_map(|r| r.charges.iter().filter(|c| c.holder == Holder::Named).map(|c| c.cost.micros)),
+    )
 }
 
 /// Earlier-held money already moved out of the earlier total by recorded reconciliations.
@@ -198,6 +229,7 @@ impl UsageLog {
                 .map(|e| e.cost.micros),
         )?;
         let moved = moved(&self.ownership.records, currency)?;
+        let max_named = evidence.original_named.checked_sub(staged_named(&self.ownership.records, session, currency)?)?;
         let left_at_import = evidence.remaining_earlier_after_exact_migrations.micros.saturating_sub(moved.micros);
         let max_earlier = Money::new(currency, left_at_import.min(earlier_total.micros).min(self.earlier_coverage(session, currency)));
         let mut hash = blake3::Hasher::new();
@@ -218,11 +250,16 @@ impl UsageLog {
             earlier_total,
             established_open,
             moved,
+            max_named,
             max_earlier,
         ] {
             hash.update(&money.micros.to_le_bytes());
         }
-        hash.update(&u64::try_from(self.ownership.records.len()).unwrap_or(u64::MAX).to_le_bytes());
+        // This group's stages only: another group's reconciliation reaches this one solely through
+        // the earlier total, `moved` and `max_earlier` above, so working through two groups side
+        // by side doesn't spend each other's reviews.
+        let stages = self.ownership.records.iter().filter(|r| r.evidence.session.as_ref() == session && r.evidence.original_open.currency == currency).count();
+        hash.update(&u64::try_from(stages).unwrap_or(u64::MAX).to_le_bytes());
         for (id, row) in &charges {
             let location = match row.location {
                 QuarantineLocation::Listed => 0u8,
@@ -239,13 +276,13 @@ impl UsageLog {
             named_total,
             earlier_total,
             established_open,
-            max_named: evidence.original_named,
+            max_named,
             max_earlier,
             token: *hash.finalize().as_bytes(),
         })
     }
 
-    /// Applies a confirmed decision to one whole group. Everything is checked before anything
+    /// Applies a confirmed decision to one group, or to one stage of it. Everything is checked before anything
     /// changes; on an error the log is unchanged. Returns the saved audit record.
     pub fn reconcile_ownership(&mut self, decision: &OwnershipDecision, at_ms: u64) -> Result<OwnershipReconciliation, Error> {
         let plan = self.plan_ownership_reconciliation(decision, at_ms)?;
@@ -258,7 +295,10 @@ impl UsageLog {
         if decision.except.len() > MAX_RECONCILE_EXCEPTIONS {
             return Err(bad("too many exceptions in one ownership decision"));
         }
-        for (provider, key) in &decision.except {
+        if decision.only.as_ref().is_some_and(|only| only.is_empty() || only.len() > MAX_STAGE_CHARGES) {
+            return Err(bad("a staged ownership decision lists between 1 and 1000 charges"));
+        }
+        for (provider, key) in decision.except.iter().chain(decision.only.iter().flatten()) {
             ownership::check_key(provider, key)?;
         }
         let currency = decision.currency;
@@ -272,13 +312,32 @@ impl UsageLog {
                 return Err(bad("an exception is listed twice"));
             }
         }
+        let scope = match &decision.only {
+            None => None,
+            Some(only) => {
+                let mut scope = BTreeSet::new();
+                for (provider, key) in only {
+                    if !scope.insert(identity(provider, key)) {
+                        return Err(bad("a staged charge is listed twice"));
+                    }
+                }
+                Some(scope)
+            }
+        };
         let mut charges = Vec::new();
-        charges.try_reserve_exact(view.charges.len()).map_err(|_| Error::new(ErrorKind::Busy, "cannot allocate the reconciliation record"))?;
+        charges
+            .try_reserve_exact(scope.as_ref().map_or(view.charges.len(), BTreeSet::len))
+            .map_err(|_| Error::new(ErrorKind::Busy, "cannot allocate the reconciliation record"))?;
         let mut evicted = Vec::new();
         let mut matched = 0usize;
+        let mut remaining = 0usize;
         for row in &view.charges {
             let e = row.entry;
             let id = identity_target(&e.provider, e.instance, &e.idempotency_key);
+            if scope.as_ref().is_some_and(|scope| !scope.contains(&id)) {
+                remaining += 1;
+                continue;
+            }
             let holder = if exceptions.contains(&id) {
                 matched += 1;
                 decision.holder.other()
@@ -291,7 +350,13 @@ impl UsageLog {
             charges.push(ReconciledCharge { provider: e.provider.clone(), idempotency_key: e.idempotency_key.clone(), cost: e.cost, holder });
         }
         if matched != exceptions.len() {
-            return Err(bad("an exception is not a quarantined charge of this group"));
+            return Err(bad("an exception is not a quarantined charge of this decision"));
+        }
+        if scope.as_ref().is_some_and(|scope| scope.len() != charges.len()) {
+            return Err(bad("a staged charge is not a quarantined charge of this group"));
+        }
+        if charges.is_empty() {
+            return Err(Error::new(ErrorKind::Internal, "the group has no quarantined charges left to reconcile"));
         }
         let named = sum(currency, charges.iter().filter(|c| c.holder == Holder::Named).map(|c| c.cost.micros))?;
         let earlier = sum(currency, charges.iter().filter(|c| c.holder == Holder::Earlier).map(|c| c.cost.micros))?;
@@ -302,14 +367,27 @@ impl UsageLog {
             return Err(Error::new(ErrorKind::Conflict, "the earlier sessions' total can't hold that much of these charges"));
         }
         // The named total must still cover every open charge it will own: the established ones
-        // and those said to be in it (earlier-held ones arrive with their money).
+        // and those said to be in it (earlier-held ones arrive with their money). For a partial
+        // stage the stronger load invariant (named total ≥ remaining floor + established) carries
+        // over unchanged: the floor drops by `named` exactly as the established sum rises by it.
         if u128::from(view.named_total.micros) < u128::from(view.established_open.micros) + u128::from(named.micros) {
             return Err(Error::new(ErrorKind::Conflict, "the named session's total doesn't cover its open charges"));
         }
         if self.pending.len().saturating_add(evicted.len()) > MAX_PENDING {
             return Err(Error::new(ErrorKind::Busy, "too many pending charges to take these back; settle pending charges first"));
         }
-        let record = OwnershipReconciliation { evidence: view.evidence.clone(), charges, moved_from_earlier: earlier, at_ms };
+        if remaining == 0 {
+            // Quarantined charges can't settle, so the group's stages account for its open
+            // amount at import exactly; anything else is a corrupted log, not a decision.
+            let staged = sum(
+                currency,
+                self.ownership.records.iter().filter(|r| r.partial && same_group(r, view.evidence)).flat_map(|r| r.charges.iter().map(|c| c.cost.micros)),
+            )?;
+            if staged.checked_add(named)?.checked_add(earlier)? != view.evidence.original_open {
+                return Err(Error::new(ErrorKind::Internal, "the quarantined charges don't add up to the group's open amount at import"));
+            }
+        }
+        let record = OwnershipReconciliation { evidence: view.evidence.clone(), charges, moved_from_earlier: earlier, at_ms, partial: remaining > 0 };
         let named_total = view.named_total.checked_add(earlier)?;
         let earlier_total = view.earlier_total.checked_sub(earlier)?;
         Ok(OwnershipPlan { record, named_total, earlier_total, evicted })
@@ -340,7 +418,9 @@ impl UsageLog {
                 self.pending.insert((entry.provider.clone(), entry.instance, entry.idempotency_key.clone()), entry);
             }
         }
-        if let Some(groups) = self.ownership.groups.get_mut(session) {
+        if !record.partial
+            && let Some(groups) = self.ownership.groups.get_mut(session)
+        {
             groups.remove(&currency);
             if groups.is_empty() {
                 self.ownership.groups.remove(session);
@@ -352,28 +432,43 @@ impl UsageLog {
 }
 
 /// Load admission for saved records (marker 3). `groups` are the still-quarantined groups and
-/// `uncertain` their charges; `shared` collects per-currency import evidence across both.
+/// `uncertain` their charges. Returns, per still-quarantined group, the open amount its partial
+/// stages already reconciled, so the caller can check it with the retained uncertainty.
 pub(super) fn admit_records(
     records: &[OwnershipReconciliation],
     groups: &BTreeMap<Arc<str>, BTreeMap<Currency, LegacyGroupEvidence>>,
     uncertain: &BTreeSet<Identity>,
-) -> Result<(), Error> {
-    let mut seen_groups = BTreeSet::new();
+) -> Result<BTreeMap<(Arc<str>, Currency), StagedTotals>, Error> {
+    let closing: BTreeSet<(Arc<str>, Currency)> =
+        records.iter().filter(|r| !r.partial).map(|r| (Arc::clone(&r.evidence.session), r.evidence.original_open.currency)).collect();
+    let mut closed_groups = BTreeSet::new();
+    let mut staged: BTreeMap<(Arc<str>, Currency), StagedTotals> = BTreeMap::new();
     let mut seen_charges = BTreeSet::new();
     let mut moved_total: BTreeMap<Currency, u128> = BTreeMap::new();
     for record in records {
         let g = &record.evidence;
         let c = g.original_open.currency;
+        let key = (Arc::clone(&g.session), c);
+        let quarantined = groups.get(g.session.as_ref()).and_then(|groups| groups.get(&c));
         if record.charges.is_empty()
             || g.session.is_empty()
             || g.session.len() > MAX_TEXT
             || record.moved_from_earlier.currency != c
-            || groups.get(g.session.as_ref()).is_some_and(|groups| groups.contains_key(&c))
-            || !seen_groups.insert((Arc::clone(&g.session), c))
+            // A still-quarantined group has only partial stages; a closed group's stages end in
+            // one complete record and are never staged again.
+            || (record.partial && quarantined.is_none() && !closing.contains(&key))
+            || (!record.partial && quarantined.is_some())
+            || closed_groups.contains(&key)
         {
             return Err(bad("invalid ownership reconciliation"));
         }
-        let (mut named, mut earlier, mut open) = (0u128, 0u128, 0u128);
+        // Every stage of a group carries the group's evidence unchanged.
+        let earlier_stages = staged.remove(&key);
+        if quarantined.is_some_and(|q| q != g) || earlier_stages.as_ref().is_some_and(|s| s.evidence != *g) {
+            return Err(bad("ownership reconciliation is inconsistent with its evidence"));
+        }
+        let mut totals = earlier_stages.unwrap_or_else(|| StagedTotals { evidence: g.clone(), named: 0, open: 0 });
+        let mut earlier = 0u128;
         for charge in &record.charges {
             ownership::check_key(&charge.provider, &charge.idempotency_key)?;
             let id = identity(&charge.provider, &charge.idempotency_key);
@@ -386,26 +481,43 @@ pub(super) fn admit_records(
                 return Err(bad("invalid reconciled charge"));
             }
             let micros = u128::from(charge.cost.micros);
-            open += micros;
+            totals.open += micros;
             match charge.holder {
-                Holder::Named => named += micros,
+                Holder::Named => totals.named += micros,
                 Holder::Earlier => earlier += micros,
             }
         }
-        // Charges can settle between import and reconciliation, so the open sum at import is an
-        // upper bound only for each holder, never an exact match.
         let total = moved_total.entry(c).or_default();
         *total += earlier;
         if earlier != u128::from(record.moved_from_earlier.micros)
-            || named > u128::from(g.original_named.micros)
+            || totals.named > u128::from(g.original_named.micros)
             || *total > u128::from(g.remaining_earlier_after_exact_migrations.micros)
-            || open == 0
+            || totals.open > u128::from(g.original_open.micros)
         {
             return Err(bad("ownership reconciliation is inconsistent with its evidence"));
+        }
+        if record.partial {
+            staged.insert(key, totals);
+        } else {
+            // Quarantined charges can't settle, so a closed group's stages account for its open
+            // amount at import exactly, each charge once.
+            if totals.open != u128::from(g.original_open.micros) {
+                return Err(bad("ownership reconciliation is inconsistent with its evidence"));
+            }
+            closed_groups.insert(key);
         }
     }
     if seen_charges.len().saturating_add(uncertain.len()) > MAX_USAGE_ENTRIES + MAX_PENDING {
         return Err(bad("too much reconciled ownership history"));
     }
-    Ok(())
+    Ok(staged)
+}
+
+/// What a still-quarantined group's partial stages reconciled so far, in micros.
+pub(super) struct StagedTotals {
+    evidence: LegacyGroupEvidence,
+    /// Placed in the named total.
+    pub(super) named: u128,
+    /// Every staged charge.
+    pub(super) open: u128,
 }
