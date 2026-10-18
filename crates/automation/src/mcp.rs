@@ -60,11 +60,23 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.fit_selection",
     "canvas.minimap_toggle",
     "canvas.pan_to",
+    "canvas.search_open",
+    "canvas.search_query",
+    "canvas.search_next",
+    "canvas.search_previous",
+    "canvas.search_close",
     "keys.status",
+    "run.quote",
+    "run.start",
+    "usage.export_csv",
 ];
-/// Commands only a person may run: `keys.set` takes a secret, which must not pass through an
-/// agent's context, and `keys.remove` deletes a key with no undo.
-pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove"];
+/// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
+/// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
+/// remain human-only until MCP/control enforce allowed read/write roots (#116); native path
+/// canonicalization is not filesystem authorization. Engine/native callers retain their existing
+/// file access. `run.record` writes the results of a run the host executed: an agent must not
+/// fabricate them.
+pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove", "file.open", "file.save", "file.save_as", "run.record"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -200,13 +212,19 @@ fn edge_page<'a>(edges: &[&'a Edge], offset: usize, budget: usize) -> Result<(Ve
     Ok((page, (next < edges.len()).then_some(next)))
 }
 
-pub(crate) fn command_list(session: &Session, args: &Map<String, Value>) -> Result<Value, Error> {
+pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut H, args: &Map<String, Value>) -> Result<Value, Error> {
     let query = args.get("query").and_then(Value::as_str).unwrap_or_default().to_lowercase();
-    let commands: Vec<Value> = session
+    let specs: Vec<_> = host
+        .session()
         .registry()
         .specs()
         .filter(|s| visible(s.id))
         .filter(|s| query.is_empty() || s.id.contains(&query) || s.label.to_lowercase().contains(&query))
+        .copied()
+        .collect();
+    // Release the registry borrow before a live host refreshes its scoped capability.
+    let commands: Vec<Value> = specs
+        .into_iter()
         .map(|s| {
             let schema = (s.input_schema)();
             let takes_params = schema.get("required").and_then(Value::as_array).is_some_and(|r| !r.is_empty());
@@ -214,7 +232,7 @@ pub(crate) fn command_list(session: &Session, args: &Map<String, Value>) -> Resu
             // Whether a command can run depends on its params; only parameterless ones are
             // checked here, so `ready` always means the same thing.
             if !takes_params {
-                let enabled = session.enabled(s.id, &json!({}));
+                let enabled = host.enabled(s.id, &json!({}));
                 entry["ready"] = json!(enabled.is_ok());
                 if let Err(e) = enabled {
                     entry["not_ready_because"] = json!(e.message);
@@ -226,19 +244,19 @@ pub(crate) fn command_list(session: &Session, args: &Map<String, Value>) -> Resu
     Ok(json!({"commands": commands}))
 }
 
-pub(crate) fn command_run(session: &mut Session, mut args: Map<String, Value>) -> Result<Value, Error> {
+pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, mut args: Map<String, Value>) -> Result<Value, Error> {
     let id = match args.remove("id") {
         Some(Value::String(id)) => id,
         _ => return Err(invalid("command_run needs the command `id`")),
     };
-    session.registry().get(&id)?;
+    host.session().registry().get(&id)?;
     if !visible(&id) {
         let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
         return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
     }
     let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
-    let result = session.dispatch(&id, &params)?;
-    Ok(json!({"result": result, "revision": session.revision()}))
+    let result = host.dispatch(&id, &params)?;
+    Ok(json!({"result": result, "revision": host.session().revision()}))
 }
 
 pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Result<Value, Error> {
@@ -425,8 +443,8 @@ impl McpServer {
         let unknown = || Err((INVALID_PARAMS, format!("unknown tool {}", name.chars().take(64).collect::<String>())));
         let result = match (&mut self.backend, name.as_str()) {
             (_, "ids_new") => self.ids_new(&args),
-            (Backend::Local(session), "command_list") => command_list(session, &args),
-            (Backend::Local(session), "command_run") => command_run(session, args),
+            (Backend::Local(session), "command_list") => command_list(&mut **session, &args),
+            (Backend::Local(session), "command_run") => command_run(&mut **session, args),
             (Backend::Local(session), "canvas_inspect") => canvas_inspect(session, &args),
             #[cfg(not(target_arch = "wasm32"))]
             (Backend::Bridge(client), tool @ ("command_list" | "command_run" | "canvas_inspect")) => {

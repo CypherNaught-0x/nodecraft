@@ -58,6 +58,8 @@ proptest = "1"
 regex-syntax = "0.8"
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode", "perf"] }
 
+zip = { version = "9.0.4", default-features = false }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

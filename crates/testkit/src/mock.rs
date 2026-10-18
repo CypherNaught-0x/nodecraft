@@ -175,6 +175,14 @@ impl Provider for MockProvider {
         let outcome = (|| {
             let mut s = self.lock();
             s.requests.push(job.clone());
+            // Acceptance owns the key, including lost replies and cancelled/completed jobs.
+            // Retry payloads must not select another model or execute its failure script.
+            if let Some(id) = s.accepted.get(&job.idempotency_key) {
+                if let Some(done) = s.finished.get(&job.idempotency_key) {
+                    return Ok(Submission::Finished(done.clone()));
+                }
+                return Ok(Submission::Queued(JobHandle { remote_id: id.clone(), data: serde_json::Value::Null }));
+            }
             let model = *self.models.get(&job.model).ok_or_else(|| ProviderError::new(ErrorKind::UnsupportedInput, "unknown model"))?;
             match model.fail {
                 Some(MockFailure::Submit(kind)) => return Err(ProviderError::new(kind, "mock submit failure")),
@@ -182,9 +190,9 @@ impl Provider for MockProvider {
                 _ => {}
             }
             let next = s.accepted.len();
-            let first = !s.accepted.contains_key(&job.idempotency_key);
-            let id = s.accepted.entry(job.idempotency_key.clone()).or_insert_with(|| format!("mock-{next}")).clone();
-            if first && let Some(MockFailure::LostReply(kind)) = model.fail {
+            let id = format!("mock-{next}");
+            s.accepted.insert(job.idempotency_key.clone(), id.clone());
+            if let Some(MockFailure::LostReply(kind)) = model.fail {
                 // Accepted and billed, but the caller never hears so.
                 if model.polls > 0 {
                     s.pending.insert(id, (job.clone(), model.polls));

@@ -91,6 +91,7 @@ fn disconnect(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 }
 
 fn enabled_edit(context: &Context<'_>, value: &Value, run: fn(&Context<'_>, &Value) -> Result<Effect, Error>) -> Result<(), Error> {
+    context.editable()?;
     if let Effect::Edit { changes, .. } = run(context, value)? {
         context.preview_changes(&changes)?;
     }
@@ -112,12 +113,14 @@ fn enabled_disconnect(c: &Context<'_>, v: &Value) -> Result<(), Error> {
     enabled_edit(c, v, disconnect)
 }
 fn enabled_undo(c: &Context<'_>, v: &Value) -> Result<(), Error> {
+    c.editable()?;
     if !v.is_null() {
         let _: Empty = params(v)?;
     }
     if c.can_undo { Ok(()) } else { Err(Error::new(ErrorKind::Conflict, "nothing to undo")) }
 }
 fn enabled_redo(c: &Context<'_>, v: &Value) -> Result<(), Error> {
+    c.editable()?;
     if !v.is_null() {
         let _: Empty = params(v)?;
     }

@@ -1945,3 +1945,139 @@ fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
 }
+
+#[test]
+fn an_open_palette_keeps_search_shortcut_ownership_after_tab() {
+    let mut h = harness();
+    double_click(&mut h, Pos2::new(560.0, 650.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    h.key_press(egui::Key::Tab);
+    h.run();
+    assert!(!canvas::text_input_focused(&h.ctx), "fixture must focus a palette row rather than its query");
+    let document = h.state().session.document().clone();
+    let view = h.state().view;
+    let selection = h.state().selection.clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(!h.state().search.open, "search must not steal the open palette's input");
+    assert!(h.state().palette.is_some());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().view, view);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().palette.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open, "normal search resumes after the palette closes");
+}
+
+#[test]
+fn clipboard_paste_belongs_to_search_input_then_returns_to_canvas_after_close() {
+    let mut h = harness();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open);
+    h.get_by_role_and_label(Role::TextInput, "Search canvas").click();
+    h.run();
+    assert!(canvas::text_input_focused(&h.ctx));
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    let selection = h.state().selection.clone();
+    let view = h.state().view;
+    h.event(egui::Event::Paste("clipboard query sentinel".into()));
+    h.run();
+    assert_eq!(h.state().search.draft, "clipboard query sentinel");
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().view, view);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().search.open);
+    h.hover_at(Pos2::new(800.0, 650.0));
+    h.event(egui::Event::Paste("canvas payload after search".into()));
+    h.run();
+    let texts = nodes_of(&h, "source.text");
+    assert_eq!(texts.len(), 2);
+    assert!(texts.iter().any(|node| node.params.get("text") == Some(&Value::Text("canvas payload after search".into()))));
+    assert_eq!(h.state().session.revision(), revision + 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &document);
+}
+
+#[test]
+fn minimap_drag_owns_quick_add_keys_until_pointer_release() {
+    let mut h = harness();
+    let canvas = h.state().canvas;
+    let id = node(h.state()).id;
+    for title in ["Before minimap", "Redo entry"] {
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id,"title":title})).unwrap();
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().selection.only(id);
+    h.run();
+    assert!(h.state().session.can_undo() && h.state().session.can_redo());
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let selection = h.state().selection.clone();
+    let count = document.canvases().get(&canvas).unwrap().nodes().len();
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    let from = map.center() + Vec2::new(20.0, 0.0);
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(h.state().navigation.drag.is_some() && h.state().navigation.pointer_owned);
+    assert!(h.state().drag.is_none() && h.state().marquee.is_none() && h.state().wiring.is_none());
+    for key in [egui::Key::T, egui::Key::I] {
+        h.event(egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), count, "held minimap owns quick-add");
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().session.events_since(0).unwrap(), events);
+        assert_eq!(h.state().selection, selection);
+        assert!(h.state().session.can_undo() && h.state().session.can_redo());
+        assert!(h.state().navigation.drag.is_some() && h.state().navigation.pointer_owned);
+        h.event(egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+    // The guard must not disable the minimap's own pan intents or its frozen mapping.
+    let mapping = h.state().navigation.drag.unwrap();
+    let view = h.state().view;
+    let to = map.right_bottom() + Vec2::new(40.0, 30.0);
+    h.hover_at(to);
+    h.run();
+    assert_ne!(h.state().view, view);
+    let center = h.state().view.visible_world(h.state().viewport).center();
+    let expected = mapping.world(to);
+    assert!((f64::from(center.x) - expected.0).abs() < 0.01 && (f64::from(center.y) - expected.1).abs() < 0.01);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(h.state().navigation.drag.is_none() && !h.state().navigation.pointer_owned);
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().session.can_undo() && h.state().session.can_redo());
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), count + 1);
+    assert_eq!(h.state().selection.nodes().len(), 1);
+    assert!(!h.state().selection.contains(id));
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document, "post-release quick-add is one undo step");
+}

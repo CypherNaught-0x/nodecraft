@@ -1,0 +1,54 @@
+{
+  "id": "04040404-0404-0404-0404-040404040404",
+  "title": "Legacy local comments",
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "id": "01010101-0101-0101-0101-010101010101",
+      "title": "Legacy canvas",
+      "nodes": {
+        "02020202-0202-0202-0202-020202020202": {
+          "id": "02020202-0202-0202-0202-020202020202",
+          "kind": "legacy.text",
+          "title": "Legacy node",
+          "pos": {
+            "x": 12.0,
+            "y": 24.0
+          },
+          "params": {
+            "asset": {
+              "type": "media",
+              "value": {
+                "hash": "93017dbc995612b1b906ba9893263b70a105d818a39824d595ea3d60b5770cba",
+                "mime": "text/plain",
+                "meta": {}
+              }
+            },
+            "text": {
+              "type": "text",
+              "value": "Legacy prompt"
+            }
+          },
+          "inputs": [],
+          "outputs": [],
+          "history": [],
+          "active": null,
+          "tag": null,
+          "field": null
+        }
+      },
+      "edges": {},
+      "fields": {},
+      "comments": {
+        "03030303-0303-0303-0303-030303030303": {
+          "id": "03030303-0303-0303-0303-030303030303",
+          "text": "Edited legacy root note",
+          "pos": {
+            "x": -120.0,
+            "y": 64.0
+          }
+        }
+      },
+      "tags": {}
+    }
+  }
+}
