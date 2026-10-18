@@ -84,6 +84,8 @@ pub struct Context<'a> {
     pub services: &'a Services,
     pub phase: Phase,
     pub file: crate::file_cmds::FileStatus,
+    /// The session's performance recorder, for `perf.report`.
+    pub perf: &'a crate::perf::Recorder,
 }
 impl Context<'_> {
     /// Session::enabled/dispatch graph-stage every returned document effect once,
@@ -97,13 +99,31 @@ impl Context<'_> {
 }
 
 pub enum Effect {
-    Open { location: nodecraft_format::StorageLocation, discard_dirty: bool },
-    Save { location: Option<nodecraft_format::StorageLocation> },
-    Service { capability: &'static str, request: Value },
-    None { result: Value },
-    Edit { changes: Changeset, result: Value, gesture: Option<String> },
+    Open {
+        location: nodecraft_format::StorageLocation,
+        discard_dirty: bool,
+    },
+    Save {
+        location: Option<nodecraft_format::StorageLocation>,
+    },
+    Service {
+        capability: &'static str,
+        request: Value,
+    },
+    None {
+        result: Value,
+    },
+    Edit {
+        changes: Changeset,
+        result: Value,
+        gesture: Option<String>,
+    },
     Undo,
     Redo,
+    /// Start, stop or clear the session's performance recorder (`perf_cmds`).
+    Perf {
+        action: crate::perf_cmds::PerfAction,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -140,6 +160,7 @@ impl Registry {
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
             .chain(crate::run_cmds::specs())
+            .chain(crate::perf_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::turn_into_cmds::specs())
