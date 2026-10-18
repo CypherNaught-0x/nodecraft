@@ -2016,6 +2016,9 @@ fn clipboard_paste_belongs_to_search_input_then_returns_to_canvas_after_close() 
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &document);
+}
+
+#[test]
 fn minimap_drag_owns_quick_add_keys_until_pointer_release() {
     let mut h = harness();
     let canvas = h.state().canvas;
