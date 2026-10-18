@@ -35,7 +35,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   upstream/downstream/kind, minimap with zoom-to-fit and zoom-to-selection (Shift+1/Shift+2/Shift+M), incremental
   search (⌘F), double-click quick-add palette with per-key shortcuts, "Turn into" on
   drop-to-empty, input-order badges with drag-to-reorder, copy/cut/paste/duplicate through the OS
-  clipboard, OS file drop as source nodes, per-node generation history strip, local pinned
+  clipboard, OS file drop as source nodes, split-grid image previews (#337), per-node generation
+  history strip, local pinned
   discussions with Note nodes (#68), grid/dependency formatting of selected nodes (#70), named
   colour tags with a bounded highlight filter (#67), an API keys panel backed by the OS keychain.
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
@@ -53,9 +54,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 - **The app cannot generate.** Nothing constructs a provider adapter or supplies the run host
   resources, so `run.quote`/`run.start` report *unsupported*, there is no Run button, and no
-  `Category::Generation` node kind is registered outside the testkit (#409, #362; #83, #84). Four
-  adapters (LLM endpoints, OpenAI Images, Replicate, ComfyUI) work as libraries with contract
-  tests, and the catalog carries 6 models across those three provider families.
+  `Category::Generation` node kind is registered outside the testkit (#409, #362; #83, #84). Five
+  adapters (LLM endpoints, OpenAI Images, Replicate, ComfyUI and Seedream) have tested library
+  integrations, with catalog definitions available to engine callers.
 - **The app cannot save or open.** `.ncraft` archives, content-addressed assets, atomic writes and
   crash recovery all exist, but no host configures project storage for a session, so `file.*`
   reports *unsupported* (#406). There is also no file picker (#407) and no recovery prompt
@@ -73,8 +74,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   playback UI (#105, #106), no video actions (#108) and no video generation.
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
   batch, Techniques, app mode, library, Layer/Timeline/Mask editors, Elements, 3D, PDF,
-  collaboration, auto-updates, and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai, Gemini
-  and Seedream are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
+  collaboration, auto-updates, and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai and Gemini
+  are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
   Tripo, Meshy and the 25 `future` names have no work started).
 
 ## Next up
@@ -131,6 +132,3 @@ The open pull requests say what is in flight; the near-term order that makes the
 - **2026-10-18** — colour tagging and its bounded highlight filter shipped (#67), backed by
   the v3 tags/fields persistence bridge (#193). Bulk assignments undo atomically, and legacy
   archives/recovery migrate before new appends. The command registry now has 66 entries.
-
-The tagging integration also preserves the split-grid image preview shipped in #337; a real
-menu interaction test checks that the preview owns input until the tag filter can resume.

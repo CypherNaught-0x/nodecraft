@@ -49,8 +49,8 @@ now is connecting it to the window. The target:
   without rewiring, or run several side by side. Each run shows its cost before it starts.
 - **ComfyUI first-class.** Import any workflow as a node with typed ports, follow live progress,
   and switch a node between cloud models and local ComfyUI without rewiring.
-- **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images and
-  Replicate are written; fal.ai, Google Imagen/Gemini image/Veo/TTS, ElevenLabs, Seedream and
+- **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images,
+  Replicate and Seedream are written; fal.ai, Google Imagen/Gemini image/Veo/TTS, ElevenLabs,
   Seedance, Kling, Tripo and Meshy are tracked as issues.
 - **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text and
   video operations — recompute live, with custom actions authored as GPU shaders.
