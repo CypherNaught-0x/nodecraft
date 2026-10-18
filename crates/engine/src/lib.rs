@@ -28,6 +28,7 @@ pub mod run_cmds;
 pub mod secrets;
 pub mod session;
 pub mod settings;
+pub mod split;
 pub mod stale_cmds;
 pub mod turn_into_cmds;
 
