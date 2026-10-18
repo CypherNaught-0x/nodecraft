@@ -1,0 +1,26 @@
+# BytePlus official API and current model pricing verified2026-10-18.
+# https://docs.byteplus.com/en/docs/modelark/image-generation-api?redirect=1
+# https://docs.byteplus.com/en/docs/modelark/model-pricing?redirect=1
+# Estimate for one requested output; not a provider-reported actual charge.
+[[model]]
+id="seedream.4_5"
+provider="seedream"
+provider_model="seedream-4-5-251128"
+label="Seedream 4.5"
+description="One JPEG from text or up to14 ordered references. Direct adapter edits; canvas media resolution is separate. No remote cancellation or automatic paid replay."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.04 USD"}
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+[[model.modes]]
+id="image-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="image",modality="image",min=1,max=14}]
+[[model.params.params]]
+name="size"
+label="Resolution"
+control={type="choice",options=[{value="2K",label="2K"},{value="4K",label="4K"}]}
+default={type="text",value="2K"}

@@ -26,6 +26,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
+    ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
 ];
 
 #[derive(Deserialize)]

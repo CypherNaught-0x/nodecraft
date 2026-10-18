@@ -16,6 +16,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
+| **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 
 ## Chat conversations and tools
 
@@ -262,3 +263,42 @@ deadline still requests best-effort cancellation when a handle exists. Provider-
 `metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
 duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
 nor a typed runtime-usage schema is supplied by this safety follow-up.
+
+## Seedream bounds and billing
+
+The optional `seedream` adapter uses the fixed BytePlus ModelArk image generation endpoint.
+The catalog quotes **0.04 USD for one requested output** (estimate, not an actual billing receipt),
+verified2026-10-18 against [current official pricing](https://docs.byteplus.com/en/docs/modelark/model-pricing?redirect=1).
+The [official image API](https://docs.byteplus.com/en/docs/modelark/image-generation-api?redirect=1)
+supports generation and ordered reference editing. This adapter selects nonstreaming single-output
+base64 JPEG, watermark enabled, and no sequential batches or newer5.0 controls. API keys belong
+in the host keychain, never catalog, project, fixture or error text. No credential is read by
+constructing the adapter.
+
+References are PNG/JPEG/WebP, at most8MiB each/48MiB aggregate, fourteen ordered occurrences
+including duplicates; prompt128000bytes/32000characters. Inputs must have both dimensions>14,
+ratio at most16 and16777216pixels each/32000000aggregate. Output is bounded8MiB JPEG with
+checked pixels<=16777216 and ratio<=16; derived axis16384 allows wide4K shapes. Request64MiB,
+JSON response13MiB, metadata256KiB. Limits may only be lowered. Lower outputgeometry cannot
+prove acceptance of server-selected shapes and therefore refuses before sending.
+
+Borrowed metadata and complete reference validation precede encoding/POST; all references are
+probed before sequential decoding and pixels are dropped before encoding. Logical phase owners
+are129MiB for decoded/rotation+metadata validation,76MiB for encoding,222MiB conservative
+response/request/raw/Arc-copy/pixel owners. These exclude caller buffers, private codec workspace,
+transport, allocator overhead and concurrent operations: media max_alloc preflights pixels plus
+orientation, not every decoder allocation or process RSS. The parser checks required map-only
+records/model/size/count before payload allocation. Bad optional usage preserves a valid paid
+image as unknown; no reported cost is fabricated from token counts or the catalog.
+
+The provider has no documented submit deduplication or resumable handle. Cancellation/deadline
+after send may still incur cost; automatic retry is disabled, including transient HTTP failures.
+All HTTP uses the explicit no-redirect contract, with no fallback; browser Reqwest refuses it,
+so wasm requires an audited host transport. The adapter does not follow/download result URLs.
+Direct adapter multi-reference edits are supported; existing graph Media→ProviderJob conversion
+still needs a separate asset resolver, so canvas editing is not claimed here. Image results use
+the existing converter/Run path; the host retains Completed if routing/conversion refuses it.
+
+The ignored live test additionally requires NODECRAFT_LIVE_SEEDREAM=1,
+NODECRAFT_LIVE_SEEDREAM_ACKNOWLEDGE_COST=1 and ARK_API_KEY, plus separate explicit human spending
+authorization. It is never run in CI; all normal contracts use authored fixtures and local HTTP.
