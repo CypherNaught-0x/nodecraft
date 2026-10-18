@@ -9,6 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Scheduling allowance for loaded CI; these tests assert delivery/accounting, not latency.
+const FIXTURE_TIMEOUT: Duration = Duration::from_secs(30);
+const RUN_DEADLINE_MS: u64 = 20_000;
+
 struct TokioRuntime(Instant);
 impl Runtime for TokioRuntime {
     fn spawn(&self, task: TaskFuture<()>) {
@@ -42,7 +46,7 @@ fn runner(runtime: Arc<TokioRuntime>) -> (Arc<ProviderRunner>, JobBudget) {
     let (_, budget) = budgeted(Some(1_000_000));
     let runner = ProviderRunner::new(
         runtime,
-        RunLimits { deadline_ms: 5_000, ..RunLimits::default() },
+        RunLimits { deadline_ms: RUN_DEADLINE_MS, ..RunLimits::default() },
         Arc::new(|_, _| panic!("failed builder must not produce output")),
         Arc::new(|_, _, _| {}),
     )
@@ -57,7 +61,7 @@ fn listener() -> (TcpListener, String) {
 }
 // Reads one bounded HTTP request and either closes its reply or returns a valid LLM body.
 async fn serve(listener: TcpListener, body: Option<&'static [u8]>) -> Vec<u8> {
-    tokio::time::timeout(Duration::from_secs(3), async move {
+    tokio::time::timeout(FIXTURE_TIMEOUT, async move {
         let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         let (stream, _) = listener.accept().await.unwrap();
         let mut bytes = Vec::new();
@@ -117,7 +121,7 @@ async fn drive(runner: Arc<ProviderRunner>, runtime: Arc<TokioRuntime>, mut on_e
     drop(handle);
     let mut events = vec![];
     let scheduler = tokio::time::timeout(
-        Duration::from_secs(3),
+        FIXTURE_TIMEOUT,
         driver.run(runner, runtime, |event| {
             on_event(&event);
             events.push(event);
