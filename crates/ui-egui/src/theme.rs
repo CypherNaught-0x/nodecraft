@@ -75,6 +75,8 @@ pub struct Tokens {
     pub card_width: f32,
     pub card_min_height: f32,
     pub card_max_height: f32,
+    /// Height of the image preview at the top of a card that shows an image (#386).
+    pub card_preview_height: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
     pub title_min_screen_px: f32,
@@ -141,6 +143,7 @@ pub const DARK: Tokens = Tokens {
     card_width: 320.0,
     card_min_height: 220.0,
     card_max_height: 720.0,
+    card_preview_height: 180.0,
     control_row_height: 64.0,
     control_gap: 6.0,
     title_min_screen_px: 9.0,

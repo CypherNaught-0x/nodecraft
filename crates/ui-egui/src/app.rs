@@ -308,6 +308,8 @@ pub struct NodeCraftApp {
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// Image previews on cards (#386).
+    previews: crate::preview::Previews,
     /// When the last timed frame started, for the frame interval (#151).
     last_frame: Option<u64>,
     /// The rows × columns last chosen for "Split into grid".
@@ -437,6 +439,7 @@ impl NodeCraftApp {
             wiring: None,
             reordering: None,
             palette: None,
+            previews: crate::preview::Previews::default(),
             last_frame: None,
             split_size: (2, 2),
             turn_into: None,
@@ -463,6 +466,7 @@ impl NodeCraftApp {
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
+        self.previews.poll(ui.ctx());
         self.cache_clock = self.cache_clock.saturating_add(1);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -663,13 +667,20 @@ impl NodeCraftApp {
             {
                 // Cull conservatively before resolving potentially large instance schemas.
                 let position = self.drag.as_ref().filter(|drag| drag.id == node.id).map_or(node.pos, |drag| drag.pos);
-                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height));
+                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height + t.card_preview_height));
                 if !self.view.rect_to_screen(viewport.min, bounds).expand(card::cull_margin(t, self.view.zoom)).intersects(viewport) {
                     if let Some(editor) = self.editors.get_mut(&node.id) {
                         editor.mark_hidden();
                     }
                     continue;
                 }
+                // Only cards on screen at a readable zoom ask for their image (#386).
+                let image = nodecraft_engine::split::image_of(node).filter(|_| self.view.zoom >= card::BODY_MIN_ZOOM).map(|asset| {
+                    let hash = asset.hash;
+                    let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
+                    let assets = self.session.assets();
+                    self.previews.request(ui.ctx(), hash, edge, || assets.get(&hash).map(<[u8]>::to_vec))
+                });
                 let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
                 let editor = self.editors.entry(node.id).or_default();
@@ -681,6 +692,7 @@ impl NodeCraftApp {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
+                        image,
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -1447,6 +1459,8 @@ mod history_tests;
 mod order_tests;
 #[cfg(test)]
 mod perf;
+#[cfg(test)]
+mod preview_tests;
 #[cfg(test)]
 mod split_tests;
 #[cfg(test)]

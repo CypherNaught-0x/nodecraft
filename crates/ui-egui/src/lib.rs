@@ -15,6 +15,7 @@ pub mod navigation;
 pub mod noodle;
 pub mod order;
 pub mod palette;
+pub mod preview;
 pub mod search;
 pub mod selection;
 pub mod theme;
