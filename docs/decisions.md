@@ -1051,19 +1051,30 @@ a choice a later contributor might otherwise undo.
   - the provisional and estimated steps (job counts known only at run time);
   - the planner's reasons when the request can't run yet;
   - a quote `token`.
-- **The token binds a run to the quote that was accepted.** It is a digest of the document
-  revision, the request, the plan's steps and their prices. `run.start` requires the token of the
-  quote the caller accepted, and amounts that cover every currency's total. It also requires
-  `partial: true` when part of the price isn't known: unpriced steps, or job counts known only at
-  run time, which could cost more than quoted. Any edit since the quote changes the token, so the
-  caller has to quote again. No caller (UI, CLI, agent) can start a paid run without having been
-  shown its current price.
-- **Host contract for the `run.start` service.** The request carries the run parameters, the
-  revision, the token and what was accepted. Before running, the host prices the request again
-  with `run_cmds::price` on the document as it is then, and refuses if the token differs. It
-  reserves the estimate in the budget ledger when the run starts (job-time budgets, #222), so two
-  quick starts can't both pass the same headroom, and holds estimated steps to the accepted
-  amounts.
+- **The v2 token binds consent to the actual live Session (#294).** The original revision/price
+  digest was insufficient for copied projects. Each Session now mints a private fallible32-byte
+  nonce and checked source generation. Every document/asset admission invalidation advances that
+  generation, preflighted before append/storage effects; import and conservative save/GC invalidate
+  even without a document revision change. Reconstructing identical ProjectIds/content gets fresh
+  authority. The immutable `RunCatalog::new` snapshot has its own nonce; Clone preserves it,
+  replacing the snapshot invalidates even equal-price/provider mappings. These nonces are never
+  serialized, user identities, or caller-supplied values.
+- **Canonical bounded request binding** uses explicit version/mode tags and counted sorted unique
+  UUIDs (only fields used by that mode), with a checked256KiB binding-input cap. No whole-project
+  serialization/hash, Debug representation, opaque implementation inventory or quote cache is
+  added. This authority relies on immutable Session-owned definitions and trusted pure NodeKind
+  callbacks; hidden interior mutation behind a live definition is unsupported. Definition updates
+  need a fresh supported Session/source identity.
+- **Host contract for the `run.start` service.** Enqueue the request during the service callback;
+  before reservation/execution, call authoritative `run_cmds::price(&actual_session, request)` and
+  verify token, live allowed/partial state and every accepted currency ceiling. The former API
+  taking arbitrary Project/revision/registry/catalog no longer mints launch authority. Reserve
+  atomically against the live ledger, then freeze the verified document/plan/asset references and
+  retain the SAME kind/catalog definition owner before releasing the Session borrow/scheduling.
+  Do not later re-fetch a different Session or registry for deferred jobs. Deferred costs remain
+  partial and subject to accepted ceilings/job-time budgets. This is a trusted host boundary,
+  not durable execution/idempotency or a proof that a confirmation UI was displayed. Live budget
+  changes recheck without changing consent identity. The desktop async host remains future work.
 - **`run.record` is host-only.** It records a run's results (generations with asset references,
   up to 1,000 per call) as one undo step. MCP lists it as human-only, so agents can't fabricate
   results.
