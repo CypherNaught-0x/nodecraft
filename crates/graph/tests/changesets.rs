@@ -119,8 +119,8 @@ fn removing_a_node_restores_all_edges_in_one_inverse_operation() {
 
 #[test]
 fn all_edit_types_and_annotation_stubs_are_reversible() {
-    let field = Field { id: FieldId::from_bytes([1; 16]), title: "Group".into() };
-    let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into() };
+    let field = Field::new(FieldId::from_bytes([1; 16]), "Group");
+    let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into(), color: None };
     let comment = Comment { id: CommentId::from_bytes([1; 16]), text: "Note".into(), pos: Position::default(), node: None, replies: vec![], resolved: false };
     let mut replacement = node(1);
     replacement.field = Some(field.id);
@@ -335,9 +335,9 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             16 => Change::Connect { canvas, edge: edge(n, n, other) },
             17 => Change::Disconnect { canvas, id: edge_id(n) },
             18 => Change::SetEdge { canvas, edge: edge(n, other, n) },
-            19 => Change::PutField { canvas, field: Field { id: FieldId::from_bytes([n; 16]), title: text } },
+            19 => Change::PutField { canvas, field: Field::new(FieldId::from_bytes([n; 16]), text) },
             20 => Change::RemoveField { canvas, id: FieldId::from_bytes([n; 16]) },
-            21 => Change::PutTag { canvas, tag: Tag { id: TagId::from_bytes([n; 16]), title: text } },
+            21 => Change::PutTag { canvas, tag: Tag { id: TagId::from_bytes([n; 16]), title: text, color: None } },
             22 => Change::RemoveTag { canvas, id: TagId::from_bytes([n; 16]) },
             23 => Change::PutComment {
                 canvas,
@@ -444,7 +444,7 @@ fn batches_can_swap_input_orders_and_replace_referenced_annotations() {
         project.clone(),
         Changeset::new(vec![Change::SetEdge { canvas: canvas(), edge: first }, Change::SetEdge { canvas: canvas(), edge: second }]),
     );
-    let field = Field { id: FieldId::from_bytes([1; 16]), title: "Old".into() };
+    let field = Field::new(FieldId::from_bytes([1; 16]), "Old");
     let mut item = node(1);
     item.field = Some(field.id);
     Changeset::new(vec![Change::PutField { canvas: canvas(), field: field.clone() }, Change::SetNode { canvas: canvas(), node: item }])

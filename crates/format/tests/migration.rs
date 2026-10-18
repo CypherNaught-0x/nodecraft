@@ -40,11 +40,11 @@ fn exact_v1_archive_and_original_hash_journal_migrate_losslessly() {
     let expected: Project = serde_json::from_slice(include_bytes!("fixtures/v1/recovered-v1-project.json")).unwrap();
     assert_eq!(recovered.snapshot.project, expected);
     let v2 = encode(&recovered.snapshot).unwrap();
-    assert_eq!(manifest(&v2)["version"], 2);
+    assert_eq!(manifest(&v2)["version"], 3);
     assert_eq!(decode(&v2).unwrap(), recovered.snapshot);
     let (_, checkpoint) = journal::checkpoint_from_archive(ARCHIVE.to_vec()).unwrap();
-    assert_eq!(&checkpoint.bytes[..8], b"NCRJ0002");
-    assert_eq!(manifest(checkpoint.archive().unwrap())["version"], 2);
+    assert_eq!(&checkpoint.bytes[..8], b"NCRJ0003");
+    assert_eq!(manifest(checkpoint.archive().unwrap())["version"], 3);
     let converted = journal::checkpoint(&recovered.snapshot).unwrap();
     let mut bytes = converted.bytes;
     let changes = Changeset::new(vec![Change::SetCanvasTitle { canvas: CanvasId::from_bytes([1; 16]), title: "Migrated".into() }]);
@@ -112,7 +112,7 @@ fn v1_headers_reject_v2_fields_and_future_versions_before_typed_graph_decode() {
         assert!(decode(&replace_manifest(ARCHIVE, &json)).is_err(), "{field}");
     }
     let mut json = base;
-    json["version"] = serde_json::json!(3);
+    json["version"] = serde_json::json!(4);
     json["project"] = serde_json::json!({"malformed":true});
     assert!(decode(&replace_manifest(ARCHIVE, &json)).is_err());
     let mut mismatch = JOURNAL.to_vec();
@@ -183,9 +183,8 @@ fn checksummed_legacy_put_comment_with_omitted_pos_cannot_smuggle_thread_fields(
 
 #[test]
 fn comments_v2_never_silently_drops_future_tags_or_fields_in_archives_or_records() {
-    let snapshot = decode(ARCHIVE).unwrap();
-    let v2 = encode(&snapshot).unwrap();
-    let base = manifest(&v2);
+    let v2: &[u8] = include_bytes!("fixtures/v2/comments-v2.ncraft");
+    let base = manifest(v2);
     let canvas_key = base["project"]["canvases"].as_object().unwrap().keys().next().unwrap().clone();
     let id = serde_json::to_value(nodecraft_types::TagId::from_bytes([8; 16])).unwrap();
     let key = id.as_str().unwrap();
@@ -198,20 +197,23 @@ fn comments_v2_never_silently_drops_future_tags_or_fields_in_archives_or_records
         let mut json = base.clone();
         json["project"]["canvases"][&canvas_key][collection][key] = serde_json::json!({"id":id,"title":"Future"});
         json["project"]["canvases"][&canvas_key][collection][key][field] = value.clone();
-        assert!(decode(&replace_manifest(&v2, &json)).is_err());
-        let checkpoint = journal::checkpoint(&snapshot).unwrap();
+        assert!(decode(&replace_manifest(v2, &json)).is_err());
+        let old_journal = include_bytes!("fixtures/v2/comments-v2.ncrj");
+        let archive_len = u64::from_le_bytes(old_journal[8..16].try_into().unwrap()) as usize;
+        let checkpoint_bytes = old_journal[..16 + archive_len].to_vec();
+        let identity = nodecraft_types::Blake3::from_bytes(*blake3::hash(&checkpoint_bytes[16..]).as_bytes());
         let operation = if collection == "tags" { "put_tag" } else { "put_field" };
         let body = if collection == "tags" { "tag" } else { "field" };
         let mut change = serde_json::json!({"type":operation,"canvas":canvas_key});
         change[body] = serde_json::json!({"id":id,"title":"Future"});
         change[body][field] = value;
-        let record = serde_json::json!({"checkpoint":checkpoint.identity,"sequence":1,"changes":{"changes":[change]}});
+        let record = serde_json::json!({"checkpoint":identity,"sequence":1,"changes":{"changes":[change]}});
         let json = serde_json::to_vec(&record).unwrap();
         let mut payload = Vec::new();
         payload.extend_from_slice(&(json.len() as u64).to_le_bytes());
         payload.extend(json);
         payload.extend_from_slice(&0u64.to_le_bytes());
-        let mut bytes = checkpoint.bytes;
+        let mut bytes = checkpoint_bytes;
         bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
         bytes.extend_from_slice(blake3::hash(&payload).as_bytes());
         bytes.extend(payload);
@@ -219,7 +221,7 @@ fn comments_v2_never_silently_drops_future_tags_or_fields_in_archives_or_records
     }
     let mut extension = base;
     extension["project"]["canvases"][&canvas_key]["unrelated_extension"] = serde_json::json!({"tags":{"color":null},"field":{"rect":null,"collapsed":false}});
-    assert!(decode(&replace_manifest(&v2, &extension)).is_ok());
+    assert!(decode(&replace_manifest(v2, &extension)).is_ok());
 }
 
 #[test]
@@ -266,6 +268,27 @@ fn legacy_headers_also_reject_reserved_v3_roles_in_archive_and_checksummed_frame
             bytes.extend_from_slice(blake3::hash(&payload).as_bytes());
             bytes.extend(payload);
             assert!(journal::recover(&bytes).is_err());
+        }
+    }
+}
+
+#[test]
+fn frozen_legacy_journals_reject_all_new_bulk_operation_names() {
+    for old in [JOURNAL, include_bytes!("fixtures/v2/comments-v2.ncrj").as_slice()] {
+        let len = u64::from_le_bytes(old[8..16].try_into().unwrap()) as usize;
+        let checkpoint = &old[..16 + len];
+        let identity = nodecraft_types::Blake3::from_bytes(*blake3::hash(&checkpoint[16..]).as_bytes());
+        for operation in ["set_node_tags", "set_node_fields", "move_nodes"] {
+            let record=serde_json::to_vec(&serde_json::json!({"checkpoint":identity,"sequence":1,"changes":{"changes":[{"type":operation,"canvas":CanvasId::from_bytes([1;16]),"assignments":[],"positions":[]}]}})).unwrap();
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&(record.len() as u64).to_le_bytes());
+            payload.extend(record);
+            payload.extend_from_slice(&0u64.to_le_bytes());
+            let mut bytes = checkpoint.to_vec();
+            bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(blake3::hash(&payload).as_bytes());
+            bytes.extend(payload);
+            assert!(journal::recover(&bytes).is_err(), "{operation}");
         }
     }
 }

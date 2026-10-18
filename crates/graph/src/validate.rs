@@ -93,6 +93,13 @@ pub(crate) fn invalid(message: &str) -> Error {
 pub(crate) fn text(value: &str, limit: usize) -> Result<(), Error> {
     if value.len() > limit { Err(invalid("text exceeds the document limit")) } else { Ok(()) }
 }
+pub(crate) fn palette_color(value: &str) -> Result<(), Error> {
+    text(value, 64)?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-') {
+        return Err(invalid("colour must be a nonempty lowercase palette identifier"));
+    }
+    Ok(())
+}
 
 pub(crate) fn comment(comment: &crate::Comment) -> Result<(), Error> {
     position(comment.pos)?;
@@ -269,13 +276,13 @@ impl Canvas {
             if *id != field.id {
                 return Err(invalid("field map key does not match its id"));
             }
-            text(&field.title, 4096)?;
+            field.validate()?;
         }
         for (id, tag) in &self.tags {
             if *id != tag.id {
                 return Err(invalid("tag map key does not match its id"));
             }
-            text(&tag.title, 4096)?;
+            tag.validate()?;
         }
         let mut message_count = 0usize;
         for (id, comment) in &self.comments {

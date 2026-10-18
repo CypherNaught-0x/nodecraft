@@ -211,7 +211,7 @@ fn run_field_and_all_stale_choose_their_own_nodes() {
         node.field = Some(field);
     }
     let mut p = project(Vec::new(), &[]);
-    let mut changes = vec![Change::PutField { canvas: C, field: nodecraft_graph::Field { id: field, title: "Field".into() } }];
+    let mut changes = vec![Change::PutField { canvas: C, field: nodecraft_graph::Field::new(field, "Field") }];
     changes.extend(nodes.into_iter().map(|node| Change::AddNode { canvas: C, node }));
     nodecraft_graph::Changeset::new(changes).apply(&mut p).unwrap();
     for (e, (from, to)) in [(1u8, 2u8), (2, 3), (3, 4)].into_iter().enumerate() {
