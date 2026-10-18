@@ -21,6 +21,8 @@ pub mod keys_cmds;
 pub mod navigation_cmds;
 pub mod node_cmds;
 pub mod order_cmds;
+pub mod perf;
+pub mod perf_cmds;
 mod persistence;
 pub mod search_cmds;
 
@@ -33,3 +35,5 @@ pub mod stale_cmds;
 pub mod turn_into_cmds;
 
 pub use session::{DocChanged, Session};
+
+pub mod provider_routing;

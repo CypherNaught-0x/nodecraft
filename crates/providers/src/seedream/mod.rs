@@ -111,9 +111,14 @@ impl Seedream {
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         Ok(Self { key, http, limits: limits.validate()? })
     }
-    async fn perform(&self, job: &ProviderJob) -> Result<Completed, ProviderError> {
+    async fn perform(&self, job: &ProviderJob, context: Option<&crate::SubmitContext>) -> Result<Completed, ProviderError> {
         let prepared = request::prepare(job, self.limits)?;
         let req = prepared.encode(&self.key, self.limits)?;
+        // Local validation/encoding proves no request was attempted. The trait method
+        // itself may have effects before returning its future, so taint before invoking it.
+        if let Some(context) = context {
+            context.unknown();
+        }
         let reply = self
             .http
             .send_no_redirect(req)
@@ -130,7 +135,11 @@ impl Provider for Seedream {
         false
     }
     fn submit<'a>(&'a self, j: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
-        Box::pin(async move { self.perform(j).await.map(Submission::Finished) })
+        Box::pin(async move { self.perform(j, None).await.map(Submission::Finished) })
+    }
+    fn submit_with_delivery<'a>(&'a self, j: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        context.arm();
+        Box::pin(async move { self.perform(j, Some(context)).await.map(Submission::Finished) })
     }
     fn poll<'a>(&'a self, _: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(async { Err(ProviderError::new(ErrorKind::NotFound, "Seedream synchronous requests have no resumable handle")) })

@@ -104,6 +104,7 @@ impl PersistentAdmission {
 /// The panic guard stages edits before publication; native unwinding preserves the live state.
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
 pub struct Session {
+    routing: crate::provider_routing::RoutingAuthority,
     document: Project,
     registry: Registry,
     kinds: nodecraft_nodes::Registry,
@@ -120,6 +121,7 @@ pub struct Session {
     status_revision: u64,
     admission_identity: Arc<()>,
     execution: crate::execution_identity::ExecutionSource,
+    perf: crate::perf::Recorder,
 }
 
 impl Session {
@@ -142,6 +144,7 @@ impl Session {
             registry,
             kinds,
             resources: Resources::default(),
+            routing: Default::default(),
             services: Services::default(),
             undo: History::default(),
             redo: History::default(),
@@ -154,7 +157,16 @@ impl Session {
             status_revision: 0,
             admission_identity: Arc::new(()),
             execution,
+            perf: crate::perf::Recorder::default(),
         }
+    }
+
+    /// The performance recorder (#151): off until `perf.start`; the host gives it a clock.
+    pub fn perf(&self) -> &crate::perf::Recorder {
+        &self.perf
+    }
+    pub fn perf_mut(&mut self) -> &mut crate::perf::Recorder {
+        &mut self.perf
     }
 
     pub fn document(&self) -> &Project {
@@ -180,6 +192,13 @@ impl Session {
         !self.redo.entries.is_empty()
     }
 
+    /// Install endpoint authority atomically. Generic resources cannot change this nonce.
+    pub fn set_provider_routing(&mut self, routing: crate::provider_routing::ProviderRouting) -> Result<(), Error> {
+        let nonce = crate::execution_identity::nonce()?;
+        self.routing = crate::provider_routing::RoutingAuthority { routing, nonce: Some(nonce) };
+        Ok(())
+    }
+
     /// Replace a host-owned capability without discarding other injected resources.
     /// A host may scope a live view snapshot to one enabled/dispatch call and restore it after.
     pub fn swap_resource<T: std::any::Any>(&mut self, value: Option<T>) -> Option<T> {
@@ -188,6 +207,17 @@ impl Session {
     /// Add a host callback without replacing services supplied by another frontend.
     pub fn register_host_service(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
         self.services.register(id, handler)
+    }
+    /// Receives/enqueues typed work. Authorize outside dispatch before scheduling.
+    pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        self.services.register_run_host(handler)
+    }
+    pub fn authorize_prepared_run(
+        &self,
+        prepared: crate::run_cmds::PreparedRun,
+        options: nodecraft_exec::run::RunOptions,
+    ) -> Result<(crate::run_cmds::AuthorizedRun, nodecraft_exec::run::Progress), Error> {
+        guard(|| crate::run_cmds::authorize(&self.context(Phase::Dispatch), prepared, options))
     }
     pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
@@ -257,6 +287,7 @@ impl Session {
 
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
+            routing: &self.routing,
             document: &self.document,
             revision: self.revision,
             kinds: &self.kinds,
@@ -267,6 +298,7 @@ impl Session {
             phase,
             file: self.file_status(),
             execution: &self.execution,
+            perf: &self.perf,
         }
     }
 
@@ -288,9 +320,18 @@ impl Session {
 
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let before = self.file_status();
+        // Capture commands don't time themselves.
+        let start = if id.starts_with("perf.") { None } else { self.perf.now() };
         let result = self.dispatch_inner(id, params);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
+        }
+        // Only commands that ran count: a refusal is fast and would pull the latencies down.
+        if let Some(start) = start.filter(|_| result.is_ok()) {
+            self.perf.record_since(crate::perf::Metric::Dispatch, start);
+            if let Some(metric) = crate::perf::Metric::of_command(id) {
+                self.perf.record_since(metric, start);
+            }
         }
         result
     }
@@ -306,6 +347,21 @@ impl Session {
             Effect::None { result } => {
                 validate_json(&result)?;
                 return Ok(result);
+            }
+            Effect::PreparedRun { prepared } => {
+                return guard(|| {
+                    let result = self.services.invoke_run_host(*prepared)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            Effect::Perf { action } => {
+                match action {
+                    crate::perf_cmds::PerfAction::Start => self.perf.set_enabled(true),
+                    crate::perf_cmds::PerfAction::Stop => self.perf.set_enabled(false),
+                    crate::perf_cmds::PerfAction::Clear => self.perf.clear(),
+                }
+                return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
@@ -426,7 +482,7 @@ impl Session {
                 let (document, inverse) = entry.inverse.stage(&self.document)?;
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
-            Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } => {
+            Effect::None { .. } | Effect::PreparedRun { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }
         };

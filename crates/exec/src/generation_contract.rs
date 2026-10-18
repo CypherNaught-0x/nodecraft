@@ -21,3 +21,23 @@ pub(crate) fn validate_outputs(node: &Node, jobs: &[JobSpec]) -> Result<(), &'st
     }
     Ok(())
 }
+
+pub(crate) fn validate_targets(
+    node: &nodecraft_graph::Node,
+    jobs: &[nodecraft_nodes::JobSpec],
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<(), crate::planner::TargetReason> {
+    use crate::planner::TargetReason;
+    for job in jobs {
+        if let nodecraft_nodes::JobSpec::Generate { node: owner, provider, instance, .. } = job {
+            if *owner != node.id {
+                return Err(TargetReason::Mismatch);
+            }
+            let target = targets.get(node.id, provider).ok_or(TargetReason::MissingSelection)?;
+            if target.instance() != *instance {
+                return Err(TargetReason::Mismatch);
+            }
+        }
+    }
+    Ok(())
+}

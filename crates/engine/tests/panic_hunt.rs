@@ -134,7 +134,7 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
         session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
-        session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
+        session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
     }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
@@ -164,6 +164,9 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        "perf.start" | "perf.clear" | "perf.report" => json!({}),
+        // Stop needs a running capture; the hunt checks the refusal never panics.
+        "perf.stop" => json!({}),
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
         "history.extract" => {
@@ -263,6 +266,10 @@ fn typed_template_panic_hunt() {
                             | "run.quote"
                             | "run.start"
                             | "usage.export_csv"
+                            | "perf.start"
+                            | "perf.stop"
+                            | "perf.clear"
+                            | "perf.report"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);

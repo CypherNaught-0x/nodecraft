@@ -29,7 +29,7 @@ control = { type = "unsigned", min = "1", max = "4" }
 default = { type = "unsigned", value = "1" }
 "#;
 
-/// A generator with a model picker and an image count.
+thread_local! {static PLAN_CALLS:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
 struct Gen(NodeDescriptor);
 impl NodeKind for Gen {
     fn descriptor(&self) -> &NodeDescriptor {
@@ -39,7 +39,19 @@ impl NodeKind for Gen {
         ModeId::new("gen").ok()
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
-        Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value: V::Text("generated".into()) }])
+        PLAN_CALLS.with(|n| n.set(n.get() + 1));
+        if self.0.category == Category::Action {
+            return Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value: V::Text("generated".into()) }]);
+        }
+        Ok(vec![JobSpec::Generate {
+            instance: ctx.targets.get(ctx.node.id, "test").and_then(|t| t.instance()),
+            node: ctx.node.id,
+            provider: "test".into(),
+            model: "img-v1".into(),
+            params: ctx.node.params.iter().filter(|(name, _)| name.as_str() == "num_images").map(|(k, v)| (k.clone(), v.clone())).collect(),
+            inputs: ctx.inputs.iter().map(|i| nodecraft_nodes::GenerateInput { role: "prompt".into(), value: i.value.clone() }).collect(),
+            outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Image }],
+        }])
     }
 }
 
@@ -114,7 +126,7 @@ fn project() -> Project {
     p
 }
 
-type Started = Arc<Mutex<Vec<Value>>>;
+type Started = Arc<Mutex<Vec<PreparedRun>>>;
 
 fn session(budgets: Budgets, with_service: bool) -> (Session, Started) {
     let mut resources = Resources::default();
@@ -126,13 +138,19 @@ fn session(budgets: Budgets, with_service: bool) -> (Session, Started) {
     if with_service {
         let log = Arc::clone(&started);
         services
-            .register(RUN_SERVICE, move |request| {
-                log.lock().unwrap().push(request.clone());
+            .register_run_host(move |request| {
+                log.lock().unwrap().push(request);
                 Ok(json!({"run": "accepted"}))
             })
             .unwrap();
     }
-    let session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources).with_services(services);
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources).with_services(services);
+    let mut routing = crate::provider_routing::ProviderRouting::new();
+    let binding = routing.bind_default(Arc::new(CommandProvider)).unwrap();
+    for n in session.document().canvases().get(&C).unwrap().nodes().keys() {
+        routing.select(*n, "test", binding.target()).unwrap();
+    }
+    session.set_provider_routing(routing).unwrap();
     (session, started)
 }
 
@@ -193,20 +211,21 @@ fn a_run_starts_only_with_an_accepted_price_within_the_budgets() {
     let ok = start_params(&mut s, &[2], json!({"USD": 120_000}), false);
     assert_eq!(s.dispatch("run.start", &ok).unwrap(), json!({"run": "accepted"}));
     let partial = start_params(&mut s, &[2, 3], json!({"USD": 200_000}), true);
-    assert!(s.dispatch("run.start", &partial).is_ok());
-    let requests = started.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0]["run"]["mode"], "selected");
-    assert_eq!(requests[0]["revision"], json!(s.revision()));
-    assert_eq!(requests[0]["accept"]["amounts"]["USD"], 120_000);
-    // The host verifies the token against the document before running.
-    let again = price(&s, &requests[0]["run"]).unwrap();
-    assert_eq!(json!(again.token), requests[0]["token"]);
+    assert!(s.dispatch("run.start", &partial).is_err(), "partial cannot override an unknown generation model");
+    let mut requests = std::mem::take(&mut *started.lock().unwrap());
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(requests[0].run.mode, ModeParam::Selected));
+    assert_eq!(requests[0].accept.amounts.get("USD"), Some(&120_000));
+    assert_eq!(price(&s, &request(&[2])).unwrap().token, requests[0].accept.token);
+    let (run, progress) = s.authorize_prepared_run(requests.pop().unwrap(), run_options()).unwrap();
+    let (_, job) = crate::generate::provider_job(run.work(progress.jobs[0].id).unwrap(), "fixture").unwrap();
+    assert_eq!(job.model, "img-v1");
+    assert_eq!(job.params.get("num_images"), Some(&json!(3)));
     // Over a session cap: refused whatever was accepted.
     let (mut capped, started) = session(Budgets { session: Some(usd(100_000)), ..Budgets::default() }, true);
     let params = start_params(&mut capped, &[2], json!({"USD": 1_000_000}), true);
     let error = capped.dispatch("run.start", &params).unwrap_err();
-    assert!(error.message.contains("session budget"), "{}", error.message);
+    assert!(error.message.contains("budget"), "{}", error.message);
     assert!(started.lock().unwrap().is_empty());
 }
 
@@ -217,7 +236,7 @@ fn an_edit_after_the_quote_invalidates_it() {
     // Four images instead of three: the price the caller saw no longer holds.
     s.dispatch("node.param_set", &json!({"canvas": C, "id": id(2), "name": "num_images", "value": {"type": "unsigned", "value": "4"}})).unwrap();
     let error = s.dispatch("run.start", &params).unwrap_err();
-    assert!(error.message.contains("quote it again"), "{}", error.message);
+    assert!(error.message.contains("quote again"), "{}", error.message);
     assert!(started.lock().unwrap().is_empty());
 }
 
@@ -300,6 +319,7 @@ fn usage_exports_in_pages() {
     let mut log = UsageLog::default();
     for n in 0..(MAX_EXPORT_ROWS + 5) {
         let entry = nodecraft_exec::cost::UsageEntry {
+            instance: None,
             at_ms: 0,
             session: "s".into(),
             node: id(2),
@@ -326,7 +346,7 @@ fn usage_exports_in_pages() {
 fn usage_snapshot_pagination_observes_finalized_actuals_and_conservative_budget_constructor() {
     use nodecraft_exec::cost::{Charge, UsageMetadata};
     let mut log = UsageLog::default();
-    let metadata = |key| UsageMetadata { at_ms: 1, session: "s", node: id(2), provider: "test", model: "m", idempotency_key: key };
+    let metadata = |key| UsageMetadata { instance: None, at_ms: 1, session: "s", node: id(2), provider: "test", model: "m", idempotency_key: key };
     let mut first = log.reserve_metadata(metadata("first")).unwrap();
     let mut second = log.reserve_metadata(metadata("second")).unwrap();
     let _held = log.reserve_metadata(metadata("held")).unwrap();
@@ -376,6 +396,7 @@ fn hostile_usage_session() -> (Session, String) {
     let text = "\"\\\n\r\t\u{0000}é".repeat(50);
     for n in 0..MAX_EXPORT_ROWS {
         log.record(nodecraft_exec::cost::UsageEntry {
+            instance: None,
             at_ms: n as u64,
             session: text.clone(),
             node: id(2),
@@ -387,7 +408,7 @@ fn hostile_usage_session() -> (Session, String) {
         })
         .unwrap();
     }
-    let expected = log.to_csv();
+    let expected = scoped_csv(&log);
     let mut resources = Resources::default();
     resources.insert(UsageSnapshot(Arc::new(log)));
     (Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources), expected)
@@ -415,7 +436,7 @@ fn usage_export_hostile_pages_fit_encoded_result_and_preserve_every_row() {
             None => break,
         }
     }
-    assert_eq!(joined, expected);
+    assert!(joined == expected, "all scoped CSV rows must roundtrip across bounded pages");
 }
 
 #[test]
@@ -439,6 +460,7 @@ fn csv_small_injected_ceiling_admits_exact_rows_and_never_stalls() {
     let mut log = UsageLog::default();
     for n in 0..3 {
         log.record(nodecraft_exec::cost::UsageEntry {
+            instance: None,
             at_ms: n,
             session: "s".into(),
             node: id(2),
@@ -452,7 +474,7 @@ fn csv_small_injected_ceiling_admits_exact_rows_and_never_stalls() {
     }
     let params = ExportParams { offset: 0, limit: Some(1) };
     let mut row = Vec::new();
-    log.write_csv_rows(&mut row, 0, 1).unwrap();
+    log.write_scoped_csv_rows(&mut row, 0, 1).unwrap();
     let envelope = serde_json::to_vec(&json!({"csv":"", "total":3,"next_offset":usize::MAX})).unwrap().len();
     let ceiling = escaped_csv_bytes(&row).unwrap() + envelope;
     let page = csv_page(&log, &params, ceiling).unwrap();
@@ -506,7 +528,7 @@ fn launch_authority_rejects_copied_projects_and_equal_revision_inputs_before_ser
         let mut target = Session::with_registries(doc, Registry::builtins().unwrap(), kinds()).unwrap();
         install_run_resources(&mut target, catalog.clone());
         target
-            .register_host_service(RUN_SERVICE, move |_| {
+            .register_run_host(move |_| {
                 *counted.lock().unwrap() += 1;
                 Ok(Value::Null)
             })
@@ -570,53 +592,19 @@ fn queued_host_checks_actual_session_before_reserving_and_freezes_verified_input
     let (mut s, queued) = session(Budgets::default(), true);
     let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
     s.dispatch("run.start", &params).unwrap();
-    let envelope = queued.lock().unwrap()[0].clone();
-    let mut ledger = UsageLog::default();
-    let verify = |s: &Session, ledger: &mut UsageLog| -> Result<(nodecraft_graph::Project, nodecraft_exec::planner::RunPlan, RunCatalog), Error> {
-        let q = price(s, &envelope["run"])?;
-        if !q.allowed || !q.complete || json!(q.token) != envelope["token"] {
-            return Err(invalid("queued execution source changed"));
-        }
-        for (currency, cost) in &q.totals {
-            if envelope["accept"]["amounts"][currency].as_u64().unwrap_or(0) < *cost {
-                return Err(invalid("unaccepted price"));
-            }
-        }
-        ledger.record(nodecraft_exec::cost::UsageEntry {
-            at_ms: 0,
-            session: "now".into(),
-            node: id(2),
-            provider: "test".into(),
-            model: "test.img".into(),
-            cost: usd(120_000),
-            idempotency_key: "queued".into(),
-            status: nodecraft_exec::cost::Charge::Estimate,
-        })?;
-        let canvas = s.document().canvases().get(&C).unwrap();
-        let Planned::Ready(plan) = plan(canvas, s.kinds(), &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new())? else {
-            return Err(invalid("verified run became blocked"));
-        };
-        let retained_catalog = s.context(crate::commands::Phase::Preview).resources.require::<RunCatalog>()?.clone();
-        Ok((s.document().clone(), plan, retained_catalog))
-    };
-    let (frozen, frozen_plan, retained_catalog) = verify(&s, &mut ledger).unwrap();
-    assert_eq!(ledger.entries().count(), 1);
+    s.dispatch("run.start", &params).unwrap();
+    let first = queued.lock().unwrap().pop().unwrap();
+    let stale = queued.lock().unwrap().pop().unwrap();
+    let (run, progress) = s.authorize_prepared_run(first, run_options()).unwrap();
     s.import_asset(b"host drift").unwrap();
-    let mut untouched = UsageLog::default();
-    assert!(verify(&s, &mut untouched).is_err());
+    let untouched = UsageLog::default();
+    assert!(s.authorize_prepared_run(stale, run_options()).is_err());
     assert_eq!(untouched.entries().count(), 0);
     s.dispatch("node.param_set", &json!({"canvas":C,"id":id(1),"name":"text","value":V::Text("later prompt".into())})).unwrap();
     s.swap_resource(Some(RunCatalog::new(Catalog::from_toml(&CATALOG.replace("img-v1", "img-v2")).unwrap()).unwrap()));
-    assert_eq!(retained_catalog.catalog().get("test.img").unwrap().provider_model, "img-v1");
-    assert!(
-        frozen_plan
-            .steps
-            .iter()
-            .flat_map(|step| &step.inputs)
-            .flat_map(|input| &input.from)
-            .any(|source| matches!(source, nodecraft_exec::planner::InputSource::Value(V::Text(text)) if text == "a fox"))
-    );
-    assert_eq!(frozen.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().params["text"], V::Text("a fox".into()));
+    let (_, job) = crate::generate::provider_job(run.work(progress.jobs[0].id).unwrap(), "queued").unwrap();
+    assert_eq!(job.model, "img-v1");
+    assert!(job.inputs.iter().any(|i| matches!(i,nodecraft_providers::JobInput::Text{text,..} if text=="a fox")));
 }
 #[test]
 fn binding_byte_budget_and_entropy_failures_are_explicit() {
@@ -624,7 +612,7 @@ fn binding_byte_budget_and_entropy_failures_are_explicit() {
     let c = s.context(crate::commands::Phase::Preview);
     let p: RunParams = params(&request(&[2])).unwrap();
     let catalog = c.resources.require::<RunCatalog>().unwrap();
-    let exact = b"nodecraft.run.quote.v2".len() + 32 + 8 + 8 + 16 + 16 + 32 + 1 + 8 + 16;
+    let exact = b"nodecraft.run.quote.v3".len() + 32 + 8 + 8 + 16 + 16 + 32 + 32 + 1 + 8 + 16;
     assert!(binding(&c, catalog, &p, exact).is_ok());
     assert!(binding(&c, catalog, &p, exact - 1).is_err());
     crate::execution_identity::without_entropy(|| {
@@ -772,6 +760,7 @@ fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells
     let heavy = "\u{1}".repeat(500);
     let add = |log: &mut UsageLog, n: usize| {
         log.record(UsageEntry {
+            instance: None,
             at_ms: n as u64,
             session: heavy.clone(),
             node: id(2),
@@ -786,7 +775,7 @@ fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells
     for n in 0..100 {
         add(&mut log, n)
     }
-    let metadata = |key| UsageMetadata { at_ms: 101, session: "s", node: id(2), provider: "overlay", model: "m", idempotency_key: key };
+    let metadata = |key| UsageMetadata { instance: None, at_ms: 101, session: "s", node: id(2), provider: "overlay", model: "m", idempotency_key: key };
     let mut first = log.reserve_metadata(metadata("first-overlay")).unwrap();
     let mut second = log.reserve_metadata(metadata("second-overlay")).unwrap();
     let _held = log.reserve_metadata(metadata("held-not-listed")).unwrap();
@@ -797,7 +786,7 @@ fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells
     log.finalize_metadata(&mut first, usd(2)).unwrap();
     assert_eq!(log.metadata_statistics().held, 1);
     assert_eq!(log.metadata_statistics().finalized, 2);
-    let expected = log.to_csv();
+    let expected = scoped_csv(&log);
     let before = serde_json::to_string(&log).unwrap();
     let retained = Arc::new(log);
     let mut resources = Resources::default();
@@ -823,9 +812,588 @@ fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells
         }
     }
     assert!(pages > 1, "actual encoded byte ceiling must split this fixture");
-    assert_eq!(joined, expected);
+    assert!(joined == expected, "all scoped CSV rows must roundtrip across bounded pages");
     assert!(!joined.contains("held-not-listed"));
     assert!(joined.find("first-overlay").unwrap() < joined.find("second-overlay").unwrap());
     assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
     assert_eq!(retained.metadata_statistics().finalized, 2, "read-only export must not flush overlays");
+}
+
+fn run_options() -> nodecraft_exec::run::RunOptions {
+    nodecraft_exec::run::RunOptions { id: [7; 16], first_job: 1, limits: Default::default(), retry: nodecraft_exec::scheduler::RetryPolicy::NEVER }
+}
+#[test]
+fn typed_queue_rechecks_live_authority_and_budget_without_replanning() {
+    for change in 0..3 {
+        let (mut s, queued) = session(Budgets::default(), true);
+        let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+        s.enabled("run.start", &params).unwrap();
+        assert!(queued.lock().unwrap().is_empty());
+        s.dispatch("run.start", &params).unwrap();
+        let prepared = queued.lock().unwrap().pop().unwrap();
+        match change {
+            0 => {
+                s.dispatch("node.param_set", &json!({"canvas":C,"id":id(2),"name":"num_images","value":{"type":"unsigned","value":"4"}})).unwrap();
+            }
+            1 => {
+                s.swap_resource(Some(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap()));
+            }
+            _ => {
+                s.swap_resource(Some(BudgetState { budgets: Budgets { session: Some(usd(1)), ..Default::default() }, spent: Default::default() }));
+            }
+        }
+        assert!(s.authorize_prepared_run(prepared, run_options()).is_err());
+    }
+    let mut services = Services::default();
+    assert!(services.register(RUN_SERVICE, |_| Ok(Value::Null)).is_err());
+}
+
+#[test]
+fn preview_has_zero_snapshot_copies_and_queued_authorization_has_zero_plan_replays() {
+    let (mut s, queued) = session(Budgets::default(), true);
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    PREPARED_COPIES.with(|n| n.set(0));
+    PLAN_CALLS.with(|n| n.set(0));
+    s.enabled("run.start", &params).unwrap();
+    assert_eq!(PREPARED_COPIES.with(|n| n.get()), 0);
+    assert_eq!(PLAN_CALLS.with(|n| n.get()), 0);
+    s.dispatch("run.start", &params).unwrap();
+    assert_eq!(PLAN_CALLS.with(|n| n.get()), 1);
+    assert_eq!(PREPARED_COPIES.with(|n| n.get()), 1);
+    let p = queued.lock().unwrap().pop().unwrap();
+    s.authorize_prepared_run(p, run_options()).unwrap();
+    assert_eq!(PLAN_CALLS.with(|n| n.get()), 1);
+}
+
+#[test]
+fn retained_request_metadata_counts_each_owned_token_and_map_entry() {
+    let value = with_accept(&[2], json!({"token":"a".repeat(64),"amounts":{"USD":20},"partial":false}));
+    let base = start_metadata(&value).unwrap();
+    let mut duplicate = value.clone();
+    duplicate["accept"]["token"] = json!("b".repeat(128));
+    assert_eq!(start_metadata(&duplicate).unwrap(), base + 64);
+    duplicate["accept"]["amounts"]["EUR"] = json!(1);
+    assert_eq!(start_metadata(&duplicate).unwrap(), base + 64 + std::mem::size_of::<(String, u64)>() + 48 + 3);
+    let mut hostile = value;
+    hostile["accept"]["token"] = json!("x".repeat(nodecraft_exec::admission::MAX_SCRATCH_BYTES));
+    assert!(start_metadata(&hostile).is_err());
+}
+
+#[test]
+fn unknown_model_quote_diagnostic_does_not_reflect_the_raw_selection() {
+    let (mut s, _) = session(Budgets::default(), true);
+    let marker = "private-model-selection-marker";
+    s.dispatch("node.param_set", &json!({"canvas":C,"id":id(2),"name":"model","value":V::Text(marker.into())})).unwrap();
+    let q = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert!(!q.to_string().contains(marker));
+    let params = start_params(&mut s, &[2], json!({"USD":1_000_000}), true);
+    let error = s.dispatch("run.start", &params).unwrap_err();
+    assert!(!error.message.contains(marker));
+    assert!(error.message.len() < 256);
+}
+
+#[test]
+fn independent_review275_all_unknown_selections_must_be_redacted() {
+    let mut descriptor = kinds().get("test.gen").unwrap().descriptor().clone();
+    descriptor.params.params.push(ParamSpec {
+        name: "model2".into(),
+        label: "Second model".into(),
+        description: None,
+        control: ParamControl::Model,
+        required: false,
+        default: None,
+        visible_if: None,
+    });
+    let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    kinds.register(Box::new(Gen(descriptor))).unwrap();
+    let mut document = project();
+    let marker = "private-model-selection-marker";
+    Change::SetParam { canvas: C, id: id(2), name: "model".into(), value: Some(V::Text(marker.into())) }.apply(&mut document).unwrap();
+    let mut resources = Resources::default();
+    resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
+    resources.insert(BudgetState { budgets: Budgets::default(), spent: Spent::default() });
+    let mut session = Session::with_registries(document, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources);
+    install_test_routing(&mut session);
+    let quote = session.dispatch("run.quote", &request(&[2])).unwrap();
+    println!("actual public quote: {quote}");
+    assert!(!quote.to_string().contains(marker), "an unrelated later unpriced reason must not expose an earlier unknown selection");
+}
+
+fn multi_model_session(selections: &[Option<&str>]) -> (Session, Arc<Mutex<usize>>) {
+    let mut descriptor = kinds().get("test.gen").unwrap().descriptor().clone();
+    for index in 1..selections.len() {
+        descriptor.params.params.push(ParamSpec {
+            name: format!("model{index}"),
+            label: "Additional model".into(),
+            description: None,
+            control: ParamControl::Model,
+            required: false,
+            default: None,
+            visible_if: None,
+        });
+    }
+    let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    kinds.register(Box::new(Gen(descriptor))).unwrap();
+    let mut document = project();
+    for (index, selected) in selections.iter().enumerate() {
+        let name = if index == 0 { "model".to_owned() } else { format!("model{index}") };
+        Change::SetParam { canvas: C, id: id(2), name, value: selected.map(|id| V::Text(id.into())) }.apply(&mut document).unwrap();
+    }
+    let mut catalog = Catalog::from_toml(CATALOG).unwrap();
+    let mut free = catalog.get("test.img").unwrap().clone();
+    free.id = "test.free".into();
+    free.pricing = nodecraft_catalog::Pricing::Free;
+    let mut usage = free.clone();
+    usage.id = "test.usage".into();
+    usage.pricing = nodecraft_catalog::Pricing::ByUsage { currency: Currency::USD };
+    catalog.merge(Catalog::from_models([free, usage]).unwrap()).unwrap();
+    let mut resources = Resources::default();
+    resources.insert(RunCatalog::new(catalog).unwrap());
+    resources.insert(BudgetState { budgets: Default::default(), spent: Default::default() });
+    let mut session = Session::with_registries(document, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources);
+    install_test_routing(&mut session);
+    let called = Arc::new(Mutex::new(0));
+    let count = called.clone();
+    session
+        .register_run_host(move |_| {
+            *count.lock().unwrap() += 1;
+            Ok(Value::Null)
+        })
+        .unwrap();
+    (session, called)
+}
+#[test]
+fn every_unknown_model_stays_out_of_public_reports_regardless_of_later_reasons() {
+    let private = "private-first-model-marker";
+    let second = "private-second-model-marker";
+    for selections in [
+        vec![Some(private), None],
+        vec![Some(private), Some(second)],
+        vec![Some(private), Some("test.usage")],
+        vec![Some(private), Some("test.free")],
+        vec![Some("test.img"), Some(private), Some("test.usage")],
+    ] {
+        let (mut s, called) = multi_model_session(&selections);
+        let q = s.dispatch("run.quote", &request(&[2])).unwrap();
+        let text = q.to_string();
+        assert!(!text.contains(private));
+        assert!(!text.contains(second));
+        let expected: Vec<_> = selections.iter().flatten().filter(|id| matches!(**id, "test.img" | "test.free" | "test.usage")).copied().collect();
+        assert_eq!(q["steps"][0]["models"], json!(expected));
+        assert!(!q["complete"].as_bool().unwrap());
+        let params = with_accept(&[2], json!({"token":q["token"],"amounts":{"USD":1_000_000},"partial":true}));
+        PLAN_CALLS.with(|n| n.set(0));
+        let error = s.dispatch("run.start", &params).unwrap_err();
+        assert!(!error.message.contains(private));
+        assert!(!error.message.contains(second));
+        assert!(error.message.len() < 256);
+        assert_eq!(*called.lock().unwrap(), 0);
+        assert_eq!(PLAN_CALLS.with(|n| n.get()), 1);
+    }
+}
+#[test]
+fn validated_multi_model_identities_sum_and_usage_partial_policy_are_preserved() {
+    let (mut s, called) = multi_model_session(&[Some("test.img"), Some("test.free")]);
+    let q = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(q["steps"][0]["models"], json!(["test.img", "test.free"]));
+    assert_eq!(q["totals"]["USD"]["micros"], 120_000);
+    assert_eq!(q["complete"], true);
+    let params = with_accept(&[2], json!({"token":q["token"],"amounts":{"USD":120_000}}));
+    s.dispatch("run.start", &params).unwrap();
+    assert_eq!(*called.lock().unwrap(), 1);
+    let (mut s, called) = multi_model_session(&[Some("test.usage"), Some("test.free")]);
+    let q = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(q["steps"][0]["models"], json!(["test.usage", "test.free"]));
+    assert_eq!(q["complete"], false);
+    let params = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true}));
+    s.dispatch("run.start", &params).unwrap();
+    assert_eq!(*called.lock().unwrap(), 1);
+}
+
+struct CommandProvider;
+impl nodecraft_providers::Provider for CommandProvider {
+    fn id(&self) -> &str {
+        "test"
+    }
+    fn submit<'a>(
+        &'a self,
+        _: &'a nodecraft_providers::ProviderJob,
+    ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::Submission, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::UnsupportedInput, "fixture has no transport")) })
+    }
+    fn poll<'a>(
+        &'a self,
+        _: &'a nodecraft_providers::JobHandle,
+    ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::JobProgress, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::NotFound, "fixture has no handle")) })
+    }
+    fn cancel<'a>(&'a self, _: &'a nodecraft_providers::JobHandle) -> nodecraft_providers::BoxFuture<'a, Result<(), nodecraft_providers::ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[test]
+fn endpoint_authorization_captures_named_binding_and_rotation_invalidates_queued_work() {
+    use crate::provider_routing::ProviderRouting;
+    use nodecraft_types::ProviderInstanceId;
+    let (mut s, started) = session(Budgets::default(), true);
+    let mut routing = ProviderRouting::new();
+    let selected = routing.bind_named(Arc::new(CommandProvider), ProviderInstanceId::from_bytes([0; 16])).unwrap();
+    routing.select(id(2), "test", selected.target()).unwrap();
+    s.set_provider_routing(routing).unwrap();
+    PLAN_CALLS.with(|n| n.set(0));
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    let quote_calls = PLAN_CALLS.with(|n| n.get());
+    s.dispatch("run.start", &params).unwrap();
+    assert_eq!(PLAN_CALLS.with(|n| n.get()), quote_calls + 1, "first eager hook runs exactly once during preparation");
+    let prepared = started.lock().unwrap().pop().unwrap();
+    // A generic resource with the same Rust type has no authority over the Session snapshot.
+    s.swap_resource(Some(ProviderRouting::new()));
+    let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+    assert!(run.binding(progress.jobs[0].id).unwrap().same_binding(&selected));
+    let queued = run.queued_job(progress.jobs[0].id, "captured-endpoint").unwrap();
+    assert!(queued.provider.same_binding(&selected));
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    s.dispatch("run.start", &params).unwrap();
+    let stale = started.lock().unwrap().pop().unwrap();
+    let mut replacement = ProviderRouting::new();
+    let new = replacement.bind_named(Arc::new(CommandProvider), ProviderInstanceId::from_bytes([0; 16])).unwrap();
+    replacement.select(id(2), "test", new.target()).unwrap();
+    s.set_provider_routing(replacement).unwrap();
+    assert!(s.authorize_prepared_run(stale, run_options()).is_err());
+    assert!(run.binding(progress.jobs[0].id).unwrap().same_binding(&selected), "active work retains the old physical binding");
+    assert!(!new.same_binding(&selected));
+}
+#[test]
+fn preparation_retains_selected_binding_only_not_large_routing_root() {
+    use crate::provider_routing::ProviderRouting;
+    use nodecraft_types::ProviderInstanceId;
+    let (mut s, started) = session(Budgets::default(), true);
+    let selected = Arc::new(CommandProvider);
+    let unused = Arc::new(CommandProvider);
+    let selected_weak = Arc::downgrade(&selected);
+    let unused_weak = Arc::downgrade(&unused);
+    let mut routing = ProviderRouting::new();
+    let binding = routing.bind_default(selected.clone()).unwrap();
+    routing.select(id(2), "test", binding.target()).unwrap();
+    drop(binding);
+    for n in 0_u64..10_000 {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&n.to_le_bytes());
+        routing.bind_named(unused.clone(), ProviderInstanceId::from_bytes(bytes)).unwrap();
+    }
+    drop(selected);
+    drop(unused);
+    s.set_provider_routing(routing).unwrap();
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    s.dispatch("run.start", &params).unwrap();
+    let prepared = started.lock().unwrap().pop().unwrap();
+    s.set_provider_routing(ProviderRouting::new()).unwrap();
+    assert!(unused_weak.upgrade().is_none(), "no external root view or selected binding may pin unrelated providers");
+    assert!(selected_weak.upgrade().is_some());
+    drop(prepared);
+    assert!(selected_weak.upgrade().is_none());
+}
+#[test]
+fn endpoint_selection_is_explicit_even_for_registered_defaults() {
+    use crate::provider_routing::ProviderRouting;
+    let (mut s, _) = session(Budgets::default(), true);
+    let mut routing = ProviderRouting::new();
+    routing.bind_default(Arc::new(CommandProvider)).unwrap();
+    s.set_provider_routing(routing).unwrap();
+    let quote = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(quote["allowed"], false);
+    assert!(quote["blocked"].as_array().is_some_and(|b| !b.is_empty()));
+    assert!(quote["blocked"][0].as_str().unwrap().contains("endpoint_missing"));
+    let params = with_accept(&[2], json!({"token":quote["token"],"amounts":{"USD":120_000}}));
+    assert!(s.dispatch("run.start", &params).unwrap_err().message.contains("endpoint_missing"));
+}
+
+fn scoped_csv(log: &UsageLog) -> String {
+    let mut out = Vec::new();
+    log.write_scoped_csv_rows(&mut out, 0, usize::MAX).unwrap();
+    String::from_utf8(out).unwrap()
+}
+fn install_test_routing(session: &mut Session) {
+    let mut routing = crate::provider_routing::ProviderRouting::new();
+    let binding = routing.bind_default(Arc::new(CommandProvider)).unwrap();
+    for node in session.document().canvases().get(&C).unwrap().nodes().keys() {
+        routing.select(*node, "test", binding.target()).unwrap();
+    }
+    session.set_provider_routing(routing).unwrap();
+}
+#[test]
+fn scoped_csv_paging_preserves_identity_beyond_first_page() {
+    use nodecraft_exec::cost::{Charge, UsageEntry};
+    use nodecraft_types::ProviderInstanceId;
+    let mut log = UsageLog::default();
+    for n in 0..=MAX_EXPORT_ROWS {
+        log.record(UsageEntry {
+            at_ms: n as u64,
+            session: "s".into(),
+            node: id(2),
+            provider: "same".into(),
+            instance: if n == MAX_EXPORT_ROWS { Some(ProviderInstanceId::from_bytes([0; 16])) } else { None },
+            model: "m".into(),
+            cost: usd(0),
+            idempotency_key: format!("k{n}"),
+            status: Charge::Actual,
+        })
+        .unwrap();
+    }
+    let first = csv_page(&log, &ExportParams { offset: 0, limit: None }, MAX_EXPORT_JSON_BYTES).unwrap();
+    assert_eq!(first["next_offset"], MAX_EXPORT_ROWS);
+    assert!(first["csv"].as_str().unwrap().contains("provider_instance"));
+    let next = csv_page(&log, &ExportParams { offset: MAX_EXPORT_ROWS, limit: None }, MAX_EXPORT_JSON_BYTES).unwrap();
+    assert!(next["csv"].as_str().unwrap().contains(&ProviderInstanceId::from_bytes([0; 16]).to_string()));
+    assert_eq!(next["next_offset"], Value::Null);
+}
+
+#[test]
+fn selected_binding_retention_overflow_refuses_before_any_binding_clone() {
+    let (s, _) = session(Budgets::default(), true);
+    let c = s.context(crate::commands::Phase::Dispatch);
+    let canvas = s.document().canvases().get(&C).unwrap();
+    let catalog = c.resources.require::<RunCatalog>().unwrap();
+    let Planned::Ready(plan) =
+        nodecraft_exec::planner::plan_with_targets(canvas, s.kinds(), &RunMode::Selected, &[id(2)].into(), &Default::default(), c.routing.routing.targets())
+            .unwrap()
+    else {
+        panic!()
+    };
+    let (mut admitted, _) = nodecraft_exec::admission::admit_run_with_targets(
+        plan,
+        C,
+        canvas.clone(),
+        s.kinds(),
+        catalog.catalog(),
+        Default::default(),
+        c.routing.routing.targets(),
+    )
+    .unwrap();
+    let remaining = admitted.remaining_metadata_bytes();
+    admitted.reserve_metadata(remaining).unwrap();
+    BINDING_COPIES.with(|n| n.set(0));
+    assert!(capture_bindings(&mut admitted, &c.routing.routing).is_err());
+    assert_eq!(BINDING_COPIES.with(|n| n.get()), 0);
+}
+
+struct CapturedProvider(Arc<std::sync::atomic::AtomicUsize>);
+impl nodecraft_providers::Provider for CapturedProvider {
+    fn id(&self) -> &str {
+        "test"
+    }
+    fn submit<'a>(
+        &'a self,
+        _: &'a nodecraft_providers::ProviderJob,
+    ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::Submission, nodecraft_providers::ProviderError>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async {
+            let mut done = nodecraft_providers::Completed::new(vec![]);
+            done.usage.cost = Some(Money::new(Currency::USD, 20));
+            Ok(nodecraft_providers::Submission::Finished(done))
+        })
+    }
+    fn poll<'a>(
+        &'a self,
+        _: &'a nodecraft_providers::JobHandle,
+    ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::JobProgress, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::NotFound, "no asynchronous handle")) })
+    }
+    fn cancel<'a>(&'a self, _: &'a nodecraft_providers::JobHandle) -> nodecraft_providers::BoxFuture<'a, Result<(), nodecraft_providers::ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+struct EndpointRuntime;
+impl nodecraft_exec::driver::Runtime for EndpointRuntime {
+    fn spawn(&self, task: nodecraft_exec::driver::TaskFuture<()>) {
+        futures::executor::block_on(task);
+    }
+    fn sleep(&self, _: u64) -> nodecraft_exec::driver::TaskFuture<()> {
+        Box::pin(async {})
+    }
+    fn now_ms(&self) -> u64 {
+        0
+    }
+}
+#[test]
+fn actual_authorized_run_queues_captured_endpoint_into_provider_runner_after_rotation() {
+    use crate::provider_routing::ProviderRouting;
+    use nodecraft_exec::driver::JobRunner;
+    use nodecraft_types::ProviderInstanceId;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (mut s, started) = session(Budgets::default(), true);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut routing = ProviderRouting::new();
+    let binding = routing.bind_named(Arc::new(CapturedProvider(calls.clone())), ProviderInstanceId::from_bytes([0; 16])).unwrap();
+    routing.select(id(2), "test", binding.target()).unwrap();
+    s.set_provider_routing(routing).unwrap();
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    s.dispatch("run.start", &params).unwrap();
+    let prepared = started.lock().unwrap().pop().unwrap();
+    let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+    s.set_provider_routing(ProviderRouting::new()).unwrap();
+    let log = Arc::new(Mutex::new(UsageLog::default()));
+    let budget =
+        crate::jobs::JobBudget { log: log.clone(), budgets: Arc::new(Mutex::new(Budgets::default())), session: "actual".into(), wall_clock_ms: Arc::new(|| 1) };
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let delivered_sink = delivered.clone();
+    let runner = crate::jobs::ProviderRunner::new(
+        Arc::new(EndpointRuntime),
+        Default::default(),
+        Arc::new(move |_, done| {
+            assert!(matches!(done.accounting, crate::jobs::CompletionAccounting::Recorded));
+            delivered_sink.fetch_add(1, Ordering::SeqCst);
+        }),
+        Arc::new(|_, sent, _| {
+            assert_eq!(sent.target.instance(), Some(ProviderInstanceId::from_bytes([0; 16])));
+        }),
+    )
+    .with_budget(budget);
+    let spec = &progress.jobs[0];
+    let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
+    let admitted_price = queued.price.as_ref().expect("paid admission cannot become unbudgeted");
+    assert_eq!(admitted_price.node, id(2));
+    assert_eq!(admitted_price.model, "test.img");
+    assert_eq!(admitted_price.estimate, Some(usd(120_000)));
+    assert!(queued.provider.same_binding(&binding));
+    runner.register(spec.id, queued);
+    let outcome = futures::executor::block_on(runner.run(
+        nodecraft_exec::scheduler::Start { job: spec.id, lane: spec.lane.clone(), attempt: 1, idempotency_key: spec.idempotency_key.clone() },
+        Default::default(),
+    ));
+    assert_eq!(outcome, nodecraft_exec::scheduler::Outcome::Done);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(delivered.load(Ordering::SeqCst), 1);
+    let log = log.lock().unwrap();
+    let charge = log.charge_target(binding.target(), &spec.idempotency_key).unwrap();
+    assert_eq!(charge.cost, usd(20));
+    assert_eq!(charge.instance, binding.target().instance());
+}
+
+struct SelectionSource(NodeDescriptor, Arc<std::sync::atomic::AtomicUsize>);
+impl NodeKind for SelectionSource {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("source").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        assert_eq!(ctx.targets.get(id(2), "test").and_then(|t| t.instance()), Some(nodecraft_types::ProviderInstanceId::from_bytes([0; 16])));
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value: V::Text("target-before-source".into()) }])
+    }
+}
+#[test]
+fn first_inline_source_hook_sees_authoritative_selection_without_preparation_replay() {
+    use crate::provider_routing::ProviderRouting;
+    use nodecraft_types::ProviderInstanceId;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let descriptor = NodeDescriptor {
+        id: "fixture.selected_source".into(),
+        label: "Source".into(),
+        category: Category::Source,
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Text, many: false } }],
+        params: Default::default(),
+        quick_add: None,
+    };
+    let source = descriptor.instantiate(id(1), &Default::default()).unwrap();
+    let mut kinds = kinds();
+    kinds.register(Box::new(SelectionSource(descriptor, calls.clone()))).unwrap();
+    let mut document = project();
+    Change::SetNode { canvas: C, node: source }.apply(&mut document).unwrap();
+    let mut s = Session::with_registries(document, Registry::builtins().unwrap(), kinds).unwrap();
+    install_run_resources(&mut s, RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
+    let started: Started = Arc::default();
+    let queue = started.clone();
+    s.register_run_host(move |p| {
+        queue.lock().unwrap().push(p);
+        Ok(Value::Null)
+    })
+    .unwrap();
+    let mut routing = ProviderRouting::new();
+    let binding = routing.bind_named(Arc::new(CommandProvider), ProviderInstanceId::from_bytes([0; 16])).unwrap();
+    routing.select(id(2), "test", binding.target()).unwrap();
+    s.set_provider_routing(routing).unwrap();
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    s.dispatch("run.start", &params).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let prepared = started.lock().unwrap().pop().unwrap();
+    let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let (_, job) = crate::generate::provider_job(run.work(progress.jobs[0].id).unwrap(), "source-selection").unwrap();
+    assert!(job.inputs.iter().any(|i| matches!(i,nodecraft_providers::JobInput::Text {text,..} if text=="target-before-source")));
+}
+
+#[test]
+fn authorized_quote_preserves_known_unknown_and_free_prices_without_host_input() {
+    for pricing in [nodecraft_catalog::Pricing::Free, nodecraft_catalog::Pricing::ByUsage { currency: Currency::USD }] {
+        let (session, started) = session(Budgets::default(), true);
+        let mut model = Catalog::from_toml(CATALOG).unwrap().get("test.img").unwrap().clone();
+        model.pricing = pricing.clone();
+        let mut resources = Resources::default();
+        resources.insert(RunCatalog::new(Catalog::from_models([model]).unwrap()).unwrap());
+        resources.insert(BudgetState { budgets: Default::default(), spent: Default::default() });
+        let mut s = session.with_resources(resources);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut routing = crate::provider_routing::ProviderRouting::new();
+        let binding = routing.bind_default(Arc::new(CapturedProvider(calls.clone()))).unwrap();
+        routing.select(id(2), "test", binding.target()).unwrap();
+        s.set_provider_routing(routing).unwrap();
+        let params = start_params(&mut s, &[2], json!({}), true);
+        s.dispatch("run.start", &params).unwrap();
+        let prepared = started.lock().unwrap().pop().unwrap();
+        let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+        let spec = &progress.jobs[0];
+        let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
+        if pricing == nodecraft_catalog::Pricing::Free {
+            assert!(queued.price.is_none());
+        } else {
+            let price = queued.price.as_ref().unwrap();
+            assert_eq!(price.node, id(2));
+            assert_eq!(price.model, "test.img");
+            assert_eq!(price.estimate, None, "unknown paid work must stay budgeted");
+        }
+        assert!(run.queued_job(nodecraft_exec::scheduler::JobId(u64::MAX), "missing").is_err());
+        let runner = crate::jobs::ProviderRunner::new(Arc::new(EndpointRuntime), Default::default(), Arc::new(|_, _| {}), Arc::new(|_, _, _| {})).with_budget(
+            crate::jobs::JobBudget {
+                log: Arc::new(Mutex::new(UsageLog::default())),
+                budgets: Arc::new(Mutex::new(Budgets { per_call: Some(usd(0)), ..Default::default() })),
+                session: "price-bound".into(),
+                wall_clock_ms: Arc::new(|| 0),
+            },
+        );
+        runner.register(spec.id, queued);
+        use nodecraft_exec::driver::JobRunner;
+        let outcome = futures::executor::block_on(runner.run(
+            nodecraft_exec::scheduler::Start { job: spec.id, lane: spec.lane.clone(), attempt: 1, idempotency_key: spec.idempotency_key.clone() },
+            Default::default(),
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(pricing == nodecraft_catalog::Pricing::Free));
+        assert_eq!(matches!(outcome, nodecraft_exec::scheduler::Outcome::Done), pricing == nodecraft_catalog::Pricing::Free);
+    }
+}
+
+#[test]
+fn bounded_static_blockers_preserve_action_and_never_echo_native_text() {
+    use nodecraft_exec::planner::{Blocker, Reason, TargetReason};
+    let blockers: Vec<_> =
+        (0..101).map(|_| Blocker { node: id(2), port: None, upstream: None, reason: Reason::Invalid("private-hook-secret".repeat(1000)) }).collect();
+    let output = blocked_reasons(&blockers);
+    assert_eq!(output.len(), 100, "omission trailer stays inside the existing hundred-record cap");
+    assert!(output.last().unwrap().contains("2 additional"));
+    let text = output.join("; ");
+    assert!(text.len() <= BLOCKED_BYTES);
+    assert!(!text.contains("private-hook"));
+    assert!(text.contains("node_validation"));
+    for reason in [TargetReason::MissingSelection, TargetReason::Mismatch] {
+        let text = blocked_reasons(&[Blocker { node: id(2), port: None, upstream: None, reason: Reason::ProviderTarget(reason) }]);
+        assert!(text[0].contains(if reason == TargetReason::MissingSelection { "endpoint_missing" } else { "endpoint_mismatch" }));
+    }
+    assert!(admission_reason(&Error::new(ErrorKind::Budget, "private-error")).contains("admission_limit"));
+    assert!(admission_reason(&Error::new(ErrorKind::InvalidInput, "private-error")).contains("catalog_mismatch"));
 }

@@ -11,6 +11,7 @@ use serde_json::value::RawValue;
 struct Lex<'a> {
     text: &'a str,
     at: usize,
+    // Aggregate field count across the complete JSON document, not per record.
     fields: usize,
     values: usize,
     strings: usize,
@@ -390,7 +391,7 @@ pub(super) fn parse(reply: HttpResponse, l: Limits) -> Result<Completed, Provide
     if let Some(f) = item.optional("output_format")?
         && text(f)? != "jpeg"
     {
-        return Err(malformed("Seedream4.5 output must be JPEG"));
+        return Err(malformed("Seedream 4.5 output must be JPEG"));
     }
     let blob = text(item.required("b64_json")?)?;
     let n = decoded_len(blob)?;

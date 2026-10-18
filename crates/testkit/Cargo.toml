@@ -12,6 +12,7 @@ description = "NodeCraft: test fixtures, the mock provider and snapshot helpers"
 workspace = true
 
 [dependencies]
+nodecraft-catalog = { workspace = true }
 nodecraft-engine = { workspace = true }
 nodecraft-exec = { workspace = true }
 nodecraft-graph = { workspace = true }
@@ -20,3 +21,7 @@ nodecraft-providers = { workspace = true, features = ["testkit"] }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Real Driver/Reqwest companion: native entered reactor and bounded loopback fixture.
+tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }

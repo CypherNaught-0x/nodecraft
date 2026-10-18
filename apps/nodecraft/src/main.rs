@@ -46,7 +46,12 @@ fn main() -> ExitCode {
                 log::warn!("{problem}");
             }
             let dir = store.dir().map(std::path::Path::to_path_buf);
-            let app = nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)?;
+            let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)?;
+            // Performance reports name what draws the frames (#151).
+            if let Some(render) = cc.wgpu_render_state.as_ref() {
+                let info = render.adapter.get_info();
+                app.set_renderer(format!("{} ({:?})", info.name, info.backend));
+            }
             if control {
                 // Without the channel the app still opens; the log says why.
                 return match control::Controlled::start(app, &cc.egui_ctx, dir) {

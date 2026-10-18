@@ -276,6 +276,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
 }
 
 mod drop;
+mod metrics;
 mod navigation;
 mod order;
 mod search;
@@ -307,6 +308,8 @@ pub struct NodeCraftApp {
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// When the last timed frame started, for the frame interval (#151).
+    last_frame: Option<u64>,
     /// The rows × columns last chosen for "Split into grid".
     split_size: (u32, u32),
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
@@ -390,6 +393,7 @@ impl NodeCraftApp {
         if !session.document().canvases().contains_key(&canvas) {
             return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
         }
+        metrics::install_clock(&mut session);
         let navigation_mailbox = Rc::new(RefCell::new(None));
         let mailbox = Rc::clone(&navigation_mailbox);
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, move |request| {
@@ -433,6 +437,7 @@ impl NodeCraftApp {
             wiring: None,
             reordering: None,
             palette: None,
+            last_frame: None,
             split_size: (2, 2),
             turn_into: None,
             text_focused: false,
@@ -450,7 +455,14 @@ impl NodeCraftApp {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
     }
+    /// One frame of the canvas, timed for performance capture when it's running (#151).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        let started = self.frame_started();
+        self.show_frame(ui);
+        self.frame_finished(started);
+    }
+
+    fn show_frame(&mut self, ui: &mut egui::Ui) {
         self.cache_clock = self.cache_clock.saturating_add(1);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -973,6 +985,11 @@ impl NodeCraftApp {
                 palette::Outcome::Closed => {}
                 palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
                 palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
+                    // The report is for reading elsewhere: put it on the clipboard.
+                    Ok(report) if id == "perf.report" => {
+                        ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
+                        self.notice = Some("Performance report copied to the clipboard.".into());
+                    }
                     Ok(_) => self.notice = None,
                     Err(error) => self.notice = Some(error.message),
                 },

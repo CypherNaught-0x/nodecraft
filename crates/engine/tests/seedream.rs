@@ -3,6 +3,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 use futures::executor::block_on;
 use nodecraft_engine::jobs::{JobBudget, JobPrice, ProviderRunner, QueuedJob};
+use nodecraft_engine::provider_routing::RegisteredProvider;
 use nodecraft_exec::cost::{Budgets, Charge, UsageLog};
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{Event, JobId, JobSpec, JobState, Lane, Limits, Outcome, RetryPolicy, Scheduler, Start};
@@ -63,7 +64,7 @@ fn money(n: u64) -> Money {
 }
 fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob {
     QueuedJob {
-        provider: Arc::new(Seedream::new(Secret::new("fixture-key-not-real").unwrap(), http)),
+        provider: RegisteredProvider::default_instance(Arc::new(Seedream::new(Secret::new("fixture-key-not-real").unwrap(), http))).unwrap(),
         job: ProviderJob {
             model: MODEL.into(),
             params: serde_json::Map::new(),
@@ -94,14 +95,17 @@ fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>
     (Arc::new(runner), budget, outputs)
 }
 fn drive(runner: Arc<ProviderRunner>) -> (Scheduler, Vec<Event>) {
+    drive_one(runner, JobId(1), "fixture-image-1")
+}
+fn drive_one(runner: Arc<ProviderRunner>, id: JobId, key: &str) -> (Scheduler, Vec<Event>) {
     let mut scheduler = Scheduler::new(Limits::default());
     scheduler
         .add(vec![JobSpec {
-            id: JobId(1),
+            id,
             deps: vec![],
             lane: Lane::new("seedream"),
             retry: RetryPolicy { max_attempts: 4, base_delay_ms: 1, max_delay_ms: 2 },
-            idempotency_key: "fixture-image-1".into(),
+            idempotency_key: key.into(),
         }])
         .unwrap();
     let (driver, handle) = nodecraft_exec::driver::driver(scheduler);
@@ -242,7 +246,17 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
         category: Category::Generation,
         inputs: vec![],
         outputs: vec![Port { name: "image".into(), port_type: PortType { modality: Modality::Image, many: false } }],
-        params: ParamSchema::default(),
+        params: ParamSchema {
+            params: vec![nodecraft_types::ParamSpec {
+                name: "model".into(),
+                label: "Model".into(),
+                description: None,
+                control: nodecraft_types::ParamControl::Model,
+                required: false,
+                default: Some(Value::Text("seedream.4_5".into())),
+                visible_if: None,
+            }],
+        },
         quick_add: None,
     };
     let instance = descriptor.instantiate(n, &Default::default()).unwrap();
@@ -252,6 +266,7 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
     Change::AddNode { canvas: c, node: instance }.apply(&mut project).unwrap();
     let routes = vec![GenerateOutput { port: "image".into(), modality: Modality::Image }];
     let work = Work::Generate {
+        instance: None,
         node: n,
         provider: "seedream".into(),
         model: MODEL.into(),
@@ -281,15 +296,22 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
     };
     let options = RunOptions { id: [4; 16], first_job: 1, limits: ExecutionLimits::default(), retry: RetryPolicy::NEVER };
     let canvas = project.canvases().get(&c).unwrap();
-    let (mut run, progress) = Run::start(&plan, c, canvas, &kinds, options).unwrap();
+    let mut targets = nodecraft_types::TargetSelection::empty();
+    targets.insert(n, &nodecraft_types::ProviderTarget::default_instance("seedream").unwrap()).unwrap();
+    let catalog = nodecraft_catalog::Catalog::builtin().unwrap();
+    let (admitted, quote) = nodecraft_exec::admission::admit_run_with_targets(plan, c, canvas.clone(), &kinds, &catalog, Default::default(), &targets).unwrap();
+    assert_eq!(quote.steps.len(), 1);
+    let (mut run, progress) = Run::start_admitted(admitted, &kinds, options).unwrap();
+    assert!(progress.failed.is_empty());
+    assert_eq!(progress.jobs.len(), 1);
     let finished = run.job_done(&kinds, progress.jobs[0].id, converted.outputs);
     assert_eq!(finished.finished.len(), 1);
     assert!(run.is_finished());
     assert_eq!(original, preserved);
     let Work::Generate { mut inputs, .. } = work.clone() else { panic!() };
     inputs.push(GenerateInput { role: "image".into(), value: finished.finished[0].generation.outputs[0].clone() });
-    let Work::Generate { node, provider, model, params, outputs, .. } = work else { panic!() };
-    let edit = Work::Generate { node, provider, model, params, inputs, outputs };
+    let Work::Generate { node, provider, instance, model, params, outputs, .. } = work else { panic!() };
+    let edit = Work::Generate { node, provider, instance, model, params, inputs, outputs };
     assert!(nodecraft_engine::generate::provider_job(&edit, "edit").is_err(), "existing canvas resolver limitation stays explicit");
 }
 
@@ -304,4 +326,69 @@ fn budget_change_after_registration_is_rechecked_before_paid_submit() {
     assert_eq!(t.requests.load(Ordering::SeqCst), 0);
     assert_eq!(o.load(Ordering::SeqCst), 0);
     assert_eq!(b.log.lock().unwrap().entries().count(), 0);
+}
+
+#[test]
+fn local_empty_prompt_refusal_has_zero_transport_and_zero_usage() {
+    let t = Arc::new(Transport { script: Script::Response(200, success()), requests: AtomicUsize::new(0) });
+    let (r, b, outputs) = runner(Budgets { session: Some(money(40000)), ..Default::default() });
+    let mut queued = registration(t.clone(), Some(Some(money(40000))));
+    queued.job.inputs = vec![JobInput::Text { role: "prompt".into(), text: String::new() }];
+    r.register(JobId(1), queued);
+    let (scheduler, events) = drive(r);
+    assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
+    assert_eq!(t.requests.load(Ordering::SeqCst), 0);
+    assert_eq!(outputs.load(Ordering::SeqCst), 0);
+    assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+    let charges = b.log.lock().unwrap().entries().map(|e| (e.cost, e.status)).collect::<Vec<_>>();
+    println!("local refusal requests={} charges={charges:?}", t.requests.load(Ordering::SeqCst));
+    assert!(charges.is_empty(), "a purely local refusal must release its reservation");
+}
+
+#[test]
+fn every_local_refusal_releases_the_same_finite_allowance_for_valid_work() {
+    use nodecraft_providers::seedream::Limits as ProviderLimits;
+    for case in 0..6 {
+        let t = Arc::new(Transport { script: Script::Response(200, success()), requests: AtomicUsize::new(0) });
+        let (r, budget, outputs) = runner(Budgets { session: Some(money(40000)), project: Some(money(40000)), ..Default::default() });
+        let mut queued = registration(t.clone(), Some(Some(money(40000))));
+        let mut limits = ProviderLimits::HARD;
+        let media = || JobInput::Media { role: "image".into(), mime: "image/jpeg".into(), bytes: Arc::from(&include_bytes!("fixtures/seedream15.jpg")[..]) };
+        match case {
+            0 => queued.job.inputs = vec![JobInput::Text { role: "prompt".into(), text: String::new() }],
+            1 => {
+                queued.job.params.insert("unknown".into(), serde_json::json!(true));
+            }
+            2 => {
+                queued.job.inputs.push(media());
+                queued.job.inputs.push(JobInput::Media { role: "image".into(), mime: "image/jpeg".into(), bytes: Arc::from(&b"corrupt last reference"[..]) });
+            }
+            3 => {
+                let mut input = media();
+                let JobInput::Media { mime, .. } = &mut input else { panic!() };
+                *mime = "image/png".into();
+                queued.job.inputs.push(input);
+            }
+            4 => limits.request_bytes = 1,
+            5 => limits.axis -= 1,
+            _ => unreachable!(),
+        }
+        queued.provider =
+            RegisteredProvider::default_instance(Arc::new(Seedream::with_limits(Secret::new("fixture").unwrap(), t.clone(), limits).unwrap())).unwrap();
+        r.register(JobId(1), queued);
+        let (failed, events) = drive(r.clone());
+        assert!(matches!(failed.state(JobId(1)), Some(JobState::Failed { .. })), "case {case}");
+        assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+        assert_eq!(t.requests.load(Ordering::SeqCst), 0, "case {case}");
+        assert_eq!(outputs.load(Ordering::SeqCst), 0);
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 0, "case {case}");
+        let mut valid = registration(t.clone(), Some(Some(money(40000))));
+        valid.job.idempotency_key = "fixture-image-2".into();
+        r.register(JobId(2), valid);
+        let (success, _) = drive_one(r, JobId(2), "fixture-image-2");
+        assert!(matches!(success.state(JobId(2)), Some(JobState::Done)), "released allowance case {case}");
+        assert_eq!(t.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(outputs.load(Ordering::SeqCst), 1);
+        assert_eq!(budget.log.lock().unwrap().entries().map(|e| e.cost).collect::<Vec<_>>(), [money(40000)]);
+    }
 }

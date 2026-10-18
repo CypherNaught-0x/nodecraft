@@ -166,7 +166,7 @@ fn lower_only_limits_wire_metadata_and_input_boundaries() {
     }
 }
 #[test]
-fn wide_valid_four_k_geometry_is_not_clamped_to4096_after_payment() {
+fn wide_valid_four_k_geometry_is_not_clamped_to_4096_after_payment() {
     for (w, h) in [(8192, 2048), (16384, 1024)] {
         let jpg = jpeg(w, h);
         let mut j = job();
@@ -339,4 +339,19 @@ fn jpeg_trailing_payload_is_not_silently_filtered_to_a_valid_prefix() {
     assert!(run(&job(), body(&bytes, 16, 16), Limits::HARD).0.is_err());
     bytes.extend_from_slice(&[255, 217]);
     assert!(run(&job(), body(&bytes, 16, 16), Limits::HARD).0.is_err());
+}
+
+#[test]
+fn aggregate_reference_pixels_count_every_occurrence_before_encoding() {
+    let bytes: Arc<[u8]> = Arc::from(jpeg(16, 16));
+    let mut request = job();
+    request.inputs.extend([media(bytes.clone()), media(bytes)]);
+    for cap in [511, 512] {
+        reset();
+        let (result, http) = run(&request, body(&jpeg(16, 16), 16, 16), Limits { total_pixels: cap, ..Limits::HARD });
+        assert_eq!(result.is_ok(), cap == 512);
+        assert_eq!(http.requests.lock().unwrap().len(), usize::from(cap == 512));
+        assert_eq!(counts()[0], usize::from(cap == 512));
+        assert_eq!(counts()[1], if cap == 512 { 2 } else { 0 });
+    }
 }
