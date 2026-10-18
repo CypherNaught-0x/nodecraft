@@ -42,7 +42,9 @@
   is not evidence that nothing was delivered. The usage log is shared across runs, so a key it
   already holds (an open, settled or retired charge from an earlier run) still counts in the run
   that adopts it, at the row's amount (or as an unknown-price admission), once per run by
-  provider and key. New work on such a key is admitted only within this run's room.
+  provider and key (past the record bound, re-adopting a key may count it again: the safe
+  direction). New work on such a key is admitted only within this run's room. A debit taken on
+  this path is never credited back, even if the row is later released.
 - **Saturation.** If a currency's reserved total overflows (adopted work at extreme catalog
   prices), its exact exposure is lost: later credits no longer reduce it, and new work in that
   currency is refused for the rest of the run.
