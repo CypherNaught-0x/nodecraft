@@ -385,6 +385,12 @@ impl Run {
             Ok(jobs) => jobs,
             Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
+        let Some(instance) = self.canvas.nodes().get(&node) else {
+            return (self.fail(node, "the step node is missing".into()), Vec::new());
+        };
+        if let Err(reason) = crate::generation_contract::validate_outputs(instance, &jobs) {
+            return (self.fail(node, reason.into()), Vec::new());
+        }
         let mut progress = Progress::default();
         let mut ids = Vec::with_capacity(jobs.len());
         for work in jobs {
@@ -640,3 +646,6 @@ impl crate::driver::JobRunner for SourceRunner {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod output_contract_tests;
