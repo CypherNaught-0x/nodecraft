@@ -21,5 +21,7 @@
   rows and columns fields.
 - **Picking visually (#337):** while the card's "Split into grid" menu is open, the card draws the
   grid over its image in the accent colour, updating as rows and columns change. The lines use
-  `split::edge` and the image's full size, so they fall exactly where the split will cut. They
+  `split::edge` on the image's recorded size (the thumbnail's if there is none). Imported images
+  record their decoded size, so the lines fall where the split cuts; with wrong metadata they can
+  be a pixel off. They
   go away when the menu closes.
