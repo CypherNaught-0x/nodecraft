@@ -21,7 +21,7 @@ fn manifest(files: &[(&str, Vec<u8>)]) -> BackupManifest {
 }
 
 fn protection(passphrase: &str) -> Protection<'_> {
-    Protection::Passphrase { passphrase, kdf: FAST, salt: [3; 16], nonce_prefix: [9; 19] }
+    Protection::Passphrase { passphrase, kdf: FAST, salt: [3; 16] }
 }
 
 fn write(protection: Protection<'_>, files: &[(&str, Vec<u8>)]) -> Vec<u8> {
@@ -122,8 +122,9 @@ fn truncation_and_trailing_data_are_detected() {
     // Dropping a whole middle chunk breaks the counter.
     let sealed = write(protection("pw"), &files);
     let chunk = BACKUP_CHUNK_BYTES + 16;
-    let mut spliced = sealed.get(..59 + chunk).unwrap().to_vec();
-    spliced.extend_from_slice(sealed.get(59 + 2 * chunk..).unwrap());
+    let header = BackupHeader::read(&mut sealed.as_slice()).unwrap().1.len();
+    let mut spliced = sealed.get(..header + chunk).unwrap().to_vec();
+    spliced.extend_from_slice(sealed.get(header + 2 * chunk..).unwrap());
     assert_eq!(read(&spliced, Some("pw")).unwrap_err().kind, ErrorKind::Authentication);
 }
 
@@ -184,7 +185,7 @@ fn hostile_headers_are_refused_before_any_key_derivation() {
     let mut unknown_flag = sealed;
     unknown_flag[10] = 7;
     assert_eq!(read(&unknown_flag, Some("pw")).unwrap_err().kind, ErrorKind::Unsupported);
-    let weak = Protection::Passphrase { passphrase: "pw", kdf: KdfParams { memory_kib: 8, iterations: 1, lanes: 1 }, salt: [0; 16], nonce_prefix: [0; 19] };
+    let weak = Protection::Passphrase { passphrase: "pw", kdf: KdfParams { memory_kib: 8, iterations: 1, lanes: 1 }, salt: [0; 16] };
     assert!(BackupWriter::create(Vec::new(), weak, &manifest(&files())).is_err(), "weak parameters can't be written either");
     assert!(KdfParams::RECOMMENDED.check().is_ok());
 }
@@ -426,4 +427,43 @@ fn repeated_end_of_entries_is_successful_without_source_or_sink_work() {
         }
         reader.finish().unwrap();
     }
+}
+
+#[test]
+fn the_nonce_prefix_is_derived_from_the_salt_not_stored() {
+    // The header ends with the salt: magic, version, flags, kdf id, three words, 16 salt bytes.
+    let sealed = write(protection("pw"), &files());
+    let (header, header_bytes) = BackupHeader::read(&mut sealed.as_slice()).unwrap();
+    assert_eq!(header_bytes.len(), 8 + 2 + 1 + 1 + 12 + 16);
+    assert_eq!(header_bytes.get(header_bytes.len() - 16..), Some([3u8; 16].as_slice()));
+    // Key and prefix come from one derivation: the same salt repeats both, a fresh salt changes
+    // both.
+    let (_, prefix) = FAST.key("pw", &[3; 16]).unwrap();
+    let (_, again) = FAST.key("pw", &[3; 16]).unwrap();
+    let (_, fresh) = FAST.key("pw", &[4; 16]).unwrap();
+    assert_eq!(prefix, again);
+    assert_ne!(prefix, fresh);
+    assert_eq!(header.encryption.map(|e| e.salt), Some([3; 16]));
+    // Two backups of the same contents under fresh salts share no ciphertext.
+    let other = write(Protection::Passphrase { passphrase: "pw", kdf: FAST, salt: [4; 16] }, &files());
+    let body = |b: &[u8]| b.get(header_bytes.len()..header_bytes.len() + 64).unwrap().to_vec();
+    assert_ne!(body(&sealed), body(&other));
+}
+
+#[test]
+fn the_key_and_prefix_split_matches_a_recomputed_derivation() {
+    // Not a fixed vector: Argon2id is recomputed here with a raw 51-byte output, and the prefix
+    // must be bytes 32..51 and the key bytes ..32, so a swapped or resized split can't pass the
+    // round trips unnoticed.
+    let params = argon2::Params::new(FAST.memory_kib, FAST.iterations, FAST.lanes, Some(51)).unwrap();
+    let mut raw = [0u8; 51];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into(b"pw", &[3; 16], &mut raw).unwrap();
+    let (_, prefix) = FAST.key("pw", &[3; 16]).unwrap();
+    assert_eq!(prefix.as_slice(), &raw[32..]);
+    let key = XChaCha20Poly1305::new_from_slice(&raw[..32]).unwrap();
+    let sealed = write(protection("pw"), &files());
+    let header = 8 + 2 + 1 + 1 + 12 + 16;
+    let mut first = sealed[header..header + BACKUP_CHUNK_BYTES].to_vec();
+    let tag = chacha20poly1305::Tag::try_from(&sealed[header + BACKUP_CHUNK_BYTES..header + BACKUP_CHUNK_BYTES + 16]).unwrap();
+    key.decrypt_inout_detached(&nonce(&prefix, 0, false), &sealed[..header], first.as_mut_slice().into(), &tag).unwrap();
 }
