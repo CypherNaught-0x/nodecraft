@@ -496,6 +496,7 @@ pub struct Client {
     /// How to connect again.
     origin: Origin,
     last_used: Instant,
+    reconnect_after: Duration,
 }
 
 #[derive(Clone)]
@@ -505,7 +506,9 @@ enum Origin {
 }
 
 /// Reconnect before a call once the app may have closed the connection as idle.
-const RECONNECT_AFTER: Duration = Duration::from_secs(540);
+pub const RECONNECT_AFTER: Duration = Duration::from_secs(540);
+/// Handshakes tried while the app is still freeing the old connection's slot.
+const RECONNECT_ATTEMPTS: u32 = 6;
 
 /// Longest reply the client reads: a screenshot in base64 plus room.
 const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
@@ -535,7 +538,15 @@ impl Client {
         let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
         stream.set_read_timeout(Some(wait)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
-        let mut client = Self { reader, writer: stream, next: 1, broken: false, origin: Origin::Addr(addr, token.to_owned()), last_used: Instant::now() };
+        let mut client = Self {
+            reader,
+            writer: stream,
+            next: 1,
+            broken: false,
+            origin: Origin::Addr(addr, token.to_owned()),
+            last_used: Instant::now(),
+            reconnect_after: RECONNECT_AFTER,
+        };
         let mut hello = Map::new();
         hello.insert("token".into(), json!(token));
         let reply = client.exchange("hello", hello)?;
@@ -545,19 +556,47 @@ impl Client {
         Ok(client)
     }
 
+    /// How long the connection may sit unused before the next call replaces it (default
+    /// [`RECONNECT_AFTER`], under the app's idle timeout). Hosts with a shorter idle timeout, and
+    /// tests, lower it.
+    pub fn set_reconnect_after(&mut self, after: Duration) {
+        self.reconnect_after = after;
+    }
+
+    /// Replaces the connection. The old one is closed first, so the replacement doesn't need a
+    /// spare slot when the app is at its connection limit. The app frees the slot a moment later,
+    /// so a `Busy` handshake is retried a few times with backoff; nothing else is, and no request
+    /// has been sent yet.
     fn reconnect(&mut self) -> Result<(), Error> {
-        let fresh = match self.origin.clone() {
-            Origin::File(path) => Self::from_token_file(&path)?,
-            Origin::Addr(addr, token) => Self::connect(addr, &token)?,
+        let _ = self.writer.shutdown(std::net::Shutdown::Both);
+        // Until a replacement works, the next call tries again.
+        self.broken = true;
+        let mut wait = Duration::from_millis(25);
+        let mut attempt = 0;
+        let fresh = loop {
+            attempt += 1;
+            let tried = match self.origin.clone() {
+                Origin::File(path) => Self::from_token_file(&path),
+                Origin::Addr(addr, token) => Self::connect(addr, &token),
+            };
+            match tried {
+                Err(e) if e.kind == ErrorKind::Busy && attempt < RECONNECT_ATTEMPTS => {
+                    std::thread::sleep(wait);
+                    wait = wait.saturating_mul(2);
+                }
+                other => break other?,
+            }
         };
+        let after = self.reconnect_after;
         *self = fresh;
+        self.reconnect_after = after;
         Ok(())
     }
 
     /// Sends one request and returns its result, or the app's error. A connection the app may
     /// have closed as idle, or one lost on an earlier call, is replaced first.
     pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
-        if self.broken || self.last_used.elapsed() >= RECONNECT_AFTER {
+        if self.broken || self.last_used.elapsed() >= self.reconnect_after {
             self.reconnect().map_err(|e| Error::new(e.kind, format!("lost the connection to the app and couldn't reconnect: {}", e.message)))?;
         }
         self.last_used = Instant::now();
