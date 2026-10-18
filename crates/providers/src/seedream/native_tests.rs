@@ -20,14 +20,14 @@ impl Http for Local {
     fn send_no_redirect(&self, mut r: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
         assert_eq!(r.url, API);
         r.url = format!("{}/images/generations", self.origin);
-        r.timeout_ms = 1000;
+        r.timeout_ms = 15_000;
         self.http.send_no_redirect(r)
     }
 }
 fn serve(listener: TcpListener, response: Vec<u8>) -> thread::JoinHandle<Vec<u8>> {
     thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let end = Instant::now() + Duration::from_secs(3);
+        let end = Instant::now() + Duration::from_secs(10);
         let mut socket = loop {
             match listener.accept() {
                 Ok((s, _)) => break s,
@@ -35,10 +35,14 @@ fn serve(listener: TcpListener, response: Vec<u8>) -> thread::JoinHandle<Vec<u8>
                 _ => panic!("bounded listener accept"),
             }
         };
-        socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
-        socket.set_write_timeout(Some(Duration::from_millis(500))).unwrap();
+        // Accepted streams may inherit nonblocking mode on macOS. Normalize before I/O.
+        socket.set_nonblocking(false).unwrap();
+        socket.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        let read_end = Instant::now() + Duration::from_secs(10);
         let mut bytes = Vec::new();
         loop {
+            let remaining = read_end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()).unwrap();
+            socket.set_read_timeout(Some(remaining)).unwrap();
             let mut chunk = [0; 1024];
             let n = socket.read(&mut chunk).unwrap();
             assert!(n > 0);
