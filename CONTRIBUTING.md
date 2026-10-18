@@ -191,7 +191,9 @@ node --test scripts/claim/*.test.js                     # if you touched the cla
 ## Sending a change
 
 1. Claim the issue (above), branch from the latest `main`, and keep the PR to one topic.
-2. Run the checks under *Tests*. CI runs them on Linux, Windows and macOS.
+2. Run the checks under *Tests*. CI runs them on Linux, Windows and macOS. The exception is a pull
+   request aimed at `main` that touches nothing but documentation and repository tooling: it skips
+   those three legs and runs the docs gate instead (`docs/development.md`).
 3. In the PR, say what you changed, how you tested it and what you measured. For anything
    visible, attach real screenshots or a short recording. Diagrams don't replace evidence of
    visible behaviour. Coding agents should capture that evidence themselves rather than asking a

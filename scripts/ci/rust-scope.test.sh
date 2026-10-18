@@ -60,6 +60,7 @@ plan/
     put "$d" .github/pull_request_template.md '# PR'
     put "$d" .github/ISSUE_TEMPLATE/bug_report.md '# Bug'
     put "$d" .github/workflows/ci.yml 'name: CI'
+    put "$d" .github/CODEOWNERS '* @someone'
     put "$d" .github/actions/rust-leg/action.yml 'name: leg'
     put "$d" .github/dependabot.yml 'version: 2'
     put "$d" crates/engine/src/lib.rs 'fn x() {}'
@@ -243,6 +244,7 @@ check "README in golden_driver" true "$r" crates/testkit/tests/golden_driver/REA
 check "a workflow change builds" true "$r" .github/workflows/ci.yml
 check "the release workflow" true "$r" .github/workflows/release.yml
 check "a composite action" true "$r" .github/actions/rust-leg/action.yml
+check "CODEOWNERS names who approves the CI files" true "$r" .github/CODEOWNERS
 check "dependabot config" true "$r" .github/dependabot.yml
 check "a packaging script" true "$r" packaging/icons.sh
 check "prose plus one .rs builds" true "$r" README.md crates/engine/src/lib.rs
@@ -432,18 +434,75 @@ if [ -f "$w" ]; then
         fi
     done
     report "no job name still interpolates a matrix" 0 "$(grep -c 'name:.*matrix\.' "$w")"
-    # 2. The classifier runs before the pull request's own test script, so nothing the pull request
-    #    wrote can influence the recorded answer.
-    classify_line=$(grep -n 'id: scope$' "$w" | head -1 | cut -d: -f1)
-    tests_line=$(grep -n 'classifier tests' "$w" | head -1 | cut -d: -f1)
-    if [ -n "$classify_line" ] && [ -n "$tests_line" ] && [ "$classify_line" -lt "$tests_line" ]; then
-        report "the classifier runs before any pull request code" ok ok "line $classify_line < $tests_line"
+    # 2. Nothing the pull request wrote runs before the decision is recorded. Not "the classifier runs
+    #    before the test script" — that was the weak version, and it passed with an arbitrary
+    #    `run: bash scripts/some-contributor-file.sh` step inserted above the classifier. The
+    #    invariant is about every step: the only steps in the scope job ahead of `id: scope` may be
+    #    actions/checkout, which runs code GitHub fetched from a pinned commit of a trusted repo.
+    #    Scoped to the scope job, because the claim bot's `run:` steps are earlier in the file and are
+    #    not the thing under test.
+    ahead=$(awk '
+        /^  scope:$/ { inside = 1 }
+        inside && /uses: actions\/checkout@/ { checkout++ }
+        inside && /run:/ { run++ }
+        inside && /^[[:space:]]*id: scope$/ { exit }
+        END { print checkout + 0 " " run + 0 }
+    ' "$w")
+    checkout_before=${ahead% *}
+    run_before=${ahead#* }
+    if [ "$checkout_before" -ge 1 ] && [ "$run_before" -eq 0 ]; then
+        report "no pull request code runs before the classifier" ok ok \
+            "$checkout_before checkout, $run_before run step(s) ahead of it"
     else
-        report "the classifier runs before any pull request code" ok "id: scope at ${classify_line:-none}, tests at ${tests_line:-none}"
+        report "no pull request code runs before the classifier" ok \
+            "$checkout_before checkout, $run_before run step(s) ahead of id: scope"
     fi
     # 3. That first run happens in a scrubbed environment, so a poisoned one is not inherited.
     # Matched on the command, not the phrase, which also appears in a comment above it.
     report "the classifier runs under env -i" 1 "$(grep -c '^[[:space:]]*env -i PATH=' "$w")"
+    # The command spans physical lines with backslashes; join them so the next two checks read one
+    # real command rather than a window of YAML that may contain comments.
+    env_i=$(awk '
+        /^[[:space:]]*env -i PATH=/ { grab = 1 }
+        grab {
+            line = line " " $0
+            if ($0 ~ /\\$/) { sub(/\\$/, "", line); next }
+            print line; exit
+        }
+    ' "$w")
+    # 3b. And every variable the classifier reads is actually in that scrubbed environment. `env -i`
+    # removes the rest, the script reads a missing one as "cannot tell", and "cannot tell" means
+    # build, so an omission is not a red test, it is a feature that silently never happens. Dropping
+    # BASE_REF here once made the whole whitelist inert while every other assertion stayed green.
+    reads=
+    # `${VAR}` and `${VAR:-}` both count as a read. Two seds on purpose: one drops the braces, one
+    # drops the `:-` default. Written as a single class, `s/[ :-}].*$//`, the middle is not a set but
+    # a range from `:` (58) to `}` (125), which contains every uppercase letter — so it deletes the
+    # whole name and `reads` comes back empty, making both checks below pass without checking
+    # anything. That is exactly what happened on the first run here, hence the count assertion.
+    for v in $(grep -oE '\$\{[A-Z_][A-Z_]*(:-|:\+|:=)?[^}]*\}' "$gate" | sed -e 's/[${}$]//g' -e 's/[:-].*$//' | sort -u); do
+        reads="$reads $v"
+    done
+    read_count=$(printf '%s\n' $reads | sed '/^$/d' | wc -l | tr -d ' ')
+    report "  the extraction found the variables to check" '4' "$read_count" "reads:$reads"
+    missing_env=
+    for v in $reads; do
+        case " $env_i " in *" $v="*) ;; *) missing_env="$missing_env $v(not forwarded)" ;; esac
+    done
+    report "env -i forwards every variable the script reads" ok "${missing_env:-ok}" \
+        "reads:$reads"
+    # 3c. The *event-derived* ones must also be supplied from GitHub context, or the forwarding is a
+    # pass-through of an empty string and the script reads that as "not main". PATH, HOME and
+    # GITHUB_OUTPUT are excluded: the runner provides those, so they appear in the env -i line and
+    # nowhere else. Mixing the two categories would make this fail for the wrong reason.
+    step_env=$(awk '/id: scope$/{f=1;next} f&&/^[[:space:]]*run:/{exit} f' "$w")
+    step_missing=
+    for v in $reads; do
+        case $v in GITHUB_OUTPUT | PATH | HOME) continue ;; esac
+        case " $step_env " in *"${v}:"*) ;; *) step_missing="$step_missing $v(not in env:)" ;; esac
+    done
+    report "the classify step supplies every event variable from context" ok "${step_missing:-ok}" \
+        "$step_missing"
     # 4. The legs ask for Rust unless a *green* gate said false. `!= 'false'` alone would let a job
     #    that reported false and then went red skip all three required checks.
     report "the legs require a successful gate" 3 "$(grep -c "needs.scope.result != 'success'" "$w")"
@@ -459,6 +518,25 @@ if [ -f "$w" ]; then
         }
     ' "$w" | wc -l | tr -d ' ')
     report "  and nothing depends on scope without always()" 0 "$unguarded"
+    # 6. Each leg checks the repository out before it can use the local action. GitHub reads
+    #    `uses: ./…` out of the job's workspace, so without that the leg dies before any step runs:
+    #    "Can't find 'action.yml' … Did you forget to run actions/checkout before running your local
+    #    action?". That is exactly how the first real CI run of this design failed, on all three
+    #    platforms at once. The flag resets at every job key (`^  foo:$`), otherwise one earlier leg's
+    #    checkout hides a later leg's missing one — the weak version only caught the last leg.
+    leg_problems=$(awk '
+        /^  [a-z][a-z0-9-]*:$/ { have = 0; job = $1 }
+        /uses: actions\/checkout@/ { have = 1; next }
+        /uses: \.\/\.github\/actions\/rust-leg/ {
+            if (!have) print "MISSING " job " uses the local action with no checkout in its own job"
+            have = 0
+        }
+    ' "$w" | paste -sd'; ' -)
+    report "  and each leg checks out before the local action" ok "${leg_problems:-ok}" \
+        "$leg_problems"
+    # And there are three legs to check, not one: assert the count, or the per-job loop above could
+    # be quietly verifying a single job while two legs went unwatched.
+    report "  three legs use the shared action" 3 "$(grep -c 'uses: \./\.github/actions/rust-leg' "$w")"
 else
     report "the workflow to check wiring against is present" ok missing "$w"
 fi

@@ -49,76 +49,179 @@ jobs:
           echo "Running $found claim bot test file(s)."
           node --test scripts/claim/*.test.js
 
-  # The Rust jobs switch themselves on once the workspace exists (milestone M0, docs/plan.md §8).
-  rust:
-    name: rust (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            nextest-target: x86_64-unknown-linux-gnu
-            nextest-sha256: 223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc
-          - os: windows-latest
-            nextest-target: x86_64-pc-windows-msvc
-            nextest-sha256: bef17504bed9d4994cf860c122e84a90d613b92e6d89584fa9e28bd53ad42e15
-          - os: macos-latest
-            # nextest ships one universal macOS archive for both Intel and Apple Silicon.
-            nextest-target: universal-apple-darwin
-            nextest-sha256: 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+  # Decide whether a pull request contains anything the Rust legs could check. Prose and repository
+  # tooling cannot break a build, and a docs-only pull request otherwise waits on three platform
+  # builds of a workspace it never touched. The rule is scripts/ci/rust-scope.sh; the reason it is a
+  # job and not `on.pull_request.paths-ignore` is documented in
+  # docs/decisions/2026-10-18-rust-ci-skips-prose-only-changes.md, along with why the legs below are
+  # three named jobs rather than a matrix.
+  #
+  # THIS JOB RUNS NOTHING THE PULL REQUEST WROTE UNTIL THE DECISION IS RECORDED. Step outputs are
+  # attributed to the step id that produced them, so classify first and the answer cannot be forged
+  # by a later step. Order is load-bearing: an earlier revision ran the pull request's own test
+  # script first, and any bash in that job could then have poisoned the classify step (BASH_ENV, or a
+  # fake `git` on GITHUB_PATH) into reporting `false` for a pull request full of Rust.
+  scope:
+    name: rust scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.scope.outputs.rust }}
+      base: ${{ steps.scope.outputs.base }}
+    steps:
+      # The classifier compares commits, so it needs the history rather than a shallow checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: classify this change set
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -eu
+          say_all() {
+            echo "$1"
+            printf 'rust=true\nbase=\n' >>"$GITHUB_OUTPUT"
+          }
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            # A push to main is what releases are cut from, and a manual run is a deliberate check
+            # of the whole tree. Neither may skip anything. Checks reported by a workflow_dispatch
+            # run do not satisfy a required status check at all, so trimming one would tell nobody
+            # anything anyway.
+            say_all 'not a pull request: every leg will build.'
+            exit 0
+          fi
+          # Run the copy committed on the base revision, from the git object store rather than from
+          # the checkout. The pull request's copy is somebody's proposal, including a proposal to
+          # skip its own checks. Which branch may be trusted at all is decided inside that copy from
+          # BASE_REF above, so the rule and its precondition are kept together rather than split
+          # across two files that could drift apart.
+          if ! git cat-file -e "${BASE_SHA}:scripts/ci/rust-scope.sh" 2>/dev/null; then
+            say_all 'the base revision has no rust-scope.sh, so nothing is known about it: build.'
+            exit 0
+          fi
+          git show "${BASE_SHA}:scripts/ci/rust-scope.sh" >"$RUNNER_TEMP/rust-scope.sh"
+          # `env -i` with only what the script needs: no BASH_ENV, no inherited PATH tricks, nothing
+          # a step that runs later could have arranged. This is the second half of why running the
+          # classifier first works.
+          #
+          # List every variable the classifier reads, because `env -i` strips the rest and the script
+          # reads a missing one as "I cannot tell", which means build. Safe direction, and therefore
+          # invisible: an earlier revision dropped BASE_REF here, and the feature would simply never
+          # have skipped anything, with every test still green. rust-scope.test.sh now compares this
+          # list against the variables the script actually reads.
+          env -i PATH="$PATH" HOME="$HOME" GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+            BASE_SHA="$BASE_SHA" HEAD_SHA="$HEAD_SHA" BASE_REF="$BASE_REF" \
+            bash "$RUNNER_TEMP/rust-scope.sh"
+      # The whitelist decides a required check, so its own tests run on every change to it: a change
+      # that would let code through fails here, and because a red gate asks for a full build the
+      # failure costs a wait rather than a skip. These are the pull request's tests, since a pull
+      # request that legitimately widens the whitelist has to be able to land. Safe only because
+      # nothing above it executed the pull request's code, and because a change under scripts/ci/
+      # forces a build whatever the rules then say.
+      - name: classifier tests
+        run: bash scripts/ci/rust-scope.test.sh
+
+  # A prose-only pull request gets its own cheap gate, so skipping the legs is not skipping what
+  # AGENTS.md asks of a documentation change: whitespace and stray conflict markers, plus the
+  # decision-record validator. Code pull requests get the same validator inside the Linux leg.
+  #
+  # This job and `rust scope` are not required status checks yet, and the skip should not be relied
+  # on until #425 makes them one: until then a prose-only pull request can merge with nothing
+  # *required* having looked at it. Making this one required is safe rather than vacuous, and it is
+  # the point: on a code pull request it is skipped, which reports Success and so does not block
+  # anything, and on a prose-only one it is the only check that inspects the change at all.
+  docs:
+    name: docs gate
+    needs: scope
+    # Exactly the case where the legs skip, and only when the gate was healthy: if it failed or was
+    # cancelled the legs build instead and this gate would be checking a tree they are already
+    # checking. A pull request that wants to merge on this job alone has to keep the gate green.
+    if: always() && needs.scope.result == 'success' && needs.scope.outputs.rust == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Linux system dependencies (egui/winit)
-        if: hashFiles('Cargo.toml') != '' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
-      - name: toolchain
-        if: hashFiles('Cargo.toml') != ''
-        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: hashFiles('Cargo.toml') != ''
-      - name: Install pinned nextest (verify before extracting)
-        if: hashFiles('Cargo.toml') != ''
-        shell: pwsh
+        with:
+          fetch-depth: 0
+      - name: whitespace and conflict markers
         env:
-          NEXTEST_VERSION: 0.9.148
-          NEXTEST_TARGET: ${{ matrix.nextest-target }}
-          NEXTEST_SHA256: ${{ matrix.nextest-sha256 }}
+          MERGE_BASE: ${{ needs.scope.outputs.base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # `rust=false` is only ever reported for a pull request against main with one merge base, so
+        # both values are present by the time this runs. If the wiring ever loses one, fail loudly
+        # rather than checking nothing.
         run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'nextest.tar.gz'
-          $bin = Join-Path $env:RUNNER_TEMP 'nextest-bin'
-          $name = "cargo-nextest-$env:NEXTEST_VERSION-$env:NEXTEST_TARGET.tar.gz"
-          $url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$env:NEXTEST_VERSION/$name"
-          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -cne $env:NEXTEST_SHA256) { throw "nextest checksum mismatch: expected $env:NEXTEST_SHA256, got $actual" }
-          New-Item -ItemType Directory -Force -Path $bin | Out-Null
-          tar -xzf $archive -C $bin
-          if ($LASTEXITCODE -ne 0) { throw 'nextest archive extraction failed' }
-          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: fmt
-        if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
-        run: cargo fmt --all --check
-      - name: clippy
-        if: hashFiles('Cargo.toml') != ''
-        run: cargo clippy --workspace --all-targets --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images -- -D warnings
-      - name: tests
-        if: hashFiles('Cargo.toml') != ''
-        run: cargo nextest run --workspace --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images --profile ci
-      - name: Native video protocol (no external tools required)
-        if: hashFiles('Cargo.toml') != ''
-        run: cargo test -p nodecraft-media --features video && cargo clippy -p nodecraft-media --features video --all-targets -- -D warnings
-      - name: Video wasm API
-        if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
-        run: cargo check -p nodecraft-media --features video --target wasm32-unknown-unknown
-      - name: doctests
-        if: hashFiles('Cargo.toml') != ''
-        run: cargo test --doc --workspace --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images
-      - name: layers and wasm
-        if: hashFiles('xtask/Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
-        run: cargo xtask layers && cargo xtask wasm
+          set -eu
+          git diff --check "${MERGE_BASE:?the scope job reported no merge base}" \
+            "${HEAD_SHA:?this is not a pull request event}"
+      - name: toolchain
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: decision records
+        run: cargo run -p xtask -- decisions
+
+  # The three legs are separate jobs with literal names because `rust (ubuntu-24.04)`,
+  # `rust (windows-latest)` and `rust (macos-latest)` are required status checks in the repo
+  # ruleset. A conditional on a plain job reports Success when it is skipped, which is what a
+  # required check needs to clear. A conditional on a *matrix* job that prevents the matrix from
+  # expanding publishes the unexpanded name instead — `rust (${{ matrix.os }})` — and none of the
+  # three required names ever report, so every pull request would sit "Waiting for status to be
+  # reported". Hence three jobs, sharing .github/actions/rust-leg/action.yml.
+  #
+  # The condition is the fail-open half, and it has both halves for a reason:
+  #   `needs` alone is not enough, because a failed dependency silently skips its dependents and a
+  #   skipped required check never blocks a merge. Hence `always()`.
+  #   `!= 'false'` alone is not enough either: a job can report `rust=false` and then go red on a
+  #   later step. Requiring a successful gate means only a green light that also said `false` skips.
+  # So: build unless a healthy gate said exactly `false`.
+  rust-linux:
+    name: rust (ubuntu-24.04)
+    needs: scope
+    if: always() && (needs.scope.result != 'success' || needs.scope.outputs.rust != 'false')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # A local action is read out of the workspace, so this checkout is what makes the step below
+      # findable at all. It has to be here in the caller, not inside the action.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust-leg
+        with:
+          platform: linux
+          nextest-target: x86_64-unknown-linux-gnu
+          nextest-sha256: 223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc
+
+  rust-windows:
+    name: rust (windows-latest)
+    needs: scope
+    if: always() && (needs.scope.result != 'success' || needs.scope.outputs.rust != 'false')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      # A local action is read out of the workspace, so this checkout is what makes the step below
+      # findable at all. It has to be here in the caller, not inside the action.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust-leg
+        with:
+          platform: windows
+          nextest-target: x86_64-pc-windows-msvc
+          nextest-sha256: bef17504bed9d4994cf860c122e84a90d613b92e6d89584fa9e28bd53ad42e15
+
+  rust-macos:
+    name: rust (macos-latest)
+    needs: scope
+    if: always() && (needs.scope.result != 'success' || needs.scope.outputs.rust != 'false')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      # A local action is read out of the workspace, so this checkout is what makes the step below
+      # findable at all. It has to be here in the caller, not inside the action.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust-leg
+        with:
+          platform: macos
+          # nextest ships one universal macOS archive for both Intel and Apple Silicon.
+          nextest-target: universal-apple-darwin
+          nextest-sha256: 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b
