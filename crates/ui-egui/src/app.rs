@@ -275,6 +275,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
     card::world_rect(node, resolved.as_deref(), t)
 }
 
+mod drop;
 mod navigation;
 mod search;
 
@@ -921,6 +922,7 @@ impl NodeCraftApp {
                     });
                 });
         }
+        self.drop_files(ui, viewport, t);
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
             match open.show(ui.ctx(), &entries, t) {

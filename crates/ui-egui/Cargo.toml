@@ -25,3 +25,4 @@ log = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }
+nodecraft-media = { workspace = true }

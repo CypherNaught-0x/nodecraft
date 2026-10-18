@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 /// Most files one drop adds; the rest are reported as skipped.
 pub const MAX_FILES: usize = 32;
+/// Largest media file a project holds (its per-asset cap).
+pub const MAX_MEDIA_BYTES: usize = nodecraft_format::MAX_ASSET_BYTES;
 /// Longest text file that becomes a Text node (the Text node's own limit).
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 
