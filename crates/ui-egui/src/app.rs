@@ -447,6 +447,7 @@ impl NodeCraftApp {
         }
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
+        let mut minimap_press = None;
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() {
             let command = ui.input_mut(|input| {
@@ -480,12 +481,21 @@ impl NodeCraftApp {
             if delete && !self.text_focused {
                 self.dispatch_delete();
             }
+            // Undo/delete above may change pan availability. Freeze admission now:
+            // later navigation shortcuts must not acquire a press after clipboard acted.
+            let minimap_owned = self.minimap_input_owned(ui.ctx());
+            minimap_press = Some(minimap_owned);
             // Clipboard: the platform turns ⌘C/⌘X/⌘V into events; ⌘D duplicates in place.
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
             // focus must never become a node in the (autosaved) project.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
+            let busy =
+                self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || minimap_owned || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
+                // Yield before consuming shortcuts or cloning any pasted payload.
+                if busy {
+                    return (false, false, None, false);
+                }
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
                 for event in &i.events {
@@ -498,7 +508,7 @@ impl NodeCraftApp {
                         _ => {}
                     }
                 }
-                if busy { (false, false, None, false) } else { (copy, cut, pasted, duplicate) }
+                (copy, cut, pasted, duplicate)
             });
             let pointer_world = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).map(|p| self.view.to_world(viewport.min, p));
             if (copy || cut || duplicate)
@@ -543,12 +553,7 @@ impl NodeCraftApp {
             }
             // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
             // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
-            let busy = self.drag.is_some()
-                || self.marquee.is_some()
-                || self.wiring.is_some()
-                || self.navigation.drag.is_some()
-                || self.navigation.pointer_owned
-                || egui::Popup::is_any_open(ui.ctx());
+            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || minimap_owned || egui::Popup::is_any_open(ui.ctx());
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
                     self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
@@ -584,7 +589,7 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks;
+        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !overlay_blocks

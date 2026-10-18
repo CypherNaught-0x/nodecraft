@@ -157,7 +157,7 @@ Fit reserves space above the overlay and clamps zoom to 10%–400%. When widely 
 all fit at 10%, it centers them at minimum zoom and reports that limitation.
 
 Minimap gestures own the pointer through release even outside the map, with a frozen transform
-so the target cannot chase the changing viewport. Map input cannot start a canvas gesture beneath
+so the target cannot chase the changing viewport. Clipboard copy/cut/paste/duplicate and quick-add yield from the initial map press through release, including keys in the same input frame and a pointer outside the map. Rejected shortcuts remain unconsumed. The initial primary-press position decides ownership even when later motion crosses the map boundary in that frame. If a frame batches several primary presses, its first press decides; a later visibility shortcut cannot retrospectively acquire that press. Map input cannot start a canvas gesture beneath
 it, interrupt a card/box/pan gesture, or act through a popup or active text editor.
 
 The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
