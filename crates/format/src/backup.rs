@@ -598,6 +598,7 @@ pub struct BackupReader<R: Read> {
     source: Source<R>,
     manifest: BackupManifest,
     next: usize,
+    failure: Option<Error>,
 }
 
 impl<R: Read> BackupReader<R> {
@@ -644,7 +645,7 @@ impl<R: Read> BackupReader<R> {
         source.read_exact(&mut encoded)?;
         let manifest: BackupManifest = serde_json::from_slice(&encoded).map_err(|_| invalid("the backup manifest is malformed"))?;
         manifest.check()?;
-        Ok(Self { source, manifest, next: 0 })
+        Ok(Self { source, manifest, next: 0, failure: None })
     }
 
     pub fn manifest(&self) -> &BackupManifest {
@@ -652,9 +653,28 @@ impl<R: Read> BackupReader<R> {
     }
 
     /// Copies the next entry into `sink` and checks its hash. Returns `None` after the last
-    /// entry. On an error, whatever reached `sink` must be discarded.
+    /// entry. On an error, whatever reached `sink` must be discarded. The reader remains failed:
+    /// later entry reads and `finish` return the first error without further source or sink work.
     pub fn next_entry(&mut self, sink: &mut impl Write) -> Result<Option<&BackupEntry>, Error> {
-        let Some(entry) = self.manifest.entries.get(self.next) else { return Ok(None) };
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        let index = self.next;
+        if self.manifest.entries.get(index).is_none() {
+            return Ok(None);
+        }
+        if let Err(error) = self.copy_entry(sink) {
+            // A failed operation may have consumed input or written a partial destination. Even
+            // a later recoverable I/O success cannot restore this stream's integrity authority.
+            self.failure = Some(error.clone());
+            return Err(error);
+        }
+        self.next = self.next.saturating_add(1);
+        Ok(self.manifest.entries.get(index))
+    }
+
+    fn copy_entry(&mut self, sink: &mut impl Write) -> Result<(), Error> {
+        let entry = self.manifest.entries.get(self.next).ok_or_else(|| invalid("the backup reader has no pending entry"))?;
         let mut hasher = blake3::Hasher::new();
         let mut left = entry.size;
         let mut buffer = vec![0u8; BACKUP_CHUNK_BYTES];
@@ -669,12 +689,15 @@ impl<R: Read> BackupReader<R> {
         if hex(hasher.finalize().as_bytes()) != entry.blake3 {
             return Err(Error::new(ErrorKind::Authentication, "a backup entry is damaged or was changed"));
         }
-        self.next += 1;
-        Ok(self.manifest.entries.get(self.next - 1))
+        Ok(())
     }
 
-    /// Confirms every entry was read and the backup ends exactly where it should.
+    /// Confirms every entry was read and the backup ends exactly where it should. A reader that
+    /// failed an entry returns that original error without further input reads.
     pub fn finish(self) -> Result<(), Error> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
         if self.next < self.manifest.entries.len() {
             return Err(invalid("not every backup entry was read"));
         }

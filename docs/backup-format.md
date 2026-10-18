@@ -77,9 +77,13 @@ For an unencrypted one, a bad trailer or entry hash reads as `Authentication`, a
 reads as `InvalidInput`. Extra data and unsafe paths read as `InvalidInput`, and a newer version
 or option as `Unsupported`. A passphrase given for an unencrypted backup is refused
 (`Authentication`): an encrypted backup may have been swapped for a crafted plain one. A writer
-whose entry failed refuses further entries and `finish`, so no incomplete backup looks complete. Hosts write
-restored entries to a staging folder and publish them only after `finish` succeeds, so a failed
-restore leaves existing work untouched.
+whose entry failed refuses further entries and `finish`, so no incomplete backup looks complete.
+A reader also remains failed after any entry hash, authentication, truncation, source-I/O or
+destination-I/O error. Later entry reads and `finish` return the first actionable error before
+further source or destination work; they cannot resume a partially consumed entry. Partial output
+must be discarded. Repeated end-of-entry `None` results remain successful, but do not replace the
+whole-container checks in `finish`. Hosts write restored entries to a staging folder and publish
+them only after `finish` succeeds, so a failed restore leaves existing work untouched.
 
 ## Secrets
 
