@@ -1,5 +1,5 @@
 use super::*;
-use crate::planner::{Planned, PlannedInput, RunMode, RunPlan, plan};
+use crate::planner::{Planned, PlannedInput, RunMode, RunPlan};
 use nodecraft_graph::{Changeset, Node, Port, Project};
 use nodecraft_nodes::{Category, GenerateOutput, ModeId, NodeDescriptor, NodeKind};
 use nodecraft_types::{Modality, ParamSchema, PortType, ProjectId};
@@ -39,7 +39,7 @@ fn route(port: &str, modality: Modality) -> GenerateOutput {
     GenerateOutput { port: port.into(), modality }
 }
 fn generate(node: NodeId, outputs: Vec<GenerateOutput>) -> JobSpec {
-    JobSpec::Generate { node, outputs, provider: "fixture".into(), model: "fixture".into(), params: Default::default(), inputs: vec![] }
+    JobSpec::Generate { instance: None, node, outputs, provider: "fixture".into(), model: "fixture".into(), params: Default::default(), inputs: vec![] }
 }
 fn fixture(jobs: Vec<Vec<GenerateOutput>>, dynamic: bool) -> (Project, Registry) {
     fixture_owner(jobs, dynamic, None)
@@ -55,7 +55,17 @@ fn fixture_owner(jobs: Vec<Vec<GenerateOutput>>, dynamic: bool, owner: Option<No
             Port { name: "out".into(), port_type: PortType { many: true, ..text } },
             Port { name: "image".into(), port_type: PortType { modality: Modality::Image, many: false } },
         ],
-        params: ParamSchema::default(),
+        params: ParamSchema {
+            params: vec![nodecraft_types::ParamSpec {
+                name: "model".into(),
+                label: "Model".into(),
+                description: None,
+                control: nodecraft_types::ParamControl::Model,
+                required: false,
+                default: Some(Value::Text("fixture".into())),
+                visible_if: None,
+            }],
+        },
         quick_add: None,
     };
     let mut kinds = Registry::builtins().unwrap();
@@ -80,6 +90,22 @@ fn options() -> RunOptions {
     RunOptions { id: [7; 16], first_job: 40, limits: RunLimits::default(), retry: RetryPolicy::NEVER }
 }
 fn start_manual(project: &Project, kinds: &Registry, jobs: Vec<JobSpec>) -> (Run, Progress) {
+    let canvas = project.canvases().get(&C).unwrap();
+    if jobs.iter().any(|j| matches!(j, JobSpec::Generate { .. }))
+        && crate::generation_contract::validate_outputs(canvas.nodes().get(&TARGET).unwrap(), &jobs).is_ok()
+    {
+        let catalog = crate::admission::tests::free_catalog("fixture", "fixture", "fixture");
+        let (admitted, _) = crate::admission::admit_default_fixture(
+            RunPlan { steps: vec![step(TARGET, "test.output_contract", Some(jobs))], edges: vec![] },
+            C,
+            canvas.clone(),
+            kinds,
+            &catalog,
+            Default::default(),
+        )
+        .unwrap();
+        return Run::start_admitted(admitted, kinds, options()).unwrap();
+    }
     Run::start(
         &RunPlan { steps: vec![step(TARGET, "test.output_contract", Some(jobs))], edges: vec![] },
         C,
@@ -152,7 +178,10 @@ fn dynamic_instance_outputs_are_authoritative_instead_of_static_palette_ports() 
     let (project, kinds) = fixture(vec![routes.clone()], true);
     let planned = plan(project.canvases().get(&C).unwrap(), &kinds, &RunMode::Selected, &BTreeSet::from([TARGET]), &BTreeSet::new()).unwrap();
     let Planned::Ready(plan) = planned else { panic!("valid dynamic output") };
-    let (_, progress) = Run::start(&plan, C, project.canvases().get(&C).unwrap(), &kinds, options()).unwrap();
+    let catalog = crate::admission::tests::free_catalog("fixture", "fixture", "fixture");
+    let (admitted, _) =
+        crate::admission::admit_default_fixture(plan, C, project.canvases().get(&C).unwrap().clone(), &kinds, &catalog, Default::default()).unwrap();
+    let (_, progress) = Run::start_admitted(admitted, &kinds, options()).unwrap();
     assert_eq!(progress.jobs.len(), 1);
     assert!(progress.failed.is_empty());
 }
@@ -214,4 +243,12 @@ fn deferred_materialisation_rejects_foreign_owner_before_dispatch() {
     assert_eq!(run.next_job, 41);
     assert_eq!(run.jobs.len(), 1);
     assert!(progress.failed.iter().any(|f| f.node == TARGET));
+}
+
+fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTreeSet<NodeId>, stale: &BTreeSet<NodeId>) -> Result<crate::planner::Planned, Error> {
+    let mut targets = nodecraft_types::TargetSelection::empty();
+    for node in canvas.nodes().keys() {
+        targets.insert(*node, &nodecraft_types::ProviderTarget::default_instance("fixture")?)?;
+    }
+    crate::planner::plan_with_targets(canvas, kinds, mode, requested, stale, &targets)
 }

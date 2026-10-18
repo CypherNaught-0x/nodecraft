@@ -23,8 +23,8 @@
 
 use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_catalog::Catalog;
-use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money, quote};
-use nodecraft_exec::planner::{Planned, RunMode, plan};
+use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money};
+use nodecraft_exec::planner::{Planned, RunMode, plan_with_targets};
 use nodecraft_exec::run::record_changes;
 use nodecraft_graph::{Changeset, Generation};
 use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, Money, NodeId};
@@ -163,7 +163,7 @@ fn money(m: Money) -> Value {
 fn unpriced_reason(why: &Unpriced) -> String {
     match why {
         Unpriced::NoModel => "no model is chosen".into(),
-        Unpriced::UnknownModel(id) => format!("the model {id} isn't in the catalog"),
+        Unpriced::UnknownModel(_) => "the selected model is not in the catalog".into(),
         Unpriced::ByUsage(id) => format!("{id} is priced by usage, measured during the run"),
         Unpriced::Invalid(message) => message.clone(),
     }
@@ -175,6 +175,8 @@ fn step_json(step: &StepQuote) -> Value {
         Ok(None) => (Value::Null, Value::Null),
         Err(why) => (Value::Null, json!(unpriced_reason(&why))),
     };
+    // StepQuote.models contains validated catalog identities, independent of which
+    // later control supplied the final unpriced reason.
     json!({"node": step.node, "jobs": step.jobs_known.then_some(step.jobs), "models": step.models, "price": price, "unpriced": reason})
 }
 
@@ -216,21 +218,22 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     let requested: BTreeSet<_> = if uses_nodes { p.nodes.iter().copied().collect() } else { BTreeSet::new() };
     // Fixed fields, explicit mode/optional field and counted UUIDs. Check BEFORE hashing;
     // no project/plan serialization, recursive walk or large temporary JSON allocation.
-    let bytes = b"nodecraft.run.quote.v2"
+    let bytes = b"nodecraft.run.quote.v3"
         .len()
-        .checked_add(32 + 8 + 8 + 16 + 16 + 32 + 1 + 8 + if matches!(mode, RunMode::Field(_)) { 16 } else { 0 })
+        .checked_add(32 + 8 + 8 + 16 + 16 + 32 + 32 + 1 + 8 + if matches!(mode, RunMode::Field(_)) { 16 } else { 0 })
         .and_then(|n| requested.len().checked_mul(16).and_then(|ids| n.checked_add(ids)))
         .ok_or_else(|| invalid("run quote binding exceeds its byte budget"))?;
     if bytes > limit {
         return Err(invalid("run quote binding exceeds its byte budget"));
     }
     let mut hash = blake3::Hasher::new();
-    hash.update(b"nodecraft.run.quote.v2");
+    hash.update(b"nodecraft.run.quote.v3");
     c.execution.bind(&mut hash);
     hash.update(&c.revision.to_le_bytes());
     hash.update(c.document.id().as_bytes());
     hash.update(p.canvas.as_bytes());
     hash.update(&catalog.0.nonce);
+    c.routing.bind(&mut hash);
     let (tag, field) = match mode {
         RunMode::Selected => (0, None),
         RunMode::WithUpstream => (1, None),
@@ -255,22 +258,55 @@ fn priced(
     budget: &BudgetState,
     p: &RunParams,
     token: String,
+    targets: &nodecraft_types::TargetSelection,
 ) -> Result<Priced, Error> {
     let canvas = document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     let mode = mode_of(p)?;
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
     // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, kinds)? } else { BTreeSet::new() };
-    let run_plan = match plan(canvas, kinds, &mode, &requested, &stale)? {
+    let run_plan = match plan_with_targets(canvas, kinds, &mode, &requested, &stale, targets)? {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
-            let reasons: Vec<String> = blockers.iter().take(MAX_LISTED).map(|b| b.message(canvas)).collect();
+            // Admission diagnostics never copy native hook messages, node titles or
+            // unknown model values into a report. One hundred fixed UUID/code records.
+            let reasons: Vec<String> = blockers
+                .iter()
+                .take(100)
+                .map(|b| {
+                    let reason = match b.reason {
+                        nodecraft_exec::planner::Reason::NoResult => "input result is unavailable",
+                        nodecraft_exec::planner::Reason::UnknownKind => "node kind is not installed",
+                        nodecraft_exec::planner::Reason::UnsupportedInputs => "input types are unsupported",
+                        nodecraft_exec::planner::Reason::Invalid(_) => "node planning or validation failed",
+                    };
+                    format!("node {}: {reason}", b.node)
+                })
+                .collect();
             let response =
                 json!({"blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
-    let priced = quote(&run_plan, canvas, kinds, catalog)?;
+    let scratch_headroom = request_scratch(p)?;
+    let priced = match nodecraft_exec::admission::quote_with_scratch(
+        &run_plan,
+        canvas,
+        kinds,
+        catalog,
+        nodecraft_exec::admission::MAX_SCRATCH_BYTES.checked_sub(scratch_headroom).ok_or_else(|| invalid("run request metadata exceeds scratch limit"))?,
+    ) {
+        Ok(priced) => priced,
+        Err(_) => {
+            return Ok(Priced {
+                response: json!({"blocked":["catalog selection or parameters are invalid"],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[]}),
+                totals: BTreeMap::new(),
+                complete: false,
+                allowed: false,
+                token,
+            });
+        }
+    };
     let admission = check(&priced, &budget.budgets, &budget.spent)?;
     let totals: BTreeMap<String, u64> = priced.totals.iter().map(|(currency, m)| (String::from(*currency), m.micros)).collect();
     let mut totals_json = Map::new();
@@ -296,10 +332,13 @@ fn priced_in(c: &Context<'_>, p: &RunParams) -> Result<Priced, Error> {
     let catalog = c.resources.require::<RunCatalog>()?;
     let budget = c.resources.require::<BudgetState>()?;
     let token = binding(c, catalog, p, MAX_BINDING_BYTES)?;
-    priced(c.document, c.kinds, catalog.catalog(), budget, p, token)
+    priced(c.document, c.kinds, catalog.catalog(), budget, p, token, c.routing.routing.targets())
 }
 
 fn run_quote(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    if c.phase == crate::commands::Phase::Preview {
+        return Ok(Effect::None { result: Value::Null });
+    }
     check_requested(value)?;
     let p: RunParams = params(value)?;
     Ok(Effect::None { result: priced_in(c, &p)?.response })
@@ -314,47 +353,120 @@ fn enabled_quote(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     mode_of(&p).map(|_| ())
 }
 
-fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
-    check_requested(value)?;
-    let (run, accept) = params::<StartParams>(value)?.split();
-    let priced = priced_in(c, &run)?;
-    if !priced.allowed {
-        let reasons = priced
-            .response
-            .get("blocked")
-            .filter(|b| b.as_array().is_some_and(|a| !a.is_empty()))
-            .or_else(|| priced.response.get("blocks"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        return Err(invalid(format!("the run can't start: {reasons}")));
-    }
-    if accept.token != priced.token {
-        return Err(invalid("the run changed since it was quoted (or wasn't quoted); quote it again with run.quote"));
-    }
-    if !priced.complete && !accept.partial {
-        return Err(invalid("part of the price isn't known (unpriced steps, or job counts known only at run time); accept a partial price to run anyway"));
-    }
-    for (currency, total) in &priced.totals {
-        let agreed = accept.amounts.get(currency).copied().unwrap_or(0);
-        if *total > agreed {
-            return Err(invalid(format!("the run costs more than was accepted ({total} > {agreed} micro-{currency}); quote again")));
+// Fixed allowance covers binding tokens, bounded command envelopes, formatting and
+// fixed typed shells; per-node entries cover parsed Vec plus simultaneous BTreeSet.
+fn request_scratch(p: &RunParams) -> Result<usize, Error> {
+    use nodecraft_exec::admission::measure::{add, mul};
+    add(16 * 1024, mul(p.nodes.len(), std::mem::size_of::<NodeId>() + std::mem::size_of::<(NodeId, ())>() + 48)?)
+}
+fn start_metadata(value: &Value) -> Result<usize, Error> {
+    use nodecraft_exec::admission::measure::{add, entries, mul};
+    let nodes = value.get("nodes").and_then(Value::as_array).map_or(0, Vec::len);
+    let accept = value.get("accept");
+    let token = accept.and_then(|a| a.get("token")).and_then(Value::as_str).map_or(0, str::len);
+    let amounts = accept.and_then(|a| a.get("amounts")).and_then(Value::as_object);
+    let mut n = add(
+        std::mem::size_of::<PreparedRun>()
+            .checked_sub(std::mem::size_of::<nodecraft_exec::admission::AdmittedRunPlan>() + std::mem::size_of::<nodecraft_exec::cost::Quote>())
+            .ok_or_else(|| invalid("run metadata representation overflow"))?
+            + std::mem::size_of::<Box<PreparedRun>>(),
+        add(mul(nodes, std::mem::size_of::<NodeId>())?, token)?,
+    )?;
+    if let Some(amounts) = amounts {
+        n = add(n, entries::<String, u64>(amounts.len())?)?;
+        for k in amounts.keys() {
+            n = add(n, k.len())?;
         }
     }
+    if n > nodecraft_exec::admission::MAX_SCRATCH_BYTES / 2 {
+        return Err(invalid("run request metadata exceeds scratch limit"));
+    }
+    Ok(n)
+}
+#[cfg(test)]
+thread_local! {static PREPARED_COPIES:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
+/// Private owned execution authority; its preparation envelope is per object, not per queue.
+pub struct PreparedRun {
+    admitted: nodecraft_exec::admission::AdmittedRunPlan,
+    quote: nodecraft_exec::cost::Quote,
+    run: RunParams,
+    accept: Accept,
+    routing_nonce: Option<[u8; 32]>,
+    bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
+}
+impl PreparedRun {
+    pub fn quote(&self) -> &nodecraft_exec::cost::Quote {
+        &self.quote
+    }
+    pub fn canvas_id(&self) -> CanvasId {
+        self.run.canvas
+    }
+}
+fn accept_quote(c: &Context<'_>, quote: &nodecraft_exec::cost::Quote, accept: &Accept) -> Result<(), Error> {
+    let budget = c.resources.require::<BudgetState>()?;
+    if !check(quote, &budget.budgets, &budget.spent)?.allowed() {
+        return Err(invalid("the run exceeds current budgets"));
+    }
+    if !quote.is_complete() && !accept.partial {
+        return Err(invalid("part of the price is unknown; explicit partial consent is required"));
+    }
+    for (currency, total) in &quote.totals {
+        let agreed = accept.amounts.get(&String::from(*currency)).copied().unwrap_or(0);
+        if total.micros > agreed {
+            return Err(invalid("the run costs more than was accepted"));
+        }
+    }
+    Ok(())
+}
+pub(crate) fn authorize(
+    c: &Context<'_>,
+    prepared: PreparedRun,
+    options: nodecraft_exec::run::RunOptions,
+) -> Result<(AuthorizedRun, nodecraft_exec::run::Progress), Error> {
+    let catalog = c.resources.require::<RunCatalog>()?;
+    if prepared.routing_nonce != c.routing.nonce || binding(c, catalog, &prepared.run, MAX_BINDING_BYTES)? != prepared.accept.token {
+        return Err(invalid("the prepared run is stale; quote and prepare again"));
+    }
+    accept_quote(c, &prepared.quote, &prepared.accept)?;
+    let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
+    Ok((AuthorizedRun { run, bindings: prepared.bindings }, progress))
+}
+fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    if c.phase == crate::commands::Phase::Preview {
+        return Ok(Effect::None { result: Value::Null });
+    }
+    check_requested(value)?;
+    // Parsed request is admitted temporary ownership before deserialization, and moves
+    // into witness ownership only after its aggregate reservation succeeds below.
+    let metadata = start_metadata(value)?;
+    let (run, accept) = params::<StartParams>(value)?.split();
+    let catalog = c.resources.require::<RunCatalog>()?;
+    let token = binding(c, catalog, &run, MAX_BINDING_BYTES)?;
+    if token != accept.token {
+        return Err(invalid("the run changed since quotation; quote again"));
+    }
+    let canvas = c.document.canvases().get(&run.canvas).ok_or_else(|| invalid("canvas does not exist"))?;
+    // Preflight ALL snapshot ownership before the single snapshot clone.
+    nodecraft_exec::admission::measure::canvas(canvas)?;
     let mode = mode_of(&run)?;
-    let nodes: BTreeSet<NodeId> = if matches!(mode, RunMode::Selected | RunMode::WithUpstream) { run.nodes.iter().copied().collect() } else { BTreeSet::new() };
-    let (mode, field) = match mode {
-        RunMode::Selected => ("selected", None),
-        RunMode::WithUpstream => ("with_upstream", None),
-        RunMode::Field(field) => ("field", Some(field)),
-        RunMode::AllStale => ("all_stale", None),
+    let requested = run.nodes.iter().copied().collect();
+    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
+    let Planned::Ready(plan) = plan_with_targets(canvas, c.kinds, &mode, &requested, &stale, c.routing.routing.targets())? else {
+        return Err(invalid("run planning is blocked"));
     };
-    let request = json!({
-        "run": {"canvas": run.canvas, "mode": mode, "nodes": nodes, "field": field},
-        "revision": c.revision,
-        "token": priced.token,
-        "accept": {"amounts": accept.amounts, "partial": accept.partial},
-    });
-    Ok(Effect::Service { capability: RUN_SERVICE, request })
+    #[cfg(test)]
+    PREPARED_COPIES.with(|n| n.set(n.get() + 1));
+    let mut limits = nodecraft_exec::admission::AdmissionLimits::default();
+    let temporary = nodecraft_exec::admission::measure::add(metadata, request_scratch(&run)?)?;
+    limits.scratch_bytes = limits.scratch_bytes.checked_sub(temporary).ok_or_else(|| invalid("run request metadata exceeds scratch limit"))?;
+    let (mut admitted, quote) =
+        nodecraft_exec::admission::admit_run_with_targets(plan, run.canvas, canvas.clone(), c.kinds, catalog.catalog(), limits, c.routing.routing.targets())?;
+    // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
+    // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
+    admitted.reserve_metadata(metadata)?;
+    let bindings = capture_bindings(&mut admitted, &c.routing.routing)?;
+    accept_quote(c, &quote, &accept)?;
+    Ok(Effect::PreparedRun { prepared: Box::new(PreparedRun { admitted, quote, run, accept, routing_nonce: c.routing.nonce, bindings }) })
 }
 
 fn enabled_start(c: &Context<'_>, value: &Value) -> Result<(), Error> {
@@ -363,7 +475,7 @@ fn enabled_start(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     c.document.canvases().get(&run.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     c.resources.require::<RunCatalog>()?;
     c.resources.require::<BudgetState>()?;
-    if !c.services.contains(RUN_SERVICE) {
+    if !c.services.contains_run_host() {
         return Err(Error::new(ErrorKind::Unsupported, "this host can't run jobs"));
     }
     mode_of(&run).map(|_| ())
@@ -446,7 +558,7 @@ fn csv_page(usage: &UsageLog, p: &ExportParams, ceiling: usize) -> Result<Value,
         .map_err(|_| Error::new(ErrorKind::Internal, "the export envelope couldn't be encoded"))?
         .len();
     let mut header = Vec::new();
-    usage.write_csv_rows(&mut header, usize::MAX, 0).map_err(|_| Error::new(ErrorKind::Internal, "the usage header couldn't be written"))?;
+    usage.write_scoped_csv_rows(&mut header, usize::MAX, 0).map_err(|_| Error::new(ErrorKind::Internal, "the usage header couldn't be written"))?;
     let mut encoded = escaped_csv_bytes(&header)
         .and_then(|n| n.checked_add(envelope))
         .filter(|n| *n <= ceiling)
@@ -454,7 +566,7 @@ fn csv_page(usage: &UsageLog, p: &ExportParams, ceiling: usize) -> Result<Value,
     let mut out = Vec::new();
     out.try_reserve_exact(ceiling).map_err(|_| Error::new(ErrorKind::Internal, "the export page couldn't be allocated"))?;
     let written = usage
-        .write_csv_rows_while(&mut out, p.offset, limit, |row| {
+        .write_scoped_csv_rows_while(&mut out, p.offset, limit, |row| {
             let Some(next) = escaped_csv_bytes(row).and_then(|n| encoded.checked_add(n)).filter(|n| *n <= ceiling) else { return false };
             encoded = next;
             true
@@ -569,3 +681,68 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+/// Authorized work and only the bindings selected by its immutable admission witness.
+pub struct AuthorizedRun {
+    run: nodecraft_exec::run::Run,
+    bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
+}
+impl std::ops::Deref for AuthorizedRun {
+    type Target = nodecraft_exec::run::Run;
+    fn deref(&self) -> &Self::Target {
+        &self.run
+    }
+}
+impl AuthorizedRun {
+    pub fn binding(&self, job: nodecraft_exec::scheduler::JobId) -> Result<&crate::provider_routing::RegisteredProvider, Error> {
+        let Some(nodecraft_nodes::JobSpec::Generate { node, provider, instance, .. }) = self.run.work(job) else {
+            return Err(invalid("job has no provider binding"));
+        };
+        self.bindings
+            .iter()
+            .find(|(n, b)| n == node && b.target().adapter() == provider && b.target().instance() == *instance)
+            .map(|(_, b)| b)
+            .ok_or_else(|| invalid("job has no provider binding"))
+    }
+    /// Convert admitted work using its captured binding, without another registry lookup.
+    pub fn queued_job(&self, id: nodecraft_exec::scheduler::JobId, key: &str, price: Option<crate::jobs::JobPrice>) -> Result<crate::jobs::QueuedJob, Error> {
+        let binding = self.binding(id)?;
+        let (_, job) = crate::generate::provider_job(self.run.work(id).ok_or_else(|| invalid("job is unavailable"))?, key)?;
+        Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, price })
+    }
+    pub fn job_done(
+        &mut self,
+        kinds: &nodecraft_nodes::Registry,
+        job: nodecraft_exec::scheduler::JobId,
+        outputs: Vec<(String, nodecraft_types::Value)>,
+    ) -> nodecraft_exec::run::Progress {
+        self.run.job_done(kinds, job, outputs)
+    }
+    pub fn job_failed(&mut self, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
+        self.run.job_failed(job, reason)
+    }
+}
+
+#[cfg(test)]
+thread_local! {static BINDING_COPIES:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
+fn capture_bindings(
+    admitted: &mut nodecraft_exec::admission::AdmittedRunPlan,
+    routing: &crate::provider_routing::ProviderRouting,
+) -> Result<Vec<(NodeId, crate::provider_routing::RegisteredProvider)>, Error> {
+    // Resolve and meter every retained independent binding before the first Arc clone.
+    let mut binding_bytes = 0usize;
+    for (_, adapter, instance) in admitted.selected_targets() {
+        let binding = routing.find_parts(adapter, instance)?;
+        binding_bytes =
+            binding_bytes.checked_add(std::mem::size_of::<NodeId>() + binding.retained_bytes()).ok_or_else(|| invalid("run binding ownership overflow"))?;
+    }
+    admitted.reserve_metadata(binding_bytes)?;
+    let mut bindings = Vec::new();
+    bindings.try_reserve_exact(admitted.selected_targets().count()).map_err(|_| invalid("run bindings cannot be allocated"))?;
+    for (node, adapter, instance) in admitted.selected_targets() {
+        #[cfg(test)]
+        BINDING_COPIES.with(|n| n.set(n.get() + 1));
+        bindings.push((node, routing.find_parts(adapter, instance)?.clone()));
+    }
+    Ok(bindings)
+}

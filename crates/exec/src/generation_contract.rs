@@ -21,3 +21,18 @@ pub(crate) fn validate_outputs(node: &Node, jobs: &[JobSpec]) -> Result<(), &'st
     }
     Ok(())
 }
+
+pub(crate) fn validate_targets(
+    node: &nodecraft_graph::Node,
+    jobs: &[nodecraft_nodes::JobSpec],
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<(), &'static str> {
+    for job in jobs {
+        if let nodecraft_nodes::JobSpec::Generate { node: owner, provider, instance, .. } = job
+            && (*owner != node.id || targets.get(node.id, provider).is_none_or(|target| target.instance() != *instance))
+        {
+            return Err("generated job does not match its selected provider target");
+        }
+    }
+    Ok(())
+}

@@ -141,7 +141,19 @@ pub const MAX_BLOCKERS: usize = 256;
 /// Kinds' [`NodeKind::mode`](nodecraft_nodes::NodeKind::mode) is asked with the node's own
 /// connected input port types, in `node.inputs` order (list ports with `many: true`).
 pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTreeSet<NodeId>, stale: &BTreeSet<NodeId>) -> Result<Planned, Error> {
-    let graph = Graph::new(canvas, kinds)?;
+    plan_with_targets(canvas, kinds, mode, requested, stale, &nodecraft_types::EMPTY_TARGET_SELECTION)
+}
+
+/// Plan with the immutable endpoint view supplied before any kind hook.
+pub fn plan_with_targets(
+    canvas: &Canvas,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<Planned, Error> {
+    let graph = Graph::new(canvas, kinds, targets)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id)) {
@@ -201,20 +213,21 @@ type Cache = BTreeMap<(NodeId, String), Result<(Value, bool, usize), Reason>>;
 struct Graph<'a> {
     canvas: &'a Canvas,
     kinds: &'a Registry,
+    targets: &'a nodecraft_types::TargetSelection,
     /// Inputs of each node: (port, upstream node, upstream port, order).
     into: BTreeMap<NodeId, Vec<(&'a str, NodeId, &'a str, u32)>>,
     routing: crate::routing::Incoming<'a>,
 }
 
 impl<'a> Graph<'a> {
-    fn new(canvas: &'a Canvas, kinds: &'a Registry) -> Result<Self, Error> {
+    fn new(canvas: &'a Canvas, kinds: &'a Registry, targets: &'a nodecraft_types::TargetSelection) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
         let mut routing = crate::routing::incoming(canvas, kinds)?;
         let into = std::mem::take(&mut routing.feeds)
             .into_iter()
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
-        Ok(Self { canvas, kinds, into, routing })
+        Ok(Self { canvas, kinds, targets, into, routing })
     }
 
     fn upstream(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
@@ -405,7 +418,11 @@ impl<'a> Graph<'a> {
         };
         let jobs = match known_inputs(&inputs) {
             Some(values) => {
-                let jobs = kind.plan(&PlanCtx { node, inputs: &values }).map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?;
+                let jobs = kind
+                    .plan(&PlanCtx { targets: self.targets, node, inputs: &values })
+                    .map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?;
+                crate::generation_contract::validate_targets(node, &jobs, self.targets)
+                    .map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
                 crate::generation_contract::validate_outputs(node, &jobs).map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
                 Some(jobs)
             }
@@ -423,7 +440,7 @@ impl<'a> Graph<'a> {
         if let Ok(kind) = self.kinds.get(&node.kind)
             && kind.descriptor().category == Category::Source
         {
-            let jobs = kind.plan(&PlanCtx { node, inputs: &[] }).map_err(|error| Reason::Invalid(error.message))?;
+            let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| Reason::Invalid(error.message))?;
             return jobs
                 .into_iter()
                 .find_map(|job| match job {

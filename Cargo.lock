@@ -2843,6 +2843,7 @@ name = "nodecraft-testkit"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "nodecraft-catalog",
  "nodecraft-engine",
  "nodecraft-exec",
  "nodecraft-graph",
@@ -2850,6 +2851,7 @@ dependencies = [
  "nodecraft-providers",
  "nodecraft-types",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
