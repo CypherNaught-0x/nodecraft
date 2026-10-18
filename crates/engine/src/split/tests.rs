@@ -94,3 +94,46 @@ fn a_one_by_one_split_copies_the_image_and_a_generated_result_can_be_split() {
     generator.active = None;
     assert!(image_of(&generator).is_none(), "only the active result counts");
 }
+
+#[test]
+fn the_largest_grids_split_and_far_out_or_overfull_splits_store_nothing() {
+    for (rows, columns) in [(8, 8), (16, 4), (4, 16)] {
+        let mut s = session(32, 32);
+        assert_eq!(split(&mut s, rows, columns, &ids((rows * columns) as u8)).unwrap().len(), (rows * columns) as usize);
+    }
+    // A source near the canvas edge: the grid would leave it.
+    let mut s = session(8, 8);
+    let stored = s.assets().len();
+    let canvas = C;
+    s.dispatch("node.move", &json!({"canvas": canvas, "id": SOURCE, "pos": {"x": 9_999_800.0, "y": 0.0}})).unwrap();
+    let error = split(&mut s, 2, 2, &ids(4)).unwrap_err();
+    assert_eq!(error.message, "the tiles would land outside the canvas; move the node and try again");
+    assert_eq!(s.assets().len(), stored);
+    // A store with no room left for the tiles.
+    let mut s = session(64, 64);
+    let filler = |n: u8| {
+        let mut bytes = encode_png(1, 1, &[n, 0, 0, 255], &Limits::default()).unwrap();
+        bytes.resize(MAX_ASSET_BYTES - 1, n);
+        bytes
+    };
+    for n in 0..2 {
+        s.import_asset(&filler(n)).unwrap();
+    }
+    let mut almost = filler(9);
+    almost.truncate(MAX_ASSET_BYTES - 3000);
+    s.import_asset(&almost).unwrap();
+    let stored = s.assets().len();
+    let error = split(&mut s, 4, 4, &ids(16)).unwrap_err();
+    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::Conflict, "the tiles don't fit in the project's media"));
+    assert_eq!(s.assets().len(), stored, "nothing stored");
+}
+
+#[test]
+fn only_decodable_image_types_can_be_split() {
+    let s = session(4, 4);
+    let mut node = s.document().canvases().get(&C).unwrap().nodes().get(&SOURCE).unwrap().clone();
+    assert!(image_of(&node).is_some());
+    let Some(Value::Media(asset)) = node.params.get_mut("asset") else { panic!() };
+    asset.mime = "image/svg+xml".parse().unwrap();
+    assert!(image_of(&node).is_none(), "SVG isn't offered");
+}

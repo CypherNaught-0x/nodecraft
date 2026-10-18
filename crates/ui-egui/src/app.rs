@@ -714,7 +714,11 @@ impl NodeCraftApp {
                                     let tiles = rows.saturating_mul(*columns);
                                     let fits = tiles <= nodecraft_engine::split::MAX_TILES;
                                     let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));
-                                    let button = if fits { button } else { button.on_disabled_hover_text("At most 64 tiles") };
+                                    let button = if fits {
+                                        button
+                                    } else {
+                                        button.on_disabled_hover_text(format!("At most {} tiles", nodecraft_engine::split::MAX_TILES))
+                                    };
                                     if button.clicked() {
                                         split_request = Some((node.id, *rows, *columns));
                                         ui.close();
@@ -854,10 +858,7 @@ impl NodeCraftApp {
                 Some(SelectQuery::Kind(kind)) => self.selection.replace(selection::of_kind(canvas, &kind)),
                 None => {}
             }
-            if let Some((node, rows, columns)) = split_request {
-                let source = canvas.nodes().get(&node).map(|n| card_geometry(&self.painted, kinds, n, t));
-                split_after = source.map(|rect| (node, rows, columns, rect));
-            }
+            split_after = split_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -889,8 +890,8 @@ impl NodeCraftApp {
         if !ui.input(|i| i.pointer.primary_down()) {
             self.wiring = None;
         }
-        if let Some((node, rows, columns, rect)) = split_after {
-            self.split_grid(node, rows, columns, rect, t);
+        if let Some((node, rows, columns)) = split_after {
+            self.split_grid(node, rows, columns, t);
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {

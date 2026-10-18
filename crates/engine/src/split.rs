@@ -18,14 +18,20 @@ use std::collections::BTreeMap;
 pub const MAX_SIDE: u32 = 16;
 /// Most tiles one split makes.
 pub const MAX_TILES: u32 = 64;
+/// The canvas extent positions may use (as `node.move`).
+const MAX_COORDINATE: f32 = 10_000_000.0;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
 
-/// The image a node shows: a Source image's asset, else the first image of its active result.
+/// Image types a split can decode.
+const SPLITTABLE: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"];
+
+/// The image a node shows, if it can be split: a Source image's asset, else the first image of
+/// its active result, of a type NodeCraft decodes.
 pub fn image_of(node: &Node) -> Option<&AssetRef> {
-    let is_image = |asset: &&AssetRef| asset.mime.essence().starts_with("image/");
+    let is_image = |asset: &&AssetRef| SPLITTABLE.contains(&asset.mime.essence());
     if let Some(Value::Media(asset)) = node.params.get("asset").filter(|_| node.kind == "source.image") {
         return Some(asset).filter(is_image);
     }
@@ -70,13 +76,25 @@ pub fn split_grid(session: &mut Session, split: &Split<'_>) -> Result<Vec<NodeId
     let asset = image_of(source).ok_or_else(|| invalid("this node has no image to split"))?;
     let origin = source.pos;
     let bytes = session.assets().get(&asset.hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "the image's data isn't in this project"))?;
-    let (_, image) = decode_image(bytes, &Limits::default()).map_err(|_| invalid("the image can't be read"))?;
-    let image = image.to_rgba8();
-    let (width, height) = image.dimensions();
+    let (_, image) = decode_image(bytes, &Limits::default()).map_err(|error| invalid(format!("the image can't be read: {error}")))?;
+    // No full RGBA copy: each tile is cut from the decoded image and converted on its own, so
+    // peak memory stays near the decode (`media`'s limits) plus one tile.
+    let (width, height) = (image.width(), image.height());
     if width < split.columns || height < split.rows {
         return Err(invalid("the image is smaller than one pixel per tile"));
     }
-    // Cut and encode every tile, and check the store's room, before storing anything.
+    // The tiles land to the right of the source and below it: refuse before any work if the
+    // grid would leave the canvas.
+    let far = (origin.x + split.step.0 * split.columns as f32, origin.y + split.step.1 * split.rows.saturating_sub(1) as f32);
+    if !(far.0.is_finite() && far.1.is_finite() && far.0.abs() <= MAX_COORDINATE && far.1.abs() <= MAX_COORDINATE) {
+        return Err(invalid("the tiles would land outside the canvas; move the node and try again"));
+    }
+    // Cut and encode every tile, stopping as soon as they can't fit the store, before storing
+    // anything. (Identical tiles are counted twice, so this errs on the safe side.)
+    let store_left = MAX_TOTAL_ASSET_BYTES.saturating_sub(session.assets().byte_len());
+    if MAX_ASSETS.saturating_sub(session.assets().len()) < tiles as usize {
+        return Err(Error::new(ErrorKind::Conflict, "the tiles don't fit in the project's media"));
+    }
     let mut encoded = Vec::with_capacity(tiles as usize);
     let mut total = 0usize;
     for row in 0..split.rows {
@@ -84,18 +102,17 @@ pub fn split_grid(session: &mut Session, split: &Split<'_>) -> Result<Vec<NodeId
         for column in 0..split.columns {
             let (left, right) = (edge(width, split.columns, column), edge(width, split.columns, column + 1));
             let (w, h) = (right.saturating_sub(left), bottom.saturating_sub(top));
-            let tile = nodecraft_media::image::imageops::crop_imm(&image, left, top, w, h).to_image();
-            let png = encode_png(w, h, tile.as_raw(), &Limits::default()).map_err(|_| invalid("a tile can't be encoded"))?;
+            let tile = image.crop_imm(left, top, w, h).to_rgba8();
+            let png = encode_png(w, h, tile.as_raw(), &Limits::default()).map_err(|error| invalid(format!("a tile can't be encoded: {error}")))?;
             if png.len() > MAX_ASSET_BYTES {
                 return Err(invalid("a tile is too large to store"));
             }
             total = total.saturating_add(png.len());
+            if total > store_left {
+                return Err(Error::new(ErrorKind::Conflict, "the tiles don't fit in the project's media"));
+            }
             encoded.push((png, w, h));
         }
-    }
-    let store_left = MAX_TOTAL_ASSET_BYTES.saturating_sub(session.assets().byte_len());
-    if total > store_left || MAX_ASSETS.saturating_sub(session.assets().len()) < encoded.len() {
-        return Err(Error::new(ErrorKind::Conflict, "the tiles don't fit in the project's media"));
     }
     // Store the tiles and add their nodes.
     let added = (|| {
