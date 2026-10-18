@@ -1,23 +1,19 @@
 use super::*;
-fn receipt(s: &str) -> Option<Receipt<'_>> {
+fn receipt(s: &str) -> Option<Receipt> {
     parse(s.as_bytes(), s.len())
 }
 #[test]
 fn complete_grammar_unicode_and_unique_root_identity_are_required() {
     for raw in [r#"{"id":"ok","x":[true,false,null,-12.5e+2,{"s":"é\uD83D\uDE00\n"}]}"#, r#" { "x":{}, "id":"ok" } "#] {
         let r = receipt(raw).unwrap();
-        assert_eq!(r.id, "ok");
+        assert_eq!(r.id(), Some("ok"));
         assert!(!r.terminal);
-        assert!(r.id.as_ptr() >= raw.as_ptr());
-        assert!(r.id.as_ptr() < raw.as_ptr().wrapping_add(raw.len()));
         assert!(parse(raw.as_bytes(), raw.len() - 1).is_none());
     }
     for raw in [
         r#"{"id":"ok","id":"other"}"#,
         r#"{"x":{"id":"nested"}}"#,
         r#"{"id":null}"#,
-        r#"{"id":"a\u0062"}"#,
-        r#"{"\u0069d":"ok"}"#,
         r#"[{"id":"ok"}]"#,
         r#"{"id":"ok"}false"#,
         r#"{"id":"ok",}"#,
@@ -65,5 +61,65 @@ fn depth_keys_scalars_and_status_confirmation_are_bounded() {
         r#"{"id":"ok","status":"unknown"}"#,
     ] {
         assert!(!receipt(raw).unwrap().terminal);
+    }
+}
+
+#[test]
+fn escaped_ascii_identity_and_semantic_keys_have_fixed_complete_bounds() {
+    for raw in [r#"{"id":"a\u0062"}"#, r#"{"\u0069\u0064":"\u0061b"}"#, r#"{"id":"\u0061\u0062"}"#] {
+        assert_eq!(receipt(raw).unwrap().id(), Some("ab"));
+    }
+    let owned = {
+        let raw = String::from(r#"{"id":"owned_1-2"}"#);
+        receipt(&raw).unwrap()
+    };
+    assert_eq!(owned.id(), Some("owned_1-2"));
+    for (n, ok) in [(128, true), (129, false)] {
+        let raw = format!(r#"{{"id":"{}"}}"#, r"\u0061".repeat(n));
+        assert_eq!(receipt(&raw).is_some(), ok);
+        if ok {
+            assert_eq!(receipt(&raw).unwrap().id(), Some("a".repeat(n).as_str()));
+        }
+    }
+    for (suffix, ok) in [("aaaa", true), ("aaaaa", false)] {
+        let raw = format!(r#"{{"id":"ok","{}{suffix}":0}}"#, r"\u0061".repeat(42));
+        assert_eq!(receipt(&raw).is_some(), ok, "256 raw bytes includes escapes");
+    }
+    for raw in [
+        r#"{"id":"ok","\u0069d":"ok"}"#,
+        r#"{"\u0069d":"ok","id":"other"}"#,
+        r#"{"\u0069d":"ok","\u0069\u0064":"ok"}"#,
+        r#"{"x":{"\u0069d":"nested"}}"#,
+        r#"{"id":"\u002f"}"#,
+        r#"{"id":"\u005c"}"#,
+        r#"{"id":"\u000a"}"#,
+        r#"{"id":"\u00e9"}"#,
+        r#"{"id":"\ud83d\ude00"}"#,
+        r#"{"id":"ok","x":"\uD800"}"#,
+        r#"{"id":"\u0061"} false"#,
+        r#"{"id":"\u0061""#,
+    ] {
+        assert!(receipt(raw).is_none(), "{raw}");
+    }
+}
+#[test]
+fn escaped_status_is_exact_and_semantic_duplicates_cannot_prove_terminal() {
+    for raw in [
+        r#"{"id":"ok","\u0073tatus":"\u0063anceled"}"#,
+        r#"{"id":"ok","status":"succe\u0065ded"}"#,
+        r#"{"id":"ok","status":"\u0066ailed"}"#,
+        r#"{"id":"ok","status":"\u0061borted"}"#,
+    ] {
+        assert!(receipt(raw).unwrap().terminal);
+    }
+    for raw in [
+        r#"{"id":"ok","status":"canceled","\u0073tatus":"canceled"}"#,
+        r#"{"id":"ok","\u0073tatus":"failed","status":"aborted"}"#,
+        r#"{"id":"ok","status":"succeededX"}"#,
+        r#"{"id":"ok","status":"\u0063anceled-extra"}"#,
+        r#"{"id":"ok","status":"canc\u00e9led"}"#,
+        r#"{"id":"ok","x":{"status":"canceled"}}"#,
+    ] {
+        assert!(!receipt(raw).unwrap().terminal, "{raw}");
     }
 }

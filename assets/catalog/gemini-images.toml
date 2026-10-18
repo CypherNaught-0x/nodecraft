@@ -1,13 +1,13 @@
-# Gemini Interactions REST contract checked2026-10-18: https://ai.google.dev/api/interactions-api
-# Local conservative aspect subset; Lite wire1K follows REST enum over1024px model prose.
-# Unknown composite cost, not free. Latency is local timeout hint, not a benchmark.
+# Gemini Interactions REST contract checked 2026-10-18: https://ai.google.dev/api/interactions-api
+# Local conservative aspect subset; Lite wire 1K follows REST enum over 1024px model prose.
+# Unknown composite cost, not free. Latency is an approximate catalog hint, not the request timeout or a benchmark.
 
 [[model]]
 id = "gemini-images.nano-banana-2.1"
 provider = "gemini-images"
 provider_model = "gemini-nano-banana-2.1"
 label = "Gemini Nano Banana 2.1"
-description = "Generate images; direct adapter editing takes ordered references. Canvas media resolution and mixed/list output routing need a host. Cost depends on usage."
+description = "Generate images with Gemini Nano Banana 2.1. Cost depends on usage."
 latency_s = 120
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }
@@ -35,7 +35,7 @@ id = "gemini-images.flash-lite"
 provider = "gemini-images"
 provider_model = "gemini-3.1-flash-lite-image"
 label = "Gemini Flash Lite Image"
-description = "Generate images; direct adapter editing takes ordered references. Canvas media resolution and mixed/list output routing need a host. Cost depends on usage."
+description = "Generate images with Gemini Flash Lite Image. Cost depends on usage."
 latency_s = 120
 quality = 3
 pricing = { type = "by_usage", currency = "USD" }
@@ -63,7 +63,7 @@ id = "gemini-images.pro"
 provider = "gemini-images"
 provider_model = "gemini-3-pro-image"
 label = "Gemini Pro Image"
-description = "Generate images; direct adapter editing takes ordered references. Canvas media resolution and mixed/list output routing need a host. Cost depends on usage."
+description = "Generate images with Gemini Pro Image. Cost depends on usage."
 latency_s = 120
 quality = 5
 pricing = { type = "by_usage", currency = "USD" }

@@ -192,7 +192,7 @@ impl Replicate {
             ..HttpRequest::get(self.endpoint(&format!("predictions/{id}/cancel"))).max_response_bytes(self.limits.response_bytes).timeout_ms(15_000)
         });
         let confirmed = match self.http.send_no_redirect(req).await {
-            Ok(reply) if reply.is_success() => receipt::parse(&reply.body, self.limits.response_bytes).is_some_and(|r| r.id == id && r.terminal),
+            Ok(reply) if reply.is_success() => receipt::parse(&reply.body, self.limits.response_bytes).is_some_and(|r| r.id() == Some(id) && r.terminal),
             _ => false,
         };
         let disposition = if confirmed { "terminal status observed" } else { "cancellation unconfirmed" };
@@ -219,16 +219,20 @@ impl Replicate {
         let admitted = response::parse(&reply, record, self.limits).and_then(|parsed| {
             parsed.identity(None, record)?;
             let accepted = receipt.as_ref().ok_or_else(|| malformed("invalid complete Replicate create receipt"))?;
-            if accepted.id != parsed.id {
+            let id = accepted.id().ok_or_else(|| malformed("invalid decoded Replicate identifier"))?;
+            if id != parsed.id {
                 return Err(malformed("Replicate create receipt does not match"));
             }
-            self.check_id(accepted.id)?;
+            self.check_id(id)?;
             Ok(parsed)
         });
         match admitted {
             Ok(parsed) => Ok(Submission::Queued(record.handle(&parsed.id))),
             Err(error) => match receipt {
-                Some(receipt) => Err(self.reject_accepted(receipt.id, error).await),
+                Some(receipt) => match receipt.id() {
+                    Some(id) => Err(self.reject_accepted(id, error).await),
+                    None => Err(error),
+                },
                 None => Err(error),
             },
         }

@@ -27,11 +27,54 @@ fn choice<'a>(job: &'a ProviderJob, key: &str, default: &'a str, choices: &[&str
     }
     Ok(s)
 }
+// Selected Nano/Pro 1K tuples; the official 2K and 4K tables are exactly ×2/×4.
+// https://ai.google.dev/gemini-api/docs/image-generation (checked 2026-10-18).
+fn output_envelope(model: &str, size: &str, aspect: &str, l: &Limits) -> Result<(), ProviderError> {
+    if model == LITE {
+        // No separately identified Lite tuple table: never assume Nano's dimensions apply.
+        let h = Limits::HARD;
+        if l.width < h.width || l.height < h.height || l.pixels < h.pixels || l.total_pixels < h.total_pixels || l.codec_bytes < h.codec_bytes {
+            return Err(invalid("lowered Gemini geometry cannot cover the undocumented Lite output envelope"));
+        }
+        return Ok(());
+    }
+    let (width, height): (u32, u32) = match aspect {
+        "1:1" => (1024, 1024),
+        "2:3" => (848, 1264),
+        "3:2" => (1264, 848),
+        "3:4" => (896, 1200),
+        "4:3" => (1200, 896),
+        "4:5" => (928, 1152),
+        "5:4" => (1152, 928),
+        "9:16" => (768, 1376),
+        "16:9" => (1376, 768),
+        "21:9" => (1584, 672),
+        _ => return Err(invalid("unsupported Gemini output aspect")),
+    };
+    let scale = match size {
+        "1K" => 1,
+        "2K" => 2,
+        "4K" => 4,
+        _ => return Err(invalid("unsupported Gemini output size")),
+    };
+    let extent = || invalid("Gemini requested output extent overflow");
+    let width = width.checked_mul(scale).ok_or_else(extent)?;
+    let height = height.checked_mul(scale).ok_or_else(extent)?;
+    let area = u64::from(width).checked_mul(u64::from(height)).ok_or_else(extent)?;
+    let aggregate = area.checked_mul(2).ok_or_else(extent)?;
+    // Pinned JPEG decoder returns at most four 8-bit channels. Reserve possible orientation copy.
+    // Actual codec/header validation still runs; this is not a whole-workspace memory guarantee.
+    let codec = area.checked_mul(8).ok_or_else(extent)?;
+    if width > l.width || height > l.height || area > l.pixels || aggregate > l.total_pixels || codec > l.codec_bytes {
+        return Err(invalid("Gemini requested output envelope exceeds geometry or codec limits"));
+    }
+    Ok(())
+}
 pub(super) fn prepare<'a>(job: &'a ProviderJob, l: &Limits) -> Result<Prepared<'a>, ProviderError> {
     if !matches!(job.model.as_str(), NANO | LITE | PRO) {
         return Err(invalid("select a supported Gemini image catalog model"));
     }
-    if job.inputs.len() > 15 || job.params.len() > 2 {
+    if job.inputs.len() > MAX_INPUT_ITEMS || job.params.len() > 2 {
         return Err(invalid("too many Gemini inputs or options"));
     }
     let mut metadata = job.model.len();
@@ -45,6 +88,7 @@ pub(super) fn prepare<'a>(job: &'a ProviderJob, l: &Limits) -> Result<Prepared<'
     }
     let size = choice(job, "image_size", "1K", if job.model == LITE { &["1K"] } else { &["1K", "2K", "4K"] })?;
     let aspect = choice(job, "aspect_ratio", "1:1", ASPECTS)?;
+    output_envelope(&job.model, size, aspect, l)?;
     let mut images = 0usize;
     let mut prompts = 0usize;
     let mut total = 0usize;
@@ -71,7 +115,7 @@ pub(super) fn prepare<'a>(job: &'a ProviderJob, l: &Limits) -> Result<Prepared<'
             _ => return Err(invalid("Gemini needs one prompt and ordered image references; masks and conversations are unsupported")),
         }
     }
-    if prompts != 1 || images > 14 {
+    if prompts != 1 || images > MAX_REFERENCE_IMAGES {
         return Err(invalid("Gemini needs one prompt and at most fourteen references"));
     }
     let mut inputs = Vec::new();
@@ -175,7 +219,7 @@ impl Prepared<'_> {
             .header("Content-Type", "application/json")
             .header("User-Agent", crate::USER_AGENT)
             .secret_header("x-goog-api-key", key.expose())
-            .timeout_ms(120000)
+            .timeout_ms(REQUEST_TIMEOUT_MS)
             .max_response_bytes(l.response_bytes))
     }
 }

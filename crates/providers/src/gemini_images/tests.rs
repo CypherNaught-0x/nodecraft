@@ -347,3 +347,148 @@ fn numeric_metadata_is_admitted_before_json_number_parsing() {
     assert!(wire::admit(b"12345678", &l).is_ok());
     assert!(wire::admit(b"123456789", &l).is_err());
 }
+
+// Independent literal 4K geometry fixture from the official Nano/Pro tables, checked 2026-10-18.
+const DOCUMENTED_4K: &[(&str, u32, u32)] = &[
+    ("1:1", 4096, 4096),
+    ("2:3", 3392, 5056),
+    ("3:2", 5056, 3392),
+    ("3:4", 3584, 4800),
+    ("4:3", 4800, 3584),
+    ("4:5", 3712, 4608),
+    ("5:4", 4608, 3712),
+    ("9:16", 3072, 5504),
+    ("16:9", 5504, 3072),
+    ("21:9", 6336, 2688),
+];
+fn sized_jpeg(width: u32, height: u32) -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(width, height, image::Rgb([30, 60, 90]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img).write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+    // The generator raster is destroyed here, before entering production parsing.
+    out.into_inner()
+}
+fn images_reply(bytes: &[u8], count: usize) -> HttpResponse {
+    let v = json!({"type":"image","mime_type":"image/jpeg","data":base64::Engine::encode(&base64::engine::general_purpose::STANDARD,bytes)});
+    reply(json!({"status":"completed","steps":[{"type":"model_output","content":vec![v;count]}]}))
+}
+#[test]
+fn documented_4k_geometries_and_two_largest_outputs_decode_with_defaults() {
+    for &(ratio, width, height) in DOCUMENTED_4K {
+        let bytes = sized_jpeg(width, height);
+        let done = response::parse(images_reply(&bytes, 1), &Limits::default()).unwrap_or_else(|e| panic!("{ratio}: {e:?}"));
+        let crate::Output::Bytes { bytes: actual, .. } = done.outputs.first().unwrap() else { panic!("image output") };
+        assert_eq!(actual.as_ref(), bytes.as_slice());
+        let meta = nodecraft_media::probe_image(actual, &Limits::default().image(false)).unwrap();
+        assert_eq!((meta.width, meta.height), (width, height));
+    }
+    let bytes = sized_jpeg(4800, 3584);
+    let done = response::parse(images_reply(&bytes, 2), &Limits::default()).unwrap();
+    assert_eq!(done.outputs.len(), 2);
+    for output in &done.outputs {
+        let crate::Output::Bytes { bytes: actual, .. } = output else { panic!("image output") };
+        assert_eq!(actual.as_ref(), bytes.as_slice());
+    }
+    assert!(response::parse(images_reply(&bytes, 2), &Limits { total_pixels: 34_406_399, ..Limits::default() }).is_err());
+}
+#[test]
+fn catalog_sizes_and_ratios_match_the_documented_request_envelopes() {
+    use nodecraft_types::ParamControl;
+    let c = nodecraft_catalog::Catalog::builtin().unwrap();
+    for m in c.models().filter(|m| m.provider == "gemini-images") {
+        let sizes = m.params.params.iter().find(|p| p.name == "image_size").unwrap();
+        let ratios = m.params.params.iter().find(|p| p.name == "aspect_ratio").unwrap();
+        let ParamControl::Choice { options: rs } = &ratios.control else { panic!("ratios") };
+        let ParamControl::Choice { options: ss } = &sizes.control else { panic!("sizes") };
+        assert_eq!(rs.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), DOCUMENTED_4K.iter().map(|p| p.0).collect::<Vec<_>>());
+        assert_eq!(ss.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), if m.provider_model == LITE { vec!["1K"] } else { vec!["1K", "2K", "4K"] });
+        for size in ss {
+            for ratio in rs {
+                let mut j = job();
+                j.model = m.provider_model.clone();
+                j.params.insert("image_size".into(), json!(size.value));
+                j.params.insert("aspect_ratio".into(), json!(ratio.value));
+                let q = request::prepare(&j, &Limits::default()).unwrap().encode(&Secret::new("fixture").unwrap(), &Limits::default()).unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&q.body).unwrap();
+                assert_eq!(body["response_format"]["image_size"], size.value);
+                assert_eq!(body["response_format"]["aspect_ratio"], ratio.value);
+                assert_eq!(q.timeout_ms, 300_000);
+            }
+        }
+    }
+}
+#[test]
+fn requested_geometry_refuses_before_codec_body_or_transport_and_exact_limits_send() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Transport {
+        constructed: AtomicUsize,
+        sent: AtomicUsize,
+    }
+    impl Http for Transport {
+        fn send(&self, _: crate::HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+            panic!("redirect fallback")
+        }
+        fn send_no_redirect(&self, q: crate::HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+            self.constructed.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(q.timeout_ms, 300_000);
+            Box::pin(async move {
+                self.sent.fetch_add(1, Ordering::SeqCst);
+                Ok(reply(success()))
+            })
+        }
+    }
+    let h = Arc::new(Transport { constructed: AtomicUsize::new(0), sent: AtomicUsize::new(0) });
+    // Literal first-column dimensions; all selected official 2K/4K tuples are exactly ×2/×4.
+    let one_k = [(1024u32, 1024u32), (848, 1264), (1264, 848), (896, 1200), (1200, 896), (928, 1152), (1152, 928), (768, 1376), (1376, 768), (1584, 672)];
+    for model in [NANO, PRO] {
+        for (size, scale) in [("1K", 1u32), ("2K", 2), ("4K", 4)] {
+            for ((ratio, _, _), &(base_w, base_h)) in DOCUMENTED_4K.iter().zip(&one_k) {
+                let (width, height) = (base_w * scale, base_h * scale);
+                let area = u64::from(width) * u64::from(height);
+                let exact = Limits { width, height, pixels: area, total_pixels: area * 2, codec_bytes: area * 8, ..Limits::default() };
+                let mut j = job();
+                j.model = model.into();
+                j.params.insert("image_size".into(), json!(size));
+                j.params.insert("aspect_ratio".into(), json!(ratio));
+                j.inputs.push(JobInput::Media { role: "reference".into(), mime: "image/jpeg".into(), bytes: Arc::from(jpeg()) });
+                for lower in [
+                    Limits { width: width - 1, ..exact },
+                    Limits { height: height - 1, ..exact },
+                    Limits { pixels: area - 1, ..exact },
+                    Limits { total_pixels: area * 2 - 1, ..exact },
+                    Limits { codec_bytes: area * 8 - 1, ..exact },
+                ] {
+                    let before = h.constructed.load(Ordering::SeqCst);
+                    let scope = SubmitContext::new();
+                    COPIES.with(|c| c.set((0, 0)));
+                    let p = GeminiImages::with_limits(Secret::new("fixture").unwrap(), h.clone(), lower).unwrap();
+                    let e = futures::executor::block_on(p.submit_with_delivery(&j, &scope)).unwrap_err();
+                    assert_eq!(e.kind, ErrorKind::UnsupportedInput);
+                    assert!(scope.finish_error().is_some());
+                    assert_eq!(COPIES.with(|c| c.get()), (0, 0));
+                    assert_eq!(h.constructed.load(Ordering::SeqCst), before);
+                }
+                let before = h.sent.load(Ordering::SeqCst);
+                let p = GeminiImages::with_limits(Secret::new("fixture").unwrap(), h.clone(), exact).unwrap();
+                assert!(futures::executor::block_on(p.submit(&j)).is_ok());
+                assert_eq!(h.sent.load(Ordering::SeqCst), before + 1);
+            }
+        }
+    }
+    let hard = Limits::default();
+    let j = job();
+    for lower in [
+        Limits { width: hard.width - 1, ..hard },
+        Limits { height: hard.height - 1, ..hard },
+        Limits { pixels: hard.pixels - 1, ..hard },
+        Limits { total_pixels: hard.total_pixels - 1, ..hard },
+        Limits { codec_bytes: hard.codec_bytes - 1, ..hard },
+    ] {
+        let before = h.constructed.load(Ordering::SeqCst);
+        let p = GeminiImages::with_limits(Secret::new("fixture").unwrap(), h.clone(), lower).unwrap();
+        assert!(futures::executor::block_on(p.submit(&j)).is_err());
+        assert_eq!(h.constructed.load(Ordering::SeqCst), before);
+    }
+    let p = GeminiImages::new(Secret::new("fixture").unwrap(), h.clone());
+    assert!(futures::executor::block_on(p.submit(&j)).is_ok());
+}

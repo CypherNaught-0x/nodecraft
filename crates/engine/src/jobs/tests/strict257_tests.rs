@@ -356,10 +356,25 @@ fn exact_inactive_retry_at_attempt_cap_reuses_its_original_permit() {
         assert!(matches!(block_on(runner.run(start, CancelToken::default())), Outcome::Failed { transient: true, .. }));
     }
     assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS);
+    let lease = runner.lock().jobs.get(&JobId(1)).unwrap().scheduler.clone().unwrap();
+    let different = || Start { idempotency_key: "different-key".into(), ..job(1) };
+    assert!(matches!(block_on(runner.run(different(), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+    let cancelled = CancelToken::default();
+    cancelled.cancel();
+    assert_eq!(block_on(runner.run(different(), cancelled)), Outcome::Cancelled);
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS);
+    assert!(runner.lock().owns_scheduler(JobId(1), &lease));
+    assert_eq!(first.submits.load(Ordering::SeqCst), 1);
     let extra = RetryCost::new();
     runner.register(JobId(10001), priced(extra.clone(), None));
     assert!(matches!(block_on(runner.run(job(10001), CancelToken::default())), Outcome::Failed { transient: false, .. }));
     assert_eq!(extra.submits.load(Ordering::SeqCst), 0);
+    // Prove settle frees a slot WHILE full, then refill it before the original retry can finish.
+    runner.settle(JobId(10000));
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS - 1);
+    assert!(matches!(block_on(runner.run(job(10001), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+    assert_eq!(extra.submits.load(Ordering::SeqCst), 1);
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS);
     let original = std::mem::take(&mut *budget.log.lock().unwrap());
     let retry = || Start { idempotency_key: "cap-0".into(), ..job(1) };
     assert!(matches!(block_on(runner.run(retry(), CancelToken::default())), Outcome::Failed { transient: false, .. }));
