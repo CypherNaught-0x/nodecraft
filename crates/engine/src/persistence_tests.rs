@@ -263,3 +263,31 @@ fn config_only_media_survives_history_root_collection_and_asset_gc() {
     s.dispatch("edit.redo", &Value::Null).unwrap();
     assert!(s.retained_assets().unwrap().contains(&hash));
 }
+
+#[test]
+fn recovered_work_replaces_the_document_untitled_unsaved_and_checkpointed() {
+    // A session edits, then "crashes": its journal holds the edits.
+    let crashed = Storage::default();
+    let mut s = Session::with_storage(Snapshot { project: project(), assets: Default::default(), epoch: 0 }, Box::new(crashed.clone())).unwrap();
+    let mut extra = node();
+    extra.id = nodecraft_types::NodeId::from_bytes([0x5a; 16]);
+    s.dispatch("node.add", &serde_json::json!({"canvas": canvas(), "node": extra})).unwrap();
+    let edited = s.document().clone();
+    let recovered = journal::recover(&crashed.0.borrow().memory.recovery).unwrap();
+    assert_eq!(recovered.applied, 1);
+    // A new session offers it, and the person chooses Recover.
+    let fresh = Storage::default();
+    let mut next = Session::with_storage(Snapshot { project: project(), assets: Default::default(), epoch: 0 }, Box::new(fresh.clone())).unwrap();
+    let revision = next.revision();
+    next.recover(recovered.snapshot).unwrap();
+    assert_eq!(next.document(), &edited);
+    assert!(next.revision() > revision);
+    let status = next.file_status();
+    assert!(status.dirty && status.location.is_none() && !status.recovery_required, "untitled, unsaved, checkpointed");
+    assert!(!next.can_undo(), "history starts fresh");
+    // Its own journal now starts from the recovered project.
+    assert_eq!(journal::recover(&fresh.0.borrow().memory.recovery).unwrap().snapshot.project, edited);
+    // Without storage, there is nothing to recover into.
+    let mut plain = Session::new(project()).unwrap();
+    assert_eq!(plain.recover(journal::recover(&fresh.0.borrow().memory.recovery).unwrap().snapshot).unwrap_err().kind, ErrorKind::Unsupported);
+}

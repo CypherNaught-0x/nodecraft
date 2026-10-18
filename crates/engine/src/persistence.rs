@@ -128,6 +128,18 @@ impl Persistence {
         self.epoch = snapshot.epoch;
         Ok(snapshot)
     }
+    /// Adopts `snapshot` (work recovered from an earlier session's journal) as the session's new
+    /// checkpoint. It has no file location and isn't saved: the person saves it where they like.
+    pub fn adopt_recovered(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
+        let checkpoint = journal::checkpoint(snapshot)?;
+        guard(|| self.storage.checkpoint(&checkpoint.bytes))?;
+        self.adopt(checkpoint);
+        self.location = None;
+        self.read_only = false;
+        self.saved_state = None;
+        self.epoch = snapshot.epoch;
+        Ok(())
+    }
     pub fn close(&mut self, state: u64, discard_dirty: bool) -> Result<(), Error> {
         if self.saved_state != Some(state) && !discard_dirty {
             return Err(Error::new(ErrorKind::Conflict, "save changes or explicitly discard them before closing recovery"));

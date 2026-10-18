@@ -268,6 +268,28 @@ impl Session {
     pub fn status_revision(&self) -> u64 {
         self.status_revision
     }
+    /// Host lifecycle boundary (#408): replaces the document with work recovered from an earlier
+    /// session's journal, checkpointing it at once. It is untitled and unsaved, history starts
+    /// fresh, and the change is published like an open (`file.recover`).
+    pub fn recover(&mut self, snapshot: Snapshot) -> Result<(), Error> {
+        snapshot.project.validate()?;
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let next = self.execution.next()?;
+        let before = self.file_status();
+        let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+        storage.adopt_recovered(&snapshot)?;
+        self.document = snapshot.project;
+        self.assets = snapshot.assets;
+        self.undo = History::default();
+        self.redo = History::default();
+        self.gesture = None;
+        self.state = revision;
+        self.publish(revision, "file.recover", next);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        Ok(())
+    }
     /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
     pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {
         let before = self.file_status();
