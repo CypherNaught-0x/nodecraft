@@ -933,7 +933,48 @@ impl UsageLog {
     /// The CSV header and up to `limit` listed rows from `offset`, including finalized Actuals.
     /// Held metadata and evicted quarantine are not listed rows.
     pub fn write_csv_rows(&self, out: &mut impl std::io::Write, offset: usize, limit: usize) -> std::io::Result<()> {
-        write_entries_csv(self.entries().skip(offset).take(limit), out)
+        self.write_csv_rows_while(out, offset, limit, |_| true).map(|_| ())
+    }
+
+    /// Writes the same header and rows as [`Self::write_csv_rows`], stopping before the first
+    /// complete row rejected by `accept`. The borrowed row includes CRLF; no partial rejected
+    /// row is written. Returns the number written (excluding the header). Formatting scratch is
+    /// bounded by the admitted entry's four [`MAX_TEXT`] fields, not by the page size.
+    pub fn write_csv_rows_while(
+        &self,
+        out: &mut impl std::io::Write,
+        offset: usize,
+        limit: usize,
+        mut accept: impl FnMut(&[u8]) -> bool,
+    ) -> std::io::Result<usize> {
+        out.write_all(b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n")?;
+        let mut written = 0;
+        for e in self.entries().skip(offset).take(limit) {
+            let amount = format_money(e.cost);
+            let amount = amount.split_once(' ').map_or(amount.as_str(), |(n, _)| n).to_owned();
+            let row = [
+                e.at_ms.to_string(),
+                cell(&e.session),
+                e.node.to_string(),
+                cell(&e.provider),
+                cell(&e.model),
+                amount,
+                String::from(e.cost.currency),
+                e.status.as_str().to_owned(),
+                cell(&e.idempotency_key),
+            ];
+            let mut row = row.join(",");
+            let body_len = row.len();
+            row.push_str("\r\n");
+            if !accept(row.as_bytes()) {
+                break;
+            }
+            // Preserve the existing writer's row-body/CRLF calls and error propagation.
+            out.write_all(row.get(..body_len).unwrap_or_default().as_bytes())?;
+            out.write_all(b"\r\n")?;
+            written += 1;
+        }
+        Ok(written)
     }
 
     /// Streaming export including evicted immutable uncertainty; ordinary CSV remains listed-only.

@@ -18,6 +18,8 @@ http = ["dep:reqwest"]
 llm = []
 # ComfyUI servers (local or remote) through the `comfy` protocol crate.
 comfyui = []
+# Direct GPT Image generations and edits. Never enabled by a live-test environment variable.
+openai-images = ["dep:base64", "dep:blake3"]
 
 [dependencies]
 nodecraft-catalog = { workspace = true }
@@ -28,6 +30,8 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
+base64 = { version = "=0.22.1", optional = true }
+blake3 = { workspace = true, optional = true }
 
 # TLS: the operating system's stack on Windows and macOS (no C toolchain needed, and it builds for
 # Windows ARM64, where aws-lc needs clang-cl); rustls with aws-lc on Linux; `fetch` in the browser.
@@ -39,6 +43,7 @@ reqwest = { workspace = true, optional = true, features = ["rustls"] }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 futures = { workspace = true, features = ["executor"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

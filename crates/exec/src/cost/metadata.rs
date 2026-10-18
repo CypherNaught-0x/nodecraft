@@ -407,6 +407,8 @@ impl UsageLog {
     }
 
     /// Ordinary admitted transaction, never called by finalization. Move finalized shells to base.
+    /// The next mutation performs an O(listed rows + finalized shells) merge/rebuild under the
+    /// retained-entry caps; allocation-free finalization itself does not rebuild these indexes.
     pub(super) fn flush_metadata(&mut self) -> Result<(), Error> {
         if self.metadata.actuals().next().is_none() {
             return Ok(());

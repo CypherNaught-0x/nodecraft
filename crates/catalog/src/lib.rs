@@ -22,7 +22,10 @@ pub const MAX_MODELS: usize = 4096;
 pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
-pub const BUILTIN: &[(&str, &str)] = &[("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml"))];
+pub const BUILTIN: &[(&str, &str)] = &[
+    ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
+    ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
+];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

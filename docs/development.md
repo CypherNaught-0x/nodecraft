@@ -46,6 +46,7 @@ so local checks do not require nextest.
 | `cargo xtask layers` | print the crate → layer table and fail on layering violations |
 | `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate |
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
+| `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
 | `cargo xtask version [set X.Y.Z]` | print or set the workspace version (Cargo.toml + Cargo.lock) |
 
@@ -70,3 +71,15 @@ unrelated/outside directory fails instead of falling back. Selecting a workspace
 Set `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` at build time to stamp `--version` and the
 About box; the packaging scripts do this (`packaging/env.sh`). Without them a build reports
 `(dev build)`.
+
+
+## Optional video service
+
+See [media-video.md](media-video.md) for explicit installed-tool configuration, a real roundtrip
+consumer, protocol tests and native fixture checks. `cargo test -p nodecraft-media --features video`
+requires no FFmpeg installation; actual codec tests are explicit and never download tools.
+
+Native `nodecraft-exec` tests use the pinned `allocation-counter` dev-dependency to measure
+allocation-free metadata finalization. Its allocator applies to the entire exec test binary, including
+unrelated tests, so coordinate any additional test allocator instrumentation. Production and wasm
+allocators are unchanged.

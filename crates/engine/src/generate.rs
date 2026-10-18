@@ -1,17 +1,10 @@
-//! Model calls (#79): turns a [`JobSpec::Generate`] into the request its provider adapter takes,
-//! and the provider's [`Completed`] result back into values for the step's output ports.
+//! Bounded conversion between standalone model jobs and provider requests/results.
 //!
-//! Parameters go out as plain JSON (numbers, text, booleans, lists). Text inputs go out as
-//! role-tagged text; a list input sends one entry per item. Media inputs need the asset store,
-//! which isn't wired yet, and are refused as unsupported rather than sent empty.
-//!
-//! Results are hostile input. Inline bytes are sniffed; the provider's claimed type is ignored,
-//! except that bytes which sniff as text count only when it claimed text (an error page claiming
-//! to be an image fails the job). Each result goes to the first output port whose modality it
-//! has, and a result no port takes, or a call that returned nothing, fails the job. Text comes back as a text value. Media comes back as a value that
-//! references the bytes by hash; the host stores them in its asset store under that hash.
+//! Complete borrowed admission precedes owned conversion, including late semantic failures.
+//! Limits are conservative representation/work budgets, not exact JSON bytes or allocator/RSS
+//! guarantees. Provider-owned inputs/results remain with the caller when conversion is refused.
 
-use nodecraft_graph::MAX_VALUE_ITEMS;
+use nodecraft_graph::{MAX_NODE_BYTES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS};
 use nodecraft_media::{ContentHash, MediaKind};
 use nodecraft_nodes::{GenerateOutput, JobSpec};
 use nodecraft_providers::{Completed, JobInput, Output, ProviderJob};
@@ -19,72 +12,257 @@ use nodecraft_types::{AssetRef, Blake3, Error, ErrorKind, MediaMeta, Modality, V
 use serde_json::{Map, Value as Json};
 use std::sync::Arc;
 
-/// Largest inline result accepted, in bytes.
+/// Largest individual binary result and aggregate raw result payload accepted.
 pub const MAX_INLINE_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
+// Matches graph's per-value aggregate text limit; parity is pinned by a Generation test.
+const MAX_TEXT_VALUE_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Copy)]
+struct Limits {
+    depth: usize,
+    items: usize,
+    inputs: usize,
+    text: usize,
+    request: usize,
+    inline: usize,
+    raw_outputs: usize,
+    outputs: usize,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            depth: MAX_VALUE_DEPTH,
+            items: MAX_VALUE_ITEMS,
+            inputs: MAX_VALUE_ITEMS,
+            text: MAX_TEXT_VALUE_BYTES,
+            request: nodecraft_exec::planner::MAX_STEP_INPUT_BYTES,
+            inline: MAX_INLINE_OUTPUT_BYTES,
+            raw_outputs: MAX_INLINE_OUTPUT_BYTES,
+            outputs: MAX_NODE_BYTES,
+        }
+    }
+}
+fn invalid(message: &str) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+}
 fn unsupported(message: &str) -> Error {
-    Error::new(ErrorKind::Unsupported, message.to_owned())
+    Error::new(ErrorKind::Unsupported, message)
 }
 
-/// A parameter value as plain JSON.
-fn json(value: &Value) -> Result<Json, Error> {
-    // Lists nest only as deep as the document allows, so this recursion is bounded.
+/// Every string costs 6*UTF8 bytes +34 (escaping, quotes, String envelope). A request Value
+/// costs 128 even when empty; each input root/leaf costs 64 plus its role string. Output routes
+/// cost 64+name, records 128, and media references 512+sniffed MIME+port. Claimed MIME is charged
+/// as work even when not retained. These deliberately overcharge short encodings and empty work.
+struct Budget(usize);
+impl Budget {
+    fn charge(&mut self, bytes: usize) -> Result<(), Error> {
+        self.0 = self.0.checked_sub(bytes).ok_or_else(|| invalid("model conversion exceeds its representation byte limit"))?;
+        Ok(())
+    }
+    fn string(&mut self, text: &str) -> Result<(), Error> {
+        let bytes = text.len().checked_mul(6).and_then(|n| n.checked_add(34)).ok_or_else(|| invalid("model conversion byte count overflowed"))?;
+        self.charge(bytes)
+    }
+}
+
+// Instance-local instrumentation at real construction sites. Empty on production builds;
+// admission never receives this object, so tests can distinguish scanning from copying.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Conversion {
+    #[cfg(test)]
+    strings: usize,
+    #[cfg(test)]
+    text_bytes: usize,
+    #[cfg(test)]
+    json_nodes: usize,
+    #[cfg(test)]
+    input_records: usize,
+    #[cfg(test)]
+    output_records: usize,
+    #[cfg(test)]
+    asset_arcs: usize,
+    #[cfg(test)]
+    hash_bytes: usize,
+}
+impl Conversion {
+    fn string(&mut self, source: &str) -> String {
+        #[cfg(test)]
+        {
+            self.strings += 1;
+            self.text_bytes += source.len();
+        }
+        source.to_owned()
+    }
+    fn scalar_text(&mut self, value: Json) -> String {
+        let text = value.to_string();
+        #[cfg(test)]
+        {
+            self.strings += 1;
+            self.text_bytes += text.len();
+        }
+        text
+    }
+}
+
+struct RequestBudget {
+    bytes: Budget,
+    values: usize,
+    inputs: usize,
+    limits: Limits,
+}
+impl RequestBudget {
+    fn value(&mut self, root: &Value, role: Option<&str>) -> Result<(), Error> {
+        let mut stack = vec![std::slice::from_ref(root).iter()];
+        let mut text_bytes = 0usize;
+        while let Some(items) = stack.last_mut() {
+            let Some(value) = items.next() else {
+                stack.pop();
+                continue;
+            };
+            if stack.len().saturating_sub(1) > self.limits.depth {
+                return Err(invalid("model request exceeds value depth limit"));
+            }
+            self.values = self.values.checked_add(1).ok_or_else(|| invalid("model request item count overflowed"))?;
+            if self.values > self.limits.items {
+                return Err(invalid("model request exceeds aggregate value item limit"));
+            }
+            self.bytes.charge(128)?;
+            match value {
+                Value::List(children) => {
+                    if children.len() > self.limits.items.saturating_sub(self.values) {
+                        return Err(invalid("model request exceeds aggregate value item limit"));
+                    }
+                    if !children.is_empty() {
+                        if stack.len() > self.limits.depth {
+                            return Err(invalid("model request exceeds value depth limit"));
+                        }
+                        stack.push(children.iter());
+                    }
+                    continue;
+                }
+                Value::Text(text) => {
+                    text_bytes = text_bytes.checked_add(text.len()).ok_or_else(|| invalid("model request text count overflowed"))?;
+                    if text_bytes > self.limits.text {
+                        return Err(invalid("model request value exceeds text limit"));
+                    }
+                    self.bytes.string(text)?;
+                }
+                Value::Number(number) if !f64::from(*number).is_finite() => return Err(invalid("a parameter is not a finite number")),
+                Value::Media(_) => {
+                    return Err(unsupported(if role.is_some() {
+                        "media inputs need the asset store, which isn't available yet"
+                    } else {
+                        "a media value can't be a model parameter"
+                    }));
+                }
+                _ => {}
+            }
+            if let Some(role) = role {
+                self.inputs = self.inputs.checked_add(1).ok_or_else(|| invalid("model input count overflowed"))?;
+                if self.inputs > self.limits.inputs {
+                    return Err(invalid("the model call has too many inputs"));
+                }
+                self.bytes.charge(64)?;
+                self.bytes.string(role)?;
+            }
+        }
+        Ok(())
+    }
+}
+struct AdmittedRequest<'a> {
+    spec: &'a JobSpec,
+    key: &'a str,
+}
+fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits) -> Result<AdmittedRequest<'a>, Error> {
+    let JobSpec::Generate { provider, model, params, inputs, .. } = spec else { return Err(invalid("not a model call")) };
+    if params.len() > limits.items || inputs.len() > limits.items {
+        return Err(invalid("model request exceeds item limit"));
+    }
+    let mut budget = RequestBudget { bytes: Budget(limits.request), values: 0, inputs: 0, limits };
+    for text in [provider.as_str(), model.as_str(), key] {
+        budget.bytes.string(text)?;
+    }
+    for (name, value) in params {
+        budget.bytes.string(name)?;
+        budget.value(value, None)?;
+    }
+    for input in inputs {
+        budget.bytes.charge(64)?;
+        budget.bytes.string(&input.role)?;
+        budget.value(&input.value, Some(&input.role))?;
+    }
+    Ok(AdmittedRequest { spec, key })
+}
+
+// Recursive conversion is only reached after complete standalone depth/item/byte admission.
+fn json(value: &Value, conversion: &mut Conversion) -> Result<Json, Error> {
+    #[cfg(test)]
+    {
+        conversion.json_nodes += 1;
+    }
     Ok(match value {
         Value::Bool(b) => Json::Bool(*b),
-        Value::Text(t) => Json::String(t.clone()),
+        Value::Text(text) => Json::String(conversion.string(text)),
         Value::Integer(i) => Json::from(i.0),
         Value::Unsigned(u) => Json::from(u.0),
-        Value::Number(n) => {
-            Json::Number(serde_json::Number::from_f64(f64::from(*n)).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "a parameter is not a finite number"))?)
-        }
-        Value::List(items) => Json::Array(items.iter().map(json).collect::<Result<_, _>>()?),
+        Value::Number(n) => Json::Number(serde_json::Number::from_f64(f64::from(*n)).ok_or_else(|| invalid("a parameter is not a finite number"))?),
+        Value::List(items) => Json::Array(items.iter().map(|v| json(v, conversion)).collect::<Result<_, _>>()?),
         Value::Media(_) => return Err(unsupported("a media value can't be a model parameter")),
     })
 }
-
-/// Adds `value` as inputs in `role`: text as one entry, lists item by item, within the cap.
-fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>) -> Result<(), Error> {
-    if out.len() >= MAX_VALUE_ITEMS {
-        return Err(Error::new(ErrorKind::InvalidInput, "the model call has too many inputs"));
-    }
-    match value {
-        Value::Text(text) => out.push(JobInput::Text { role: role.to_owned(), text: text.clone() }),
-        Value::List(items) => {
-            for item in items {
-                inputs(role, item, out)?;
-            }
+fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, conversion: &mut Conversion) -> Result<(), Error> {
+    if let Value::List(items) = value {
+        for item in items {
+            inputs(role, item, out, conversion)?;
         }
-        Value::Media(_) => return Err(unsupported("media inputs need the asset store, which isn't available yet")),
-        other => out.push(JobInput::Text { role: role.to_owned(), text: json(other)?.to_string() }),
+        return Ok(());
     }
+    let text = match value {
+        Value::Text(text) => conversion.string(text),
+        other => {
+            let value = json(other, conversion)?;
+            conversion.scalar_text(value)
+        }
+    };
+    let role = conversion.string(role);
+    #[cfg(test)]
+    {
+        conversion.input_records += 1;
+    }
+    out.push(JobInput::Text { role, text });
     Ok(())
 }
-
-/// The provider id and request for a generate job, sent under `idempotency_key`.
-pub fn provider_job(spec: &JobSpec, idempotency_key: &str) -> Result<(String, ProviderJob), Error> {
-    let JobSpec::Generate { provider, model, params, inputs: given, .. } = spec else {
-        return Err(Error::new(ErrorKind::InvalidInput, "not a model call"));
-    };
+fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &mut Conversion) -> Result<(String, ProviderJob), Error> {
+    let proof = admit_request(spec, key, limits)?;
+    let JobSpec::Generate { provider, model, params, inputs: given, .. } = proof.spec else { return Err(invalid("not a model call")) };
     let mut map = Map::new();
     for (name, value) in params {
-        map.insert(name.clone(), json(value)?);
+        let name = conversion.string(name);
+        map.insert(name, json(value, conversion)?);
     }
     let mut job_inputs = Vec::new();
     for input in given {
-        inputs(&input.role, &input.value, &mut job_inputs)?;
+        inputs(&input.role, &input.value, &mut job_inputs, conversion)?;
     }
-    Ok((provider.clone(), ProviderJob { model: model.clone(), params: map, inputs: job_inputs, idempotency_key: idempotency_key.to_owned() }))
+    Ok((
+        conversion.string(provider),
+        ProviderJob { model: conversion.string(model), params: map, inputs: job_inputs, idempotency_key: conversion.string(proof.key) },
+    ))
+}
+/// Convert a standalone job after complete borrowed depth/item/text/representation admission.
+/// The request representation budget is 64 MiB, with 4096 aggregate values/inputs and graph depth 32.
+/// Text per original value is 1 MiB. Metadata and repeated flattened roles share the byte budget.
+pub fn provider_job(spec: &JobSpec, idempotency_key: &str) -> Result<(String, ProviderJob), Error> {
+    request_with_limits(spec, idempotency_key, Limits::default(), &mut Conversion::default())
 }
 
-/// What a finished model call produced: `(port, value)` outputs for the run executor, and the
-/// bytes of media outputs, by hash, for the host to store.
+/// Converted outputs and shared media bytes for the host to store; no asset store is mutated.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Produced {
     pub outputs: Vec<(String, Value)>,
     pub assets: Vec<(Blake3, Arc<[u8]>)>,
 }
-
-fn modality_of(kind: MediaKind) -> Modality {
+fn modality(kind: MediaKind) -> Modality {
     match kind {
         MediaKind::Image => Modality::Image,
         MediaKind::Video => Modality::Video,
@@ -94,131 +272,200 @@ fn modality_of(kind: MediaKind) -> Modality {
         MediaKind::Text => Modality::Text,
     }
 }
-
-fn port_for(outputs: &[GenerateOutput], modality: Modality) -> Result<&str, Error> {
-    outputs
-        .iter()
-        .find(|o| o.modality == modality)
-        .map(|o| o.port.as_str())
-        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, format!("the model returned {modality:?} output, which this node has no output for")))
+fn index(kind: Modality) -> usize {
+    match kind {
+        Modality::Text => 0,
+        Modality::Image => 1,
+        Modality::Video => 2,
+        Modality::Audio => 3,
+        Modality::Mesh => 4,
+        Modality::Document => 5,
+    }
+}
+struct Routes<'a>([Option<&'a str>; 6]);
+impl<'a> Routes<'a> {
+    fn port(&self, kind: Modality) -> Result<&'a str, Error> {
+        let label = match kind {
+            Modality::Text => "text",
+            Modality::Image => "image",
+            Modality::Video => "video",
+            Modality::Audio => "audio",
+            Modality::Mesh => "mesh",
+            Modality::Document => "document",
+        };
+        self.0.get(index(kind)).copied().flatten().ok_or_else(|| invalid(&format!("the model returned {label} output but this node has no output port for it")))
+    }
+}
+enum BorrowedOutput<'a> {
+    Text { port: &'a str, text: &'a str },
+    Media { port: &'a str, mime: &'static str, bytes: &'a Arc<[u8]> },
+}
+#[derive(Default, Debug)]
+struct ScanWork {
+    #[cfg(test)]
+    utf8_calls: usize,
+    #[cfg(test)]
+    utf8_bytes: usize,
 }
 
-/// Routes a provider's result onto `outputs` (see the module docs). URLs must be downloaded
-/// first (`fetch_output`).
-pub fn produced(outputs: &[GenerateOutput], done: &Completed) -> Result<Produced, Error> {
+fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, work: &mut ScanWork) -> Result<BorrowedOutput<'a>, Error> {
+    match item {
+        Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
+        Output::Bytes { mime: claimed, bytes } => {
+            let sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            if sniffed.kind == MediaKind::Text {
+                if !claimed.trim_start().get(..5).is_some_and(|head| head.eq_ignore_ascii_case("text/")) {
+                    return Err(invalid("the provider claimed non-text output but returned text (an error page?)"));
+                }
+                if sniffed.mime != "text/plain" {
+                    return Err(unsupported("the provider returned UTF-16 text, which isn't supported"));
+                }
+                // One standard UTF-8 BOM can precede an exact-limit payload. This raw-work
+                // cap also applies to non-BOM/multiple-BOM data, before any full UTF-8 scan.
+                let raw_limit = limits.text.checked_add(3).ok_or_else(|| invalid("provider raw text limit overflowed"))?;
+                if bytes.len() > raw_limit {
+                    return Err(invalid("the provider returned raw text over the text work limit"));
+                }
+                #[cfg(test)]
+                {
+                    work.utf8_calls += 1;
+                    work.utf8_bytes += bytes.len();
+                }
+                let _ = &work;
+                let text = std::str::from_utf8(bytes).map_err(|_| invalid("the provider returned text that isn't UTF-8"))?;
+                Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text: text.trim_start_matches('\u{feff}') })
+            } else {
+                Ok(BorrowedOutput::Media { port: routes.port(modality(sniffed.kind))?, mime: sniffed.mime, bytes })
+            }
+        }
+        Output::Url { .. } => Err(unsupported("download URL outputs before mapping them")),
+    }
+}
+// Fixed cross-target logical charges, not allocator/RSS measurements.
+const OUTPUT_PROOF_RECORD_BYTES: usize = 64;
+const OUTPUT_PROOF_ROOT_BYTES: usize = 32;
+const _: [(); 1] = [(); (std::mem::size_of::<BorrowedOutput<'static>>() <= OUTPUT_PROOF_RECORD_BYTES) as usize];
+const _: [(); 1] = [(); (std::mem::size_of::<Vec<BorrowedOutput<'static>>>() <= OUTPUT_PROOF_ROOT_BYTES) as usize];
+struct AdmittedOutputs<'a> {
+    items: Vec<BorrowedOutput<'a>>,
+}
+fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits: Limits, work: &mut ScanWork) -> Result<AdmittedOutputs<'a>, Error> {
     if done.outputs.is_empty() {
-        return Err(Error::new(ErrorKind::InvalidInput, "the provider returned no output"));
+        return Err(invalid("the provider returned no output"));
     }
-    if done.outputs.len() > MAX_VALUE_ITEMS {
-        return Err(Error::new(ErrorKind::InvalidInput, "the provider returned too many outputs"));
+    if done.outputs.len() > limits.items || outputs.len() > limits.items {
+        return Err(invalid("the provider result or route table has too many items"));
     }
-    let mut produced = Produced::default();
+    let mut budget = Budget(limits.outputs);
+    let mut routes = Routes([None; 6]);
+    for output in outputs {
+        budget.charge(64)?;
+        budget.string(&output.port)?;
+        if let Some(slot) = routes.0.get_mut(index(output.modality))
+            && slot.is_none()
+        {
+            *slot = Some(output.port.as_str());
+        }
+    }
+    // Cheap entire-result size/work admission before semantic scans; every Arc occurrence counts.
+    let mut raw = Budget(limits.raw_outputs);
     for item in &done.outputs {
+        budget.charge(128)?;
         match item {
-            Output::Text(text) => produced.outputs.push((port_for(outputs, Modality::Text)?.to_owned(), Value::Text(text.clone()))),
-            Output::Bytes { mime: claimed, bytes } => {
-                if bytes.len() > MAX_INLINE_OUTPUT_BYTES {
-                    return Err(Error::new(ErrorKind::InvalidInput, "the provider returned an output too large to keep"));
+            Output::Text(text) => {
+                if text.len() > limits.text {
+                    return Err(invalid("the provider returned text over the value text limit"));
                 }
-                let sniffed = nodecraft_media::sniff(bytes)
-                    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the provider returned an output that isn't a known media type"))?;
-                if sniffed.kind == MediaKind::Text {
-                    // Text bytes count only when the provider said they were text: an error page
-                    // claiming to be an image must not become a caption.
-                    if !claimed.trim_start().to_ascii_lowercase().starts_with("text/") {
-                        return Err(Error::new(ErrorKind::InvalidInput, format!("the provider claimed {claimed} but returned text (an error page?)")));
-                    }
-                    if sniffed.mime != "text/plain" {
-                        return Err(Error::new(ErrorKind::Unsupported, "the provider returned UTF-16 text, which isn't supported"));
-                    }
-                    let text = std::str::from_utf8(bytes).map_err(|_| Error::new(ErrorKind::InvalidInput, "the provider returned text that isn't UTF-8"))?;
-                    produced.outputs.push((port_for(outputs, Modality::Text)?.to_owned(), Value::Text(text.trim_start_matches('\u{feff}').to_owned())));
-                    continue;
+                raw.charge(text.len())?;
+            }
+            Output::Bytes { mime, bytes } => {
+                if bytes.len() > limits.inline {
+                    return Err(invalid("the provider returned an output too large to keep"));
                 }
-                let port = port_for(outputs, modality_of(sniffed.kind))?.to_owned();
-                let hash = Blake3::from_bytes(ContentHash::of(bytes).0);
-                let mime = sniffed.mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
-                produced.assets.push((hash, Arc::clone(bytes)));
-                produced.outputs.push((port, Value::Media(AssetRef { hash, mime, meta: MediaMeta::default() })));
+                raw.charge(bytes.len())?;
+                budget.string(mime)?;
             }
             Output::Url { .. } => return Err(unsupported("download URL outputs before mapping them")),
         }
     }
+    let proof_bytes = done
+        .outputs
+        .len()
+        .checked_mul(OUTPUT_PROOF_RECORD_BYTES)
+        .and_then(|n| n.checked_add(OUTPUT_PROOF_ROOT_BYTES))
+        .ok_or_else(|| invalid("provider proof byte count overflowed"))?;
+    budget.charge(proof_bytes)?;
+    let mut items = Vec::new();
+    items.try_reserve_exact(done.outputs.len()).map_err(|_| Error::new(ErrorKind::Busy, "provider output admission scratch couldn't be allocated"))?;
+    if items.capacity() != done.outputs.len() {
+        return Err(Error::new(ErrorKind::Busy, "provider output admission scratch capacity exceeds its bound"));
+    }
+    let mut text_bytes = 0usize;
+    // Bounded borrowed scratch is allowed here; no converted records, hashing or cloning
+    // precedes complete semantic admission. Keep the validated &str instead of rescanning it.
+    for item in &done.outputs {
+        let classified = classify(item, &routes, limits, work)?;
+        match &classified {
+            BorrowedOutput::Text { port, text } => {
+                text_bytes = text_bytes.checked_add(text.len()).ok_or_else(|| invalid("provider text byte count overflowed"))?;
+                if text_bytes > limits.text {
+                    return Err(invalid("the provider's routed text exceeds the value text limit"));
+                }
+                budget.string(port)?;
+                budget.string(text)?;
+            }
+            BorrowedOutput::Media { port, mime, .. } => {
+                budget.charge(512)?;
+                budget.string(port)?;
+                budget.string(mime)?;
+            }
+        }
+        items.push(classified);
+    }
+    Ok(AdmittedOutputs { items })
+}
+fn outputs_with_limits(outputs: &[GenerateOutput], done: &Completed, limits: Limits, conversion: &mut Conversion) -> Result<Produced, Error> {
+    outputs_with_work(outputs, done, limits, conversion, &mut ScanWork::default())
+}
+fn outputs_with_work(
+    outputs: &[GenerateOutput],
+    done: &Completed,
+    limits: Limits,
+    conversion: &mut Conversion,
+    work: &mut ScanWork,
+) -> Result<Produced, Error> {
+    let proof = admit_outputs(outputs, done, limits, work)?;
+    let mut produced = Produced::default();
+    for item in proof.items {
+        let (port, value) = match item {
+            BorrowedOutput::Text { port, text } => (conversion.string(port), Value::Text(conversion.string(text))),
+            BorrowedOutput::Media { port, mime, bytes } => {
+                #[cfg(test)]
+                {
+                    conversion.hash_bytes += bytes.len();
+                    conversion.asset_arcs += 1;
+                }
+                let hash = Blake3::from_bytes(ContentHash::of(bytes).0);
+                let mime = mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
+                produced.assets.push((hash, Arc::clone(bytes)));
+                (conversion.string(port), Value::Media(AssetRef { hash, mime, meta: MediaMeta::default() }))
+            }
+        };
+        #[cfg(test)]
+        {
+            conversion.output_records += 1;
+        }
+        produced.outputs.push((port, value));
+    }
     Ok(produced)
+}
+/// Map hostile results only after complete borrowed admission. Text totals at most 1 MiB;
+/// binary items/raw aggregate at most 256 MiB; converted reference/string representation at most 8 MiB.
+/// These are not full Generation cardinality/type or asset-persistence certification. URLs must
+/// be downloaded first. Refusal leaves the original paid result with its caller.
+pub fn produced(outputs: &[GenerateOutput], done: &Completed) -> Result<Produced, Error> {
+    outputs_with_limits(outputs, done, Limits::default(), &mut Conversion::default())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use nodecraft_nodes::GenerateInput;
-    use nodecraft_types::{Integer, NodeId, Number};
-
-    fn routes() -> Vec<GenerateOutput> {
-        vec![GenerateOutput { port: "image".into(), modality: Modality::Image }, GenerateOutput { port: "caption".into(), modality: Modality::Text }]
-    }
-
-    fn spec(inputs: Vec<GenerateInput>) -> JobSpec {
-        let params = [
-            ("steps".to_owned(), Value::Integer(Integer(20))),
-            ("cfg".to_owned(), Value::Number(Number::new(4.5).unwrap())),
-            ("hd".to_owned(), Value::Bool(true)),
-            ("style".to_owned(), Value::Text("ink".into())),
-        ]
-        .into_iter()
-        .collect();
-        JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: routes(), provider: "mock".into(), model: "mock-image".into(), params, inputs }
-    }
-
-    #[test]
-    fn a_generate_job_becomes_a_provider_request() {
-        let given = vec![
-            GenerateInput { role: "prompt".into(), value: Value::Text("a fox".into()) },
-            GenerateInput { role: "reference".into(), value: Value::List(vec![Value::Text("one".into()), Value::Text("two".into())]) },
-        ];
-        let (provider, job) = provider_job(&spec(given), "nodecraft:r:1").unwrap();
-        assert_eq!(provider, "mock");
-        assert_eq!(job.model, "mock-image");
-        assert_eq!(job.idempotency_key, "nodecraft:r:1");
-        assert_eq!(Json::Object(job.params), serde_json::json!({"steps": 20, "cfg": 4.5, "hd": true, "style": "ink"}));
-        assert_eq!(job.inputs.len(), 3);
-        assert_eq!(job.inputs[0], JobInput::Text { role: "prompt".into(), text: "a fox".into() });
-        // Media inputs and source jobs are refused.
-        let media = Value::Media(AssetRef { hash: Blake3::from_bytes([2; 32]), mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
-        assert_eq!(provider_job(&spec(vec![GenerateInput { role: "image".into(), value: media }]), "k").unwrap_err().kind, ErrorKind::Unsupported);
-        let source = JobSpec::Source { node: NodeId::from_bytes([1; 16]), output: "out".into(), value: Value::Text("x".into()) };
-        assert!(provider_job(&source, "k").is_err());
-        // More inputs than a list can hold are refused while flattening.
-        let many = Value::List((0..=MAX_VALUE_ITEMS).map(|n| Value::Text(n.to_string())).collect());
-        assert!(provider_job(&spec(vec![GenerateInput { role: "prompt".into(), value: many }]), "k").is_err());
-    }
-
-    #[test]
-    fn results_are_sniffed_and_routed_by_modality() {
-        let png: Arc<[u8]> = Arc::from(&b"\x89PNG\r\n\x1a\n0123456789"[..]);
-        // The claimed type is ignored: the bytes are a PNG.
-        let done = Completed::new(vec![Output::Text("a fox".into()), Output::Bytes { mime: "application/octet-stream".into(), bytes: Arc::clone(&png) }]);
-        let got = produced(&routes(), &done).unwrap();
-        assert_eq!(got.outputs[0], ("caption".to_owned(), Value::Text("a fox".into())));
-        let (port, Value::Media(asset)) = &got.outputs[1] else { panic!("not media") };
-        assert_eq!((port.as_str(), asset.mime.as_str()), ("image", "image/png"));
-        assert_eq!(got.assets, vec![(asset.hash, png)]);
-        // An HTML error page claiming to be a PNG is refused, not recorded as a caption; text
-        // bytes the provider calls text go to the text port (without a UTF-8 BOM).
-        let html = Completed::new(vec![Output::Bytes { mime: "image/png".into(), bytes: Arc::from(&b"<html>error</html>"[..]) }]);
-        assert!(produced(&routes(), &html).is_err());
-        let text = Completed::new(vec![Output::Bytes { mime: "text/plain; charset=utf-8".into(), bytes: Arc::from(&b"\xEF\xBB\xBFhello"[..]) }]);
-        assert_eq!(produced(&routes(), &text).unwrap().outputs, vec![("caption".to_owned(), Value::Text("hello".into()))]);
-        let utf16 = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(&b"\xFF\xFEh\x00i\x00"[..]) }]);
-        assert_eq!(produced(&routes(), &utf16).unwrap_err().kind, ErrorKind::Unsupported);
-        let image_only = [GenerateOutput { port: "image".into(), modality: Modality::Image }];
-        assert!(produced(&image_only, &text).is_err(), "no port takes text");
-        // A paid call that returned nothing is a failure.
-        assert!(produced(&routes(), &Completed::new(vec![])).is_err());
-        // Unknown binary, audio on an image-only node, and URLs are refused.
-        let binary = Completed::new(vec![Output::Bytes { mime: "image/png".into(), bytes: Arc::from(&b"\x00\x01\x02\x03"[..]) }]);
-        assert!(produced(&routes(), &binary).is_err());
-        let wav = Completed::new(vec![Output::Bytes { mime: "image/png".into(), bytes: Arc::from(&b"RIFF\x00\x00\x00\x00WAVEfmt "[..]) }]);
-        assert!(produced(&image_only, &wav).is_err());
-        assert!(produced(&routes(), &Completed::new(vec![Output::Url { url: "https://x".into(), mime: None }])).is_err());
-    }
-}
+mod tests;

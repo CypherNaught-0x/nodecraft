@@ -118,7 +118,7 @@ type Started = Arc<Mutex<Vec<Value>>>;
 
 fn session(budgets: Budgets, with_service: bool) -> (Session, Started) {
     let mut resources = Resources::default();
-    resources.insert(RunCatalog(Arc::new(Catalog::from_toml(CATALOG).unwrap())));
+    resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
     resources.insert(BudgetState { budgets, spent: Spent::default() });
     resources.insert(UsageSnapshot(Arc::new(UsageLog::default())));
     let started: Started = Arc::default();
@@ -166,7 +166,7 @@ fn a_quote_prices_each_step_read_only() {
     Change::AddNode { canvas: C, node: nodecraft_graph::Node::new(id(7), "missing.kind") }.apply(&mut lone).unwrap();
     let mut blocked = Session::with_registries(lone, Registry::builtins().unwrap(), kinds()).unwrap();
     let mut resources = Resources::default();
-    resources.insert(RunCatalog(Arc::new(Catalog::from_toml(CATALOG).unwrap())));
+    resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
     resources.insert(BudgetState { budgets: Budgets::default(), spent: Spent::default() });
     blocked = blocked.with_resources(resources);
     let q = blocked.dispatch("run.quote", &request(&[7])).unwrap();
@@ -200,9 +200,7 @@ fn a_run_starts_only_with_an_accepted_price_within_the_budgets() {
     assert_eq!(requests[0]["revision"], json!(s.revision()));
     assert_eq!(requests[0]["accept"]["amounts"]["USD"], 120_000);
     // The host verifies the token against the document before running.
-    let catalog = Catalog::from_toml(CATALOG).unwrap();
-    let budget = BudgetState { budgets: Budgets::default(), spent: Spent::default() };
-    let again = price(s.document(), s.revision(), s.kinds(), &catalog, &budget, &requests[0]["run"]).unwrap();
+    let again = price(&s, &requests[0]["run"]).unwrap();
     assert_eq!(json!(again.token), requests[0]["token"]);
     // Over a session cap: refused whatever was accepted.
     let (mut capped, started) = session(Budgets { session: Some(usd(100_000)), ..Budgets::default() }, true);
@@ -362,7 +360,7 @@ fn run_quote_consumes_conservative_usage_state_without_changing_reporting() {
     let uncertain: UsageLog = serde_json::from_str(include_str!("../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
     // 120000 quoted + raw5 fits120007; conservative10 does not.
     let mut resources = Resources::default();
-    resources.insert(RunCatalog(Arc::new(Catalog::from_toml(CATALOG).unwrap())));
+    resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
     resources.insert(BudgetState::from_usage(Budgets { session: Some(usd(120007)), ..Budgets::default() }, &uncertain, "a"));
     let before = serde_json::to_string(&uncertain).unwrap();
     let retained = Arc::new(uncertain);
@@ -371,4 +369,463 @@ fn run_quote_consumes_conservative_usage_state_without_changing_reporting() {
     let quote = session.dispatch("run.quote", &request(&[2])).unwrap();
     assert_eq!(quote["allowed"], false, "{quote}");
     assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
+}
+
+fn hostile_usage_session() -> (Session, String) {
+    let mut log = UsageLog::default();
+    let text = "\"\\\n\r\t\u{0000}é".repeat(50);
+    for n in 0..MAX_EXPORT_ROWS {
+        log.record(nodecraft_exec::cost::UsageEntry {
+            at_ms: n as u64,
+            session: text.clone(),
+            node: id(2),
+            provider: text.clone(),
+            model: text.clone(),
+            cost: usd(1),
+            idempotency_key: format!("{n:04}{}", text),
+            status: nodecraft_exec::cost::Charge::Actual,
+        })
+        .unwrap();
+    }
+    let expected = log.to_csv();
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(Arc::new(log)));
+    (Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources), expected)
+}
+
+#[test]
+fn usage_export_hostile_pages_fit_encoded_result_and_preserve_every_row() {
+    let (mut session, expected) = hostile_usage_session();
+    let header_end = expected.find('\n').unwrap() + 1;
+    let mut joined = expected[..header_end].to_owned();
+    let mut offset = 0;
+    loop {
+        let page = session.dispatch("usage.export_csv", &json!({"offset":offset})).unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 768 * 1024);
+        crate::commands::validate_json(&page).unwrap();
+        assert_eq!(page["total"], json!(MAX_EXPORT_ROWS));
+        let csv = page["csv"].as_str().unwrap();
+        assert!(csv.starts_with(&expected[..header_end]));
+        joined.push_str(&csv[header_end..]);
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset);
+                offset = next;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(joined, expected);
+}
+
+#[test]
+fn usage_export_zero_limit_is_rejected_by_enabled_and_dispatch() {
+    let (mut session, _) = hostile_usage_session();
+    let p = json!({"limit":0});
+    assert_eq!(session.enabled("usage.export_csv", &p).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(session.dispatch("usage.export_csv", &p).unwrap_err().kind, ErrorKind::InvalidInput);
+    let page = session.dispatch("usage.export_csv", &json!({"offset":usize::MAX})).unwrap();
+    assert_eq!(page["next_offset"], Value::Null);
+}
+
+#[test]
+fn csv_escape_accounting_matches_serde_for_all_controls_and_unicode() {
+    let text = (0_u8..=31).map(char::from).collect::<String>() + "\"\\é🦀";
+    assert_eq!(escaped_csv_bytes(text.as_bytes()).unwrap() + 2, serde_json::to_vec(&text).unwrap().len());
+}
+
+#[test]
+fn csv_small_injected_ceiling_admits_exact_rows_and_never_stalls() {
+    let mut log = UsageLog::default();
+    for n in 0..3 {
+        log.record(nodecraft_exec::cost::UsageEntry {
+            at_ms: n,
+            session: "s".into(),
+            node: id(2),
+            provider: "p".into(),
+            model: "m".into(),
+            cost: usd(1),
+            idempotency_key: format!("k{n}"),
+            status: nodecraft_exec::cost::Charge::Actual,
+        })
+        .unwrap();
+    }
+    let params = ExportParams { offset: 0, limit: Some(1) };
+    let mut row = Vec::new();
+    log.write_csv_rows(&mut row, 0, 1).unwrap();
+    let envelope = serde_json::to_vec(&json!({"csv":"", "total":3,"next_offset":usize::MAX})).unwrap().len();
+    let ceiling = escaped_csv_bytes(&row).unwrap() + envelope;
+    let page = csv_page(&log, &params, ceiling).unwrap();
+    assert_eq!(page["csv"], String::from_utf8(row).unwrap());
+    assert_eq!(page["next_offset"], 1);
+    assert!(serde_json::to_vec(&page).unwrap().len() <= ceiling);
+    assert_eq!(csv_page(&log, &params, ceiling - 1).unwrap_err().kind, ErrorKind::InvalidInput);
+    let terminal = csv_page(&log, &ExportParams { offset: usize::MAX, limit: Some(1) }, ceiling).unwrap();
+    assert_eq!(terminal["next_offset"], Value::Null);
+}
+
+fn install_run_resources(s: &mut Session, catalog: RunCatalog) {
+    s.swap_resource(Some(catalog));
+    s.swap_resource(Some(BudgetState { budgets: Budgets::default(), spent: Spent::default() }));
+}
+fn consent(token: &str) -> Value {
+    with_accept(&[2], json!({"token": token, "amounts": {"USD": 120_000}, "partial": false}))
+}
+#[test]
+fn launch_authority_rejects_copied_projects_and_equal_revision_inputs_before_service() {
+    let (s, _) = session(Budgets::default(), false);
+    let token = price(&s, &request(&[2])).unwrap().token;
+    let catalog = s.context(crate::commands::Phase::Preview).resources.require::<RunCatalog>().unwrap().clone();
+    for variant in 0..5 {
+        let mut doc = project();
+        if variant == 1 {
+            let mut n = doc.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
+            n.params.insert("text".into(), V::Text("different prompt".into()));
+            Change::SetNode { canvas: C, node: n }.apply(&mut doc).unwrap();
+        }
+        if variant == 2 {
+            let mut n = doc.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+            n.config.insert("runtime".into(), V::Text("different config".into()));
+            Change::SetNode { canvas: C, node: n }.apply(&mut doc).unwrap();
+        }
+        if variant == 3 {
+            let mut n = doc.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
+            let generation = Generation { id: GenerationId::from_bytes([71; 16]), outputs: vec![], input_hash: None };
+            n.active = Some(generation.id);
+            n.history.push(generation);
+            Change::SetNode { canvas: C, node: n }.apply(&mut doc).unwrap();
+        }
+        if variant == 4 {
+            // Same graph IDs but a different project: repeat the original292 exploit.
+            let mut other = Project::new(ProjectId::from_bytes([9; 16]), "Copied").unwrap();
+            Change::AddCanvas { canvas: doc.canvases().get(&C).unwrap().clone() }.apply(&mut other).unwrap();
+            doc = other;
+        }
+        let calls = Arc::new(Mutex::new(0));
+        let counted = Arc::clone(&calls);
+        let mut target = Session::with_registries(doc, Registry::builtins().unwrap(), kinds()).unwrap();
+        install_run_resources(&mut target, catalog.clone());
+        target
+            .register_host_service(RUN_SERVICE, move |_| {
+                *counted.lock().unwrap() += 1;
+                Ok(Value::Null)
+            })
+            .unwrap();
+        assert_eq!(target.revision(), s.revision());
+        assert_ne!(price(&target, &request(&[2])).unwrap().token, token);
+        assert!(target.dispatch("run.start", &consent(&token)).is_err());
+        assert_eq!(*calls.lock().unwrap(), 0);
+        assert!(!target.can_undo());
+    }
+}
+#[test]
+fn canonical_request_and_catalog_snapshot_identity_are_bound() {
+    let (mut s, _) = session(Budgets::default(), false);
+    let original = price(&s, &request(&[2, 3])).unwrap().token;
+    assert_eq!(original, price(&s, &request(&[3, 2, 2])).unwrap().token);
+    let catalog = s.swap_resource::<RunCatalog>(None).unwrap();
+    s.swap_resource(Some(catalog.clone()));
+    assert_eq!(original, price(&s, &request(&[2, 3])).unwrap().token);
+    let changed = CATALOG.replace("img-v1", "img-v2");
+    s.swap_resource(Some(RunCatalog::new(Catalog::from_toml(&changed).unwrap()).unwrap()));
+    let new = price(&s, &request(&[2, 3])).unwrap();
+    assert_ne!(original, new.token);
+    assert_eq!(new.totals.get("USD"), Some(&120_000));
+    s.swap_resource(Some(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap()));
+    assert_ne!(original, price(&s, &request(&[2, 3])).unwrap().token, "new identical snapshot is new authority");
+    s.swap_resource(Some(catalog));
+    let mut unused = request(&[]);
+    unused["mode"] = json!("all_stale");
+    let a = price(&s, &unused).unwrap().token;
+    unused["nodes"] = json!([id(2)]);
+    unused["field"] = json!(nodecraft_types::FieldId::from_bytes([8; 16]));
+    assert_eq!(a, price(&s, &unused).unwrap().token);
+}
+#[test]
+fn imports_edits_undo_redo_and_live_budget_have_their_intended_identity_effects() {
+    let (mut s, _) = session(Budgets::default(), false);
+    let quote = price(&s, &request(&[2])).unwrap();
+    s.import_asset(b"unreferenced cached bytes").unwrap();
+    assert_eq!(s.revision(), 0);
+    let imported = price(&s, &request(&[2])).unwrap().token;
+    assert_ne!(quote.token, imported);
+    let doc = s.document().clone();
+    s.dispatch("node.move", &json!({"canvas": C, "id": id(1), "pos":{"x":25,"y":50}})).unwrap();
+    let edited = price(&s, &request(&[2])).unwrap().token;
+    assert_ne!(imported, edited);
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &doc);
+    let undone = price(&s, &request(&[2])).unwrap().token;
+    assert_ne!(undone, imported);
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_ne!(undone, price(&s, &request(&[2])).unwrap().token);
+    let before = price(&s, &request(&[2])).unwrap().token;
+    s.swap_resource(Some(BudgetState { budgets: Budgets { project: Some(usd(1)), ..Budgets::default() }, spent: Spent::default() }));
+    let blocked = price(&s, &request(&[2])).unwrap();
+    assert_eq!(blocked.token, before);
+    assert!(!blocked.allowed);
+}
+#[test]
+fn queued_host_checks_actual_session_before_reserving_and_freezes_verified_inputs() {
+    let (mut s, queued) = session(Budgets::default(), true);
+    let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
+    s.dispatch("run.start", &params).unwrap();
+    let envelope = queued.lock().unwrap()[0].clone();
+    let mut ledger = UsageLog::default();
+    let verify = |s: &Session, ledger: &mut UsageLog| -> Result<(nodecraft_graph::Project, nodecraft_exec::planner::RunPlan, RunCatalog), Error> {
+        let q = price(s, &envelope["run"])?;
+        if !q.allowed || !q.complete || json!(q.token) != envelope["token"] {
+            return Err(invalid("queued execution source changed"));
+        }
+        for (currency, cost) in &q.totals {
+            if envelope["accept"]["amounts"][currency].as_u64().unwrap_or(0) < *cost {
+                return Err(invalid("unaccepted price"));
+            }
+        }
+        ledger.record(nodecraft_exec::cost::UsageEntry {
+            at_ms: 0,
+            session: "now".into(),
+            node: id(2),
+            provider: "test".into(),
+            model: "test.img".into(),
+            cost: usd(120_000),
+            idempotency_key: "queued".into(),
+            status: nodecraft_exec::cost::Charge::Estimate,
+        })?;
+        let canvas = s.document().canvases().get(&C).unwrap();
+        let Planned::Ready(plan) = plan(canvas, s.kinds(), &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new())? else {
+            return Err(invalid("verified run became blocked"));
+        };
+        let retained_catalog = s.context(crate::commands::Phase::Preview).resources.require::<RunCatalog>()?.clone();
+        Ok((s.document().clone(), plan, retained_catalog))
+    };
+    let (frozen, frozen_plan, retained_catalog) = verify(&s, &mut ledger).unwrap();
+    assert_eq!(ledger.entries().count(), 1);
+    s.import_asset(b"host drift").unwrap();
+    let mut untouched = UsageLog::default();
+    assert!(verify(&s, &mut untouched).is_err());
+    assert_eq!(untouched.entries().count(), 0);
+    s.dispatch("node.param_set", &json!({"canvas":C,"id":id(1),"name":"text","value":V::Text("later prompt".into())})).unwrap();
+    s.swap_resource(Some(RunCatalog::new(Catalog::from_toml(&CATALOG.replace("img-v1", "img-v2")).unwrap()).unwrap()));
+    assert_eq!(retained_catalog.catalog().get("test.img").unwrap().provider_model, "img-v1");
+    assert!(
+        frozen_plan
+            .steps
+            .iter()
+            .flat_map(|step| &step.inputs)
+            .flat_map(|input| &input.from)
+            .any(|source| matches!(source, nodecraft_exec::planner::InputSource::Value(V::Text(text)) if text == "a fox"))
+    );
+    assert_eq!(frozen.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().params["text"], V::Text("a fox".into()));
+}
+#[test]
+fn binding_byte_budget_and_entropy_failures_are_explicit() {
+    let (s, _) = session(Budgets::default(), false);
+    let c = s.context(crate::commands::Phase::Preview);
+    let p: RunParams = params(&request(&[2])).unwrap();
+    let catalog = c.resources.require::<RunCatalog>().unwrap();
+    let exact = b"nodecraft.run.quote.v2".len() + 32 + 8 + 8 + 16 + 16 + 32 + 1 + 8 + 16;
+    assert!(binding(&c, catalog, &p, exact).is_ok());
+    assert!(binding(&c, catalog, &p, exact - 1).is_err());
+    crate::execution_identity::without_entropy(|| {
+        assert_eq!(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).err().unwrap().kind, ErrorKind::Internal);
+        assert_eq!(Session::new(project()).err().unwrap().kind, ErrorKind::Internal);
+        // Existing authority needs no new entropy for quote, preview or start validation.
+        assert!(price(&s, &request(&[2])).is_ok());
+        assert!(s.enabled("run.quote", &request(&[2])).is_ok());
+    });
+}
+
+#[derive(Default)]
+struct AuthorityStorage {
+    memory: nodecraft_format::MemoryStorage,
+    calls: Arc<Mutex<usize>>,
+}
+impl nodecraft_format::ProjectStorage for AuthorityStorage {
+    fn load(&mut self, location: &nodecraft_format::StorageLocation) -> Result<Vec<u8>, Error> {
+        *self.calls.lock().unwrap() += 1;
+        self.memory.load(location)
+    }
+    fn save(&mut self, location: &nodecraft_format::StorageLocation, bytes: &[u8]) -> Result<(), Error> {
+        *self.calls.lock().unwrap() += 1;
+        self.memory.save(location, bytes)
+    }
+    fn checkpoint(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        *self.calls.lock().unwrap() += 1;
+        self.memory.checkpoint(bytes)
+    }
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        *self.calls.lock().unwrap() += 1;
+        self.memory.append(bytes)
+    }
+}
+fn plain_snapshot() -> nodecraft_format::Snapshot {
+    let mut doc = Project::new(ProjectId::from_bytes([2; 16]), "Plain").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut doc).unwrap();
+    let text = nodecraft_nodes::Registry::builtins().unwrap().get("source.text").unwrap().descriptor().instantiate(id(1), &Default::default()).unwrap();
+    Change::AddNode { canvas: C, node: text }.apply(&mut doc).unwrap();
+    nodecraft_format::Snapshot { project: doc, assets: Default::default(), epoch: 0 }
+}
+#[test]
+fn entropy_and_generation_exhaustion_precede_assets_and_all_storage_effects() {
+    let calls = Arc::new(Mutex::new(0));
+    crate::execution_identity::without_entropy(|| {
+        let storage = AuthorityStorage { calls: Arc::clone(&calls), ..Default::default() };
+        assert_eq!(Session::with_storage(plain_snapshot(), Box::new(storage)).err().unwrap().kind, ErrorKind::Internal);
+    });
+    assert_eq!(*calls.lock().unwrap(), 0, "entropy failure must precede initial checkpoint");
+    let storage = AuthorityStorage { calls: Arc::clone(&calls), ..Default::default() };
+    let mut s = Session::with_storage(plain_snapshot(), Box::new(storage)).unwrap();
+    assert_eq!(*calls.lock().unwrap(), 1);
+    s.exhaust_execution_generation();
+    let doc = s.document().clone();
+    let assets = s.assets().clone();
+    let status = s.file_status();
+    let before = *calls.lock().unwrap();
+    for (command, args) in [
+        ("node.create", json!({"canvas":C,"id":id(9),"kind":"source.text","pos":{"x":0,"y":0}})),
+        ("file.save_as", json!({"location":"saved"})),
+        ("file.open", json!({"location":"other","discard_dirty":true})),
+    ] {
+        assert_eq!(s.dispatch(command, &args).unwrap_err().kind, ErrorKind::Overflow, "{command}");
+    }
+    assert_eq!(s.import_asset(b"not admitted").unwrap_err().kind, ErrorKind::Overflow);
+    assert_eq!(s.document(), &doc);
+    assert_eq!(s.assets(), &assets);
+    assert_eq!(s.file_status(), status);
+    assert_eq!(s.revision(), 0);
+    assert!(!s.can_undo());
+    assert!(!s.can_redo());
+    assert!(s.events_since(0).unwrap().is_empty());
+    assert_eq!(*calls.lock().unwrap(), before, "no append/save/load/checkpoint on exhausted authority");
+}
+#[test]
+fn successful_save_and_open_invalidate_source_without_relying_on_revision_alone() {
+    let mut s = Session::with_storage(plain_snapshot(), Box::new(AuthorityStorage::default())).unwrap();
+    install_run_resources(&mut s, RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
+    let req = request(&[1]);
+    let a = price(&s, &req).unwrap().token;
+    s.dispatch("file.save_as", &json!({"location":"saved"})).unwrap();
+    assert_eq!(s.revision(), 0);
+    let b = price(&s, &req).unwrap().token;
+    assert_ne!(a, b);
+    s.dispatch("file.save", &json!({})).unwrap();
+    let c = price(&s, &req).unwrap().token;
+    assert_ne!(b, c);
+    s.dispatch("file.open", &json!({"location":"saved"})).unwrap();
+    assert_ne!(c, price(&s, &req).unwrap().token);
+    let before_failure = price(&s, &req).unwrap().token;
+    assert!(s.dispatch("file.open", &json!({"location":"missing","discard_dirty":true})).is_err());
+    assert_eq!(before_failure, price(&s, &req).unwrap().token, "failed open does not revoke unchanged source");
+    assert!(s.dispatch("node.move", &json!({"canvas":C,"id":id(99),"pos":{"x":1,"y":2}})).is_err());
+    assert_eq!(before_failure, price(&s, &req).unwrap().token, "failed preparation does not revoke unchanged source");
+}
+
+#[test]
+fn equal_descriptors_in_a_new_registry_do_not_reuse_live_authority() {
+    struct Alternate(NodeDescriptor);
+    impl NodeKind for Alternate {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            ModeId::new("gen").ok()
+        }
+        fn plan(&self, c: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![JobSpec::Source { node: c.node.id, output: "out".into(), value: V::Text("alternate implementation".into()) }])
+        }
+    }
+    let (s, _) = session(Budgets::default(), false);
+    let catalog = s.context(crate::commands::Phase::Preview).resources.require::<RunCatalog>().unwrap().clone();
+    let original = kinds();
+    let mut alternative = nodecraft_nodes::Registry::builtins().unwrap();
+    for d in original.descriptors().filter(|d| d.id.starts_with("test.")) {
+        alternative.register(Box::new(Alternate(d.clone()))).unwrap();
+    }
+    assert_eq!(original.descriptors().collect::<Vec<_>>(), alternative.descriptors().collect::<Vec<_>>());
+    let mut other = Session::with_registries(s.document().clone(), Registry::builtins().unwrap(), alternative).unwrap();
+    install_run_resources(&mut other, catalog);
+    assert_ne!(price(&s, &request(&[2])).unwrap().token, price(&other, &request(&[2])).unwrap().token);
+}
+#[test]
+fn oversized_requests_and_advisory_values_cannot_authorize_start() {
+    let (mut s, calls) = session(Budgets::default(), true);
+    let mut oversized = request(&[2]);
+    oversized["nodes"] = json!(vec![id(2); MAX_REQUESTED + 1]);
+    assert!(price(&s, &oversized).is_err());
+    assert!(s.dispatch("run.quote", &oversized).is_err());
+    let q = price(&s, &request(&[2])).unwrap();
+    // A caller-assembled price summary without this live authority cannot launch.
+    assert!(s.dispatch("run.start", &consent("120000 USD revision0 project2")).is_err());
+    assert_eq!(calls.lock().unwrap().len(), 0);
+    let before = q.token;
+    for _ in 0..2 {
+        assert!(s.enabled("run.quote", &request(&[2])).is_ok());
+        assert_eq!(price(&s, &request(&[2])).unwrap().token, before);
+    }
+}
+
+#[test]
+fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells() {
+    use nodecraft_exec::cost::{Charge, UsageEntry, UsageMetadata};
+    let mut log = UsageLog::default();
+    let heavy = "\u{1}".repeat(500);
+    let add = |log: &mut UsageLog, n: usize| {
+        log.record(UsageEntry {
+            at_ms: n as u64,
+            session: heavy.clone(),
+            node: id(2),
+            provider: heavy.clone(),
+            model: heavy.clone(),
+            cost: usd(1),
+            idempotency_key: format!("{n:03}{heavy}"),
+            status: Charge::Actual,
+        })
+        .unwrap();
+    };
+    for n in 0..100 {
+        add(&mut log, n)
+    }
+    let metadata = |key| UsageMetadata { at_ms: 101, session: "s", node: id(2), provider: "overlay", model: "m", idempotency_key: key };
+    let mut first = log.reserve_metadata(metadata("first-overlay")).unwrap();
+    let mut second = log.reserve_metadata(metadata("second-overlay")).unwrap();
+    let _held = log.reserve_metadata(metadata("held-not-listed")).unwrap();
+    for n in 100..200 {
+        add(&mut log, n)
+    }
+    log.finalize_metadata(&mut second, usd(3)).unwrap();
+    log.finalize_metadata(&mut first, usd(2)).unwrap();
+    assert_eq!(log.metadata_statistics().held, 1);
+    assert_eq!(log.metadata_statistics().finalized, 2);
+    let expected = log.to_csv();
+    let before = serde_json::to_string(&log).unwrap();
+    let retained = Arc::new(log);
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(retained.clone()));
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let header_end = expected.find('\n').unwrap() + 1;
+    let mut joined = expected[..header_end].to_owned();
+    let mut offset = 0;
+    let mut pages = 0;
+    loop {
+        let page = session.dispatch("usage.export_csv", &json!({"offset":offset})).unwrap();
+        assert_eq!(page["total"], 202);
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 768 * 1024);
+        let csv = page["csv"].as_str().unwrap();
+        joined.push_str(&csv[header_end..]);
+        pages += 1;
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset);
+                offset = next
+            }
+            None => break,
+        }
+    }
+    assert!(pages > 1, "actual encoded byte ceiling must split this fixture");
+    assert_eq!(joined, expected);
+    assert!(!joined.contains("held-not-listed"));
+    assert!(joined.find("first-overlay").unwrap() < joined.find("second-overlay").unwrap());
+    assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
+    assert_eq!(retained.metadata_statistics().finalized, 2, "read-only export must not flush overlays");
 }

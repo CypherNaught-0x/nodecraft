@@ -44,6 +44,19 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
+The native client gives initial authentication and each replacement connection one five-second
+network-admission deadline. TCP connect, every partial hello write/read, and all six replacement
+attempts with backoff share that deadline. Hello replies are capped at 4 KiB separately from
+screenshot replies. Busy and network failures may retry only admission; once a requested operation
+might have been sent, it is never replayed. `Client::set_reconnect_after` retains its existing
+behavior, including reconnecting before every call at `Duration::ZERO`.
+
+Reading/re-reading the token file is synchronous filesystem I/O and cannot be interrupted by this
+network deadline. Time spent there is counted: if it exhausts admission, no subsequent network
+operation starts. Token-file reads stop at 4 KiB plus one detection byte and validate the 64-hex token before
+connecting; this is not a bound on filesystem stalls.
+
+
 - A connection must send `hello` (at most 4 KiB) within 5 seconds in total, and it closes on
   anything else before then.
   Once authenticated, it closes after 10 minutes of silence. A reply that can't be written within
@@ -57,10 +70,6 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 - The app answers 16 requests per frame.
 - Up to 4 screenshots can be pending, each at most 64 MiB of PNG.
 
-The current control transport is authenticated TCP. Headless stdio automation is available through
-`nodecraft-cli mcp`; a separate stdio control transport is tracked by #269 and is not part of the
-live canvas command bridge described below (see `docs/decisions.md`).
-
 ### Live canvas commands
 
 `command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
@@ -70,3 +79,24 @@ live availability for parameterless commands. These operations change only the v
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
 Classification is shared with MCP; the live host does not grant access to human-only or paid
 commands. Screenshot requests retain their separate asynchronous capture path.
+
+## Headless stdio
+
+`nodecraft-cli control` serves the same methods against a new empty in-memory project on
+stdin/stdout. Its parent process is trusted: no token, token file, socket or keychain service is
+created. `hello` with empty params is optional and reports the same app/version/protocol; TCP
+still requires its token handshake. This is headless control, not a bridge to a running app.
+
+Requests are processed one at a time. Only newline-delimited JSON replies go to stdout;
+diagnostics go to stderr. The shared 4 MiB request limit applies. Blank lines are ignored.
+Malformed JSON, invalid UTF-8 and oversized lines return `invalid_input` with a null id, discard
+that line, and recover at the next line. EOF processes a final unterminated line and exits
+successfully; input/output failure exits nonzero with a diagnostic. There is no socket idle or
+handshake timeout on trusted pipes; the parent controls pipe lifetime and must read replies.
+
+Screenshots and live-only canvas navigation return `unsupported` because no window exists.
+Human-only and paid command restrictions remain shared with MCP/TCP. Graph edits use the same
+validation, revisions and undo. `nodecraft-cli mcp` remains the separate MCP stdio protocol;
+`nodecraft-cli mcp --bridge [token-file]` forwards MCP calls to the authenticated running app.
+These entrypoints coexist; trusted headless control does not replace the MCP bridge or add a
+live viewport to its own in-memory session.

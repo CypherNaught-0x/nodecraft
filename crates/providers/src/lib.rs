@@ -23,6 +23,8 @@ mod error;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
+#[cfg(feature = "openai-images")]
+pub mod openai_images;
 mod provider;
 pub mod secrets;
 mod task;

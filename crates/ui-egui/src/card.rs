@@ -1,6 +1,7 @@
 //! Graph-backed cards. Widgets keep only drafts; all accepted edits become engine commands.
 use crate::{
     canvas::CanvasView,
+    history::{self, HistoryIntent},
     noodle::{self, Side},
     theme::Tokens,
 };
@@ -44,6 +45,7 @@ pub enum Intent {
     Move(Position),
     Title(String),
     Parameter { name: String, value: Option<Value> },
+    History(HistoryIntent),
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -85,7 +87,9 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
 
 pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
-    let height = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
+    let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
+    // The history strip sits under the parameters and is never squeezed out by them.
+    let height = params + history::rows(node) as f32 * t.control_row_height;
     Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, height))
 }
 
@@ -214,7 +218,20 @@ pub fn show(
     }
     editor.hide_fields(visible);
     if view.zoom >= BODY_MIN_ZOOM {
-        let inner = rect.shrink(t.card_padding);
+        let mut inner = rect.shrink(t.card_padding);
+        let strip = history::rows(node) as f32 * t.control_row_height;
+        if strip > 0.0 {
+            // The card reserves `strip`; the strip itself sits on the card's bottom edge.
+            let (params, reserved) = inner.split_top_bottom_at_y(inner.bottom() - strip);
+            inner = params;
+            let height = (history::height(ui.spacing())).min(reserved.height());
+            let results = Rect::from_min_max(Pos2::new(reserved.left(), reserved.bottom() - height), reserved.max);
+            let mut strip_ui = ui.new_child(egui::UiBuilder::new().id_salt("history").max_rect(results));
+            strip_ui.set_clip_rect(results.intersect(ui.clip_rect()));
+            if let Some(intent) = history::strip(&mut strip_ui, node, response.has_focus(), t) {
+                intents.push(Intent::History(intent));
+            }
+        }
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {

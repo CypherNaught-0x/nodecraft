@@ -7,6 +7,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. |
+| **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
@@ -79,3 +80,66 @@ NODECRAFT_LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=… cargo test -p nodecraft-provide
 NODECRAFT_LIVE_OLLAMA=1 cargo test -p nodecraft-providers --test live_llm
 NODECRAFT_LIVE_COMFYUI=1 cargo test -p nodecraft-providers --test live_comfyui   # reads /object_info only
 ```
+
+## OpenAI Images
+
+`openai_images::OpenAiImages` implements the normal Provider interface behind `openai-images`.
+Supply a validated Secret and an Http transport; the adapter never reads a keychain, environment,
+project credential or file path. Production requests go only to api.openai.com. The native
+Reqwest transport opts into send_no_redirect: no redirect, including one to the same origin,
+may forward reference images. Other Http implementations must explicitly implement that operation;
+its default refuses before invoking legacy send. Builtin browser execution refuses before fetch;
+the library feature still compiles for wasm. The adapter does not wire a desktop paid-run host.
+
+Official [image generation](https://developers.openai.com/api/docs/guides/image-generation)
+and [API reference](https://developers.openai.com/api/reference/resources/images) were checked on
+2026-10-18. The supported wire IDs are gpt-image-2.5-sunburst-2026-09-08 and
+gpt-image-2.5-flare-2026-09-08, embedded as two separate catalog entries. Account/model access or
+organization verification may still be required. No floating fallback model is selected.
+
+Pass one prompt Text input, ordered image/reference Media inputs (at most 16), and optionally one
+mask. No references means generation; references mean one multipart edit request. A mask applies
+to the first reference; both must be PNG with matching dimensions and the mask must have alpha.
+Other references accept verified PNG/JPEG/WebP. Masking is guidance rather than pixel-exact editing.
+Parameters are size (1024x1024,1536x1024,1024x1536,auto), quality
+(low,medium,high,xhigh,max,auto), background (opaque,transparent,auto), n (integer 1–10),
+output_format (png,jpeg,webp), and output_compression (integer 0–100, JPEG/WebP only).
+Transparency needs PNG/WebP. Unknown options and invalid combinations refuse before sending.
+Inputs are sniffed and decoded within bounds; MIME labels alone are not validation.
+
+One POST requests N outputs. A nonempty partial result is retained in order with its actual count;
+there is no retry to fill missing images. Outputs are verified bytes, never automatically downloaded
+provider URLs. Empty/excess or late-corrupt replies refuse the whole batch, potentially after billing.
+Hard limits: prompt 32,000 Unicode scalars / 128,000 UTF-8 bytes; request metadata 256 KiB; input 8 MiB each,
+48 MiB aggregate; complete request 64 MiB; response 65 MiB; decoded output 8 MiB each/48 MiB aggregate;
+image edges 4096, pixels 16,777,216 each / 32 million aggregate; codec allowance 128 MiB per image operation.
+One image is decoded at a time. Limits may only be lowered. N=10 supports ten small images; it does
+not guarantee ten near-limit images fit. JSON admission bounds depth/fields/decoded strings before
+owned unescaping, then strict base64 sizes are checked across the batch before payload allocations.
+These bound operation-owned extents, not allocator RSS, host concurrency or network/codec internals.
+
+Composite pricing uses ByUsage: quote is unknown, not free. Every finite cap (including zero) refuses
+an unknown paid registration Some(JobPrice { estimate: None, .. }) before submit. Raw price=None is
+an existing trusted-host local/free bypass; neither Provider nor ProviderRunner enforces command
+partial-price consent. The run.quote/run.start authorized host path owns that consent. No numeric
+pre-submit/capped desktop execution is supplied here. Optional token totals remain counts;
+Usage.cost stays None rather than labelling a standard-rate estimate as an actual provider invoice.
+Without an independently supplied estimate or exact monetary cost, current main may produce no
+money ledger row. Do not interpret that absence as zero spend.
+
+There is no documented server idempotency guarantee in this adapter. A lost reply can have been
+billed. The captured provider's retry_ambiguous_submit=false policy makes uncertain no-handle
+failures terminal in the engine, with their original diagnostic and conservative reservation handling.
+Legacy providers keep their existing retry policy; genuine handles and affirmative no-send failures
+retain normal resume/retry semantics. Direct clients, manual requeue/new requests, concurrent callers
+and cold reconstruction can still submit again: a matching local key is not remote deduplication.
+Hosts must disclose prior uncertainty before an explicit new paid attempt. Dropping a pending future
+stops local waiting only; poll/cancel cannot invent a resumable handle or confirm remote cancellation.
+A custom Http is a trusted Rust implementation, not a sandbox or a positive nonbilling proof.
+
+Synthetic official-shape fixtures and authored tiny images cover all modes, options, resource/error
+boundaries, native redirect refusal and actual runner composition. The live smoke test is ignored,
+never runs in CI, and requires fresh human spending authorization plus both
+NODECRAFT_LIVE_OPENAI_IMAGES=1 and NODECRAFT_LIVE_OPENAI_IMAGES_ACKNOWLEDGE_COST=1 before it
+reads OPENAI_API_KEY. Explicit --ignored selection is also required. No paid call was used to
+validate this adapter. Ordinary cargo xtask ci enables the feature for tests/Clippy/wasm.

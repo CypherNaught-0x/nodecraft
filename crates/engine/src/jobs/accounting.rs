@@ -95,7 +95,6 @@ pub(super) struct Finish<'a> {
     pub budget: Option<&'a JobBudget>,
     pub price: Option<&'a JobPrice>,
     pub reserved: Option<&'a Reserved>,
-    pub fallback: Option<Money>,
     pub identity: Option<LedgerIdentity>,
     pub attempt: &'a Attempt,
     pub permit: Option<MetadataPermit>,
@@ -103,14 +102,13 @@ pub(super) struct Finish<'a> {
 }
 
 pub(super) fn finish(input: Finish<'_>) -> CompletionAccounting {
-    let Finish { budget, price, reserved, fallback, identity, attempt, mut permit, reported } = input;
+    let Finish { budget, price, reserved, identity, attempt, mut permit, reported } = input;
     let (Some(budget), Some(identity)) = (budget, identity) else { return CompletionAccounting::NotBudgeted };
     if price.is_none() && reserved.is_none() && permit.is_none() {
         return CompletionAccounting::NotBudgeted;
     }
     let identity = reserved.map(|r| r.identity.clone()).unwrap_or(identity);
-    let cost =
-        if permit.is_some() { reported.or(fallback) } else { reported.or_else(|| reserved.map(|r| r.estimate)).or_else(|| price.and_then(|p| p.estimate)) };
+    let cost = if permit.is_some() { reported } else { reported.or_else(|| reserved.map(|r| r.estimate)).or_else(|| price.and_then(|p| p.estimate)) };
     let Some(cost) = cost else {
         drop(permit);
         return CompletionAccounting::NoReportedCost;

@@ -463,3 +463,38 @@ fn delivery_evidence_failure_paths_reclaim_unknown_price_metadata_without_fake_m
     assert!(budget.log.lock().unwrap().reported_spent("now").project.is_empty());
     assert!(delivered.lock().unwrap().is_empty(), "failed provider invocation has no completed output to redeliver");
 }
+
+struct TerminalNoReplay(AtomicUsize);
+impl Provider for TerminalNoReplay {
+    fn id(&self) -> &str {
+        "terminal-no-replay"
+    }
+    fn retry_ambiguous_submit(&self) -> bool {
+        false
+    }
+    fn submit<'a>(&'a self, _: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public terminal lost reply")) })
+    }
+    fn poll<'a>(&'a self, _: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+        Box::pin(async { panic!("no accepted handle") })
+    }
+    fn cancel<'a>(&'a self, _: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+#[test]
+fn captured_terminal_no_replay_policy_reclaims_unknown_price_metadata_hold() {
+    let (mut runner, budget) = budgeted(None);
+    let outputs = collect(&mut runner);
+    let provider = Arc::new(TerminalNoReplay(AtomicUsize::new(0)));
+    runner.register(JobId(1), priced(provider.clone(), None));
+    assert!(
+        matches!(block_on(runner.run(job(1),CancelToken::default())),Outcome::Failed{transient:false,error}if error.contains("public terminal lost reply"))
+    );
+    assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+    assert!(outputs.lock().unwrap().is_empty());
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 0);
+    assert!(runner.state.lock().unwrap().metadata.is_empty());
+    assert!(budget.log.lock().unwrap().entries().next().is_none());
+}
