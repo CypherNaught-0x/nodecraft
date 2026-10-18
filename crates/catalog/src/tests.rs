@@ -95,7 +95,15 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     let order: Vec<(&str, bool)> = candidates.iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
     assert_eq!(
         order,
-        vec![("comfyui.flux-dev", true), ("comfyui.sdxl", true), ("openai-images.flare", true), ("openai-images.sunburst", true), ("test.video", false)]
+        vec![
+            ("comfyui.flux-dev", true),
+            ("comfyui.sdxl", true),
+            ("openai-images.flare", true),
+            ("openai-images.sunburst", true),
+            ("replicate.sdxl", true),
+            ("replicate.hello", false),
+            ("test.video", false)
+        ]
     );
     // Wiring an image narrows it to image-to-image models.
     let edit = Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 1);

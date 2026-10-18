@@ -26,6 +26,8 @@ pub mod llm;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
 mod provider;
+#[cfg(feature = "replicate")]
+pub mod replicate;
 pub mod secrets;
 mod task;
 

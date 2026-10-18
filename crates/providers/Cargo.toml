@@ -20,6 +20,8 @@ llm = []
 comfyui = []
 # Direct GPT Image generations and edits. Never enabled by a live-test environment variable.
 openai-images = ["dep:base64", "dep:blake3"]
+# Version-pinned predictions, polling, cancellation and bounded authenticated file downloads.
+replicate = ["dep:base64"]
 
 [dependencies]
 nodecraft-catalog = { workspace = true }

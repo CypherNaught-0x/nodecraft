@@ -940,6 +940,10 @@ fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is()
     assert_eq!(log.spent("s").project.get(&Currency::USD), Some(&usd(total)), "it still counts");
 }
 
+mod strict257;
+
+mod legacy255;
+
 #[test]
 fn csv_row_admission_never_writes_rejected_rows_and_preserves_writer_errors() {
     let mut log = UsageLog::default();
