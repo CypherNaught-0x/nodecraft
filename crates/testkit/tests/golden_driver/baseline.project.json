@@ -1,0 +1,99 @@
+{
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "comments": {},
+      "edges": {
+        "02020202-0202-0202-0202-020202020202": {
+          "from": {
+            "node": "01010101-0101-0101-0101-010101010101",
+            "port": "out"
+          },
+          "id": "02020202-0202-0202-0202-020202020202",
+          "order": 0,
+          "to": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "in"
+          }
+        }
+      },
+      "fields": {},
+      "id": "01010101-0101-0101-0101-010101010101",
+      "nodes": {
+        "01010101-0101-0101-0101-010101010101": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "01010101-0101-0101-0101-010101010101",
+          "inputs": [],
+          "kind": "source.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "public fox"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Text"
+        },
+        "02020202-0202-0202-0202-020202020202": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "02020202-0202-0202-0202-020202020202",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-text"
+            },
+            "style": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Mock text"
+        }
+      },
+      "tags": {},
+      "title": "Canvas"
+    }
+  },
+  "id": "02020202-0202-0202-0202-020202020202",
+  "title": "Driver fixture"
+}

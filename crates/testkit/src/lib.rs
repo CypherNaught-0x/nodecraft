@@ -13,6 +13,8 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 //! The testkit is a dev-dependency only.
 
+pub mod catalog;
+pub mod driver_golden;
 pub mod golden;
 pub mod kinds;
 // Preserve the original public path while sharing the provider crate's one implementation.

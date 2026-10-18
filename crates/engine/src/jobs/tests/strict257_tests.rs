@@ -50,6 +50,7 @@ fn one_slot() -> UsageLog {
     file.sessions.insert(String::new(), [(nodecraft_types::Currency::USD, usd(n - 1))].into());
     file.quarantined = (0..count)
         .map(|i| UsageEntry {
+            instance: None,
             at_ms: 0,
             session: "a".into(),
             node: NodeId::from_bytes([1; 16]),
@@ -92,6 +93,7 @@ fn blocked_unknown_price_holds_last_slot_and_completed_actual_cannot_be_displace
             .lock()
             .unwrap()
             .record(UsageEntry {
+                instance: None,
                 at_ms: 1,
                 session: "now".into(),
                 node: NodeId::from_bytes([1; 16]),

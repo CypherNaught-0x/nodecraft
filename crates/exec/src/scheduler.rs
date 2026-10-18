@@ -28,8 +28,9 @@ impl fmt::Display for JobId {
     }
 }
 
-/// What a job runs on, for concurrency limits: one lane per provider or server (`fal`,
-/// `comfy:http://gpu-box:8188`), `local` for deterministic actions.
+/// What a job runs on, for concurrency limits. Provider targets use canonical opaque lanes;
+/// `local` is reserved by the run executor for deterministic work. Generic lane text is not
+/// endpoint ownership authority.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Lane(pub String);
 
@@ -40,6 +41,9 @@ impl std::borrow::Borrow<str> for Lane {
 }
 
 impl Lane {
+    pub fn for_target(target: &nodecraft_types::ProviderTarget) -> Result<Self, nodecraft_types::Error> {
+        Ok(Self(target.lane_name()?))
+    }
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
@@ -114,6 +118,15 @@ impl Default for Limits {
 }
 
 impl Limits {
+    /// Configure concurrency using a typed target; no lane parsing grants routing authority.
+    pub fn set_target_limit(&mut self, target: &nodecraft_types::ProviderTarget, limit: usize) -> Result<(), nodecraft_types::Error> {
+        let lane = Lane::for_target(target)?;
+        self.per_lane
+            .try_reserve(1)
+            .map_err(|_| nodecraft_types::Error::new(nodecraft_types::ErrorKind::Budget, "provider lane configuration cannot be allocated"))?;
+        self.per_lane.insert(lane, limit);
+        Ok(())
+    }
     fn lane(&self, lane: &str) -> usize {
         self.per_lane.get(lane).copied().unwrap_or(self.default_per_lane).max(1)
     }
