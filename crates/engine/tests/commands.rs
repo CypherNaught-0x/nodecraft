@@ -219,8 +219,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        47,
-        "7 graph, 2 node editing, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, 3 file, 4 run/usage, 2 usage ownership, 6 history and 4 perf commands"
+        57,
+        "10 discussion, 7 graph, 2 node editing, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, 3 file, 4 run/usage, 2 usage ownership, 6 history and 4 perf commands"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
@@ -229,7 +229,14 @@ fn oversized_redo(_: &Context<'_>, _: &Value) -> Result<Effect, Error> {
     let changes = (0..17_u8)
         .map(|n| Change::PutComment {
             canvas: canvas(),
-            comment: nodecraft_graph::Comment { id: nodecraft_types::CommentId::from_bytes([n; 16]), text: "x".repeat(1024 * 1024), pos: Position::default() },
+            comment: nodecraft_graph::Comment {
+                id: nodecraft_types::CommentId::from_bytes([n; 16]),
+                text: "x".repeat(1024 * 1024),
+                pos: Position::default(),
+                node: None,
+                replies: vec![],
+                resolved: false,
+            },
         })
         .collect();
     Ok(Effect::Edit { changes: Changeset::new(changes), result: Value::Null, gesture: None })

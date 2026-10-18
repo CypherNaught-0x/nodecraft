@@ -53,13 +53,13 @@ fn save(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.file.location.is_none() {
         return Err(Error::new(ErrorKind::Conflict, "untitled project needs file.save_as with an explicit location"));
     }
-    nodecraft_format::validate_v1_project(c.document)?;
+    nodecraft_format::validate_current_project(c.document)?;
     Ok(Effect::Save { location: None })
 }
 fn save_as(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: SaveAs = params(value)?;
     available(c)?;
-    nodecraft_format::validate_v1_project(c.document)?;
+    nodecraft_format::validate_current_project(c.document)?;
     Ok(Effect::Save { location: Some(StorageLocation::from_command(p.location)?) })
 }
 fn enabled_open(c: &Context<'_>, v: &Value) -> Result<(), Error> {

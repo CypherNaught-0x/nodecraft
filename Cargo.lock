@@ -1309,11 +1309,16 @@ version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5eb3f3effb2726fee23449293e67acbf6cc6ce35525b1722bd5743bb348114d5"
 dependencies = [
+ "eframe",
  "egui",
+ "egui-wgpu",
+ "image",
  "kittest",
  "log",
+ "pollster",
  "serde",
  "toml",
+ "wgpu",
 ]
 
 [[package]]
@@ -2931,6 +2936,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "getrandom 0.3.4",
  "log",
  "nodecraft-engine",
  "nodecraft-graph",

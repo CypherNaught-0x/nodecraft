@@ -92,6 +92,9 @@ impl ModeId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    pub(crate) fn annotation() -> Self {
+        Self("annotation".into())
+    }
     pub(crate) fn source() -> Self {
         Self("source".into())
     }
