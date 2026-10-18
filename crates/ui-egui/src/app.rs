@@ -325,6 +325,9 @@ pub struct NodeCraftApp {
     last_frame: Option<u64>,
     /// The rows × columns last chosen for "Split into grid".
     split_size: (u32, u32),
+    /// The split being picked: seen in this frame's open menu, shown on the card next frame.
+    split_seen: Option<(NodeId, u32, u32)>,
+    split_shown: Option<(NodeId, u32, u32)>,
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -483,6 +486,8 @@ impl NodeCraftApp {
             previews: crate::preview::Previews::default(),
             last_frame: None,
             split_size: (2, 2),
+            split_seen: None,
+            split_shown: None,
             turn_into: None,
             text_focused: false,
             last_text_focus: None,
@@ -526,6 +531,8 @@ impl NodeCraftApp {
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
+        // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
+        self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
         let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
@@ -798,6 +805,10 @@ impl NodeCraftApp {
                         visible: schema.map(|cached| &cached.visible),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
                         image,
+                        grid: self.split_shown.filter(|(id, ..)| *id == node.id).map(|(_, rows, columns)| {
+                            let full = nodecraft_engine::split::image_of(node).and_then(|asset| Some([asset.meta.width?, asset.meta.height?]));
+                            (rows, columns, full)
+                        }),
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -887,6 +898,11 @@ impl NodeCraftApp {
                                     let side = 1..=nodecraft_engine::split::MAX_SIDE;
                                     ui.add(egui::DragValue::new(rows).range(side.clone()).prefix("Rows: "));
                                     ui.add(egui::DragValue::new(columns).range(side).prefix("Columns: "));
+                                    // The card draws these lines over its image while the menu is open.
+                                    self.split_seen = Some((node.id, *rows, *columns));
+                                    if self.split_shown != self.split_seen {
+                                        ui.ctx().request_repaint();
+                                    }
                                     let tiles = rows.saturating_mul(*columns);
                                     let fits = tiles <= nodecraft_engine::split::MAX_TILES;
                                     let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));

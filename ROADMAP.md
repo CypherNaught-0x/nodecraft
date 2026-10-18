@@ -5,8 +5,8 @@ the action library (M4) are built and heavily tested, and the current work is co
 the app. Details and exit criteria per milestone: [`docs/plan.md`](docs/plan.md) §7. Work is
 tracked as GitHub issues in milestones; comment `/claim` to take one.
 
-Status is measured from the issues in each milestone as of 2026-10-18: 269 filed, 154 open,
-113 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
+Status is measured from the issues in each milestone as of 2026-10-18: 271 filed, 154 open,
+115 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
 so M1 reads 20/32 where GitHub says 21 closed (#135 was declined rather than built). Status
 describes shipped behaviour, not code that merely exists: a milestone only counts what a person or
 an agent can actually do today.
@@ -16,7 +16,7 @@ an agent can actually do today.
 | 0 | **Skeleton** — workspace, lints, xtask, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph + changesets + undo, commands, canvas widget, `.ncraft` | 🟡 nearly — see caveat | 20/32 |
 | 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 6/9 |
-| 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 16/30 |
+| 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 17/30 |
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | ⬜ not started | 0/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ⬜ not started | 0/6 |
@@ -131,3 +131,6 @@ The open pull requests say what is in flight; the near-term order that makes the
 - **2026-10-18** — colour tagging and its bounded highlight filter shipped (#67), backed by
   the v3 tags/fields persistence bridge (#193). Bulk assignments undo atomically, and legacy
   archives/recovery migrate before new appends. The command registry now has 66 entries.
+
+The tagging integration also preserves the split-grid image preview shipped in #337; a real
+menu interaction test checks that the preview owns input until the tag filter can resume.
