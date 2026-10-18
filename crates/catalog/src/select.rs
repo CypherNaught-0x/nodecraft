@@ -72,8 +72,8 @@ impl Rejected {
     }
 }
 
-/// A model that fits, with the mode it would run in and its price per job at defaults (`None`
-/// when priced by usage).
+/// A model that fits, with the mode it would run in and its price per job, quoted with the node's known
+/// parameters and its defaults (`None` when priced by usage).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Choice<'a> {
     pub model: &'a ModelDescriptor,
@@ -119,7 +119,11 @@ impl<'a> Selection<'a> {
             Effort::Balanced => "the best balance of quality and speed",
             Effort::Best => "the highest quality",
         };
-        let left_out = if self.rejected.is_empty() { String::new() } else { format!(" {} other models don't fit.", self.rejected.len()) };
+        let left_out = match self.rejected.len() {
+            0 => String::new(),
+            1 => " 1 other model doesn't fit.".to_owned(),
+            n => format!(" {n} other models don't fit."),
+        };
         format!("Picked {goal} of {} fitting models. {}{left_out}", self.ranked.len(), best.summary())
     }
 
@@ -219,10 +223,9 @@ impl Catalog {
                 selection.rejected.push((model, Rejected::Provider));
                 continue;
             }
-            // Only the parameters this model's schema knows; its defaults fill the rest.
-            let params: ParamValues =
-                given.iter().filter(|(name, _)| model.params.params.iter().any(|spec| spec.name == **name)).map(|(k, v)| (k.clone(), v.clone())).collect();
-            let price = match model.quote(&params) {
+            // Only the parameters this model's schema knows, checked in place; its defaults fill
+            // the rest.
+            let price = match model.quote_selected(given) {
                 Ok(price) => price,
                 Err(_) => {
                     selection.rejected.push((model, Rejected::Invalid));

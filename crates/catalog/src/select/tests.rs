@@ -153,7 +153,7 @@ fn free_beats_paid_in_any_currency_on_a_tie_and_currencies_never_compare() {
 }
 
 #[test]
-fn the_price_order_is_transitive_for_every_input_order() {
+fn the_price_order_is_transitive_and_stable_across_input_orders() {
     // Same quality and latency, so price decides. A pairwise "different currencies tie" rule
     // would make these three cyclic (a < b, b < c by id, c < a by USD amount).
     let models = [
@@ -178,7 +178,8 @@ fn the_price_order_is_transitive_for_every_input_order() {
             }
         }
     }
-    // Sorting any permutation gives the same order.
+    // Sorting every rotation of the ranked list, and each sorted result reversed, gives the
+    // same order (a sample of input orders; the triple check above is the exhaustive part).
     let mut rotated = choices.clone();
     for _ in 0..rotated.len() {
         rotated.rotate_left(1);
@@ -233,6 +234,99 @@ default = { type = "unsigned", value = "5" }
     let long = catalog.select(&Request { wiring: prompt_only(), budget_per_job: budget, params: Some(&params), ..Request::default() });
     assert!(long.best().is_none(), "15 s costs USD 1.50, over the budget");
     assert_eq!(long.why_none(), Some(Rejected::OverBudget { price: usd(1_500_000), budget: usd(1_000_000) }));
+}
+
+#[test]
+fn bad_known_parameters_are_refused_in_place_and_unknown_ones_ignored() {
+    let toml = r#"
+[[model]]
+id = "v.video"
+provider = "v"
+provider_model = "v"
+label = "Video"
+description = "Per second."
+latency_s = 60
+quality = 4
+pricing = { type = "per_unit", unit = "second", price = "0.10 USD", count = "duration", default_count = 5 }
+[[model.modes]]
+id = "gen"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "duration"
+label = "Duration"
+control = { type = "unsigned", min = "1", max = "20" }
+default = { type = "unsigned", value = "5" }
+"#;
+    use nodecraft_types::{Unsigned, Value};
+    let catalog = Catalog::from_toml(toml).unwrap();
+    let model = catalog.get("v.video").unwrap();
+    let select = |params: &ParamValues| catalog.select(&Request { wiring: prompt_only(), params: Some(params), ..Request::default() });
+    // A wrong-typed 2 MiB value for a known parameter, and one out of its bounds: refused.
+    for bad in [Value::List(vec![Value::Text("x".repeat(2 * 1024 * 1024))]), Value::Unsigned(Unsigned(21))] {
+        let params = ParamValues::from([("duration".to_owned(), bad)]);
+        assert!(model.quote_selected(&params).is_err());
+        let selection = select(&params);
+        assert!(selection.best().is_none());
+        assert_eq!(selection.why_none(), Some(Rejected::Invalid));
+    }
+    // An unknown parameter, however large, is skipped: the model quotes at its defaults.
+    let unknown = ParamValues::from([("other".to_owned(), Value::Text("y".repeat(2 * 1024 * 1024)))]);
+    assert_eq!(model.quote_selected(&unknown).unwrap(), Some(usd(500_000)));
+    assert_eq!(select(&unknown).best().unwrap().price, Some(usd(500_000)));
+    // A known value prices the job exactly as the owned-map quote does.
+    let known = ParamValues::from([("duration".to_owned(), Value::Unsigned(Unsigned(7)))]);
+    assert_eq!(model.quote_selected(&known).unwrap(), model.quote(&known).unwrap());
+    assert_eq!(model.quote_selected(&known).unwrap(), Some(usd(700_000)));
+}
+
+#[test]
+fn a_hidden_pricing_parameter_falls_back_to_the_default_count() {
+    let toml = r#"
+[[model]]
+id = "v.video"
+provider = "v"
+provider_model = "v"
+label = "Video"
+description = "Per second."
+latency_s = 60
+quality = 4
+pricing = { type = "per_unit", unit = "second", price = "0.10 USD", count = "duration", default_count = 5 }
+[[model.modes]]
+id = "gen"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "length"
+label = "Length"
+control = { type = "choice", options = [{ value = "short", label = "Short" }, { value = "custom", label = "Custom" }] }
+default = { type = "text", value = "short" }
+[[model.params.params]]
+name = "duration"
+label = "Duration"
+control = { type = "unsigned", min = "1", max = "20" }
+visible_if = { parameter = "length", equals = { type = "text", value = "custom" } }
+"#;
+    use nodecraft_types::{Unsigned, Value};
+    let catalog = Catalog::from_toml(toml).unwrap();
+    let model = catalog.get("v.video").unwrap();
+    let duration = ("duration".to_owned(), Value::Unsigned(Unsigned(15)));
+    let hidden = ParamValues::from([duration.clone()]);
+    assert_eq!(model.quote_selected(&hidden).unwrap(), Some(usd(500_000)), "hidden at the default length: the default count prices it");
+    assert_eq!(model.quote_selected(&hidden).unwrap(), model.quote(&hidden).unwrap());
+    let shown = ParamValues::from([("length".to_owned(), Value::Text("custom".into())), duration]);
+    assert_eq!(model.quote_selected(&shown).unwrap(), Some(usd(1_500_000)));
+}
+
+#[test]
+fn a_parameter_map_over_the_count_limit_refuses_every_model() {
+    // Node maps can't exceed the schema limit (256), so only a hostile programmatic request
+    // reaches this: it is refused whole, before any value is read.
+    let catalog = catalog();
+    let params: ParamValues = (0..257).map(|n| (format!("p{n}"), nodecraft_types::Value::Bool(true))).collect();
+    let selection = catalog.select(&Request { wiring: prompt_only(), params: Some(&params), ..Request::default() });
+    assert!(selection.best().is_none());
+    assert_eq!(selection.why_none(), Some(Rejected::Invalid));
 }
 
 #[test]

@@ -56,7 +56,11 @@ default = { type = "unsigned", value = "1" }
   (out of its range) in a notice.
 - **Auto-select** (`Catalog::select`, #78) keeps the models that fit what is wired in, whose
   provider the person can use and whose price per job fits the budget. The price is quoted with
-  the node's parameters that the model knows, plus its defaults. Survivors are ranked by effort:
+  the node's parameters that the model knows, plus its defaults. Known values are checked
+  against their controls in place before anything is copied; one that doesn't fit refuses the
+  model (`Rejected::Invalid`), and parameters the model doesn't know are ignored. A map of more
+  than 256 parameters (more than any schema allows) refuses every model. Survivors are ranked
+  by effort:
   - *fast*: quickest, then best quality;
   - *best*: best quality, then quickest;
   - *balanced*: quality minus a waiting penalty of 0 up to 30 s, 1 up to 2 min, and 2 beyond.
