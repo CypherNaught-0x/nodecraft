@@ -152,3 +152,94 @@ fn download_errors_are_sanitized_and_polling_is_two_seconds() {
         assert_eq!(e.retry_after_ms, Some(2000));
     }
 }
+
+fn escaped_prediction(mut reply: HttpResponse) -> HttpResponse {
+    reply.body = String::from_utf8(reply.body).unwrap().replace("\"public-prediction\"", r#""\u0070ublic-prediction""#).into_bytes();
+    reply
+}
+#[test]
+fn escaped_receipt_valid_create_queues_the_decoded_identifier_once() {
+    let (p, m) = fixture(vec![escaped_prediction(prediction(HELLO, "starting", serde_json::Value::Null))]);
+    let result = block_on(p.submit(&job(HELLO)));
+    let seen = m.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "one create and no cleanup for an admitted reply");
+    let Submission::Queued(h) = result.expect("valid escaped ASCII id must retain its accepted handle") else { panic!("queued") };
+    assert_eq!(h.remote_id, "public-prediction");
+}
+#[test]
+fn escaped_receipt_rejected_echo_requests_exactly_one_cancel() {
+    let mut reply = prediction(HELLO, "processing", serde_json::Value::Null);
+    let mut v: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+    v["input"] = serde_json::json!({});
+    for n in 0..33 {
+        v["input"].as_object_mut().unwrap().insert(format!("k{n}"), serde_json::Value::Null);
+    }
+    reply.body = serde_json::to_vec(&v).unwrap();
+    let (p, m) = fixture(vec![escaped_prediction(reply), bytes(br#"{"id":"public-prediction","status":"canceled"}"#.to_vec())]);
+    reset();
+    let e = block_on(p.submit(&job(HELLO))).unwrap_err();
+    let seen = m.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one accepted create and one cleanup, never resubmit");
+    assert_eq!(seen[1].url, "https://api.replicate.com/v1/predictions/public-prediction/cancel");
+    assert!(e.message.contains("public-prediction") && e.message.contains("terminal status observed") && e.message.contains("billing remains uncertain"));
+    assert_eq!(counts()[5], 0);
+    assert_eq!(counts()[6], 0);
+}
+
+#[test]
+fn escaped_receipt_rejected_admission_and_decoded_terminal_cleanup_never_resubmit() {
+    let original = prediction(HELLO, "processing", serde_json::Value::Null);
+    let base: serde_json::Value = serde_json::from_slice(&original.body).unwrap();
+    let mut cases = Vec::new();
+    let mut v = base.clone();
+    v["version"] = serde_json::json!("hidden");
+    cases.push(serde_json::to_vec(&v).unwrap());
+    let mut v = base.clone();
+    for n in 0..65 {
+        v.as_object_mut().unwrap().insert(format!("extra{n}"), serde_json::Value::Null);
+    }
+    cases.push(serde_json::to_vec(&v).unwrap());
+    let mut v = base.clone();
+    v["extra"] = serde_json::json!(vec![serde_json::Value::Null; 256]);
+    cases.push(serde_json::to_vec(&v).unwrap());
+    // Full output admission still refuses escaped field names; lifecycle recovery alone recognizes them.
+    cases.push(String::from_utf8(serde_json::to_vec(&base).unwrap()).unwrap().replace("\"id\":", r#""\u0069d":"#).into_bytes());
+    for body in cases {
+        let reply = escaped_prediction(bytes(body));
+        let cancel = bytes(br#"{"\u0069d":"\u0070ublic-prediction","\u0073tatus":"\u0063anceled"}"#.to_vec());
+        let (p, m) = fixture(vec![reply, cancel]);
+        let e = block_on(p.submit(&job(HELLO))).unwrap_err();
+        assert!(e.message.contains("public-prediction") && e.message.contains("terminal status observed") && e.message.contains("billing remains uncertain"));
+        let seen = m.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].method, HttpMethod::Post);
+        assert_eq!(seen[1].url, "https://api.replicate.com/v1/predictions/public-prediction/cancel");
+        assert_eq!(seen[1].timeout_ms, 15_000);
+    }
+}
+#[test]
+fn escaped_receipt_unsafe_ambiguous_or_secret_ids_never_create_cleanup_urls() {
+    for raw in [
+        r#"{"id":"public-prediction","\u0069d":"public-prediction"}"#,
+        r#"{"id":"\u002e\u002e\u002fescape"}"#,
+        r#"{"id":"\u00e9"}"#,
+        r#"{"id":"\u0070ublic-fixture-key"}"#,
+        r#"{"\u0069d":"prefix-\u0070ublic-fixture-key-suffix"}"#,
+    ] {
+        let (p, m) = fixture(vec![bytes(raw.as_bytes().to_vec())]);
+        let e = block_on(p.submit(&job(HELLO))).unwrap_err();
+        assert!(!e.message.contains("public-fixture-key") && !e.message.contains(r"\u0070ublic-fixture-key"));
+        let seen = m.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].url, "https://api.replicate.com/v1/predictions");
+    }
+    let mut reply = prediction(HELLO, "processing", serde_json::Value::Null);
+    let raw = String::from_utf8(reply.body).unwrap().replace("\"version\":", "\"version\":\"wrong\",\"version\":");
+    reply.body = raw.into_bytes();
+    let (p, m) =
+        fixture(vec![escaped_prediction(reply), HttpResponse { status: 503, headers: vec![], body: b"private signed-url public-fixture-key".to_vec() }]);
+    let e = block_on(p.submit(&job(HELLO))).unwrap_err();
+    assert!(e.message.contains("invalid Replicate prediction fields") && e.message.contains("unconfirmed") && e.message.contains("billing remains uncertain"));
+    assert!(!e.message.contains("private") && !e.message.contains("public-fixture-key"));
+    assert_eq!(m.seen.lock().unwrap().len(), 2);
+}

@@ -241,26 +241,29 @@ fn exhausted_internal_poll_retry_is_resumed_by_driver_with_the_same_prediction()
 
 #[test]
 fn rejected_create_cancels_once_and_preserves_safe_id_in_driver_failure_after_settlement() {
-    let (model, _) = HELLO.split_once(':').unwrap();
-    let body =
-        serde_json::to_vec(&serde_json::json!({"id":"retained-accepted-id","model":model,"version":"hidden","status":"processing","output":null})).unwrap();
-    let t = Arc::new(Transport { script: Script::Response(200, body), requests: AtomicUsize::new(0) });
-    let (r, b, out) = runner(Budgets::default());
-    r.register(JobId(1), registration(t.clone(), Some(Some(money(7)))));
-    let (mut scheduler, events) = drive(r.clone());
-    let Some(JobState::Failed { error }) = scheduler.state(JobId(1)) else { panic!("failed") };
-    assert!(error.contains("retained-accepted-id") && error.contains("unconfirmed"));
-    assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
-    assert_eq!(out.load(Ordering::SeqCst), 0);
-    assert_eq!(t.requests.load(Ordering::SeqCst), 2, "one create and one best-effort cancel");
-    r.settle(JobId(1));
-    assert_eq!(b.log.lock().unwrap().entries().map(|e| (e.cost, e.status)).collect::<Vec<_>>(), [(money(7), Charge::Unresolved)]);
-    r.forget(JobId(1));
-    let Some(JobState::Failed { error }) = scheduler.state(JobId(1)) else { panic!("diagnostic remains in scheduler") };
-    assert!(error.contains("retained-accepted-id"));
-    scheduler.forget_finished();
-    assert!(scheduler.state(JobId(1)).is_none(), "explicitly forgetting the failure also loses its diagnostic; no durable handle promised");
-    assert_eq!(t.requests.load(Ordering::SeqCst), 2);
+    for escaped in [false, true] {
+        let (model, _) = HELLO.split_once(':').unwrap();
+        let body =
+            serde_json::to_vec(&serde_json::json!({"id":"retained-accepted-id","model":model,"version":"hidden","status":"processing","output":null})).unwrap();
+        let body = if escaped { String::from_utf8(body).unwrap().replace("retained-accepted-id", r"\u0072etained-accepted-id").into_bytes() } else { body };
+        let t = Arc::new(Transport { script: Script::Response(200, body), requests: AtomicUsize::new(0) });
+        let (r, b, out) = runner(Budgets::default());
+        r.register(JobId(1), registration(t.clone(), Some(Some(money(7)))));
+        let (mut scheduler, events) = drive(r.clone());
+        let Some(JobState::Failed { error }) = scheduler.state(JobId(1)) else { panic!("failed") };
+        assert!(error.contains("retained-accepted-id") && error.contains("unconfirmed"));
+        assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+        assert_eq!(out.load(Ordering::SeqCst), 0);
+        assert_eq!(t.requests.load(Ordering::SeqCst), 2, "one create and one best-effort cancel");
+        r.settle(JobId(1));
+        assert_eq!(b.log.lock().unwrap().entries().map(|e| (e.cost, e.status)).collect::<Vec<_>>(), [(money(7), Charge::Unresolved)]);
+        r.forget(JobId(1));
+        let Some(JobState::Failed { error }) = scheduler.state(JobId(1)) else { panic!("diagnostic remains in scheduler") };
+        assert!(error.contains("retained-accepted-id"));
+        scheduler.forget_finished();
+        assert!(scheduler.state(JobId(1)).is_none(), "explicitly forgetting the failure also loses its diagnostic; no durable handle promised");
+        assert_eq!(t.requests.load(Ordering::SeqCst), 2);
+    }
 }
 
 #[test]

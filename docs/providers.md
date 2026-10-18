@@ -215,11 +215,14 @@ without automatic paid regeneration.
 
 If a successful create reply fails full prediction admission, a separate complete bounded JSON
 receipt can retain its unique canonical root ID and request one best-effort API cancellation.
-That scanner validates UTF-8, JSON grammar/Unicode escapes, depth 16, 256-byte unescaped keys,
-64-byte scalar spellings and a 128-byte ASCII ID within the same 2 MiB response cap, without an
-owned JSON tree. Its physical byte bound permits receipt recovery after application field/region
-limits fail; it never validates outputs. Duplicate/escaped/nested IDs, malformed or truncated bodies,
-excessive depth and missing response bytes cannot supply a trustworthy receipt. Only a matching
+That scanner validates UTF-8, JSON grammar/Unicode escapes, depth 16, 256-byte raw key spellings,
+64-byte scalar spellings and a 128-byte decoded ASCII ID within the same 2 MiB response cap.
+The ID uses fixed storage; bounded semantic decoding also recognizes escaped root ID/status keys
+and status values without an owned JSON tree. Duplicate semantic IDs (even equal ones), nested-only
+IDs, malformed or truncated bodies, excessive depth and missing response bytes cannot supply a
+trustworthy receipt. Duplicate semantic statuses cannot confirm termination. Receipt recovery after
+application field/region rejection never validates outputs; full prediction admission still refuses
+escaped field names, even when the receipt permits cleanup. Only a matching
 complete terminal-status acknowledgment is reported as terminal; HTTP success alone is insufficient.
 The original failure diagnostic retains a safe ID and cancellation disposition for manual inspection.
 It remains visible in the runner/Driver failure record until the host explicitly forgets that record;
