@@ -679,7 +679,7 @@ impl NodeCraftApp {
                     let hash = asset.hash;
                     let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
                     let assets = self.session.assets();
-                    self.previews.request(ui.ctx(), hash, edge, || assets.get(&hash).map(<[u8]>::to_vec))
+                    self.previews.request_asset(ui.ctx(), hash, edge, || assets.preview_read(asset))
                 });
                 let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());

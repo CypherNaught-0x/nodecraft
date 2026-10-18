@@ -12,6 +12,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod preview_read;
+pub use preview_read::{PreviewAssetRead, PreviewReadError};
+
 struct Entry {
     identity: Arc<AssetIdentity>,
     memory: Option<Arc<[u8]>>,

@@ -59,6 +59,25 @@ metadata can be validated using a bounded synthetic header stream accepted by th
 it does not claim whole JPEG payload decode/validity. Unsupported metadata remains advisory;
 corruption is never converted to a fabricated decoded image.
 
+Card previews capture one opaque `PreviewAssetRead` for the exact asset identity. Capture does
+not read, hash, probe, materialize, clone the complete store, or acquire the source-operation
+lock on the UI thread. The native preview worker selects a pinned range under the existing
+nonblocking operation authority, then reads at most the existing media decoder input limit
+(256 MiB) in calls of at most 64 KiB, checking exact length, BLAKE3, indexed CRC when present,
+and declared image facts before decoding. It never seals or packs unrelated assets and does
+not publish global verification-cache state. The 16 MiB `read_small` helper is unchanged.
+One active encoded buffer is owned by this path; queued jobs retain bounded capabilities,
+not eagerly materialized bodies. Decoder/private workspace and allocator overhead are separate
+owners, not a total-RSS promise. Cancellation is cooperative between reads; blocked foreign
+reads and the active decoder cannot be forcibly interrupted.
+
+Temporary source-operation contention releases the preview slot without caching a permanent
+failure or scheduling a repaint. A later externally driven visible frame may retry; idle
+eventual recovery is not promised. Actual missing identities and permanent verification errors
+remain distinct. Without a worker, only insertion-verified resident inputs use the existing
+small inline limits; a lazy input reports unavailable here rather than missing. The entire
+selection/read/probe/decode attempt runs inside the preview panic guard.
+
 Live and all undo/redo roots survive Save and `collect_assets()`. This host-only logical GC API
 returns whether logical entries were removed, does not make a document edit/event/undo entry,
 and does not promise immediate physical reclamation. Cleanup failure preserves logical state;

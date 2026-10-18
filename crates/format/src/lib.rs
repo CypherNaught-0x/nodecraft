@@ -37,6 +37,7 @@ pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, decod
 pub use archive_plan::{ArchivePlan, StorageCapability};
 pub use asset_context::AssetContext;
 pub use asset_store::{AssetDescriptor, VerifiedAsset, VerifiedReader};
+pub use asset_store::{PreviewAssetRead, PreviewReadError};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes};
 pub use checkpoint_plan::CheckpointPlan;
 pub use frame_plan::{FramePlan, MAX_STREAM_JOURNAL_BYTES, MAX_STREAM_TAIL_BYTES, RecordedAssets};
