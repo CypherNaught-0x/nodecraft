@@ -228,6 +228,15 @@ impl ComfyProvider {
         workflow.check(catalog).into_result().map_err(from_catalog)?;
         for (node, name, bytes) in uploads {
             let checked = crate::check_media(bytes, None).map_err(plain)?;
+            // Recognition isn't upload permission (#394): an HDR input is refused here exactly as it
+            // was before those formats were recognised at all, instead of landing on the user's
+            // server under a name no Comfy loader can read.
+            if nodecraft_media::is_undecoded_image(checked.mime) {
+                return Err(plain(ProviderError::new(
+                    ErrorKind::UnsupportedInput,
+                    format!("can't upload {node}.{name}: NodeCraft can't read {} files yet; convert the input to PNG or JPEG", checked.mime),
+                )));
+            }
             let ext = checked.mime.rsplit('/').next().unwrap_or("bin").split(['+', ';']).next().unwrap_or("bin");
             // Named by content: a name collision means identical bytes, so overwriting is harmless
             // and repeated uploads of the same input dedupe.
@@ -299,6 +308,10 @@ impl ComfyProvider {
             // Files NodeCraft can't show (latents, model files) are skipped, not fatal; a text or
             // HTML body for a file output is a proxy or error page, not a result.
             match nodecraft_media::sniff(&response.body) {
+                // An HDR image is recognised (#394) but has no decoder, so it is skipped like a
+                // latent rather than kept as a result the engine then refuses: one EXR saved next to
+                // the PNG must not cost the user the whole paid run.
+                Some(s) if nodecraft_media::is_undecoded_image(s.mime) => skipped.push(file.filename.clone()),
                 Some(s) if s.kind != nodecraft_media::MediaKind::Text => {
                     outputs.push(Output::Bytes { mime: s.mime.to_owned(), bytes: Arc::from(response.body) });
                 }
@@ -467,6 +480,9 @@ mod tests {
     }"#;
     const EMPTY_QUEUE: &str = r#"{"queue_running":[],"queue_pending":[]}"#;
     const SALT: &str = "install-salt";
+    /// The OpenEXR magic plus a version field: all `sniff` reads, and all Comfy can ever be given.
+    const EXR_BYTES: &[u8] = b"\x76\x2f\x31\x01\x02\x00\x00\x00";
+    const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nimage";
 
     /// A scripted ComfyUI server: answers by path (queue and history answers can be scripted as a
     /// sequence), records requests.
@@ -719,6 +735,55 @@ mod tests {
         let seen = server.seen.lock().unwrap();
         let view = seen.iter().find(|r| r.url.contains("/view")).unwrap();
         assert_eq!((view.max_response_bytes, view.timeout_ms), (20, DOWNLOAD_TIMEOUT_MS), "capped by the remaining total");
+    }
+
+    /// A server whose finished prompt wrote `out.png` *and* an `out.exr` side by side; `/view`
+    /// answers per file, which one scripted body can't.
+    struct SavesPngAndExr;
+
+    impl Http for SavesPngAndExr {
+        fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+            let path = request.url.split("8188").nth(1).unwrap_or_default().to_owned();
+            let body: Vec<u8> = match path.split('?').next().unwrap_or_default() {
+                "/queue" => EMPTY_QUEUE.as_bytes().to_vec(),
+                "/view" if request.url.contains("filename=out.exr") => EXR_BYTES.to_vec(),
+                "/view" => PNG_BYTES.to_vec(),
+                p if p.starts_with("/history/") => {
+                    history_ok("abc", r#"[{"filename":"out.png","subfolder":"","type":"output"},{"filename":"out.exr","subfolder":"","type":"output"}]"#)
+                        .into_bytes()
+                }
+                _ => b"{}".to_vec(),
+            };
+            Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body }) })
+        }
+    }
+
+    /// #394 made an EXR sniff as an image. Recognition is not permission: the undecodable file is
+    /// skipped, so a workflow that saved a PNG alongside it still delivers that PNG instead of the
+    /// engine refusing the whole (already paid for) run.
+    #[test]
+    fn an_hdr_output_is_skipped_and_the_png_from_the_same_run_lands() {
+        let p = ComfyProvider::new("http://gpu-box:8188", None, SALT, Arc::new(SavesPngAndExr), Arc::new(|| 0)).unwrap();
+        let JobProgress::Done(Completed { outputs, .. }) = block_on(p.poll(&handle_for("abc"))).unwrap() else { panic!("not done") };
+        assert_eq!(outputs.len(), 1, "the EXR must be skipped, not kept: {outputs:?}");
+        assert!(matches!(&outputs[0], Output::Bytes { mime, .. } if mime == "image/png"), "{outputs:?}");
+    }
+
+    /// The same boundary on the way in: an HDR input is refused before `/upload/image`, exactly as
+    /// it was while `sniff` didn't know these bytes at all, so nothing unopenable lands on the
+    /// user's server and the prompt is never queued.
+    #[test]
+    fn an_hdr_input_is_refused_before_it_is_uploaded() {
+        let server = FakeServer::new();
+        let p = provider(server.clone());
+        let mut j = job();
+        j.inputs = vec![JobInput::Media { role: "1.image".into(), mime: "image/x-exr".into(), bytes: Arc::from(EXR_BYTES) }];
+        let e = block_on(p.submit(&j)).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::UnsupportedInput, "{e}");
+        assert!(e.message.contains("1.image") && e.message.contains("image/x-exr") && e.message.contains("PNG"), "{e}");
+        let paths = server.paths();
+        assert!(!paths.iter().any(|p| p.starts_with("/upload")), "recognition grants no upload permission: {paths:?}");
+        assert!(!paths.iter().any(|p| p == "/prompt"), "a run that can't work is never queued: {paths:?}");
     }
 
     #[test]

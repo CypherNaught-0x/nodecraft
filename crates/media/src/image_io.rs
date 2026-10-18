@@ -143,6 +143,14 @@ fn decodable_format(mime: &str) -> Option<ImageFormat> {
     })
 }
 
+/// The HDR images [`sniff`] recognises but this build has no decoder for (#394): exactly OpenEXR
+/// and Radiance RGBE. Callers that only ask "is this an image?" must ask this too before keeping,
+/// storing or uploading one — recognition grants no permission. The set is deliberately narrow:
+/// AVIF/HEIC/HEIF have their own deferred-storage behaviour and stay outside it.
+pub fn is_undecoded_image(mime: &str) -> bool {
+    matches!(mime, "image/x-exr" | "image/vnd.radiance")
+}
+
 fn meta_of(mime: &'static str, decoder: &impl ImageDecoder) -> ImageMeta {
     let (width, height) = decoder.dimensions();
     let stored = decoder.original_color_type();
@@ -363,5 +371,66 @@ pub(crate) mod tests {
             }
         }
         !crc
+    }
+}
+
+#[cfg(test)]
+mod hdr394_unsupported {
+    use super::*;
+    use std::io::Cursor;
+    #[test]
+    fn hdr394_probe_and_decode_are_explicitly_unsupported() {
+        for (bytes, mime) in [
+            (b"\x76\x2f\x31\x01".as_slice(), "image/x-exr"),
+            (b"#?RGBE\n".as_slice(), "image/vnd.radiance"),
+            (b"#?RADIANCE\n".as_slice(), "image/vnd.radiance"),
+        ] {
+            assert_eq!(probe_image(bytes, &Limits::default()).unwrap_err(), MediaError::Unsupported { mime });
+            assert_eq!(decode_image(bytes, &Limits::default()).unwrap_err(), MediaError::Unsupported { mime });
+            // #147 added a streaming header probe for lazily loaded assets, after this refusal was
+            // written: it shares the sniff/decodable_format gate, so a stored HDR asset is refused
+            // as unsupported here too, never read as a decodable image.
+            let length = u64::try_from(bytes.len()).unwrap();
+            assert_eq!(probe_image_reader(Cursor::new(bytes), length, &Limits::default()).unwrap_err(), MediaError::Unsupported { mime });
+        }
+    }
+
+    /// What recognition does *not* grant: the predicate callers use to keep refusing an HDR image
+    /// when all they can ask is "is this an image?". Pinned in both directions, because a set that
+    /// quietly grows (or shrinks) silently reclassifies every provider path that uses it.
+    #[test]
+    fn hdr394_recognition_grants_no_permission_to_keep_or_upload() {
+        // Every HDR signature sniff() recognises must be in the set, so no recognised HDR image
+        // can reach a caller that only filters on MediaKind::Image.
+        for bytes in [b"\x76\x2f\x31\x01".as_slice(), b"#?RGBE\n".as_slice(), b"#?RADIANCE\n".as_slice()] {
+            let sniffed = sniff(bytes).unwrap();
+            assert_eq!(sniffed.kind, MediaKind::Image);
+            assert!(is_undecoded_image(sniffed.mime), "recognised but unfilterable: {}", sniffed.mime);
+        }
+        // Nothing else is in it: the decodable formats, and the deferred-storage image formats
+        // (which providers already upload today), keep behaving exactly as before #394.
+        for mime in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+            "image/avif",
+            "image/heic",
+            "image/heif",
+            "image/aces",
+            "image/svg+xml",
+            "video/mp4",
+            "audio/mpeg",
+            "text/plain",
+            "application/pdf",
+            "",
+        ] {
+            assert!(!is_undecoded_image(mime), "{mime} must not be refused as an undecoded image");
+        }
+        for mime in ["image/x-exr", "image/vnd.radiance"] {
+            assert_eq!(decodable_format(mime), None, "{mime} is in both sets");
+        }
     }
 }

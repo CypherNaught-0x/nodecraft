@@ -101,6 +101,9 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     let Some(sniffed) = sniff(file.bytes) else {
         return Err(if file.bytes.is_empty() { "the file is empty".into() } else { "NodeCraft doesn't recognise this kind of file".into() });
     };
+    if matches!(sniffed.mime, "image/x-exr" | "image/vnd.radiance") {
+        return Err("HDR images can't be added yet; convert to PNG or JPEG first".into());
+    }
     let kind = match sniffed.kind {
         MediaKind::Text => return text_of(file.bytes, sniffed.mime, text_left).map(Plan::Text),
         MediaKind::Image => "source.image",

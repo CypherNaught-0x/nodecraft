@@ -166,3 +166,36 @@ fn text_right_at_the_budget_still_fits_one_paste() {
     let imported = import_files(&mut s, C, AT, 300.0, &[Incoming { name: "full.txt", bytes: text.as_bytes() }], &ids(1)).unwrap();
     assert_eq!(imported.nodes, ids(1), "{:?}", imported.skipped);
 }
+
+#[test]
+fn hdr394_import_skips_hdr_without_assets_edits_or_text_fallback() {
+    for bytes in [b"\x76\x2f\x31\x01".as_slice(), b"#?RGBE\n", b"#?RADIANCE\n"] {
+        let mut s = session();
+        let before = s.document().clone();
+        let revision = s.revision();
+        let got = import_files(&mut s, C, AT, 300.0, &[Incoming { name: "sample.dat", bytes }], &ids(1)).unwrap();
+        assert!(got.nodes.is_empty());
+        assert_eq!(got.notice().unwrap(), "sample.dat wasn't added: HDR images can't be added yet; convert to PNG or JPEG first.");
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), revision);
+        assert!(s.assets().is_empty());
+        assert!(!s.can_undo());
+    }
+    let mut s = session();
+    let before = s.document().clone();
+    let got = import_files(
+        &mut s,
+        C,
+        AT,
+        300.0,
+        &[Incoming { name: "empty", bytes: b"" }, Incoming { name: "sample.hdr", bytes: b"#?RGBE\n" }, Incoming { name: "ok.txt", bytes: b"kept" }],
+        &ids(3),
+    )
+    .unwrap();
+    assert_eq!(got.nodes, [ids(3)[2]]);
+    assert_eq!(got.skipped[0].1, "the file is empty");
+    assert!(got.skipped[1].1.contains("HDR"));
+    assert!(s.assets().is_empty());
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before);
+}

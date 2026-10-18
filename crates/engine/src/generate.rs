@@ -327,6 +327,9 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text:
         Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
         Output::Bytes { mime: claimed, bytes } => {
             let sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            if matches!(sniffed.mime, "image/x-exr" | "image/vnd.radiance") {
+                return Err(unsupported("HDR image outputs aren't supported yet; use PNG or JPEG"));
+            }
             if sniffed.kind == MediaKind::Text {
                 if !claimed.trim_start().get(..5).is_some_and(|head| head.eq_ignore_ascii_case("text/")) {
                     return Err(invalid("the provider claimed non-text output but returned text (an error page?)"));
