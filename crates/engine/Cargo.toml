@@ -41,3 +41,7 @@ tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
 zip = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.
+tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }

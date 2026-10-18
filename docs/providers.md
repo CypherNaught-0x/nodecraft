@@ -56,6 +56,23 @@ nonacceptance. Native reqwest request building can prove a request was not execu
 Responses, status errors, parsing, body limits and stream sink failures cannot undo possible
 delivery. Browser fetch stages remain unknown.
 
+A native request-builder failure returns terminal `UnsupportedInput` with the static diagnostic
+`HTTP request could not be constructed`; request URLs, header values and the underlying builder
+error are excluded. This applies to ordinary and streaming requests. Execution, connection and
+timeout errors retain their existing classifications. The audited LLM path releases a fresh
+reservation immediately when its complete submission proves no delivery; earlier ambiguous
+attempts remain charged even when a later attempt fails locally.
+
+HTTP middleware must propagate delivery contexts through every relevant request, but context
+forwarding alone is insufficient. A wrapper with side effects outside the inner request,
+including effects when constructing its future or outstanding work, must not promote an inner
+not-sent proof to proof of the whole wrapper attempt. Keep the whole operation unknown or
+discard inner affirmative evidence unless the entire wrapper is audited and all relevant work
+participates in its scope. Existing code has no such side-effecting wrapper. Unaudited wrappers
+default to unknown; observing zero socket accepts or matching an error kind grants no positive
+evidence. This is an adapter contract, not a sandbox or an automatic enforcement guarantee.
+Browser delivery remains conservative.
+
 Only the audited LLM Provider path can currently certify a whole submission: local validation
 or a native pre-execute build failure, with no earlier possible delivery or outstanding work.
 Legacy Provider and Http implementations default to unknown before their future constructors
