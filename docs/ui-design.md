@@ -254,3 +254,7 @@ Enabled checks perform bounded structural admission without arranging, ranking t
 the project. A final output-coordinate or transaction error can still reject dispatch atomically.
 Unavailable toolbar primary clicks are consumed by a one-pass, exact-focus and topmost-layer
 capability before widgets render; keyboard, scroll, other buttons and popup owners remain active.
+
+### Colour tags
+
+Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).

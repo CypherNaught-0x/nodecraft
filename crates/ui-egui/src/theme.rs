@@ -48,6 +48,11 @@ pub struct Tokens {
     pub wire_mesh: Color32,
     pub wire_document: Color32,
 
+    pub tag_colors: [Color32; 8],
+    pub tag_marker_width: f32,
+    pub tag_panel_width: f32,
+    pub tag_panel_height: f32,
+    pub tag_row_height: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
@@ -131,6 +136,20 @@ pub const DARK: Tokens = Tokens {
     wire_audio: Color32::from_rgb(0xe0, 0x7a, 0x5a),
     wire_mesh: Color32::from_rgb(0x8f, 0xc3, 0x5a),
     wire_document: Color32::from_rgb(0xa0, 0xa0, 0xa8),
+    tag_colors: [
+        Color32::from_rgb(238, 112, 122),
+        Color32::from_rgb(235, 162, 94),
+        Color32::from_rgb(224, 201, 102),
+        Color32::from_rgb(126, 199, 131),
+        Color32::from_rgb(96, 198, 190),
+        Color32::from_rgb(118, 170, 240),
+        Color32::from_rgb(181, 145, 230),
+        Color32::from_rgb(225, 142, 194),
+    ],
+    tag_marker_width: 5.0,
+    tag_panel_width: 280.0,
+    tag_panel_height: 320.0,
+    tag_row_height: 24.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
@@ -203,6 +222,16 @@ pub const LIGHT: Tokens = Tokens {
     wire_audio: Color32::from_rgb(0xb0, 0x48, 0x2a),
     wire_mesh: Color32::from_rgb(0x4f, 0x8a, 0x1f),
     wire_document: Color32::from_rgb(0x6b, 0x6b, 0x74),
+    tag_colors: [
+        Color32::from_rgb(163, 45, 59),
+        Color32::from_rgb(151, 79, 20),
+        Color32::from_rgb(115, 95, 13),
+        Color32::from_rgb(32, 108, 41),
+        Color32::from_rgb(16, 104, 98),
+        Color32::from_rgb(43, 94, 164),
+        Color32::from_rgb(109, 63, 161),
+        Color32::from_rgb(154, 53, 120),
+    ],
     ..DARK
 };
 
@@ -257,6 +286,12 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.set_visuals(visuals(kind));
 }
 
+impl Tokens {
+    pub fn tag_color(&self, color: Option<&str>) -> Color32 {
+        crate::tags::PALETTE.iter().position(|(id, _)| Some(*id) == color).and_then(|i| self.tag_colors.get(i)).copied().unwrap_or(self.text_muted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +322,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tag_labels_contrast_on_every_surface() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            for color in t.tag_colors {
+                for bg in [t.card_fill, visuals(kind).widgets.hovered.bg_fill, t.panel_fill, t.canvas_bg] {
+                    assert!(contrast(color, bg) >= 4.5, "{kind:?} {color:?} on {bg:?}: {}", contrast(color, bg));
+                }
+            }
+        }
+    }
     #[test]
     fn discussion_checkbox_has_contrasting_unchecked_border_and_checked_glyph() {
         for kind in [ThemeKind::Dark, ThemeKind::Light] {

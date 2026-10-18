@@ -563,3 +563,7 @@ height at fixed reference zoom. Advisory Preview validates structure without sol
 dispatch returns one MoveNode changeset through the private persistent admission boundary.
 Grid and whole-DAG dependency modes move selected nodes only, with one undo step; see
 [the decision](decisions/2026-10-18-selected-node-auto-format-70.md) and [UI design](ui-design.md).
+
+### Colour tag mutations and filtering
+
+The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.

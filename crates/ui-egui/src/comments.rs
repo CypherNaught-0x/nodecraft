@@ -98,6 +98,21 @@ impl Discussions {
         self.editing = None;
         self.drafts.retain(|_, draft| draft.dirty || draft.error.is_some());
     }
+    pub(crate) fn reset_session_view(&mut self) {
+        self.close();
+        self.active = None;
+        self.message = None;
+        self.page = 0;
+        self.chunk = 0;
+        self.last_focus = None;
+        self.focus_pending = None;
+        self.drag = None;
+        self.gesture_cancelled = false;
+        self.session = None;
+        self.pins.clear();
+        self.marker_ids.clear();
+        self.stamp = None;
+    }
     /// Fresh UUIDv4 checked against live roots/replies and retained draft IDs. Native
     /// entropy and browser Web Crypto share a fallible shell-only boundary.
     pub fn allocate_comment(&self, project: &nodecraft_graph::Project) -> Result<CommentId, Error> {

@@ -19,6 +19,7 @@ pub mod palette;
 pub mod preview;
 pub mod search;
 pub mod selection;
+pub mod tags;
 pub mod theme;
 pub mod turn_into;
 
