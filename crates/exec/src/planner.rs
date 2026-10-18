@@ -404,7 +404,11 @@ impl<'a> Graph<'a> {
             return Err(blockers);
         };
         let jobs = match known_inputs(&inputs) {
-            Some(values) => Some(kind.plan(&PlanCtx { node, inputs: &values }).map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?),
+            Some(values) => {
+                let jobs = kind.plan(&PlanCtx { node, inputs: &values }).map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?;
+                crate::generation_contract::validate_outputs(node, &jobs).map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
+                Some(jobs)
+            }
             None => None,
         };
         Ok(Step { node: id, kind: node.kind.clone(), mode, after: after.into_iter().collect(), inputs, jobs })

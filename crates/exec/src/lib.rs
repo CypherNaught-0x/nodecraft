@@ -4,6 +4,7 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+mod generation_contract;
 mod payload;
 
 pub mod cost;
