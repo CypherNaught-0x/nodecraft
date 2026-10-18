@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "craft-quit",
  "eframe",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-actions"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-graph",
  "nodecraft-media",
@@ -2656,14 +2656,14 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-agent"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-engine",
 ]
 
 [[package]]
 name = "nodecraft-automation"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "getrandom 0.3.4",
  "nodecraft-engine",
@@ -2678,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-catalog"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-graph",
  "nodecraft-types",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-cli"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-automation",
  "nodecraft-engine",
@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-comfy"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-types",
  "serde",
@@ -2709,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-engine"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "blake3",
  "craft-settings",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-exec"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-format"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "blake3",
  "craft-atomic",
@@ -2773,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-gpu"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "futures",
  "nodecraft-actions",
@@ -2783,7 +2783,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-graph"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-media",
  "nodecraft-types",
@@ -2794,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-media"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "blake3",
  "image",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-nodes"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-comfy",
  "nodecraft-graph",
@@ -2815,7 +2815,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-provider-testkit"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-providers",
  "nodecraft-types",
@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-providers"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-testkit"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "futures",
  "nodecraft-engine",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-types"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "mime",
  "proptest",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-ui-egui"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "craft-quit",
  "craft-ui",
@@ -5760,7 +5760,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "serde_json",
  "tempfile",
