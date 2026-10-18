@@ -1,0 +1,17 @@
+## 2026-10-17 · Staleness (#75)
+
+- **A result records the hash of what it was made from** (`Generation.input_hash`, optional so
+  existing results load; they are never reported stale). The driver stamps it with
+  `exec::staleness::input_hash` when it adds a generation; `.ncraft` archives must carry the
+  field (#134).
+- **What is hashed:** the node's kind, its configuration, its *visible* resolved parameters (a node
+  its kind rejects has no hash and counts as unknown), and per input port in
+  noodle order an upstream source's content or the id of an upstream node's active result.
+  Positions, titles, tags and unrelated nodes don't count. A domain/version tag is mixed in, so a
+  change to the recipe makes old hashes unknown rather than wrongly fresh.
+- **Stale is transitive:** a result is stale when its hash no longer matches *or* any upstream
+  node is stale (it was built on out-of-date data). This is the set `planner::plan` expects, and
+  `canvas.stale` returns it read-only, using the session's authoritative node-kind registry
+  from Context.kinds, shared with node editing and rendering. Session::new supplies builtins;
+  with_registries supplies custom kinds without a second registry in Resources.
+

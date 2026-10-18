@@ -5,10 +5,12 @@ use serde_json::Value as Json;
 
 const FIT_CLAMP_NOTICE: &str = "Nodes are too spread out to fit at minimum zoom; the view is centered at 10%.";
 
-fn navigation_id(id: &str) -> bool {
-    matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
-}
 impl NodeCraftApp {
+    /// Whether a command uses the live canvas navigation bridge. This is routing metadata;
+    /// automation must still apply its own human-only, paid and classification checks.
+    pub fn is_navigation_command(id: &str) -> bool {
+        matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
+    }
     fn navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let t = self.theme.tokens();
@@ -52,7 +54,7 @@ impl NodeCraftApp {
     /// The supported programmatic enabled query for a live canvas. Headless Session calls have
     /// no scoped live-view capability and return Unsupported instead of using stale snapshots.
     pub fn navigation_enabled(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> Result<(), Error> {
-        if !navigation_id(id) {
+        if !Self::is_navigation_command(id) {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
         let context = self.navigation_context(ctx, id);
@@ -61,7 +63,7 @@ impl NodeCraftApp {
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
     /// then apply the acknowledged intent immediately to shell view state. No dialogs/history.
     pub fn dispatch_navigation(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> Result<Json, Error> {
-        if !navigation_id(id) {
+        if !Self::is_navigation_command(id) {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
         let context = self.navigation_context(ctx, id);
@@ -114,7 +116,7 @@ impl NodeCraftApp {
         let selected = self.navigation_enabled_with_context(selected_context, "canvas.fit_selection", &json!({})).is_ok();
         let toggle = self.navigation_enabled_with_context(toggle_context, "canvas.minimap_toggle", &json!({})).is_ok();
         let pan = self.navigation_enabled_with_context(pan_context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
-        let specs: Vec<_> = self.session.registry().specs().filter(|spec| navigation_id(spec.id)).copied().collect();
+        let specs: Vec<_> = self.session.registry().specs().filter(|spec| Self::is_navigation_command(spec.id)).copied().collect();
         for spec in specs {
             let enabled = match spec.id {
                 "canvas.fit_all" => all,
