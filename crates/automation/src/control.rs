@@ -543,7 +543,7 @@ pub const RECONNECT_AFTER: Duration = Duration::from_secs(540);
 /// Handshakes tried while the app is still freeing the old connection's slot.
 pub const RECONNECT_ATTEMPTS: u32 = 6;
 /// How long the app may take to answer `hello`.
-const HELLO_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Longest reply the client reads: a screenshot in base64 plus room.
 const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
@@ -576,25 +576,57 @@ fn read_token_file_with<T>(reader: impl Read, path: &std::path::Path, connect: i
 #[cfg(test)]
 mod token_file_tests;
 
+fn admission_deadline() -> Instant {
+    Instant::now().checked_add(ADMISSION_TIMEOUT).unwrap_or_else(Instant::now)
+}
+
+fn admission_left(deadline: Instant) -> std::io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() { Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "control admission deadline expired")) } else { Ok(left) }
+}
+
+fn write_admission(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(admission_left(deadline)?))?;
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "control hello couldn't be written")),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    admission_left(deadline).map(|_| ())
+}
+
 impl Client {
     /// Connects to the app named by the token file at `path` and says hello.
     /// Files are capped at 4 KiB and their 64-hex token is checked before connecting.
+    /// Network admission has one five-second deadline; synchronous file I/O cannot be interrupted.
     pub fn from_token_file(path: &std::path::Path) -> Result<Self, Error> {
+        Self::from_token_file_until(path, admission_deadline())
+    }
+
+    fn from_token_file_until(path: &std::path::Path, deadline: Instant) -> Result<Self, Error> {
+        admission_left(deadline).map_err(|e| network(e.to_string()))?;
         let file = std::fs::File::open(path).map_err(|e| token_read_error(path, e))?;
-        let mut client = read_token_file_with(file, path, Self::connect)?;
+        let mut client = read_token_file_with(file, path, |addr, token| Self::connect_until(addr, token, deadline))?;
         client.origin = Origin::File(path.to_path_buf());
         Ok(client)
     }
 
-    /// Connects to `addr` and says hello with `token`.
+    /// Connects to `addr` and authenticates within one five-second network deadline.
     pub fn connect(addr: SocketAddr, token: &str) -> Result<Self, Error> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        Self::connect_until(addr, token, admission_deadline())
+    }
+
+    fn connect_until(addr: SocketAddr, token: &str, deadline: Instant) -> Result<Self, Error> {
+        let stream = TcpStream::connect_timeout(&addr, admission_left(deadline).map_err(|e| network(e.to_string()))?)
             .map_err(|e| network(format!("can't reach the app on {addr} ({e}); is it still running with --control?")))?;
         // The app answers every request within its answer timeout, so this only fires if it
         // hangs. A long reply is read in pieces, each with this timeout.
         let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
         // The handshake gets a short reply timeout of its own; requests get the long one.
-        stream.set_read_timeout(Some(HELLO_REPLY_TIMEOUT)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
+        stream.set_write_timeout(Some(WRITE_TIMEOUT)).map_err(|e| network(e.to_string()))?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
         let mut client = Self {
             reader,
@@ -607,11 +639,12 @@ impl Client {
         };
         let mut hello = Map::new();
         hello.insert("token".into(), json!(token));
-        let reply = client.exchange("hello", hello)?;
+        let reply = client.exchange_until("hello", hello, Some(deadline))?;
         if reply.get("protocol").and_then(Value::as_u64) != Some(u64::from(PROTOCOL)) {
             return Err(Error::new(ErrorKind::Unsupported, "the app speaks a different control protocol; use a matching nodecraft-cli"));
         }
-        client.writer.set_read_timeout(Some(wait)).map_err(|e| network(e.to_string()))?;
+        admission_left(deadline).map_err(|e| network(e.to_string()))?;
+        client.writer.set_read_timeout(Some(wait)).and_then(|()| client.writer.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
         Ok(client)
     }
 
@@ -622,28 +655,29 @@ impl Client {
         self.reconnect_after = after;
     }
 
-    /// Replaces the connection. The old one is closed first, so the replacement doesn't need a
-    /// spare slot when the app is at its connection limit. The app frees the slot a moment later,
-    /// so a handshake refused as busy, or cut off before its reply (a refused connection can be
-    /// reset), is retried up to [`RECONNECT_ATTEMPTS`] times with backoff (775 ms of waits in
-    /// all). Only `hello` has been sent on those connections, never the caller's request. Worst
-    /// case, each attempt waits out the 5 s connect and 5 s handshake timeouts. An app that has
-    /// exited (connection refused) is retried too, so such a call takes about 0.8 s to fail.
+    /// Replaces the connection before sending the requested operation. Connect, hello and all
+    /// six admission attempts/backoff share one five-second network deadline. Token-file I/O
+    /// is synchronous and cannot be interrupted; elapsed time is checked before network work.
     fn reconnect(&mut self) -> Result<(), Error> {
+        self.reconnect_until(admission_deadline())
+    }
+
+    fn reconnect_until(&mut self, deadline: Instant) -> Result<(), Error> {
         let _ = self.writer.shutdown(std::net::Shutdown::Both);
         // Until a replacement works, the next call tries again.
         self.broken = true;
         let mut wait = Duration::from_millis(25);
         let mut attempt = 0;
         let fresh = loop {
+            admission_left(deadline).map_err(|e| network(e.to_string()))?;
             attempt += 1;
             let tried = match self.origin.clone() {
-                Origin::File(path) => Self::from_token_file(&path),
-                Origin::Addr(addr, token) => Self::connect(addr, &token),
+                Origin::File(path) => Self::from_token_file_until(&path, deadline),
+                Origin::Addr(addr, token) => Self::connect_until(addr, &token, deadline),
             };
             match tried {
                 Err(e) if matches!(e.kind, ErrorKind::Busy | ErrorKind::Network) && attempt < RECONNECT_ATTEMPTS => {
-                    std::thread::sleep(wait);
+                    std::thread::sleep(wait.min(admission_left(deadline).map_err(|e| network(e.to_string()))?));
                     wait = wait.saturating_mul(2);
                 }
                 other => break other?,
@@ -667,16 +701,26 @@ impl Client {
 
     /// One request and its reply on the current connection.
     fn exchange(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
+        self.exchange_until(method, params, None)
+    }
+
+    fn exchange_until(&mut self, method: &str, params: Map<String, Value>, deadline: Option<Instant>) -> Result<Value, Error> {
         let id = self.next;
         self.next = self.next.saturating_add(1);
         let message = json!({"id": id, "method": method, "params": params});
-        let sent = writeln!(self.writer, "{message}").and_then(|()| self.writer.flush());
+        let sent = match deadline {
+            Some(deadline) => write_admission(&mut self.writer, format!("{message}\n").as_bytes(), deadline),
+            None => writeln!(self.writer, "{message}").and_then(|()| self.writer.flush()),
+        };
         if let Err(e) = sent {
             self.broken = true;
             return Err(network(format!("the app closed the control channel ({e}); the next call reconnects")));
         }
         let mut line = Vec::new();
-        let read = mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES);
+        let read = match deadline {
+            Some(deadline) => read_hello(&mut self.reader, &mut line, deadline),
+            None => mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES),
+        };
         let reply = match read {
             Ok(Line::Read) => serde_json::from_slice::<Value>(&line).map_err(|_| network("the app sent a malformed reply")),
             Ok(Line::TooLong) => Err(network("the app's reply was too large")),

@@ -73,6 +73,7 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
+    pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
     /// The document's revision: bumped by every edit, undo and redo.
     pub revision: u64,

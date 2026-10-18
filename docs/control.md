@@ -44,6 +44,19 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
+The native client gives initial authentication and each replacement connection one five-second
+network-admission deadline. TCP connect, every partial hello write/read, and all six replacement
+attempts with backoff share that deadline. Hello replies are capped at 4 KiB separately from
+screenshot replies. Busy and network failures may retry only admission; once a requested operation
+might have been sent, it is never replayed. `Client::set_reconnect_after` retains its existing
+behavior, including reconnecting before every call at `Duration::ZERO`.
+
+Reading/re-reading the token file is synchronous filesystem I/O and cannot be interrupted by this
+network deadline. Time spent there is counted: if it exhausts admission, no subsequent network
+operation starts. Token-file reads stop at 4 KiB plus one detection byte and validate the 64-hex token before
+connecting; this is not a bound on filesystem stalls.
+
+
 - A connection must send `hello` (at most 4 KiB) within 5 seconds in total, and it closes on
   anything else before then.
   Once authenticated, it closes after 10 minutes of silence. A reply that can't be written within

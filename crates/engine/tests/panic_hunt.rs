@@ -118,7 +118,7 @@ fn template(id: &str) -> (Session, Value) {
     }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
-        session.swap_resource(Some(RunCatalog(std::sync::Arc::new(nodecraft_catalog::Catalog::builtin().unwrap()))));
+        session.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
         session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
         session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
