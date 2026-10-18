@@ -120,6 +120,7 @@ pub struct Session {
     status_revision: u64,
     admission_identity: Arc<()>,
     execution: crate::execution_identity::ExecutionSource,
+    perf: crate::perf::Recorder,
 }
 
 impl Session {
@@ -154,7 +155,16 @@ impl Session {
             status_revision: 0,
             admission_identity: Arc::new(()),
             execution,
+            perf: crate::perf::Recorder::default(),
         }
+    }
+
+    /// The performance recorder (#151): off until `perf.start`; the host gives it a clock.
+    pub fn perf(&self) -> &crate::perf::Recorder {
+        &self.perf
+    }
+    pub fn perf_mut(&mut self) -> &mut crate::perf::Recorder {
+        &mut self.perf
     }
 
     pub fn document(&self) -> &Project {
@@ -267,6 +277,7 @@ impl Session {
             phase,
             file: self.file_status(),
             execution: &self.execution,
+            perf: &self.perf,
         }
     }
 
@@ -288,9 +299,18 @@ impl Session {
 
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let before = self.file_status();
+        // Capture commands don't time themselves.
+        let start = if id.starts_with("perf.") { None } else { self.perf.now() };
         let result = self.dispatch_inner(id, params);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
+        }
+        // Only commands that ran count: a refusal is fast and would pull the latencies down.
+        if let Some(start) = start.filter(|_| result.is_ok()) {
+            self.perf.record_since(crate::perf::Metric::Dispatch, start);
+            if let Some(metric) = crate::perf::Metric::of_command(id) {
+                self.perf.record_since(metric, start);
+            }
         }
         result
     }
@@ -306,6 +326,14 @@ impl Session {
             Effect::None { result } => {
                 validate_json(&result)?;
                 return Ok(result);
+            }
+            Effect::Perf { action } => {
+                match action {
+                    crate::perf_cmds::PerfAction::Start => self.perf.set_enabled(true),
+                    crate::perf_cmds::PerfAction::Stop => self.perf.set_enabled(false),
+                    crate::perf_cmds::PerfAction::Clear => self.perf.clear(),
+                }
+                return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
@@ -426,7 +454,7 @@ impl Session {
                 let (document, inverse) = entry.inverse.stage(&self.document)?;
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
-            Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } => {
+            Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }
         };
