@@ -33,7 +33,8 @@ every CI run, and fails on an unregistered crate.
 | L5 | `agent` | in-canvas agent: LLM tool loop over engine commands | engine |
 | L5 | `automation` | control channel (JSON), MCP server, HTTP serve mode | engine |
 | L5 | `ui-egui` | egui shell: canvas widget, node cards, panels, editors, theme tokens | engine |
-| dev only | `testkit` | fixtures, mock provider, snapshot helpers | engine |
+| dev only | `testkit` | graph fixtures, mock compatibility reexport, snapshot helpers | engine |
+| dev only | `provider-testkit` | provider-only mock/type reexports for lower-layer tests | providers, types |
 | exempt | `apps/nodecraft`, `apps/nodecraft-cli`, `xtask` | binaries and tooling | anything |
 
 ```mermaid
@@ -60,7 +61,13 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
-- **`testkit` is a dev-dependency only.**
+- **`testkit` and `provider-testkit` are dev-dependencies only.** The latter has no dependency
+  back to nodes, exec or engine. It exposes the opt-in `providers::mock` implementation and the
+  same external provider types; lower crates use the facade only in tests. Provider unit tests
+  use their local `crate::mock` and local Provider trait to avoid duplicate-crate trait identity.
+  The higher testkit preserves `testkit::mock` by reexporting providers directly, without a
+  forbidden normal dependency on another testkit crate. Neither testkit class is in the normal
+  wasm sweep; the facade and opt-in mock need explicit wasm feature checks.
 
 ## Core data types
 

@@ -1,0 +1,21 @@
+[package]
+name = "nodecraft-provider-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "NodeCraft: provider-only fixtures for lower-layer tests"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+# Explicit canonical workspace path: disabling inherited defaults needs Cargo 1.99,
+# beyond our 1.95 MSRV. Do not change other consumers' adapter defaults.
+nodecraft-providers = { path = "../providers", default-features = false, features = ["testkit"] }
+nodecraft-types = { workspace = true }

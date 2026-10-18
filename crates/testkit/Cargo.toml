@@ -16,8 +16,7 @@ nodecraft-engine = { workspace = true }
 nodecraft-exec = { workspace = true }
 nodecraft-graph = { workspace = true }
 nodecraft-nodes = { workspace = true }
-nodecraft-providers = { workspace = true }
+nodecraft-providers = { workspace = true, features = ["testkit"] }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
-blake3 = { workspace = true }
 futures = { workspace = true, features = ["executor"] }

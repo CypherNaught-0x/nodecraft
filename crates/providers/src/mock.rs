@@ -1,7 +1,7 @@
 //! A deterministic fake provider. Each model is scripted with a [`MockModel`]; results depend only
 //! on the model, its parameters and its inputs, so tests can compare them byte for byte.
 
-use nodecraft_providers::{BoxFuture, Completed, ErrorKind, JobHandle, JobInput, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
+use crate::{BoxFuture, Completed, ErrorKind, JobHandle, JobInput, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
 use nodecraft_types::Money;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};

@@ -15,4 +15,5 @@
 
 pub mod golden;
 pub mod kinds;
-pub mod mock;
+// Preserve the original public path while sharing the provider crate's one implementation.
+pub use nodecraft_providers::mock;

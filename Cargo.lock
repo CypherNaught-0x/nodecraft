@@ -2723,6 +2723,7 @@ dependencies = [
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-nodes",
+ "nodecraft-provider-testkit",
  "nodecraft-providers",
  "nodecraft-types",
  "serde",
@@ -2743,6 +2744,7 @@ dependencies = [
  "nodecraft-catalog",
  "nodecraft-graph",
  "nodecraft-nodes",
+ "nodecraft-provider-testkit",
  "nodecraft-types",
  "proptest",
  "serde",
@@ -2802,9 +2804,18 @@ version = "0.1.0"
 dependencies = [
  "nodecraft-comfy",
  "nodecraft-graph",
+ "nodecraft-provider-testkit",
  "nodecraft-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nodecraft-provider-testkit"
+version = "0.1.0"
+dependencies = [
+ "nodecraft-providers",
+ "nodecraft-types",
 ]
 
 [[package]]
@@ -2830,7 +2841,6 @@ dependencies = [
 name = "nodecraft-testkit"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "futures",
  "nodecraft-engine",
  "nodecraft-exec",

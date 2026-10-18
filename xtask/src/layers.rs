@@ -49,6 +49,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("automation", Class::Layer(5)),
     ("ui-egui", Class::Layer(5)),
     ("testkit", Class::Testkit),
+    ("provider-testkit", Class::Testkit),
     // apps and tooling
     ("nodecraft", Class::Exempt),
     ("cli", Class::Exempt),
@@ -122,7 +123,7 @@ impl std::fmt::Display for Violation {
                 write!(f, "{krate}: standalone crate must not depend on workspace crate {dep}")
             }
             Violation::TestkitAsNormalDep { krate } => {
-                write!(f, "{krate}: nodecraft-testkit may only be a dev-dependency")
+                write!(f, "{krate}: test tooling may only be a dev-dependency")
             }
             Violation::UiOutsideShell { krate, dep } => {
                 write!(f, "{krate} depends on UI crate `{dep}`; UI toolkits are only allowed in ui-egui and the apps")
@@ -298,6 +299,17 @@ mod tests {
         // testkit itself may use the engine but not L5 crates.
         assert!(check(&[c("nodecraft-testkit", &[("nodecraft-engine", Normal, true)])]).is_empty());
         assert!(!check(&[c("nodecraft-testkit", &[("nodecraft-ui-egui", Normal, true)])]).is_empty());
+    }
+
+    #[test]
+    fn provider_facade_has_only_lower_dependencies_and_is_dev_only_for_every_consumer() {
+        assert!(check(&[c("nodecraft-provider-testkit", &[("nodecraft-providers", Normal, true), ("nodecraft-types", Normal, true)])]).is_empty());
+        for consumer in ["nodecraft-nodes", "nodecraft-exec", "nodecraft-engine", "nodecraft-testkit"] {
+            assert!(check(&[c(consumer, &[("nodecraft-provider-testkit", Dev, true)])]).is_empty());
+            assert!(matches!(check(&[c(consumer, &[("nodecraft-provider-testkit", Normal, true)])])[..], [Violation::TestkitAsNormalDep { .. }]));
+        }
+        assert!(matches!(check(&[c("nodecraft-exec", &[("nodecraft-providers", Dev, true)])])[..], [Violation::Upward { .. }]));
+        assert!(matches!(check(&[c("nodecraft-media", &[("nodecraft-provider-testkit", Dev, true)])])[..], [Violation::StandaloneHasWorkspaceDep { .. }]));
     }
 
     #[test]
