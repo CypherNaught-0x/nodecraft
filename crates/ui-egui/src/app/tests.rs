@@ -258,9 +258,13 @@ fn conditional_controls_and_choice_labels_follow_schema() {
     assert!(h.query_by_role_and_label(Role::TextInput, "detail").is_some());
     h.get_by_role_and_label(Role::ComboBox, "quality").click();
     h.run();
+    let view = h.state().view;
+    let selection = h.state().selection.clone();
     h.get_by_label("High").click();
     h.run();
     assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().view, view);
+    assert_eq!(h.state().selection, selection);
 }
 #[test]
 fn slider_previews_then_commits_one_undo_step() {

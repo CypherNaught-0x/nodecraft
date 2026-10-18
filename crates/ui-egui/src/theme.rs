@@ -65,6 +65,8 @@ pub struct Tokens {
     pub navigation_margin: f32,
     pub navigation_gap: f32,
     pub fit_padding: f32,
+    pub layout_gap: f32,
+    pub layout_button_width: f32,
     pub minimap_node_min: f32,
 
     /// Distance between grid dots, at 100% zoom.
@@ -145,6 +147,8 @@ pub const DARK: Tokens = Tokens {
     navigation_toolbar_height: 30.0,
     navigation_margin: 16.0,
     navigation_gap: 6.0,
+    layout_gap: 64.0,
+    layout_button_width: 150.0,
     fit_padding: 24.0,
     minimap_node_min: 2.0,
     grid_spacing: 20.0,

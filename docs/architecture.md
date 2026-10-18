@@ -551,3 +551,12 @@ imposing the archive's smaller manifest ceiling on every edit.
 [media-video.md](media-video.md). It depends only on external Rust crates and configured installed
 tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
 is separate. Feature-on wasm exposes an Unsupported host setup path.
+
+## Selected-node formatting
+
+Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
+The UI supplies a revision-stamped scoped geometry capability, including history-strip body
+height at fixed reference zoom. Advisory Preview validates structure without solving or staging;
+dispatch returns one MoveNode changeset through the private persistent admission boundary.
+Grid and whole-DAG dependency modes move selected nodes only, with one undo step; see
+[the decision](decisions/2026-10-18-selected-node-auto-format-70.md) and [UI design](ui-design.md).

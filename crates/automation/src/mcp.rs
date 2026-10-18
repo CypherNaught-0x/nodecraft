@@ -105,6 +105,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "file.save_as",
     "run.record",
     "usage.reconcile_ownership",
+    "canvas.auto_format",
     "comment.compose",
     "comment.open",
     "canvas.comments_toggle",

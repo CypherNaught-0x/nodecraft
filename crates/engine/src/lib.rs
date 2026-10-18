@@ -19,6 +19,7 @@ pub mod history_cmds;
 pub mod import;
 pub mod jobs;
 pub mod keys_cmds;
+pub mod layout_cmds;
 pub mod navigation_cmds;
 pub mod node_cmds;
 pub mod order_cmds;

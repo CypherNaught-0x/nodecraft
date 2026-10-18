@@ -227,3 +227,30 @@ scans progress on rendered frames, and queued framing waits for completion and i
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
 events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+
+### Format selection
+
+The selection toolbar and selected-card context menu offer **Grid** and **Dependency order**.
+Both dispatch `canvas.auto_format` and move selected nodes in one undo step; unselected nodes
+and edges stay fixed. Fit selected remains a separate view command. No layout shortcut is
+reserved. Finish an editor or gesture before opening Format; dirty hidden drafts remain drafts.
+
+Actual resolved instance sizes include the clipped title/UNSAVED line and output handle stroke
+at reference zoom 1.0. Unavailable instances retain navigation placeholders, but lack the checked
+logical sizes required for layout; formatting rejects the whole selection atomically.
+Persistent positions are independent of camera zoom. Auto-format uses `layout_gap` (64 world points) and `layout_button_width` (150
+screen points). Outer cell origins and spans deliberately align to an **8-world-point lattice**;
+this is the layout policy for stable repeated formatting, not coordinate clamping. Positive
+left/top insets are added to each cell origin to position the body. Body positions outside the
+canvas coordinate domain reject the entire action. Grid defaults to ceil(sqrt(selection count));
+programmatic callers can supply columns. Dependency order ranks the whole DAG, including paths
+through unselected nodes, then places selected ranks in left-to-right columns. It does not move
+unselected obstacles or promise optimal edge crossings. Reapplication with unchanged selection,
+logical extents and topology is a no-op, including after camera zoom changes and at large legal coordinates.
+Grid ordering groups connected positive vertical-overlap intervals, then orders each group by
+left edge and stable node ID. A tall card can bridge an overlap chain; touching boundaries start
+a separate row. The output lattice does not define input row membership.
+Enabled checks perform bounded structural admission without arranging, ranking the DAG or cloning
+the project. A final output-coordinate or transaction error can still reject dispatch atomically.
+Unavailable toolbar primary clicks are consumed by a one-pass, exact-focus and topmost-layer
+capability before widgets render; keyboard, scroll, other buttons and popup owners remain active.

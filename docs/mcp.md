@@ -74,7 +74,8 @@ through the engine and native app. `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325); agents can still review those charges with `usage.ownership`. A new
 command stays hidden until it is added to one of the
-lists, and a test fails until then.
+lists, and a test fails until then. `canvas.auto_format` is temporarily human-only: it consumes
+the live selection and trusted card geometry, which MCP and the control bridge cannot supply yet.
 
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the

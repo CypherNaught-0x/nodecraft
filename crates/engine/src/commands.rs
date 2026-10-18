@@ -182,6 +182,7 @@ impl Registry {
             .chain(crate::clipboard_cmds::specs())
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
+            .chain(crate::layout_cmds::specs())
             .chain(crate::comment_cmds::specs())
             .chain(crate::run_cmds::specs())
             .chain(crate::perf_cmds::specs())

@@ -46,6 +46,13 @@ fn the_context_menu_splits_an_image_into_selected_nodes_in_one_undo_step() {
     h.get_by_label_contains("Split into grid").hover();
     h.run();
     h.run();
+    let ctx = h.ctx.clone();
+    h.state_mut().selection.only(IMAGE);
+    let text = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().find(|n| n.kind == "source.text").unwrap().id;
+    h.state_mut().selection.add(text);
+    assert!(h.state_mut().layout_enabled(&ctx, &json!({"mode":"grid"})).is_err());
+    assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).is_err());
+    assert_eq!(h.state().session.document(), &before);
     h.get_by_label("Split into 4 images").click();
     h.run();
     assert_eq!(count(&h), nodes + 4, "{:?}", h.state().notice);
