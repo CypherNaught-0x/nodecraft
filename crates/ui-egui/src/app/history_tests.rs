@@ -59,6 +59,25 @@ fn the_strip_steps_through_results_with_buttons_chips_and_arrow_keys() {
 }
 
 #[test]
+fn the_active_chip_stays_inside_the_card_however_many_results() {
+    for n in [12u8, 40, 150] {
+        let mut h = with_results(n);
+        for _ in 0..3 {
+            let card_rect = screen_rect(h.state());
+            let active = card(h.state()).active.and_then(|id| card(h.state()).history.iter().position(|g| g.id == id)).unwrap();
+            let chip = h.get_by_label(&format!("Result {} of {n}, active", active + 1)).rect();
+            assert!(card_rect.contains_rect(chip), "{n} results: chip {chip:?} outside card {card_rect:?}");
+            h.get_by_label("Previous result").click();
+            h.run();
+        }
+    }
+}
+
+fn screen_rect(app: &NodeCraftApp) -> Rect {
+    app.view.rect_to_screen(app.viewport.min, card::world_rect(card(app), None, app.theme.tokens()))
+}
+
+#[test]
 fn a_card_with_many_results_draws_a_bounded_window_of_chips() {
     let mut h = with_results(40);
     assert!(h.query_by_label("Result 40 of 40, active").is_some());

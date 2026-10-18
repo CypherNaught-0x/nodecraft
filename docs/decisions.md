@@ -1172,7 +1172,7 @@ section-anchor bookmarks should be updated to the corresponding dated file in th
   the new node id, as for `node.create`; the shell places it beside the source, stepping down
   past earlier extracts.
 - **The strip reserves one card row** under the parameters and draws on the card's bottom edge:
-  ‹ position › and Clear, then chips for at most 12 results around the active one (click to
+  ‹ position › and Clear, then chips for as many results around the active one as fit the card's width (at most 12) (click to
   use, right-click to use, extract or delete). The cap keeps a node with hundreds of results as
   cheap per frame as one with a few; ‹ › reach the rest. ← and → step while the card or a strip
   control has focus (a clicked chip takes focus). Hover previews are built only for the hovered

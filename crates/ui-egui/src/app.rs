@@ -1040,7 +1040,7 @@ impl NodeCraftApp {
             HistoryIntent::Clear => ("history.clear", at),
             HistoryIntent::Select(generation) => ("history.select", json!({"canvas": self.canvas, "id": id, "generation": generation})),
             HistoryIntent::Delete(generation) => ("history.delete", json!({"canvas": self.canvas, "id": id, "generation": generation})),
-            HistoryIntent::Extract(generation) => {
+            HistoryIntent::Extract { generation, port, item } => {
                 let document = self.session.document();
                 let canvas = document.canvases().get(&self.canvas)?;
                 let source = canvas.nodes().get(&id)?;
@@ -1053,7 +1053,14 @@ impl NodeCraftApp {
                 let step = t.card_min_height + t.card_padding * 2.0;
                 let taken = |y: f32| canvas.nodes().values().any(|n| (n.pos.x - x).abs() < t.card_width / 2.0 && (n.pos.y - y).abs() < step / 2.0);
                 let y = (0..64u8).map(|row| source.pos.y + f32::from(row) * step).find(|y| !taken(*y)).unwrap_or(source.pos.y);
-                ("history.extract", json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "pos": {"x": x, "y": y}}))
+                let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "pos": {"x": x, "y": y}});
+                if let Some(port) = port {
+                    params["port"] = json!(port);
+                }
+                if let Some(item) = item {
+                    params["item"] = json!(item);
+                }
+                ("history.extract", params)
             }
         })
     }

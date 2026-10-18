@@ -18,7 +18,12 @@ pub enum HistoryIntent {
     Previous,
     Next,
     Delete(GenerationId),
-    Extract(GenerationId),
+    /// Extract one output (`port`, `None` for the first) or one item of a list output.
+    Extract {
+        generation: GenerationId,
+        port: Option<String>,
+        item: Option<usize>,
+    },
     Clear,
 }
 
@@ -35,8 +40,13 @@ pub fn rows(node: &Node) -> usize {
 /// A short, single-line description of a result for its tooltip.
 pub fn preview(generation: &Generation, t: &Tokens) -> String {
     let first = generation.outputs.first();
+    // Text is clipped while borrowed: a result can be megabytes long.
+    if let Some(Value::Text(text)) = first {
+        let line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+        return if line.is_empty() { "Empty text".to_owned() } else { clip(line, t.preview_chars) };
+    }
     let text = match first {
-        Some(Value::Text(text)) => text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim().to_owned(),
+        Some(Value::Text(_)) => String::new(),
         Some(Value::Media(asset)) => match (asset.meta.width, asset.meta.height) {
             (Some(w), Some(h)) => format!("{} {w}×{h}", asset.mime.essence()),
             _ => asset.mime.essence().to_owned(),
@@ -45,23 +55,67 @@ pub fn preview(generation: &Generation, t: &Tokens) -> String {
         Some(_) => "A value".to_owned(),
         None => "No output".to_owned(),
     };
-    let mut chars = text.chars();
-    let mut clipped: String = chars.by_ref().take(t.preview_chars).collect();
-    if chars.next().is_some() {
+    clip(&text, t.preview_chars)
+}
+
+/// The first `chars` characters of `text`, with an ellipsis when there were more.
+fn clip(text: &str, chars: usize) -> String {
+    let mut rest = text.chars();
+    let mut clipped: String = rest.by_ref().take(chars).collect();
+    if rest.next().is_some() {
         clipped.push('…');
     }
-    if clipped.is_empty() { "Empty text".to_owned() } else { clipped }
+    clipped
+}
+
+/// Most list items offered for extraction from one output.
+pub const MAX_EXTRACT_ITEMS: usize = 12;
+
+/// What the Extract menu offers for a result: each output, or each item of a list output (up to
+/// [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
+pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
+    let mut targets = Vec::new();
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+        match value {
+            Value::List(items) => {
+                for item in 0..items.len().min(MAX_EXTRACT_ITEMS) {
+                    targets.push((format!("{} item {}", port.name, item + 1), Some(port.name.clone()), Some(item)));
+                }
+            }
+            _ => targets.push((port.name.clone(), Some(port.name.clone()), None)),
+        }
+    }
+    targets
 }
 
 /// Most result chips drawn at once, centred on the active result; the position label and ‹ ›
 /// reach the rest. Keeps a node with hundreds of results as cheap per frame as one with a few.
 pub const MAX_CHIPS: usize = 12;
 
-/// The range of results that get a chip.
-pub fn window(count: usize, active: Option<usize>) -> std::ops::Range<usize> {
+/// The range of results that get a chip when `fit` chips fit the strip (at most
+/// [`MAX_CHIPS`], at least one), centred on the active result (the newest when none is).
+pub fn window(count: usize, active: Option<usize>, fit: usize) -> std::ops::Range<usize> {
+    let shown = fit.clamp(1, MAX_CHIPS);
     let centre = active.unwrap_or(count.saturating_sub(1));
-    let start = centre.saturating_sub(MAX_CHIPS / 2).min(count.saturating_sub(MAX_CHIPS));
-    start..start.saturating_add(MAX_CHIPS).min(count)
+    let start = centre.saturating_sub(shown / 2).min(count.saturating_sub(shown));
+    start..start.saturating_add(shown).min(count)
+}
+
+/// How many chips of the widest label (`count`'s digits) fit in `ui`'s row.
+fn chips_that_fit(ui: &egui::Ui, count: usize) -> usize {
+    let widest = egui::WidgetText::from("0".repeat(count.to_string().len())).into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
+    let spacing = ui.spacing();
+    let chip = galley_width(&widest) + spacing.button_padding.x * 2.0 + spacing.item_spacing.x;
+    let room = ui.available_width() + spacing.item_spacing.x;
+    if !(chip.is_finite() && chip > 0.0 && room.is_finite() && room > 0.0) {
+        return 1;
+    }
+    // Bounded by MAX_CHIPS before the cast, so it can't overflow.
+    (room / chip).floor().clamp(1.0, MAX_CHIPS as f32) as usize
+}
+
+fn galley_width(galley: &std::sync::Arc<egui::Galley>) -> f32 {
+    galley.size().x
 }
 
 /// Gives a glyph button a spoken name.
@@ -90,33 +144,43 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
     let newer = active.is_none_or(|index| index + 1 < count);
     let mut intent = None;
     let mut focused = card_focused;
+    // While a chip has focus, focus follows the active result as ←/→ move the window.
+    let follow_key = ui.id().with(("history_chip_focus", node.id));
+    let follow = ui.data(|d| d.get_temp::<bool>(follow_key)).unwrap_or(false);
+    let mut button_focus = false;
     ui.horizontal(|ui| {
         let previous = named(ui.add_enabled(older, egui::Button::new("‹")), "Previous result");
-        focused |= focus_on_click(&previous);
+        button_focus |= focus_on_click(&previous);
         if previous.on_hover_text("Previous result (←)").clicked() {
             intent = Some(HistoryIntent::Previous);
         }
         let position = active.map_or_else(|| format!("– / {count}"), |index| format!("{} / {count}", index + 1));
         ui.label(RichText::new(position).color(t.text_muted));
         let next = named(ui.add_enabled(newer, egui::Button::new("›")), "Next result");
-        focused |= focus_on_click(&next);
+        button_focus |= focus_on_click(&next);
         if next.on_hover_text("Next result (→)").clicked() {
             intent = Some(HistoryIntent::Next);
         }
         let clear = named(ui.button("Clear"), "Clear results");
-        focused |= clear.has_focus();
+        button_focus |= clear.has_focus();
         if clear.on_hover_text("Remove every result of this node (undoable)").clicked() {
             intent = Some(HistoryIntent::Clear);
         }
     });
+    focused |= button_focus;
+    let mut chip_focus = false;
     ui.horizontal(|ui| {
-        let shown = window(count, active);
+        let shown = window(count, active, chips_that_fit(ui, count));
         for (index, generation) in node.history.iter().enumerate().skip(shown.start).take(shown.len()) {
             let is_active = active == Some(index);
-            let chip = ui.add(egui::Button::selectable(is_active, format!("{}", index + 1)).sense(Sense::click()));
+            // Keyed by the result, so focus stays with it when the window moves.
+            let chip = ui.push_id(generation.id, |ui| ui.add(egui::Button::selectable(is_active, format!("{}", index + 1)).sense(Sense::click()))).inner;
             let state = if is_active { ", active" } else { "" };
             chip.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_active, format!("Result {} of {count}{state}", index + 1)));
-            focused |= focus_on_click(&chip);
+            if is_active && follow && !button_focus && !chip.has_focus() {
+                chip.request_focus();
+            }
+            chip_focus |= focus_on_click(&chip);
             if chip.clicked() && !is_active {
                 intent = Some(HistoryIntent::Select(generation.id));
             }
@@ -127,9 +191,27 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
                     intent = Some(HistoryIntent::Select(generation.id));
                     ui.close();
                 }
-                if ui.button("Extract to canvas").clicked() {
-                    intent = Some(HistoryIntent::Extract(generation.id));
-                    ui.close();
+                let targets = extract_targets(node, generation);
+                match targets.as_slice() {
+                    [(_, port, item)] => {
+                        if ui.button("Extract to canvas").clicked() {
+                            intent = Some(HistoryIntent::Extract { generation: generation.id, port: port.clone(), item: *item });
+                            ui.close();
+                        }
+                    }
+                    [] => {
+                        ui.add_enabled(false, egui::Button::new("Extract to canvas"));
+                    }
+                    _ => {
+                        ui.menu_button("Extract to canvas", |ui| {
+                            for (label, port, item) in &targets {
+                                if ui.button(label).clicked() {
+                                    intent = Some(HistoryIntent::Extract { generation: generation.id, port: port.clone(), item: *item });
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
                 }
                 if ui.button("Delete result").clicked() {
                     intent = Some(HistoryIntent::Delete(generation.id));
@@ -138,6 +220,8 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
             });
         }
     });
+    focused |= chip_focus;
+    ui.data_mut(|d| d.insert_temp(follow_key, chip_focus || (follow && !button_focus && focused)));
     if focused && intent.is_none() {
         let (left, right) = ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
         if left && older {
@@ -152,18 +236,54 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nodecraft_graph::Port;
+    use nodecraft_types::{Modality, NodeId, PortType};
+
+    fn result(outputs: Vec<Value>) -> Generation {
+        Generation::new(GenerationId::from_bytes([1; 16]), outputs)
+    }
+
+    #[test]
+    fn previews_skip_blank_lines_and_clip_unicode_by_character() {
+        let t = crate::theme::DARK;
+        assert_eq!(preview(&result(vec![Value::Text("\n  \n  Ünïcödé forest  \nsecond".into())]), &t), "Ünïcödé forest");
+        assert_eq!(preview(&result(vec![Value::Text(" \n\t".into())]), &t), "Empty text");
+        let long = "é".repeat(t.preview_chars + 5);
+        let clipped = preview(&result(vec![Value::Text(long)]), &t);
+        assert_eq!(clipped.chars().count(), t.preview_chars + 1);
+        assert!(clipped.ends_with('…'));
+        assert_eq!(preview(&result(vec![]), &t), "No output");
+        assert_eq!(preview(&result(vec![Value::List(vec![Value::Bool(true); 3])]), &t), "3 items");
+    }
+
+    #[test]
+    fn extract_offers_each_output_and_list_item() {
+        let text = |many| PortType { modality: Modality::Text, many };
+        let mut node = Node::new(NodeId::from_bytes([2; 16]), "test.gen");
+        node.outputs = vec![Port { name: "caption".into(), port_type: text(false) }, Port { name: "takes".into(), port_type: text(true) }];
+        let items = Value::List((0..20).map(|n| Value::Text(format!("{n}"))).collect());
+        let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), items]));
+        assert_eq!(targets.len(), 1 + MAX_EXTRACT_ITEMS);
+        assert_eq!(targets[0], ("caption".into(), Some("caption".into()), None));
+        assert_eq!(targets[1], ("takes item 1".into(), Some("takes".into()), Some(0)));
+    }
 
     #[test]
     fn the_chip_window_is_bounded_and_follows_the_active_result() {
-        assert_eq!(window(0, None), 0..0);
-        assert_eq!(window(5, Some(2)), 0..5);
-        assert_eq!(window(1000, None), 988..1000, "the newest when none is active");
-        assert_eq!(window(1000, Some(0)), 0..12);
-        assert_eq!(window(1000, Some(500)), 494..506);
-        assert_eq!(window(1000, Some(999)), 988..1000);
-        for active in 0..40 {
-            let shown = window(40, Some(active));
-            assert!(shown.contains(&active) && shown.len() == MAX_CHIPS);
+        assert_eq!(window(0, None, 12), 0..0);
+        assert_eq!(window(5, Some(2), 12), 0..5);
+        assert_eq!(window(1000, None, 12), 988..1000, "the newest when none is active");
+        assert_eq!(window(1000, Some(0), 12), 0..12);
+        assert_eq!(window(1000, Some(500), 12), 494..506);
+        assert_eq!(window(1000, Some(999), 12), 988..1000);
+        assert_eq!(window(1000, Some(500), 7), 497..504, "only what fits");
+        assert_eq!(window(1000, Some(500), 0), 500..501, "at least the active one");
+        assert_eq!(window(1000, Some(500), 99), 494..506, "never more than MAX_CHIPS");
+        for fit in 1..=MAX_CHIPS {
+            for active in 0..40 {
+                let shown = window(40, Some(active), fit);
+                assert!(shown.contains(&active) && shown.len() == fit);
+            }
         }
     }
 }
