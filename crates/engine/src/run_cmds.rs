@@ -11,7 +11,11 @@
 //!   to the host's `run.start` service, which plans the same request and runs it.
 //! - `run.record` (host only): records a run's results, one generation per node, as one undo
 //!   step.
-//! - `usage.export_csv` (read-only): the usage log as spreadsheet-safe CSV.
+//! - `usage.export_csv` (read-only): spreadsheet-safe CSV pages, at most 2,000 rows and
+//!   768 KiB of encoded JSON including the envelope. Continue at the returned actual row offset.
+//!
+//! Requiring a configured budget for automation-started paid runs remains desktop-host policy
+//! for #201 part 2 / #293; these commands do not implement that future host.
 //!
 //! The model catalog, the caps with what has been spent, and the usage log are host resources
 //! ([`RunCatalog`], [`BudgetState`], [`UsageSnapshot`]); without them the commands are
@@ -346,20 +350,67 @@ struct ExportParams {
     limit: Option<usize>,
 }
 
-fn export_csv(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+/// Encoded JSON page ceiling, including CSV escapes and the pagination envelope.
+const MAX_EXPORT_JSON_BYTES: usize = 768 * 1024;
+
+fn export_params(value: &Value) -> Result<ExportParams, Error> {
     let p: ExportParams = params(value)?;
-    let usage = c.resources.require::<UsageSnapshot>()?;
+    if p.limit == Some(0) {
+        return Err(invalid("export limit must be at least 1"));
+    }
+    Ok(p)
+}
+
+/// JSON string content bytes (quotes belong to the envelope). UTF-8 stays literal in serde_json.
+fn escaped_csv_bytes(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().try_fold(0_usize, |sum, byte| {
+        let size = match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+            0..=31 => 6,
+            _ => 1,
+        };
+        sum.checked_add(size)
+    })
+}
+
+fn csv_page(usage: &UsageLog, p: &ExportParams, ceiling: usize) -> Result<Value, Error> {
+    let total = usage.listed();
     let limit = p.limit.unwrap_or(MAX_EXPORT_ROWS).min(MAX_EXPORT_ROWS);
+    // Reserve the longest possible continuation number, even on the terminal page.
+    let envelope = serde_json::to_vec(&json!({"csv":"", "total":total, "next_offset":usize::MAX}))
+        .map_err(|_| Error::new(ErrorKind::Internal, "the export envelope couldn't be encoded"))?
+        .len();
+    let mut header = Vec::new();
+    usage.write_csv_rows(&mut header, usize::MAX, 0).map_err(|_| Error::new(ErrorKind::Internal, "the usage header couldn't be written"))?;
+    let mut encoded = escaped_csv_bytes(&header)
+        .and_then(|n| n.checked_add(envelope))
+        .filter(|n| *n <= ceiling)
+        .ok_or_else(|| invalid("export byte limit cannot fit the CSV header"))?;
     let mut out = Vec::new();
-    usage.0.write_csv_rows(&mut out, p.offset, limit).map_err(|_| Error::new(ErrorKind::Internal, "the usage log couldn't be written"))?;
+    out.try_reserve_exact(ceiling).map_err(|_| Error::new(ErrorKind::Internal, "the export page couldn't be allocated"))?;
+    let written = usage
+        .write_csv_rows_while(&mut out, p.offset, limit, |row| {
+            let Some(next) = escaped_csv_bytes(row).and_then(|n| encoded.checked_add(n)).filter(|n| *n <= ceiling) else { return false };
+            encoded = next;
+            true
+        })
+        .map_err(|_| Error::new(ErrorKind::Internal, "the usage log couldn't be written"))?;
+    if written == 0 && p.offset < total {
+        return Err(invalid("export byte limit cannot fit a usage row"));
+    }
     let csv = String::from_utf8(out).map_err(|_| Error::new(ErrorKind::Internal, "the usage log isn't UTF-8"))?;
-    let total = usage.0.listed();
-    let next = p.offset.saturating_add(limit);
-    Ok(Effect::None { result: json!({"csv": csv, "total": total, "next_offset": (next < total).then_some(next)}) })
+    let next = p.offset.saturating_add(written);
+    Ok(json!({"csv":csv,"total":total,"next_offset":(next < total).then_some(next)}))
+}
+
+fn export_csv(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    let p = export_params(value)?;
+    let usage = c.resources.require::<UsageSnapshot>()?;
+    Ok(Effect::None { result: csv_page(&usage.0, &p, MAX_EXPORT_JSON_BYTES)? })
 }
 
 fn enabled_export(c: &Context<'_>, value: &Value) -> Result<(), Error> {
-    let _: ExportParams = params(value)?;
+    export_params(value)?;
     c.resources.require::<UsageSnapshot>().map(|_| ())
 }
 

@@ -67,6 +67,12 @@ fn panic_hunt() {
 fn template(id: &str) -> (Session, Value) {
     use common::*;
     let mut document = project();
+    if id == "run.start" {
+        document = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([0; 16]), "Run corpus").unwrap();
+        nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(canvas(), "Canvas") }.apply(&mut document).unwrap();
+        let source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(1), &std::collections::BTreeMap::new()).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    }
     if id == "edge.connect" {
         nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
     }
@@ -133,7 +139,12 @@ fn template(id: &str) -> (Session, Value) {
         }
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
         "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
-        "run.start" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)],"accept":{"amounts":{},"partial":true}}),
+        "run.start" => {
+            let mut request = json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]});
+            let quote = session.dispatch("run.quote", &request).unwrap();
+            request["accept"] = json!({"token":quote["token"],"amounts":{},"partial":true});
+            request
+        }
         "run.record" => {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
@@ -193,8 +204,13 @@ fn typed_template_panic_hunt() {
                 }
             }
         }
-        for params in cases {
-            let (mut session, _) = template(id);
+        for mut params in cases {
+            let (mut session, fresh) = template(id);
+            // Keep the valid token bound to this exact template Session; preserve deliberately
+            // mutated/missing tokens and all other mutations for the adversarial cases.
+            if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
+                params["accept"]["token"] = fresh["accept"]["token"].clone();
+            }
             let before = session.document().clone();
             let revision = session.revision();
             let events = session.events_since(0).unwrap();
@@ -252,4 +268,18 @@ fn typed_template_panic_hunt() {
         }
     }
     assert!(successes >= 7);
+}
+
+#[test]
+fn run_start_template_reaches_the_registered_host() {
+    let (mut session, params) = template("run.start");
+    let before = session.document().clone();
+    let events = session.events_since(0).unwrap();
+    let revision = session.revision();
+    let history = (session.can_undo(), session.can_redo());
+    assert_eq!(session.dispatch("run.start", &params).unwrap(), json!({"run":"accepted"}));
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), revision);
+    assert_eq!(session.events_since(0).unwrap(), events);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
 }
