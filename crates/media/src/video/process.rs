@@ -97,10 +97,10 @@ pub(super) fn run(
         .stderr(Stdio::piped());
     #[cfg(windows)]
     for name in ["SystemRoot", "WINDIR"] {
-        if let Some(value) = std::env::var_os(name) {
-            if value.len() <= 4096 {
-                command.env(name, value);
-            }
+        if let Some(value) = std::env::var_os(name)
+            && value.len() <= 4096
+        {
+            command.env(name, value);
         }
     }
     command.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
