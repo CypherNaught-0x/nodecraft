@@ -292,3 +292,5 @@ fn token_files_replace_links_and_old_files_and_stay_out_of_shared_folders() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+mod admission;
