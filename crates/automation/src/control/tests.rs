@@ -293,6 +293,8 @@ fn token_files_replace_links_and_old_files_and_stay_out_of_shared_folders() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+mod admission;
+
 #[test]
 fn trusted_stdio_does_not_change_tcp_token_admission() {
     let mut tcp = Connection::new(token());
