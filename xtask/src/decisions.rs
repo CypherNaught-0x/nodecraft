@@ -16,6 +16,14 @@ pub fn check(root: &Path) -> Result<(), String> {
             problems.push(format!("{}: the file name isn't UTF-8", path.display()));
             continue;
         };
+        // Hidden files (`.DS_Store` from Finder, editor swap files) aren't entries.
+        if name.starts_with('.') {
+            continue;
+        }
+        if !path.is_file() {
+            problems.push(format!("docs/decisions/{name}: only decision files belong here, not folders"));
+            continue;
+        }
         let text = std::fs::read_to_string(&path).map_err(|e| format!("docs/decisions/{name}: {e}"))?;
         problems.extend(file_problems(&name, &text).into_iter().map(|p| format!("docs/decisions/{name}: {p}")));
         count = count.saturating_add(1);
