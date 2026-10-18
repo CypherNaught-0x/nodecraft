@@ -80,12 +80,15 @@ pub struct JobBudget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Attempt {
     provider: String,
+    /// The key sent to the provider (and charged under).
     key: String,
+    /// The scheduler's key, which the registration keeps (#223).
+    base: String,
 }
 
 impl Attempt {
     fn matches_job(&self, job: &QueuedJob) -> bool {
-        job.provider.id() == self.provider && job.job.idempotency_key == self.key
+        job.provider.id() == self.provider && job.job.idempotency_key == self.base
     }
 }
 
@@ -94,6 +97,8 @@ impl Attempt {
 struct Reserved {
     provider: String,
     key: String,
+    /// The scheduler's key `key` derives from.
+    base: String,
     estimate: Money,
     /// The job may have reached the provider: settle as unresolved, never release.
     maybe_billed: bool,
@@ -111,6 +116,34 @@ struct State {
     running: HashMap<JobId, Attempt>,
     settle_after: std::collections::HashSet<JobId>,
     forget_after: std::collections::HashSet<JobId>,
+    /// Generations a provider itself reported as failed, by provider and the scheduler's key: a
+    /// retry after one is a new generation and is sent under a derived key (#223).
+    failures: HashMap<(String, String), u32>,
+}
+
+/// Longest idempotency key sent to a provider.
+pub const MAX_SENT_KEY: usize = 64;
+
+/// The key a job's next submission is sent under: the scheduler's `base` key at first, then
+/// `base#n` after the provider reported `n` generations failed, so a provider that dedupes on the
+/// key starts a new generation instead of returning the failed one. Deterministic per attempt (a
+/// lost reply resends the same key), ASCII, and at most [`MAX_SENT_KEY`] long: a key that
+/// wouldn't fit keeps an ASCII prefix and a hash of the whole base key.
+pub fn sent_key(base: &str, failures: u32) -> String {
+    if failures == 0 && base.len() <= MAX_SENT_KEY && base.is_ascii() {
+        return base.to_owned();
+    }
+    let suffix = if failures == 0 { String::new() } else { format!("#{failures}") };
+    let candidate = format!("{base}{suffix}");
+    if candidate.len() <= MAX_SENT_KEY && candidate.is_ascii() {
+        return candidate;
+    }
+    // FNV-1a: stable across runs and platforms, no dependency.
+    let hash = base.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let tail = format!("~{hash:016x}{suffix}");
+    let room = MAX_SENT_KEY.saturating_sub(tail.len());
+    let prefix: String = base.chars().filter(char::is_ascii).filter(|c| !c.is_ascii_control()).take(room).collect();
+    format!("{prefix}{tail}")
 }
 
 impl Reserved {
@@ -123,10 +156,21 @@ impl State {
     /// Handles are global provider/key entries. Prune only the touched identity, after its
     /// registration/running transition, and retain retries still referenced by another JobId.
     /// Restored handles without registrations are not swept. Work scales with host job state.
+    /// `attempt.key` is the key its handle is stored under (the scheduler's key, or one derived
+    /// from it after reported failures, #223); the failure count goes with the last reference.
     fn prune_handle(&mut self, attempt: &Attempt) {
-        if !self.jobs.values().any(|job| attempt.matches_job(job)) && !self.running.values().any(|running| running == attempt) {
+        let referenced = self.jobs.values().any(|job| attempt.matches_job(job))
+            || self.running.values().any(|running| running.provider == attempt.provider && running.base == attempt.base);
+        if !referenced {
             self.handles.remove(&(attempt.provider.clone(), attempt.key.clone()));
+            self.failures.remove(&(attempt.provider.clone(), attempt.base.clone()));
         }
+    }
+
+    /// The attempt a registration's next run would send: under its derived key after failures.
+    fn registered(&self, provider: &str, base: String) -> Attempt {
+        let failures = self.failures.get(&(provider.to_owned(), base.clone())).copied().unwrap_or(0);
+        Attempt { provider: provider.to_owned(), key: sent_key(&base, failures), base }
     }
 
     fn take_reserved(&mut self, id: JobId, attempt: &Attempt) -> Option<Reserved> {
@@ -161,16 +205,18 @@ fn close(budget: &JobBudget, r: &Reserved) {
 }
 
 /// Reserves (or adopts) a priced job's estimate. `Err` is the refusal message.
-fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resumed: bool) -> Result<Option<Reserved>, String> {
+fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: bool) -> Result<Option<Reserved>, String> {
     if budget.session.is_empty() {
         return Err(format!("{REFUSAL_PREFIX}the budget has no session id, so charges can't be recorded (a host setup error)"));
     }
     let budgets = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let mut log = lock_log(budget);
     let maybe_billed = resumed;
+    let (provider, key) = (attempt.provider.as_str(), attempt.key.as_str());
+    let reserved = |estimate| Reserved { provider: provider.into(), key: key.into(), base: attempt.base.clone(), estimate, maybe_billed };
     if let Some(entry) = log.charge(provider, key) {
         // A retry of a job already reserved (or settled) under this key: nothing new to charge.
-        return Ok((entry.status == Charge::Estimate).then(|| Reserved { provider: provider.into(), key: key.into(), estimate: entry.cost, maybe_billed }));
+        return Ok((entry.status == Charge::Estimate).then(|| reserved(entry.cost)));
     }
     let Some(estimate) = price.estimate else {
         // An unknown price: fine without caps (nothing to charge), refused with any.
@@ -202,7 +248,7 @@ fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resu
     // A log that can't take the charge (it is at its ceiling) refuses new work; an adopted job
     // already ran, so it goes ahead uncharged rather than being abandoned.
     match log.record(entry) {
-        Ok(_) => Ok(Some(Reserved { provider: provider.into(), key: key.into(), estimate, maybe_billed })),
+        Ok(_) => Ok(Some(reserved(estimate))),
         Err(e) if !resumed => Err(format!("{REFUSAL_PREFIX}{}", e.message)),
         Err(_) => Ok(None),
     }
@@ -241,7 +287,8 @@ impl Drop for RunGuard {
                 && s.jobs.get(&self.job).is_some_and(|job| self.attempt.matches_job(job))
                 && let Some(q) = s.jobs.remove(&self.job)
             {
-                s.prune_handle(&Attempt { provider: q.provider.id().to_owned(), key: q.job.idempotency_key });
+                let old = s.registered(q.provider.id(), q.job.idempotency_key);
+                s.prune_handle(&old);
             }
             // Also clean late Submitted handles after a re-registration, on every return/drop.
             // A different replacement's running mark and deferred requests remain untouched.
@@ -305,7 +352,8 @@ impl ProviderRunner {
             job.job.idempotency_key.clone_from(&old.job.idempotency_key);
         }
         if let Some(old) = s.jobs.insert(id, job) {
-            s.prune_handle(&Attempt { provider: old.provider.id().to_owned(), key: old.job.idempotency_key });
+            let old = s.registered(old.provider.id(), old.job.idempotency_key);
+            s.prune_handle(&old);
         }
     }
 
@@ -326,7 +374,8 @@ impl ProviderRunner {
             return;
         }
         if let Some(q) = s.jobs.remove(&id) {
-            s.prune_handle(&Attempt { provider: q.provider.id().to_owned(), key: q.job.idempotency_key });
+            let old = s.registered(q.provider.id(), q.job.idempotency_key);
+            s.prune_handle(&old);
         }
     }
 
@@ -379,24 +428,27 @@ impl JobRunner for ProviderRunner {
             let Some(mut queued) = lock().jobs.get(&start.job).cloned() else {
                 return Outcome::Failed { error: format!("{} has no provider job registered", start.job), transient: false };
             };
-            // Only a handle this job's current provider issued can be resumed.
-            let handle = lock().handles.get(&(queued.provider.id().to_owned(), start.idempotency_key.clone())).cloned();
+            let provider_id = queued.provider.id().to_owned();
             // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
             // step so `forget` finds the handle stored under it.
-            queued.job.idempotency_key = start.idempotency_key.clone();
-            {
+            let key = {
                 let mut s = lock();
                 let old = s.jobs.get_mut(&start.job).map(|registered| std::mem::replace(&mut registered.job.idempotency_key, start.idempotency_key.clone()));
-                // Requeued under a new key: the old key's handle is done with.
+                // Requeued under a new key: the old key's handle and failure count are done with.
                 if let Some(old) = old.filter(|old| *old != start.idempotency_key) {
-                    s.prune_handle(&Attempt { provider: queued.provider.id().to_owned(), key: old });
+                    let old = s.registered(&provider_id, old);
+                    s.prune_handle(&old);
                 }
-            }
+                // After provider-reported failures, a fresh generation goes under a derived key.
+                let failures = s.failures.get(&(provider_id.clone(), start.idempotency_key.clone())).copied().unwrap_or(0);
+                sent_key(&start.idempotency_key, failures)
+            };
+            // Only a handle this job's current provider issued, under the key now sent, resumes.
+            let handle = lock().handles.get(&(provider_id.clone(), key.clone())).cloned();
+            queued.job.idempotency_key = key.clone();
             let signal = TokenSignal(cancel);
             let job_id = start.job;
-            let key = start.idempotency_key.clone();
-            let provider_id = queued.provider.id().to_owned();
-            let attempt = Attempt { provider: provider_id.clone(), key: key.clone() };
+            let attempt = Attempt { provider: provider_id.clone(), key: key.clone(), base: start.idempotency_key.clone() };
             // Close a prior identity even when this replacement is unpriced or already cancelled.
             if let Some(budget) = &budget {
                 let stale = {
@@ -406,7 +458,7 @@ impl JobRunner for ProviderRunner {
                         if let Some(old) = &mut old {
                             // An in-flight submit may have reached its provider before Submitted.
                             old.maybe_billed |= s.running.get(&job_id).is_some_and(|running| old.matches(running));
-                            s.prune_handle(&Attempt { provider: old.provider.clone(), key: old.key.clone() });
+                            s.prune_handle(&Attempt { provider: old.provider.clone(), key: old.key.clone(), base: old.base.clone() });
                         }
                         old
                     } else {
@@ -433,7 +485,7 @@ impl JobRunner for ProviderRunner {
             let mut guard = RunGuard { state: Arc::clone(&state), budget: budget.clone(), job: job_id, attempt: attempt.clone(), returned: false };
             let outcome = async {
                 if let (Some(budget), Some(price)) = (&budget, &queued.price) {
-                    match reserve(budget, &provider_id, &key, price, handle.is_some()) {
+                    match reserve(budget, &attempt, price, handle.is_some()) {
                         Ok(Some(r)) => {
                             let mut s = lock();
                             let maybe = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.maybe_billed) || r.maybe_billed;
@@ -502,7 +554,14 @@ impl JobRunner for ProviderRunner {
                     Err(failure) => {
                         if failure.handle.is_none() || failure.finished || !failure.is_transient() {
                             // Nothing to resume: never accepted, ended by the provider, or over for good.
-                            lock().handles.remove(&(provider_id.clone(), start.idempotency_key.clone()));
+                            let mut s = lock();
+                            s.handles.remove(&(provider_id.clone(), key.clone()));
+                            // The provider ran and failed this generation: a retry is a new one,
+                            // under the next derived key.
+                            if failure.finished && failure.handle.is_some() {
+                                let n = s.failures.entry((provider_id.clone(), start.idempotency_key.clone())).or_insert(0);
+                                *n = n.saturating_add(1);
+                            }
                         }
                         // A submit lost in transit (or answered with a garbled or "it ran" reply) may
                         // still have been accepted and billed; one cancelled before it was sent,
@@ -1136,6 +1195,7 @@ mod tests {
         assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
     }
 
+    mod fresh_key_tests;
     mod paid_unpriced_tests;
     mod stale_handle_tests;
 }
