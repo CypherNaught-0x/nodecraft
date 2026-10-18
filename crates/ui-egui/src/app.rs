@@ -275,6 +275,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
 }
 
 mod navigation;
+mod run;
 mod search;
 
 pub struct NodeCraftApp {
@@ -313,6 +314,8 @@ pub struct NodeCraftApp {
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
+    /// Runs from the canvas: stale badges, refreshes and the run host (#211).
+    pub run: run::RunHost,
 }
 impl NodeCraftApp {
     pub fn new(ctx: &egui::Context) -> Result<Self, Error> {
@@ -400,6 +403,7 @@ impl NodeCraftApp {
             *slot = Some(request.clone());
             Ok(json!({"accepted":true}))
         })?;
+        let run = run::RunHost::install(&mut session)?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -431,6 +435,7 @@ impl NodeCraftApp {
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
+            run,
         })
     }
     pub fn home(&mut self) -> Pos2 {
@@ -486,7 +491,12 @@ impl NodeCraftApp {
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
             // focus must never become a node in the (autosaved) project.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
+            let busy = self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || egui::Popup::is_any_open(ui.ctx())
+                || self.keys.open
+                || self.run.confirm.is_some();
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
@@ -550,7 +560,8 @@ impl NodeCraftApp {
                 || self.wiring.is_some()
                 || self.navigation.drag.is_some()
                 || self.navigation.pointer_owned
-                || egui::Popup::is_any_open(ui.ctx());
+                || egui::Popup::is_any_open(ui.ctx())
+                || self.run.confirm.is_some();
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
                     self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
@@ -613,6 +624,9 @@ impl NodeCraftApp {
         if self.view != view_before {
             self.palette = None;
         }
+        self.host_pending_run();
+        let stale = self.stale_nodes();
+        let mut refresh = None;
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
         canvas::paint_grid(&painter, viewport, &self.view, t);
@@ -651,6 +665,7 @@ impl NodeCraftApp {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
+                        stale: stale.contains(&node.id),
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -658,6 +673,9 @@ impl NodeCraftApp {
                 ) {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
+                    if result.refresh && !overlay_blocks {
+                        refresh = Some(node.id);
+                    }
                     if !overlay_blocks && r.clicked() {
                         if shift {
                             self.selection.toggle(node.id);
@@ -837,6 +855,9 @@ impl NodeCraftApp {
         if !ui.input(|i| i.pointer.primary_down()) {
             self.wiring = None;
         }
+        if let Some(node) = refresh {
+            self.refresh(node);
+        }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
                 Ok(_) => self.notice = None,
@@ -925,6 +946,7 @@ impl NodeCraftApp {
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.keys_button(ui, viewport);
+        self.show_confirm(ui.ctx());
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
     }
@@ -1324,5 +1346,7 @@ impl eframe::App for NodeCraftApp {
 mod history_tests;
 #[cfg(test)]
 mod perf;
+#[cfg(test)]
+mod run_tests;
 #[cfg(test)]
 mod tests;

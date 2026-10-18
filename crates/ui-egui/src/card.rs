@@ -52,6 +52,8 @@ pub struct CardResponse {
     pub intents: Vec<Intent>,
     /// Port handles by side and port name, for starting and rerouting noodles.
     pub ports: Vec<(Side, String, egui::Response)>,
+    /// The stale badge was clicked: refresh this node's result.
+    pub refresh: bool,
 }
 
 pub fn text_px(size: f32, zoom: f32) -> Option<f32> {
@@ -97,6 +99,8 @@ pub struct CardView<'a> {
     pub descriptor: Option<&'a NodeDescriptor>,
     pub visible: Option<&'a BTreeSet<String>>,
     pub preview_pos: Option<Position>,
+    /// The node's result no longer matches its inputs: show the stale badge.
+    pub stale: bool,
 }
 
 pub fn cull_margin(t: &Tokens, zoom: f32) -> f32 {
@@ -112,7 +116,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, preview_pos } = card;
+    let CardView { descriptor, visible, preview_pos, stale } = card;
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -288,7 +292,17 @@ pub fn show(
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} output", port.name)));
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
-    Some(CardResponse { response, intents, ports })
+    // Last, so it sits above the card's own click area.
+    let refresh = stale && {
+        let size = Vec2::new(t.badge_width, t.badge_height);
+        // In the title row, right-aligned above the card: clear of the card's controls.
+        let at = rect.right_top() + Vec2::new(-size.x, -size.y - t.label_gap);
+        let badge = egui::Button::new(egui::RichText::new("Stale ↻").color(t.card_fill).size(t.label_size)).fill(t.stale);
+        let r = ui.put(Rect::from_min_size(at, size), badge).on_hover_text("This result no longer matches its inputs. Click to refresh it.");
+        ui.ctx().accesskit_node_builder(r.id, |node| node.set_label("Stale result: refresh"));
+        r.clicked()
+    };
+    Some(CardResponse { response, intents, ports, refresh })
 }
 
 fn control(

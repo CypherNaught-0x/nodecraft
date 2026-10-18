@@ -26,6 +26,7 @@ same structure with the values inverted.
 | `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 | `danger` | `#f06a5f` | `#c4372b` | errors and failed states in chrome |
+| `stale` | `#e0a83a` | `#8a5800` | the stale badge on a card whose result no longer matches its inputs (text in `card_fill`; `badge_width` × `badge_height` = 64 × 20) |
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` | `#e07a5a` / `#8fc35a` / `#a0a0a8` | `#b0482a` / `#4f8a1f` / `#6b6b74` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
 

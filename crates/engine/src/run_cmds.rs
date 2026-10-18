@@ -183,6 +183,10 @@ pub struct Priced {
     /// Budgets remain live rechecks; the trusted host must retain the verified execution
     /// snapshot/definitions after checking this token and before scheduling.
     pub token: String,
+    /// The canvas the request is for.
+    pub canvas: CanvasId,
+    /// The plan that was priced, when the request can run: hosts run exactly this.
+    pub plan: Option<nodecraft_exec::planner::RunPlan>,
 }
 
 /// Prices the ACTUAL live Session. The returned launch authority cannot be minted
@@ -257,7 +261,7 @@ fn priced(
             let reasons: Vec<String> = blockers.iter().take(MAX_LISTED).map(|b| b.message(canvas)).collect();
             let response =
                 json!({"blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
-            return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
+            return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token, canvas: p.canvas, plan: None });
         }
     };
     let priced = quote(&run_plan, canvas, kinds, catalog)?;
@@ -279,7 +283,7 @@ fn priced(
         "estimated": estimated.iter().take(MAX_LISTED).collect::<Vec<_>>(),
         "token": token,
     });
-    Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token })
+    Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token, canvas: p.canvas, plan: Some(run_plan) })
 }
 
 fn priced_in(c: &Context<'_>, p: &RunParams) -> Result<Priced, Error> {
