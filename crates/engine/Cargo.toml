@@ -24,6 +24,8 @@ serde.workspace = true
 serde_json.workspace = true
 nodecraft-media.workspace = true
 blake3.workspace = true
+# Fallible live execution identities; Web Crypto on wasm, OS entropy natively.
+getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 serde_path_to_error.workspace = true
 
 # The OS keychain wraps platform APIs; pinned exactly and reviewed (AGENTS.md: no unsafe of our own,
