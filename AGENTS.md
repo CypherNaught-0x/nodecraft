@@ -143,7 +143,13 @@ A crate may depend only on strictly lower layers; `media` depends on no workspac
 
 ## Quality gates
 
-Before every commit:
+**Documentation-only changes:** when a change only edits prose in Markdown or other documentation
+and does not affect product code, build configuration, scripts, or executable examples, skip the
+baseline and pre-commit `cargo xtask ci` runs and do not wait for GitHub CI before merging. Run
+`git diff --check` and any relevant documentation validators (for example, `cargo xtask decisions`
+for decision records). The usual review requirement still applies.
+
+For all other changes, before every commit:
 
 ```sh
 cargo xtask ci        # fmt --check, clippy -D warnings, tests, layers, wasm
@@ -187,6 +193,13 @@ that drive real pointer and key events through the canvas.
 - Stay current: `git pull --rebase origin main` before pushing, resolve conflicts without
   discarding others' work, and re-run the gates after a rebase. **Never force-push `main`** or
   over someone else's commits.
+- **Clean up after a successful merge.** Confirm GitHub reports the PR as merged, then delete
+  its remote branch, remove the task's temporary workspace/worktree, and delete its local branch.
+  Use the Codex archive-worktree tool for managed worktrees and `git worktree remove` for other
+  temporary worktrees; run removal from outside the worktree. Remove the task's build output too.
+  Only clean up resources owned by this task. Preserve uncommitted work and unmerged commits;
+  never force removal or delete the primary checkout, shared workspaces, `main`, or `release`.
+  If cleanup is blocked, report what remains and why.
 - Never commit `plan/`, `log/`, `dev_assets/`, `target*/`, `dist/`, secrets or generated
   screenshots; check `git status` and `git diff --cached` before committing.
 - **Releases are deliberate.** Pushes to `main` are not releases. Follow `docs/releasing.md`
