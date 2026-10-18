@@ -2,7 +2,9 @@
 use crate::{
     canvas::{self, CanvasView},
     card::{self, EditTarget, EditorState, Intent},
-    clipboard, ids,
+    clipboard,
+    history::HistoryIntent,
+    ids,
     navigation::Navigation,
     noodle::{self, Side},
     palette::{self, Palette},
@@ -855,6 +857,10 @@ impl NodeCraftApp {
                 Intent::Parameter { name, value } => {
                     ("node.param_set", json!({"canvas":self.canvas,"id":id,"name":name,"value":value}), Some(EditTarget::Parameter(name)))
                 }
+                Intent::History(intent) => match self.history_command(id, intent, t) {
+                    Some((command, params)) => (command, params, None),
+                    None => continue,
+                },
             };
             match self.session.dispatch(command, &params) {
                 Ok(_) => {
@@ -1024,6 +1030,30 @@ impl NodeCraftApp {
     }
 
     /// Paste plain text as a Text node centred on `centre`.
+    /// The `history.*` command for a strip intent on node `id`. Extracted results land to the
+    /// right of their node, under fresh ids.
+    fn history_command(&mut self, id: NodeId, intent: HistoryIntent, t: &Tokens) -> Option<(&'static str, serde_json::Value)> {
+        let at = json!({"canvas": self.canvas, "id": id});
+        Some(match intent {
+            HistoryIntent::Previous => ("history.previous", at),
+            HistoryIntent::Next => ("history.next", at),
+            HistoryIntent::Clear => ("history.clear", at),
+            HistoryIntent::Select(generation) => ("history.select", json!({"canvas": self.canvas, "id": id, "generation": generation})),
+            HistoryIntent::Delete(generation) => ("history.delete", json!({"canvas": self.canvas, "id": id, "generation": generation})),
+            HistoryIntent::Extract(generation) => {
+                let document = self.session.document();
+                let source = document.canvases().get(&self.canvas)?.nodes().get(&id)?;
+                let seed = ("extract", id, generation, self.session.revision());
+                let (Some(node), Some(result)) = (ids::node_id(document, seed), ids::generation_id(document, seed)) else {
+                    self.notice = Some("Couldn't find a free id for the extracted result".into());
+                    return None;
+                };
+                let pos = json!({"x": source.pos.x + t.card_width + t.card_padding * 4.0, "y": source.pos.y});
+                ("history.extract", json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "result": result, "pos": pos}))
+            }
+        })
+    }
+
     fn paste_text(&mut self, text: &str, centre: Pos2) {
         if text.trim().is_empty() {
             return;
@@ -1279,6 +1309,8 @@ impl eframe::App for NodeCraftApp {
     }
 }
 
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod perf;
 #[cfg(test)]
