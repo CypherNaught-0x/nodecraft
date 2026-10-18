@@ -280,6 +280,7 @@ mod navigation;
 mod order;
 mod search;
 mod split;
+mod stale;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -297,6 +298,7 @@ pub struct NodeCraftApp {
     store: Option<nodecraft_engine::settings::SettingsStore>,
     pub viewport: Rect,
     pub notice: Option<String>,
+    stale_snapshot: Option<stale::StaleSnapshot>,
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
@@ -426,6 +428,7 @@ impl NodeCraftApp {
             store: None,
             viewport: Rect::NOTHING,
             notice: None,
+            stale_snapshot: None,
             editors: BTreeMap::new(),
             drag: None,
             marquee: None,
@@ -947,24 +950,6 @@ impl NodeCraftApp {
             self.marquee = None;
         }
         self.view.pan_by(pan);
-        let hidden_draft_notice = self
-            .editors
-            .values()
-            .any(|editor| editor.hidden_dirty)
-            .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
-        if let Some(notice) = self.notice.as_deref().or(hidden_draft_notice) {
-            egui::Area::new(ui.id().with("notice"))
-                .order(egui::Order::Foreground)
-                .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
-                        ui.label(notice);
-                        if hidden_draft_notice.is_some() && ui.button("Discard drafts").clicked() {
-                            self.editors.clear();
-                        }
-                    });
-                });
-        }
         self.drop_files(ui, viewport, t);
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
@@ -972,10 +957,7 @@ impl NodeCraftApp {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
                 palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
-                palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
-                    Ok(_) => self.notice = None,
-                    Err(error) => self.notice = Some(error.message),
-                },
+                palette::Outcome::Chosen(palette::Target::Command(id)) => self.dispatch_palette_command(id),
             }
         }
         if let Some(mut open) = self.turn_into.take() {
@@ -985,6 +967,8 @@ impl NodeCraftApp {
                 turn_into::Outcome::Chosen(kind) => self.create_connected(&kind, &open),
             }
         }
+        // All document-changing frame effects precede the last-check stamp test and paint.
+        self.show_notices(ui, viewport, t);
         self.navigation.finish_frame(ui.ctx());
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
@@ -1197,7 +1181,7 @@ impl NodeCraftApp {
     }
 
     /// What the palette offers: every node kind, then every command that runs without
-    /// parameters right now.
+    /// parameters right now, plus the active canvas staleness query.
     fn palette_entries(&self) -> Vec<palette::Entry> {
         let mut kinds: Vec<palette::Entry> = self
             .session
@@ -1206,11 +1190,10 @@ impl NodeCraftApp {
             .map(|d| palette::Entry { target: palette::Target::Kind(d.id.clone()), label: d.label.clone(), shortcut: d.quick_add.clone() })
             .collect();
         kinds.sort_by(|a, b| a.label.cmp(&b.label));
-        let commands = self.session.registry().specs().filter(|spec| self.session.enabled(spec.id, &json!({})).is_ok()).map(|spec| palette::Entry {
-            target: palette::Target::Command(spec.id),
-            label: spec.label.to_owned(),
-            shortcut: spec.shortcut.map(str::to_owned),
-        });
+        let commands =
+            self.session.registry().specs().filter(|spec| self.session.enabled(spec.id, &self.palette_command_params(spec.id)).is_ok()).map(|spec| {
+                palette::Entry { target: palette::Target::Command(spec.id), label: spec.label.to_owned(), shortcut: spec.shortcut.map(str::to_owned) }
+            });
         kinds.into_iter().chain(commands).collect()
     }
 
@@ -1436,3 +1419,6 @@ mod split_tests;
 mod tests;
 #[cfg(test)]
 mod turn_into_tests;
+
+#[cfg(test)]
+mod stale_tests;
