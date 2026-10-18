@@ -22,7 +22,7 @@ use nodecraft_catalog::Catalog;
 use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money, quote};
 use nodecraft_exec::planner::{Planned, RunMode, plan};
 use nodecraft_exec::run::record_changes;
-use nodecraft_graph::{Changeset, Generation, MAX_CHANGES};
+use nodecraft_graph::{Changeset, Generation};
 use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, Money, NodeId};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -33,8 +33,13 @@ use std::sync::Arc;
 pub const RUN_SERVICE: &str = "run.start";
 /// Most nodes one run request may name.
 pub const MAX_REQUESTED: usize = 10_000;
-/// Most results one `run.record` may carry (each is up to three changes).
-pub const MAX_RESULTS: usize = MAX_CHANGES / 3;
+/// Most results one `run.record` may carry. Results carry asset references, not media bytes:
+/// the whole request must also fit the command parameter limits (1 MiB of text).
+pub const MAX_RESULTS: usize = 1_000;
+/// Most steps, blockers and node ids a quote lists (the totals always cover the whole run).
+pub const MAX_LISTED: usize = 500;
+/// Most usage rows one `usage.export_csv` page returns.
+pub const MAX_EXPORT_ROWS: usize = 2_000;
 
 /// The model catalog runs are priced against (a host resource).
 pub struct RunCatalog(pub Arc<Catalog>);
@@ -71,10 +76,13 @@ struct RunParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Accept {
+    /// The `token` of the quote the caller was shown.
+    token: String,
     /// The most the caller agreed to, per currency code, in micro-units.
     #[serde(default)]
     amounts: BTreeMap<String, u64>,
-    /// The caller agreed although some step has no price (it could cost anything).
+    /// The caller agreed although part of the price isn't known: a step has no price, or its job
+    /// count is known only at run time (it could cost more than quoted).
     #[serde(default)]
     partial: bool,
 }
@@ -135,51 +143,108 @@ fn step_json(step: &StepQuote) -> Value {
     json!({"node": step.node, "jobs": step.jobs_known.then_some(step.jobs), "models": step.models, "price": price, "unpriced": reason})
 }
 
-/// What a quote found: the JSON response, the totals, whether every step is priced, and whether
-/// the budgets allow the run.
-struct Priced {
-    response: Value,
-    totals: BTreeMap<String, u64>,
-    complete: bool,
-    allowed: bool,
+/// A request priced against a document: the response `run.quote` returns, and what `run.start`
+/// checks.
+pub struct Priced {
+    /// The `run.quote` response.
+    pub response: Value,
+    /// Totals per currency code, in micro-units.
+    pub totals: BTreeMap<String, u64>,
+    /// Every step priced and every job count known: the totals are the whole cost.
+    pub complete: bool,
+    /// The budgets allow the run (possibly provisionally).
+    pub allowed: bool,
+    /// Identifies what was priced: the document revision, the request, the plan's steps and
+    /// their prices. `run.start` requires the token of the quote the caller accepted, and the
+    /// host checks it again before running, so the run is exactly what was priced.
+    pub token: String,
 }
 
-fn priced(c: &Context<'_>, p: &RunParams) -> Result<Priced, Error> {
-    let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let catalog = c.resources.require::<RunCatalog>()?;
-    let budget = c.resources.require::<BudgetState>()?;
+/// Prices a run request (`run.quote`'s parameters) on `document` at `revision`. Hosts call this
+/// before running a started run, with the document as it is then, and refuse when the token
+/// differs from the one `run.start` passed them.
+pub fn price(
+    document: &nodecraft_graph::Project,
+    revision: u64,
+    kinds: &nodecraft_nodes::Registry,
+    catalog: &Catalog,
+    budget: &BudgetState,
+    request: &Value,
+) -> Result<Priced, Error> {
+    let p: RunParams = params(request)?;
+    priced(document, revision, kinds, catalog, budget, &p)
+}
+
+fn priced(
+    document: &nodecraft_graph::Project,
+    revision: u64,
+    kinds: &nodecraft_nodes::Registry,
+    catalog: &Catalog,
+    budget: &BudgetState,
+    p: &RunParams,
+) -> Result<Priced, Error> {
+    let canvas = document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     let mode = mode_of(p)?;
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
-    let stale = nodecraft_exec::staleness::stale(canvas, c.kinds)?;
-    let run_plan = match plan(canvas, c.kinds, &mode, &requested, &stale)? {
+    // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
+    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, kinds)? } else { BTreeSet::new() };
+    let mut token = blake3::Hasher::new();
+    token.update(b"nodecraft.run.quote.v1");
+    token.update(&revision.to_le_bytes());
+    token.update(p.canvas.as_bytes());
+    token.update(format!("{mode:?}").as_bytes());
+    for node in &requested {
+        token.update(node.as_bytes());
+    }
+    let run_plan = match plan(canvas, kinds, &mode, &requested, &stale)? {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
-            let reasons: Vec<String> = blockers.iter().map(|b| b.message(canvas)).collect();
-            return Ok(Priced { response: json!({"blocked": reasons, "allowed": false}), totals: BTreeMap::new(), complete: false, allowed: false });
+            let reasons: Vec<String> = blockers.iter().take(MAX_LISTED).map(|b| b.message(canvas)).collect();
+            let response =
+                json!({"blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
+            return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token: token.finalize().to_hex().to_string() });
         }
     };
-    let priced = quote(&run_plan, canvas, c.kinds, &catalog.0)?;
+    let priced = quote(&run_plan, canvas, kinds, catalog)?;
     let admission = check(&priced, &budget.budgets, &budget.spent)?;
+    for step in &priced.steps {
+        token.update(step.node.as_bytes());
+        token.update(format!("{:?}|{:?}|{}|{}", step.models, step.per_job, step.jobs, step.jobs_known).as_bytes());
+    }
     let totals: BTreeMap<String, u64> = priced.totals.iter().map(|(currency, m)| (String::from(*currency), m.micros)).collect();
+    for (currency, micros) in &totals {
+        token.update(currency.as_bytes());
+        token.update(&micros.to_le_bytes());
+    }
     let mut totals_json = Map::new();
     for m in priced.totals.values() {
         totals_json.insert(String::from(m.currency), money(*m));
     }
-    let complete = priced.unpriced().next().is_none();
+    let estimated: Vec<NodeId> = priced.estimated().collect();
+    let token = token.finalize().to_hex().to_string();
     let response = json!({
-        "steps": priced.steps.iter().map(step_json).collect::<Vec<_>>(),
+        "steps": priced.steps.iter().take(MAX_LISTED).map(step_json).collect::<Vec<_>>(),
+        "steps_total": priced.steps.len(),
         "totals": Value::Object(totals_json),
-        "complete": complete,
+        "complete": priced.is_complete(),
         "allowed": admission.allowed(),
-        "blocks": admission.blocks.iter().map(|b| b.message()).collect::<Vec<_>>(),
-        "provisional": admission.provisional,
+        "blocks": admission.blocks.iter().take(MAX_LISTED).map(|b| b.message()).collect::<Vec<_>>(),
+        "provisional": admission.provisional.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+        "estimated": estimated.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+        "token": token,
     });
-    Ok(Priced { response, totals, complete, allowed: admission.allowed() })
+    Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token })
+}
+
+fn priced_in(c: &Context<'_>, p: &RunParams) -> Result<Priced, Error> {
+    let catalog = c.resources.require::<RunCatalog>()?;
+    let budget = c.resources.require::<BudgetState>()?;
+    priced(c.document, c.revision, c.kinds, &catalog.0, budget, p)
 }
 
 fn run_quote(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: RunParams = params(value)?;
-    Ok(Effect::None { result: priced(c, &p)?.response })
+    Ok(Effect::None { result: priced_in(c, &p)?.response })
 }
 
 fn enabled_quote(c: &Context<'_>, value: &Value) -> Result<(), Error> {
@@ -192,13 +257,22 @@ fn enabled_quote(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let (run, accept) = params::<StartParams>(value)?.split();
-    let priced = priced(c, &run)?;
+    let priced = priced_in(c, &run)?;
     if !priced.allowed {
-        let reasons = priced.response.get("blocked").or_else(|| priced.response.get("blocks")).cloned().unwrap_or(Value::Null);
+        let reasons = priced
+            .response
+            .get("blocked")
+            .filter(|b| b.as_array().is_some_and(|a| !a.is_empty()))
+            .or_else(|| priced.response.get("blocks"))
+            .cloned()
+            .unwrap_or(Value::Null);
         return Err(invalid(format!("the run can't start: {reasons}")));
     }
+    if accept.token != priced.token {
+        return Err(invalid("the run changed since it was quoted (or wasn't quoted); quote it again with run.quote"));
+    }
     if !priced.complete && !accept.partial {
-        return Err(invalid("some steps have no price; quote again and accept a partial price to run anyway"));
+        return Err(invalid("part of the price isn't known (unpriced steps, or job counts known only at run time); accept a partial price to run anyway"));
     }
     for (currency, total) in &priced.totals {
         let agreed = accept.amounts.get(currency).copied().unwrap_or(0);
@@ -206,7 +280,12 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
             return Err(invalid(format!("the run costs more than was accepted ({total} > {agreed} micro-{currency}); quote again")));
         }
     }
-    let request = json!({"canvas": run.canvas, "mode": value.get("mode"), "nodes": run.nodes, "field": run.field, "quote": priced.response});
+    let request = json!({
+        "run": {"canvas": run.canvas, "mode": value.get("mode"), "nodes": run.nodes, "field": run.field},
+        "revision": c.revision,
+        "token": priced.token,
+        "accept": {"amounts": accept.amounts, "partial": accept.partial},
+    });
     Ok(Effect::Service { capability: RUN_SERVICE, request })
 }
 
@@ -260,23 +339,34 @@ fn enabled_record(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NoParams {}
+struct ExportParams {
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    limit: Option<usize>,
+}
 
 fn export_csv(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
-    let _: NoParams = params(value)?;
+    let p: ExportParams = params(value)?;
     let usage = c.resources.require::<UsageSnapshot>()?;
-    Ok(Effect::None { result: json!({"csv": usage.0.to_csv()}) })
+    let limit = p.limit.unwrap_or(MAX_EXPORT_ROWS).min(MAX_EXPORT_ROWS);
+    let mut out = Vec::new();
+    usage.0.write_csv_rows(&mut out, p.offset, limit).map_err(|_| Error::new(ErrorKind::Internal, "the usage log couldn't be written"))?;
+    let csv = String::from_utf8(out).map_err(|_| Error::new(ErrorKind::Internal, "the usage log isn't UTF-8"))?;
+    let total = usage.0.listed();
+    let next = p.offset.saturating_add(limit);
+    Ok(Effect::None { result: json!({"csv": csv, "total": total, "next_offset": (next < total).then_some(next)}) })
 }
 
 fn enabled_export(c: &Context<'_>, value: &Value) -> Result<(), Error> {
-    let _: NoParams = params(value)?;
+    let _: ExportParams = params(value)?;
     c.resources.require::<UsageSnapshot>().map(|_| ())
 }
 
 fn run_schema_properties() -> Value {
     json!({
         "canvas": {"type": "string", "format": "uuid"},
-        "mode": {"enum": ["selected", "with_upstream", "field", "all_stale"]},
+        "mode": {"type": "string", "enum": ["selected", "with_upstream", "field", "all_stale"]},
         "nodes": {"type": "array", "maxItems": MAX_REQUESTED, "items": {"type": "string", "format": "uuid"}},
         "field": {"type": "string", "format": "uuid"}
     })
@@ -292,7 +382,8 @@ fn start_schema() -> Value {
     if let Some(map) = properties.as_object_mut() {
         map.insert(
             "accept".into(),
-            json!({"type": "object", "additionalProperties": false, "properties": {
+            json!({"type": "object", "additionalProperties": false, "required": ["token"], "properties": {
+                "token": {"type": "string"},
                 "amounts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
                 "partial": {"type": "boolean"}}}),
         );
@@ -306,11 +397,13 @@ fn record_schema() -> Value {
         "required": ["canvas", "results"], "properties": {
             "canvas": {"type": "string", "format": "uuid"},
             "results": {"type": "array", "minItems": 1, "maxItems": MAX_RESULTS, "items": {"type": "object", "additionalProperties": false,
-                "required": ["node", "generation"], "properties": {"node": {"type": "string", "format": "uuid"}, "generation": {"type": "object"}}}}}})
+                "required": ["node", "generation"], "properties": {"node": {"type": "string", "format": "uuid"}, "generation": {"type": "object",
+                    "required": ["id"], "properties": {"id": {"type": "string", "format": "uuid"}, "outputs": {"type": "array"}, "input_hash": {"type": "string"}}}}}}}})
 }
 
-fn empty_schema() -> Value {
-    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": [], "properties": {}})
+fn export_schema() -> Value {
+    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": [], "properties": {
+        "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_EXPORT_ROWS}}})
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -321,7 +414,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}], totals: {CUR: {currency, micros, text}}, complete, allowed, blocks: [text], provisional: [NodeId]} or {blocked: [text], allowed: false}. Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, blocked?, token}. `nodes` is used by selected and with_upstream. Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
@@ -331,7 +424,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: start_schema,
-            params_doc: "{canvas, mode, nodes?, field?, accept: {amounts: {CUR: micros}, partial?: bool}}; quotes again and starts the run only when the budgets allow it, the accepted amounts cover every currency's total, and `partial` is set if some step has no price. Quote first with run.quote.",
+            params_doc: "{canvas, mode, nodes?, field?, accept: {token, amounts: {CUR: micros}, partial?: bool}}; starts the run only if it is still exactly what run.quote priced (`token`), the budgets allow it, the accepted amounts cover every currency's total, and `partial` is set when part of the price isn't known.",
             enabled: enabled_start,
             run: run_start,
         },
@@ -350,8 +443,8 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Export usage as CSV",
             shortcut: None,
             alternate_shortcuts: &[],
-            input_schema: empty_schema,
-            params_doc: "{} -> {csv: String}; the usage log as CSV (formula cells neutralised). Read-only.",
+            input_schema: export_schema,
+            params_doc: "{offset?, limit? (≤ 2000)} -> {csv, total, next_offset}; one page of the usage log as CSV (formula cells neutralised). Read-only.",
             enabled: enabled_export,
             run: export_csv,
         },

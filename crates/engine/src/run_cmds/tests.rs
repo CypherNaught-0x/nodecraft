@@ -63,6 +63,18 @@ fn kinds() -> nodecraft_nodes::Registry {
             quick_add: None,
         })))
         .unwrap();
+    // A free text step: text in, text out.
+    kinds
+        .register(Box::new(Gen(NodeDescriptor {
+            id: "test.write".into(),
+            label: "Write".into(),
+            category: Category::Action,
+            inputs: vec![Port { name: "in".into(), port_type: PortType { modality: Modality::Text, many: false } }],
+            outputs: vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Text, many: false } }],
+            params: ParamSchema::default(),
+            quick_add: None,
+        })))
+        .unwrap();
     kinds
 }
 
@@ -161,27 +173,85 @@ fn a_quote_prices_each_step_read_only() {
     assert!(q["blocked"].as_array().is_some_and(|b| !b.is_empty()), "{q}");
 }
 
+/// Quotes `nodes`, then builds `run.start` params accepting that quote with `amounts`.
+fn start_params(s: &mut Session, nodes: &[u8], amounts: Value, partial: bool) -> Value {
+    let quoted = s.dispatch("run.quote", &request(nodes)).unwrap();
+    with_accept(nodes, json!({"token": quoted["token"], "amounts": amounts, "partial": partial}))
+}
+
 #[test]
 fn a_run_starts_only_with_an_accepted_price_within_the_budgets() {
     let (mut s, started) = session(Budgets::default(), true);
-    // Nothing accepted, too little, or a partial price without saying so: refused.
-    assert_eq!(s.dispatch("run.start", &with_accept(&[2], json!({}))).unwrap_err().kind, ErrorKind::InvalidInput);
-    assert!(s.dispatch("run.start", &with_accept(&[2], json!({"amounts": {"USD": 100_000}}))).is_err());
-    assert!(s.dispatch("run.start", &with_accept(&[2, 3], json!({"amounts": {"USD": 120_000}}))).is_err(), "3 has no price");
+    // No token, too little, or a partial price without saying so: refused.
+    assert_eq!(s.dispatch("run.start", &with_accept(&[2], json!({"token": "x", "amounts": {"USD": 1_000_000}}))).unwrap_err().kind, ErrorKind::InvalidInput);
+    let low = start_params(&mut s, &[2], json!({"USD": 100_000}), false);
+    assert!(s.dispatch("run.start", &low).is_err());
+    let partial = start_params(&mut s, &[2, 3], json!({"USD": 120_000}), false);
+    assert!(s.dispatch("run.start", &partial).is_err(), "3 has no price");
     assert!(started.lock().unwrap().is_empty());
-    // Accepted: the host service gets the request and the quote.
-    let out = s.dispatch("run.start", &with_accept(&[2], json!({"amounts": {"USD": 120_000}}))).unwrap();
-    assert_eq!(out, json!({"run": "accepted"}));
-    assert!(s.dispatch("run.start", &with_accept(&[2, 3], json!({"amounts": {"USD": 200_000}, "partial": true}))).is_ok());
+    // Accepted: the host service gets the run, the revision, the token and what was accepted.
+    let ok = start_params(&mut s, &[2], json!({"USD": 120_000}), false);
+    assert_eq!(s.dispatch("run.start", &ok).unwrap(), json!({"run": "accepted"}));
+    let partial = start_params(&mut s, &[2, 3], json!({"USD": 200_000}), true);
+    assert!(s.dispatch("run.start", &partial).is_ok());
     let requests = started.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0]["quote"]["totals"]["USD"]["micros"], 120_000);
-    assert_eq!(requests[0]["mode"], "selected");
+    assert_eq!(requests[0]["run"]["mode"], "selected");
+    assert_eq!(requests[0]["revision"], json!(s.revision()));
+    assert_eq!(requests[0]["accept"]["amounts"]["USD"], 120_000);
+    // The host verifies the token against the document before running.
+    let catalog = Catalog::from_toml(CATALOG).unwrap();
+    let budget = BudgetState { budgets: Budgets::default(), spent: Spent::default() };
+    let again = price(s.document(), s.revision(), s.kinds(), &catalog, &budget, &requests[0]["run"]).unwrap();
+    assert_eq!(json!(again.token), requests[0]["token"]);
     // Over a session cap: refused whatever was accepted.
     let (mut capped, started) = session(Budgets { session: Some(usd(100_000)), ..Budgets::default() }, true);
-    let error = capped.dispatch("run.start", &with_accept(&[2], json!({"amounts": {"USD": 1_000_000}}))).unwrap_err();
+    let params = start_params(&mut capped, &[2], json!({"USD": 1_000_000}), true);
+    let error = capped.dispatch("run.start", &params).unwrap_err();
     assert!(error.message.contains("session budget"), "{}", error.message);
     assert!(started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_edit_after_the_quote_invalidates_it() {
+    let (mut s, started) = session(Budgets::default(), true);
+    let params = start_params(&mut s, &[2], json!({"USD": 1_000_000}), false);
+    // Four images instead of three: the price the caller saw no longer holds.
+    s.dispatch("node.param_set", &json!({"canvas": C, "id": id(2), "name": "num_images", "value": {"type": "unsigned", "value": "4"}})).unwrap();
+    let error = s.dispatch("run.start", &params).unwrap_err();
+    assert!(error.message.contains("quote it again"), "{}", error.message);
+    assert!(started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn job_counts_known_only_at_run_time_need_a_partial_acceptance() {
+    // A free text step (4) feeds generator 2, so 2's jobs are planned only when 4 has run.
+    let (mut s, started) = session(Budgets::default(), true);
+    let writer = s.kinds().get("test.write").unwrap().descriptor().instantiate(id(4), &Default::default()).unwrap();
+    s.dispatch("node.add", &json!({"canvas": C, "node": writer})).unwrap();
+    s.dispatch("edge.disconnect", &json!({"canvas": C, "id": EdgeId::from_bytes([10; 16])})).unwrap();
+    let wire = Edge {
+        id: EdgeId::from_bytes([12; 16]),
+        from: Endpoint { node: id(1), port: "out".into() },
+        to: Endpoint { node: id(4), port: "in".into() },
+        order: 0,
+    };
+    s.dispatch("edge.connect", &json!({"canvas": C, "edge": wire})).unwrap();
+    let wire = Edge {
+        id: EdgeId::from_bytes([13; 16]),
+        from: Endpoint { node: id(4), port: "out".into() },
+        to: Endpoint { node: id(2), port: "in".into() },
+        order: 0,
+    };
+    s.dispatch("edge.connect", &json!({"canvas": C, "edge": wire})).unwrap();
+    let q = s.dispatch("run.quote", &request(&[4, 2])).unwrap();
+    assert_eq!(q["complete"], false, "{q}");
+    assert_eq!(q["estimated"], json!([id(2)]));
+    let strict = start_params(&mut s, &[4, 2], json!({"USD": 1_000_000}), false);
+    assert!(s.dispatch("run.start", &strict).is_err(), "one job's price was quoted for an unknown count");
+    let partial = start_params(&mut s, &[4, 2], json!({"USD": 1_000_000}), true);
+    assert!(s.dispatch("run.start", &partial).is_ok());
+    assert_eq!(started.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -191,7 +261,10 @@ fn without_resources_or_a_run_service_the_commands_are_unsupported() {
     assert_eq!(bare.dispatch("usage.export_csv", &json!({})).unwrap_err().kind, ErrorKind::Unsupported);
     let (mut no_service, _) = session(Budgets::default(), false);
     assert!(no_service.dispatch("run.quote", &request(&[2])).is_ok());
-    assert_eq!(no_service.dispatch("run.start", &with_accept(&[2], json!({"amounts": {"USD": 120_000}}))).unwrap_err().kind, ErrorKind::Unsupported);
+    assert_eq!(
+        no_service.dispatch("run.start", &with_accept(&[2], json!({"token": "x", "amounts": {"USD": 120_000}}))).unwrap_err().kind,
+        ErrorKind::Unsupported
+    );
     // Field mode needs a field; unknown fields are refused.
     assert!(no_service.dispatch("run.quote", &json!({"canvas": C, "mode": "field"})).is_err());
     assert!(no_service.dispatch("run.quote", &json!({"canvas": C, "mode": "selected", "extra": 1})).is_err());
@@ -221,4 +294,32 @@ fn results_are_recorded_in_one_undo_step_and_usage_exports() {
     assert!(s.dispatch("run.record", &json!({"canvas": C, "results": [{"node": id(9), "generation": generation(9)}]})).is_err());
     let csv = s.dispatch("usage.export_csv", &json!({})).unwrap();
     assert!(csv["csv"].as_str().unwrap().starts_with("time_ms,"));
+    assert_eq!((csv["total"].clone(), csv["next_offset"].clone()), (json!(0), Value::Null));
+}
+
+#[test]
+fn usage_exports_in_pages() {
+    let mut log = UsageLog::default();
+    for n in 0..(MAX_EXPORT_ROWS + 5) {
+        let entry = nodecraft_exec::cost::UsageEntry {
+            at_ms: 0,
+            session: "s".into(),
+            node: id(2),
+            provider: "test".into(),
+            model: "test.img".into(),
+            cost: usd(1),
+            idempotency_key: format!("k{n}"),
+            status: nodecraft_exec::cost::Charge::Actual,
+        };
+        log.record(entry).unwrap();
+    }
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(Arc::new(log)));
+    let mut s = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let first = s.dispatch("usage.export_csv", &json!({})).unwrap();
+    assert_eq!(first["csv"].as_str().unwrap().lines().count(), MAX_EXPORT_ROWS + 1, "header and a full page");
+    assert_eq!(first["next_offset"], json!(MAX_EXPORT_ROWS));
+    let rest = s.dispatch("usage.export_csv", &json!({"offset": MAX_EXPORT_ROWS})).unwrap();
+    assert_eq!(rest["csv"].as_str().unwrap().lines().count(), 6);
+    assert_eq!(rest["next_offset"], Value::Null);
 }

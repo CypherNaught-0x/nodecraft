@@ -2696,6 +2696,7 @@ dependencies = [
 name = "nodecraft-engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "craft-settings",
  "futures",
  "keyring",
