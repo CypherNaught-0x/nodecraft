@@ -381,7 +381,7 @@ fn different_key_precancel_preserves_old_retry_until_admission_or_explicit_settl
             let state = runner.lock();
             assert!(state.metadata.is_empty());
             assert!(state.jobs.get(&JobId(1)).unwrap().scheduler.is_none());
-            assert!(!state.handles.contains_key(&("reregister".into(), "old".into())));
+            assert!(!state.handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
             drop(state);
             assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
             assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"], "host acknowledgement ends the old retry lifetime");
