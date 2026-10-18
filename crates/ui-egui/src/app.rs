@@ -279,6 +279,7 @@ mod drop;
 mod navigation;
 mod order;
 mod search;
+mod split;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -306,6 +307,8 @@ pub struct NodeCraftApp {
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// The rows × columns last chosen for "Split into grid".
+    split_size: (u32, u32),
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -430,6 +433,7 @@ impl NodeCraftApp {
             wiring: None,
             reordering: None,
             palette: None,
+            split_size: (2, 2),
             turn_into: None,
             text_focused: false,
             schemas: SchemaCache::default(),
@@ -631,7 +635,9 @@ impl NodeCraftApp {
         let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
         let mut query = None;
+        let mut split_request = None;
         let mut wire_command = None;
+        let mut split_after = None;
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
@@ -698,6 +704,22 @@ impl NodeCraftApp {
                             let label = descriptor.map_or(node.kind.as_str(), |d| d.label.as_str());
                             if ui.button(format!("Select all {label} nodes")).clicked() {
                                 query = Some(SelectQuery::Kind(node.kind.clone()));
+                            }
+                            if nodecraft_engine::split::image_of(node).is_some() {
+                                ui.menu_button("Split into grid", |ui| {
+                                    let (rows, columns) = &mut self.split_size;
+                                    let side = 1..=nodecraft_engine::split::MAX_SIDE;
+                                    ui.add(egui::DragValue::new(rows).range(side.clone()).prefix("Rows: "));
+                                    ui.add(egui::DragValue::new(columns).range(side).prefix("Columns: "));
+                                    let tiles = rows.saturating_mul(*columns);
+                                    let fits = tiles <= nodecraft_engine::split::MAX_TILES;
+                                    let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));
+                                    let button = if fits { button } else { button.on_disabled_hover_text("At most 64 tiles") };
+                                    if button.clicked() {
+                                        split_request = Some((node.id, *rows, *columns));
+                                        ui.close();
+                                    }
+                                });
                             }
                         });
                     }
@@ -832,6 +854,10 @@ impl NodeCraftApp {
                 Some(SelectQuery::Kind(kind)) => self.selection.replace(selection::of_kind(canvas, &kind)),
                 None => {}
             }
+            if let Some((node, rows, columns)) = split_request {
+                let source = canvas.nodes().get(&node).map(|n| card_geometry(&self.painted, kinds, n, t));
+                split_after = source.map(|rect| (node, rows, columns, rect));
+            }
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -862,6 +888,9 @@ impl NodeCraftApp {
         }
         if !ui.input(|i| i.pointer.primary_down()) {
             self.wiring = None;
+        }
+        if let Some((node, rows, columns, rect)) = split_after {
+            self.split_grid(node, rows, columns, rect, t);
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
@@ -1400,6 +1429,8 @@ mod history_tests;
 mod order_tests;
 #[cfg(test)]
 mod perf;
+#[cfg(test)]
+mod split_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
