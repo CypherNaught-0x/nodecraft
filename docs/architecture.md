@@ -493,3 +493,11 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 `Generation.input_hash` with an actionable Unsupported error before journal append or document,
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
+
+
+## Optional native video sidecar
+
+`media/video` provides the standalone bounded native FFmpeg service described in
+[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
+tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
+is separate. Feature-on wasm exposes an Unsupported host setup path.

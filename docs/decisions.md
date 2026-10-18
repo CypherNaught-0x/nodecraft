@@ -1033,3 +1033,12 @@ a choice a later contributor might otherwise undo.
   revalidates every visible card) stays linear. Tests recompute the total to catch drift.
 - **The benchmark lives with the canvas tests** (`app/perf.rs`, ignored by default) and reports
   mean, p95 and worst frame; re-run it when cards or noodles get richer.
+
+
+- **Native video uses an explicit external tool service (#107).** The optional standalone media
+  feature owns bounded probe/decode/scrub/render processes and private scratch files. It never
+  downloads or redistributes FFmpeg, runs shell commands, or treats codec flags as an OS sandbox.
+  Caller-provided RGBA is composited against an explicit opaque background in linear sRGB for
+  VP9 WebM. Color assumptions are typed and reported; missing tags are not silently treated as
+  accurate metadata. Shared quotas retain externally pinned artifacts; final-pin cleanup belongs
+  to the existing supervisor, not synchronous Drop. See `docs/media-video.md`.

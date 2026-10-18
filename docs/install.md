@@ -100,3 +100,11 @@ theme = "dark"        # or "light"
 scroll = "pan"        # "zoom": the mouse wheel zooms, horizontal scroll still pans
 zoom_speed = 1.0      # 0.25 to 4
 ```
+
+
+## Optional FFmpeg library integration
+
+The optional `nodecraft-media/video` library feature uses explicitly configured user-installed
+FFmpeg/ffprobe and does not bundle or install them. This is not yet a desktop timeline feature.
+See [media-video.md](media-video.md) for capabilities, Flatpak/browser limitations and resource
+contracts. Installing NodeCraft alone does not install a video toolchain.
