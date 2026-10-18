@@ -234,6 +234,12 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.set_visuals(visuals(kind));
 }
 
+impl Tokens {
+    pub fn marquee_stroke(&self) -> Stroke {
+        Stroke::new(1.0, self.accent)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
