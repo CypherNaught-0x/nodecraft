@@ -218,6 +218,16 @@ node-kind descriptors directly. All accepted title, parameter and position edits
 rendering never writes automatic titles into the document. Each card has a transformed egui layer
 so its schema widgets use world coordinates while pointer hit tests follow canvas pan/zoom.
 
+Native dropped-file acquisition is a private shell service with one process-wide worker and one
+occupied request. It opens, checks metadata on, reads and closes the same file off the UI thread.
+The pending view polls a bounded result and offers Cancel; only a current Session identity,
+project/canvas and revision can accept it through the existing synchronous `import_files` route.
+A blocked filesystem call cannot be interrupted portably: abandonment ends the pending view, but
+keeps the process slot busy until that call returns or the process restarts. No replacement worker
+is spawned. Browser file drops remain unsupported. See the
+[native drop decision](decisions/2026-10-18-bounded-native-drop-acquisition.md) for resource bounds
+and the distinction between acquisition and synchronous engine import.
+
 `engine::Session` now owns a validated `Project`, its command and node-kind registries, undo/redo stacks and
 revision notifications. Frontends call `enabled(id, &params)` for a disabled reason and
 `dispatch(id, &params)` for a JSON result. `registry().specs()` exposes stable IDs, labels,
