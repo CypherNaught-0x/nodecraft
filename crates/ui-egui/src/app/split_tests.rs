@@ -92,3 +92,36 @@ fn the_grid_shows_on_the_image_while_the_split_menu_is_open() {
     h.run();
     assert!(h.query_by_label_contains("split preview").is_none(), "and goes when the menu closes");
 }
+
+#[test]
+fn split_preview_owns_input_until_the_tag_filter_can_resume() {
+    let mut h = with_image();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[],"untagged":true})).unwrap();
+    for _ in 0..100 {
+        h.run();
+        if h.query_by_label("Image 8×6").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    right_click(&mut h, IMAGE);
+    h.get_by_label_contains("Split into grid").hover();
+    h.run();
+    h.run();
+    assert!(h.query_by_label("Image 8×6, split preview 2 rows by 2 columns").is_some());
+    let before = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    assert!(h.state_mut().tag_filter_enabled(&ctx, "canvas.tag_filter_next", &json!({})).is_err());
+    assert!(h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).is_err());
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().tag_filter.current, None);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains("split preview").is_none());
+    assert!(h.state_mut().tag_filter_enabled(&ctx, "canvas.tag_filter_next", &json!({})).is_ok());
+    assert_eq!(h.state().session.document(), &before);
+}

@@ -2095,3 +2095,85 @@ fn minimap_drag_owns_quick_add_keys_until_pointer_release() {
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(h.state().session.document(), &document, "post-release quick-add is one undo step");
 }
+
+#[test]
+fn a_real_choice_popup_over_the_tag_panel_keeps_its_parameter_intent() {
+    let mut h = schema_harness(vec![spec(
+        "quality",
+        ParamControl::Choice { options: vec![Choice { value: "low".into(), label: "Low".into() }, Choice { value: "high".into(), label: "High".into() }] },
+        Value::Text("low".into()),
+    )]);
+    h.get_by_role_and_label(Role::ComboBox, "quality").click();
+    h.run();
+    let high = h.get_by_label("High").rect().center();
+    h.state_mut().view.pan += Pos2::new(150.0, 180.0) - high;
+    h.state_mut().tag_filter.open = true;
+    h.run();
+    let high = h.get_by_label("High").rect().center();
+    assert!(h.state().tag_rect().contains(high));
+    h.get_by_label("High").click();
+    h.run();
+    assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().session.revision(), 1);
+    assert!(!h.state().tag_filter.active());
+}
+
+#[test]
+fn tag_decoration_clip_contains_visible_negative_world_cards_at_pan_and_zoom() {
+    let viewport = Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(1200.0, 800.0));
+    for zoom in [0.15, 1.0, 2.0] {
+        let view = CanvasView { zoom, pan: Vec2::new(600.0, 400.0) };
+        let clip = tag_world_clip(&view, viewport, viewport);
+        let negative = Rect::from_min_size(Pos2::new(-200.0, -100.0), Vec2::new(100.0, 50.0));
+        assert!(view.rect_to_screen(viewport.min, negative).intersects(viewport));
+        assert!(clip.intersects(negative));
+        assert!(clip.contains(Pos2::new(-194.0, -94.0)));
+    }
+}
+
+#[test]
+fn emitted_tag_marker_and_outline_use_world_clip_then_respect_tighter_screen_parent() {
+    let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).with_max_steps(160).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            ui.set_clip_rect(ui.max_rect().shrink(40.0));
+            app.show(ui);
+        },
+        NodeCraftApp::headless().unwrap(),
+    );
+    let id = NodeId::from_bytes([3; 16]);
+    h.state_mut().selection.only(id);
+    h.state_mut().apply_tag_action(super::tags::TagAction::Palette(5)).unwrap();
+    h.run();
+    let c = h.state().canvas;
+    let tag = h.state().session.document().canvases().get(&c).unwrap().nodes().get(&id).unwrap().tag.unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[tag],"untagged":false})).unwrap();
+    for zoom in [0.15, 1.0, 2.0] {
+        h.state_mut().view.zoom = zoom;
+        h.run();
+        let app = h.state();
+        let t = app.theme.tokens();
+        let world = app.painted[&id];
+        assert!(world.min.x < 0.0 && world.min.y < 0.0);
+        let marker = Rect::from_min_size(world.min + Vec2::splat(t.navigation_gap), Vec2::new(t.tag_marker_width, t.tag_row_height.min(world.height())));
+        let expected = app.view.rect_to_screen(app.viewport.min, marker);
+        let outline = app.view.rect_to_screen(app.viewport.min, world.expand(t.tag_marker_width));
+        let parent = app.viewport.shrink(40.0);
+        let marker_shape = h
+            .output()
+            .shapes
+            .iter()
+            .find(|shape| matches!(&shape.shape,egui::epaint::Shape::Rect(r) if r.fill==t.tag_color(Some("blue"))))
+            .expect("actual painted marker");
+        let egui::epaint::Shape::Rect(painted) = &marker_shape.shape else {
+            panic!("rectangle marker");
+        };
+        assert!((painted.rect.min - expected.min).length() < 0.1);
+        assert!((painted.rect.max - expected.max).length() < 0.1);
+        assert!(marker_shape.clip_rect.contains(expected.center()));
+        assert!((marker_shape.clip_rect.min - parent.min).length() < 0.1);
+        assert!((marker_shape.clip_rect.max - parent.max).length() < 0.1);
+        assert!(!marker_shape.clip_rect.contains(app.viewport.min));
+        assert!(h.output().shapes.iter().any(|shape|matches!(&shape.shape,egui::epaint::Shape::Rect(r) if r.stroke.color==t.accent&&(r.rect.min-outline.min).length()<0.1&&(r.rect.max-outline.max).length()<0.1)&& (shape.clip_rect.min-parent.min).length()<0.1));
+    }
+}

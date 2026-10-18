@@ -252,6 +252,14 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "history.delete",
         "history.clear",
         "history.extract",
+        "tag.put",
+        "tag.remove",
+        "node.tag_set",
+        "canvas.tag_filter_open",
+        "canvas.tag_filter_close",
+        "canvas.tag_filter_set",
+        "canvas.tag_filter_next",
+        "canvas.tag_filter_previous",
         "canvas.auto_format",
         "comment.create",
         "comment.edit",
@@ -281,8 +289,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        58,
-        "canvas.auto_format, 10 discussion, 7 graph, 2 node editing, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, 3 file, 4 run/usage, 2 usage ownership, 6 history and 4 perf commands"
+        66,
+        "canvas.auto_format, 8 tag/filter, 10 discussion, 7 graph, 2 node editing, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, 3 file, 4 run/usage, 2 usage ownership, 6 history and 4 perf commands"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }

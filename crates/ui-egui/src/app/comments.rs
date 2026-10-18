@@ -28,6 +28,16 @@ fn view_command(id: &str) -> bool {
     matches!(id, "comment.compose" | "comment.open" | "canvas.comments_toggle")
 }
 impl NodeCraftApp {
+    pub(super) fn discussion_rect(&self) -> Rect {
+        let t = self.theme.tokens();
+        let available_width = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
+        let width = t.comments_width.min(if self.tag_filter.open { ((available_width - t.navigation_gap) / 2.0).max(1.0) } else { available_width });
+        let height = t.comments_height.min((self.viewport.height() - 2.0 * t.navigation_margin - t.navigation_toolbar_height).max(1.0));
+        Rect::from_min_size(
+            self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap),
+            Vec2::new(width, height),
+        )
+    }
     fn discussion_context(&self, ctx: &egui::Context, owner: Option<egui::Id>) -> CommentContext {
         let focused = ctx.memory(|m| m.focused());
         let own = focused.map_or_else(
@@ -606,12 +616,9 @@ impl NodeCraftApp {
         }
 
         if self.comments.open {
-            let width = t.comments_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
-            let height = t.comments_height.min((self.viewport.height() - 2.0 * t.navigation_margin - t.navigation_toolbar_height).max(1.0));
-            let rect = Rect::from_min_size(
-                self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap),
-                Vec2::new(width, height),
-            );
+            let rect = self.discussion_rect();
+            let width = rect.width();
+            let height = rect.height();
             let panel = egui::Area::new(egui::Id::new("discussions_panel"))
                 .order(egui::Order::Foreground)
                 .movable(false)
@@ -1014,6 +1021,49 @@ mod tests {
         h.run();
         h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).unwrap();
         assert!(h.state().comments.open);
+    }
+    #[test]
+    fn tag_controls_preserve_dirty_discussion_focus_and_replacement_keeps_orphan_identity() {
+        let mut h = harness();
+        compose(&mut h, "Unsaved UTF8 é discussion");
+        let key = h.state().comments.editing.unwrap();
+        let token = h.state().comments.drafts.get(&key).unwrap().session.clone();
+        let before = h.state().session.document().clone();
+        let owner = egui::Id::new("discussion_edit").with(key);
+        h.get_by_role_and_label(Role::Button, "Tag filter").click();
+        h.run();
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(owner));
+        assert!(!h.state().tag_filter.open);
+        assert_eq!(h.state().session.document(), &before);
+        assert_eq!(h.state().comments.drafts.get(&key).unwrap().text, "Unsaved UTF8 é discussion");
+        let canvas = h.state().canvas;
+        h.state_mut().replace_session(Session::new(before.clone()).unwrap(), canvas).unwrap();
+        let draft = h.state().comments.drafts.get(&key).unwrap();
+        assert!(Arc::ptr_eq(&draft.session, &token));
+        assert!(!Arc::ptr_eq(&draft.session, &h.state().session.view_identity()));
+        assert_eq!(draft.text, "Unsaved UTF8 é discussion");
+        assert!(h.state().comments.drag.is_none() && h.state().comments.pins.is_empty());
+        h.state_mut().comments.editing = Some(key);
+        let ctx = h.ctx.clone();
+        h.state_mut().save_discussion(&ctx, false);
+        assert!(h.state().comments.drafts.get(&key).unwrap().error.is_some());
+        assert_eq!(h.state().session.document(), &before);
+        assert_eq!(h.state().session.revision(), 0);
+    }
+    #[test]
+    fn tag_and_discussion_panels_have_disjoint_bounds_and_pin_gestures_block_tag_navigation() {
+        let mut h = harness();
+        h.state_mut().comments.open = true;
+        h.state_mut().tag_filter.open = true;
+        h.run();
+        let app = h.state();
+        let t = app.theme.tokens();
+        let available = (app.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
+        let comments_right = app.viewport.min.x + t.navigation_margin + t.comments_width.min(((available - t.navigation_gap) / 2.0).max(1.0));
+        assert!(app.tag_rect().left() >= comments_right + t.navigation_gap);
+        h.state_mut().comments.gesture_cancelled = true;
+        let ctx = h.ctx.clone();
+        assert!(h.state_mut().tag_filter_enabled(&ctx, "canvas.tag_filter_open", &json!({})).is_err());
     }
     #[test]
     fn real_compose_reply_resolve_note_and_undo_use_shared_commands() {

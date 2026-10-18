@@ -1,0 +1,7 @@
+## 2026-10-17 · Colour tags: bounded identifiers and highlight filtering (#67)
+
+Tags retain their existing IDs/titles and gain optional bounded color identifiers. Unknown identifiers are preserved and rendered neutrally, so known palette values are not a closed file-format enum. Per-node tags remain singular. Bulk tagging uses an ID-only graph operation with an independent aggregate 10,000-assignment cap on both forward and inverse transactions; it does not clone complete nodes. First-use definition creation and assignment share one undo step.
+
+Filtering highlights cards and keeps other data editable. Exact tag-ID OR matching is independent of text search. Only explicit stepping changes selection/framing, and scans defer pending jumps until completion. Live filtering is a scoped view service; persistent tagging remains a headless engine command. Existing transaction staging/validation remains authoritative. Details and compatibility limits: [color-tags.md](../color-tags.md).
+
+The tag presentation index sorts bounded single-line display labels and exact IDs incrementally rather than sorting full stored titles on each revision. Visible ordinal prefixes disambiguate duplicate display labels. A Session-owned retained Arc token distinguishes replacement sessions even when document IDs, revisions and allocator addresses repeat. Explicit search/filter navigation cancels competing pending jumps while retaining results.

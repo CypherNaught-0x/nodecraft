@@ -62,6 +62,9 @@ fn discussion_mutations_are_discoverable_undoable_and_recover_through_real_mcp()
         let spec = commands.iter().find(|spec| spec["id"] == id).unwrap();
         assert_eq!(spec["params_schema"]["type"], "object");
     }
+    for id in ["tag.put", "tag.remove", "node.tag_set"] {
+        assert!(commands.iter().any(|spec| spec["id"] == id));
+    }
     for id in HUMAN_ONLY {
         assert!(!commands.iter().any(|spec| spec["id"] == *id));
     }
@@ -86,6 +89,11 @@ fn discussion_mutations_are_discoverable_undoable_and_recover_through_real_mcp()
         ("comment.reply", json!({"canvas":CANVAS,"id":ROOT,"reply":CommentId::from_bytes([5;16]),"text":"Resolved replies require reopen"})),
         ("comment.open", json!({"id":ROOT})),
         ("comment.compose", json!({"pos":{"x":0,"y":0}})),
+        ("canvas.tag_filter_open", json!({})),
+        ("canvas.tag_filter_set", json!({"tags":[],"untagged":true})),
+        ("canvas.tag_filter_next", json!({})),
+        ("canvas.tag_filter_previous", json!({})),
+        ("canvas.tag_filter_close", json!({})),
         ("canvas.comments_toggle", json!({})),
     ] {
         let reply = command(&mut server, id, params);

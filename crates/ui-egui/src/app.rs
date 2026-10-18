@@ -283,6 +283,7 @@ mod navigation;
 mod order;
 mod search;
 mod split;
+mod tags;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -293,6 +294,12 @@ pub struct NodeCraftApp {
     pub canvas_prefs: CanvasSettings,
     pub navigation: Navigation,
     pub search: crate::search::Search,
+    pub tag_filter: crate::tags::TagFilter,
+    tag_focus_ids: Vec<egui::Id>,
+    tag_focused: bool,
+    tag_session_identity: Option<Arc<()>>,
+    tag_focus_pending: bool,
+    tag_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     search_focused: bool,
     search_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     pub comments: crate::comments::Discussions,
@@ -435,6 +442,16 @@ impl NodeCraftApp {
             *slot = Some(request.clone());
             Ok(json!({"accepted":true}))
         })?;
+        let tag_mailbox = Rc::new(RefCell::new(None));
+        let mailbox = Rc::clone(&tag_mailbox);
+        session.register_host_service(nodecraft_engine::tag_filter_cmds::SERVICE, move |request| {
+            let mut slot = mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "tag host is busy"))?;
+            if slot.is_some() {
+                return Err(Error::new(ErrorKind::Conflict, "tag request is already pending"));
+            }
+            *slot = Some(request.clone());
+            Ok(serde_json::json!({"accepted":true}))
+        })?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -444,6 +461,12 @@ impl NodeCraftApp {
             canvas_prefs: CanvasSettings::default(),
             navigation: Navigation::default(),
             search: crate::search::Search::default(),
+            tag_filter: crate::tags::TagFilter::default(),
+            tag_focus_ids: Vec::new(),
+            tag_focused: false,
+            tag_session_identity: None,
+            tag_focus_pending: false,
+            tag_mailbox,
             search_focused: false,
             search_mailbox,
             comments: crate::comments::Discussions::default(),
@@ -478,6 +501,24 @@ impl NodeCraftApp {
             key_results: None,
         })
     }
+    /// Replace a document session together with scoped view services and all view caches.
+    /// Assigning the public session field directly is not a supported live-host replacement path.
+    pub fn replace_session(&mut self, session: Session, canvas: CanvasId) -> Result<(), Error> {
+        let mut next = Self::from_session(session, canvas)?;
+        next.theme = self.theme;
+        next.canvas_prefs = self.canvas_prefs.clone();
+        // Retain bounded dirty/orphan discussion drafts with their original Session token.
+        // New host services and view caches belong to the replacement Session.
+        let mut discussions = std::mem::take(&mut self.comments);
+        discussions.reset_session_view();
+        next.comments = discussions;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            next.store = self.store.take();
+        }
+        *self = next;
+        Ok(())
+    }
     pub fn home(&mut self) -> Pos2 {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
@@ -503,8 +544,22 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
-        let search_blocks = self.search_overlay(ui);
         let comments_blocks = self.comments_overlay(ui);
+        // A context menu is not permission to commit a dirty editor draft.
+        if self.text_focused
+            && !egui::Popup::is_any_open(ui.ctx())
+            && let Some(owner) = self.last_text_focus
+            && ui.ctx().memory(|m| m.focused()).is_none_or(|id| id == owner)
+            && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary))
+            && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+            && ui.ctx().layer_id_at(pointer) == Some(ui.layer_id())
+            && self.painted.values().any(|r| self.view.rect_to_screen(viewport.min, *r).contains(pointer))
+        {
+            ui.ctx().memory_mut(|m| m.request_focus(owner));
+            ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
+        }
+        let tag_blocks = self.tag_overlay(ui);
+        let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
@@ -653,7 +708,7 @@ impl NodeCraftApp {
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
         let layout_blocks = self.layout_overlay(ui);
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || layout_blocks || comments_blocks;
+        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || layout_blocks || comments_blocks || tag_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
         let canvas_blocks = overlay_blocks || popup_owned;
         let shift = ui.input(|i| i.modifiers.shift);
@@ -697,6 +752,20 @@ impl NodeCraftApp {
         let layout_context_ready = self.layout_base_available(ui.ctx());
         let mut comment_target = None;
         let mut split_after = None;
+        let mut tag_action = None;
+        let tag_menu_allowed = !self.text_focused
+            && !canvas::text_input_focused(ui.ctx())
+            && self.drag.is_none()
+            && self.marquee.is_none()
+            && self.comments.drag.is_none()
+            && !self.comments.gesture_cancelled
+            && !self.navigation.pointer_owned
+            && self.navigation.drag.is_none()
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+            && self.reordering.is_none()
+            && self.wiring.is_none()
+            && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
@@ -747,6 +816,25 @@ impl NodeCraftApp {
                 ) {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
+                    let tag_painter = egui::Painter::new(ui.ctx().clone(), r.layer_id, tag_world_clip(&self.view, viewport, ui.clip_rect()));
+                    if let Some(tag) = node.tag.and_then(|id| canvas.tags().get(&id)) {
+                        let marker = Rect::from_min_size(
+                            r.rect.min + Vec2::splat(t.navigation_gap),
+                            Vec2::new(t.tag_marker_width, t.tag_row_height.min(r.rect.height())),
+                        );
+                        tag_painter.rect_filled(marker, t.tag_marker_width, t.tag_color(tag.color.as_deref()));
+                        ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover())
+                            .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
+                    }
+                    if self.tag_filter.active() {
+                        let matches = self.tag_filter.matches(node.id);
+                        tag_painter.rect_stroke(
+                            r.rect.expand(t.tag_marker_width),
+                            t.card_radius,
+                            egui::Stroke::new(if matches { t.handle_stroke * 2.0 } else { t.handle_stroke }, if matches { t.accent } else { t.panel_stroke }),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
                     if !canvas_blocks && r.clicked() {
                         if shift {
                             self.selection.toggle(node.id);
@@ -764,7 +852,9 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     }
-                    if !overlay_blocks || egui::Popup::is_any_open(ui.ctx()) {
+                    if (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
+                        && (!self.text_focused && !canvas::text_input_focused(ui.ctx()) || egui::Popup::is_any_open(ui.ctx()))
+                    {
                         r.context_menu(|ui| {
                             let owner = egui::Popup::context_menu(&r).get_id();
                             let owned = egui::Popup::is_id_open(ui.ctx(), owner);
@@ -787,6 +877,11 @@ impl NodeCraftApp {
                                 comment_target = Some((node.id, owner));
                                 ui.close();
                             }
+                            ui.add_enabled_ui(tag_menu_allowed, |ui| {
+                                if let Some(action) = tags::tag_menu(ui, canvas, &self.selection, t, &self.tag_filter.presentation) {
+                                    tag_action = Some(action);
+                                }
+                            });
                             if ui.button("Select upstream").clicked() {
                                 query = Some(SelectQuery::Upstream);
                             }
@@ -983,6 +1078,12 @@ impl NodeCraftApp {
         } else {
             self.selection.clear();
         }
+        if let Some(action) = tag_action {
+            if let Err(error) = self.apply_tag_action(action) {
+                self.notice = Some(error.message);
+            }
+            ui.ctx().request_repaint();
+        }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if self.selection != selected_before {
             ui.ctx().request_repaint();
@@ -1097,6 +1198,7 @@ impl NodeCraftApp {
             }
         }
         self.navigation.finish_frame(ui.ctx());
+        self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
@@ -1443,6 +1545,11 @@ impl NodeCraftApp {
             (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None, None)
         }
     }
+}
+/// A transformed card painter needs its clip in the same world coordinates as its shapes.
+fn tag_world_clip(view: &CanvasView, viewport: Rect, parent_clip: Rect) -> Rect {
+    let screen = viewport.intersect(parent_clip);
+    Rect::from_min_max(view.to_world(viewport.min, screen.min), view.to_world(viewport.min, screen.max))
 }
 fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
     consume_shortcut_with_policy(input, shortcut, false)
