@@ -18,5 +18,8 @@
   `perf.report` take `{}`, so they show in the palette. They add no undo step, and the capture
   commands don't time themselves. They return a session-level effect (`Effect::Perf`), because
   command handlers can't change session state. Agents may run them.
+- **What counts:** only commands that ran are timed; refusals would pull the latencies down.
+  Frame intervals over 250 ms are the app idling, since it redraws only on input; they are
+  counted as idle, not kept. An interval is over budget past 1.5 frames, to allow for jitter.
 - **Not here:** a GPU or presentation timestamp (#65), CI baselines and regression thresholds
   (#152), and a UI panel showing the report.

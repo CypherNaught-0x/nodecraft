@@ -305,7 +305,8 @@ impl Session {
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
         }
-        if let Some(start) = start {
+        // Only commands that ran count: a refusal is fast and would pull the latencies down.
+        if let Some(start) = start.filter(|_| result.is_ok()) {
             self.perf.record_since(crate::perf::Metric::Dispatch, start);
             if let Some(metric) = crate::perf::Metric::of_command(id) {
                 self.perf.record_since(metric, start);

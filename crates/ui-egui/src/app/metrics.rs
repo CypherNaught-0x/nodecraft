@@ -10,16 +10,15 @@ use nodecraft_engine::{
 /// Gives the session a monotonic microsecond clock where the platform has one. Browsers get
 /// none for now, so their timings are reported as unsupported rather than wrong.
 pub(super) fn install_clock(session: &mut Session) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let epoch = std::time::Instant::now();
-        session.perf_mut().set_clock(Some(Box::new(move || u64::try_from(epoch.elapsed().as_micros()).unwrap_or(u64::MAX))));
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = session;
+    session.perf_mut().set_clock(nodecraft_engine::perf::native_clock());
 }
 
 impl NodeCraftApp {
+    /// Names the renderer (GPU adapter and backend) in performance reports.
+    pub fn set_renderer(&mut self, renderer: String) {
+        self.session.perf_mut().set_renderer(Some(renderer));
+    }
+
     /// The frame's start time while a capture runs, recording the interval since the last one.
     pub(super) fn frame_started(&mut self) -> Option<u64> {
         let now = self.session.perf().now();

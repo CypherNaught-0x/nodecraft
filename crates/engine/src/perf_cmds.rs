@@ -39,6 +39,10 @@ fn clear(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 }
 fn report(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     empty(value)?;
+    // Availability checks (the palette's, every frame) don't build the report.
+    if c.phase == crate::commands::Phase::Preview {
+        return Ok(Effect::None { result: Value::Null });
+    }
     let result = serde_json::to_value(c.perf.report()).map_err(|_| Error::new(nodecraft_types::ErrorKind::Internal, "the report couldn't be built"))?;
     Ok(Effect::None { result })
 }

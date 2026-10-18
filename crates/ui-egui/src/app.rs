@@ -985,6 +985,11 @@ impl NodeCraftApp {
                 palette::Outcome::Closed => {}
                 palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
                 palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
+                    // The report is for reading elsewhere: put it on the clipboard.
+                    Ok(report) if id == "perf.report" => {
+                        ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
+                        self.notice = Some("Performance report copied to the clipboard.".into());
+                    }
                     Ok(_) => self.notice = None,
                     Err(error) => self.notice = Some(error.message),
                 },

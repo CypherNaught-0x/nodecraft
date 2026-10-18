@@ -52,7 +52,9 @@ labels, never document contents or paths.
 3. Optionally run **Clear performance capture** after warming up: every sample since the last
    clear counts.
 4. Do the work being measured (pan, zoom, edit, undo, save).
-5. Read the report with `perf.report`, and stop with **Stop performance capture**.
+5. Read the report with `perf.report`. From the palette, **Performance report** copies it to the
+   clipboard. Stop with **Stop performance capture**. The headless CLI session (`control`, `mcp`)
+   records too.
 
 The report (`schema: "nodecraft.perf/1"`) gives, per metric, p50/p95/p99/max in microseconds,
 the samples kept (the latest 4,096), how many were recorded and how many were refused as invalid.
@@ -62,11 +64,14 @@ Metrics:
 - `dispatch`: any command;
 - `undo`, `redo`, `load` and `save`.
 
-The two frame metrics also count frames over the 60 Hz budget (16,667 µs), and `workload`
-gives the last frame's visible and total nodes and edges. `frame_prepare` excludes GPU work and
+The two frame metrics also count frames over budget: 16,667 µs to prepare, and 1.5 × that
+between frames, which leaves room for scheduling jitter. The app redraws only on input, so an
+interval over 250 ms is counted as `idle` rather than kept as a slow frame. Only commands that
+ran are timed; refusals aren't. `workload` gives the last frame's visible and total nodes and
+edges. `environment` adds the CPU count and, in the desktop app, the GPU adapter and backend. `frame_prepare` excludes GPU work and
 presentation, so it can't prove 60 fps on its own. A metric without a clock (the browser build
 for now) is `supported: false` with `null` values, never zero. Recording costs one bounded push
-per sample. `cargo test -p nodecraft-engine --lib recording_overhead -- --ignored --nocapture`
+per sample (about 90 ns in a debug build). `cargo test -p nodecraft-engine --lib recording_overhead -- --ignored --nocapture`
 prints the cost with capture on and off.
 
 ## xtask

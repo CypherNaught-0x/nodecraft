@@ -19,6 +19,23 @@ pub const FRAME_BUDGET_US: u64 = 16_667;
 /// Longer samples are dropped as invalid (a suspended machine or a clock jump, not a frame or
 /// a command): one hour.
 pub const MAX_SAMPLE_US: u64 = 3_600_000_000;
+/// A frame interval longer than this is the app idling (it redraws only on input), not a slow
+/// frame: it is counted as idle, not kept.
+pub const IDLE_GAP_US: u64 = 250_000;
+/// An interval this much over [`FRAME_BUDGET_US`] counts as a missed frame (one and a half
+/// budgets): a frame on time at 60 Hz lands around 16,667 µs, give or take scheduling jitter.
+pub const INTERVAL_BUDGET_US: u64 = FRAME_BUDGET_US * 3 / 2;
+
+/// A monotonic microsecond clock from the platform, where it has one (not in the browser yet).
+pub fn native_clock() -> Option<Clock> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let epoch = std::time::Instant::now();
+        Some(Box::new(move || u64::try_from(epoch.elapsed().as_micros()).unwrap_or(u64::MAX)))
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
+}
 
 /// What is measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -43,8 +60,13 @@ pub enum Metric {
 impl Metric {
     pub const ALL: [Metric; 7] = [Metric::FramePrepare, Metric::FrameInterval, Metric::Dispatch, Metric::Undo, Metric::Redo, Metric::Load, Metric::Save];
 
-    fn is_frame(self) -> bool {
-        matches!(self, Metric::FramePrepare | Metric::FrameInterval)
+    /// The time a frame metric's sample may take before it counts as over budget.
+    fn budget(self) -> Option<u64> {
+        match self {
+            Metric::FramePrepare => Some(FRAME_BUDGET_US),
+            Metric::FrameInterval => Some(INTERVAL_BUDGET_US),
+            _ => None,
+        }
     }
 
     /// The metric a command's dispatch also counts as, besides [`Metric::Dispatch`].
@@ -77,10 +99,14 @@ pub struct Recorder {
     enabled: bool,
     clock: Option<Clock>,
     samples: BTreeMap<Metric, VecDeque<u64>>,
-    /// Samples ever recorded, and dropped as invalid, per metric (since the last clear).
+    /// Samples ever recorded, dropped as invalid, and frame intervals skipped as idle, per
+    /// metric (since the last clear).
     recorded: BTreeMap<Metric, u64>,
     invalid: BTreeMap<Metric, u64>,
+    idle: BTreeMap<Metric, u64>,
     workload: Option<Workload>,
+    /// The renderer the host draws with (GPU adapter and backend), if it said.
+    renderer: Option<String>,
 }
 
 impl Recorder {
@@ -101,7 +127,12 @@ impl Recorder {
         self.samples.clear();
         self.recorded.clear();
         self.invalid.clear();
+        self.idle.clear();
         self.workload = None;
+    }
+    /// What the host draws with, for the report (e.g. "Apple M2 (Metal)"); at most 128 chars.
+    pub fn set_renderer(&mut self, renderer: Option<String>) {
+        self.renderer = renderer.map(|name| name.chars().filter(|c| !c.is_control()).take(128).collect());
     }
     /// The clock's time, while recording and if there is a clock.
     pub fn now(&self) -> Option<u64> {
@@ -124,6 +155,11 @@ impl Recorder {
         }
         if micros > MAX_SAMPLE_US {
             self.count_invalid(metric);
+            return;
+        }
+        if metric == Metric::FrameInterval && micros > IDLE_GAP_US {
+            let idle = self.idle.entry(metric).or_default();
+            *idle = idle.saturating_add(1);
             return;
         }
         let samples = self.samples.entry(metric).or_default();
@@ -161,11 +197,12 @@ impl Recorder {
                     samples: sorted.len(),
                     recorded: self.recorded.get(&metric).copied().unwrap_or(0),
                     invalid: self.invalid.get(&metric).copied().unwrap_or(0),
+                    idle: (metric == Metric::FrameInterval).then(|| self.idle.get(&metric).copied().unwrap_or(0)),
                     p50: at(50),
                     p95: at(95),
                     p99: at(99),
                     max: sorted.last().copied(),
-                    over_frame_budget: metric.is_frame().then(|| sorted.iter().filter(|us| **us > FRAME_BUDGET_US).count()),
+                    over_frame_budget: metric.budget().map(|budget| sorted.iter().filter(|us| **us > budget).count()),
                 }
             })
             .collect();
@@ -175,6 +212,8 @@ impl Recorder {
             clock: self.clock.is_some(),
             max_samples: MAX_SAMPLES,
             frame_budget_us: FRAME_BUDGET_US,
+            interval_budget_us: INTERVAL_BUDGET_US,
+            idle_gap_us: IDLE_GAP_US,
             warm_up: "none: every sample since the last clear is kept; clear after warming up",
             note: "frame_prepare is CPU time in the shell, not end-to-end; it alone doesn't show 60 fps",
             metrics,
@@ -185,9 +224,21 @@ impl Recorder {
                 profile: if cfg!(debug_assertions) { "debug" } else { "release" },
                 os: std::env::consts::OS,
                 arch: std::env::consts::ARCH,
+                cpus: cpus(),
+                renderer: self.renderer.clone(),
             },
         }
     }
+}
+
+/// Logical CPUs, where the platform says.
+fn cpus() -> Option<usize> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::available_parallelism().ok().map(std::num::NonZeroUsize::get)
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
 }
 
 /// The nearest-rank `p`th percentile of `sorted` (ascending), or `None` when empty.
@@ -207,6 +258,8 @@ pub struct Report {
     pub clock: bool,
     pub max_samples: usize,
     pub frame_budget_us: u64,
+    pub interval_budget_us: u64,
+    pub idle_gap_us: u64,
     pub warm_up: &'static str,
     pub note: &'static str,
     pub metrics: Vec<MetricReport>,
@@ -225,11 +278,14 @@ pub struct MetricReport {
     pub recorded: u64,
     /// Samples refused as invalid (clock ran backwards, or longer than [`MAX_SAMPLE_US`]).
     pub invalid: u64,
+    /// Frame intervals over [`IDLE_GAP_US`], skipped as the app idling; only for the interval.
+    pub idle: Option<u64>,
     pub p50: Option<u64>,
     pub p95: Option<u64>,
     pub p99: Option<u64>,
     pub max: Option<u64>,
-    /// Frames over [`FRAME_BUDGET_US`]; only for frame metrics.
+    /// Frames over budget ([`FRAME_BUDGET_US`] to prepare, [`INTERVAL_BUDGET_US`] between
+    /// frames); only for frame metrics.
     pub over_frame_budget: Option<usize>,
 }
 
@@ -241,6 +297,9 @@ pub struct Environment {
     pub profile: &'static str,
     pub os: &'static str,
     pub arch: &'static str,
+    pub cpus: Option<usize>,
+    /// GPU adapter and backend, as the host reported them.
+    pub renderer: Option<String>,
 }
 
 #[cfg(test)]

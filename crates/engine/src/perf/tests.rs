@@ -86,14 +86,20 @@ fn commands_start_stop_and_report_and_dispatch_is_timed_without_document_content
     let _ = s.dispatch("edit.undo", &json!({}));
     let report = s.dispatch("perf.report", &json!({})).unwrap();
     let dispatch = report["metrics"].as_array().unwrap().iter().find(|m| m["metric"] == "dispatch").unwrap().clone();
-    assert_eq!(dispatch["samples"], 1, "the undo, not the perf commands");
-    let undo = report["metrics"].as_array().unwrap().iter().find(|m| m["metric"] == "undo").unwrap().clone();
-    assert_eq!(undo["samples"], 1);
+    assert_eq!(dispatch["samples"], 0, "a refused undo (nothing to undo) isn't a latency sample, nor are perf commands");
+    // A command that runs is timed.
+    s.dispatch("node.add", &json!({"canvas": canvas, "node": nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([2; 16]), "source.text")}))
+        .unwrap();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    let report = s.dispatch("perf.report", &json!({})).unwrap();
+    let samples = |name: &str| report["metrics"].as_array().unwrap().iter().find(|m| m["metric"] == name).unwrap()["samples"].clone();
+    assert_eq!((samples("dispatch"), samples("undo")), (json!(2), json!(1)));
     let text = report.to_string();
     assert!(!text.contains("secret"), "no document contents in the report");
     assert_eq!(s.dispatch("perf.stop", &json!({})).unwrap(), json!({"recording": false}));
     assert_eq!(s.dispatch("perf.clear", &json!({})).unwrap(), json!({"cleared": true}));
-    assert_eq!(s.dispatch("perf.report", &json!({})).unwrap()["metrics"][2]["samples"], 0);
+    let cleared = s.dispatch("perf.report", &json!({})).unwrap();
+    assert_eq!(cleared["metrics"].as_array().unwrap().iter().find(|m| m["metric"] == "dispatch").unwrap()["samples"], 0);
 }
 
 #[test]
@@ -112,4 +118,21 @@ fn recording_overhead_on_and_off() {
     }
     let on = started.elapsed();
     eprintln!("1M samples: off {off:?}, on {on:?}");
+}
+
+#[test]
+fn idle_gaps_are_not_frames_and_intervals_get_jitter_room() {
+    let mut r = Recorder::default();
+    r.set_enabled(true);
+    for us in [16_700, 17_000, 24_000, 26_000, 2_000_000] {
+        r.record(Metric::FrameInterval, us);
+    }
+    r.record(Metric::FramePrepare, 16_700);
+    let report = r.report();
+    let interval = metric(&report, Metric::FrameInterval);
+    assert_eq!((interval.samples, interval.idle, interval.over_frame_budget), (4, Some(1), Some(1)), "the 2 s pause is idle; only 26 ms is over 1.5 budgets");
+    assert_eq!(metric(&report, Metric::FramePrepare).over_frame_budget, Some(1), "preparation keeps the strict budget");
+    assert_eq!(metric(&report, Metric::FramePrepare).idle, None);
+    r.set_renderer(Some("Test GPU\n(Metal)".into()));
+    assert_eq!(r.report().environment.renderer.as_deref(), Some("Test GPU(Metal)"));
 }
