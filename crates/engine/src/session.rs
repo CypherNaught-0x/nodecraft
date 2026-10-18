@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use nodecraft_format::{AssetStore, ProjectStorage, Snapshot};
+use nodecraft_format::{AssetStore, ProjectStorage, Snapshot, StorageLocation};
 use nodecraft_graph::{Change, Changeset, Project};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
@@ -269,15 +269,22 @@ impl Session {
         self.status_revision
     }
     /// Host lifecycle boundary (#408): replaces the document with work recovered from an earlier
-    /// session's journal, checkpointing it at once. It is untitled and unsaved, history starts
-    /// fresh, and the change is published like an open (`file.recover`).
-    pub fn recover(&mut self, snapshot: Snapshot) -> Result<(), Error> {
+    /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
+    /// session's file, or untitled), history starts fresh, and the change is published like an
+    /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
+    pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        if self.can_undo() || self.can_redo() {
+            return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
+        }
+        if !self.file_status().available {
+            return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
+        }
         snapshot.project.validate()?;
         let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
         let next = self.execution.next()?;
         let before = self.file_status();
         let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
-        storage.adopt_recovered(&snapshot)?;
+        storage.adopt_recovered(&snapshot, location)?;
         self.document = snapshot.project;
         self.assets = snapshot.assets;
         self.undo = History::default();

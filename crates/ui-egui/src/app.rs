@@ -326,6 +326,15 @@ pub struct NodeCraftApp {
     /// The startup question about an earlier session's unsaved work (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovery: Option<recovery::RecoveryOffer>,
+    /// Recovered work's kept journal, removed once that work is saved (#408).
+    #[cfg(not(target_arch = "wasm32"))]
+    recovered: Option<recovery::RecoveryOffer>,
+    /// This session's recovery journal, beside which the open project file is recorded.
+    #[cfg(not(target_arch = "wasm32"))]
+    recovery_journal: Option<std::path::PathBuf>,
+    /// The project file last recorded there (`None` until the first record).
+    #[cfg(not(target_arch = "wasm32"))]
+    recorded_location: Option<Option<std::path::PathBuf>>,
     /// The window title last sent, so it is only sent when it changes.
     title: String,
     /// Image previews on cards (#386).
@@ -392,6 +401,7 @@ impl NodeCraftApp {
         // Storage that can't start (another window holds the journal, or the project won't
         // open) still opens the window, without project files, and says why.
         let mut problem = None;
+        let journal = storage.as_ref().map(|setup| setup.recovery.clone());
         let stored = storage.and_then(|setup| match Self::storage_session(setup) {
             Ok(stored) => Some(stored),
             Err(error) => {
@@ -413,7 +423,9 @@ impl NodeCraftApp {
         };
         app.notice = problem;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
-        app.recovery = kept.map(recovery::RecoveryOffer::read);
+        if let Some(journal) = journal {
+            app.attach_recovery(journal, kept);
+        }
         app.key_results = results;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -541,6 +553,12 @@ impl NodeCraftApp {
             palette: None,
             #[cfg(not(target_arch = "wasm32"))]
             recovery: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovered: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovery_journal: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recorded_location: None,
             title: String::new(),
             previews: crate::preview::Previews::default(),
             last_frame: None,
@@ -594,6 +612,7 @@ impl NodeCraftApp {
         {
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);
+            self.track_recovery();
         }
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();

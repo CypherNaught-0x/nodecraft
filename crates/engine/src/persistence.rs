@@ -129,12 +129,12 @@ impl Persistence {
         Ok(snapshot)
     }
     /// Adopts `snapshot` (work recovered from an earlier session's journal) as the session's new
-    /// checkpoint. It has no file location and isn't saved: the person saves it where they like.
-    pub fn adopt_recovered(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
+    /// checkpoint, at `location` (the file the earlier session had, if any) and unsaved.
+    pub fn adopt_recovered(&mut self, snapshot: &Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
         let checkpoint = journal::checkpoint(snapshot)?;
         guard(|| self.storage.checkpoint(&checkpoint.bytes))?;
         self.adopt(checkpoint);
-        self.location = None;
+        self.location = location;
         self.read_only = false;
         self.saved_state = None;
         self.epoch = snapshot.epoch;
