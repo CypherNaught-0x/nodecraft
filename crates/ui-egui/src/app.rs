@@ -525,7 +525,12 @@ impl NodeCraftApp {
             }
             // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
             // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx());
+            let busy = self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || self.navigation.drag.is_some()
+                || self.navigation.pointer_owned
+                || egui::Popup::is_any_open(ui.ctx());
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
                     self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
