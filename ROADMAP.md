@@ -109,3 +109,6 @@ The open pull requests say what is in flight; the near-term order that makes the
 - **2026-10-18** — docs brought in line with the code. `docs/decisions.md` was split into one
   dated file per decision under `docs/decisions/` (#295, #303), with `cargo xtask decisions`
   enforcing the format so parallel pull requests never conflict over one shared log.
+- **2026-10-18** — `v0.2.0-rc.1` published: the first build cut from the post-M0 tree, with
+  installers for macOS and Windows and packages plus Flatpaks for Linux. A pre-release on
+  purpose — the app still cannot generate or save; the 0.2.0 GA belongs with the M3 wiring above.
