@@ -9,9 +9,11 @@
 
 pub mod model;
 pub mod pricing;
+pub mod select;
 
 pub use model::{InputRole, ModeSpec, ModelDescriptor};
 pub use pricing::{Price, Pricing, Unit};
+pub use select::{Choice, Effort, MAX_MULTIPLE, Rejected, Request, Selection};
 
 use nodecraft_types::{Error, ErrorKind, Modality, ParamValues};
 use serde::Deserialize;
