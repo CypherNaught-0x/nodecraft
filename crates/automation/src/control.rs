@@ -344,6 +344,7 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
     let addr = socket.local_addr().map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
     let (to_ui, calls) = sync_channel::<Call>(QUEUE);
     let open = Arc::new(AtomicUsize::new(0));
+    let refusing = Arc::new(AtomicUsize::new(0));
     std::thread::Builder::new()
         .name("nodecraft-control".into())
         .spawn(move || {
@@ -351,7 +352,20 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
                 let Ok(stream) = stream else { continue };
                 if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     open.fetch_sub(1, Ordering::SeqCst);
-                    refuse_busy(stream);
+                    // Off the accept thread, so silent refused clients can't delay real ones; a few at
+                    // once at most, beyond that the refusal is just closed.
+                    if refusing.fetch_add(1, Ordering::SeqCst) < MAX_REFUSALS {
+                        let refusing = Arc::clone(&refusing);
+                        let spawned = std::thread::Builder::new().name("nodecraft-control-busy".into()).spawn(move || {
+                            refuse_busy(stream);
+                            refusing.fetch_sub(1, Ordering::SeqCst);
+                        });
+                        if spawned.is_err() {
+                            refusing.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    } else {
+                        refusing.fetch_sub(1, Ordering::SeqCst);
+                    }
                     continue;
                 }
                 let (token, to_ui, wake, slot) = (token.clone(), to_ui.clone(), Arc::clone(&wake), Arc::clone(&open));
@@ -399,6 +413,9 @@ fn read_hello(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>, deadline: In
         }
     }
 }
+
+/// Refusals answered at once (each waits up to 200 ms for the client's hello).
+const MAX_REFUSALS: usize = 4;
 
 /// Turns a connection away as busy. The client's `hello` is drained briefly after the reply, so
 /// closing doesn't reset the connection and lose the reply (a reset is what an unread `hello`
@@ -582,7 +599,8 @@ impl Client {
     /// so a handshake refused as busy, or cut off before its reply (a refused connection can be
     /// reset), is retried up to [`RECONNECT_ATTEMPTS`] times with backoff (775 ms of waits in
     /// all). Only `hello` has been sent on those connections, never the caller's request. Worst
-    /// case, each attempt waits out the 5 s connect and 5 s handshake timeouts.
+    /// case, each attempt waits out the 5 s connect and 5 s handshake timeouts. An app that has
+    /// exited (connection refused) is retried too, so such a call takes about 0.8 s to fail.
     fn reconnect(&mut self) -> Result<(), Error> {
         let _ = self.writer.shutdown(std::net::Shutdown::Both);
         // Until a replacement works, the next call tries again.
