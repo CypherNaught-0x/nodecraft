@@ -806,7 +806,9 @@ impl NodeCraftApp {
             // Badges show where their numbers can be read; dragging one reorders the input.
             if !overlay_blocks && self.view.zoom >= card::BODY_MIN_ZOOM {
                 let badges = order::Badges { canvas_id: self.canvas, view: &self.view, reordering: &mut self.reordering };
-                wire_command = badges.show(ui, canvas, &curves, viewport, t);
+                let (command, badge_pan) = badges.show(ui, canvas, kinds, &curves, viewport, t);
+                wire_command = command;
+                pan += badge_pan;
             } else {
                 self.reordering = None;
             }

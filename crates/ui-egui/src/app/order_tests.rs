@@ -52,14 +52,14 @@ fn order(h: &Harness<'static, NodeCraftApp>) -> Vec<EdgeId> {
 fn dragging_a_badge_onto_another_moves_it_there_in_one_undo_step() {
     let mut h = harness();
     for n in 1..=3 {
-        assert!(h.query_by_label(&format!("Input {n} of 3, drag to reorder")).is_some(), "badge {n}");
+        assert!(h.query_by_label(&format!("Input {n} of 3 into in of Router, drag to reorder")).is_some(), "badge {n}");
     }
-    let third = h.get_by_label("Input 3 of 3, drag to reorder").rect().center();
-    let first = h.get_by_label("Input 1 of 3, drag to reorder").rect().center();
+    let third = h.get_by_label("Input 3 of 3 into in of Router, drag to reorder").rect().center();
+    let first = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
     wire_drag(&mut h, third, first);
     h.run();
     assert_eq!(order(&h), [edge(3), edge(1), edge(2)]);
-    assert!(h.query_by_label("Input 1 of 3, drag to reorder").is_some(), "renumbered");
+    assert!(h.query_by_label("Input 1 of 3 into in of Router, drag to reorder").is_some(), "renumbered");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(order(&h), [edge(1), edge(2), edge(3)], "one undo restores the order");
@@ -68,7 +68,7 @@ fn dragging_a_badge_onto_another_moves_it_there_in_one_undo_step() {
 #[test]
 fn dropping_a_badge_back_on_its_own_place_changes_nothing() {
     let mut h = harness();
-    let second = h.get_by_label("Input 2 of 3, drag to reorder").rect().center();
+    let second = h.get_by_label("Input 2 of 3 into in of Router, drag to reorder").rect().center();
     wire_drag(&mut h, second, second + Vec2::new(2.0, 2.0));
     assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
     assert!(!h.state().session.can_undo());
@@ -80,12 +80,51 @@ fn a_single_noodle_or_a_far_zoom_shows_no_badges() {
     let mut h = harness();
     h.state_mut().view.zoom = 0.3;
     h.run();
-    assert!(h.query_by_label("Input 1 of 3, drag to reorder").is_none(), "too small to read");
+    assert!(h.query_by_label("Input 1 of 3 into in of Router, drag to reorder").is_none(), "too small to read");
     h.state_mut().view.zoom = 0.6;
     let canvas = h.state().canvas;
     for n in [2u8, 3] {
         h.state_mut().session.dispatch("edge.disconnect", &json!({"canvas": canvas, "id": edge(n)})).unwrap();
     }
     h.run();
-    assert!(h.query_by_label("Input 1 of 1, drag to reorder").is_none(), "one noodle has no order to show");
+    assert!(h.query_by_label("Input 1 of 1 into in of Router, drag to reorder").is_none(), "one noodle has no order to show");
+}
+
+#[test]
+fn a_release_off_screen_still_ends_the_drag_and_other_buttons_pan() {
+    let mut h = harness();
+    let first = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(first);
+    h.run();
+    h.drag_at(first);
+    h.run();
+    h.hover_at(first + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    // The view moves so far that the badge's own spot is off screen, then the button is released.
+    h.state_mut().view.pan += Vec2::new(-5000.0, 0.0);
+    h.run();
+    h.drop_at(first + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_none(), "the drag ends");
+    h.state_mut().view.pan += Vec2::new(5000.0, 0.0);
+    h.run();
+    assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    // A middle-drag starting on a badge pans, as one on a card does.
+    let badge = h.get_by_label("Input 2 of 3 into in of Router, drag to reorder").rect().center();
+    let pan = h.state().view.pan;
+    h.hover_at(badge);
+    h.event(egui::Event::PointerButton { pos: badge, button: egui::PointerButton::Middle, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.hover_at(badge + Vec2::new(40.0, 0.0));
+    h.run();
+    h.event(egui::Event::PointerButton {
+        pos: badge + Vec2::new(40.0, 0.0),
+        button: egui::PointerButton::Middle,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert!((h.state().view.pan - pan - Vec2::new(40.0, 0.0)).length() < 1.0, "{:?}", h.state().view.pan - pan);
+    assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
 }

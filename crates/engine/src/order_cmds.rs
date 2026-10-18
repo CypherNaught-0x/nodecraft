@@ -68,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: reorder_schema,
-        params_doc: "{canvas, to: {node, port}, edges: [EdgeId]} -> {edges}; sets the order of the connections into a list input, first to last. List every connection into it once. One undo step.",
+        params_doc: "{canvas, to: {node, port}, edges: [EdgeId]} -> {edges}; sets the order of the connections into a list input, first to last. List every connection into it once; the current order is refused as a no-op. One undo step.",
         enabled: enabled_reorder,
         run: reorder,
     }]

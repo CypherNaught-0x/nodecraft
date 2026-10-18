@@ -72,3 +72,34 @@ fn refuses_partial_duplicate_unchanged_or_single_input_orders() {
     assert_eq!(s.dispatch("edge.reorder", &single).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(s.document(), &before);
 }
+
+#[test]
+fn gaps_are_compacted_and_a_single_input_has_no_order() {
+    // Gaps (0, 2, 5) are what disconnecting and reconnecting leaves; set the last first so no
+    // step collides.
+    let mut project = session().document().clone();
+    for (n, order) in [(3u8, 5u32), (2, 2)] {
+        let mut edge = project.canvases().get(&C).unwrap().edges().get(&edge(n)).unwrap().clone();
+        edge.order = order;
+        Change::SetEdge { canvas: C, edge }.apply(&mut project).unwrap();
+    }
+    // A node with a single text input, fed by the first source.
+    let single = NodeId::from_bytes([20; 16]);
+    let mut node = nodecraft_graph::Node::new(single, "test.single");
+    node.inputs
+        .push(nodecraft_graph::Port { name: "in".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false } });
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let wire = Edge {
+        id: edge(30),
+        from: Endpoint { node: NodeId::from_bytes([1; 16]), port: "out".into() },
+        to: Endpoint { node: single, port: "in".into() },
+        order: 0,
+    };
+    Change::Connect { canvas: C, edge: wire }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
+    s.dispatch("edge.reorder", &reorder(&[2, 3, 1])).unwrap();
+    let orders: Vec<u32> = [2u8, 3, 1].iter().map(|n| s.document().canvases().get(&C).unwrap().edges().get(&edge(*n)).unwrap().order).collect();
+    assert_eq!(orders, [0, 1, 2], "compacted");
+    let error = s.dispatch("edge.reorder", &json!({"canvas": C, "to": {"node": single, "port": "in"}, "edges": [edge(30)]})).unwrap_err();
+    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "only a list input has an order"));
+}

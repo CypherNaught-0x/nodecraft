@@ -16,20 +16,27 @@ pub(super) struct Badges<'a> {
 
 impl Badges<'_> {
     /// Numbered badges on the noodles into each list input fed by more than one. Dragging a badge
-    /// onto another's place returns the `edge.reorder` that moves it there.
+    /// onto another's place returns the `edge.reorder` that moves it there; middle- or right-
+    /// dragging one pans the canvas, by the returned screen delta, as dragging a card does.
     pub(super) fn show(
         self,
         ui: &egui::Ui,
         canvas: &Canvas,
+        kinds: &nodecraft_nodes::Registry,
         curves: &[(EdgeId, [Pos2; 4], Modality)],
         viewport: Rect,
         t: &Tokens,
-    ) -> Option<(&'static str, serde_json::Value)> {
+    ) -> (Option<(&'static str, serde_json::Value)>, Vec2) {
         let Badges { canvas_id, view, reordering } = self;
         let groups = order::ordered_inputs(canvas);
+        if groups.is_empty() {
+            *reordering = None;
+            return (None, Vec2::ZERO);
+        }
         if reordering.as_ref().is_some_and(|(input, edge)| !groups.get(input).is_some_and(|edges| edges.contains(edge))) {
             *reordering = None;
         }
+        let mut pan = Vec2::ZERO;
         let by_edge: BTreeMap<EdgeId, (&[Pos2; 4], Modality)> = curves.iter().map(|(id, curve, modality)| (*id, (curve, *modality))).collect();
         let radius = t.body_size * 0.75;
         let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -47,7 +54,16 @@ impl Badges<'_> {
                 }
                 let response = ui.interact(rect, ui.id().with(("input_order", *id)), Sense::drag());
                 let total = spots.len();
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Input {} of {total}, drag to reorder", index + 1)));
+                let into = canvas.nodes().get(&input.0).map_or_else(String::new, |node| {
+                    let descriptor = kinds.get(&node.kind).ok().map(|kind| kind.descriptor());
+                    format!(" into {} of {}", input.1, crate::card::title(node, descriptor))
+                });
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Input {} of {total}{into}, drag to reorder", index + 1))
+                });
+                if response.dragged_by(egui::PointerButton::Middle) || response.dragged_by(egui::PointerButton::Secondary) {
+                    pan += response.drag_delta();
+                }
                 if response.drag_started_by(egui::PointerButton::Primary) {
                     *reordering = Some((input.clone(), *id));
                 }
@@ -65,6 +81,11 @@ impl Badges<'_> {
                 }
             }
         }
-        command
+        // A release the loop didn't see (the badge's own spot was off screen, after a wheel pan
+        // or zoom mid-drag) still ends the drag.
+        if !ui.input(|i| i.pointer.primary_down()) {
+            *reordering = None;
+        }
+        (command, pan)
     }
 }
