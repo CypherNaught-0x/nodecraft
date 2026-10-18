@@ -837,6 +837,143 @@ a choice a later contributor might otherwise undo.
   their reservation and ordinary cap enforcement. This does not redesign provider-handle lifecycle
   or authenticate overlapping invocations with the same provider/key.
 
+## 2026-10-17 · Incremental canvas search (#69)
+
+- Search indexes persisted Text leaves and linked tag titles, with checked actual title fallbacks.
+  Stored model identifiers match today; catalog display names wait for verified catalog integration.
+  Unicode scalar lowercase literal matching is explicit, without normalization/full case folding.
+- Work is incremental over borrowed text and bounded structural cursors. Only IDs, query/matcher
+  state and bounded fallback labels survive; no full prompt/lowercase copies. A pending step belongs
+  to its query generation and waits for complete results before wrapping. Idle frames do no scans.
+- Search commands use a scoped live host capability, retaining document/history/event identity.
+  Only the exact search editor's current/prior focus permits framing; unrelated editors, menus and
+  gestures retain ownership. Opening search never steals an unrelated dirty editor's focus.
+
+
+## 2026-10-16 · Project archives and recovery (#54)
+
+- **Stored ZIP with a narrow, versioned surface.** Format v1 accepts only a bounded manifest and
+  canonical content-addressed assets. Metadata is checked before library parsing; no archive path
+  is extracted. CRC and BLAKE3 checks catch both transport corruption and content-name mismatch.
+  Pure codec and recovery replay run on wasm; native I/O stays behind `ProjectStorage`.
+- **One publication boundary per operation.** Graph edits are staged, journaled, then published.
+  Opening is an explicit session lifecycle replacement after complete validation, not a synthetic
+  enormous undo transaction. Saving publishes a file before changing the session savepoint.
+- **Dirty follows content state, not notification revision.** Undo entries restore state IDs;
+  saves break coalescing so a drag cannot swallow a saved boundary. Status has its own cursor.
+- **Recovery is append-only between checkpoints.** Checksummed sequential frames carry actual
+  forward changesets and newly referenced asset bytes. Physical framing/length/checksum damage
+  stops at the complete validated prefix, even if later frames survived. Recovery reports the
+  first damaged frame's absolute byte offset and reason alongside truncated_tail; it never skips
+  damage or replays later bytes. Invalid checkpoints and checksum-valid semantic/compatibility
+  violations remain hard errors. Native append handles stay open and a worker group-syncs every 250 ms (plus scheduling/I/O
+  latency); the latest window may be lost on power failure. Save/clean-close flush explicitly.
+  There is no synchronous fsync for every drag move. Worker failures latch until a new checkpoint. Checkpoint identities include an advancing
+  epoch; stale frames cannot replay onto a new checkpoint. Failed appends latch editing until save.
+  Recovered snapshots are explicitly untitled and dirty to avoid overwriting a newer destination.
+  Reading preserves the original bytes; native recovery latches damaged journals against append
+  until a new checkpoint is published. Hosts must preserve/report the damage before replacing it.
+- **Replay validates assets incrementally at every frame boundary.** The checkpoint establishes
+  asset validity. Graph apply validates the frame's final graph; only surviving nodes with changed
+  asset-bearing payloads are rechecked for missing bytes, MIME and dimensions. This includes
+  AddCanvas snapshots, add/set/restore nodes, params/config/nested Values and generation history.
+  Later frames cannot erase an earlier invalid reference. Same-batch replacements retain the
+  existing valid-final semantics. Moves do no asset walk, but graph apply still clones/validates
+  the document each frame: overall replay is not claimed to be linear in frames plus nodes.
+- **Publication and durability differ.** `craft-atomic` reports a rename as successful even if
+  directory sync fails afterward. We retain that contract. If subsequent recovery checkpointing
+  fails, save still reports published and separately reports recovery unavailable.
+- **Initial limits are conservative.** Archives cap at 64 MiB with 48 MiB aggregate media; buffering
+  and shared immutable assets keep resource behavior explicit. Lazy disk-backed large projects
+  need a streaming storage implementation before these limits can safely grow.
+
+- **Clean close and asset lifetime are explicit.** Hosts flush/discard recovery after saving or
+  an explicit dirty discard; dirty/crashed sessions retain recovery. Save-time GC retains live
+  and undo/redo asset references. Per-user canonical destination locks coordinate cooperating
+  native writers; only active/pending guards are retained, with no historical64-location cap.
+- **Container checks are not media decoders.** Known signatures and dimensions from available image probes are
+  checked; audio/video/document metadata needs later probes. Project hashes use types::Blake3,
+  bridged to media::ContentHash at format. The bounded initial codec still needs a separately
+  tracked file-backed/lazy asset implementation to meet plan 4.6 for large projects; see [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54.
+
+## 2026-10-17 · Storage access, lock publication and sync generations (#54)
+
+- A staged Open returns explicit source access and retains the previous guard until decode and
+  checkpoint publication succeed. Cancelling drops only the candidate. Save As changes guards
+  only after its atomic file publication; a subsequent recovery failure still reports the new
+  published destination. FileStatus/open results expose read-only sources, file.save refuses
+  them, and local edits plus Save As remain available. Read-only is source capability, not an ACL.
+- Project locks live in private per-user app data, keyed by canonical native path bytes. Stable
+  lock files remain there rather than being unlinked and recreated across holders; user project
+  directories receive no sidecars. Actual contention returns Busy, while inaccessible lock
+  infrastructure/read-only directories permit explicit read-only loading. Cooperating same-user
+  processes share this protocol; different OS users and hard-link aliases are outside its scope.
+- Background/explicit syncs use a separate gate and cloned-handle tickets. The append-state mutex
+  is released during sync. Captured generation/sequence bounds prevent a successful older sync
+  clearing newer dirty data, and per-generation atomic failure tokens latch known failures before
+  subsequent successful append results. Fresh checkpoints replace the token and generation so
+  stale completion cannot poison the new file. Flush covers its captured boundary; close flushes
+  before discard. Deterministic blocked-sync tests prove these relationships without latency-only
+  claims. The250ms group-sync window plus scheduling/I/O latency remains unchanged.
+
+## 2026-10-17 · Frozen-v1 compatibility during format integration (#54)
+
+- Version1 and NCRJ0001 remain frozen to08586e. Contextual raw read/write guards reject newer
+  graph representations before typed interpretation or publication, with value-free Unsupported
+  errors. Existing reviewed v1/v2/v3 migration fixtures and numbering remain authoritative.
+- Memory-only sessions remain full current graph editors. Storage-backed sessions admit only
+  v1-compatible prospective documents and canonical forward/inverse records before append;
+  compatibility failures neither latch recovery nor publish document/history/status changes.
+- A borrowed graph-role check avoids serializing large prospective documents, while shared
+  parity cases bind it to the raw guard. Bounded record preflight adds a transient JSON buffer
+  and parsed tree; it does not change durability semantics or claim zero-copy behavior.
+
+## 2026-10-17 · Cheap read-only command previews (#134)
+
+- **Availability still admits prospective edits.** `Session::enabled` runs handlers in Preview
+  and applies frozen-format and history admission to document effects. Read-only queries validate
+  their parameters and capabilities first, then may return a null non-document preview effect.
+  `canvas.stale` uses this phase contract so only dispatch traverses and hashes the canvas; its
+  node registry is the authoritative Session/Context registry. Service and file handlers describe requests; availability
+  does not execute their I/O.
+
+## 2026-10-17 · New destination admission and published access (#134)
+
+- Canonical names for absent destinations are established by the actual publication, with no
+  lowercasing or scratch-name normalization assumptions. A bounded per-directory operation gate
+  covers every cooperating native prepare-open/save admission through guard adoption. Existing
+  destination guards are acquired before writing; new destination guards use the published file's
+  canonical path. Directory guards are never retained for a document's lifetime.
+- Publication cannot be undone by a later identity/lock error. `save_with_access` returns explicit
+  ReadOnly after such failures while preserving successful publication, new location/savepoint,
+  and ordinary recovery-checkpoint handling. Future inplace writes are refused; independent
+  Save As remains available. Writable nonlocking hosts retain the default adapter.
+- The pinned upstream writability helper uses a PID-specific probe. A process mutex serializes
+  all format-native calls rather than forking the shared helper or falsely treating a same-process
+  probe race as evidence of a read-only directory. Other external helper callers are out of scope.
+- Unresolved destination symlinks are rejected before admission: the atomic writer may follow
+  a dangling link into a different parent, so admitting the alias parent would not serialize
+  publication. Existing canonicalizable symlinks/chains and ordinary absent leaves remain
+  supported. Metadata failures, cycles and missing parents fail before publication. Recovery
+  path comparison retains its prior behavior; no upstream resolver or atomic writer is forked.
+
+## 2026-10-17 · Prepared persistent admission (#134)
+
+- Session privately pairs a graph-staged draft with a non-Clone forward replay capability and
+  source identity/revision. Every document publication, successful import and save/asset GC
+  replaces identity; rejected preparation/import/append leaves it unchanged. Commit consumes
+  the bundle and checks identity/revision before append. Handlers cannot fabricate this proof.
+- A valid v1 root plus complete frozen forward/inverse role admission replaces redundant whole
+  prospective-project checks. Changed surviving nodes still validate reference existence, MIME
+  and dimensions against the complete source store. Payload reference availability, canonical
+  future redo budgets and ordered valid-final batches remain checked. Config is still refused
+  by frozen v1. Archive/Save/Open and arbitrary public frame writers retain full admission.
+- Owned replay admission captures only referenced immutable asset bytes and derives additions
+  from admitted forward references. Append cannot substitute a different document/assets pair.
+  Builtin Preview graph staging now uses the same single Session boundary as custom effects;
+  read-only Preview still avoids preparing a document. Deterministic opt-in counters establish
+  eliminated visits; shared-machine wall timings describe samples rather than guarantee speed.
+
 ## 2026-10-17 · Copy, paste, duplicate (#63)
 
 - **The clipboard carries versioned JSON** (`{"format":"nodecraft.nodes","version":1,…}`) of the
@@ -911,3 +1048,37 @@ a choice a later contributor might otherwise undo.
   Responses, status/parsing/body/sink errors stay unknown. Comfy's multi-request path and browser
   fetch remain conservative. No generic HTTP refusal attestations, billing wire migration or
   new retry/idempotency policy. Existing prior uncertainty and captured-attempt ownership win.
+
+## 2026-10-18 · Run commands: quote, start within budget, record (#201, part 1)
+
+- **`run.quote` prices a request without changing anything.** It plans the request and prices it
+  against the catalog. The response has:
+  - the first 500 steps, with each step's price or why it has none;
+  - totals per currency, which always cover the whole run;
+  - the budget blocks;
+  - the provisional and estimated steps (job counts known only at run time);
+  - the planner's reasons when the request can't run yet;
+  - a quote `token`.
+- **The token binds a run to the quote that was accepted.** It is a digest of the document
+  revision, the request, the plan's steps and their prices. `run.start` requires the token of the
+  quote the caller accepted, and amounts that cover every currency's total. It also requires
+  `partial: true` when part of the price isn't known: unpriced steps, or job counts known only at
+  run time, which could cost more than quoted. Any edit since the quote changes the token, so the
+  caller has to quote again. No caller (UI, CLI, agent) can start a paid run without having been
+  shown its current price.
+- **Host contract for the `run.start` service.** The request carries the run parameters, the
+  revision, the token and what was accepted. Before running, the host prices the request again
+  with `run_cmds::price` on the document as it is then, and refuses if the token differs. It
+  reserves the estimate in the budget ledger when the run starts (job-time budgets, #222), so two
+  quick starts can't both pass the same headroom, and holds estimated steps to the accepted
+  amounts.
+- **`run.record` is host-only.** It records a run's results (generations with asset references,
+  up to 1,000 per call) as one undo step. MCP lists it as human-only, so agents can't fabricate
+  results.
+- **`usage.export_csv` pages** (up to 2,000 rows per call), so a long usage log stays exportable
+  within the command result limits.
+- **Pricing inputs are host resources:** the catalog (`RunCatalog`), the caps with what has been
+  spent (`BudgetState`), and the usage log (`UsageSnapshot`). Without them the commands are
+  unsupported. Staleness is computed only for the modes that use it.
+- **Not yet done:** the desktop host. It needs an async runtime, a provider registry, the run
+  service, budget settings and the cost-confirmation UI on generation nodes (#83, #84).

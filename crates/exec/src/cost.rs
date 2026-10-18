@@ -741,6 +741,11 @@ impl UsageLog {
         self.pending.values()
     }
 
+    /// How many entries are listed.
+    pub fn listed(&self) -> usize {
+        self.entries.len()
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &UsageEntry> {
         self.entries.iter()
     }
@@ -763,8 +768,13 @@ impl UsageLog {
 
     /// Streams the CSV of [`UsageLog::to_csv`] to `out`, a row at a time.
     pub fn write_csv(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        self.write_csv_rows(out, 0, usize::MAX)
+    }
+
+    /// The CSV header and up to `limit` listed entries from `offset` on (for paged exports).
+    pub fn write_csv_rows(&self, out: &mut impl std::io::Write, offset: usize, limit: usize) -> std::io::Result<()> {
         out.write_all(b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n")?;
-        for e in &self.entries {
+        for e in self.entries.iter().skip(offset).take(limit) {
             let amount = format_money(e.cost);
             let amount = amount.split_once(' ').map_or(amount.as_str(), |(n, _)| n).to_owned();
             let row = [

@@ -31,7 +31,7 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges"] {
+        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges", "location", "discard_dirty"] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
@@ -75,7 +75,21 @@ fn template(id: &str) -> (Session, Value) {
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
-    let mut session = Session::new(document).unwrap();
+    let mut session = if id.starts_with("file.") {
+        let mut storage = nodecraft_format::MemoryStorage::default();
+        let snapshot = nodecraft_format::Snapshot { project: document.clone(), assets: Default::default(), epoch: 0 };
+        nodecraft_format::ProjectStorage::save(
+            &mut storage,
+            &nodecraft_format::StorageLocation::from_command("template.ncraft".into()).unwrap(),
+            &nodecraft_format::encode(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let mut session = Session::with_storage(snapshot, Box::new(storage)).unwrap();
+        session.dispatch("file.save_as", &json!({"location":"template.ncraft"})).unwrap();
+        session
+    } else {
+        Session::new(document).unwrap()
+    };
     if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to") {
         session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
             canvas: canvas(),
@@ -85,6 +99,23 @@ fn template(id: &str) -> (Session, Value) {
             fit_selection: true,
         }));
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
+    if id.starts_with("canvas.search_") {
+        session.swap_resource(Some(nodecraft_engine::search_cmds::SearchContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            open: true,
+            has_query: true,
+        }));
+        session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
+    if id.starts_with("run.") || id == "usage.export_csv" {
+        use nodecraft_engine::run_cmds::*;
+        session.swap_resource(Some(RunCatalog(std::sync::Arc::new(nodecraft_catalog::Catalog::builtin().unwrap()))));
+        session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
+        session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
+        session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
     }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
@@ -101,9 +132,17 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
         }
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
+        "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
+        "run.start" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)],"accept":{"amounts":{},"partial":true}}),
+        "run.record" => {
+            json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
+        }
+        "usage.export_csv" => json!({}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
+        "canvas.search_query" => json!({"query":"needle"}),
         "canvas.pan_to" => json!({"x":0,"y":0}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();
@@ -117,6 +156,9 @@ fn template(id: &str) -> (Session, Value) {
         // The keys service isn't registered here: dispatch must fail cleanly, never panic.
         "keys.set" => json!({"account":"openai","key":"sk-test-123456789"}),
         "keys.remove" | "keys.status" => json!({"account":"openai"}),
+        "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
+        "file.save" => Value::Null,
+        "file.save_as" => json!({"location":"new.ncraft"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
@@ -168,7 +210,22 @@ fn typed_template_panic_hunt() {
                 }
                 Ok(_) => {
                     successes += 1;
-                    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to" | "canvas.stale") {
+                    if matches!(
+                        id,
+                        "canvas.fit_all"
+                            | "canvas.fit_selection"
+                            | "canvas.minimap_toggle"
+                            | "canvas.pan_to"
+                            | "canvas.stale"
+                            | "canvas.search_open"
+                            | "canvas.search_query"
+                            | "canvas.search_next"
+                            | "canvas.search_previous"
+                            | "canvas.search_close"
+                            | "run.quote"
+                            | "run.start"
+                            | "usage.export_csv"
+                    ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
                         assert_eq!(session.events_since(0).unwrap(), events);
@@ -177,6 +234,14 @@ fn typed_template_panic_hunt() {
                     }
                     let after = session.document().clone();
                     session.document().validate().unwrap();
+                    if id == "canvas.paste" {
+                        assert_ne!(after, before, "a successful paste is a document edit");
+                        assert_eq!(session.revision(), revision + 1);
+                    }
+                    if id.starts_with("file.") {
+                        assert_eq!(after, before);
+                        continue;
+                    }
                     let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };
                     session.dispatch(reverse, &Value::Null).unwrap();
                     assert_eq!(session.document(), &before, "{id}");
