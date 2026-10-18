@@ -17,7 +17,12 @@ fn main() -> ExitCode {
     // `--control`: accept local automation clients (see `control.rs`). The first other argument
     // that isn't a flag is a project to open (#406); OS paths are kept as they are.
     let control = std::env::args_os().skip(1).any(|a| a == "--control");
-    let project = std::env::args_os().skip(1).find(|a| !a.to_string_lossy().starts_with('-')).map(std::path::PathBuf::from);
+    // Relative paths are made absolute here, while the working directory is the launcher's.
+    let project = std::env::args_os()
+        .skip(1)
+        .find(|a| !a.to_string_lossy().starts_with('-'))
+        .map(std::path::PathBuf::from)
+        .map(|path| if path.is_absolute() { path } else { std::env::current_dir().map(|dir| dir.join(&path)).unwrap_or(path) });
     if std::env::args_os().skip(1).any(|a| a == "--version" || a == "-V") {
         println!("nodecraft {}", nodecraft_engine::build_info::long_version());
         return ExitCode::SUCCESS;

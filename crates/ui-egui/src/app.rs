@@ -397,15 +397,18 @@ impl NodeCraftApp {
         });
         let mut kept = None;
         let mut app = match stored {
-            Some((session, canvas, unrecovered)) => {
+            Some((session, canvas, unrecovered, open_error)) => {
                 kept = unrecovered;
+                if let Some(error) = open_error {
+                    problem = Some(format!("That project couldn't be opened: {}", error.message));
+                }
                 Self::from_session(session.with_services(services), canvas)?
             }
             None => Self::with_services(services)?,
         };
         app.notice = problem.or_else(|| {
             kept.map(|path| {
-                log::warn!("kept an earlier session's recovery journal at {}", path.display());
+                log::warn!("kept an earlier session's recovery journal as {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
                 "Unsaved work from a session that didn't close cleanly was kept in the recovery folder.".to_owned()
             })
         });
@@ -613,6 +616,15 @@ impl NodeCraftApp {
         let tag_blocks = self.tag_overlay(ui);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
+        // Save and open (#406) work from a text field too (no field uses them); not while the palette
+        // or "Turn into" is open. Without a file yet, saving needs a location: say how to give one.
+        if self.palette.is_none() && self.turn_into.is_none() {
+            let (save_as, save, open) =
+                ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
+            if save || save_as || open {
+                self.notice = self.file_shortcut(save, save_as);
+            }
+        }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
@@ -632,12 +644,6 @@ impl NodeCraftApp {
                     self.notice = None;
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
-            }
-            // Save and open (#406). Without a file yet, saving needs a location: say how to give one.
-            let (save_as, save, open) =
-                ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
-            if save || save_as || open {
-                self.notice = self.file_shortcut(save, save_as);
             }
             let (select_all, escape, delete) = ui.input_mut(|i| {
                 (

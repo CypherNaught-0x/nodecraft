@@ -18,30 +18,52 @@ pub struct StorageSetup {
     pub open: Option<PathBuf>,
 }
 
-/// Copies a non-empty journal at `recovery` to a fresh `<name>.unrecovered-<n>` beside it, and
-/// returns where. Call with the journal's lock held.
+/// Most kept journals; past this, older work is still kept but no new copy is made (and storage
+/// keeps working).
+pub const MAX_KEPT: u32 = 99;
+
+/// Whether the journal at `recovery` holds work worth keeping: edits after its checkpoint, or
+/// damage or an old format that recovery has to look at. A journal holding only the checkpoint
+/// (the session started and did nothing) isn't.
+fn holds_work(recovery: &std::path::Path) -> bool {
+    let Ok(bytes) = std::fs::read(recovery) else {
+        return false;
+    };
+    if bytes.is_empty() {
+        return false;
+    }
+    match nodecraft_format::journal::recover(&bytes) {
+        Ok(recovered) => recovered.applied > 0 || recovered.damage.is_some() || recovered.truncated_tail || recovered.legacy,
+        // Unreadable bytes are kept: only a person should decide they're worthless.
+        Err(_) => true,
+    }
+}
+
+/// Copies a journal holding work at `recovery` to a fresh `<name>.unrecovered-<n>` beside it,
+/// flushed to disk, and returns where. Call with the journal's lock held.
 fn keep_unrecovered(recovery: &std::path::Path) -> Result<Option<PathBuf>, Error> {
     let unreadable = |_| Error::new(ErrorKind::Conflict, "an earlier session's recovery journal can't be kept, so it wasn't replaced");
-    match std::fs::metadata(recovery) {
-        Ok(meta) if meta.len() > 0 => {}
-        // Nothing to keep: no journal yet, or an empty one.
-        _ => return Ok(None),
+    if !holds_work(recovery) {
+        return Ok(None);
     }
     let name = recovery.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "session.journal".into());
-    for n in 1..=999u32 {
+    for n in 1..=MAX_KEPT {
         let kept = recovery.with_file_name(format!("{name}.unrecovered-{n}"));
         if !kept.exists() {
             std::fs::copy(recovery, &kept).map_err(unreadable)?;
+            // On disk before the original is checkpointed over.
+            std::fs::File::open(&kept).and_then(|file| file.sync_all()).map_err(unreadable)?;
             return Ok(Some(kept));
         }
     }
-    Err(Error::new(ErrorKind::Conflict, "too many unrecovered journals are kept; recover or remove some first"))
+    log::warn!("{MAX_KEPT} unrecovered journals are already kept; not keeping another");
+    Ok(None)
 }
 
 impl NodeCraftApp {
     /// A session over native storage, starting from the sample project or the file in `setup`,
     /// and the canvas to show, plus where an earlier session's unrecovered journal was kept.
-    pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>), Error> {
+    pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>, Option<Error>), Error> {
         let kinds = nodecraft_nodes::Registry::builtins()?;
         let (document, canvas) = Self::starter_document(&kinds)?;
         if let Some(folder) = setup.recovery.parent() {
@@ -55,28 +77,36 @@ impl NodeCraftApp {
         let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
         let mut session = Session::with_storage(snapshot, Box::new(storage))?;
         let mut canvas = canvas;
+        let mut opened = Ok(());
         if let Some(path) = setup.open {
-            let location = path.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project path isn't valid UTF-8"))?;
-            session.dispatch("file.open", &json!({"location": location, "discard_dirty": true}))?;
-            canvas = session.document().canvases().keys().next().copied().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project has no canvas"))?;
+            // A project that won't open leaves the new one, still saveable, and says why.
+            opened = path
+                .to_str()
+                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project path isn't valid UTF-8"))
+                .and_then(|location| session.dispatch("file.open", &json!({"location": location, "discard_dirty": true})).map(|_| ()));
+            if let Some(first) = session.document().canvases().keys().next() {
+                canvas = *first;
+            }
         }
-        Ok((session, canvas, kept))
+        Ok((session, canvas, kept, opened.err()))
     }
 
     /// [`Self::storage_session`] wrapped in an app with `services`.
     #[cfg(test)]
     pub(super) fn with_services_and_storage(services: nodecraft_engine::commands::Services, setup: StorageSetup) -> Result<Self, Error> {
-        let (session, canvas, _) = Self::storage_session(setup)?;
+        let (session, canvas, _, _) = Self::storage_session(setup)?;
         Self::from_session(session.with_services(services), canvas)
     }
 
-    /// On a clean quit: when everything is saved, close the recovery journal so it isn't
-    /// offered next time. Unsaved work keeps its journal for recovery (#408).
+    /// On a clean quit: when everything is saved, or nothing was done (an untitled project with
+    /// no edits), close the recovery journal so it isn't offered next time. Unsaved work keeps
+    /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
         let status = self.session.file_status();
+        let untouched = status.location.is_none() && !self.session.can_undo() && !self.session.can_redo();
         if status.available
-            && !status.dirty
-            && let Err(error) = self.session.close_recovery(false)
+            && (!status.dirty || untouched)
+            && let Err(error) = self.session.close_recovery(untouched)
         {
             log::warn!("recovery journal not closed: {}", error.message);
         }

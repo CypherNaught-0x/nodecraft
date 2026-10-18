@@ -88,15 +88,52 @@ fn an_untitled_project_says_how_to_give_it_a_file() {
 #[test]
 fn quitting_closes_the_journal_only_when_everything_is_saved() {
     let dir = Scratch::new("quit");
+    let journal = dir.0.join("recovery");
     let file = dir.0.join("q.ncraft");
-    let mut app = app(&dir.0, None);
-    add_text(&mut app, 70);
-    // Unsaved: the journal stays for recovery.
-    app.close_storage();
-    assert!(!app.session.file_status().recovery_required || app.session.file_status().dirty);
-    app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
-    app.close_storage();
-    assert!(app.session.file_status().recovery_required, "closed after a clean save");
+    // Unsaved edits: the journal stays on disk for recovery.
+    {
+        let mut edited = app(&dir.0, None);
+        add_text(&mut edited, 70);
+        edited.close_storage();
+    }
+    assert!(std::fs::metadata(&journal).is_ok_and(|m| m.len() > 0), "unsaved work keeps its journal");
+    let _ = std::fs::remove_file(&journal);
+    // Saved: the journal is closed.
+    {
+        let mut saved = app(&dir.0, None);
+        add_text(&mut saved, 71);
+        saved.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
+        saved.close_storage();
+        assert!(saved.session.file_status().recovery_required, "closed after a clean save");
+    }
+    // Nothing done: closed too, so the next launch has nothing to keep.
+    {
+        let mut untouched = app(&dir.0, None);
+        untouched.close_storage();
+    }
+    let (_, _, kept, _) = NodeCraftApp::storage_session(StorageSetup { recovery: journal.clone(), open: None }).unwrap();
+    assert!(kept.is_none(), "an untouched session leaves nothing to recover");
+}
+
+#[test]
+fn launching_without_edits_never_keeps_a_journal() {
+    let dir = Scratch::new("relaunch");
+    let journal = dir.0.join("recovery");
+    for _ in 0..3 {
+        // Start and quit without the clean-close (a crash right after launch): no edits, no copy.
+        let (_, _, kept, _) = NodeCraftApp::storage_session(StorageSetup { recovery: journal.clone(), open: None }).unwrap();
+        assert!(kept.is_none());
+    }
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().contains("unrecovered"))).count(), 0);
+}
+
+#[test]
+fn a_bad_startup_path_keeps_saving_working_and_says_why() {
+    let dir = Scratch::new("badpath");
+    let (session, _, _, error) =
+        NodeCraftApp::storage_session(StorageSetup { recovery: dir.0.join("recovery"), open: Some(dir.0.join("missing.ncraft")) }).unwrap();
+    assert!(error.is_some(), "the open failure is reported");
+    assert!(session.file_status().available, "and the window can still save");
 }
 
 #[test]
@@ -118,7 +155,7 @@ fn an_earlier_sessions_journal_is_kept_not_overwritten() {
     }
     let before = std::fs::read(&journal).unwrap();
     assert!(!before.is_empty());
-    let (_, _, kept) = NodeCraftApp::storage_session(StorageSetup { recovery: journal.clone(), open: None }).unwrap();
+    let (_, _, kept, _) = NodeCraftApp::storage_session(StorageSetup { recovery: journal.clone(), open: None }).unwrap();
     let kept = kept.expect("the earlier journal was kept");
     assert_eq!(std::fs::read(&kept).unwrap(), before, "byte for byte");
     assert_eq!(kept.file_name().unwrap(), "recovery.unrecovered-1");
