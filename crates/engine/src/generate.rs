@@ -308,7 +308,21 @@ struct ScanWork {
     utf8_bytes: usize,
 }
 
-fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, work: &mut ScanWork) -> Result<BorrowedOutput<'a>, Error> {
+impl ScanWork {
+    // Test-only observer of actual UTF-8 scan attempts; production admission uses its own Budget.
+    fn utf8_scan(&mut self, _bytes: usize) {
+        #[cfg(test)]
+        {
+            self.utf8_calls += 1;
+            self.utf8_bytes += _bytes;
+        }
+    }
+}
+fn raw_text_budget(text: usize, occurrences: usize) -> Result<Budget, Error> {
+    let bytes = occurrences.checked_mul(3).and_then(|n| n.checked_add(text)).ok_or_else(|| invalid("provider raw text work limit overflowed"))?;
+    Ok(Budget(bytes))
+}
+fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text: &mut Budget, work: &mut ScanWork) -> Result<BorrowedOutput<'a>, Error> {
     match item {
         Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
         Output::Bytes { mime: claimed, bytes } => {
@@ -326,12 +340,8 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, work: &mu
                 if bytes.len() > raw_limit {
                     return Err(invalid("the provider returned raw text over the text work limit"));
                 }
-                #[cfg(test)]
-                {
-                    work.utf8_calls += 1;
-                    work.utf8_bytes += bytes.len();
-                }
-                let _ = &work;
+                raw_text.charge(bytes.len()).map_err(|_| invalid("the provider's aggregate raw text exceeds the text work limit"))?;
+                work.utf8_scan(bytes.len());
                 let text = std::str::from_utf8(bytes).map_err(|_| invalid("the provider returned text that isn't UTF-8"))?;
                 Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text: text.trim_start_matches('\u{feff}') })
             } else {
@@ -388,6 +398,10 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
             Output::Url { .. } => return Err(unsupported("download URL outputs before mapping them")),
         }
     }
+    // Count actual occurrences, including aliases; the configured maximum is only a ceiling.
+    // Direct strings/media do not need UTF-8 validation, but contribute at most three bytes
+    // of bounded BOM allowance without an extra classification pass.
+    let mut raw_text = raw_text_budget(limits.text, done.outputs.len())?;
     let proof_bytes = done
         .outputs
         .len()
@@ -397,14 +411,11 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
     budget.charge(proof_bytes)?;
     let mut items = Vec::new();
     items.try_reserve_exact(done.outputs.len()).map_err(|_| Error::new(ErrorKind::Busy, "provider output admission scratch couldn't be allocated"))?;
-    if items.capacity() != done.outputs.len() {
-        return Err(Error::new(ErrorKind::Busy, "provider output admission scratch capacity exceeds its bound"));
-    }
     let mut text_bytes = 0usize;
     // Bounded borrowed scratch is allowed here; no converted records, hashing or cloning
     // precedes complete semantic admission. Keep the validated &str instead of rescanning it.
     for item in &done.outputs {
-        let classified = classify(item, &routes, limits, work)?;
+        let classified = classify(item, &routes, limits, &mut raw_text, work)?;
         match &classified {
             BorrowedOutput::Text { port, text } => {
                 text_bytes = text_bytes.checked_add(text.len()).ok_or_else(|| invalid("provider text byte count overflowed"))?;
