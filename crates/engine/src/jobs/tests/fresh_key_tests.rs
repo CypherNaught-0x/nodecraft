@@ -160,7 +160,11 @@ fn shared_active_key_is_busy_and_late_older_failure_cannot_regress_restored_gene
     runner.restore_generation("gated", "shared".into(), 3, JobHandle { remote_id: "shared#3".into(), data: serde_json::Value::Null });
     provider.open.store(true, Ordering::SeqCst);
     assert!(matches!(block_on(old), Outcome::Failed { .. }));
-    assert_eq!(runner.lock().failures.get(&("gated".into(), "shared".into())), Some(&3), "max(existing, captured+1), not regression or skipped generation");
+    assert_eq!(
+        runner.lock().failures.get(&(nodecraft_types::ProviderTarget::default_instance("gated").unwrap(), "shared".into())),
+        Some(&3),
+        "max(existing, captured+1), not regression or skipped generation"
+    );
     assert_eq!(block_on(runner.run(shared(2), CancelToken::default())), Outcome::Done);
     assert_eq!(*provider.keys.lock().unwrap(), ["shared"], "restored generation resumes without submit");
     assert_eq!(budget.log.lock().unwrap().charge("gated", "shared#3").unwrap().status, Charge::Actual);

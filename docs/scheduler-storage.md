@@ -87,3 +87,20 @@ This bounds job-spec storage only. Arbitrary caller-provided concurrency configu
 job error strings/outcomes and caller-owned outputs have separate ownership and limits. No outcome
 or event is silently discarded to enforce these budgets. Paid retry and cooperative cancellation
 semantics, including the fan-in settle-only-when-ready correction, remain unchanged.
+
+
+## Provider endpoint limits and usage export
+
+Provider lanes use canonical target encodings (`p:<adapter-hex>:d` for the default endpoint,
+`p:<adapter-hex>:i:<instance-hex>` for a named endpoint). The literal adapter name `local` is
+separate from the real local Source/Action lane. Configure endpoint concurrency through
+`Limits::set_target_limit(&target, limit)` rather than a bare adapter-name lane string.
+Scoped usage CSV adds `provider_instance`: an empty value is the legacy/default endpoint,
+while a named value identifies its endpoint UUID. This column does not imply old records
+contained a named instance or that a lane string is restoration authority.
+
+Authorized runs derive each queued job's known, unknown or free price from their retained
+admitted quote; a host cannot replace it with an unbudgeted price argument. Partial consent
+continues to authorize unknown/provisional work under the host budgets. It is not an additional
+per-run cumulative ceiling equal to the accepted provisional totals; that policy remains a
+separate follow-up.

@@ -35,3 +35,5 @@ pub mod stale_cmds;
 pub mod turn_into_cmds;
 
 pub use session::{DocChanged, Session};
+
+pub mod provider_routing;
