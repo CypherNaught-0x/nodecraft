@@ -19,3 +19,7 @@
 - **Not yet:** picking N×M visually on the image, and wiring the tiles into a collection (#92).
   Cards don't render images yet; for now the card's context menu offers "Split into grid" with
   rows and columns fields.
+- **Picking visually (#337):** while the card's "Split into grid" menu is open, the card draws the
+  grid over its image in the accent colour, updating as rows and columns change. The lines use
+  `split::edge` and the image's full size, so they fall exactly where the split will cut. They
+  go away when the menu closes.

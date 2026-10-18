@@ -70,3 +70,25 @@ fn nodes_without_an_image_offer_no_split() {
     assert!(h.query_by_label("Select upstream").is_some());
     assert!(h.query_by_label_contains("Split into grid").is_none());
 }
+
+#[test]
+fn the_grid_shows_on_the_image_while_the_split_menu_is_open() {
+    let mut h = with_image();
+    for _ in 0..100 {
+        h.run();
+        if h.query_by_label("Image 8×6").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(h.query_by_label("Image 8×6").is_some(), "the preview is ready");
+    right_click(&mut h, IMAGE);
+    h.get_by_label_contains("Split into grid").hover();
+    h.run();
+    h.run();
+    assert!(h.query_by_label("Image 8×6, split preview 2 rows by 2 columns").is_some(), "the grid is drawn over the image");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains("split preview").is_none(), "and goes when the menu closes");
+}
