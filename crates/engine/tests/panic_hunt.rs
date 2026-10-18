@@ -31,7 +31,7 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges"] {
+        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges", "location", "discard_dirty"] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
@@ -75,7 +75,21 @@ fn template(id: &str) -> (Session, Value) {
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
-    let mut session = Session::new(document).unwrap();
+    let mut session = if id.starts_with("file.") {
+        let mut storage = nodecraft_format::MemoryStorage::default();
+        let snapshot = nodecraft_format::Snapshot { project: document.clone(), assets: Default::default(), epoch: 0 };
+        nodecraft_format::ProjectStorage::save(
+            &mut storage,
+            &nodecraft_format::StorageLocation::from_command("template.ncraft".into()).unwrap(),
+            &nodecraft_format::encode(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let mut session = Session::with_storage(snapshot, Box::new(storage)).unwrap();
+        session.dispatch("file.save_as", &json!({"location":"template.ncraft"})).unwrap();
+        session
+    } else {
+        Session::new(document).unwrap()
+    };
     if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to") {
         session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
             canvas: canvas(),
@@ -117,6 +131,9 @@ fn template(id: &str) -> (Session, Value) {
         // The keys service isn't registered here: dispatch must fail cleanly, never panic.
         "keys.set" => json!({"account":"openai","key":"sk-test-123456789"}),
         "keys.remove" | "keys.status" => json!({"account":"openai"}),
+        "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
+        "file.save" => Value::Null,
+        "file.save_as" => json!({"location":"new.ncraft"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
@@ -177,6 +194,14 @@ fn typed_template_panic_hunt() {
                     }
                     let after = session.document().clone();
                     session.document().validate().unwrap();
+                    if id == "canvas.paste" {
+                        assert_ne!(after, before, "a successful paste is a document edit");
+                        assert_eq!(session.revision(), revision + 1);
+                    }
+                    if id.starts_with("file.") {
+                        assert_eq!(after, before);
+                        continue;
+                    }
                     let (reverse, again) = if id == "edit.undo" { ("edit.redo", "edit.undo") } else { ("edit.undo", "edit.redo") };
                     session.dispatch(reverse, &Value::Null).unwrap();
                     assert_eq!(session.document(), &before, "{id}");

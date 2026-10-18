@@ -289,3 +289,207 @@ null is the reset sentinel for a parameter, not a stored Value variant.
 rendering. Builtin sessions require no separate Registry resource; custom sessions inject kinds
 once through `Session::with_registries`. The query remains read-only and its enabled check only
 checks the canvas, leaving staleness computation to dispatch.
+
+## Project persistence (#54)
+
+`format::Snapshot` combines a validated graph, immutable content-addressed `AssetStore`, and a
+checkpoint epoch. `encode`/`decode` are platform-independent stored-ZIP codecs; they never extract
+paths or decode media. The version gate precedes graph deserialization. ZIP directory/local-header
+validation runs before the ZIP library allocates its directory. Only `project.json` and canonical
+`assets/<lowercase-blake3>` regular entries are accepted, with matching lengths, CRCs and hashes.
+Unknown JSON fields are tolerated; optional graph collections default empty. IDs, kinds and format
+version remain required. Unsupported versions produce an update error.
+
+Initial limits are 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per asset and 48 MiB
+aggregate media. Codec bytes are currently buffered; cloned asset stores share immutable buffers.
+Saving includes only assets referenced by node parameters or generation history, including lists.
+Large-project lazy disk storage is a later optimization: do not simply increase these memory caps.
+Format v1 excludes ZIP64, compression, encryption, directory entries, archive comments and extra
+fields. These restrictions make the bounded interchange surface explicit.
+
+Hosts construct `Session::with_storage(snapshot, storage)`. A `ProjectStorage` instance belongs to
+one session. Native hosts provide `NativeStorage` with a private, session-unique recovery path;
+an OS lock on a persistent recovery-side file prevents concurrent recovery writers and releases
+on process exit. Project destination locks use a private per-user app-data directory (see below).
+Native paths retain `PathBuf`; command parameters use UTF8 filesystem paths (native) or opaque
+keys (web). Browser hosts implement `ProjectStorage`; `MemoryStorage` supports deterministic tests.
+The desktop/CLI adapters will supply these services when they connect their document sessions.
+
+`file.open`, `file.save` and `file.save_as` use the same registry/dispatcher as graph commands and
+never open dialogs. Open fully validates the archive and creates its recovery checkpoint before
+publishing a replacement session document; it resets undo/redo and preserves monotonic event
+cursors. Discarding a dirty document requires explicit `discard_dirty: true`. A successful save
+updates location and savepoint after atomic publication and breaks drag coalescing. Undo entries
+carry content state IDs, so undo/redo to the saved state clears dirty even though revision increases.
+`file_status()` plus `status_revision()` notify hosts of save/dirty/recovery changes independently
+of `DocChanged`; saving does not manufacture document edits.
+
+`ProjectStorage::prepare_open` returns `LoadedProject {bytes,access}` and retains the previous
+active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`;
+only successful publication calls the infallible `commit_open`. Native load's eager convenience
+API commits immediately; engine lifecycle code always uses the staged protocol. Writable hosts
+without destination locks retain compatibility defaults; locking/read-only adapters must implement
+and forward the complete protocol. `file.open` returns `{opened:true,read_only:bool}`.
+`FileStatus.read_only` means the source cannot be overwritten: file.save is disabled/refused,
+while local edits/recovery and Save As to a different writable destination remain supported.
+Native canonical aliases cannot bypass that source restriction. A published Save As adopts its
+new destination even if subsequent recovery checkpointing fails, retaining existing save semantics.
+`save_with_access` reports the capability of a successfully published destination; its default
+delegates to `save` and returns ReadWrite for nonlocking hosts. Locking wrappers must forward it.
+Native admission uses a short per-canonical-directory OS gate (at most two seconds of waiting,
+then Busy), shared by prepare-open and save. Existing destinations acquire their canonical project
+guard before any write. New destinations canonicalize the actual published file and acquire that
+guard before releasing admission. Postpublication identity/guard failure reports successful
+publication with ReadOnly capability, never an unpublished-save error. Save results include
+`{saved:true,recovery_ready:bool,read_only:bool}`; FileStatus and the saved location agree.
+Directory gates are released after adoption, so unrelated files can remain open concurrently.
+Existing symlinks and chains are supported only when the complete destination canonicalizes.
+An unresolved/dangling leaf symlink is rejected before admission and reserved-path checks;
+callers must choose the actual writable target. Only an ordinary absent leaf may fall back to
+canonical parent plus filename. Missing parents, cycles and metadata/permission errors refuse
+publication rather than guessing which directory an atomic writer would follow.
+This assumes cooperating processes and stable filesystem names; external deletion/renaming,
+noncooperating writers, hard-link aliases and different OS users are outside the lock protocol.
+All format-native calls to the upstream PID-named writability probe share a process mutex;
+the helper stays upstream. Independent users of that helper outside this crate are not serialized.
+
+Recovery files contain a complete checkpoint plus append-only, BLAKE3-checked changeset frames.
+Every edit, undo, redo and intermediate coalesced move is appended to the OS before publication.
+Native recovery keeps its append handle open and a worker group-syncs pending bytes every 250 ms,
+plus scheduler/filesystem latency. This bounds the ordinary power-loss window without syncing
+every pointer sample. Save and explicit clean close flush synchronously. Worker failures latch
+and surface on append/flush; an edit whose append fails does not publish.
+Sync captures a cloned handle, file generation and appended sequence under the state mutex, then
+releases it before syncing. A separate sync gate serializes worker/explicit syncs without blocking
+appends. Success advances durable only through the captured sequence; concurrent appends remain
+dirty. Each generation owns an atomic failure token checked before/after append, so a known failure
+latches immediately without waiting for the state mutex. Checkpoint publication advances generation
+and replaces that token; stale handle completion cannot clear new dirty data or poison a new file.
+Explicit flush covers its invocation boundary, or a durable replacement checkpoint, and clean close
+waits for that boundary before discard. Overflow is rejected before checkpoint/append publication.
+Newly referenced asset bytes accompany the first frame that needs them. Frames are sequence- and
+checkpoint-bound, at most 64 MiB; the journal is capped at 128 MiB and requires saving when full.
+Replay validates graph and asset references after every frame. The checkpoint performs the full
+asset walk; subsequent frames recheck only surviving nodes whose asset-bearing data changed
+(AddCanvas, add/set/restore node, SetParam and AddGeneration). Unchanged references remain valid
+because stored asset bytes are immutable. Config, nested Values and all generation outputs are
+included. Removing a bad reference in a later frame cannot hide it. Moves need no asset walk;
+graph apply still clones/validates the final project per frame, so overall replay remains
+proportional to frame count times document size. Before accepting an edit, the
+session preflights canonical forward/inverse replay with max sequence digits, the Record envelope
+and every retained asset as potentially additional after a checkpoint. Full binary headers count
+toward the64MiB frame limit, so accepted undo/redo cannot become oversized after saving an empty
+or smaller document. Any physical outer framing/length/checksum damage yields the complete
+validated prefix, even when later frames survive. `Recovered.damage` reports the first damaged
+frame's absolute byte `offset` and typed `reason`; `truncated_tail` remains true for existing hosts.
+The decoder stops there and never applies any later frame. Invalid checkpoints, checksum-valid
+semantic/compatibility violations, missing/invalid assets, reordered and stale frames remain hard
+errors. A valid outer checksum makes malformed inner record/asset envelopes semantic errors too.
+An ambiguous append failure preserves live state and disables edits until a successful save
+replaces the journal. `NativeStorage::recover` preserves the original bytes and latches a damaged
+journal against append until a fresh checkpoint is published. Pure `journal::recover` cannot
+mutate storage; other hosts must honor the same checkpoint-before-append contract and report
+the reason/offset while retaining the evidence. Constructing a new
+session from it writes a fresh checkpoint and presents it as untitled/dirty, requiring an explicit
+save destination. Recovery selection/presentation belongs to the host; it never silently overwrites
+a newer saved project.
+
+`craft-atomic` writes same-directory staging files, syncs before publication and replaces the
+destination. A storage save error means unpublished. Its directory sync after rename is best effort,
+so success means published, not a guarantee against hardware failure. A recovery-checkpoint failure
+after a published save returns `{saved: true, recovery_ready: false}`, records the saved location
+and state, and disables edits until another save repairs recovery. Hosts must surface that status.
+
+
+### Persistence integration boundaries and tracked storage work
+
+Save encodes once: its archive slice is reused from the new checkpoint. Open decodes once and
+reuses the validated archive bytes for checkpointing. After a save, asset GC preserves references
+from both the live document and bounded undo/redo payloads; discarded redo assets can then be
+reclaimed. Hosts must call `Session::close_recovery` on a clean close (or explicit dirty discard)
+to flush and remove recovery; dropping a dirty session intentionally leaves recovery available.
+Native project destinations use persistent lock inodes in the per-user NodeCraft app-data
+`project-locks-v1` directory, named by a BLAKE3 hash of the canonical native path bytes. The directory
+is private (0700 on Unix); symlink/unsafe lock entries are refused, and project destinations cannot
+overwrite these private files. Lock files are never unlinked while participating in the protocol,
+avoiding inode-split races and project-folder sidecars. A storage session holds only its active and
+pending candidate guards, releasing the old guard after a successful Open/Save As and the candidate
+on failure. Historical destinations do not impose a64-location limit. Actual contention is Busy.
+A readable source in a read-only directory or with unavailable private lock infrastructure opens
+explicitly read-only; writable saves always require a real destination guard and write capability.
+The protocol coordinates cooperating processes for the same OS user and canonical path spelling.
+Hard-link identity and writers under other OS users/other lock protocols are not coordinated; it
+does not imply universal filesystem exclusion. Recovery-path protection remains separately enforced.
+Format checks ZIP parser entry-count agreement. `types::Blake3` is canonical for project/journal
+references; format's `canonical_hash`/`media_hash` bridge the standalone media cache key without
+illegal orphan From implementations. Known MIME signatures and dimensions from available bounded image probes are
+verified against bytes. Duration/sample-rate/channel/page metadata remains advisory until the
+[media milestones](plan.md#7-roadmap) provide the corresponding bounded probes.
+
+The bounded buffered M1 codec does **not** yet satisfy [plan 4.6's large-project requirement](plan.md#46-storage)
+that assets stay on disk and load lazily. This remains tracked in [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54:
+a file-backed AssetSource, streaming archive/checkpoint paths, large video limits and ZIP64 need
+a separate format/asset-store design before increasing memory caps. The current 16 MiB/48 MiB limits
+are operational limits, not a claim of large-video support. Format v1 has no published predecessor;
+the explicit migration seam rejects older/future versions before typed graph decoding. A real
+migration and fixture must land before writing v2; no invented lossy v0 migration is applied.
+
+### Frozen-v1 bridge on the current graph
+
+The v1 archive and `NCRJ0001` journal keep the exact08586e representation contract. A contextual
+raw-JSON gate runs after container/version/checksum admission and before typed graph/changeset
+decoding; writers apply the same gate to bounded manifests/records before publication. Node
+configuration (including explicit empty/null keys in incoming v1), scalar Bool/Number/Integer/
+Unsigned values in actual params/history, Note/discussion fields, generation input hashes and
+reserved newer Tag/Field members require newer format support. Harmless extension objects
+outside those roles retain the old serde behavior. Diagnostics are value-free `Unsupported`
+errors. No fixture headers or version numbers are rewritten.
+
+Current nodes with empty config and legacy Text/Media/List data remain saveable. Memory-only
+sessions support the full current graph, including config/scalars and undo/redo. Storage-backed
+sessions graph-stage prospective documents and preflight forward/inverse replay before append
+or history publication. A validated v1 checkpoint plus complete frozen contextual forward-role
+guards preserves compatibility inductively; unchanged representation needs no additional full
+project traversal. Archive/Save/Open retain full validation and the 4-MiB manifest cap, without
+imposing that smaller cap on incremental editing. Record preflight retains max-sequence,
+canonical replay and binary/asset overhead reservations, then allocates an additional bounded
+record buffer (at most16 MiB) and temporary parsed JSON tree for compatibility. This is an extra
+allocation/pass, not zero-copy; the guard retains no accumulating metadata. Config media walkers
+already cover live and retained-history references for the later v2 writer, although v1 refuses
+nonempty config. Full config/scalar persistence arrives with the coordinated Comments-v2
+migration; it is not silently added under v1. Large/lazy assets remain #147.
+
+A local macOS debug-profile sample used a 262,445-byte canonical-shaped record containing a
+256-KiB text parameter: 100 full replay preflights took 1.296 s. This includes canonical budget
+traversal, the extra bounded serialized buffer and raw JSON parse/guard; it measures neither
+fsync nor durability. The buffer length is measured, not a claim about total heap usage (the
+parsed JSON tree is additional). The ignored `compatibility_preflight_cost` test reproduces the
+sample without timing assertions.
+
+Persistent preparation returns a private, non-Clone bundle pairing the graph-staged document
+with an opaque admitted forward replay. It captures only referenced immutable asset bytes and
+their canonical replay budgets. Append consumes this proof, derives additional assets from
+forward references minus already-journaled hashes, and accepts no substitute document/store.
+Surviving changed nodes receive incremental MIME/dimension/reference checks against the complete
+source store; unchanged references retain the validated-root proof. Ordered valid-final batches
+and every inverse/future canonical redo remain admitted through the same path. Arbitrary public
+`journal::frame` callers still receive full replay admission.
+
+The bundle carries a private session source identity and revision. Commit rejects a proof from
+another session, earlier revision, asset import or save/asset-GC epoch before append. Only a
+successful publication/import replaces identity; failed preparation/import/append preserves it.
+Availability graph-stages document effects once through Session, including generic/custom commands;
+handler preview callbacks only check editability/parameters. Read-only Preview early returns stay
+cheap. Opt-in `validation-metrics` exists for deterministic downstream tests, with no product-build
+counter cost. Graph cloning/application, structural validation and byte-budget serialization still
+traverse the project per admitted edit; this is not a constant-time or linear-total edit claim.
+
+### Runtime result recording and frozen-v1 storage
+
+The current `exec::run::Run` returns caller-owned completed results; it does not mutate a
+Session or automatically wire desktop execution. A host can turn a result into one changeset
+with `record_changes` and dispatch it through the ordinary command admission boundary.
+Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 storage refuses
+`Generation.input_hash` with an actionable Unsupported error before journal append or document,
+history and identity publication. The caller retains the completed result for explicit later
+handling; the engine must neither discard its stamp nor silently widen v1 to save it.

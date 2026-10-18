@@ -10,9 +10,11 @@ claude mcp add nodecraft -- nodecraft-cli mcp      # Claude Code
 
 For other clients, configure a stdio server that runs `nodecraft-cli` with the argument `mcp`.
 
-The server starts with a new, empty project with one canvas. Opening and saving project files
-arrives with the project format (#54), confined to the read/write roots you allow. Streamable HTTP
-and the in-app server setting are still to come (#116).
+The server starts with a new, empty project with one canvas. Project file commands are currently
+hidden and refused over MCP, including when the host configures project storage. Allowed
+read/write roots must be enforced before exposing them (#116); native path canonicalization
+does not provide that authorization. Streamable HTTP and the in-app server setting are still
+to come (#116).
 
 ## Bridge to the running app
 
@@ -66,8 +68,10 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 
 **Every command is classified.** Commands in `mcp::AGENT_COMMANDS` are listed and run. Commands
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
-and `keys.remove` deletes a key with no undo. A new command stays hidden until it is added to one
-of the lists, and a test fails until then.
+and `keys.remove` deletes a key with no undo. `file.open`, `file.save` and `file.save_as` are
+temporarily human-only until MCP enforces allowed read/write roots (#116); they remain available
+through the engine and native app. A new command stays hidden until it is added to one of the
+lists, and a test fails until then.
 
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
