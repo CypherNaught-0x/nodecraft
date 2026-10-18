@@ -28,7 +28,7 @@ nodecraft-media = { workspace = true }
 nodecraft-types = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 url = { workspace = true }
 base64 = { version = "=0.22.1", optional = true }
 blake3 = { workspace = true, optional = true }

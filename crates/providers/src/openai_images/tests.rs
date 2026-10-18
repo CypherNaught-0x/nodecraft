@@ -339,13 +339,13 @@ fn lexical_limits_apply_before_serde_unescaping_including_unknown_fields() {
     assert_eq!(counters().3, 1);
 }
 #[test]
-fn duplicate_critical_fields_usage_overflows_and_mime_alpha_mismatch_are_safe_errors() {
+fn duplicate_critical_fields_and_mime_alpha_mismatch_are_safe_errors() {
     let good = base64::engine::general_purpose::STANDARD.encode(png());
     let duplicate = format!(r#"{{"data":[{{"b64_json":"{good}","b64_json":"{good}"}}]}}"#);
     assert!(run(&job(), duplicate.into_bytes(), Limits::default()).0.is_err());
     let mut b: Value = serde_json::from_slice(&body(vec![png()])).unwrap();
     b["usage"]["input_tokens_details"]["text_tokens"] = json!(u64::MAX);
-    assert!(run(&job(), serde_json::to_vec(&b).unwrap(), Limits::default()).0.is_err());
+    assert_eq!(completed(run(&job(), serde_json::to_vec(&b).unwrap(), Limits::default()).0.unwrap()).usage, Usage::default());
     assert!(run(&job(), body(vec![image("jpeg", false, 1)]), Limits::default()).0.is_err());
     let mut j = job();
     j.params.insert("background".into(), json!("transparent"));
@@ -408,4 +408,109 @@ fn non_mask_edits_admit_jpeg_and_webp_without_reordering_or_transcoding() {
         assert!(a < b);
         assert!(!format!("{req:?}").contains("fixture-key"));
     }
+}
+
+fn assert_usage_survives(value: Value) {
+    let bytes = png();
+    let mut reply: Value = serde_json::from_slice(&body(vec![bytes.clone()])).unwrap();
+    reply["usage"] = value;
+    let (done, h) = run(&job(), serde_json::to_vec(&reply).unwrap(), Limits::default());
+    let c = completed(done.expect("valid paid output survives optional usage"));
+    assert_eq!(c.usage, Usage::default());
+    assert_eq!(c.outputs.len(), 1);
+    let Output::Bytes { bytes: actual, .. } = &c.outputs[0] else { panic!("image bytes") };
+    assert_eq!(actual.as_ref(), bytes);
+    assert_eq!(h.requests().len(), 1);
+}
+#[test]
+fn optional_usage_wrong_types_preserve_outputs() {
+    for value in [json!("bad"), json!([]), json!({"input_tokens":"seven"}), json!({"input_tokens":-1}), json!({"output_tokens":1.5})] {
+        assert_usage_survives(value);
+    }
+}
+#[test]
+fn optional_usage_partial_details_preserve_outputs() {
+    assert_usage_survives(json!({"input_tokens":7,"input_tokens_details":{"text_tokens":3}}));
+}
+#[test]
+fn optional_usage_inconsistent_totals_preserve_outputs() {
+    assert_usage_survives(json!({"input_tokens":7,"output_tokens":11,"total_tokens":19}));
+}
+#[test]
+fn optional_usage_overflow_preserves_outputs() {
+    assert_usage_survives(json!({"input_tokens_details":{"image_tokens":u64::MAX,"text_tokens":1}}));
+}
+
+#[test]
+fn optional_usage_valid_and_unknown_controls() {
+    for value in [
+        json!(null),
+        json!({}),
+        json!({"input_tokens":7,"output_tokens":11}),
+        json!({"input_tokens":7,"output_tokens":11,"total_tokens":18,"input_tokens_details":{"text_tokens":3,"image_tokens":4}}),
+    ] {
+        let mut reply: Value = serde_json::from_slice(&body(vec![png()])).unwrap();
+        reply["usage"] = value.clone();
+        let c = completed(run(&job(), serde_json::to_vec(&reply).unwrap(), Limits::default()).0.unwrap());
+        assert_eq!(c.usage.cost, None);
+        assert_eq!(c.usage.input_tokens, value.get("input_tokens").and_then(Value::as_u64));
+        assert_eq!(c.usage.output_tokens, value.get("output_tokens").and_then(Value::as_u64));
+    }
+    assert_usage_survives(json!({"input_tokens":u64::MAX,"output_tokens":1,"total_tokens":0}));
+    assert_usage_survives(json!({"input_tokens":7,"input_tokens_details":{"image_tokens":1,"text_tokens":1}}));
+}
+#[test]
+fn optional_usage_is_not_a_structural_or_output_validation_bypass() {
+    let good = base64::engine::general_purpose::STANDARD.encode(png());
+    {
+        let raw = format!(r#"{{"data":[{{"b64_json":"{good}"}}],"usage":{{"input_tokens":1,"input_tokens":2}}}}"#);
+        let c = completed(run(&job(), raw.into_bytes(), Limits::default()).0.unwrap());
+        assert_eq!(c.usage, Usage::default());
+    }
+    for raw in [
+        format!(r#"{{"data":[{{"b64_json":"{good}"}}],"usage":{{}},"usage":{{}}}}"#),
+        format!(r#"{{"data":[{{"b64_json":"{good}"}}],"usage":{{"bad":"\uD800"}}}}"#),
+        format!(r#"{{"data":[{{"b64_json":"{good}"}}],"usage":[]}} trailing"#),
+        r#"{"data":[{"b64_json":"%%%%"}],"usage":"invalid"}"#.into(),
+    ] {
+        reset();
+        assert!(run(&job(), raw.into_bytes(), Limits::default()).0.is_err());
+        assert_eq!(counters().2, 0);
+    }
+    let raw = format!(r#"{{"data":[{{"b64_json":"{good}"}}],"usage":{{"unknown":"{}"}}}}"#, "x".repeat(513));
+    reset();
+    assert!(run(&job(), raw.into_bytes(), Limits { metadata_bytes: 512, ..Limits::default() }).0.is_err());
+    assert_eq!(counters().3, 0);
+    assert!(run(&job(), body(vec![png()]), Limits::default()).0.is_ok());
+    assert!(counters().2 > 0);
+}
+#[test]
+fn optional_usage_partial_n_retains_order_without_replay() {
+    let mut j = job();
+    j.params.insert("n".into(), json!(3));
+    let images = vec![image("png", true, 1), image("png", true, 2)];
+    let mut reply: Value = serde_json::from_slice(&body(images.clone())).unwrap();
+    reply["usage"] = json!({"total_tokens":"bad"});
+    let (done, h) = run(&j, serde_json::to_vec(&reply).unwrap(), Limits::default());
+    let c = completed(done.unwrap());
+    assert_eq!(c.usage, Usage::default());
+    assert_eq!(c.outputs.len(), 2);
+    assert_eq!(h.requests().len(), 1);
+    for (output, expected) in c.outputs.iter().zip(images) {
+        let Output::Bytes { bytes, .. } = output else { panic!("bytes") };
+        assert_eq!(bytes.as_ref(), expected);
+    }
+}
+
+#[test]
+fn optional_usage_top_positional_array_is_unknown() {
+    assert_usage_survives(json!([7, 11, 18, null, null]));
+}
+#[test]
+fn optional_usage_input_detail_positional_array_is_unknown() {
+    assert_usage_survives(json!({"input_tokens":7,"output_tokens":11,"total_tokens":18,"input_tokens_details":[4,3]}));
+}
+#[test]
+fn optional_usage_output_detail_positional_array_is_unknown() {
+    assert_usage_survives(json!({"input_tokens":7,"output_tokens":11,"total_tokens":18,"output_tokens_details":[8,3]}));
 }
