@@ -234,7 +234,9 @@ AddNode restore spelling and the complete changeset envelope, avoiding a second 
 pass. Parameter decoding borrows JSON and reports allowlisted field paths and error categories,
 never raw input values or arbitrary map keys. Native panic unwinding returns an
 internal error while preserving document/history/events; abort-only targets still depend on
-validation. History limits and explicit drag tokens are specified in `decisions.md`. Each
+validation. History limits and explicit drag tokens are specified in the
+[engine-session decision](decisions/2026-10-16-engine-command-sessions.md), with the later
+[history-step limit update](decisions/2026-10-17-200-node-performance.md). Each
 subscriber calls `events_since(cursor)` and advances its own cursor to the last notification;
 an expired cursor requires reading the current document and revision again. These notifications
 are an invalidation log, not a persistence or collaboration journal. Applied changeset events
@@ -493,3 +495,11 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 `Generation.input_hash` with an actionable Unsupported error before journal append or document,
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
+
+
+## Optional native video sidecar
+
+`media/video` provides the standalone bounded native FFmpeg service described in
+[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
+tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
+is separate. Feature-on wasm exposes an Unsupported host setup path.

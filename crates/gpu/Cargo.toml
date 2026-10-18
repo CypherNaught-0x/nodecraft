@@ -12,3 +12,10 @@ workspace = true
 
 [dependencies]
 nodecraft-actions = { workspace = true }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12", "webgpu"] }
+
+futures = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+serde_json = { workspace = true }

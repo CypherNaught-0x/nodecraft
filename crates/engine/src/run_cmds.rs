@@ -11,7 +11,11 @@
 //!   to the host's `run.start` service, which plans the same request and runs it.
 //! - `run.record` (host only): records a run's results, one generation per node, as one undo
 //!   step.
-//! - `usage.export_csv` (read-only): the usage log as spreadsheet-safe CSV.
+//! - `usage.export_csv` (read-only): spreadsheet-safe CSV pages, at most 2,000 rows and
+//!   768 KiB of encoded JSON including the envelope. Continue at the returned actual row offset.
+//!
+//! Requiring a configured budget for automation-started paid runs remains desktop-host policy
+//! for #201 part 2 / #293; these commands do not implement that future host.
 //!
 //! The model catalog, the caps with what has been spent, and the usage log are host resources
 //! ([`RunCatalog`], [`BudgetState`], [`UsageSnapshot`]); without them the commands are
@@ -41,16 +45,40 @@ pub const MAX_LISTED: usize = 500;
 /// Most usage rows one `usage.export_csv` page returns.
 pub const MAX_EXPORT_ROWS: usize = 2_000;
 
-/// The model catalog runs are priced against (a host resource).
-pub struct RunCatalog(pub Arc<Catalog>);
+/// Immutable catalog definition snapshot. Clone preserves identity; a newly constructed
+/// snapshot invalidates earlier launch consent, even when all prices happen to match.
+#[derive(Clone)]
+pub struct RunCatalog(Arc<CatalogSnapshot>);
+struct CatalogSnapshot {
+    catalog: Catalog,
+    nonce: [u8; 32],
+}
+impl RunCatalog {
+    pub fn new(catalog: Catalog) -> Result<Self, Error> {
+        Ok(Self(Arc::new(CatalogSnapshot { catalog, nonce: crate::execution_identity::nonce()? })))
+    }
+    pub fn catalog(&self) -> &Catalog {
+        &self.0.catalog
+    }
+}
 
-/// The caps, and what has been spent so far, as of now (a host resource).
+/// The caps and conservative admission spend (a host resource).
+/// Prefer [`BudgetState::from_usage`] when constructing this from a usage log; exact reporting
+/// totals alone can understate an uncertain historical session's admission exposure.
 pub struct BudgetState {
     pub budgets: Budgets,
     pub spent: Spent,
 }
 
-/// The usage log, for export (a host resource).
+impl BudgetState {
+    /// Includes finalized Actuals and the conservative uncertain-session upper bound.
+    pub fn from_usage(budgets: Budgets, usage: &UsageLog, session: &str) -> Self {
+        Self { budgets, spent: usage.spent(session) }
+    }
+}
+
+/// The usage log, for listed-row export (a host resource). Finalized Actuals are included;
+/// evicted uncertain rows remain available through UsageLog's separate quarantine export.
 pub struct UsageSnapshot(pub Arc<UsageLog>);
 
 #[derive(Deserialize)]
@@ -109,6 +137,13 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
 
+fn check_requested(value: &Value) -> Result<(), Error> {
+    if value.get("nodes").and_then(Value::as_array).is_some_and(|nodes| nodes.len() > MAX_REQUESTED) {
+        return Err(invalid(format!("a run names at most {MAX_REQUESTED} nodes")));
+    }
+    Ok(())
+}
+
 fn mode_of(p: &RunParams) -> Result<RunMode, Error> {
     if p.nodes.len() > MAX_REQUESTED {
         return Err(invalid(format!("a run names at most {MAX_REQUESTED} nodes")));
@@ -154,74 +189,95 @@ pub struct Priced {
     pub complete: bool,
     /// The budgets allow the run (possibly provisionally).
     pub allowed: bool,
-    /// Identifies what was priced: the document revision, the request, the plan's steps and
-    /// their prices. `run.start` requires the token of the quote the caller accepted, and the
-    /// host checks it again before running, so the run is exactly what was priced.
+    /// Live Session/source-generation, immutable catalog identity and canonical request.
+    /// Budgets remain live rechecks; the trusted host must retain the verified execution
+    /// snapshot/definitions after checking this token and before scheduling.
     pub token: String,
 }
 
-/// Prices a run request (`run.quote`'s parameters) on `document` at `revision`. Hosts call this
-/// before running a started run, with the document as it is then, and refuse when the token
-/// differs from the one `run.start` passed them.
-pub fn price(
-    document: &nodecraft_graph::Project,
-    revision: u64,
-    kinds: &nodecraft_nodes::Registry,
-    catalog: &Catalog,
-    budget: &BudgetState,
-    request: &Value,
-) -> Result<Priced, Error> {
-    let p: RunParams = params(request)?;
-    priced(document, revision, kinds, catalog, budget, &p)
+/// Prices the ACTUAL live Session. The returned launch authority cannot be minted
+/// from a copied Project and a caller-asserted revision. Hosts enqueue service requests,
+/// then revalidate against this Session before reserving/scheduling. They must freeze the
+/// verified inputs/assets/plan and retain these same immutable kind/catalog definitions.
+/// NodeKind callbacks are trusted pure definitions; hidden interior mutation is unsupported.
+pub fn price(session: &crate::Session, request: &Value) -> Result<Priced, Error> {
+    crate::session::guard(|| {
+        crate::commands::validate_json(request)?;
+        check_requested(request)?;
+        let p: RunParams = params(request)?;
+        priced_in(&session.context(crate::commands::Phase::Preview), &p)
+    })
+}
+
+const MAX_BINDING_BYTES: usize = 256 * 1024;
+fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -> Result<String, Error> {
+    let mode = mode_of(p)?;
+    let uses_nodes = matches!(mode, RunMode::Selected | RunMode::WithUpstream);
+    let requested: BTreeSet<_> = if uses_nodes { p.nodes.iter().copied().collect() } else { BTreeSet::new() };
+    // Fixed fields, explicit mode/optional field and counted UUIDs. Check BEFORE hashing;
+    // no project/plan serialization, recursive walk or large temporary JSON allocation.
+    let bytes = b"nodecraft.run.quote.v2"
+        .len()
+        .checked_add(32 + 8 + 8 + 16 + 16 + 32 + 1 + 8 + if matches!(mode, RunMode::Field(_)) { 16 } else { 0 })
+        .and_then(|n| requested.len().checked_mul(16).and_then(|ids| n.checked_add(ids)))
+        .ok_or_else(|| invalid("run quote binding exceeds its byte budget"))?;
+    if bytes > limit {
+        return Err(invalid("run quote binding exceeds its byte budget"));
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nodecraft.run.quote.v2");
+    c.execution.bind(&mut hash);
+    hash.update(&c.revision.to_le_bytes());
+    hash.update(c.document.id().as_bytes());
+    hash.update(p.canvas.as_bytes());
+    hash.update(&catalog.0.nonce);
+    let (tag, field) = match mode {
+        RunMode::Selected => (0, None),
+        RunMode::WithUpstream => (1, None),
+        RunMode::Field(id) => (2, Some(id)),
+        RunMode::AllStale => (3, None),
+    };
+    hash.update(&[tag]);
+    if let Some(field) = field {
+        hash.update(field.as_bytes());
+    }
+    hash.update(&u64::try_from(requested.len()).map_err(|_| invalid("too many requested nodes"))?.to_le_bytes());
+    for id in requested {
+        hash.update(id.as_bytes());
+    }
+    Ok(hash.finalize().to_hex().to_string())
 }
 
 fn priced(
     document: &nodecraft_graph::Project,
-    revision: u64,
     kinds: &nodecraft_nodes::Registry,
     catalog: &Catalog,
     budget: &BudgetState,
     p: &RunParams,
+    token: String,
 ) -> Result<Priced, Error> {
     let canvas = document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     let mode = mode_of(p)?;
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
     // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, kinds)? } else { BTreeSet::new() };
-    let mut token = blake3::Hasher::new();
-    token.update(b"nodecraft.run.quote.v1");
-    token.update(&revision.to_le_bytes());
-    token.update(p.canvas.as_bytes());
-    token.update(format!("{mode:?}").as_bytes());
-    for node in &requested {
-        token.update(node.as_bytes());
-    }
     let run_plan = match plan(canvas, kinds, &mode, &requested, &stale)? {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
             let reasons: Vec<String> = blockers.iter().take(MAX_LISTED).map(|b| b.message(canvas)).collect();
             let response =
                 json!({"blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
-            return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token: token.finalize().to_hex().to_string() });
+            return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
     let priced = quote(&run_plan, canvas, kinds, catalog)?;
     let admission = check(&priced, &budget.budgets, &budget.spent)?;
-    for step in &priced.steps {
-        token.update(step.node.as_bytes());
-        token.update(format!("{:?}|{:?}|{}|{}", step.models, step.per_job, step.jobs, step.jobs_known).as_bytes());
-    }
     let totals: BTreeMap<String, u64> = priced.totals.iter().map(|(currency, m)| (String::from(*currency), m.micros)).collect();
-    for (currency, micros) in &totals {
-        token.update(currency.as_bytes());
-        token.update(&micros.to_le_bytes());
-    }
     let mut totals_json = Map::new();
     for m in priced.totals.values() {
         totals_json.insert(String::from(m.currency), money(*m));
     }
     let estimated: Vec<NodeId> = priced.estimated().collect();
-    let token = token.finalize().to_hex().to_string();
     let response = json!({
         "steps": priced.steps.iter().take(MAX_LISTED).map(step_json).collect::<Vec<_>>(),
         "steps_total": priced.steps.len(),
@@ -239,15 +295,18 @@ fn priced(
 fn priced_in(c: &Context<'_>, p: &RunParams) -> Result<Priced, Error> {
     let catalog = c.resources.require::<RunCatalog>()?;
     let budget = c.resources.require::<BudgetState>()?;
-    priced(c.document, c.revision, c.kinds, &catalog.0, budget, p)
+    let token = binding(c, catalog, p, MAX_BINDING_BYTES)?;
+    priced(c.document, c.kinds, catalog.catalog(), budget, p, token)
 }
 
 fn run_quote(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    check_requested(value)?;
     let p: RunParams = params(value)?;
     Ok(Effect::None { result: priced_in(c, &p)?.response })
 }
 
 fn enabled_quote(c: &Context<'_>, value: &Value) -> Result<(), Error> {
+    check_requested(value)?;
     let p: RunParams = params(value)?;
     c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     c.resources.require::<RunCatalog>()?;
@@ -256,6 +315,7 @@ fn enabled_quote(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 }
 
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    check_requested(value)?;
     let (run, accept) = params::<StartParams>(value)?.split();
     let priced = priced_in(c, &run)?;
     if !priced.allowed {
@@ -280,8 +340,16 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
             return Err(invalid(format!("the run costs more than was accepted ({total} > {agreed} micro-{currency}); quote again")));
         }
     }
+    let mode = mode_of(&run)?;
+    let nodes: BTreeSet<NodeId> = if matches!(mode, RunMode::Selected | RunMode::WithUpstream) { run.nodes.iter().copied().collect() } else { BTreeSet::new() };
+    let (mode, field) = match mode {
+        RunMode::Selected => ("selected", None),
+        RunMode::WithUpstream => ("with_upstream", None),
+        RunMode::Field(field) => ("field", Some(field)),
+        RunMode::AllStale => ("all_stale", None),
+    };
     let request = json!({
-        "run": {"canvas": run.canvas, "mode": value.get("mode"), "nodes": run.nodes, "field": run.field},
+        "run": {"canvas": run.canvas, "mode": mode, "nodes": nodes, "field": field},
         "revision": c.revision,
         "token": priced.token,
         "accept": {"amounts": accept.amounts, "partial": accept.partial},
@@ -290,6 +358,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 }
 
 fn enabled_start(c: &Context<'_>, value: &Value) -> Result<(), Error> {
+    check_requested(value)?;
     let (run, _) = params::<StartParams>(value)?.split();
     c.document.canvases().get(&run.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     c.resources.require::<RunCatalog>()?;
@@ -346,20 +415,67 @@ struct ExportParams {
     limit: Option<usize>,
 }
 
-fn export_csv(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+/// Encoded JSON page ceiling, including CSV escapes and the pagination envelope.
+const MAX_EXPORT_JSON_BYTES: usize = 768 * 1024;
+
+fn export_params(value: &Value) -> Result<ExportParams, Error> {
     let p: ExportParams = params(value)?;
-    let usage = c.resources.require::<UsageSnapshot>()?;
+    if p.limit == Some(0) {
+        return Err(invalid("export limit must be at least 1"));
+    }
+    Ok(p)
+}
+
+/// JSON string content bytes (quotes belong to the envelope). UTF-8 stays literal in serde_json.
+fn escaped_csv_bytes(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().try_fold(0_usize, |sum, byte| {
+        let size = match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+            0..=31 => 6,
+            _ => 1,
+        };
+        sum.checked_add(size)
+    })
+}
+
+fn csv_page(usage: &UsageLog, p: &ExportParams, ceiling: usize) -> Result<Value, Error> {
+    let total = usage.listed();
     let limit = p.limit.unwrap_or(MAX_EXPORT_ROWS).min(MAX_EXPORT_ROWS);
+    // Reserve the longest possible continuation number, even on the terminal page.
+    let envelope = serde_json::to_vec(&json!({"csv":"", "total":total, "next_offset":usize::MAX}))
+        .map_err(|_| Error::new(ErrorKind::Internal, "the export envelope couldn't be encoded"))?
+        .len();
+    let mut header = Vec::new();
+    usage.write_csv_rows(&mut header, usize::MAX, 0).map_err(|_| Error::new(ErrorKind::Internal, "the usage header couldn't be written"))?;
+    let mut encoded = escaped_csv_bytes(&header)
+        .and_then(|n| n.checked_add(envelope))
+        .filter(|n| *n <= ceiling)
+        .ok_or_else(|| invalid("export byte limit cannot fit the CSV header"))?;
     let mut out = Vec::new();
-    usage.0.write_csv_rows(&mut out, p.offset, limit).map_err(|_| Error::new(ErrorKind::Internal, "the usage log couldn't be written"))?;
+    out.try_reserve_exact(ceiling).map_err(|_| Error::new(ErrorKind::Internal, "the export page couldn't be allocated"))?;
+    let written = usage
+        .write_csv_rows_while(&mut out, p.offset, limit, |row| {
+            let Some(next) = escaped_csv_bytes(row).and_then(|n| encoded.checked_add(n)).filter(|n| *n <= ceiling) else { return false };
+            encoded = next;
+            true
+        })
+        .map_err(|_| Error::new(ErrorKind::Internal, "the usage log couldn't be written"))?;
+    if written == 0 && p.offset < total {
+        return Err(invalid("export byte limit cannot fit a usage row"));
+    }
     let csv = String::from_utf8(out).map_err(|_| Error::new(ErrorKind::Internal, "the usage log isn't UTF-8"))?;
-    let total = usage.0.listed();
-    let next = p.offset.saturating_add(limit);
-    Ok(Effect::None { result: json!({"csv": csv, "total": total, "next_offset": (next < total).then_some(next)}) })
+    let next = p.offset.saturating_add(written);
+    Ok(json!({"csv":csv,"total":total,"next_offset":(next < total).then_some(next)}))
+}
+
+fn export_csv(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    let p = export_params(value)?;
+    let usage = c.resources.require::<UsageSnapshot>()?;
+    Ok(Effect::None { result: csv_page(&usage.0, &p, MAX_EXPORT_JSON_BYTES)? })
 }
 
 fn enabled_export(c: &Context<'_>, value: &Value) -> Result<(), Error> {
-    let _: ExportParams = params(value)?;
+    export_params(value)?;
     c.resources.require::<UsageSnapshot>().map(|_| ())
 }
 

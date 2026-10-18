@@ -22,3 +22,7 @@ pub use thumb::{Thumbnail, ThumbnailCache, fit_within, thumbnail};
 
 /// The `image` crate this API is built on, so callers use the same version of [`image::DynamicImage`].
 pub use image;
+
+/// Bounded native FFmpeg service (external tools are never bundled).
+#[cfg(feature = "video")]
+pub mod video;

@@ -158,6 +158,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -451,6 +457,12 @@ dependencies = [
  "fs_extra",
  "pkg-config",
 ]
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
@@ -1641,9 +1653,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1997,7 +2011,7 @@ version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -2616,6 +2630,7 @@ dependencies = [
  "craft-quit",
  "eframe",
  "egui",
+ "egui_kittest",
  "log",
  "nodecraft-automation",
  "nodecraft-engine",
@@ -2699,6 +2714,7 @@ dependencies = [
  "blake3",
  "craft-settings",
  "futures",
+ "getrandom 0.3.4",
  "keyring",
  "nodecraft-catalog",
  "nodecraft-exec",
@@ -2720,6 +2736,7 @@ dependencies = [
 name = "nodecraft-exec"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "blake3",
  "futures",
  "nodecraft-actions",
@@ -2753,7 +2770,10 @@ dependencies = [
 name = "nodecraft-gpu"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "nodecraft-actions",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]
@@ -2773,6 +2793,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "image",
+ "serde_json",
 ]
 
 [[package]]
@@ -2790,7 +2811,10 @@ dependencies = [
 name = "nodecraft-providers"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "blake3",
  "futures",
+ "image",
  "nodecraft-catalog",
  "nodecraft-comfy",
  "nodecraft-media",
@@ -3870,7 +3894,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "futures-core",
  "h2",

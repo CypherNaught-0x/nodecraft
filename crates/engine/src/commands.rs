@@ -73,6 +73,7 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
+    pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
     /// The document's revision: bumped by every edit, undo and redo.
     pub revision: u64,
@@ -139,6 +140,8 @@ impl Registry {
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
             .chain(crate::run_cmds::specs())
+            .chain(crate::history_cmds::specs())
+            .chain(crate::turn_into_cmds::specs())
         {
             registry.register(spec)?;
         }

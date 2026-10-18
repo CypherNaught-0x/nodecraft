@@ -92,6 +92,12 @@ jobs:
       - name: tests
         if: hashFiles('Cargo.toml') != ''
         run: cargo nextest run --workspace --profile ci
+      - name: Native video protocol (no external tools required)
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test -p nodecraft-media --features video && cargo clippy -p nodecraft-media --features video --all-targets -- -D warnings
+      - name: Video wasm API
+        if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
+        run: cargo check -p nodecraft-media --features video --target wasm32-unknown-unknown
       - name: doctests
         if: hashFiles('Cargo.toml') != ''
         run: cargo test --doc --workspace

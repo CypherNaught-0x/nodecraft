@@ -3,3 +3,6 @@
 //! NodeCraft gpu: wgpu actions, custom WGSL actions and the 3D preview renderer.
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
+
+/// Bounded image compute backend.
+pub mod image;

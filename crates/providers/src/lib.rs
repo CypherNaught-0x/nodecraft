@@ -18,14 +18,20 @@
 
 #[cfg(feature = "comfyui")]
 pub mod comfyui;
+mod delivery;
 mod error;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
+#[cfg(feature = "openai-images")]
+pub mod openai_images;
 mod provider;
+#[cfg(feature = "replicate")]
+pub mod replicate;
 pub mod secrets;
 mod task;
 
+pub use delivery::{HttpFailure, RequestContext, SubmitContext};
 pub use error::{ErrorKind, ProviderError};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;

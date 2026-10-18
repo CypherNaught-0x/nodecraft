@@ -14,7 +14,8 @@
 //! - **Adopt resumed jobs.** A job resumed from a stored handle was already submitted: it is
 //!   recorded without a cap check, since its money is already spent.
 //! - **Settle.** A finished job is charged what the provider reported, or its estimate. A job the
-//!   provider certainly never billed (refused at submit: bad key, invalid input) is released. A job
+//!   provider provably never accepted (pre-invocation cancellation or audited whole-submit
+//!   evidence) is released. Diagnostic kinds alone never supply that proof. A job
 //!   that may have been billed (it got a handle, or its submit got no clear answer: a timeout, a
 //!   network or server error, a garbled reply, or one saying it ran or expired;
 //!   `RunFailure::uncertain`) keeps its reservation while the scheduler may retry it, and is charged as
@@ -23,7 +24,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use nodecraft_exec::cost::{Budgets, Charge, StepQuote, UsageEntry, UsageLog, check};
+use nodecraft_exec::cost::{
+    Budgets, Charge, ChargeOwnership, LedgerIdentity, MAX_METADATA_SHELLS, MetadataPermit, StepQuote, UsageEntry, UsageLog, UsageMetadata, check,
+};
+
+mod accounting;
+pub use accounting::{AccountingFailure, AccountingRetry, AccountingRetryError, CompletionAccounting, CompletionDelivery};
 use nodecraft_types::{Money, NodeId};
 
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
@@ -32,10 +38,20 @@ use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, 
 
 /// Where a finished job's outputs and usage go (the engine turns the outputs into an
 /// `AddGeneration` changeset; budgets charge the usage's reported cost).
-pub type OutputSink = dyn Fn(JobId, Completed) + Send + Sync;
+pub type OutputSink = dyn Fn(JobId, CompletionDelivery) + Send + Sync;
 
-/// Progress reports while a job runs (queue panel, status cards).
-pub type UpdateSink = dyn Fn(JobId, RunUpdate) + Send + Sync;
+/// Progress reports while a job runs (queue panel, status cards), with the key the attempt was
+/// sent under. A host that persists `RunUpdate::Submitted` handles saves `Sent::generation`
+/// with them and passes it back to [`ProviderRunner::restore_generation`] after a restart.
+pub type UpdateSink = dyn Fn(JobId, Sent<'_>, RunUpdate) + Send + Sync;
+
+/// What an attempt was sent as: its key and its generation (how many generations the provider
+/// had reported failed before it, #223; the key is `sent_key(scheduler key, generation)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sent<'a> {
+    pub key: &'a str,
+    pub generation: u32,
+}
 
 /// Start of every error for a job the budgets refused; such jobs are never retried.
 pub const REFUSAL_PREFIX: &str = "budget: ";
@@ -77,31 +93,62 @@ pub struct JobBudget {
 }
 
 /// Accounting belongs to a captured provider/key, even if its JobId is re-registered.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Attempt {
     provider: String,
+    /// The key sent to the provider (and charged under).
     key: String,
+    /// The scheduler's key, which the registration keeps (#223).
+    base: String,
 }
 
 impl Attempt {
     fn matches_job(&self, job: &QueuedJob) -> bool {
-        job.provider.id() == self.provider && job.job.idempotency_key == self.key
+        job.provider.id() == self.provider && job.job.idempotency_key == self.base
     }
 }
 
 /// A job's reservation in the usage log.
 #[derive(Clone, Debug)]
 struct Reserved {
+    identity: LedgerIdentity,
+    invocation: u64,
     provider: String,
     key: String,
+    /// The scheduler's key `key` derives from.
+    base: String,
     estimate: Money,
     /// The job may have reached the provider: settle as unresolved, never release.
     maybe_billed: bool,
 }
 
+struct RetainedMetadata {
+    job: JobId,
+    permit: MetadataPermit,
+}
+
+// Incarnation proof belongs to the existing registration, rather than a second registry.
+struct RegisteredJob {
+    queued: QueuedJob,
+    identity: Arc<()>,
+}
+
+impl std::ops::Deref for RegisteredJob {
+    type Target = QueuedJob;
+    fn deref(&self) -> &Self::Target {
+        &self.queued
+    }
+}
+
+impl std::ops::DerefMut for RegisteredJob {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.queued
+    }
+}
+
 #[derive(Default)]
 struct State {
-    jobs: HashMap<JobId, QueuedJob>,
+    jobs: HashMap<JobId, RegisteredJob>,
     /// Handles of jobs a provider accepted, by provider and idempotency key, so retries resume
     /// them, and a job moved to another provider never resumes the first one's handle (#228).
     handles: HashMap<(String, String), JobHandle>,
@@ -111,6 +158,39 @@ struct State {
     running: HashMap<JobId, Attempt>,
     settle_after: std::collections::HashSet<JobId>,
     forget_after: std::collections::HashSet<JobId>,
+    /// Generations reported failed, keyed by provider and scheduler base (main297).
+    failures: HashMap<(String, String), u32>,
+    running_serial: HashMap<JobId, u64>,
+    invocations: HashMap<u64, (JobId, Attempt)>,
+    next_invocation: u64,
+    metadata: HashMap<Attempt, RetainedMetadata>,
+}
+
+/// Longest idempotency key sent to a provider.
+pub const MAX_SENT_KEY: usize = 64;
+
+/// The key a job's next submission is sent under: the scheduler's `base` key at first, then
+/// `base#n` after the provider reported `n` generations failed, so a provider that dedupes on the
+/// key starts a new generation instead of returning the failed one. Deterministic per attempt (a
+/// lost reply resends the same key), ASCII, and at most [`MAX_SENT_KEY`] long: a key that
+/// wouldn't fit, or isn't ASCII, keeps an ASCII prefix and a hash of the whole base key, even at
+/// generation 0. Scheduler keys (`nodecraft:r…`) are short ASCII without `#`, so they go out
+/// unchanged at first and never collide with another key's derived form.
+pub fn sent_key(base: &str, failures: u32) -> String {
+    if failures == 0 && base.len() <= MAX_SENT_KEY && base.is_ascii() {
+        return base.to_owned();
+    }
+    let suffix = if failures == 0 { String::new() } else { format!("#{failures}") };
+    let candidate = format!("{base}{suffix}");
+    if candidate.len() <= MAX_SENT_KEY && candidate.is_ascii() {
+        return candidate;
+    }
+    // FNV-1a: stable across runs and platforms, no dependency.
+    let hash = base.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let tail = format!("~{hash:016x}{suffix}");
+    let room = MAX_SENT_KEY.saturating_sub(tail.len());
+    let prefix: String = base.chars().filter(char::is_ascii).filter(|c| !c.is_ascii_control()).take(room).collect();
+    format!("{prefix}{tail}")
 }
 
 impl Reserved {
@@ -123,10 +203,22 @@ impl State {
     /// Handles are global provider/key entries. Prune only the touched identity, after its
     /// registration/running transition, and retain retries still referenced by another JobId.
     /// Restored handles without registrations are not swept. Work scales with host job state.
+    /// `attempt.key` is the key its handle is stored under (the scheduler's key, or one derived
+    /// from it after reported failures, #223); the failure count goes with the last reference.
     fn prune_handle(&mut self, attempt: &Attempt) {
-        if !self.jobs.values().any(|job| attempt.matches_job(job)) && !self.running.values().any(|running| running == attempt) {
+        let referenced = self.jobs.values().any(|job| attempt.matches_job(job))
+            || self.running.values().any(|active| active.provider == attempt.provider && active.base == attempt.base)
+            || self.invocations.values().any(|(_, active)| active.provider == attempt.provider && active.base == attempt.base);
+        if !referenced {
             self.handles.remove(&(attempt.provider.clone(), attempt.key.clone()));
+            self.failures.remove(&(attempt.provider.clone(), attempt.base.clone()));
         }
+    }
+
+    /// The attempt a registration's next run would send: under its derived key after failures.
+    fn registered(&self, provider: &str, base: String) -> Attempt {
+        let failures = self.failures.get(&(provider.to_owned(), base.clone())).copied().unwrap_or(0);
+        Attempt { provider: provider.to_owned(), key: sent_key(&base, failures), base }
     }
 
     fn take_reserved(&mut self, id: JobId, attempt: &Attempt) -> Option<Reserved> {
@@ -151,6 +243,9 @@ fn lock_log(budget: &JobBudget) -> std::sync::MutexGuard<'_, UsageLog> {
 /// Ends a reservation: charged as unresolved if the job may have been billed, released if not.
 fn close(budget: &JobBudget, r: &Reserved) {
     let mut log = lock_log(budget);
+    if log.ledger_identity() != r.identity {
+        return;
+    }
     let open = log.charge(&r.provider, &r.key).is_some_and(|e| e.status == Charge::Estimate);
     if !open {
         return;
@@ -161,16 +256,31 @@ fn close(budget: &JobBudget, r: &Reserved) {
 }
 
 /// Reserves (or adopts) a priced job's estimate. `Err` is the refusal message.
-fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resumed: bool) -> Result<Option<Reserved>, String> {
+fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: bool, at_ms: u64) -> Result<Option<Reserved>, String> {
     if budget.session.is_empty() {
         return Err(format!("{REFUSAL_PREFIX}the budget has no session id, so charges can't be recorded (a host setup error)"));
     }
     let budgets = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let mut log = lock_log(budget);
     let maybe_billed = resumed;
+    let (provider, key) = (attempt.provider.as_str(), attempt.key.as_str());
+    if log.ownership(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? == Some(ChargeOwnership::LegacyUncertain) {
+        return Err(format!("{REFUSAL_PREFIX}historical charge ownership is uncertain; inspect the usage log before retrying"));
+    }
     if let Some(entry) = log.charge(provider, key) {
         // A retry of a job already reserved (or settled) under this key: nothing new to charge.
-        return Ok((entry.status == Charge::Estimate).then(|| Reserved { provider: provider.into(), key: key.into(), estimate: entry.cost, maybe_billed }));
+        return Ok((entry.status == Charge::Estimate).then(|| Reserved {
+            identity: log.ledger_identity(),
+            invocation: 0,
+            provider: provider.into(),
+            key: key.into(),
+            base: attempt.base.clone(),
+            estimate: entry.cost,
+            maybe_billed,
+        }));
+    }
+    if log.has_recorded(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? {
+        return Ok(None);
     }
     let Some(estimate) = price.estimate else {
         // An unknown price: fine without caps (nothing to charge), refused with any.
@@ -190,7 +300,7 @@ fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resu
         }
     }
     let entry = UsageEntry {
-        at_ms: (budget.wall_clock_ms)(),
+        at_ms,
         session: budget.session.clone(),
         node: price.node,
         provider: provider.into(),
@@ -202,8 +312,18 @@ fn reserve(budget: &JobBudget, provider: &str, key: &str, price: &JobPrice, resu
     // A log that can't take the charge (it is at its ceiling) refuses new work; an adopted job
     // already ran, so it goes ahead uncharged rather than being abandoned.
     match log.record(entry) {
-        Ok(_) => Ok(Some(Reserved { provider: provider.into(), key: key.into(), estimate, maybe_billed })),
-        Err(e) if !resumed => Err(format!("{REFUSAL_PREFIX}{}", e.message)),
+        Ok(_) => Ok(Some(Reserved {
+            identity: log.ledger_identity(),
+            invocation: 0,
+            provider: provider.into(),
+            key: key.into(),
+            base: attempt.base.clone(),
+            estimate,
+            maybe_billed,
+        })),
+        Err(e) if !resumed || matches!(e.kind, nodecraft_types::ErrorKind::Busy | nodecraft_types::ErrorKind::Conflict) => {
+            Err(format!("{REFUSAL_PREFIX}{}", e.message))
+        }
         Err(_) => Ok(None),
     }
 }
@@ -218,18 +338,25 @@ struct RunGuard {
     /// Set when the run returned; a run dropped or unwound mid-flight may have reached the
     /// provider, so its reservation counts as maybe billed.
     returned: bool,
+    invocation: u64,
+    registration: Arc<()>,
+    metadata: Option<MetadataPermit>,
+    published: bool,
 }
 
 impl Drop for RunGuard {
     fn drop(&mut self) {
-        let (settle, reserved) = {
+        let (settle, reserved, unstarted) = {
             let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let owns_running = s.running.get(&self.job) == Some(&self.attempt);
+            let owns_running = s.running_serial.get(&self.job) == Some(&self.invocation);
+            s.invocations.remove(&self.invocation);
             if owns_running {
                 s.running.remove(&self.job);
+                s.running_serial.remove(&self.job);
             }
             if !self.returned
-                && let Some(r) = s.reserved.get_mut(&self.job).filter(|r| r.matches(&self.attempt))
+                && self.published
+                && let Some(r) = s.reserved.get_mut(&self.job).filter(|r| r.matches(&self.attempt) && r.invocation == self.invocation)
             {
                 r.maybe_billed = true;
             }
@@ -237,17 +364,30 @@ impl Drop for RunGuard {
             let settle = owns_running && s.settle_after.remove(&self.job);
             let forget = owns_running && s.forget_after.remove(&self.job);
             let reserved = if settle { s.take_reserved(self.job, &self.attempt) } else { None };
+            if settle {
+                s.metadata.retain(|_, held| held.job != self.job);
+            }
             if forget
                 && s.jobs.get(&self.job).is_some_and(|job| self.attempt.matches_job(job))
+                && s.jobs.get(&self.job).is_some_and(|job| Arc::ptr_eq(&job.identity, &self.registration))
                 && let Some(q) = s.jobs.remove(&self.job)
             {
-                s.prune_handle(&Attempt { provider: q.provider.id().to_owned(), key: q.job.idempotency_key });
+                let old = s.registered(q.queued.provider.id(), q.queued.job.idempotency_key);
+                s.prune_handle(&old);
             }
             // Also clean late Submitted handles after a re-registration, on every return/drop.
             // A different replacement's running mark and deferred requests remain untouched.
             s.prune_handle(&self.attempt);
-            (settle, reserved)
+            let unstarted = if !self.published && s.reserved.get(&self.job).is_some_and(|r| r.invocation == self.invocation) {
+                s.take_reserved(self.job, &self.attempt)
+            } else {
+                None
+            };
+            (settle, reserved, unstarted)
         };
+        if let (Some(budget), Some(r)) = (&self.budget, unstarted) {
+            close(budget, &r);
+        }
         if settle && let (Some(budget), Some(r)) = (&self.budget, reserved) {
             close(budget, &r);
         }
@@ -285,6 +425,7 @@ impl ProviderRunner {
                 s.settle_after.insert(id);
                 return;
             }
+            s.metadata.retain(|_, held| held.job != id);
             s.reserved.remove(&id)
         };
         if let (Some(budget), Some(r)) = (&self.budget, reserved) {
@@ -304,16 +445,33 @@ impl ProviderRunner {
         {
             job.job.idempotency_key.clone_from(&old.job.idempotency_key);
         }
-        if let Some(old) = s.jobs.insert(id, job) {
-            s.prune_handle(&Attempt { provider: old.provider.id().to_owned(), key: old.job.idempotency_key });
+        let incoming = s.registered(job.provider.id(), job.job.idempotency_key.clone());
+        s.metadata.retain(|attempt, held| held.job != id || *attempt == incoming);
+        if let Some(old) = s.jobs.insert(id, RegisteredJob { queued: job, identity: Arc::new(()) }) {
+            let old = s.registered(old.queued.provider.id(), old.queued.job.idempotency_key);
+            s.prune_handle(&old);
         }
     }
 
-    /// Restores handles saved before a restart (from `RunUpdate::Submitted`), keyed by the
-    /// provider that issued them and the idempotency key, so those jobs are resumed rather than
-    /// submitted again.
+    /// Restores a first-generation handle saved before a restart (from `RunUpdate::Submitted`),
+    /// keyed by the provider that issued it and the scheduler's idempotency key, so the job is
+    /// resumed rather than submitted again. See [`Self::restore_generation`].
     pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) {
-        self.lock().handles.insert((provider.into(), idempotency_key), handle);
+        self.restore_generation(provider, idempotency_key, 0, handle);
+    }
+
+    /// Restores a handle saved before a restart with the [`Sent::generation`] it was reported
+    /// with: it is stored under the derived key it was sent under, and the job's failure count is
+    /// brought back, so the retry resumes that generation and charges under its key.
+    pub fn restore_generation(&self, provider: impl Into<String>, idempotency_key: String, generation: u32, handle: JobHandle) {
+        let provider = provider.into();
+        let mut s = self.lock();
+        let key = sent_key(&idempotency_key, generation);
+        if generation > 0 {
+            let n = s.failures.entry((provider.clone(), idempotency_key)).or_insert(0);
+            *n = (*n).max(generation);
+        }
+        s.handles.insert((provider, key), handle);
     }
 
     /// Drops a finished job's registration and handle (call when the scheduler forgets it).
@@ -326,7 +484,8 @@ impl ProviderRunner {
             return;
         }
         if let Some(q) = s.jobs.remove(&id) {
-            s.prune_handle(&Attempt { provider: q.provider.id().to_owned(), key: q.job.idempotency_key });
+            let old = s.registered(q.queued.provider.id(), q.queued.job.idempotency_key);
+            s.prune_handle(&old);
         }
     }
 
@@ -359,10 +518,10 @@ impl CancelSignal for TokenSignal {
     }
 }
 
-fn outcome(error: &ProviderError) -> Outcome {
+fn outcome(error: &ProviderError, will_retry: bool) -> Outcome {
     match error.kind {
         ErrorKind::Cancelled => Outcome::Cancelled,
-        _ => Outcome::Failed { error: error.to_string(), transient: error.is_transient() },
+        _ => Outcome::Failed { error: error.to_string(), transient: will_retry },
     }
 }
 
@@ -376,27 +535,51 @@ impl JobRunner for ProviderRunner {
         let budget = self.budget.clone();
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(mut queued) = lock().jobs.get(&start.job).cloned() else {
-                return Outcome::Failed { error: format!("{} has no provider job registered", start.job), transient: false };
+            if start.idempotency_key.is_empty() || start.idempotency_key.len() > 64 || !start.idempotency_key.is_ascii() {
+                return Outcome::Failed { error: format!("{REFUSAL_PREFIX}invalid scheduler idempotency identity"), transient: false };
+            }
+            let (mut queued, registration) = {
+                let s = lock();
+                let Some(queued) = s.jobs.get(&start.job) else {
+                    return Outcome::Failed { error: format!("{} has no provider job registered", start.job), transient: false };
+                };
+                if queued.provider.id().len() > nodecraft_exec::cost::MAX_TEXT
+                    || queued.price.as_ref().is_some_and(|p| p.model.len() > nodecraft_exec::cost::MAX_TEXT)
+                {
+                    return Outcome::Failed { error: format!("{REFUSAL_PREFIX}accounting identity metadata is too long"), transient: false };
+                }
+                (queued.queued.clone(), Arc::clone(&queued.identity))
             };
-            // Only a handle this job's current provider issued can be resumed.
-            let handle = lock().handles.get(&(queued.provider.id().to_owned(), start.idempotency_key.clone())).cloned();
+            let provider_id = queued.provider.id().to_owned();
             // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
             // step so `forget` finds the handle stored under it.
-            queued.job.idempotency_key = start.idempotency_key.clone();
-            {
+            let (key, generation) = {
                 let mut s = lock();
+                if !s.jobs.get(&start.job).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration)) {
+                    return Outcome::Failed { error: "provider job registration changed before admission".into(), transient: false };
+                }
                 let old = s.jobs.get_mut(&start.job).map(|registered| std::mem::replace(&mut registered.job.idempotency_key, start.idempotency_key.clone()));
                 // Requeued under a new key: the old key's handle is done with.
                 if let Some(old) = old.filter(|old| *old != start.idempotency_key) {
-                    s.prune_handle(&Attempt { provider: queued.provider.id().to_owned(), key: old });
+                    let old = s.registered(&provider_id, old);
+                    s.prune_handle(&old);
                 }
-            }
+                // After provider-reported failures, a fresh generation goes under a derived key.
+                let generation = s.failures.get(&(provider_id.clone(), start.idempotency_key.clone())).copied().unwrap_or(0);
+                let key = sent_key(&start.idempotency_key, generation);
+                // Fresh scheduler keys or reported-failure generations abandon only obsolete
+                // inactive capabilities. Older active guards still own their own permits.
+                s.metadata.retain(|attempt, held| {
+                    held.job != start.job || (attempt.provider == provider_id && attempt.key == key && attempt.base == start.idempotency_key)
+                });
+                (key, generation)
+            };
+            // Only a handle this job's current provider issued, under the key now sent, resumes.
+            let handle = lock().handles.get(&(provider_id.clone(), key.clone())).cloned();
+            queued.job.idempotency_key = key.clone();
             let signal = TokenSignal(cancel);
             let job_id = start.job;
-            let key = start.idempotency_key.clone();
-            let provider_id = queued.provider.id().to_owned();
-            let attempt = Attempt { provider: provider_id.clone(), key: key.clone() };
+            let attempt = Attempt { provider: provider_id.clone(), key: key.clone(), base: start.idempotency_key.clone() };
             // Close a prior identity even when this replacement is unpriced or already cancelled.
             if let Some(budget) = &budget {
                 let stale = {
@@ -406,7 +589,7 @@ impl JobRunner for ProviderRunner {
                         if let Some(old) = &mut old {
                             // An in-flight submit may have reached its provider before Submitted.
                             old.maybe_billed |= s.running.get(&job_id).is_some_and(|running| old.matches(running));
-                            s.prune_handle(&Attempt { provider: old.provider.clone(), key: old.key.clone() });
+                            s.prune_handle(&Attempt { provider: old.provider.clone(), key: old.key.clone(), base: old.base.clone() });
                         }
                         old
                     } else {
@@ -419,29 +602,157 @@ impl JobRunner for ProviderRunner {
             }
             // Cancelled before this attempt reserved or sent anything: nothing new to charge.
             if signal.is_cancelled() {
+                let mut s = lock();
+                if s.metadata.get(&attempt).is_some_and(|held| held.job == job_id) {
+                    s.metadata.remove(&attempt);
+                }
                 return Outcome::Cancelled;
             }
-            {
+            let invocation = {
                 let mut s = lock();
-                s.running.insert(job_id, attempt.clone());
-                // Flags left by an earlier, abandoned run don't apply to this one.
-                s.settle_after.remove(&job_id);
-                s.forget_after.remove(&job_id);
-            }
-            // Ends the running mark and does deferred settles even if this future is dropped
-            // mid-await or unwinds.
-            let mut guard = RunGuard { state: Arc::clone(&state), budget: budget.clone(), job: job_id, attempt: attempt.clone(), returned: false };
+                if s.invocations.values().any(|(_, active)| active.provider == attempt.provider && active.key == attempt.key) {
+                    return Outcome::Failed { error: format!("{REFUSAL_PREFIX}that provider identity already has an active invocation"), transient: false };
+                }
+                let reuse = s.metadata.get(&attempt).is_some_and(|held| held.job == job_id);
+                // An invocation may have claimed an inactive identity before transferring its
+                // permit to its guard. That is one retained attempt, not two table entries.
+                let transfers = s.invocations.values().filter(|(id, active)| s.metadata.get(active).is_some_and(|held| held.job == *id)).count();
+                let retained = s.metadata.len().saturating_add(s.invocations.len()).saturating_sub(transfers);
+                if s.invocations.len() >= MAX_METADATA_SHELLS || retained.saturating_add(usize::from(!reuse)) > MAX_METADATA_SHELLS {
+                    return Outcome::Failed { error: format!("{REFUSAL_PREFIX}accounting attempt capacity is full"), transient: false };
+                }
+                let Some(serial) = s.next_invocation.checked_add(1) else {
+                    return Outcome::Failed { error: format!("{REFUSAL_PREFIX}accounting attempt sequence exhausted"), transient: false };
+                };
+                let needed = s.invocations.len().saturating_sub(transfers).saturating_add(usize::from(!reuse));
+                if s.invocations.try_reserve(1).is_err()
+                    || s.running.try_reserve(1).is_err()
+                    || s.running_serial.try_reserve(1).is_err()
+                    || s.metadata.try_reserve(needed).is_err()
+                {
+                    return Outcome::Failed { error: format!("{REFUSAL_PREFIX}cannot allocate accounting attempt metadata"), transient: false };
+                }
+                s.next_invocation = serial;
+                s.invocations.insert(serial, (job_id, attempt.clone()));
+                serial
+            };
+            let mut guard = RunGuard {
+                state: Arc::clone(&state),
+                budget: budget.clone(),
+                job: job_id,
+                attempt: attempt.clone(),
+                returned: false,
+                invocation,
+                registration: Arc::clone(&registration),
+                metadata: None,
+                published: false,
+            };
             let outcome = async {
-                if let (Some(budget), Some(price)) = (&budget, &queued.price) {
-                    match reserve(budget, &provider_id, &key, price, handle.is_some()) {
+                let at_ms = if queued.price.is_some() { budget.as_ref().map_or(0, |b| (b.wall_clock_ms)()) } else { 0 };
+                let identity = if let Some(budget) = &budget {
+                    let log = lock_log(budget);
+                    match log.ownership(&provider_id, &key) {
+                        Ok(Some(ChargeOwnership::LegacyUncertain)) => {
+                            return Outcome::Failed {
+                                error: format!("{REFUSAL_PREFIX}historical charge ownership is uncertain; inspect the usage log"),
+                                transient: false,
+                            };
+                        }
+                        Err(error) => return Outcome::Failed { error: format!("{REFUSAL_PREFIX}{}", error.message), transient: false },
+                        _ => {}
+                    }
+                    Some(log.ledger_identity())
+                } else {
+                    None
+                };
+                if let Some(budget) = &budget {
+                    let old_identity = lock().reserved.get(&job_id).filter(|r| r.matches(&attempt)).map(|r| r.identity.clone());
+                    if old_identity.is_some_and(|old| old != lock_log(budget).ledger_identity()) {
+                        return Outcome::Failed {
+                            error: format!("{REFUSAL_PREFIX}accounting reservation belongs to a replaced live ledger"),
+                            transient: false,
+                        };
+                    }
+                }
+                if let Some(budget) = &budget {
+                    let retained = {
+                        let mut s = lock();
+                        if s.metadata.get(&attempt).is_some_and(|held| held.job != job_id) {
+                            return Outcome::Failed { error: format!("{REFUSAL_PREFIX}another job owns this accounting attempt"), transient: false };
+                        }
+                        s.metadata.remove(&attempt)
+                    };
+                    if let Some(held) = retained {
+                        if handle.is_none() {
+                            let caps = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner);
+                            if caps.per_call.is_some() || caps.session.is_some() || caps.project.is_some() {
+                                drop(caps);
+                                lock().metadata.insert(attempt.clone(), held);
+                                return Outcome::Failed {
+                                    error: format!("{REFUSAL_PREFIX}the captured attempt has unknown cost; capped retries require a resumable handle"),
+                                    transient: false,
+                                };
+                            }
+                        }
+                        if lock_log(budget).validate_metadata(&held.permit).is_err() {
+                            lock().metadata.insert(attempt.clone(), held);
+                            return Outcome::Failed {
+                                error: format!("{REFUSAL_PREFIX}accounting reservation no longer belongs to this live ledger"),
+                                transient: false,
+                            };
+                        }
+                        guard.metadata = Some(held.permit);
+                    }
+                }
+                if guard.metadata.is_none()
+                    && let (Some(budget), Some(price)) = (&budget, &queued.price)
+                {
+                    match reserve(budget, &attempt, price, handle.is_some(), at_ms) {
                         Ok(Some(r)) => {
                             let mut s = lock();
                             let maybe = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.maybe_billed) || r.maybe_billed;
-                            s.reserved.insert(job_id, Reserved { maybe_billed: maybe, ..r });
+                            s.reserved.insert(job_id, Reserved { invocation, maybe_billed: maybe, ..r });
                         }
                         Ok(None) => {}
                         Err(refusal) => return Outcome::Failed { error: refusal, transient: false },
                     }
+                }
+                if guard.metadata.is_none()
+                    && let (Some(budget), Some(price)) = (&budget, &queued.price)
+                {
+                    let mut log = lock_log(budget);
+                    match log.has_recorded(&provider_id, &key) {
+                        Ok(false) => {
+                            let m = UsageMetadata {
+                                at_ms,
+                                session: &budget.session,
+                                node: price.node,
+                                provider: &provider_id,
+                                model: &price.model,
+                                idempotency_key: &key,
+                            };
+                            match log.reserve_metadata(m) {
+                                Ok(permit) => {
+                                    guard.metadata = Some(permit);
+                                }
+                                Err(error) => return Outcome::Failed { error: format!("{REFUSAL_PREFIX}{}", error.message), transient: false },
+                            }
+                        }
+                        Ok(true) => {}
+                        Err(error) => return Outcome::Failed { error: format!("{REFUSAL_PREFIX}{}", error.message), transient: false },
+                    }
+                }
+                {
+                    let mut s = lock();
+                    if !s.jobs.get(&job_id).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration)) {
+                        return Outcome::Failed { error: format!("{REFUSAL_PREFIX}job registration changed during accounting admission"), transient: false };
+                    }
+                    // Accounting is fully admitted before publishing running state or invoking a provider.
+                    s.running_serial.insert(job_id, invocation);
+                    s.running.insert(job_id, attempt.clone());
+                    s.settle_after.remove(&job_id);
+                    s.forget_after.remove(&job_id);
+                    guard.published = true;
                 }
                 let record = |update: RunUpdate| {
                     if let RunUpdate::Submitted(h) = &update {
@@ -451,7 +762,7 @@ impl JobRunner for ProviderRunner {
                             r.maybe_billed = true;
                         }
                     }
-                    on_update(job_id, update);
+                    on_update(job_id, Sent { key: &key, generation }, update);
                 };
                 let result = match handle {
                     Some(handle) => nodecraft_providers::resume(queued.provider.as_ref(), &handle, &signal, &clock, limits, record).await,
@@ -461,65 +772,71 @@ impl JobRunner for ProviderRunner {
                     Ok(done) => {
                         let reserved = {
                             let mut s = lock();
-                            if s.jobs.get(&job_id).is_some_and(|job| attempt.matches_job(job)) {
+                            if s.jobs.get(&job_id).is_some_and(|job| attempt.matches_job(job))
+                                && s.jobs.get(&job_id).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration))
+                            {
                                 s.jobs.remove(&job_id);
                             }
                             s.take_reserved(job_id, &attempt)
                         };
-                        // A priced job with nothing reserved (its price unknown, uncapped): still
-                        // record what the provider reported, once per key (#228).
-                        if let (Some(budget), Some(price), None, Some(cost)) = (&budget, &queued.price, &reserved, done.usage.cost) {
-                            let entry = UsageEntry {
-                                at_ms: (budget.wall_clock_ms)(),
-                                session: budget.session.clone(),
-                                node: price.node,
-                                provider: provider_id.clone(),
-                                model: price.model.clone(),
-                                cost,
-                                idempotency_key: key.clone(),
-                                status: Charge::Actual,
-                            };
-                            // Already charged under this key as unresolved: the report settles it. A
-                            // report the log refuses (implausibly large) is left out rather than
-                            // failing a finished job.
-                            let mut log = lock_log(budget);
-                            if let Ok(false) = log.record(entry) {
-                                let _ = log.settle(&provider_id, &key, cost, Charge::Actual);
-                            }
+                        let accounting = accounting::finish(accounting::Finish {
+                            budget: budget.as_ref(),
+                            price: queued.price.as_ref(),
+                            reserved: reserved.as_ref(),
+                            identity,
+                            attempt: &attempt,
+                            permit: guard.metadata.take(),
+                            reported: done.usage.cost,
+                        });
+                        let failed = matches!(accounting, CompletionAccounting::Failed(_));
+                        on_output(job_id, CompletionDelivery { completed: done, accounting });
+                        if failed {
+                            Outcome::Failed { error: "accounting: completed output requires accounting repair".into(), transient: false }
+                        } else {
+                            Outcome::Done
                         }
-                        if let (Some(budget), Some(r)) = (&budget, reserved) {
-                            // What the provider reported, else the estimate; a report in another
-                            // currency can't settle it, so the estimate stands.
-                            let mut log = lock_log(budget);
-                            let reported = done.usage.cost.filter(|c| c.currency == r.estimate.currency).unwrap_or(r.estimate);
-                            if log.settle(&r.provider, &r.key, reported, Charge::Actual).is_err() {
-                                let _ = log.settle(&r.provider, &r.key, r.estimate, Charge::Actual);
-                            }
-                        }
-                        on_output(job_id, done);
-                        Outcome::Done
                     }
                     Err(failure) => {
                         if failure.handle.is_none() || failure.finished || !failure.is_transient() {
                             // Nothing to resume: never accepted, ended by the provider, or over for good.
-                            lock().handles.remove(&(provider_id.clone(), start.idempotency_key.clone()));
+                            let mut s = lock();
+                            s.handles.remove(&(provider_id.clone(), key.clone()));
+                            // The provider ran and failed this generation: a retry is a new one,
+                            // under the next derived key. Two runs reporting the same failed
+                            // generation advance the count once.
+                            if failure.finished && failure.handle.is_some() {
+                                let n = s.failures.entry((provider_id.clone(), start.idempotency_key.clone())).or_insert(0);
+                                *n = (*n).max(generation.saturating_add(1));
+                            }
                         }
                         // A submit lost in transit (or answered with a garbled or "it ran" reply) may
-                        // still have been accepted and billed; one cancelled before it was sent,
-                        // or refused, certainly wasn't (#227).
+                        // still have been accepted and billed. Only affirmative whole-submit
+                        // evidence proves nonacceptance; generic refusal kinds do not (#250).
                         let lost = failure.uncertain;
+                        // Use the captured provider that executed this attempt, even if its job
+                        // registration was replaced while awaiting the response.
+                        let will_retry =
+                            failure.error.is_transient() && (failure.handle.is_some() || !failure.uncertain || queued.provider.retry_ambiguous_submit());
                         let reserved = {
                             let mut s = lock();
                             if let Some(r) = s.reserved.get_mut(&job_id).filter(|r| r.matches(&attempt)) {
                                 r.maybe_billed |= failure.handle.is_some() || lost;
                             }
                             // A retry may still come for transient failures: keep the reservation.
-                            if failure.is_transient() { None } else { s.take_reserved(job_id, &attempt) }
+                            if will_retry { None } else { s.take_reserved(job_id, &attempt) }
                         };
                         if let (Some(budget), Some(r)) = (&budget, reserved) {
                             close(budget, &r);
                         }
-                        outcome(&failure.error)
+                        if will_retry && let Some(permit) = guard.metadata.take() {
+                            let mut s = lock();
+                            if s.running_serial.get(&job_id) == Some(&invocation)
+                                && s.jobs.get(&job_id).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration))
+                            {
+                                s.metadata.insert(attempt.clone(), RetainedMetadata { job: job_id, permit });
+                            }
+                        }
+                        outcome(&failure.error, will_retry)
                     }
                 }
             }
@@ -599,8 +916,11 @@ mod tests {
         let runner = ProviderRunner::new(
             Arc::new(InstantRuntime(AtomicU64::new(0))),
             RunLimits { max_poll_errors: 5, ..RunLimits::default() },
-            Arc::new(move |id, out| sink.lock().unwrap().push((id, out.outputs))),
-            Arc::new(|_, _| {}),
+            Arc::new(move |id, out| {
+                assert!(matches!(out.accounting, CompletionAccounting::NotBudgeted));
+                sink.lock().unwrap().push((id, out.completed.outputs));
+            }),
+            Arc::new(|_, _, _| {}),
         );
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
         runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
@@ -647,7 +967,14 @@ mod tests {
     #[test]
     fn a_job_the_provider_failed_is_submitted_again_on_retry() {
         let provider = Arc::new(FailsOnce { submits: AtomicU64::new(0), polls: AtomicU64::new(0) });
-        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let runner = ProviderRunner::new(
+            Arc::new(InstantRuntime(AtomicU64::new(0))),
+            RunLimits::default(),
+            Arc::new(|_, delivery| {
+                assert!(matches!(delivery.accounting, CompletionAccounting::NotBudgeted));
+            }),
+            Arc::new(|_, _, _| {}),
+        );
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
         runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
         assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
@@ -658,7 +985,14 @@ mod tests {
 
     #[test]
     fn unknown_jobs_and_cancellation() {
-        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let runner = ProviderRunner::new(
+            Arc::new(InstantRuntime(AtomicU64::new(0))),
+            RunLimits::default(),
+            Arc::new(|_, delivery| {
+                assert!(matches!(delivery.accounting, CompletionAccounting::NotBudgeted));
+            }),
+            Arc::new(|_, _, _| {}),
+        );
         assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
@@ -722,8 +1056,10 @@ mod tests {
         let runner = ProviderRunner::new(
             Arc::new(InstantRuntime(AtomicU64::new(0))),
             RunLimits { max_poll_errors: 1, ..RunLimits::default() },
-            Arc::new(|_, _| {}),
-            Arc::new(|_, _| {}),
+            Arc::new(|_, delivery| {
+                assert!(!matches!(delivery.accounting, CompletionAccounting::Failed(_)), "unexpected accounting failure: {:?}", delivery.accounting);
+            }),
+            Arc::new(|_, _, _| {}),
         )
         .with_budget(budget.clone());
         (runner, budget)
@@ -782,17 +1118,28 @@ mod tests {
 
     #[test]
     fn finished_jobs_are_charged_what_the_provider_reported() {
-        let (runner, budget) = budgeted(Some(1_000_000));
+        let (mut runner, budget) = budgeted(Some(1_000_000));
         runner.register(JobId(1), priced(Arc::new(Reports(Some(usd(12_345)))), Some(40_000)));
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
         runner.register(JobId(2), priced(Arc::new(Reports(None)), Some(40_000)));
         assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done);
-        // A report in another currency can't settle it: the estimate stands.
+        // Strict accounting retains the estimate, but no longer fabricates an Actual USD
+        // report when the provider actually reported EUR. The original output is still delivered.
+        let deliveries = Arc::new(Mutex::new(Vec::new()));
+        let saved = Arc::clone(&deliveries);
+        runner.on_output = Arc::new(move |_, delivery| saved.lock().unwrap().push(delivery));
         runner.register(JobId(3), priced(Arc::new(Reports(Some(Money::new(nodecraft_types::Currency::EUR, 1)))), Some(40_000)));
-        assert_eq!(block_on(runner.run(job(3), CancelToken::default())), Outcome::Done);
+        assert!(matches!(block_on(runner.run(job(3), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+        let mut delivered = deliveries.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        let completion = delivered.pop().unwrap();
+        assert_eq!(completion.completed.outputs, vec![Output::Text("ok".into())]);
+        let CompletionAccounting::Failed(mut failure) = completion.accounting else { panic!("missing accounting failure") };
+        assert_eq!(failure.kind, nodecraft_types::ErrorKind::CurrencyMismatch);
+        assert_eq!(failure.retry.as_mut().unwrap().retry(&budget), Err(AccountingRetryError::CurrencyMismatch));
         let log = budget.log.lock().unwrap();
         let rows: Vec<(u64, Charge)> = log.entries().map(|e| (e.cost.micros, e.status)).collect();
-        assert_eq!(rows, [(12_345, Charge::Actual), (40_000, Charge::Actual), (40_000, Charge::Actual)]);
+        assert_eq!(rows, [(12_345, Charge::Actual), (40_000, Charge::Actual), (40_000, Charge::Estimate)]);
         assert_eq!(log.entries().next().map(|e| (e.provider.as_str(), e.model.as_str(), e.at_ms)), Some(("reports", "test.img", 7)));
     }
 
@@ -851,7 +1198,14 @@ mod tests {
 
     #[test]
     fn handles_left_by_a_provider_change_or_requeue_are_dropped_without_a_budget() {
-        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let runner = ProviderRunner::new(
+            Arc::new(InstantRuntime(AtomicU64::new(0))),
+            RunLimits::default(),
+            Arc::new(|_, delivery| {
+                assert!(matches!(delivery.accounting, CompletionAccounting::NotBudgeted));
+            }),
+            Arc::new(|_, _, _| {}),
+        );
         let a = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 100 });
         runner.register(JobId(1), priced(a.clone(), None));
         assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
@@ -930,40 +1284,40 @@ mod tests {
     }
 
     #[test]
-    fn certain_rejections_are_released_and_lost_submits_are_charged() {
+    fn legacy_submit_errors_are_charged_and_preinvocation_cancel_is_free() {
         let (runner, budget) = budgeted(Some(1_000_000));
         runner.register(JobId(1), priced(Arc::new(SubmitFails(ErrorKind::Auth)), Some(300_000)));
         assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
-        assert_eq!(spent(&budget), 0, "a rejected key never reached a model");
-        assert_eq!(budget.log.lock().unwrap().entries().count(), 0);
+        assert_eq!(spent(&budget), 300_000, "legacy Auth does not prove absence of acceptance");
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 1);
         runner.register(JobId(2), priced(Arc::new(SubmitFails(ErrorKind::Network)), Some(300_000)));
         assert!(matches!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Failed { transient: true, .. }));
-        assert_eq!(spent(&budget), 300_000, "a lost submit may have been accepted: held");
+        assert_eq!(spent(&budget), 600_000, "a lost submit may have been accepted: held");
         runner.settle(JobId(2));
         assert_eq!(budget.log.lock().unwrap().entries().last().map(|e| e.status), Some(Charge::Unresolved));
-        assert_eq!(spent(&budget), 300_000);
+        assert_eq!(spent(&budget), 600_000);
         // Cancelled before it started: nothing reserved.
         let provider = Arc::new(Reports(None));
         runner.register(JobId(3), priced(provider, Some(5)));
         let token = CancelToken::default();
         token.cancel();
         assert_eq!(block_on(runner.run(job(3), token)), Outcome::Cancelled);
-        assert_eq!(spent(&budget), 300_000);
+        assert_eq!(spent(&budget), 600_000);
     }
 
     #[test]
-    fn garbled_or_it_ran_submit_replies_are_charged_and_refusals_released() {
-        // #227: a reply that can't be read, or one saying the job ran (and failed or expired),
-        // may follow an accepted submission: charged as unresolved. Refusals are released.
+    fn legacy_submit_kinds_cannot_release_reservations_without_evidence() {
+        // Generic diagnostics alone cannot prove whole-submit nonacceptance, even for a
+        // legacy adapter returning a refusal-looking error. All remain unresolved.
         let (runner, budget) = budgeted(Some(10_000_000));
         let mut expected = 0;
         for (n, (kind, charged)) in [
             (ErrorKind::Malformed, true),
             (ErrorKind::JobFailed, true),
             (ErrorKind::Expired, true),
-            (ErrorKind::UnsupportedInput, false),
-            (ErrorKind::BlockedContent, false),
-            (ErrorKind::Budget, false),
+            (ErrorKind::UnsupportedInput, true),
+            (ErrorKind::BlockedContent, true),
+            (ErrorKind::Budget, true),
         ]
         .into_iter()
         .enumerate()
@@ -1136,6 +1490,10 @@ mod tests {
         assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
     }
 
+    mod ambiguous_retry_tests;
+    mod delivery_evidence_tests;
+    mod fresh_key_tests;
     mod paid_unpriced_tests;
     mod stale_handle_tests;
+    mod strict257_tests;
 }
