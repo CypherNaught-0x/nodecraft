@@ -219,8 +219,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        33,
-        "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, 3 file and 4 run/usage commands"
+        39,
+        "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, 3 file, 4 run/usage and 6 history commands"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
