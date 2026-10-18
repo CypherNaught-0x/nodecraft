@@ -142,6 +142,11 @@ an existing trusted-host local/free bypass; neither Provider nor ProviderRunner 
 partial-price consent. The run.quote/run.start authorized host path owns that consent. No numeric
 pre-submit/capped desktop execution is supplied here. Optional token totals remain counts;
 Usage.cost stays None rather than labelling a standard-rate estimate as an actual provider invoice.
+Malformed or inconsistent optional token usage is discarded as a whole while valid image outputs
+are retained. Missing detail members, invalid count types, overflow and mismatched totals leave
+usage unknown, not zero. This does not bypass JSON/UTF-8, depth, field, value or metadata limits,
+nor base64, MIME, alpha, count, pixel or codec validation. At most 64 JSON fields and 256 values at
+depth 16 are admitted; arbitrary future response expansion is not guaranteed.
 Without an independently supplied estimate or exact monetary cost, current main may produce no
 money ledger row. Do not interpret that absence as zero spend.
 
@@ -151,7 +156,13 @@ failures terminal in the engine, with their original diagnostic and conservative
 Legacy providers keep their existing retry policy; genuine handles and affirmative no-send failures
 retain normal resume/retry semantics. Direct clients, manual requeue/new requests, concurrent callers
 and cold reconstruction can still submit again: a matching local key is not remote deduplication.
-Hosts must disclose prior uncertainty before an explicit new paid attempt. Dropping a pending future
+Hosts must disclose prior uncertainty before an explicit new paid attempt.
+HTTP 429 (rate limited) and 503 (overloaded) remain terminal for uncertain no-handle submissions.
+Retry-After is diagnostic information, not proof of nonacceptance or nonbilling. General provider
+retry recommendations do not establish that stronger guarantee. The 180-second timeout bounds
+local waiting; high quality or larger N can exceed it, losing a possibly paid reply. It does not
+cancel remote work. Builtin wasm refuses before fetch, but the legacy Provider boundary remains
+conservatively uncertain; that refusal carries no whole-submit positive no-send attestation. Dropping a pending future
 stops local waiting only; poll/cancel cannot invent a resumable handle or confirm remote cancellation.
 A custom Http is a trusted Rust implementation, not a sandbox or a positive nonbilling proof.
 
