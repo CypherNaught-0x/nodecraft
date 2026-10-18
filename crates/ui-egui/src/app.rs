@@ -281,6 +281,8 @@ mod layout;
 mod metrics;
 mod navigation;
 mod order;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery;
 mod search;
 mod split;
 #[cfg(not(target_arch = "wasm32"))]
@@ -321,6 +323,9 @@ pub struct NodeCraftApp {
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// The startup question about an earlier session's unsaved work (#408).
+    #[cfg(not(target_arch = "wasm32"))]
+    recovery: Option<recovery::RecoveryOffer>,
     /// The window title last sent, so it is only sent when it changes.
     title: String,
     /// Image previews on cards (#386).
@@ -406,12 +411,9 @@ impl NodeCraftApp {
             }
             None => Self::with_services(services)?,
         };
-        app.notice = problem.or_else(|| {
-            kept.map(|path| {
-                log::warn!("kept an earlier session's recovery journal as {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
-                "Unsaved work from a session that didn't close cleanly was kept in the recovery folder.".to_owned()
-            })
-        });
+        app.notice = problem;
+        // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
+        app.recovery = kept.map(recovery::RecoveryOffer::read);
         app.key_results = results;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -537,6 +539,8 @@ impl NodeCraftApp {
             wiring: None,
             reordering: None,
             palette: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovery: None,
             title: String::new(),
             previews: crate::preview::Previews::default(),
             last_frame: None,
@@ -586,6 +590,11 @@ impl NodeCraftApp {
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let t = *self.theme.tokens();
+            self.recovery_dialog(ui.ctx(), &t);
+        }
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
