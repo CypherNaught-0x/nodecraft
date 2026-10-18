@@ -181,7 +181,10 @@ node --test scripts/claim/*.test.js                     # if you touched the cla
    visible, attach real screenshots or a short recording. Diagrams don't replace evidence of
    visible behaviour. Coding agents should capture that evidence themselves rather than asking a
    human for it.
-4. Keep the PR up to date with `main` by rebasing before you push. Never force-push over someone
+4. If you made a choice others will build on, record it as a **new file** in `docs/decisions/`
+   (`YYYY-MM-DD-<slug>.md`, see `docs/decisions.md`). Don't append to an existing file: one
+   file per decision keeps parallel PRs from conflicting.
+5. Keep the PR up to date with `main` by rebasing before you push. Never force-push over someone
    else's commits.
 
 ## Licence

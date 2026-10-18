@@ -234,7 +234,8 @@ AddNode restore spelling and the complete changeset envelope, avoiding a second 
 pass. Parameter decoding borrows JSON and reports allowlisted field paths and error categories,
 never raw input values or arbitrary map keys. Native panic unwinding returns an
 internal error while preserving document/history/events; abort-only targets still depend on
-validation. History limits and explicit drag tokens are specified in `decisions.md`. Each
+validation. History limits and explicit drag tokens are specified in
+[`decisions/2026-10-16-engine-command-sessions-52.md`](decisions/2026-10-16-engine-command-sessions-52.md). Each
 subscriber calls `events_since(cursor)` and advances its own cursor to the last notification;
 an expired cursor requires reading the current document and revision again. These notifications
 are an invalidation log, not a persistence or collaboration journal. Applied changeset events

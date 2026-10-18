@@ -59,7 +59,8 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 The current control transport is authenticated TCP. Headless stdio automation is available through
 `nodecraft-cli mcp`; a separate stdio control transport is tracked by #269 and is not part of the
-live canvas command bridge described below (see `docs/decisions.md`).
+live canvas command bridge described below (see
+[`decisions/2026-10-17-scoped-live-control-navigation-262.md`](decisions/2026-10-17-scoped-live-control-navigation-262.md)).
 
 ### Live canvas commands
 

@@ -21,7 +21,7 @@ Flatpak ids); never change it, desktops and installers key on it.
 
 1. `ROADMAP.md`: the current milestone. `docs/plan.md` §7–8: its tasks and exit criteria.
 2. The GitHub issue you are working on, and its milestone.
-3. `docs/architecture.md` for the crate you will touch; `docs/decisions.md` before undoing
+3. `docs/architecture.md` for the crate you will touch; `docs/decisions/` before undoing
    anything that looks odd (it may be deliberate).
 4. `git pull --rebase origin main`, and `cargo xtask ci` to see the tree is green before you
    start. If it isn't, find out why before adding to it.
@@ -209,7 +209,7 @@ that drive real pointer and key events through the canvas.
 |---|---|
 | Product scope, architecture, roadmap | `docs/plan.md` |
 | Crate map and rules | `docs/architecture.md` |
-| Decisions taken and why | `docs/decisions.md` (add one when you make a choice others will build on) |
+| Decisions taken and why | `docs/decisions/`, one file per decision (add one when you make a choice others will build on; how: `docs/decisions.md`) |
 | Build, test, run | `docs/development.md` |
 | Theme tokens, canvas interaction | `docs/ui-design.md` |
 | Cutting a release, signing, packaging | `docs/releasing.md` |
