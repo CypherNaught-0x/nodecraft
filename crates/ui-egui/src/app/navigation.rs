@@ -108,7 +108,20 @@ impl NodeCraftApp {
         }
         Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"clamped":clamped}))
     }
-    pub(super) fn navigation_overlay(&mut self, ui: &mut egui::Ui) -> bool {
+    pub(super) fn minimap_input_owned(&mut self, ctx: &egui::Context) -> bool {
+        if self.navigation.pointer_owned || self.navigation.drag.is_some() {
+            return true;
+        }
+        // The common case needs no geometry or capability query. A fresh press uses
+        // exactly the pan admission and hit-test used by the later overlay capture.
+        if !self.navigation.visible || !ctx.input(|i| i.pointer.primary_pressed()) {
+            return false;
+        }
+        let context = self.navigation_context(ctx, "canvas.pan_to");
+        let pan = self.navigation_enabled_with_context(context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
+        self.navigation.press_pending(ctx, self.viewport, pan, self.theme.tokens())
+    }
+    pub(super) fn navigation_overlay(&mut self, ui: &mut egui::Ui, press_admitted: Option<bool>) -> bool {
         // Decide ownership/availability before consuming any key. An editor, popup,
         // unavailable fit or active canvas gesture must retain the original event.
         let [all_context, selected_context, toggle_context, pan_context] = self.navigation_contexts(ui.ctx());
@@ -154,6 +167,7 @@ impl NodeCraftApp {
                 selection_enabled: selected,
                 toggle_enabled: toggle,
                 pan_enabled: pan,
+                press_admitted,
                 preview,
                 canvas_gesture: self.wiring.is_some()
                     || self.drag.is_some()
@@ -298,7 +312,7 @@ mod tests {
                         app.marquee = Some(Marquee { start: Pos2::ZERO, base: Selection::default(), cancelled: false });
                     }
                     app.viewport = ui.max_rect();
-                    app.navigation_overlay(ui);
+                    app.navigation_overlay(ui, None);
                     *observed.borrow_mut() |= ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, .. })));
                 },
                 app(),

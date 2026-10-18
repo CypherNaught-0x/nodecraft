@@ -25,6 +25,7 @@ same structure with the values inverted.
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
 | `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
+| `duplicate_offset` | 40 world points | 40 world points | duplicate displacement on both axes, independent of zoom |
 | `danger` | `#f06a5f` | `#c4372b` | errors and failed states in chrome |
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` | `#e07a5a` / `#8fc35a` / `#a0a0a8` | `#b0482a` / `#4f8a1f` / `#6b6b74` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
@@ -217,3 +218,36 @@ scans progress on rendered frames, and queued framing waits for completion and i
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
 events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+
+## Clipboard admission and placement
+
+Copy projects only retained node fields and inner edges; generation history and active results
+never enter the clipboard projection. The borrowed projection is checked before constructing
+owned nodes: the clipboard envelope is at most 16 MiB encoded JSON, and the eventual command is
+at most 1 MiB of logical key/string bytes and 16,384 JSON values under the shared depth rules.
+Selections beyond those limits are refused with an instruction to copy fewer nodes.
+
+Cut first checks the actual registered paste against a privately staged post-delete document.
+The delete commits through ordinary graph/history/recovery admission only after that roundtrip
+passes, then the app queues the copied text. This validates the captured post-delete proposal;
+a subsequent Paste remaps IDs and placement against its current document and revision. It does
+not guarantee acceptance by arbitrary extensions for every future paste proposal. A failed append
+can require recovery repair while preserving the live document and history. This cannot acknowledge
+delivery by the OS clipboard; undo remains available after a successful Cut. Command/kind extensions keep the existing trusted
+pure-description contract; this is not a sandbox for arbitrary native callback side effects.
+
+Media references require actual immutable destination bytes even when project UUIDs match.
+Already-present bytes may be used across different UUIDs; the clipboard transfers no assets.
+The existing format checks known MIME signatures and declared image width/height. Unknown
+signatures remain availability-only; duration/audio/page metadata remains advisory.
+
+Busy editors, Search, palettes, menus, the keys panel and active canvas/minimap gestures yield
+before copying Paste text. For an idle canvas, only the final Paste event in one platform input
+is copied; an oversized final event cannot fall back to an earlier paste. Fresh minimap primary
+press ownership uses the first press position and the same frozen admission as later capture,
+including movement outside the map within that input. Ignored events remain unconsumed.
+
+Pastes over the minimap or its toolbar use the unobscured canvas center; ordinary canvas pointers
+retain their target. No finite unobscured region means refusal. Both node groups and plain Text
+use actual admitted instance body geometry, including renderer placeholder refusal. Duplicate
+uses the `duplicate_offset` theme token in world coordinates.

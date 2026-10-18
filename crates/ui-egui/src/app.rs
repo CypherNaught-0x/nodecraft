@@ -25,6 +25,8 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
+thread_local! { static PASTE_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub(crate) const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
 struct CachedSchema {
     descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
@@ -135,6 +137,29 @@ pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> 
     // Conservative heap accounting for Vec/String/enum/tree overhead beyond wire text.
     counter.0.checked_mul(4).filter(|bytes| *bytes <= MAX_SCHEMA_CACHE_BYTES)
 }
+// Shared actual-card admission, including the renderer's single-entry retention refusal.
+fn card_admission<'a>(
+    session: &'a Session,
+    node: &Node,
+    cache: Option<&SchemaCache>,
+) -> Option<(Cow<'a, nodecraft_nodes::NodeDescriptor>, BTreeSet<String>, usize)> {
+    let descriptor = session.kinds().get(&node.kind).ok()?.resolve_instance(node).ok()?;
+    if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
+        return None;
+    }
+    let schema = descriptor.params.validated().ok()?;
+    let visible = schema.resolve_borrowed(&node.params, false).ok()?.visible;
+    let known = match &descriptor {
+        Cow::Borrowed(value) => cache.and_then(|cache| cache.shared.get(&(*value as *const nodecraft_nodes::NodeDescriptor as usize))).map(|slot| slot.1),
+        Cow::Owned(_) => None,
+    };
+    let bytes = known.or_else(|| descriptor_bytes(&descriptor))?;
+    let overhead = visible.iter().fold(256usize, |n, name| n.saturating_add(name.len().saturating_add(96)));
+    if bytes.checked_add(overhead)? > MAX_SCHEMA_CACHE_BYTES {
+        return None;
+    }
+    Some((descriptor, visible, bytes))
+}
 fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
     if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision()) {
         if let Some(entry) = cache.entries.get_mut(&node.id) {
@@ -142,11 +167,7 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
         }
         return cache.get(&node.id);
     }
-    let descriptor = session.kinds().get(&node.kind).ok()?.resolve_instance(node).ok()?;
-    if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
-        return None;
-    }
-    let nodecraft_nodes::ResolvedParams { visible, .. } = descriptor.params.resolve(&node.params, false).ok()?;
+    let (descriptor, visible, bytes) = card_admission(session, node, Some(cache))?;
     let (descriptor, borrowed_identity, bytes) = match descriptor {
         Cow::Borrowed(descriptor) => {
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
@@ -155,14 +176,10 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
             if let Some((shared, bytes, _)) = cache.shared.get(&identity) {
                 (Arc::clone(shared), Some(identity), *bytes)
             } else {
-                let bytes = descriptor_bytes(descriptor)?;
                 (Arc::new(descriptor.clone()), Some(identity), bytes)
             }
         }
-        Cow::Owned(descriptor) => {
-            let bytes = descriptor_bytes(&descriptor)?;
-            (Arc::new(descriptor), None, bytes)
-        }
+        Cow::Owned(descriptor) => (Arc::new(descriptor), None, bytes),
     };
     cache.insert(node.id, CachedSchema { descriptor, visible, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock });
     while cache.bytes > MAX_SCHEMA_CACHE_BYTES {
@@ -200,12 +217,9 @@ struct Wiring {
 }
 
 /// A copied node's card rect, from its kind's resolved instance (it isn't on the canvas yet).
-fn payload_rect(kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
-    card::world_rect(node, kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok()).as_deref(), t)
+fn payload_rect(session: &Session, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
+    card::world_rect(node, card_admission(session, node, None).as_ref().map(|a| a.0.as_ref()), t)
 }
-
-/// World offset of a duplicate from its original.
-const DUPLICATE_OFFSET: f32 = 40.0;
 
 /// Screen points within which a click selects a noodle.
 const NOODLE_HIT: f32 = 6.0;
@@ -447,6 +461,7 @@ impl NodeCraftApp {
         }
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
+        let mut minimap_press = None;
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() {
             let command = ui.input_mut(|input| {
@@ -484,58 +499,56 @@ impl NodeCraftApp {
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
             // focus must never become a node in the (autosaved) project.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
-            let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
-                let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
-                let (mut copy, mut cut, mut pasted) = (false, false, None);
-                for event in &i.events {
-                    match event {
-                        egui::Event::Copy => copy = true,
-                        egui::Event::Cut => cut = true,
-                        // Bounded before any copy: oversized text is refused, not cloned.
-                        egui::Event::Paste(text) if text.len() > clipboard::MAX_BYTES => pasted = Some(Err(())),
-                        egui::Event::Paste(text) => pasted = Some(Ok(text.clone())),
-                        _ => {}
-                    }
+            let minimap_owned = self.minimap_input_owned(ui.ctx());
+            minimap_press = Some(minimap_owned);
+            let busy =
+                self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || minimap_owned || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
+            let (copy, cut, pasted, duplicate) = ui.input_mut(|input| {
+                if busy {
+                    return (false, false, None, false);
                 }
-                if busy { (false, false, None, false) } else { (copy, cut, pasted, duplicate) }
-            });
-            let pointer_world = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).map(|p| self.view.to_world(viewport.min, p));
-            if (copy || cut || duplicate)
-                && let Some(payload) = self.selection_payload()
-            {
-                // A copy that couldn't be pasted back is refused, so cut never loses work.
-                if let Err(why) = self.pasteable(&payload) {
-                    self.notice = Some(why);
-                } else if duplicate {
-                    let kinds = self.session.kinds();
-                    if let Some(centre) = clipboard::group_centre(&payload.nodes, |n| payload_rect(kinds, n, t)) {
-                        self.paste(payload, centre + Vec2::splat(DUPLICATE_OFFSET));
+                let duplicate = input.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
+                let copy = input.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                let cut = input.events.iter().any(|e| matches!(e, egui::Event::Cut));
+                let pasted = input.events.iter().rev().find_map(|event| match event {
+                    egui::Event::Paste(text) if text.len() > clipboard::MAX_BYTES => Some(Err(())),
+                    egui::Event::Paste(text) => {
+                        #[cfg(test)]
+                        PASTE_CLONES.with(|n| n.set(n.get() + 1));
+                        Some(Ok(text.clone()))
                     }
-                } else if let Some(text) = clipboard::to_text(&payload) {
-                    ui.ctx().copy_text(text);
-                    if cut {
-                        // Cut removes what it copied: the selected nodes (their noodles go with them).
-                        let nodes = self.selection.nodes().clone();
-                        self.dispatch_delete_of(&nodes, &Default::default());
+                    _ => None,
+                });
+                (copy, cut, pasted, duplicate)
+            });
+            if copy || cut || duplicate {
+                match self.selection_payload() {
+                    Err(error) => self.notice = Some(error.message),
+                    Ok(None) => {}
+                    Ok(Some(payload)) => {
+                        if duplicate {
+                            self.duplicate_payload(payload, t);
+                        } else if let Some(text) = clipboard::to_text(&payload) {
+                            if cut {
+                                self.cut_payload(ui.ctx(), payload, text);
+                            } else {
+                                ui.ctx().copy_text(text);
+                                self.notice = None;
+                            }
+                        }
                     }
                 }
             }
             match pasted {
                 Some(Err(())) => self.notice = Some("The clipboard holds more than 16 MiB; nothing was pasted.".into()),
-                Some(Ok(text)) => {
-                    let centre = pointer_world.unwrap_or_else(|| self.view.to_world(viewport.min, viewport.center()));
-                    match clipboard::parse(&text) {
-                        clipboard::Parsed::Nodes(payload) if payload.project != Some(self.session.document().id()) && clipboard::has_media(&payload) => {
-                            self.notice = Some(
-                                "Can't paste these nodes: their media lives in another project, and copying media between projects isn't supported yet.".into(),
-                            );
-                        }
+                Some(Ok(text)) => match self.paste_target(ui, t) {
+                    Some(centre) => match clipboard::parse(&text) {
                         clipboard::Parsed::Nodes(payload) => self.paste(payload, centre),
                         clipboard::Parsed::Unreadable(why) => self.notice = Some(format!("Can't paste these nodes: {why}.")),
                         clipboard::Parsed::Text => self.paste_text(&text, centre),
-                    }
-                }
+                    },
+                    None => self.notice = Some("There is no unobscured canvas space for this paste.".into()),
+                },
                 None => {}
             }
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
@@ -543,12 +556,7 @@ impl NodeCraftApp {
             }
             // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
             // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
-            let busy = self.drag.is_some()
-                || self.marquee.is_some()
-                || self.wiring.is_some()
-                || self.navigation.drag.is_some()
-                || self.navigation.pointer_owned
-                || egui::Popup::is_any_open(ui.ctx());
+            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || minimap_owned || egui::Popup::is_any_open(ui.ctx());
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
                     self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
@@ -584,7 +592,7 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks;
+        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !overlay_blocks
@@ -990,25 +998,54 @@ impl NodeCraftApp {
         }
     }
 
+    /// The selection as a bounded, history-free clipboard payload.
+    fn selection_payload(&self) -> Result<Option<clipboard::Payload>, Error> {
+        clipboard::checked_payload(&self.session, self.canvas, &self.selection)
+    }
+    fn paste_target(&self, ui: &egui::Ui, t: &Tokens) -> Option<Pos2> {
+        let usable = self.navigation.usable(self.viewport, t);
+        if !canvas::valid_rect(usable) {
+            return None;
+        }
+        let overlay = crate::navigation::layout(self.viewport, self.navigation.visible, t).overlay;
+        let screen = ui.input(|i| i.pointer.hover_pos()).filter(|p| self.viewport.contains(*p) && !overlay.contains(*p)).unwrap_or_else(|| usable.center());
+        let world = self.view.to_world(self.viewport.min, screen);
+        world.is_finite().then_some(world)
+    }
+    fn duplicate_payload(&mut self, payload: clipboard::Payload, t: &Tokens) {
+        if let Some(centre) = clipboard::group_centre(&payload.nodes, |n| payload_rect(&self.session, n, t)) {
+            self.paste(payload, centre + Vec2::splat(t.duplicate_offset));
+        }
+    }
+    fn cut_payload(&mut self, ctx: &egui::Context, payload: clipboard::Payload, text: String) {
+        let nodes: Vec<_> = payload.nodes.iter().map(|node| node.id).collect();
+        let Some(centre) = clipboard::group_centre(&payload.nodes, |n| payload_rect(&self.session, n, self.theme.tokens())) else {
+            return;
+        };
+        let Some((pasted, edges)) = clipboard::place(
+            self.session.document(),
+            self.canvas,
+            payload,
+            centre,
+            |n| payload_rect(&self.session, n, self.theme.tokens()),
+            self.session.revision(),
+        ) else {
+            self.notice = Some("Couldn't allocate ids for the cut roundtrip; try again.".into());
+            return;
+        };
+        match self.session.dispatch_clipboard_cut(&json!({"canvas":self.canvas,"nodes":nodes}), &json!({"canvas":self.canvas,"nodes":pasted,"edges":edges})) {
+            Ok(_) => {
+                ctx.copy_text(text);
+                self.selection.clear();
+                self.notice = None;
+            }
+            Err(error) => self.notice = Some(error.message),
+        }
+    }
     /// Paste copied nodes centred on `centre` (one undo step) and select them.
-    /// The selection as a clipboard payload.
-    fn selection_payload(&self) -> Option<clipboard::Payload> {
-        let document = self.session.document();
-        document.canvases().get(&self.canvas).and_then(|canvas| clipboard::payload(document.id(), canvas, &self.selection))
-    }
-
-    /// Whether `payload` fits what `canvas.paste` accepts (command JSON limits), with a notice if
-    /// not.
-    fn pasteable(&self, payload: &clipboard::Payload) -> Result<(), String> {
-        let params = json!({"canvas": self.canvas, "nodes": payload.nodes, "edges": payload.edges});
-        nodecraft_engine::commands::validate_json(&params)
-            .map_err(|_| "This selection is too large to copy and paste back in one go (over 1 MiB of text or 16,384 values); copy fewer nodes.".to_owned())
-    }
-
     fn paste(&mut self, payload: clipboard::Payload, centre: Pos2) {
         let t = self.theme.tokens();
-        let kinds = self.session.kinds();
-        let placed = clipboard::place(self.session.document(), self.canvas, payload, centre, |n| payload_rect(kinds, n, t), self.session.revision());
+        let placed = clipboard::place(self.session.document(), self.canvas, payload, centre, |n| payload_rect(&self.session, n, t), self.session.revision());
         let Some((nodes, edges)) = placed else {
             self.notice = Some("Couldn't allocate ids for the pasted nodes; try again.".into());
             return;
@@ -1038,7 +1075,9 @@ impl NodeCraftApp {
             });
         match node {
             Ok(mut node) => {
-                node.pos = nodecraft_graph::Position { x: centre.x - t.card_width * 0.5, y: centre.y - t.card_min_height * 0.5 };
+                let rect = payload_rect(&self.session, &node, t);
+                let shift = centre - rect.center();
+                node.pos = nodecraft_graph::Position { x: node.pos.x + shift.x, y: node.pos.y + shift.y };
                 let id = node.id;
                 match self.session.dispatch("canvas.paste", &json!({"canvas": self.canvas, "nodes": [node]})) {
                     Ok(_) => {

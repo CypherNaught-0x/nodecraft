@@ -68,34 +68,39 @@ impl AssetStore {
         Ok(snapshot)
     }
 
+    /// Checks immutable destination bytes and the format's supported reference metadata policy.
+    /// Unknown signatures remain available; duration/audio/page metadata is advisory.
+    pub fn validate_reference(&self, asset: &nodecraft_types::AssetRef) -> Result<(), Error> {
+        let bytes = self.get(&asset.hash).ok_or_else(|| crate::invalid("project references a missing asset"))?;
+        #[cfg(any(test, feature = "validation-metrics"))]
+        crate::validation_metrics::record(|metrics| metrics.sniffs = metrics.sniffs.saturating_add(1));
+        let Some(sniffed) = nodecraft_media::sniff(bytes) else {
+            return Ok(());
+        };
+        let expected = asset.mime.essence();
+        let actual = sniffed.mime.split(';').next().unwrap_or_default();
+        let generic_text = actual == "text/plain"
+            && (expected.starts_with("text/") || expected == "application/json" || expected.ends_with("+json") || expected.ends_with("+xml"));
+        if actual != expected && !generic_text {
+            return Err(crate::invalid("asset MIME does not match its stored bytes"));
+        }
+        if matches!(actual, "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff")
+            && (asset.meta.width.is_some() || asset.meta.height.is_some())
+        {
+            #[cfg(any(test, feature = "validation-metrics"))]
+            crate::validation_metrics::record(|metrics| metrics.image_probes = metrics.image_probes.saturating_add(1));
+            let meta =
+                nodecraft_media::probe_image(bytes, &nodecraft_media::Limits::default()).map_err(|_| crate::invalid("cannot verify asset image dimensions"))?;
+            if asset.meta.width.is_some_and(|width| width != meta.width) || asset.meta.height.is_some_and(|height| height != meta.height) {
+                return Err(crate::invalid("asset dimensions do not match its stored bytes"));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_value_assets(&self, value: &Value) -> Result<(), Error> {
         match value {
-            Value::Media(asset) => {
-                let bytes = self.get(&asset.hash).ok_or_else(|| crate::invalid("project references a missing asset"))?;
-                #[cfg(any(test, feature = "validation-metrics"))]
-                crate::validation_metrics::record(|metrics| metrics.sniffs = metrics.sniffs.saturating_add(1));
-                let Some(sniffed) = nodecraft_media::sniff(bytes) else {
-                    return Ok(());
-                };
-                let expected = asset.mime.essence();
-                let actual = sniffed.mime.split(';').next().unwrap_or_default();
-                let generic_text = actual == "text/plain"
-                    && (expected.starts_with("text/") || expected == "application/json" || expected.ends_with("+json") || expected.ends_with("+xml"));
-                if actual != expected && !generic_text {
-                    return Err(crate::invalid("asset MIME does not match its stored bytes"));
-                }
-                if matches!(actual, "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff")
-                    && (asset.meta.width.is_some() || asset.meta.height.is_some())
-                {
-                    #[cfg(any(test, feature = "validation-metrics"))]
-                    crate::validation_metrics::record(|metrics| metrics.image_probes = metrics.image_probes.saturating_add(1));
-                    let meta = nodecraft_media::probe_image(bytes, &nodecraft_media::Limits::default())
-                        .map_err(|_| crate::invalid("cannot verify asset image dimensions"))?;
-                    if asset.meta.width.is_some_and(|width| width != meta.width) || asset.meta.height.is_some_and(|height| height != meta.height) {
-                        return Err(crate::invalid("asset dimensions do not match its stored bytes"));
-                    }
-                }
-            }
+            Value::Media(asset) => self.validate_reference(asset)?,
             Value::List(values) => {
                 for value in values {
                     self.validate_value_assets(value)?;
@@ -266,5 +271,28 @@ mod tests {
         let final_changes = Changeset::new(vec![Change::SetNode { canvas, node: Node::new(id, "source.text") }]);
         final_changes.apply(&mut project).unwrap();
         assert!(assets.validate_changed_assets(&project, &changes).is_ok());
+    }
+    #[test]
+    fn borrowed_reference_policy_checks_presence_known_mime_and_image_dimensions() {
+        let mut store = AssetStore::default();
+        let png = nodecraft_media::encode_png(1, 1, &[20, 40, 60, 255], &nodecraft_media::Limits::default()).unwrap();
+        let hash = store.insert(&png).unwrap();
+        let mut reference = AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta { width: Some(1), height: Some(1), ..Default::default() } };
+        store.validate_reference(&reference).unwrap();
+        reference.meta.width = Some(2);
+        assert!(store.validate_reference(&reference).is_err());
+        reference.meta.width = Some(1);
+        reference.mime = "text/plain".parse().unwrap();
+        assert!(store.validate_reference(&reference).is_err());
+        reference.hash = Blake3::from_bytes([9; 32]);
+        assert!(store.validate_reference(&reference).is_err());
+        let unknown = store.insert(&[0xff, 0, 0xfe, 0, 0xfd]).unwrap();
+        let reference = AssetRef {
+            hash: unknown,
+            mime: "application/x-test".parse().unwrap(),
+            meta: MediaMeta { duration_ms: Some(123), sample_rate: Some(48000), ..Default::default() },
+        };
+        assert!(nodecraft_media::sniff(store.get(&unknown).unwrap()).is_none());
+        store.validate_reference(&reference).unwrap();
     }
 }

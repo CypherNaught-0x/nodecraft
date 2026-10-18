@@ -244,6 +244,8 @@ pub struct OverlayInput<'a> {
     pub selection_enabled: bool,
     pub toggle_enabled: bool,
     pub pan_enabled: bool,
+    /// A live app freezes fresh-press admission before clipboard/quick-add; isolated overlays use None.
+    pub press_admitted: Option<bool>,
     pub preview: Option<(NodeId, Vec2)>,
     pub canvas_gesture: bool,
     pub tokens: &'a Tokens,
@@ -253,8 +255,38 @@ impl Navigation {
         let top = layout(viewport, self.visible, t).overlay.top();
         Rect::from_min_max(viewport.min, Pos2::new(viewport.max.x, top - t.navigation_gap))
     }
+    /// Shared with early canvas-key admission: a fresh map press owns the whole frame,
+    /// even when a key event precedes that press in the platform's event list.
+    pub(crate) fn press_pending(&self, ctx: &egui::Context, viewport: Rect, pan_enabled: bool, t: &Tokens) -> bool {
+        self.visible
+            && pan_enabled
+            && self.drag.is_none()
+            && ctx.input(|i| {
+                // A batch may include movement after the press. The first primary
+                // press owns this frame; later presses cannot transfer that ownership.
+                i.events
+                    .iter()
+                    .find_map(|event| match event {
+                        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                        _ => None,
+                    })
+                    .is_some_and(|pos| layout(viewport, self.visible, t).map.contains(pos))
+            })
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, input: OverlayInput<'_>) -> (bool, Vec<(&'static str, Value)>) {
-        let OverlayInput { view, viewport, selection, all_enabled, selection_enabled, toggle_enabled, pan_enabled, preview, canvas_gesture, tokens: t } = input;
+        let OverlayInput {
+            view,
+            viewport,
+            selection,
+            all_enabled,
+            selection_enabled,
+            toggle_enabled,
+            pan_enabled,
+            press_admitted,
+            preview,
+            canvas_gesture,
+            tokens: t,
+        } = input;
         let layout = layout(viewport, self.visible, t);
         let mut actions = Vec::new();
         let visible = view.visible_world(viewport);
@@ -267,7 +299,7 @@ impl Navigation {
         }
         let mapping = self.drag.or_else(|| Mapping::new(domain, layout.map.shrink(t.navigation_gap)));
         let pointer = ui.input(|i| i.pointer.interact_pos());
-        if self.visible && pan_enabled && self.drag.is_none() && ui.input(|i| i.pointer.primary_pressed()) && pointer.is_some_and(|p| layout.map.contains(p)) {
+        if self.drag.is_none() && press_admitted.unwrap_or_else(|| self.press_pending(ui.ctx(), viewport, pan_enabled, t)) {
             self.drag = mapping;
             self.pointer_owned = self.drag.is_some();
         }

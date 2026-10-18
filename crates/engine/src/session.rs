@@ -204,6 +204,9 @@ impl Session {
     pub fn assets(&self) -> &AssetStore {
         &self.assets
     }
+    pub fn validate_asset(&self, asset: &nodecraft_types::AssetRef) -> Result<(), Error> {
+        self.assets.validate_reference(asset)
+    }
     pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
         let next = self.execution.next()?;
         let hash = self.assets.insert(bytes)?;
@@ -247,6 +250,7 @@ impl Session {
 
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
+            assets: &self.assets,
             document: &self.document,
             revision: self.revision,
             kinds: &self.kinds,
@@ -284,14 +288,55 @@ impl Session {
         }
         result
     }
+    /// Cut's delete is published only after the real registered paste admits its roundtrip.
+    /// Handlers/kinds retain the ordinary trusted-pure description contract; this does not
+    /// sandbox interior-mutating native extensions or acknowledge OS clipboard delivery.
+    pub fn dispatch_clipboard_cut(&mut self, delete: &Value, paste: &Value) -> Result<Value, Error> {
+        let before = self.file_status();
+        let result = guard(|| self.clipboard_cut_inner(delete, paste));
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        result
+    }
+    fn describe(spec: &crate::commands::CommandSpec, context: &Context<'_>, params: &Value) -> Result<Effect, Error> {
+        guard(|| {
+            validate_json(params)?;
+            (spec.enabled)(context, params)?;
+            (spec.run)(context, params)
+        })
+    }
+    fn clipboard_cut_inner(&mut self, delete: &Value, paste: &Value) -> Result<Value, Error> {
+        let delete_spec = *self.registry.get("canvas.delete")?;
+        let paste_spec = *self.registry.get("canvas.paste")?;
+        validate_json(paste)?;
+        let effect = Self::describe(&delete_spec, &self.context(Phase::Dispatch), delete)?;
+        if !matches!(&effect, Effect::Edit { .. }) {
+            return Err(invalid("cut requires a document delete effect"));
+        }
+        let prepared = self.prepare(effect)?;
+        let future_execution = self.execution.prospective(prepared.next_execution_generation);
+        {
+            let mut context = self.context(Phase::Dispatch);
+            context.document = &prepared.document;
+            context.revision = prepared.state;
+            context.can_undo = true;
+            context.can_redo = false;
+            context.file.dirty = true;
+            context.execution = &future_execution;
+            let effect = Self::describe(&paste_spec, &context, paste)?;
+            if !matches!(&effect, Effect::Edit { .. }) {
+                return Err(invalid("cut roundtrip requires a document paste effect"));
+            }
+            // No service/file effect is executed. Drop this complete hypothetical graph/replay
+            // before the real append; old histories/resources are borrowed throughout.
+            let _hypothetical = self.prepare_from(effect, &prepared.document, prepared.state, prepared.state, &future_execution)?;
+        }
+        self.commit_prepared(prepared, delete_spec.id)
+    }
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
-        let effect = guard(|| {
-            validate_json(params)?;
-            let context = self.context(Phase::Dispatch);
-            (spec.enabled)(&context, params)?;
-            (spec.run)(&context, params)
-        })?;
+        let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;
         let effect = match effect {
             Effect::None { result } => {
                 validate_json(&result)?;
@@ -383,7 +428,17 @@ impl Session {
     }
 
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
-        let next_execution_generation = self.execution.next()?;
+        self.prepare_from(effect, &self.document, self.revision, self.state, &self.execution)
+    }
+    fn prepare_from(
+        &self,
+        effect: Effect,
+        source: &Project,
+        revision: u64,
+        source_state: u64,
+        execution: &crate::execution_identity::ExecutionSource,
+    ) -> Result<Prepared, Error> {
+        let next_execution_generation = execution.next()?;
         self.context(Phase::Dispatch).editable()?;
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
             Effect::Edit { changes, result, gesture } => {
@@ -392,7 +447,7 @@ impl Session {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let (document, inverse) = changes.stage(&self.document)?;
+                let (document, inverse) = changes.stage(source)?;
                 // Graph canonical sizing includes the operation array. History stores the full
                 // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
                 changes.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12))?;
@@ -400,7 +455,7 @@ impl Session {
                     document,
                     inverse,
                     changes,
-                    self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?,
+                    revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?,
                     Direction::Edit,
                     gesture,
                     result,
@@ -408,12 +463,12 @@ impl Session {
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let (document, inverse) = entry.inverse.stage(source)?;
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let (document, inverse) = entry.inverse.stage(source)?;
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
             Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } => {
@@ -433,12 +488,12 @@ impl Session {
         };
         Ok(Prepared {
             document,
-            inverse: Entry { inverse, bytes, state: self.state },
+            inverse: Entry { inverse, bytes, state: source_state },
             direction,
             gesture,
             result,
             admission,
-            source: SourceStamp { identity: Arc::clone(&self.admission_identity), revision: self.revision },
+            source: SourceStamp { identity: Arc::clone(&self.admission_identity), revision },
             next_execution_generation,
             state,
         })
@@ -808,3 +863,6 @@ mod persistence_tests;
 #[cfg(test)]
 #[path = "admission_tests.rs"]
 mod admission_tests;
+
+#[cfg(test)]
+mod clipboard_tests;

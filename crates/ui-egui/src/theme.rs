@@ -73,6 +73,8 @@ pub struct Tokens {
     pub body_size: f32,
     pub handle_radius: f32,
     pub card_width: f32,
+    /// Duplicate displacement in world points, independent of zoom.
+    pub duplicate_offset: f32,
     pub card_min_height: f32,
     pub card_max_height: f32,
     pub control_row_height: f32,
@@ -139,6 +141,7 @@ pub const DARK: Tokens = Tokens {
     body_size: 13.0,
     handle_radius: 9.0,
     card_width: 320.0,
+    duplicate_offset: 40.0,
     card_min_height: 220.0,
     card_max_height: 720.0,
     control_row_height: 64.0,
