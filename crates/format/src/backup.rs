@@ -2,8 +2,8 @@
 //! library items, settings) with a manifest, per-entry integrity hashes and optional, recommended
 //! passphrase encryption. See `docs/backup-format.md` for the byte layout.
 //!
-//! The container is pure: it reads and writes `std::io` streams and takes its random salt and
-//! nonce prefix from the caller (the host's platform randomness), so it builds for wasm and never
+//! The container is pure: it reads and writes `std::io` streams and takes its random salt from
+//! the caller (the host's platform randomness), so it builds for wasm and never
 //! touches the filesystem itself. Choosing what to back up, staging a restore and publishing it
 //! atomically belong to the host.
 //!
@@ -13,12 +13,15 @@
 //!   and accidental corruption are detected. Those hashes carry no key, so only encryption also
 //!   detects deliberate edits.
 //! - **Encryption:** XChaCha20-Poly1305 over 64 KiB chunks in the STREAM construction (a 19-byte
-//!   random nonce prefix, a 32-bit chunk counter and a last-chunk flag), with the header as
-//!   associated data. The key comes from the passphrase through Argon2id with the header's
-//!   parameters, which are bounded on read so a hostile file can't demand unbounded memory or
-//!   time. The manifest is inside the encrypted payload. A lost passphrase can't be recovered.
+//!   nonce prefix, a 32-bit chunk counter and a last-chunk flag), with the header as associated
+//!   data. The key and the nonce prefix both come from the passphrase through Argon2id with the
+//!   header's salt and parameters, so a fresh salt alone gives a fresh key and prefix: no
+//!   caller-chosen nonce can repeat a keystream (#385). The parameters are bounded on read so a
+//!   hostile file can't demand unbounded memory or time. The manifest is inside the encrypted
+//!   payload. A lost passphrase can't be recovered.
 //! - **Secrets:** passphrases and keys are never stored or put in errors; the derived key and the
-//!   cipher's key state are zeroed when dropped. (Argon2's large working memory and decrypted
+//!   cipher's key state are zeroed when dropped. (The derived nonce prefix is held unzeroed: it
+//!   reveals no more than the ciphertext already does. Argon2's large working memory and decrypted
 //!   buffers are freed but not wiped.) Key derivation takes
 //!   seconds by design, so hosts run it off the UI thread. What goes into a backup is the
 //!   caller's choice; credentials must not be offered as entries.
@@ -49,6 +52,7 @@ pub const MAX_BACKUP_ENTRY_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 pub const MAX_BACKUP_TOTAL_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 
 const TAG_BYTES: usize = 16;
+const KEY_BYTES: usize = 32;
 const PREFIX_BYTES: usize = 19;
 const SALT_BYTES: usize = 16;
 const KDF_ARGON2ID: u8 = 1;
@@ -90,29 +94,36 @@ impl KdfParams {
         Ok(self)
     }
 
-    fn key(self, passphrase: &str, salt: &[u8; SALT_BYTES]) -> Result<XChaCha20Poly1305, Error> {
+    /// The cipher and the STREAM nonce prefix, both from one Argon2id output: its first 32 bytes
+    /// are the key, the remaining 19 the prefix.
+    fn key(self, passphrase: &str, salt: &[u8; SALT_BYTES]) -> Result<(XChaCha20Poly1305, [u8; PREFIX_BYTES]), Error> {
         if passphrase.is_empty() {
             return Err(invalid("an encrypted backup needs a passphrase"));
         }
-        let params = argon2::Params::new(self.memory_kib, self.iterations, self.lanes, Some(32)).map_err(|_| invalid("invalid key-derivation parameters"))?;
+        let params = argon2::Params::new(self.memory_kib, self.iterations, self.lanes, Some(KEY_BYTES + PREFIX_BYTES))
+            .map_err(|_| invalid("invalid key-derivation parameters"))?;
         let kdf = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-        let mut key = zeroize::Zeroizing::new([0u8; 32]);
-        kdf.hash_password_into(passphrase.as_bytes(), salt, key.as_mut_slice())
+        let mut derived = zeroize::Zeroizing::new([0u8; KEY_BYTES + PREFIX_BYTES]);
+        kdf.hash_password_into(passphrase.as_bytes(), salt, derived.as_mut_slice())
             .map_err(|_| Error::new(ErrorKind::Busy, "the backup key could not be derived"))?;
-        XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| Error::new(ErrorKind::Internal, "the backup key has the wrong size"))
+        let (key, prefix) = derived.split_at(KEY_BYTES);
+        let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::new(ErrorKind::Internal, "the backup key has the wrong size"))?;
+        let prefix = prefix.try_into().map_err(|_| Error::new(ErrorKind::Internal, "the backup nonce prefix has the wrong size"))?;
+        Ok((cipher, prefix))
     }
 }
 
 /// How a new backup is protected.
 ///
-/// `salt` and `nonce_prefix` must never be reused together with the same passphrase: that would
-/// reuse the keystream. Take both from the platform's random source for every backup.
+/// The key and nonce prefix are derived from the passphrase and `salt`, so reusing a salt with the
+/// same passphrase reuses the keystream. Take the salt from the platform's random source for every
+/// backup.
 pub enum Protection<'a> {
     /// No encryption. Integrity is still checked; anyone with the file can read it.
     Unencrypted,
-    /// Encrypted with a key derived from `passphrase`. `salt` and `nonce_prefix` must be fresh
-    /// random bytes from the platform for every backup.
-    Passphrase { passphrase: &'a str, kdf: KdfParams, salt: [u8; SALT_BYTES], nonce_prefix: [u8; PREFIX_BYTES] },
+    /// Encrypted with a key derived from `passphrase`. `salt` must be fresh random bytes from the
+    /// platform for every backup.
+    Passphrase { passphrase: &'a str, kdf: KdfParams, salt: [u8; SALT_BYTES] },
 }
 
 /// The plaintext header: readable without a passphrase, so a backup can say whether it is
@@ -128,7 +139,6 @@ pub struct BackupHeader {
 pub struct Encryption {
     pub kdf: KdfParams,
     salt: [u8; SALT_BYTES],
-    nonce_prefix: [u8; PREFIX_BYTES],
 }
 
 impl BackupHeader {
@@ -145,7 +155,6 @@ impl BackupHeader {
                     out.extend_from_slice(&n.to_le_bytes());
                 }
                 out.extend_from_slice(&e.salt);
-                out.extend_from_slice(&e.nonce_prefix);
             }
         }
         out
@@ -168,7 +177,7 @@ impl BackupHeader {
         let encryption = match fixed[10] {
             0 => None,
             FLAG_ENCRYPTED => {
-                let mut rest = [0u8; 1 + 12 + SALT_BYTES + PREFIX_BYTES];
+                let mut rest = [0u8; 1 + 12 + SALT_BYTES];
                 if fill(input, &mut rest)? < rest.len() {
                     return Err(invalid("the backup is truncated"));
                 }
@@ -179,10 +188,8 @@ impl BackupHeader {
                 let word = |at: usize| rest.get(at..at + 4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes);
                 let kdf = KdfParams { memory_kib: word(1), iterations: word(5), lanes: word(9) }.check()?;
                 let mut salt = [0u8; SALT_BYTES];
-                salt.copy_from_slice(rest.get(13..13 + SALT_BYTES).unwrap_or(&[0; SALT_BYTES]));
-                let mut nonce_prefix = [0u8; PREFIX_BYTES];
-                nonce_prefix.copy_from_slice(rest.get(13 + SALT_BYTES..).unwrap_or(&[0; PREFIX_BYTES]));
-                Some(Encryption { kdf, salt, nonce_prefix })
+                salt.copy_from_slice(rest.get(13..).unwrap_or(&[0; SALT_BYTES]));
+                Some(Encryption { kdf, salt })
             }
             _ => return Err(Error::new(ErrorKind::Unsupported, "this backup uses an unknown option; update NodeCraft")),
         };
@@ -373,12 +380,9 @@ impl<W: Write> BackupWriter<W> {
         }
         let (header, cipher) = match protection {
             Protection::Unencrypted => (BackupHeader { version: BACKUP_VERSION, encryption: None }, None),
-            Protection::Passphrase { passphrase, kdf, salt, nonce_prefix } => {
+            Protection::Passphrase { passphrase, kdf, salt } => {
                 let kdf = kdf.check()?;
-                (
-                    BackupHeader { version: BACKUP_VERSION, encryption: Some(Encryption { kdf, salt, nonce_prefix }) },
-                    Some((kdf.key(passphrase, &salt)?, nonce_prefix)),
-                )
+                (BackupHeader { version: BACKUP_VERSION, encryption: Some(Encryption { kdf, salt }) }, Some(kdf.key(passphrase, &salt)?))
             }
         };
         let aad = header.encode();
@@ -621,18 +625,8 @@ impl<R: Read> BackupReader<R> {
             }
             Some(e) => {
                 let passphrase = passphrase.ok_or_else(|| invalid("this backup is encrypted; enter its passphrase"))?;
-                let cipher = e.kdf.key(passphrase, &e.salt)?;
-                Source::Sealed {
-                    input,
-                    cipher: Box::new(cipher),
-                    prefix: e.nonce_prefix,
-                    aad: header_bytes,
-                    counter: 0,
-                    plain: Vec::new(),
-                    pos: 0,
-                    last: false,
-                    peeked: None,
-                }
+                let (cipher, prefix) = e.kdf.key(passphrase, &e.salt)?;
+                Source::Sealed { input, cipher: Box::new(cipher), prefix, aad: header_bytes, counter: 0, plain: Vec::new(), pos: 0, last: false, peeked: None }
             }
         };
         let mut len = [0u8; 4];

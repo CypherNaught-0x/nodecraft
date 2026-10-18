@@ -7,8 +7,10 @@
   stay ZIP and go into a backup as entries.
 - **Crypto choices.** We use the RustCrypto crates `chacha20poly1305` 0.11 and `argon2` 0.6:
   maintained, MIT/Apache-2.0, pure Rust, and they build for wasm.
-  - XChaCha20's 24-byte nonce takes a random 19-byte prefix per backup, plus the STREAM counter
-    and last-chunk flag. That rules out nonce reuse, chunk reordering and truncation.
+  - XChaCha20's 24-byte nonce takes a 19-byte prefix per backup, plus the STREAM counter and
+    last-chunk flag. That rules out nonce reuse, chunk reordering and truncation. The prefix is
+    derived with the key, not chosen by the caller; see
+    [the derived nonce prefix](2026-10-18-backup-derived-nonce.md).
   - The header is authenticated as associated data.
   - Argon2id runs at 64 MiB and 3 passes for new backups (above OWASP's minimum). Readers accept
     at most 256 MiB and 6 passes, so a hostile file can't demand huge memory or time.
@@ -16,7 +18,7 @@
   plus the manifest's per-entry hashes still catch truncation and accidental corruption, but not
   deliberate edits (the hashes have no key). The format and the UI label such a backup as
   readable and editable by anyone.
-- **Pure container.** The format crate takes randomness (salt, nonce prefix) from the caller and
+- **Pure container.** The format crate takes randomness (the salt) from the caller and
   touches no files, so it builds for wasm. Selection, size estimates, staging, atomic publication,
   restore previews and commands (`backup.create`/`inspect`/`restore`) are the host and engine
   phase of #182. They depend on the native storage in #147/#348 and the library in #96.
