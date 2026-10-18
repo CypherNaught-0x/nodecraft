@@ -54,6 +54,22 @@ default = { type = "unsigned", value = "1" }
 - **Swapping models** keeps parameters by name when the new model accepts the value, fills the
   rest from its defaults, and names what was removed (not on the new model) and what was reset
   (out of its range) in a notice.
+- **Auto-select** (`Catalog::select`, #78) keeps the models that fit what is wired in, whose
+  provider the person can use and whose price per job fits the budget. The price is quoted with
+  the node's parameters that the model knows, plus its defaults. Survivors are ranked by effort:
+  - *fast*: quickest, then best quality;
+  - *best*: best quality, then quickest;
+  - *balanced*: quality minus a waiting penalty of 0 up to 30 s, 1 up to 2 min, and 2 beyond.
+
+  Ties go to free models, then known prices before usage-priced ones, then the cheaper price
+  within one currency (currencies are never compared), then the id.
+
+  While a budget is set, usage-priced models and models priced in another currency are refused,
+  since they can't be shown to fit. Every refused model keeps its reason. When nothing fits,
+  `why_none` reports the closest miss. "Use multiple models" (`Selection::several`) takes up to 8
+  fitting models, one per provider first, in ranking order. Phase 1 counts inputs only:
+  reference, style and voice capabilities, the combined multi-model quote and the canvas command
+  come with the picker.
 - Files are untrusted input: at most 4 MiB, 4096 models, 32 modes per model and 16 inputs per
   mode; unknown fields are rejected.
 
