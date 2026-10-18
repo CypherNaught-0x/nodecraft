@@ -2616,6 +2616,7 @@ dependencies = [
  "craft-quit",
  "eframe",
  "egui",
+ "egui_kittest",
  "log",
  "nodecraft-automation",
  "nodecraft-engine",
@@ -2696,9 +2697,11 @@ dependencies = [
 name = "nodecraft-engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "craft-settings",
  "futures",
  "keyring",
+ "nodecraft-catalog",
  "nodecraft-exec",
  "nodecraft-format",
  "nodecraft-gpu",

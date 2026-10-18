@@ -17,6 +17,13 @@ a choice a later contributor might otherwise undo.
   out-of-step reply, the next call reconnects. The call that failed is reported, never resent,
   so a command can't run twice.
 
+## 2026-10-17 · Scoped live control navigation (#262)
+
+- MCP and control share command admission and result envelopes. A trusted frontend host supplies
+  fresh availability and dispatch through Session or the supported live navigation bridge.
+  Navigation capabilities are scoped to each call and restored on success or failure; the control
+  protocol never installs a global capability or duplicates the automation permission lists.
+
 ## 2026-10-17 · Control channel (#115)
 
 - **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.
@@ -51,8 +58,8 @@ a choice a later contributor might otherwise undo.
 - **Settle by what may have been billed.**
   - A finished job settles to the provider's reported cost in the estimate's currency, otherwise
     to the estimate.
-  - A job the provider certainly never billed (refused at submit: a bad key, invalid input,
-    cancelled before start) is released.
+  - Cancellation before invocation or affirmative whole-submit nonacceptance evidence releases
+    a fresh reservation. Generic diagnostic kinds alone do not prove this (see #250 below).
   - A job that got a handle, or whose submit was lost to a timeout, network or server error,
     keeps its reservation while a retry can come. When it is forgotten, settled, or requeued
     under a fresh key, it is charged its estimate as `unresolved`.
@@ -1034,6 +1041,96 @@ a choice a later contributor might otherwise undo.
 - **The benchmark lives with the canvas tests** (`app/perf.rs`, ignored by default) and reports
   mean, p95 and worst frame; re-run it when cards or noodles get richer.
 
+## 2026-10-17 · Submission delivery evidence (#250)
+
+- **Diagnostics do not prove absence of billing.** This supersedes the historical kind-only
+  submit-refusal classifier in #227/#243. Legacy Provider and Http implementations are unknown
+  before invoking their future constructors, including errors named Auth or UnsupportedInput.
+- **A request is not a submission.** Opaque request scopes can prove native construction failed
+  before execute; redirects share sticky possible-delivery state. Only a runner-owned audited
+  operation with no earlier taint or unfinished child can finalize whole-submit nonacceptance.
+  Proofs cannot be cloned, publicly minted or reused across children/invocations. Cancel/drop
+  after invocation remains unknown; a handle independently establishes acceptance.
+- **Useful narrow opt-in.** LLM submission tracks its local construction and single request.
+  Responses, status/parsing/body/sink errors stay unknown. Comfy's multi-request path and browser
+  fetch remain conservative. No generic HTTP refusal attestations, billing wire migration or
+  new retry/idempotency policy. Existing prior uncertainty and captured-attempt ownership win.
+
+## 2026-10-18 · Run commands: quote, start within budget, record (#201, part 1)
+
+- **`run.quote` prices a request without changing anything.** It plans the request and prices it
+  against the catalog. The response has:
+  - the first 500 steps, with each step's price or why it has none;
+  - totals per currency, which always cover the whole run;
+  - the budget blocks;
+  - the provisional and estimated steps (job counts known only at run time);
+  - the planner's reasons when the request can't run yet;
+  - a quote `token`.
+- **The token binds a run to the quote that was accepted.** It is a digest of the document
+  revision, the request, the plan's steps and their prices. `run.start` requires the token of the
+  quote the caller accepted, and amounts that cover every currency's total. It also requires
+  `partial: true` when part of the price isn't known: unpriced steps, or job counts known only at
+  run time, which could cost more than quoted. Any edit since the quote changes the token, so the
+  caller has to quote again. No caller (UI, CLI, agent) can start a paid run without having been
+  shown its current price.
+- **Host contract for the `run.start` service.** The request carries the run parameters, the
+  revision, the token and what was accepted. Before running, the host prices the request again
+  with `run_cmds::price` on the document as it is then, and refuses if the token differs. It
+  reserves the estimate in the budget ledger when the run starts (job-time budgets, #222), so two
+  quick starts can't both pass the same headroom, and holds estimated steps to the accepted
+  amounts.
+- **`run.record` is host-only.** It records a run's results (generations with asset references,
+  up to 1,000 per call) as one undo step. MCP lists it as human-only, so agents can't fabricate
+  results.
+- **`usage.export_csv` pages** (up to 2,000 rows per call), so a long usage log stays exportable
+  within the command result limits.
+- **Pricing inputs are host resources:** the catalog (`RunCatalog`), the caps with what has been
+  spent (`BudgetState`), and the usage log (`UsageSnapshot`). Without them the commands are
+  unsupported. Staleness is computed only for the modes that use it.
+- **Not yet done:** the desktop host. It needs an async runtime, a provider registry, the run
+  service, budget settings and the cost-confirmation UI on generation nodes (#83, #84).
+
+## 2026-10-18 · A fresh provider key after a reported failure (#223)
+
+- **A provider that dedupes by idempotency key would hand a failed generation back on retry**, so
+  after a provider reports a submitted job as finished-and-failed, `ProviderRunner` sends the next
+  attempt under a derived key: `base#n`, where `n` counts reported failures for that provider and
+  scheduler key. Keys stay ASCII and at most 64 bytes (`MAX_SENT_KEY`); a key that would not fit
+  becomes an ASCII prefix plus an FNV-1a hash of the base.
+- **Only a reported failure advances the count.** A lost reply, a cancel or an exhausted poll
+  budget keeps the handle and resumes the same generation under the same key, so a retry still
+  never charges twice.
+- **The usage log charges each generation under the key its provider saw**, so two generations
+  are two charges, as they are on the provider's bill.
+- **One failed generation advances the count once:** each attempt remembers its generation, and
+  a reported failure raises the count to `generation + 1`, so two runs that saw the same
+  generation fail don't skip the next one.
+- **The count survives a restart only through the host.** The update sink reports each attempt's
+  `Sent { key, generation }`; a host that saves `Submitted` handles saves the generation with
+  them and restores with `restore_generation`, which puts the handle back under its derived key
+  and restores the count. A requeue under a new scheduler key, or `forget`, starts from zero.
+
+## 2026-10-18 · Standalone Generate conversion admission (#279)
+
+- Public `provider_job` accepts standalone jobs, so document validation cannot stand in for
+  admission. Before copying anything proportional to caller data, it checks all parameter and
+  input values: depth 32, 4,096 aggregate visits (including empty lists), 4,096 flattened inputs,
+  and 1 MiB aggregate text per original value. Media inputs remain unsupported.
+- A shared 64 MiB request representation/work budget charges each string as six times its
+  UTF-8 length plus 34 bytes, each value 128 bytes, and each input root and emitted leaf 64
+  bytes plus its role string. Names, provider, model and idempotency key count too. Repeated
+  flattened roles count each time. These are conservative upper bounds, not exact wire or RSS
+  measurements; combining individually valid roots can now be refused.
+- Result admission checks all routes and outputs before cloning text, hashing media or cloning
+  asset Arcs. It allows at most 4,096 routes/results, 1 MiB routed text in total, 256 MiB per
+  binary item and aggregate raw payload, and 8 MiB converted representation/work. Every Arc
+  occurrence counts, even if shared. Routes cost 64 plus their name, records 128, strings use
+  the same formula, and media references cost 512 plus sniffed MIME and port. Claimed MIME
+  counts as work. Late unsupported, invalid UTF-8 or unroutable outputs refuse the whole
+  conversion before publishing a valid prefix. Accepted media keeps the original shared bytes.
+- Iterative admission keeps only depth-bounded traversal state. Conversion recurses only after
+  admission. Refusal leaves the original job/paid result with its caller. These checks do not
+  certify a complete Generation's port types/cardinality or persisted asset availability.
 
 ## 2026-10-18 · One control-client admission deadline (#289)
 

@@ -791,3 +791,254 @@ fn maximal_omitted_schema_keeps_canonical_values_and_exact_admission() {
     assert_eq!(exact.hash(canvas, &kinds, id(10), &BTreeMap::new()).unwrap(), Some(Blake3::from_bytes(expected.finish())));
     assert_eq!(exact.hashed(), required + 1, "stored override replaces, rather than adds to, the default reservation");
 }
+
+fn diagnostic_project(kinds: &Registry) -> Project {
+    let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Public diagnostic fixture").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    for n in [20, 21] {
+        let node = kinds.get("test.gen").unwrap().descriptor().instantiate(id(n), &Default::default()).unwrap();
+        Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    }
+    project
+}
+
+#[test]
+fn diagnostics_identify_invalid_routers() {
+    let kinds = kinds();
+    let mut project = diagnostic_project(&kinds);
+    for (router, target) in [(10, 20), (11, 21)] {
+        let mut node = kinds.get("structure.router").unwrap().instantiate_instance(id(router), Default::default(), &Default::default()).unwrap();
+        node.config.insert("modality".into(), Value::Text("invalid fixture modality".into()));
+        Changeset::new(vec![Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge: edge(router, router, target, 0) }])
+            .apply(&mut project)
+            .unwrap();
+    }
+    let canvas = project.canvases().get(&C).unwrap();
+    for (router, target, other) in [(10, 20, 11), (11, 21, 10)] {
+        let error = input_hash(canvas, &kinds, id(target)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains(&id(router).to_string()), "identify actual router: {}", error.message);
+        assert!(!error.message.contains(&id(other).to_string()));
+    }
+}
+
+struct DiagnosticSource {
+    descriptor: NodeDescriptor,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    reason: String,
+}
+impl NodeKind for DiagnosticSource {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.descriptor
+    }
+    fn validate_instance(&self, node: &Node, _: bool) -> Result<nodecraft_nodes::ResolvedParams, Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let kind = if node.id == id(1) { ErrorKind::Unsupported } else { ErrorKind::Conflict };
+        Err(Error::new(kind, self.reason.clone())) // Native hook owns this returned allocation.
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        None
+    }
+    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok(vec![])
+    }
+}
+fn diagnostic_sources(reason: &str) -> (Project, Registry, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let mut kinds = kinds();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    kinds
+        .register(Box::new(DiagnosticSource {
+            descriptor: NodeDescriptor {
+                id: "test.rejected".into(),
+                label: "Rejected source".into(),
+                category: Category::Source,
+                inputs: vec![],
+                outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+                params: ParamSchema::default(),
+                quick_add: None,
+            },
+            calls: calls.clone(),
+            reason: reason.into(),
+        }))
+        .unwrap();
+    let mut project = diagnostic_project(&kinds);
+    for (source, target) in [(1, 20), (2, 21)] {
+        let node = kinds.get("test.rejected").unwrap().descriptor().instantiate(id(source), &Default::default()).unwrap();
+        Changeset::new(vec![Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge: edge(source, source, target, 0) }])
+            .apply(&mut project)
+            .unwrap();
+    }
+    (project, kinds, calls)
+}
+
+#[test]
+fn diagnostics_preserve_source_identity_reason_and_kind() {
+    let (project, kinds, _) = diagnostic_sources("choose a supported source configuration");
+    let canvas = project.canvases().get(&C).unwrap();
+    for (source, target, kind) in [(1, 20, ErrorKind::Unsupported), (2, 21, ErrorKind::Conflict)] {
+        let error = input_hash(canvas, &kinds, id(target)).unwrap_err();
+        assert_eq!(error.kind, kind, "preserve source rejection category");
+        assert!(error.message.contains(&id(source).to_string()));
+        assert!(error.message.contains("choose a supported source configuration"));
+    }
+}
+
+#[test]
+fn bounded_rejection_cache_and_output_copy_only_once_after_admission() {
+    let native_reason = format!("{}TAIL_MARKER", "bad\n\t\u{202e}🙂".repeat(500));
+    let (project, kinds, calls) = diagnostic_sources(&native_reason);
+    let canvas = project.canvases().get(&C).unwrap();
+    let mut query = InputHasher::new(canvas, &kinds, MAX_QUERY_BYTES).unwrap();
+    assert!(query.hash(canvas, &kinds, id(1), &BTreeMap::new()).unwrap().is_none());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let reason = &query.recipes.get(&id(1)).unwrap().as_ref().err().unwrap().reason;
+    assert!(reason.starts_with("bad   🙂"));
+    assert!(reason.ends_with('…'));
+    assert!(reason.len() <= MAX_REJECTION_REASON_BYTES);
+    assert!(!reason.contains("TAIL_MARKER"));
+    assert!(!reason.chars().any(|c| c.is_control() || c == '\u{202e}'));
+    let copied = query.diagnostic_cache_bytes;
+    assert_eq!(copied, reason.len());
+    assert!(copied > 0);
+    let charged = query.hashed();
+    for _ in 0..3 {
+        assert!(query.hash(canvas, &kinds, id(1), &BTreeMap::new()).unwrap().is_none());
+    }
+    assert_eq!(query.hashed(), charged, "memoized invalid recipe adds no record charge");
+    assert_eq!(query.diagnostic_cache_bytes, copied);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let HashResult::Invalid(failure) = query.hash_detailed(canvas, &kinds, id(20), &BTreeMap::new()).unwrap() else { panic!("source must be rejected") };
+    let error = query.diagnostic(failure).unwrap();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains(&id(1).to_string()));
+    assert!(error.message.len() < MAX_DIAGNOSTIC_BYTES);
+    assert_eq!(query.diagnostic_output_bytes, error.message.len());
+    assert!(query.diagnostic_output_bytes > 0);
+    assert_eq!(query.diagnostic_cache_bytes, copied);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "formatting/source query does not repeat native hook");
+    assert!(query.hash(canvas, &kinds, id(21), &BTreeMap::new()).unwrap().is_none());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "different rejected source owns its own record");
+}
+
+fn empty_query(budget: usize) -> (Canvas, Registry, InputHasher) {
+    let canvas = Canvas::new(C, "Empty");
+    let kinds = Registry::default();
+    let query = InputHasher::new(&canvas, &kinds, budget).unwrap();
+    (canvas, kinds, query)
+}
+#[test]
+fn diagnostic_record_and_output_exact_budgets_refuse_before_copy_and_stay_sticky() {
+    let record = CACHE_REJECTION_OVERHEAD + 3; // é + normalized newline = 3 UTF-8 bytes.
+    let (_, _, mut exact) = empty_query(record);
+    let cached = exact.cache_rejection(Error::new(ErrorKind::Conflict, "é\n")).unwrap();
+    assert_eq!(cached.reason, "é ");
+    assert_eq!(cached.kind, ErrorKind::Conflict);
+    assert_eq!(exact.meter.left, 0);
+    assert_eq!(exact.diagnostic_cache_bytes, 3);
+    let (canvas, kinds, mut refused) = empty_query(record - 1);
+    assert!(refused.cache_rejection(Error::new(ErrorKind::Conflict, "é\n")).is_err());
+    assert_eq!(refused.diagnostic_cache_bytes, 0);
+    assert!(refused.meter.refused);
+    let error = refused.hash(&canvas, &kinds, id(99), &BTreeMap::new()).unwrap_err();
+    assert_eq!(error.message, too_large().message, "shared refusal overrides later memo/NotFound requests");
+    let output = MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD;
+    for kind in [InvalidHash::Target(id(1)), InvalidHash::Source(id(1))] {
+        for enough in [false, true] {
+            let (_, _, mut query) = empty_query(record + output - usize::from(!enough));
+            let rejection = query.cache_rejection(Error::new(ErrorKind::Conflict, "é\n")).unwrap();
+            query.recipes.insert(id(1), Err(rejection));
+            let result = query.diagnostic(kind);
+            if enough {
+                let error = result.unwrap();
+                assert_eq!(error.kind, ErrorKind::Conflict);
+                assert_eq!(query.meter.left, 0);
+                assert_eq!(query.diagnostic_output_bytes, error.message.len());
+                assert!(query.diagnostic_output_bytes > 0);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(query.diagnostic_output_bytes, 0);
+                assert!(query.meter.refused);
+                assert_eq!(query.diagnostic_cache_bytes, 3, "earlier admitted cache remains accounted");
+            }
+        }
+    }
+    for enough in [false, true] {
+        let (_, _, mut query) = empty_query(output - usize::from(!enough));
+        let result = query.diagnostic(InvalidHash::Router(id(10)));
+        assert_eq!(result.is_ok(), enough);
+        if enough {
+            assert!(result.unwrap().message.contains(&id(10).to_string()));
+            assert_eq!(query.meter.left, 0);
+            assert!(query.diagnostic_output_bytes > 0);
+        } else {
+            assert_eq!(query.diagnostic_output_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn diagnostic_prefix_bounds_unicode_line_and_bidi_controls_without_full_message_copy() {
+    for (reason, expected) in
+        [("plain error", "plain error"), ("", "the node kind rejected this node"), ("x\u{2028}\u{2029}\u{061c}\u{200e}\u{200f}\u{202a}\u{2066}y", "x       y")]
+    {
+        let (_, _, mut query) = empty_query(10_000);
+        let got = query.cache_rejection(Error::new(ErrorKind::Unknown, reason)).unwrap();
+        assert_eq!(got.kind, ErrorKind::Unknown);
+        assert_eq!(got.reason, expected);
+    }
+    for (reason, len) in [("x".repeat(253), 253), ("x".repeat(254), 256), ("🙂".repeat(64), 255), ("é".repeat(128), 255)] {
+        let (_, _, mut query) = empty_query(10_000);
+        let got = query.cache_rejection(Error::new(ErrorKind::InvalidInput, reason)).unwrap();
+        assert_eq!(got.reason.len(), len);
+        assert_eq!(query.diagnostic_cache_bytes, len);
+    }
+}
+
+#[test]
+fn detailed_source_choice_is_deterministic_and_default_validation_reason_is_retained() {
+    let (mut project, rejected_kinds, _) = diagnostic_sources("native rejection");
+    // List orders are unique; the earlier feed wins even when its source ID is larger.
+    Changeset::new(vec![
+        Change::Disconnect { canvas: C, id: EdgeId::from_bytes([1; 16]) },
+        Change::Connect { canvas: C, edge: edge(1, 1, 20, 1) },
+        Change::Connect { canvas: C, edge: edge(3, 2, 20, 0) },
+    ])
+    .apply(&mut project)
+    .unwrap();
+    let error = input_hash(project.canvases().get(&C).unwrap(), &rejected_kinds, id(20)).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert!(error.message.contains(&id(2).to_string()));
+    let mut kinds = kinds();
+    kinds
+        .register(Box::new(Gen(NodeDescriptor {
+            id: "test.defaultsource".into(),
+            label: "Default source".into(),
+            category: Category::Source,
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+            quick_add: None,
+            params: ParamSchema {
+                params: vec![ParamSpec {
+                    name: "setting".into(),
+                    label: "Setting".into(),
+                    description: None,
+                    required: false,
+                    default: None,
+                    visible_if: None,
+                    control: ParamControl::Text { multiline: false, max_bytes: 1 },
+                }],
+            },
+        })))
+        .unwrap();
+    let mut project = diagnostic_project(&kinds);
+    let mut node = Node::new(id(12), "test.defaultsource");
+    node.outputs = vec![Port { name: "out".into(), port_type: TEXT }];
+    node.params.insert("setting".into(), Value::Text("long".into()));
+    Changeset::new(vec![Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge: edge(12, 12, 20, 0) }]).apply(&mut project).unwrap();
+    let canvas = project.canvases().get(&C).unwrap();
+    let direct = input_hash(canvas, &kinds, id(12)).unwrap_err();
+    let upstream = input_hash(canvas, &kinds, id(20)).unwrap_err();
+    assert_eq!(upstream.kind, direct.kind);
+    assert!(upstream.message.ends_with(&direct.message));
+    assert!(upstream.message.contains(&id(12).to_string()));
+}

@@ -52,7 +52,7 @@ pub struct RunFailure {
     pub finished: bool,
     /// The submit was interrupted with no handle back (cancelled midway, timed out, cut off, a
     /// server error, a garbled reply, or one saying the job ran): the provider may have accepted,
-    /// and billed, the job anyway. Never set for a run cancelled before its submit, or a refusal.
+    /// and billed, the job anyway. Never set for a run cancelled before its submit, or proven whole-submit nonacceptance.
     /// `false` alone does not mean unbilled: a returned `handle` independently proves acceptance
     /// and possible billing, even when submission itself is no longer uncertain.
     pub uncertain: bool,
@@ -63,26 +63,8 @@ impl RunFailure {
         Self { error, handle: None, finished: false, uncertain: false }
     }
 
-    /// A submit that failed with `error`: uncertain unless the error says the provider refused it.
-    fn submit_failed(error: ProviderError) -> Self {
-        // Exhaustive within this crate: every new error kind needs a deliberate billing decision.
-        let uncertain = match error.kind {
-            ErrorKind::Cancelled
-            | ErrorKind::Timeout
-            | ErrorKind::Network
-            | ErrorKind::Server
-            | ErrorKind::Malformed
-            | ErrorKind::JobFailed
-            | ErrorKind::Expired => true,
-            ErrorKind::BlockedContent
-            | ErrorKind::UnsupportedInput
-            | ErrorKind::Busy
-            | ErrorKind::RateLimited
-            | ErrorKind::Budget
-            | ErrorKind::Auth
-            | ErrorKind::NotFound => false,
-        };
-        Self { error, handle: None, finished: false, uncertain }
+    fn submit_failed(error: ProviderError, proven: bool) -> Self {
+        Self { error, handle: None, finished: false, uncertain: !proven }
     }
 
     /// Worth retrying: transient, and either never submitted or resumable by handle.
@@ -113,11 +95,12 @@ pub async fn run_to_completion(
     if cancel.is_cancelled() {
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
-    let submitted = race(provider.submit(job), cancel).await;
+    let context = crate::SubmitContext::new();
+    let submitted = race(provider.submit_with_delivery(job, &context), cancel).await;
     let handle = match submitted {
         // Cancelled while submitting: we can't know whether the provider accepted it.
-        None => return Err(RunFailure::submit_failed(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"))),
-        Some(Err(e)) => return Err(RunFailure::submit_failed(e)),
+        None => return Err(RunFailure::submit_failed(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"), false)),
+        Some(Err(e)) => return Err(RunFailure::submit_failed(e, context.finish_error().is_some())),
         Some(Ok(Submission::Finished(done))) => return Ok(done),
         Some(Ok(Submission::Queued(handle))) => handle,
     };
@@ -427,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_submits_are_uncertain_and_refused_ones_are_not() {
+    fn legacy_submit_errors_are_uncertain_for_every_kind() {
         for (kind, uncertain) in [
             (ErrorKind::Cancelled, true),
             (ErrorKind::Network, true),
@@ -436,13 +419,13 @@ mod tests {
             (ErrorKind::Malformed, true),
             (ErrorKind::JobFailed, true),
             (ErrorKind::Expired, true),
-            (ErrorKind::Auth, false),
-            (ErrorKind::RateLimited, false),
-            (ErrorKind::Busy, false),
-            (ErrorKind::UnsupportedInput, false),
-            (ErrorKind::BlockedContent, false),
-            (ErrorKind::Budget, false),
-            (ErrorKind::NotFound, false),
+            (ErrorKind::Auth, true),
+            (ErrorKind::RateLimited, true),
+            (ErrorKind::Busy, true),
+            (ErrorKind::UnsupportedInput, true),
+            (ErrorKind::BlockedContent, true),
+            (ErrorKind::Budget, true),
+            (ErrorKind::NotFound, true),
         ] {
             let f = block_on(run_to_completion(&Refuses(kind), &job(), &Flag::default(), &Clocked::default(), RunLimits::default(), |_| {})).unwrap_err();
             assert_eq!((f.handle.is_none(), f.uncertain), (true, uncertain), "{kind:?}");

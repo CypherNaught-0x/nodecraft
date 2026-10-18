@@ -70,6 +70,16 @@ connecting; this is not a bound on filesystem stalls.
 - The app answers 16 requests per frame.
 - Up to 4 screenshots can be pending, each at most 64 MiB of PNG.
 
-The issue also asks for a stdio transport. The desktop app has no stdin worth reading, and
-headless stdio automation is `nodecraft-cli mcp`. A stdio control mode is a follow-up (see
-`docs/decisions.md`).
+The current control transport is authenticated TCP. Headless stdio automation is available through
+`nodecraft-cli mcp`; a separate stdio control transport is tracked by #269 and is not part of the
+live canvas command bridge described below (see `docs/decisions.md`).
+
+### Live canvas commands
+
+`command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
+`canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
+editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
+live availability for parameterless commands. These operations change only the view, without
+document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
+Classification is shared with MCP; the live host does not grant access to human-only or paid
+commands. Screenshot requests retain their separate asynchronous capture path.
