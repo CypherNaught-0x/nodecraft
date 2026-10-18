@@ -303,3 +303,55 @@ fn published_readonly_save_adopts_location_savepoint_and_recovery_without_discar
         session.enabled("file.save", &json!({})).unwrap();
     }
 }
+
+#[test]
+fn persistent_layout_preserves_admission_replay_savepoint_and_failure_atomicity() {
+    for mode in ["grid", "layered"] {
+        let (mut session, storage) = setup();
+        session.dispatch("file.save_as", &json!({"location":"layout.ncraft"})).unwrap();
+        let original = session.document().clone();
+        let request = json!({"mode":mode});
+        session.swap_resource(Some(common::layout_context(&session)));
+        let checkpoint = storage.0.borrow().memory.recovery.clone();
+        session.enabled("canvas.auto_format", &request).unwrap();
+        assert_eq!(storage.0.borrow().memory.recovery, checkpoint);
+        assert!(!session.file_status().dirty);
+        session.dispatch("canvas.auto_format", &request).unwrap();
+        let formatted = session.document().clone();
+        assert_ne!(formatted, original);
+        assert!(session.file_status().dirty);
+        assert_eq!(replay(&storage).applied, 1);
+        assert_eq!(replay(&storage).snapshot.project, formatted);
+        // Stale geometry and then exact no-op must not append, alter status or history.
+        let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision());
+        let journal = storage.0.borrow().memory.recovery.clone();
+        assert!(session.dispatch("canvas.auto_format", &request).is_err());
+        session.swap_resource(Some(common::layout_context(&session)));
+        assert_eq!(session.dispatch("canvas.auto_format", &request).unwrap(), json!({"moved":0}));
+        assert_eq!(
+            (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision()),
+            before
+        );
+        assert_eq!(storage.0.borrow().memory.recovery, journal);
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(session.document(), &original);
+        assert!(!session.file_status().dirty);
+        assert_eq!(replay(&storage).snapshot.project, original);
+        session.dispatch("edit.redo", &json!({})).unwrap();
+        assert_eq!(session.document(), &formatted);
+        assert_eq!(replay(&storage).snapshot.project, formatted);
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        session.swap_resource(Some(common::layout_context(&session)));
+        let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo());
+        storage.0.borrow_mut().append = Some(0);
+        assert!(session.dispatch("canvas.auto_format", &request).is_err());
+        assert_eq!((session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo()), before);
+        assert!(session.file_status().recovery_required);
+        assert!(session.enabled("canvas.auto_format", &request).is_err());
+        storage.0.borrow_mut().append = None;
+        session.dispatch("file.save", &json!({})).unwrap();
+        assert!(session.enabled("canvas.auto_format", &request).is_ok());
+        session.dispatch("canvas.auto_format", &request).unwrap();
+        assert_eq!(replay(&storage).snapshot.project, *session.document());
+    }
+}

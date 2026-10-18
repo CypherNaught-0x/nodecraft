@@ -1,5 +1,5 @@
 //! Atomic selected-node layout using a revision-stamped, scoped host geometry capability.
-use crate::commands::{CommandSpec, Context, Effect, params};
+use crate::commands::{CommandSpec, Context, Effect, Phase, params};
 use nodecraft_graph::{
     Change, Changeset, MAX_CHANGES,
     layout::{self, Extent, Mode},
@@ -38,6 +38,7 @@ fn columns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::E
     usize::deserialize(d).map(Some)
 }
 fn preflight<'a>(c: &'a Context<'_>, value: &Value) -> Result<(&'a LayoutContext, &'a nodecraft_graph::Canvas, Mode, Option<usize>), Error> {
+    c.editable()?;
     let p: Params = params(value)?;
     let host = c.resources.require::<LayoutContext>()?;
     let conflict = |m| Error::new(ErrorKind::Conflict, m);
@@ -72,6 +73,10 @@ fn preflight<'a>(c: &'a Context<'_>, value: &Value) -> Result<(&'a LayoutContext
 thread_local! { static ARRANGEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn run(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let (host, canvas, mode, columns) = preflight(c, value)?;
+    if c.phase == Phase::Preview {
+        // Availability admits structure only; Dispatch retains normal staged persistence admission.
+        return Ok(Effect::None { result: Value::Null });
+    }
     #[cfg(test)]
     ARRANGEMENTS.with(|n| n.set(n.get() + 1));
     let positions = layout::arrange(canvas, &host.extents, mode, columns, host.gap)?;

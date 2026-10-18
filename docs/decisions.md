@@ -1065,3 +1065,7 @@ logical geometry/topology, rather than pretending a position-dependent custom ki
 change its own size. Whole-DAG longest-path ranking uses a stable ordered ready set in
 O((V+E) log V), avoiding repeated transitive searches. Only selected ranks are placed; obstacles
 and edge-crossing optimization are outside this contract.
+
+### Layout availability with persistent admission
+
+Layout Preview checks editability, parameters, fresh geometry and exact selection, then returns a non-document effect. It deliberately does not solve or stage the document: final output bounds, history budgets and frozen-format replay admission remain dispatch checks. Dispatch returns one ordinary Edit through the unchanged private Prepared/journal boundary. A latched recovery journal disables layout before either phase. Automation classifies this reversible command, while raw headless callers still need explicit trusted geometry.

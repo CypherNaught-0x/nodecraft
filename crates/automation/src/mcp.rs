@@ -56,6 +56,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
     "canvas.stale",
+    "canvas.auto_format",
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",

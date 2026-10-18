@@ -211,6 +211,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         let spec = *registry.get(id).unwrap();
         assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
     }
+    assert!(registry.get("canvas.auto_format").is_ok());
     let builtin_ids: std::collections::BTreeSet<_> = registry.specs().map(|spec| spec.id).collect();
     let spec = *registry.get("node.move").unwrap();
     assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
@@ -219,8 +220,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        29,
-        "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search and 3 file commands"
+        30,
+        "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, layout and 3 file commands"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }

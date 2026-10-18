@@ -117,6 +117,8 @@ impl NodeCraftApp {
             || canvas::text_input_focused(ctx)
             || self.drag.is_some()
             || self.marquee.is_some()
+            || self.wiring.is_some()
+            || self.palette.is_some()
             || ctx.dragged_id().is_some()
             || self.navigation.pointer_owned
             || self.navigation.drag.is_some()
@@ -675,5 +677,100 @@ mod tests {
         assert_eq!(h.state().session.document(), &before);
         assert_eq!(h.state().session.revision(), 0);
         assert!(canvas::text_input_focused(&ctx));
+    }
+    fn assert_retained_owner_refuses(app: &mut NodeCraftApp, ctx: &egui::Context, mode: &str) {
+        assert!(ctx.dragged_id().is_none());
+        assert!(!canvas::text_input_focused(ctx));
+        assert!(!app.text_focused);
+        assert!(app.drag.is_none() && app.marquee.is_none());
+        assert!(!app.navigation.pointer_owned && app.navigation.drag.is_none());
+        let mut prior = app.layout_context(ctx, None);
+        prior.gap = 80.0;
+        prior.blocked = false;
+        app.session.swap_resource(Some(prior.clone()));
+        let document = app.session.document().clone();
+        let revision = app.session.revision();
+        let events = app.session.events_since(0).unwrap();
+        let history = (app.session.can_undo(), app.session.can_redo());
+        let status = (app.session.file_status(), app.session.status_revision());
+        let selection = app.selection.clone();
+        let view = app.view;
+        let params = json!({"mode":mode});
+        // Evaluate both public routes before asserting, so the before-fix test exercises dispatch too.
+        let enabled = app.layout_enabled(ctx, &params);
+        let dispatched = app.dispatch_layout(ctx, &params);
+        assert_eq!(enabled.unwrap_err().kind, nodecraft_types::ErrorKind::Conflict);
+        assert_eq!(dispatched.unwrap_err().kind, nodecraft_types::ErrorKind::Conflict);
+        assert_eq!(app.session.document(), &document);
+        assert_eq!(app.session.revision(), revision);
+        assert_eq!(app.session.events_since(0).unwrap(), events);
+        assert_eq!((app.session.can_undo(), app.session.can_redo()), history);
+        assert_eq!((app.session.file_status(), app.session.status_revision()), status);
+        assert_eq!(app.selection, selection);
+        assert_eq!(app.view, view);
+        let restored = app.session.swap_resource::<LayoutContext>(None).unwrap();
+        assert_eq!(format!("{restored:?}"), format!("{prior:?}"));
+    }
+    #[test]
+    fn retained_wiring_without_egui_drag_blocks_public_layout_until_released() {
+        for mode in ["grid", "layered"] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            app.wiring = Some(Wiring {
+                from: nodecraft_graph::Endpoint { node: id(3), port: "out".into() },
+                port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false },
+                moving: None,
+            });
+            assert_retained_owner_refuses(&mut app, &ctx, mode);
+            assert!(app.wiring.is_some());
+            app.wiring = None;
+            assert!(app.layout_enabled(&ctx, &json!({"mode":mode})).is_ok());
+            app.dispatch_layout(&ctx, &json!({"mode":mode})).unwrap();
+            assert_eq!(app.session.revision(), 1);
+        }
+    }
+    #[test]
+    fn retained_palette_without_egui_focus_blocks_public_layout_until_released() {
+        for mode in ["grid", "layered"] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            app.palette = Some(Palette::new(Pos2::ZERO, Pos2::new(600.0, 650.0)));
+            assert_retained_owner_refuses(&mut app, &ctx, mode);
+            assert!(app.palette.is_some());
+            app.palette = None;
+            assert!(app.layout_enabled(&ctx, &json!({"mode":mode})).is_ok());
+            app.dispatch_layout(&ctx, &json!({"mode":mode})).unwrap();
+            assert_eq!(app.session.revision(), 1);
+        }
+    }
+    #[test]
+    fn real_palette_double_click_tab_and_escape_transition_guards_layout() {
+        let mut h =
+            Harness::builder().with_step_dt(1.0 / 60.0).with_size(Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
+        h.state_mut().selection.clear();
+        h.state_mut().view.pan += Vec2::new(-5000.0, -5000.0);
+        h.run();
+        let point = Pos2::new(560.0, 650.0);
+        h.hover_at(point);
+        h.step();
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+                h.step();
+            }
+        }
+        h.run();
+        assert!(h.state().palette.is_some());
+        h.key_press(egui::Key::Tab);
+        h.run();
+        h.state_mut().selection.only(id(3));
+        h.state_mut().selection.add(id(4));
+        let ctx = h.ctx.clone();
+        assert_retained_owner_refuses(h.state_mut(), &ctx, "grid");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().palette.is_none());
+        h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).unwrap();
+        assert_eq!(h.state().session.revision(), 1);
     }
 }
