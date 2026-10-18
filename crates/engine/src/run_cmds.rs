@@ -44,13 +44,23 @@ pub const MAX_EXPORT_ROWS: usize = 2_000;
 /// The model catalog runs are priced against (a host resource).
 pub struct RunCatalog(pub Arc<Catalog>);
 
-/// The caps, and what has been spent so far, as of now (a host resource).
+/// The caps and conservative admission spend (a host resource).
+/// Prefer [`BudgetState::from_usage`] when constructing this from a usage log; exact reporting
+/// totals alone can understate an uncertain historical session's admission exposure.
 pub struct BudgetState {
     pub budgets: Budgets,
     pub spent: Spent,
 }
 
-/// The usage log, for export (a host resource).
+impl BudgetState {
+    /// Includes finalized Actuals and the conservative uncertain-session upper bound.
+    pub fn from_usage(budgets: Budgets, usage: &UsageLog, session: &str) -> Self {
+        Self { budgets, spent: usage.spent(session) }
+    }
+}
+
+/// The usage log, for listed-row export (a host resource). Finalized Actuals are included;
+/// evicted uncertain rows remain available through UsageLog's separate quarantine export.
 pub struct UsageSnapshot(pub Arc<UsageLog>);
 
 #[derive(Deserialize)]

@@ -323,3 +323,52 @@ fn usage_exports_in_pages() {
     assert_eq!(rest["csv"].as_str().unwrap().lines().count(), 6);
     assert_eq!(rest["next_offset"], Value::Null);
 }
+
+#[test]
+fn usage_snapshot_pagination_observes_finalized_actuals_and_conservative_budget_constructor() {
+    use nodecraft_exec::cost::{Charge, UsageMetadata};
+    let mut log = UsageLog::default();
+    let metadata = |key| UsageMetadata { at_ms: 1, session: "s", node: id(2), provider: "test", model: "m", idempotency_key: key };
+    let mut first = log.reserve_metadata(metadata("first")).unwrap();
+    let mut second = log.reserve_metadata(metadata("second")).unwrap();
+    let _held = log.reserve_metadata(metadata("held")).unwrap();
+    log.finalize_metadata(&mut second, usd(3)).unwrap();
+    log.finalize_metadata(&mut first, usd(2)).unwrap();
+    assert_eq!(log.metadata_statistics().finalized, 2);
+    let budget = BudgetState::from_usage(Budgets::default(), &log, "s");
+    assert_eq!(budget.spent.session.get(&Currency::USD), Some(&usd(5)));
+    assert_eq!(log.charge("test", "first").unwrap().status, Charge::Actual);
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(Arc::new(log)));
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let one = session.dispatch("usage.export_csv", &json!({"limit": 1})).unwrap();
+    assert_eq!(one["total"], 2);
+    assert_eq!(one["next_offset"], 1);
+    assert!(one["csv"].as_str().unwrap().contains(",actual,first"));
+    let two = session.dispatch("usage.export_csv", &json!({"offset": 1, "limit": 1})).unwrap();
+    assert_eq!(two["next_offset"], Value::Null);
+    assert!(two["csv"].as_str().unwrap().contains(",actual,second"));
+
+    let uncertain: UsageLog = serde_json::from_str(include_str!("../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+    let state = BudgetState::from_usage(Budgets::default(), &uncertain, "a");
+    assert_eq!(state.spent.session, uncertain.budget_view("a").admission.session);
+    assert_eq!(state.spent.project, uncertain.budget_view("a").admission.project);
+    assert_ne!(state.spent.session, uncertain.reported_spent("a").session);
+    assert_eq!(state.spent.project, uncertain.reported_spent("a").project);
+}
+
+#[test]
+fn run_quote_consumes_conservative_usage_state_without_changing_reporting() {
+    let uncertain: UsageLog = serde_json::from_str(include_str!("../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+    // 120000 quoted + raw5 fits120007; conservative10 does not.
+    let mut resources = Resources::default();
+    resources.insert(RunCatalog(Arc::new(Catalog::from_toml(CATALOG).unwrap())));
+    resources.insert(BudgetState::from_usage(Budgets { session: Some(usd(120007)), ..Budgets::default() }, &uncertain, "a"));
+    let before = serde_json::to_string(&uncertain).unwrap();
+    let retained = Arc::new(uncertain);
+    resources.insert(UsageSnapshot(Arc::clone(&retained)));
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let quote = session.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(quote["allowed"], false, "{quote}");
+    assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
+}

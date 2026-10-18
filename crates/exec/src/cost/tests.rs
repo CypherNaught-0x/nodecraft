@@ -939,3 +939,7 @@ fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is()
     assert!(!log.record(estimate("s", &last_out, 1)).unwrap(), "still the same charge");
     assert_eq!(log.spent("s").project.get(&Currency::USD), Some(&usd(total)), "it still counts");
 }
+
+mod strict257;
+
+mod legacy255;
