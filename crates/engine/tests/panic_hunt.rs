@@ -64,6 +64,10 @@ fn panic_hunt() {
     }
 }
 
+fn gen_id(n: u8) -> nodecraft_types::GenerationId {
+    nodecraft_types::GenerationId::from_bytes([n; 16])
+}
+
 fn template(id: &str) -> (Session, Value) {
     use common::*;
     let mut document = project();
@@ -80,6 +84,15 @@ fn template(id: &str) -> (Session, Value) {
         let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(3), &std::collections::BTreeMap::new()).unwrap();
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    }
+    if id.starts_with("history.") {
+        // Two results on node 1, oldest first; `history.next` starts at the older one.
+        for n in [0x21, 0x22] {
+            let generation = nodecraft_graph::Generation::new(gen_id(n), vec![nodecraft_types::Value::Text(format!("take {n}"))]);
+            nodecraft_graph::Change::AddGeneration { canvas: canvas(), id: node_id(1), index: usize::from(n - 0x21), generation }.apply(&mut document).unwrap();
+        }
+        let active = if id == "history.next" { 0x21 } else { 0x22 };
+        nodecraft_graph::Change::SetActiveGeneration { canvas: canvas(), id: node_id(1), generation: Some(gen_id(active)) }.apply(&mut document).unwrap();
     }
     let mut session = if id.starts_with("file.") {
         let mut storage = nodecraft_format::MemoryStorage::default();
@@ -149,6 +162,11 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
+        "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
+        "history.extract" => {
+            json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"node":node_id(7),"result":gen_id(0x70),"pos":{"x":1,"y":2}})
+        }
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
