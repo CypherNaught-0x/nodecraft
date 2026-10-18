@@ -4,14 +4,14 @@
 use super::NodeCraftApp;
 use crate::{ids, theme::Tokens};
 use egui::{Pos2, Rect};
-use nodecraft_engine::import::{Imported, Incoming, MAX_FILES, MAX_MEDIA_BYTES, import_files};
+use nodecraft_engine::import::{Imported, Incoming, MAX_FILES, MAX_MEDIA_BYTES, MAX_PROJECT_MEDIA_BYTES, import_files};
 use nodecraft_graph::Position;
 
 /// Largest file read from a drop: the project's per-asset cap (text files are smaller still).
 pub const MAX_DROP_BYTES: usize = MAX_MEDIA_BYTES;
 /// Most bytes read for one drop, all files together: what the project's asset store can hold,
 /// so a drop of many large files can't hold hundreds of MiB in memory in one frame.
-pub const MAX_DROP_TOTAL_BYTES: usize = 48 * 1024 * 1024;
+pub const MAX_DROP_TOTAL_BYTES: usize = MAX_PROJECT_MEDIA_BYTES;
 
 /// A dropped file's bytes, at most `limit`. Only regular files are read, and never more than
 /// `limit + 1` bytes, whatever size the file claims: a pipe, a device or a file that grows after

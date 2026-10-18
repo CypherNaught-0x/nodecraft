@@ -52,11 +52,11 @@ fn utf16_and_bom_text_is_decoded() {
     le.extend("Hé".encode_utf16().flat_map(u16::to_le_bytes));
     let mut be = vec![0xFE, 0xFF];
     be.extend("Ünï".encode_utf16().flat_map(u16::to_be_bytes));
-    let bom = b"\xEF\xBB\xBFplain".to_vec();
+    let bom = b"\xEF\xBB\xBFplain\x0Cpage two".to_vec();
     let files = [Incoming { name: "le.txt", bytes: &le }, Incoming { name: "be.txt", bytes: &be }, Incoming { name: "bom.txt", bytes: &bom }];
     import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
     let texts: Vec<_> = ids(3).into_iter().map(|id| node(&s, id).params.get("text").cloned()).collect();
-    assert_eq!(texts, [Some(Value::Text("Hé".into())), Some(Value::Text("Ünï".into())), Some(Value::Text("plain".into()))]);
+    assert_eq!(texts, [Some(Value::Text("Hé".into())), Some(Value::Text("Ünï".into())), Some(Value::Text("plain\x0Cpage two".into()))]);
 }
 
 #[test]

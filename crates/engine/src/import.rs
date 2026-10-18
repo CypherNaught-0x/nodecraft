@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 pub const MAX_FILES: usize = 32;
 /// Largest media file a project holds (its per-asset cap).
 pub const MAX_MEDIA_BYTES: usize = MAX_ASSET_BYTES;
+/// All the media a project holds together.
+pub const MAX_PROJECT_MEDIA_BYTES: usize = MAX_TOTAL_ASSET_BYTES;
 /// Most text one drop adds, across all its files. A paste is one command, and a command's
 /// strings share a 1 MiB budget; this leaves room for the ids, kinds and media types beside it.
 pub const MAX_DROP_TEXT_BYTES: usize = 960 * 1024;
@@ -79,7 +81,7 @@ fn text_of(bytes: &[u8], mime: &str, limit: usize) -> Result<String, String> {
             std::str::from_utf8(body).map_err(|_| "the text isn't valid UTF-8".to_owned())?.to_owned()
         }
     };
-    if text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
+    if text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t' | '\x0C')) {
         return Err("the file has binary data in it, so it isn't text".into());
     }
     Ok(text)
@@ -192,7 +194,8 @@ pub fn import_files(session: &mut Session, canvas: CanvasId, at: Position, step:
     });
     if let Err(error) = added {
         // Nothing refers to what was stored for this drop: don't leave it taking the project's room.
-        session.prune_assets()?;
+        // The paste's own error is the one to report, whether or not the prune works.
+        let _ = session.prune_assets();
         imported.nodes.clear();
         return Err(error);
     }
