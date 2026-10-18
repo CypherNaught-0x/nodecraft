@@ -460,10 +460,11 @@ fn accept_quote(c: &Context<'_>, quote: &nodecraft_exec::cost::Quote, accept: &A
     }
     // Unknown-price steps need an explicit count of such jobs, at least what the quote shows
     // (a deferred step counts as one job here, as it does for its price).
+    let nodes: BTreeSet<NodeId> = quote.unpriced().map(|(node, _)| node).collect();
     let unpriced = quote
         .steps
         .iter()
-        .filter(|step| quote.unpriced().any(|(node, _)| node == step.node))
+        .filter(|step| nodes.contains(&step.node))
         .try_fold(0u64, |n, step| n.checked_add(step.jobs))
         .ok_or_else(|| invalid("the quote's job count is out of range"))?;
     if unpriced > 0 && accept.unpriced_jobs.is_none_or(|accepted| accepted < unpriced) {

@@ -16,6 +16,8 @@
   run's paid jobs before the provider. Nothing outside the engine can create, attach, widen or
   refresh a ceiling. `QueuedJob::new` and `JobPrice::new` remain for work outside an
   authorized run, which only the budgets bound: that is the trusted host's statement, as before.
+  The binding covers the price; the job's provider binding and request stay the host's to run
+  as admitted, under the same trusted-host convention.
 - **Priced reservations.** Every new priced reservation (first attempts, deferred 1→many
   expansion, concurrent jobs, retries and requeues under a new key, replacements on another
   endpoint) is debited at its estimate inside `ProviderRunner`'s reservation, under the usage
@@ -26,8 +28,9 @@
   hasn't admitted: deferred expansion, concurrent jobs, new-key retries, requeues and
   replacements) uses one of the accepted count, under the same lock; past it, the job is refused
   before the provider. A same-key retry uses nothing more. A refusal before admission (a budget
-  cap, the count itself) uses nothing. Once admitted, a job's count is never given back: without
-  a price a release proves nothing worth refunding. The count is not a price; budgets apply on
+  cap, the count itself) uses nothing; a refusal after admission but still before the provider
+  (metadata capacity, a changed registration) keeps its count. Once admitted, a job's count is
+  never given back: without a price a release proves nothing worth refunding. The count is not a price; budgets apply on
   their own, and any cap still refuses unknown-price work.
 - **Release.** A priced reservation released on evidence that nothing reached the provider
   (refused before invocation, cancelled before submission, an audited local failure) is credited

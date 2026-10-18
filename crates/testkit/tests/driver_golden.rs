@@ -1361,16 +1361,10 @@ fn literal_local_adapter_lane_is_distinct_from_actual_source_runner_lane() {
 /// The deferred-fan-out session from `concurrent_deferred_paid_jobs_share_session_project_caps_and_currency`:
 /// one deferred step quoted as one USD 40 job that becomes two at run time.
 fn fan_out_session() -> Session {
-    fan_out_session_with("mock-counted")
-}
-
-/// [`fan_out_session`] with both of the step's models set to `model`.
-fn fan_out_session_with(model: &str) -> Session {
     let base = multi_session(true);
     let mut p = base.document().clone();
     let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
-    node.params.insert("model".into(), Value::Text(model.into()));
-    node.params.insert("second".into(), Value::Text(model.into()));
+    node.params.insert("second".into(), Value::Text("mock-counted".into()));
     Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
     let mut kinds = kinds::registry().unwrap();
     kinds.register(Box::new(ActionSource(source_descriptor()))).unwrap();
@@ -1482,33 +1476,39 @@ fn an_accepted_but_lost_reply_keeps_its_debit_and_a_requeue_must_fit() {
         ErrorKind,
         mock::{MockFailures, MockOperation, MockScript},
     };
-    let mut f = fixture(0);
-    f.record = false;
-    f.adapters[0].models.push(("mock-counted".into(), MockModel::new(MockOutput::Text)));
-    f.adapters[0].operations.push(MockOperation {
-        id: "operation".into(),
-        model: "mock-counted".into(),
-        sent_keys: vec![nodecraft_engine::jobs::sent_key(BASE, 0)],
-        script: MockScript { lost_replies: Some(MockFailures { count: 4, kind: ErrorKind::Network }), ..Default::default() },
-    });
-    f.actions = vec![Action {
-        trigger: Trigger::Event(JobId(1), "failed"),
-        kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None },
-    }];
-    let mut r = request();
-    r.amounts.insert("USD".into(), 20);
-    let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
-    let submits = out.adapters[0].counters().submits;
-    assert!(submits >= 1);
-    assert_eq!(out.jobs.len(), 2);
-    assert_eq!(out.jobs[0].terminal, Some("failed"));
-    assert_eq!(out.jobs[1].terminal, Some("failed"), "the requeue would pass the accepted amount");
-    let log = out.budget.log.lock().unwrap();
-    let entries: Vec<_> = log.entries().collect();
-    assert_eq!(entries.len(), 1, "the requeue reserved nothing and never reached the provider");
-    assert_eq!((entries[0].cost.micros, entries[0].status), (20, nodecraft_exec::cost::Charge::Unresolved));
-    drop(log);
-    assert_eq!(out.adapters[0].counters().submits, submits);
+    // Every reply to the first attempt is lost, so it may have been billed. With USD 20 accepted
+    // its debit fills the ceiling and the requeue under a new key never reaches the provider;
+    // with USD 40 (the control) the requeue is sent.
+    for (accepted, requeue_sent) in [(20, false), (40, true)] {
+        let mut f = fixture(0);
+        f.record = false;
+        f.adapters[0].models.push(("mock-counted".into(), MockModel::new(MockOutput::Text)));
+        f.adapters[0].operations.push(MockOperation {
+            id: "operation".into(),
+            model: "mock-counted".into(),
+            sent_keys: vec![nodecraft_engine::jobs::sent_key(BASE, 0)],
+            script: MockScript { lost_replies: Some(MockFailures { count: 4, kind: ErrorKind::Network }), ..Default::default() },
+        });
+        f.actions = vec![Action {
+            trigger: Trigger::Event(JobId(1), "failed"),
+            kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None },
+        }];
+        let mut r = request();
+        r.amounts.insert("USD".into(), accepted);
+        let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+        assert_eq!(out.jobs.len(), 2);
+        assert_eq!(out.jobs[0].terminal, Some("failed"));
+        let sent: Vec<String> = out.adapters[0].requests().unwrap().into_iter().map(|r| r.idempotency_key).collect();
+        assert!(sent.iter().any(|k| k == BASE), "the first attempt reached the provider");
+        assert_eq!(sent.iter().any(|k| k != BASE), requeue_sent, "USD {accepted}: {sent:?}");
+        let log = out.budget.log.lock().unwrap();
+        let first = log.entries().find(|e| e.idempotency_key == BASE).unwrap();
+        assert_eq!((first.cost.micros, first.status), (20, nodecraft_exec::cost::Charge::Unresolved), "the possibly billed attempt keeps its charge");
+        assert_eq!(log.entries().count(), if requeue_sent { 2 } else { 1 }, "a refused requeue reserves nothing");
+        if !requeue_sent {
+            assert_eq!(out.jobs[1].terminal, Some("failed"));
+        }
+    }
 }
 
 #[test]
@@ -1556,5 +1556,8 @@ fn each_currency_has_its_own_ceiling_through_the_driver() {
         let log = out.budget.log.lock().unwrap();
         assert!(log.entries().all(|e| e.cost.currency == Currency::EUR));
         assert_eq!(log.entries().count(), if second == "done" { 2 } else { 1 });
+        let first = log.entries().find(|e| e.idempotency_key == BASE).unwrap();
+        assert_eq!(first.status, nodecraft_exec::cost::Charge::Unresolved, "the cancelled-after-submit attempt keeps its charge");
+        assert_eq!(out.adapters[0].counters().submits, if second == "done" { 2 } else { 1 });
     }
 }
