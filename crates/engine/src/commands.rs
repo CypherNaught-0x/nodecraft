@@ -66,6 +66,8 @@ impl Services {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
+    /// Describe prospective effects for availability without I/O. Read-only queries may
+    /// skip computing their result after validating parameters and required capabilities.
     Preview,
     Dispatch,
 }
@@ -78,16 +80,22 @@ pub struct Context<'a> {
     pub resources: &'a Resources,
     pub services: &'a Services,
     pub phase: Phase,
+    pub file: crate::file_cmds::FileStatus,
 }
 impl Context<'_> {
-    /// Builtins preview the full graph for `enabled()`. Dispatch still invokes every enabled
-    /// hook, but stages graph validation once after the handler returns its changeset.
-    pub fn preview_changes(&self, changes: &Changeset) -> Result<(), Error> {
-        if self.phase == Phase::Preview { changes.validate(self.document) } else { Ok(()) }
+    /// Session::enabled/dispatch graph-stage every returned document effect once,
+    /// including custom handlers. Handler callbacks only check editability/parameters.
+    pub fn editable(&self) -> Result<(), Error> {
+        if self.file.recovery_required { Err(Error::new(ErrorKind::Conflict, "recovery journal needs a checkpoint; save before editing")) } else { Ok(()) }
+    }
+    pub fn preview_changes(&self, _changes: &Changeset) -> Result<(), Error> {
+        self.editable()
     }
 }
 
 pub enum Effect {
+    Open { location: nodecraft_format::StorageLocation, discard_dirty: bool },
+    Save { location: Option<nodecraft_format::StorageLocation> },
     Service { capability: &'static str, request: Value },
     None { result: Value },
     Edit { changes: Changeset, result: Value, gesture: Option<String> },
@@ -127,6 +135,7 @@ impl Registry {
             .chain(crate::create_cmds::specs())
             .chain(crate::clipboard_cmds::specs())
             .chain(crate::search_cmds::specs())
+            .chain(crate::file_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -289,5 +298,7 @@ fn safe_field(field: &str) -> bool {
             | "gesture"
             | "type"
             | "value"
+            | "location"
+            | "discard_dirty"
     )
 }

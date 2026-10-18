@@ -23,3 +23,6 @@ serde_json = { workspace = true }
 nodecraft-media = { workspace = true }
 # Pinned exactly: the OS random source for the control token.
 getrandom = "=0.3.4"
+
+[dev-dependencies]
+nodecraft-format = { workspace = true }

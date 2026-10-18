@@ -84,6 +84,19 @@ message. Asset controls display/remove existing references; file import is track
 
 ## Level of detail and performance
 
+- **Frame budget (#65).** `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`
+  times frames over generated 200- and 1,000-node graphs (text sources and relays with a toggle,
+  slider, choice and note, wired in rows, in a square grid) while panning at fixed zooms, sweeping
+  zoom from 10% to 100% and back, and on the frame after an edit, with the pointer moving. It
+  measures the egui pass (with AccessKit) plus tessellation at 1 and 2 pixels per point, not
+  windowing, texture upload or GPU work. On an Apple M3 Pro, 2026-10-17: 200 nodes stay under
+  2 ms mean (worst frame 6.8 ms, in the 2× zoom sweep); 1,000 nodes with 736 cards on screen pan
+  at 4.3 ms mean, the frame after an edit costs 5.4 ms and the worst sweep frame 10.6 ms, all
+  inside 16.7 ms for 60 fps. The run found one hotspot, fixed: every edit made the schema cache
+  rescan all entries per visible card (O(visible²), 10.2 ms after an edit at 1,000 nodes); it
+  now keeps a running byte total and a shared-descriptor index. Title font sizes still change
+  with every zoom step (a new glyph size per frame in a sweep); snapping them to a few sizes is
+  the next lever if sweeps get heavier.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the
   grid skips every other dot (`canvas::grid_step`), so it never turns into a haze; at most 120,000
   dots are drawn per frame, and they are tiny squares (4 vertices) rather than circles.

@@ -30,6 +30,8 @@ serde_path_to_error.workspace = true
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 
 [dev-dependencies]
+nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
+zip = { workspace = true }
