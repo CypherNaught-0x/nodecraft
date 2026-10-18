@@ -2699,6 +2699,7 @@ dependencies = [
  "craft-settings",
  "futures",
  "keyring",
+ "nodecraft-catalog",
  "nodecraft-exec",
  "nodecraft-format",
  "nodecraft-gpu",

@@ -1033,3 +1033,24 @@ a choice a later contributor might otherwise undo.
   revalidates every visible card) stays linear. Tests recompute the total to catch drift.
 - **The benchmark lives with the canvas tests** (`app/perf.rs`, ignored by default) and reports
   mean, p95 and worst frame; re-run it when cards or noodles get richer.
+
+## 2026-10-18 · Run commands: quote, start within budget, record (#201, part 1)
+
+- **`run.quote` prices a request without changing anything.** It plans the request and prices it
+  against the catalog. The response has the steps, each step's price or why it has none, totals
+  per currency, the budget blocks and the provisional steps; a request that can't run yet gets
+  the planner's reasons instead. The UI, CLI and agents all read the same response.
+- **`run.start` makes every caller accept the price first.** It quotes again. It refuses when
+  the budgets block the run, when a currency's total is more than the caller accepted, or when a
+  step has no price and the caller didn't accept a partial price. A price that grew since the
+  quote is refused rather than charged. Only then does it hand the request to the host's
+  `run.start` service, which plans and runs it (exec's run executor plus `ProviderRunner`). Job
+  time budgets (#222) still hold each job to the caps.
+- **`run.record` is host-only.** It records a run's results, one generation per node, as one
+  undo step. MCP lists it as human-only, so agents can't fabricate results.
+- **Pricing inputs are host resources:** the catalog (`RunCatalog`), the caps with what has been
+  spent (`BudgetState`), and the usage log (`UsageSnapshot`) for `usage.export_csv`. Without them
+  the commands are unsupported. The host keeps them current, which is the same pattern as
+  navigation.
+- **Not yet done:** the desktop host. It needs an async runtime, a provider registry, the run
+  service, budget settings and the cost-confirmation UI on generation nodes (#83, #84).

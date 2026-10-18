@@ -109,6 +109,13 @@ fn template(id: &str) -> (Session, Value) {
             has_query: true,
         }));
         session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+
+    if id.starts_with("run.") || id == "usage.export_csv" {
+        use nodecraft_engine::run_cmds::*;
+        session.swap_resource(Some(RunCatalog(std::sync::Arc::new(nodecraft_catalog::Catalog::builtin().unwrap()))));
+        session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
+        session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
+        session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
     }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
@@ -125,6 +132,12 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
         }
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
+        "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
+        "run.start" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)],"accept":{"amounts":{},"partial":true}}),
+        "run.record" => {
+            json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
+        }
+        "usage.export_csv" => json!({}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
@@ -209,6 +222,10 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_next"
                             | "canvas.search_previous"
                             | "canvas.search_close"
+
+                            | "run.quote"
+                            | "run.start"
+                            | "usage.export_csv"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);

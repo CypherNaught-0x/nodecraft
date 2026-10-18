@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 nodecraft-exec = { workspace = true }
+nodecraft-catalog = { workspace = true }
 nodecraft-nodes = { workspace = true }
 nodecraft-providers = { workspace = true }
 nodecraft-gpu = { workspace = true }
