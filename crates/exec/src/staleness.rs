@@ -43,6 +43,25 @@ pub const DOMAIN: &[u8] = b"nodecraft.input-hash.v2";
 /// Scalar/media JSON uses conservative encoded-size reservations, not exact bytes hashed.
 pub const MAX_QUERY_BYTES: usize = 256 * 1024 * 1024;
 
+/// A checked result whose current input hash is unknown, with its actual failing node.
+/// Reasons are the same bounded public-safe messages as [`input_hash`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashDiagnostic {
+    pub node: NodeId,
+    pub cause: NodeId,
+    pub error: Error,
+}
+
+/// Known stale results plus the first local invalidity, in canvas NodeId order.
+/// `unknown_total` counts only results with a recorded input hash that were checked.
+/// A stale set alone is not proof that every other node is fresh.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleReport {
+    pub nodes: BTreeSet<NodeId>,
+    pub unknown_total: usize,
+    pub unknown: Option<HashDiagnostic>,
+}
+
 /// Fixed cost charged per value on top of its payload, so huge lists of tiny values count too.
 const VALUE_COST: usize = 16;
 
@@ -427,6 +446,14 @@ impl InputHasher {
         Ok(Error::new(kind, message))
     }
 
+    fn reported(&mut self, node: NodeId, invalid: InvalidHash) -> Result<HashDiagnostic, Error> {
+        let cause = match invalid {
+            InvalidHash::Router(id) | InvalidHash::Target(id) | InvalidHash::Source(id) => id,
+        };
+        // Move the admitted Error: two fixed IDs and Error fit its reserved 64-byte overhead.
+        Ok(HashDiagnostic { node, cause, error: self.diagnostic(invalid)? })
+    }
+
     /// The content of `upstream`'s result on `port`: `produced` (a run's own outputs, in
     /// `upstream.outputs` order) when given, else its active result. `None` when it has none it
     /// can lend (no result, or one recorded for another port layout).
@@ -551,18 +578,38 @@ pub fn stale(canvas: &Canvas, kinds: &Registry) -> Result<BTreeSet<NodeId>, Erro
     stale_within(canvas, kinds, MAX_QUERY_BYTES).map(|(stale, _)| stale)
 }
 
+/// [`stale`] with one bounded diagnostic and a count of locally invalid checked results.
+/// Uses the same hasher/cache and never repeats hooks to recover a reason. The first diagnostic
+/// costs the existing 576-byte output reservation; refusal returns an error, not a partial report.
+pub fn stale_report(canvas: &Canvas, kinds: &Registry) -> Result<StaleReport, Error> {
+    query_stale(canvas, kinds, MAX_QUERY_BYTES, true).map(|(report, _)| report)
+}
+
 /// [`stale`] with its own admission budget; also returns charged bytes (including reservations).
 fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTreeSet<NodeId>, usize), Error> {
+    query_stale(canvas, kinds, budget, false).map(|(report, charged)| (report.nodes, charged))
+}
+
+fn query_stale(canvas: &Canvas, kinds: &Registry, budget: usize, details: bool) -> Result<(StaleReport, usize), Error> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
     let mut query = InputHasher::new(canvas, kinds, budget)?;
     let none = BTreeMap::new();
     let mut stale = BTreeSet::new();
+    let mut unknown_total = 0usize;
+    let mut first_unknown = None;
     for node in canvas.nodes().values() {
         let recorded = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).and_then(|g| g.input_hash);
-        if let Some(recorded) = recorded
-            && query.hash(canvas, kinds, node.id, &none)?.is_some_and(|now| now != recorded)
-        {
-            stale.insert(node.id);
+        if let Some(recorded) = recorded {
+            match query.hash_detailed(canvas, kinds, node.id, &none)? {
+                HashResult::Ready(now) if now != recorded => {
+                    stale.insert(node.id);
+                }
+                HashResult::Invalid(invalid) if details => {
+                    unknown_total = unknown_total.saturating_add(1);
+                    first_unknown.get_or_insert((node.id, invalid));
+                }
+                _ => {}
+            }
         }
     }
     // Downstream of a stale node, every result is stale too (seen-set walk; graphs are acyclic
@@ -583,7 +630,8 @@ fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTr
             }
         }
     }
-    Ok((stale, query.meter.hashed))
+    let unknown = first_unknown.map(|(node, invalid)| query.reported(node, invalid)).transpose()?;
+    Ok((StaleReport { nodes: stale, unknown_total, unknown }, query.meter.hashed))
 }
 
 #[cfg(test)]
