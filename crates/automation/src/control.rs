@@ -355,10 +355,10 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
                     // Off the accept thread, so silent refused clients can't delay real ones; a few at
                     // once at most, beyond that the refusal is just closed.
                     if refusing.fetch_add(1, Ordering::SeqCst) < MAX_REFUSALS {
-                        let refusing = Arc::clone(&refusing);
+                        let held = Arc::clone(&refusing);
                         let spawned = std::thread::Builder::new().name("nodecraft-control-busy".into()).spawn(move || {
                             refuse_busy(stream);
-                            refusing.fetch_sub(1, Ordering::SeqCst);
+                            held.fetch_sub(1, Ordering::SeqCst);
                         });
                         if spawned.is_err() {
                             refusing.fetch_sub(1, Ordering::SeqCst);
