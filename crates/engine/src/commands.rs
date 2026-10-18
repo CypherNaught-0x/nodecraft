@@ -184,6 +184,7 @@ impl Registry {
             .chain(crate::file_cmds::specs())
             .chain(crate::run_cmds::specs())
             .chain(crate::perf_cmds::specs())
+            .chain(crate::ownership_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::turn_into_cmds::specs())

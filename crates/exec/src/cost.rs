@@ -22,6 +22,8 @@ pub use metadata::{LedgerIdentity, MAX_METADATA_SHELLS, MetadataFinalizeError, M
 mod ownership;
 use ownership::Ownership;
 pub use ownership::{ChargeOwnership, LegacyGroupEvidence, QuarantineLocation, QuarantinedCharge};
+mod reconcile;
+pub use reconcile::{Holder, MAX_RECONCILE_EXCEPTIONS, OwnershipDecision, OwnershipGroup, OwnershipPlan, OwnershipReconciliation, ReconciledCharge};
 
 /// Why a step has no price yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -450,7 +452,8 @@ impl Eq for UsageLog {}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageLogFile {
-    /// Explicit ownership contract: 0 legacy input, 1 established, 2 immutable quarantine.
+    /// Explicit ownership contract: 0 legacy input, 1 established, 2 immutable quarantine,
+    /// 3 quarantine with confirmed reconciliations (#325).
     #[serde(default)]
     pub open_session_ownership: u8,
     #[serde(default)]
@@ -463,6 +466,8 @@ pub struct UsageLogFile {
     pub quarantined: Vec<UsageEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legacy_groups: Vec<LegacyGroupEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ownership_reconciliations: Vec<OwnershipReconciliation>,
     pub entries: Vec<UsageEntry>,
     pub project: Totals,
     #[serde(default)]
@@ -1150,11 +1155,18 @@ impl From<UsageLog> for UsageLogFile {
         let sessions = log.merged_sessions();
         Self {
             provider_identity_version: log.provider_identity_version,
-            open_session_ownership: if log.ownership.uncertain.is_empty() { 1 } else { 2 },
+            open_session_ownership: if !log.ownership.records.is_empty() {
+                3
+            } else if log.ownership.uncertain.is_empty() {
+                1
+            } else {
+                2
+            },
             uncertain_listed,
             uncertain_pending,
             quarantined: log.ownership.quarantined.into_values().collect(),
             legacy_groups: log.ownership.groups.into_values().flat_map(|g| g.into_values()).collect(),
+            ownership_reconciliations: log.ownership.records,
             entries,
             project,
             sessions,

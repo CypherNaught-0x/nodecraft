@@ -14,10 +14,23 @@ Project admission uses exact project spend. `budget_view` exposes both values ex
 Wire marker 1 means established ownership. Marker 2 additionally retains group evidence and
 uncertain identities, including entries evicted from the ordinary FIFO. The original named
 floor plus established open charges must remain covered. Cross-group evidence for one
-currency must agree. A marker-2 file cannot be loaded by the older strict wire reader.
+currency must agree. A marker-2 file cannot be loaded by the older strict wire reader, nor a marker-3 file by a
+marker-2 reader.
 `write_csv` exports ordinary listed entries; `write_quarantine_csv` separately exports retained
 uncertain entries, including those outside the FIFO. Neither export invents a currency or
 turns an unknown cost into zero.
+
+A person can resolve a group after checking their own provider records (#325):
+`usage.ownership` lists the groups, then one group's evidence, totals and charges with a token;
+`usage.reconcile_ownership` (human only) states which total holds each charge, as a default
+holder plus at most 1,000 exceptions. The decision is refused when the token is stale, when
+named-held charges exceed the named total at import, when earlier-held charges exceed what the
+earlier total held at import or holds now (less what folded sessions' listed charges need
+from it), or when the named total would not cover its open charges. `dry_run: true` reports the
+record and resulting totals first. Earlier-held money moves to the named session with the project unchanged; the charges
+become established and settle or release normally afterwards. Reconciliation itself settles
+nothing. Marker 3 adds the immutable audit records; see
+[the decision](decisions/2026-10-18-ownership-reconciliation.md).
 
 Unknown-price jobs reserve metadata capacity before invoking the provider. A non-cloneable
 permit captures a live ledger identity, exact provider/key, metadata and one serial. Its
