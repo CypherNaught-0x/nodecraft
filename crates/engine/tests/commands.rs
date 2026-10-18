@@ -211,18 +211,58 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         let spec = *registry.get(id).unwrap();
         assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
     }
-    assert!(registry.get("canvas.auto_format").is_ok());
-    let builtin_ids: std::collections::BTreeSet<_> = registry.specs().map(|spec| spec.id).collect();
+    let builtin_ids: std::collections::BTreeSet<_> = [
+        "node.add",
+        "node.remove",
+        "node.move",
+        "edge.connect",
+        "edge.disconnect",
+        "edit.undo",
+        "edit.redo",
+        "node.title",
+        "node.param_set",
+        "edge.rewire",
+        "canvas.delete",
+        "keys.set",
+        "keys.remove",
+        "keys.status",
+        "canvas.stale",
+        "canvas.fit_all",
+        "canvas.fit_selection",
+        "canvas.minimap_toggle",
+        "canvas.pan_to",
+        "node.create",
+        "node.create_connected",
+        "canvas.paste",
+        "canvas.search_open",
+        "canvas.search_query",
+        "canvas.search_next",
+        "canvas.search_previous",
+        "canvas.search_close",
+        "file.open",
+        "file.save",
+        "file.save_as",
+        "run.quote",
+        "run.start",
+        "run.record",
+        "usage.export_csv",
+        "history.select",
+        "history.previous",
+        "history.next",
+        "history.delete",
+        "history.clear",
+        "history.extract",
+        "canvas.auto_format",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
     let spec = *registry.get("node.move").unwrap();
     assert_eq!(registry.register(spec).unwrap_err().kind, ErrorKind::Conflict);
     for id in ["nodot", ".empty", "Upper.case", "two..dots", "with space.name"] {
         assert_eq!(registry.register(CommandSpec { id, ..spec }).unwrap_err().kind, ErrorKind::InvalidInput);
     }
-    assert_eq!(
-        registry.specs().count(),
-        30,
-        "7 graph, 2 node editing, 2 edge, node.create, canvas.paste, 3 keys, canvas.stale, 4 navigation, 5 search, layout and 3 file commands"
-    );
+    assert_eq!(registry.specs().count(), 41);
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
 

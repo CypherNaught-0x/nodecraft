@@ -563,7 +563,8 @@ NodeCraft/
 ├─ CONTRIBUTING.md       claiming issues, non-negotiable rules, tests, checklists
 ├─ README.md
 ├─ ROADMAP.md            one-page status
-├─ docs/                 plan.md (this file), architecture.md, development.md, decisions.md,
+├─ docs/                 plan.md (this file), architecture.md, development.md, decisions.md (guide),
+│                        decisions/ (one dated file per decision),
 │                        ui-design.md, node-catalog.md, providers.md
 ├─ crates/ apps/ xtask/  as in §4.1
 ├─ assets/               icons (original, licensed), catalog data
@@ -620,7 +621,8 @@ Testing strategy:
 
 All builds are distributed as **GitHub releases**. `.github/workflows/release.yml` follows the
 shared Craft release workflow (`storytold/craft-common-actions`) but is NodeCraft's own, so that
-releases don't depend on signing secrets (docs/decisions.md). It runs the per-app `packaging/`
+releases don't depend on signing secrets (see the
+[M0 release decision](decisions/2026-10-16-m0-skeleton.md)). It runs the per-app `packaging/`
 scripts (`packaging/env.sh`, `packaging/{macos,windows,linux}/…`, modelled on PhotoCraft's).
 
 - **Flow:** bump `[workspace.package] version` with `cargo xtask version set X.Y.Z`, merge

@@ -939,3 +939,40 @@ fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is()
     assert!(!log.record(estimate("s", &last_out, 1)).unwrap(), "still the same charge");
     assert_eq!(log.spent("s").project.get(&Currency::USD), Some(&usd(total)), "it still counts");
 }
+
+mod strict257;
+
+mod legacy255;
+
+#[test]
+fn csv_row_admission_never_writes_rejected_rows_and_preserves_writer_errors() {
+    let mut log = UsageLog::default();
+    log.record(entry("s", "k1", 1)).unwrap();
+    log.record(entry("s", "k2", 2)).unwrap();
+    let mut expected = Vec::new();
+    log.write_csv_rows(&mut expected, 0, 1).unwrap();
+    let mut actual = Vec::new();
+    let mut calls = 0;
+    assert_eq!(
+        log.write_csv_rows_while(&mut actual, 0, 2, |row| {
+            assert!(row.ends_with(b"\r\n"));
+            calls += 1;
+            calls == 1
+        })
+        .unwrap(),
+        1
+    );
+    assert_eq!(calls, 2);
+    assert_eq!(actual, expected);
+    struct Broken;
+    impl std::io::Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    assert_eq!(log.write_csv_rows(&mut Broken, 0, 2).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(log.write_csv_rows_while(&mut Broken, 0, 2, |_| true).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+}

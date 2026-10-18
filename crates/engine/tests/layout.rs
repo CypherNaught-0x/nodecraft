@@ -97,3 +97,43 @@ fn late_range_failure_leaves_history_and_document_unchanged() {
     let h = s.swap_resource::<LayoutContext>(None).unwrap();
     assert_eq!(h.revision, 0);
 }
+
+#[test]
+fn changing_layout_invalidates_run_token_but_refusal_and_noop_preserve_it() {
+    use nodecraft_engine::run_cmds::{BudgetState, RUN_SERVICE, RunCatalog};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([44; 16]), "Layout authority").unwrap();
+    Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(common::canvas(), "Canvas") }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
+    for n in [1, 2] {
+        s.dispatch("node.create", &json!({"canvas":common::canvas(),"id":common::node_id(n),"kind":"source.text","pos":{"x":0,"y":0}})).unwrap();
+    }
+    s.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
+    s.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let called = calls.clone();
+    s.register_host_service(RUN_SERVICE, move |_| {
+        called.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"accepted":true}))
+    })
+    .unwrap();
+    let mut request = json!({"canvas":common::canvas(),"mode":"selected","nodes":[common::node_id(1)]});
+    let quote = s.dispatch("run.quote", &request).unwrap();
+    request["accept"] = json!({"token":quote["token"],"amounts":{},"partial":true});
+    host(&mut s);
+    s.dispatch("canvas.auto_format", &json!({"mode":"grid"})).unwrap();
+    assert!(s.dispatch("run.start", &request).is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let quote = s.dispatch("run.quote", &json!({"canvas":common::canvas(),"mode":"selected","nodes":[common::node_id(1)]})).unwrap();
+    request["accept"]["token"] = quote["token"].clone();
+    host(&mut s);
+    let revision = s.revision();
+    assert_eq!(s.dispatch("canvas.auto_format", &json!({"mode":"grid"})).unwrap(), json!({"moved":0}));
+    assert!(s.dispatch("canvas.auto_format", &json!({"mode":"invalid"})).is_err());
+    assert_eq!(s.revision(), revision);
+    s.dispatch("run.start", &request).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

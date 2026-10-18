@@ -234,7 +234,9 @@ AddNode restore spelling and the complete changeset envelope, avoiding a second 
 pass. Parameter decoding borrows JSON and reports allowlisted field paths and error categories,
 never raw input values or arbitrary map keys. Native panic unwinding returns an
 internal error while preserving document/history/events; abort-only targets still depend on
-validation. History limits and explicit drag tokens are specified in `decisions.md`. Each
+validation. History limits and explicit drag tokens are specified in the
+[engine-session decision](decisions/2026-10-16-engine-command-sessions.md), with the later
+[history-step limit update](decisions/2026-10-17-200-node-performance.md). Each
 subscriber calls `events_since(cursor)` and advances its own cursor to the last notification;
 an expired cursor requires reading the current document and revision again. These notifications
 are an invalidation log, not a persistence or collaboration journal. Applied changeset events
@@ -494,7 +496,19 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
 
+
+## Optional native video sidecar
+
+`media/video` provides the standalone bounded native FFmpeg service described in
+[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
+tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
+is separate. Feature-on wasm exposes an Unsupported host setup path.
+
+## Selected-node formatting
+
 Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
-The UI supplies a revision-stamped scoped geometry capability; the engine validates it and
-returns one MoveNode changeset. Both grid and whole-DAG dependency modes share bounded actual
-instance metrics and canonical outer-coordinate ordering; see decisions and UI design.
+The UI supplies a revision-stamped scoped geometry capability, including history-strip body
+height at fixed reference zoom. Advisory Preview validates structure without solving or staging;
+dispatch returns one MoveNode changeset through the private persistent admission boundary.
+Grid and whole-DAG dependency modes move selected nodes only, with one undo step; see
+[the decision](decisions/2026-10-18-selected-node-auto-format-70.md) and [UI design](ui-design.md).

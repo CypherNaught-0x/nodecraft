@@ -726,7 +726,11 @@ fn title_at_four_times_zoom_remains_when_body_is_below_viewport() {
 }
 
 /// Text A → relay B → relay C, and a lone Text D, at 30% zoom so cards have no body controls.
-fn chain_harness() -> Harness<'static, NodeCraftApp> {
+pub(super) fn chain_harness() -> Harness<'static, NodeCraftApp> {
+    chain_harness_with(|descriptor| Box::new(TestKind(descriptor)))
+}
+/// The chain fixture, with its test kinds wrapped by `kind`.
+pub(super) fn chain_harness_with(kind: fn(NodeDescriptor) -> Box<dyn NodeKind>) -> Harness<'static, NodeCraftApp> {
     let text = PortType { modality: nodecraft_types::Modality::Text, many: false };
     let port = |name: &str| nodecraft_graph::Port { name: name.into(), port_type: text };
     let relay = NodeDescriptor {
@@ -748,8 +752,8 @@ fn chain_harness() -> Harness<'static, NodeCraftApp> {
         quick_add: None,
     };
     let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
-    kinds.register(Box::new(TestKind(relay))).unwrap();
-    kinds.register(Box::new(TestKind(collect))).unwrap();
+    kinds.register(kind(relay)).unwrap();
+    kinds.register(kind(collect)).unwrap();
     let canvas = CanvasId::from_bytes([1; 16]);
     let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Chain").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
@@ -777,7 +781,7 @@ fn chain_harness() -> Harness<'static, NodeCraftApp> {
     h.run();
     h
 }
-fn chain_id(n: u8) -> NodeId {
+pub(super) fn chain_id(n: u8) -> NodeId {
     NodeId::from_bytes([n; 16])
 }
 fn ids(ns: &[u8]) -> BTreeSet<NodeId> {
@@ -1038,13 +1042,13 @@ fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
 }
 
 /// Screen position of node `n`'s single input or output port.
-fn port_point(h: &Harness<'static, NodeCraftApp>, n: u8, side: noodle::Side) -> Pos2 {
+pub(super) fn port_point(h: &Harness<'static, NodeCraftApp>, n: u8, side: noodle::Side) -> Pos2 {
     let app = h.state();
     let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
     let rect = card_geometry(&app.painted, app.session.kinds(), node, app.theme.tokens());
     app.view.to_screen(app.viewport.min, noodle::anchor(rect, side, 0, 1))
 }
-fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
+pub(super) fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
     h.hover_at(from);
     h.run();
     h.drag_at(from);
@@ -1057,7 +1061,7 @@ fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
     h.run();
 }
 /// Edges as (from node, to node) pairs.
-fn links(h: &Harness<'static, NodeCraftApp>) -> BTreeSet<(NodeId, NodeId)> {
+pub(super) fn links(h: &Harness<'static, NodeCraftApp>) -> BTreeSet<(NodeId, NodeId)> {
     let app = h.state();
     app.session.document().canvases().get(&app.canvas).unwrap().edges().values().map(|e| (e.from.node, e.to.node)).collect()
 }
@@ -1097,7 +1101,8 @@ fn invalid_drops_leave_the_document_alone_and_explain_why() {
         assert_eq!(h.state().session.document(), &before, "{a}->{b}");
         assert_eq!(h.state().notice.as_deref(), Some(message));
     }
-    // Dropping on empty canvas, or Escape mid-drag, does nothing.
+    // Dropping on empty canvas only opens "Turn into" (a new drag closes it), and Escape
+    // mid-drag does nothing.
     let from = port_point(&h, 1, noodle::Side::Output);
     wire_drag(&mut h, from, Pos2::new(900.0, 600.0));
     let to = port_point(&h, 3, noodle::Side::Input);

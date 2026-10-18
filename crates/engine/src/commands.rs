@@ -73,9 +73,10 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
-    /// Revision of this exact document, shared by preview and dispatch.
-    pub revision: u64,
+    pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
+    /// The document's revision: bumped by every edit, undo and redo.
+    pub revision: u64,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -139,6 +140,9 @@ impl Registry {
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
             .chain(crate::layout_cmds::specs())
+            .chain(crate::run_cmds::specs())
+            .chain(crate::history_cmds::specs())
+            .chain(crate::turn_into_cmds::specs())
         {
             registry.register(spec)?;
         }

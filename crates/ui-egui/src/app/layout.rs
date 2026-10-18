@@ -119,6 +119,7 @@ impl NodeCraftApp {
             || self.marquee.is_some()
             || self.wiring.is_some()
             || self.palette.is_some()
+            || self.turn_into.is_some()
             || ctx.dragged_id().is_some()
             || self.navigation.pointer_owned
             || self.navigation.drag.is_some()
@@ -772,5 +773,65 @@ mod tests {
         assert!(h.state().palette.is_none());
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).unwrap();
         assert_eq!(h.state().session.revision(), 1);
+    }
+    #[test]
+    fn integration_retained_turn_into_blocks_layout_after_pointer_gesture_until_escape() {
+        for mode in ["grid", "layered"] {
+            let mut h = super::super::tests::chain_harness();
+            let from = super::super::tests::port_point(&h, 1, noodle::Side::Output);
+            super::super::tests::wire_drag(&mut h, from, Pos2::new(520.0, 380.0));
+            h.run();
+            assert!(h.state().turn_into.is_some());
+            h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+            h.state_mut().selection.add(NodeId::from_bytes([4; 16]));
+            // Fresh egui context has no transient focus/drag/popup; only the retained menu remains.
+            let ctx = egui::Context::default();
+            assert_retained_owner_refuses(h.state_mut(), &ctx, mode);
+            assert!(h.state().turn_into.is_some());
+            h.key_press(egui::Key::Escape);
+            h.run();
+            assert!(h.state().turn_into.is_none());
+            h.state_mut().dispatch_layout(&ctx, &json!({"mode":mode})).unwrap();
+        }
+    }
+    #[test]
+    fn integration_history_metrics_refresh_and_both_layout_modes_reapply_without_overlap() {
+        for mode in ["grid", "layered"] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            let plain = app.layout_context(&ctx, None).extents;
+            let canvas = app.canvas;
+            app.session
+                .dispatch(
+                    "run.record",
+                    &json!({"canvas":canvas,"results":[{"node":id(3),"generation":{
+                "id":"29292929-2929-4929-8929-292929292929","outputs":[{"type":"text","value":"Public layout history"}]}}]}),
+                )
+                .unwrap();
+            let history = app.layout_context(&ctx, None).extents;
+            let before = plain.iter().find(|e| e.id == id(3)).unwrap();
+            let after = history.iter().find(|e| e.id == id(3)).unwrap();
+            assert!(after.height > before.height);
+            let node = app.session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap();
+            let descriptor = app.session.kinds().get(&node.kind).unwrap().instance(node).unwrap();
+            let size = card::world_size(node, Some(&descriptor), app.theme.tokens());
+            assert_eq!(f64::from(size.y), after.height);
+            assert_eq!(card::world_rect(node, Some(&descriptor), app.theme.tokens()).height(), size.y);
+            let mut far = node.clone();
+            far.pos = nodecraft_graph::Position { x: 9_000_000.0, y: 9_000_000.0 };
+            assert_eq!(card::world_size(&far, Some(&descriptor), app.theme.tokens()), size);
+            let request = if mode == "grid" { json!({"mode":mode,"columns":1}) } else { json!({"mode":mode}) };
+            app.dispatch_layout(&ctx, &request).unwrap();
+            let scene = app.session.document().canvases().get(&canvas).unwrap();
+            let a = scene.nodes().get(&id(3)).unwrap();
+            let b = scene.nodes().get(&id(4)).unwrap();
+            assert!(f64::from(a.pos.y) + after.height + after.bottom <= f64::from(b.pos.y) - history.iter().find(|e| e.id == id(4)).unwrap().top);
+            let revision = app.session.revision();
+            assert_eq!(app.dispatch_layout(&ctx, &request).unwrap(), json!({"moved":0}));
+            assert_eq!(app.session.revision(), revision);
+            app.session.dispatch("history.clear", &json!({"canvas":canvas,"id":id(3)})).unwrap();
+            let cleared = app.layout_context(&ctx, None).extents;
+            assert_eq!(cleared.iter().find(|e| e.id == id(3)).unwrap().height, before.height);
+        }
     }
 }

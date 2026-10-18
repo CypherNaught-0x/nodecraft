@@ -169,7 +169,7 @@ fn instance_info<'a>(
     if !valid_rect(rect) {
         return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
     }
-    Ok((rect, Some(card::world_size(Some(&descriptor), t)), if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
+    Ok((rect, Some(card::world_size(node, Some(&descriptor), t)), if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
 }
 #[cfg(test)]
 fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<Rect, Error> {

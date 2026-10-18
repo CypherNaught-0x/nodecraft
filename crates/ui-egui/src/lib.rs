@@ -8,6 +8,7 @@ pub mod app;
 pub mod canvas;
 pub mod card;
 pub mod clipboard;
+pub mod history;
 pub mod ids;
 pub mod keys;
 pub mod navigation;
@@ -16,5 +17,6 @@ pub mod palette;
 pub mod search;
 pub mod selection;
 pub mod theme;
+pub mod turn_into;
 
 pub use app::NodeCraftApp;

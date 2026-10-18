@@ -94,6 +94,16 @@ The bot lives in [`scripts/claim/claim.js`](scripts/claim/claim.js) and runs fro
   `rev` in the workspace `Cargo.toml`. Fix shared code upstream there, then bump the pin, rather
   than forking it here.
 
+## Decision records
+
+Before changing an established choice, read the dated records in [`docs/decisions/`](docs/decisions/).
+When a new choice will guide later contributors, add one new
+`docs/decisions/YYYY-MM-DD-short-descriptive-slug.md` file, starting with
+`## YYYY-MM-DD · Title (#issue)`. Use a unique topic slug and links relative to the new file.
+See [`docs/decisions.md`](docs/decisions.md) for the format and historical records. Do not append
+to that index or edit a shared list when adding a decision; each independent decision adds only
+its own file.
+
 ## Style
 
 - `cargo fmt` (160-column lines) and `cargo clippy --workspace --all-targets -- -D warnings`.

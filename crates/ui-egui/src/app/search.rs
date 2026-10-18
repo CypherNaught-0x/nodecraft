@@ -25,6 +25,7 @@ impl NodeCraftApp {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
             blocked: self.palette.is_some()
+                || self.turn_into.is_some()
                 || egui::Popup::is_any_open(ctx)
                 || (focused && !own_focus)
                 || (self.text_focused && !own_focus && !self.search_focused)
