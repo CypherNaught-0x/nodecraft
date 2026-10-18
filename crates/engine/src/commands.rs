@@ -74,6 +74,8 @@ pub enum Phase {
 
 pub struct Context<'a> {
     pub document: &'a Project,
+    /// The document's revision: bumped by every edit, undo and redo.
+    pub revision: u64,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -136,6 +138,7 @@ impl Registry {
             .chain(crate::clipboard_cmds::specs())
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
+            .chain(crate::run_cmds::specs())
         {
             registry.register(spec)?;
         }

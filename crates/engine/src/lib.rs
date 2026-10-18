@@ -19,6 +19,8 @@ pub mod navigation_cmds;
 pub mod node_cmds;
 mod persistence;
 pub mod search_cmds;
+
+pub mod run_cmds;
 pub mod secrets;
 pub mod session;
 pub mod settings;
