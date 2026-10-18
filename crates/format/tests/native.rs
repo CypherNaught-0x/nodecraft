@@ -259,7 +259,7 @@ fn damaged_recovery_preserves_original_bytes_and_refuses_append_until_a_new_chec
     let mut storage = NativeStorage::new(path.clone()).unwrap();
     let recovered = storage.recover().unwrap();
     assert_eq!(recovered.applied, 1);
-    assert_eq!(recovered.damage.unwrap().offset, damaged_at);
+    assert_eq!(recovered.damage.unwrap().offset, damaged_at as u64);
     assert!(storage.append(b"must not append after damage").is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let checkpoint = journal::checkpoint(&recovered.snapshot).unwrap();

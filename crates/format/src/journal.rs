@@ -63,12 +63,13 @@ struct RecordRef<'a> {
 /// omitted them all. Sequence digits, the full record envelope and binary frame/asset headers
 /// count too, so an accepted undo cannot become too large after saving a smaller document.
 pub fn validate_replay(changes: &Changeset, assets: &AssetStore) -> Result<(), Error> {
-    validate_replay_with_limits(changes, assets, MAX_CHANGES_BYTES, MAX_FRAME_BYTES)
+    replay_references(changes, assets, MAX_CHANGES_BYTES, replay_frame_cap(assets)).map(|_| ())
 }
+#[cfg(test)]
 fn validate_replay_with_limits(changes: &Changeset, assets: &AssetStore, record_cap: usize, frame_cap: usize) -> Result<(), Error> {
-    replay_references(changes, assets, record_cap, frame_cap).map(|_| ())
+    replay_references(changes, assets, record_cap, frame_cap as u64).map(|_| ())
 }
-fn replay_references(changes: &Changeset, assets: &AssetStore, record_cap: usize, frame_cap: usize) -> Result<BTreeSet<Blake3>, Error> {
+fn replay_references(changes: &Changeset, assets: &AssetStore, record_cap: usize, frame_cap: u64) -> Result<BTreeSet<Blake3>, Error> {
     #[cfg(any(test, feature = "validation-metrics"))]
     crate::validation_metrics::record(|metrics| metrics.replay_preflights = metrics.replay_preflights.saturating_add(1));
     changes.validate_payload()?;
@@ -77,12 +78,13 @@ fn replay_references(changes: &Changeset, assets: &AssetStore, record_cap: usize
     let json = crate::archive::bounded_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes }, record_cap)?;
     crate::compatibility::validate(&json)?;
     let referenced = crate::assets_in_changes(changes)?;
-    let mut binary = 56_usize; // outer length/hash40 + payload JSON length/asset count16
+    let mut binary = 56_u64; // outer length/hash40 + payload JSON length/asset count16
     for hash in &referenced {
-        let bytes = assets.get(hash).ok_or_else(|| invalid("journal replay references a missing retained asset"))?;
-        binary = binary.saturating_add(40).saturating_add(bytes.len());
+        let bytes = assets.descriptor(hash).ok_or_else(|| invalid("journal replay references a missing retained asset"))?.bytes;
+        binary = binary.checked_add(40).and_then(|n| n.checked_add(bytes)).ok_or_else(|| invalid("journal replay extent overflow"))?;
     }
-    let record_limit = frame_cap.checked_sub(binary).ok_or_else(|| invalid("journal replay assets exceed frame budget"))?.min(record_cap);
+    let record_limit = frame_cap.checked_sub(binary).ok_or_else(|| invalid("journal replay assets exceed frame budget"))?.min(record_cap as u64);
+    let record_limit = usize::try_from(record_limit).map_err(|_| invalid("journal record limit exceeds this host"))?;
     let empty = Changeset::default();
     let envelope = crate::archive::bounded_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes: &empty }, 1024)?
         .len()
@@ -93,6 +95,10 @@ fn replay_references(changes: &Changeset, assets: &AssetStore, record_cap: usize
         return Err(invalid("journal replay exceeds record/frame budget"));
     }
     Ok(referenced)
+}
+
+fn replay_frame_cap(assets: &AssetStore) -> u64 {
+    if assets.context().supports_large_assets() { crate::frame_plan::MAX_STREAM_FRAME_BYTES } else { MAX_FRAME_BYTES as u64 }
 }
 
 /// Frozen wire/payload admission for one immutable forward replay. This does not
@@ -106,7 +112,7 @@ pub struct AdmittedReplay {
 }
 impl AdmittedReplay {
     pub fn new(changes: Changeset, assets: &AssetStore) -> Result<Self, Error> {
-        let referenced = replay_references(&changes, assets, MAX_CHANGES_BYTES, MAX_FRAME_BYTES)?;
+        let referenced = replay_references(&changes, assets, MAX_CHANGES_BYTES, replay_frame_cap(assets))?;
         let assets = assets.referenced_snapshot(&referenced)?;
         Ok(Self { changes, assets, referenced })
     }
@@ -118,6 +124,33 @@ impl AdmittedReplay {
         // This method therefore needs the complete admitted source store, not only
         // the replay's retained references.
         source_assets.validate_changed_assets(document, &self.changes)
+    }
+    /// Authenticate surviving touched-node references independently of the additional
+    /// frame payload. A recorded hash does not by itself authorize MIME/metadata.
+    pub fn verify_changed_assets(
+        &self,
+        document: &nodecraft_graph::Project,
+        source_assets: &AssetStore,
+        cancel: &crate::asset_source::TransferCancel,
+        metrics: &crate::asset_source::StreamMetrics,
+    ) -> Result<(), Error> {
+        source_assets.verify_changed_references(document, &self.changes, cancel, metrics)
+    }
+    /// Pure native preview checks only descriptor presence. Actual commit must verify
+    /// changed/restored references before preparing a frame and publishing its graph.
+    pub fn validate_changed_presence(&self, document: &nodecraft_graph::Project, source_assets: &AssetStore) -> Result<(), Error> {
+        source_assets.validate_changed_presence(document, &self.changes)
+    }
+    pub fn into_plan(
+        self,
+        identity: Blake3,
+        sequence: u64,
+        recorded: &crate::RecordedAssets,
+        capability: crate::StorageCapability,
+        cancel: &crate::asset_source::TransferCancel,
+        metrics: &crate::asset_source::StreamMetrics,
+    ) -> Result<(crate::FramePlan, crate::RecordedAssets), Error> {
+        crate::frame_plan::prepare(identity, sequence, &self.changes, &self.assets, &self.referenced, recorded, capability, cancel, metrics)
     }
     /// Consume this admission, adding only forward references not already journaled.
     pub fn into_frame(self, identity: Blake3, sequence: u64, recorded: &BTreeSet<Blake3>) -> Result<(Vec<u8>, BTreeSet<Blake3>), Error> {
@@ -131,7 +164,16 @@ pub fn frame(identity: Blake3, sequence: u64, changes: &Changeset, assets: &Asse
     validate_replay(changes, assets)?;
     frame_admitted(identity, sequence, changes, assets, additional)
 }
-fn frame_admitted(identity: Blake3, sequence: u64, changes: &Changeset, assets: &AssetStore, additional: &BTreeSet<Blake3>) -> Result<Vec<u8>, Error> {
+pub(crate) fn frame_admitted(
+    identity: Blake3,
+    sequence: u64,
+    changes: &Changeset,
+    assets: &AssetStore,
+    additional: &BTreeSet<Blake3>,
+) -> Result<Vec<u8>, Error> {
+    if !assets.is_resident_small() {
+        return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Unsupported, "legacy frame encoder requires small resident assets"));
+    }
     if additional.len() > MAX_ASSETS {
         return Err(invalid("recovery asset count exceeds limit"));
     }
@@ -171,7 +213,7 @@ pub struct Recovered {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecoveryDamage {
     /// Absolute byte offset of the first damaged frame, after the fully validated prefix.
-    pub offset: usize,
+    pub offset: u64,
     pub reason: RecoveryDamageReason,
 }
 
@@ -208,7 +250,7 @@ pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
     let mut applied = 0_u64;
     let mut damage = None;
     while !input.is_empty() {
-        let offset = bytes.len().saturating_sub(input.len());
+        let offset = bytes.len().saturating_sub(input.len()) as u64;
         let stopped = |reason| Some(RecoveryDamage { offset, reason });
         if input.len() < 40 {
             damage = stopped(RecoveryDamageReason::IncompleteHeader);
