@@ -110,21 +110,80 @@ fn a_release_off_screen_still_ends_the_drag_and_other_buttons_pan() {
     h.state_mut().view.pan += Vec2::new(5000.0, 0.0);
     h.run();
     assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
-    // A middle-drag starting on a badge pans, as one on a card does.
-    let badge = h.get_by_label("Input 2 of 3 into in of Router, drag to reorder").rect().center();
-    let pan = h.state().view.pan;
-    h.hover_at(badge);
-    h.event(egui::Event::PointerButton { pos: badge, button: egui::PointerButton::Middle, pressed: true, modifiers: egui::Modifiers::NONE });
+    // Middle/right drags starting on a badge pan, as ones on a card do.
+    for button in [egui::PointerButton::Middle, egui::PointerButton::Secondary] {
+        let badge = h.get_by_label("Input 2 of 3 into in of Router, drag to reorder").rect().center();
+        let pan = h.state().view.pan;
+        h.hover_at(badge);
+        h.event(egui::Event::PointerButton { pos: badge, button, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run();
+        h.hover_at(badge + Vec2::new(40.0, 0.0));
+        h.run();
+        h.event(egui::Event::PointerButton { pos: badge + Vec2::new(40.0, 0.0), button, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        assert!((h.state().view.pan - pan - Vec2::new(40.0, 0.0)).length() < 1.0, "{:?}", h.state().view.pan - pan);
+        assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    }
+}
+
+/// Establish ownership through the badge's real pointer response, without publishing any edit.
+fn begin_third_badge_drag(h: &mut Harness<'static, NodeCraftApp>) -> Pos2 {
+    let third = h.get_by_label("Input 3 of 3 into in of Router, drag to reorder").rect().center();
+    let first = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(third);
     h.run();
-    h.hover_at(badge + Vec2::new(40.0, 0.0));
+    h.drag_at(third);
     h.run();
-    h.event(egui::Event::PointerButton {
-        pos: badge + Vec2::new(40.0, 0.0),
-        button: egui::PointerButton::Middle,
-        pressed: false,
-        modifiers: egui::Modifiers::NONE,
-    });
+    h.hover_at(first);
     h.run();
-    assert!((h.state().view.pan - pan - Vec2::new(40.0, 0.0)).length() < 1.0, "{:?}", h.state().view.pan - pan);
+    assert!(h.state().reordering.is_some(), "real badge owns the held primary drag");
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+    first
+}
+#[test]
+fn issue333_escape_then_release_cancels_reordering_and_preserves_selection() {
+    let mut h = harness();
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(HUB);
+    let before = h.state().session.document().clone();
+    let selection = h.state().selection.clone();
+    let first = begin_third_badge_drag(&mut h);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let cancelled = h.state().reordering.is_none();
+    // Always execute the release before assertions: the old code can still publish here.
+    h.drop_at(first);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "release after Escape must not reorder");
+    assert!(cancelled, "Escape releases retained reorder ownership");
     assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo() && !h.state().session.can_redo());
+    assert!(h.state().reordering.is_none());
+}
+#[test]
+fn issue333_quick_add_waits_for_badge_drag_and_resumes_after_release() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let first = begin_third_badge_drag(&mut h);
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "quick-add must yield to the active badge drag");
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(first);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.key_press(egui::Key::T);
+    h.run();
+    let canvas = h.state().canvas;
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), before.canvases().get(&canvas).unwrap().nodes().len() + 1);
+    assert_eq!(h.state().session.revision(), 1, "quick-add resumes after ownership ends");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
 }

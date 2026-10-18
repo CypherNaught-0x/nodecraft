@@ -558,6 +558,7 @@ impl NodeCraftApp {
             let busy = self.drag.is_some()
                 || self.marquee.is_some()
                 || self.wiring.is_some()
+                || self.reordering.is_some()
                 || self.navigation.drag.is_some()
                 || self.navigation.pointer_owned
                 || egui::Popup::is_any_open(ui.ctx());
@@ -582,8 +583,8 @@ impl NodeCraftApp {
                 }
             }
             // Escape closes an open menu or leaves a text field first, then drops a noodle being
-            // dragged, then cancels a box select, then clears.
-            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) && self.wiring.take().is_none() {
+            // dragged or an input-order drag, then cancels a box select, then clears.
+            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) && self.wiring.take().is_none() && self.reordering.take().is_none() {
                 match &mut self.marquee {
                     Some(marquee) if !marquee.cancelled => {
                         marquee.cancelled = true;
