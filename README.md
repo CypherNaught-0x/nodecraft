@@ -36,7 +36,7 @@
 - **Keep your keys yours**: an API keys panel over the OS keychain.
 - **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
   you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
-  dispatching the same 41 commands the UI uses.
+  dispatching the same 57 commands the UI uses.
 
 ## What it will do
 
