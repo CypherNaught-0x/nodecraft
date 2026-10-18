@@ -1493,6 +1493,8 @@ mod tests {
     mod ambiguous_retry_tests;
     mod delivery_evidence_tests;
     mod fresh_key_tests;
+    #[cfg(not(target_arch = "wasm32"))]
+    mod native_build_tests;
     mod paid_unpriced_tests;
     mod stale_handle_tests;
     mod strict257_tests;
