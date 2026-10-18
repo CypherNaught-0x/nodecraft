@@ -10,6 +10,7 @@ mod asset_context;
 pub mod asset_source;
 mod asset_store;
 mod assets;
+pub mod backup;
 mod checkpoint_plan;
 mod compatibility;
 pub mod disk_quota;
