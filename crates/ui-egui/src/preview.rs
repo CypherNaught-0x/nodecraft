@@ -21,10 +21,15 @@ pub const MAX_IN_FLIGHT: usize = 4;
 /// Largest image decoded inline where there's no worker (the browser build).
 pub const MAX_INLINE_BYTES: usize = 512 * 1024;
 
-/// Decoding limits for previews: a preview never needs more than a 16k image at 512 MiB.
+/// Decoding limits for previews: `media`'s, which admit a 16k×16k RGBA image (1 GiB). The worker
+/// decodes one at a time, so that is the most a preview holds at once.
 fn limits() -> Limits {
-    Limits { max_alloc: 512 * 1024 * 1024, ..Limits::default() }
+    Limits::default()
 }
+/// Decoded size above which the browser build doesn't decode inline (it has no worker).
+pub const MAX_INLINE_PIXEL_BYTES: u64 = 64 * 1024 * 1024;
+/// Times a worker that died is started again before previews give up for the session.
+pub const MAX_RESTARTS: u32 = 3;
 
 /// The smallest bucket at least `edge` pixels, or the largest.
 pub fn bucket(edge: f32) -> u32 {
@@ -47,8 +52,13 @@ pub enum Preview {
     Unavailable(&'static str),
 }
 
-/// A thumbnail decoded from `bytes` at most `edge` pixels on its longer side.
+/// A thumbnail decoded from `bytes` at most `edge` pixels on its longer side. A panic inside the
+/// image decoder is caught and reported as a failure, so one bad file can't stop previews.
 fn decode(bytes: &[u8], edge: u32) -> Result<ColorImage, &'static str> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_unguarded(bytes, edge))).unwrap_or(Err("Can't preview this image"))
+}
+
+fn decode_unguarded(bytes: &[u8], edge: u32) -> Result<ColorImage, &'static str> {
     let (_, image) = decode_image(bytes, &limits()).map_err(|_| "Can't preview this image")?;
     let thumb = thumbnail(&image, edge).map_err(|_| "Can't preview this image")?;
     let size =
@@ -62,6 +72,7 @@ mod worker {
     use egui::ColorImage;
     use std::sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
     };
 
@@ -74,24 +85,28 @@ mod worker {
         jobs: Option<SyncSender<Job>>,
         pub(super) done: Receiver<Done>,
         handle: Option<std::thread::JoinHandle<()>>,
+        /// Set on shutdown: queued jobs are skipped, so closing waits for one decode at most.
+        cancelled: Arc<AtomicBool>,
     }
 
     impl Worker {
         pub(super) fn start(ctx: egui::Context) -> Option<Self> {
             let (jobs, queue) = sync_channel::<Job>(super::MAX_IN_FLIGHT);
             let (send, done) = sync_channel::<Done>(super::MAX_IN_FLIGHT.saturating_mul(2));
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let stop = Arc::clone(&cancelled);
             let handle = std::thread::Builder::new()
                 .name("nodecraft-previews".into())
                 .spawn(move || {
                     for (key, bytes, edge) in queue {
-                        if send.send((key, decode(&bytes, edge))).is_err() {
+                        if stop.load(Ordering::Relaxed) || send.send((key, decode(&bytes, edge))).is_err() {
                             break;
                         }
                         ctx.request_repaint();
                     }
                 })
                 .ok()?;
-            Some(Self { jobs: Some(jobs), done, handle: Some(handle) })
+            Some(Self { jobs: Some(jobs), done, handle: Some(handle), cancelled })
         }
 
         /// Queues a decode; `false` when the worker is busy (try again next frame) or gone.
@@ -105,7 +120,9 @@ mod worker {
 
     impl Drop for Worker {
         fn drop(&mut self) {
-            // Closing the queue ends the thread after its current decode.
+            // Closing the queue and cancelling ends the thread after its current decode, skipping
+            // anything still queued.
+            self.cancelled.store(true, Ordering::Relaxed);
             self.jobs = None;
             while self.done.try_recv().is_ok() {}
             if let Some(handle) = self.handle.take() {
@@ -127,6 +144,8 @@ pub struct Previews {
     worker: Option<worker::Worker>,
     #[cfg(not(target_arch = "wasm32"))]
     worker_failed: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    restarts: u32,
 }
 
 impl Previews {
@@ -140,14 +159,42 @@ impl Previews {
         self.clock = self.clock.wrapping_add(1);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let finished: Vec<worker::Done> = self.worker.as_ref().map(|w| w.done.try_iter().collect()).unwrap_or_default();
+            use std::sync::mpsc::TryRecvError;
+            let mut finished = Vec::new();
+            let mut died = false;
+            if let Some(worker) = &self.worker {
+                loop {
+                    match worker.done.try_recv() {
+                        Ok(done) => finished.push(done),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            died = true;
+                            break;
+                        }
+                    }
+                }
+            }
             for (key, result) in finished {
                 self.in_flight = self.in_flight.saturating_sub(1);
                 self.finish(ctx, key, result);
             }
+            if died {
+                self.worker_died();
+            }
         }
         #[cfg(target_arch = "wasm32")]
         let _ = ctx;
+    }
+
+    /// The worker ended without being asked: forget what it was decoding, so those images are
+    /// asked for again, and allow a fresh worker a few times before giving up for the session.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn worker_died(&mut self) {
+        self.worker = None;
+        self.in_flight = 0;
+        self.entries.retain(|_, entry| !matches!(entry, Entry::Pending));
+        self.restarts = self.restarts.saturating_add(1);
+        self.worker_failed = self.restarts > MAX_RESTARTS;
     }
 
     fn finish(&mut self, ctx: &egui::Context, key: Key, result: Result<ColorImage, &'static str>) {
@@ -193,6 +240,7 @@ impl Previews {
         let wanted = (hash, bucket(edge));
         let clock = self.clock;
         let mut show = None;
+        let mut missing = false;
         match self.entries.get_mut(&wanted) {
             Some(Entry::Ready { texture, size, used, .. }) => {
                 *used = clock;
@@ -200,7 +248,7 @@ impl Previews {
             }
             Some(Entry::Failed(why)) => return Preview::Unavailable(why),
             Some(Entry::Pending) => {}
-            None => self.start(ctx, wanted, bytes),
+            None => missing = self.start(ctx, wanted, bytes),
         }
         // While a sharper one decodes, any other size of the same image will do.
         for bucket in BUCKETS.into_iter().rev() {
@@ -212,13 +260,16 @@ impl Previews {
         }
         match self.entries.get(&wanted) {
             Some(Entry::Failed(why)) => show.unwrap_or(Preview::Unavailable(why)),
-            _ => show.unwrap_or(Preview::Pending),
+            Some(_) => show.unwrap_or(Preview::Pending),
+            // Nothing started: the data is missing, or decoding is busy until a later frame.
+            None => show.unwrap_or(if missing { Preview::Unavailable("This image's data is missing") } else { Preview::Pending }),
         }
     }
 
-    fn start(&mut self, ctx: &egui::Context, key: Key, bytes: impl FnOnce() -> Option<Vec<u8>>) {
+    /// Starts decoding `key`; `true` when the asset's data is missing.
+    fn start(&mut self, ctx: &egui::Context, key: Key, bytes: impl FnOnce() -> Option<Vec<u8>>) -> bool {
         if self.in_flight >= MAX_IN_FLIGHT {
-            return;
+            return false;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -227,28 +278,30 @@ impl Previews {
                 self.worker_failed = self.worker.is_none();
             }
             if self.worker.is_some() {
+                // Missing data isn't remembered: the asset may come back (undo, reload).
                 let Some(data) = bytes() else {
-                    self.entries.insert(key, Entry::Failed("This image's data is missing"));
-                    return;
+                    return true;
                 };
                 let submitted = self.worker.as_ref().is_some_and(|w| w.submit(key, std::sync::Arc::from(data), key.1));
                 if submitted {
                     self.in_flight = self.in_flight.saturating_add(1);
                     self.entries.insert(key, Entry::Pending);
                 }
-                return;
+                return false;
             }
         }
-        // No worker: decode small images now, and say so for larger ones.
+        // No worker: decode small images now, and say so for larger ones. Both the file and
+        // its decoded size are checked: a small file can decode to a huge image.
         let Some(data) = bytes() else {
-            self.entries.insert(key, Entry::Failed("This image's data is missing"));
-            return;
+            return true;
         };
-        if data.len() > MAX_INLINE_BYTES {
+        let decoded = nodecraft_media::probe_image(&data, &limits()).map(|m| u64::from(m.width).saturating_mul(u64::from(m.height)).saturating_mul(4));
+        if data.len() > MAX_INLINE_BYTES || decoded.is_ok_and(|bytes| bytes > MAX_INLINE_PIXEL_BYTES) {
             self.entries.insert(key, Entry::Failed("Preview not available here"));
-            return;
+            return false;
         }
         self.finish(ctx, key, decode(&data, key.1));
+        false
     }
 
     /// Decodes inline, for tests: no worker, so results are ready in the same frame.
