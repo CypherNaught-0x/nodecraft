@@ -327,7 +327,7 @@ Initial limits are 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per 
 aggregate media. Codec bytes are currently buffered; cloned asset stores share immutable buffers.
 Saving includes only assets referenced by node parameters or generation history, including lists.
 Large-project lazy disk storage is a later optimization: do not simply increase these memory caps.
-Formats v1/v2 exclude ZIP64, compression, encryption, directory entries, archive comments and extra
+Formats v1/v2/v3 exclude ZIP64, compression, encryption, directory entries, archive comments and extra
 fields. These restrictions make the bounded interchange surface explicit.
 
 Hosts construct `Session::with_storage(snapshot, storage)`. A `ProjectStorage` instance belongs to
@@ -427,7 +427,7 @@ and state, and disables edits until another save repairs recovery. Hosts must su
 ### Persistence integration boundaries and tracked storage work
 
 Save encodes once: its archive slice is reused from the new checkpoint. Open decodes once and
-reuses validated v2 archive bytes for checkpointing; v1 is explicitly converted to a v2 checkpoint
+reuses validated v3 archive bytes for checkpointing; v1 and v2 are explicitly converted to a v3 checkpoint
 before adoption. After a save, asset GC preserves references
 from both the live document and bounded undo/redo payloads; discarded redo assets can then be
 reclaimed. Hosts must call `Session::close_recovery` on a clean close (or explicit dirty discard)
@@ -454,9 +454,12 @@ The bounded buffered M1 codec does **not** yet satisfy [plan 4.6's large-project
 that assets stay on disk and load lazily. This remains tracked in [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54:
 a file-backed AssetSource, streaming archive/checkpoint paths, large video limits and ZIP64 need
 a separate format/asset-store design before increasing memory caps. The current 16 MiB/48 MiB limits
-are operational limits, not a claim of large-video support. Format v1 has no published predecessor;
-the explicit migration seam rejects older/future versions before typed graph decoding. A real
-migration and fixture must land before writing v2; no invented lossy v0 migration is applied.
+are operational limits, not a claim of large-video support. Comments owns format v2 with frozen exact-v1 migration fixtures and an explicit NCRJ0001→NCRJ0002
+checkpoint transition. Unknown versions reject before typed graph decoding. The persisted Tag/Field vocabulary is introduced by the v3 compatibility bridge (#193), with
+NCRJ0003 recovery. Frozen v1/v2 paths still reject those reserved roles rather than dropping them.
+Both older journal versions retain their original embedded archive hash while replaying, then
+require an atomic v3 checkpoint before appending. The bridge adds no Tags/Fields commands or UI.
+See [local comments, replay certification and format ownership](comments.md).
 
 ### Frozen-v1 bridge on the current graph
 
@@ -525,7 +528,7 @@ engine document commands and a scoped UI view service. Node deletion detaches di
 restore metadata plus certified exact F/I/R staging preserves undo/redo budgets. `structure.note`
 is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
 authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
-explicit Save/Cancel, versioned migration and later v3 ownership are specified in that contract.
+explicit Save/Cancel, versioned migration and current format ownership are specified in that contract.
 
 
 ### Comments-v2 on the current persistence host

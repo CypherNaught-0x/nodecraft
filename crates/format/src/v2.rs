@@ -98,8 +98,10 @@ fn operation(value: &Value) -> Result<(), Error> {
 mod tests {
     use serde_json::json;
 
-    /// Serialize future-model stand-ins through the same gate used by archive encode,
-    /// journal frame and replay admission; current typed models cannot express v3 fields.
+    fn admit_frozen_v2(value: &serde_json::Value) -> Result<(), nodecraft_types::Error> {
+        super::validate(&crate::archive::bounded_json(value, 4096)?)
+    }
+    /// Frozen-v2 manifests and replay records keep the same role gate after v3 lands.
     #[test]
     fn writer_boundary_rejects_future_semantics_in_snapshots_and_all_record_roles() {
         for (collection, body, key, value) in [
@@ -118,12 +120,12 @@ mod tests {
             change[body][key] = value;
             let record = json!({"changes":{"changes":[change]}});
             for payload in [snapshot, incoming, record] {
-                assert!(crate::archive::bounded_v2_json(&payload, 4096).is_err(), "{collection}/{key}");
+                assert!(admit_frozen_v2(&payload).is_err(), "{collection}/{key}");
             }
         }
         let future = json!({"changes":{"changes":[{"type":"future_operation"}]}});
-        assert!(crate::archive::bounded_v2_json(&future, 4096).is_err());
+        assert!(admit_frozen_v2(&future).is_err());
         let extension = json!({"version":2,"project":{"canvases":{"canvas":{"unrelated":{"tags":{"color":null}}}}}});
-        assert!(crate::archive::bounded_v2_json(&extension, 4096).is_ok());
+        assert!(admit_frozen_v2(&extension).is_ok());
     }
 }

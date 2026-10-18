@@ -112,21 +112,22 @@ test proves unrelated structural removals/replacements use one stage and no extr
 The deterministic1000-node/1000-pin test checks stages 1/3,
 extra probe clones 0/1 and anchor visits 1000/3000; timing is diagnostic, not a performance guarantee.
 
-Comments owns archive **v2** and journal **NCRJ0002** on the combined canvas/persistence foundation.
-This version includes Node.config, scalar Values, threads/anchors/Note and restored pin metadata.
-Exact v1 fixtures come from reviewed commit 08586e3319f5577f1ac6f618103bfa4702e39043. V1 archive
-and journal roles reject new fields/variants, including when old default fields such as pos are
-absent. Harmless unrelated extension objects retain v1 behavior. Legacy recovery checks record
-identities against the original archive bytes, then a new Session/checkpoint atomically establishes
-v2 before any new append. Failed conversion leaves the old live session and recovery untouched.
-A recovered legacy snapshot explicitly reports `legacy`; hosts must checkpoint it before writing.
+Comments froze archive **v2** and journal **NCRJ0002** on its tag-free foundation.
+That version includes Node.config, scalar Values, threads/anchors/Note and restored pin metadata.
+Exact v1 fixtures come from reviewed commit 08586e3319f5577f1ac6f618103bfa4702e39043; genuine v2
+fixtures come from 4d2b9df618f8ef724c29e8ce837f5ee8a36fd5f2. Their contextual guards remain frozen:
+v1 rejects newer fields/variants even when old default fields such as pos are absent; both v1/v2
+reject Tag.color, Field.rect/color/collapsed even when null/default, and the new bulk operations.
+Harmless unrelated extension objects retain their old behavior.
 
-Tags/Fields are a later, coordinated **v3** integration. Both v1/v2 readers reject Tag.color and
-Field.rect/color/collapsed even when null/default, and reject future bulk operations. Archive and
-journal writers, including replay admission, apply the same guard to their exact serialized JSON
-before emitting bytes; unrelated extension objects keep their existing compatibility. They must
-never silently accept/drop a competing expanded v2 model. No active peer Fields/Tags source is
-imported here. The later v3 writer must provide lossless v1/v2 migrations and explicit defaults.
+The persisted-data compatibility bridge (#193) now writes archive **v3** and journal **NCRJ0003**.
+It adds Tag color, Field rectangle/color/collapse and compact bulk tag/membership/position changes;
+it adds no Tags/Fields commands or UI. Legacy Fields default to rectangle (0,0,320,240), no color
+and expanded, preserving explicit membership. Recovery validates each old version's record roles
+and identities against its original archive bytes, then a new Session/checkpoint atomically
+establishes v3 for BOTH v1 and v2 inputs before any new append. Failed conversion leaves the old
+live session and recovery untouched. A recovered older snapshot explicitly reports `legacy`;
+hosts must checkpoint it before writing. Exact journal magic and embedded archive versions agree.
 
 
 ## Current-main integration evidence

@@ -140,6 +140,9 @@ impl AssetStore {
                 | Change::SetCanvasTitle { .. }
                 | Change::RemoveNode { .. }
                 | Change::MoveNode { .. }
+                | Change::MoveNodes { .. }
+                | Change::SetNodeTags { .. }
+                | Change::SetNodeFields { .. }
                 | Change::SetNodeTitle { .. }
                 | Change::RemoveGeneration { .. }
                 | Change::SetActiveGeneration { .. }

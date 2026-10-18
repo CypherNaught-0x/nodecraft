@@ -100,11 +100,61 @@ impl Node {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Persistent layout zone; membership is held only by `Node::field`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldRect {
+    pub pos: Position,
+    pub width: f32,
+    pub height: f32,
+}
+impl Default for FieldRect {
+    fn default() -> Self {
+        Self { pos: Position::default(), width: 320.0, height: 240.0 }
+    }
+}
+impl FieldRect {
+    pub fn validate(&self) -> Result<(), Error> {
+        crate::validate::position(self.pos)?;
+        let x = f64::from(self.pos.x) + f64::from(self.width);
+        let y = f64::from(self.pos.y) + f64::from(self.height);
+        if !self.width.is_finite()
+            || !self.height.is_finite()
+            || self.width <= 0.0
+            || self.height <= 0.0
+            || self.width > 20_000_000.0
+            || self.height > 20_000_000.0
+            || x.abs() > 10_000_000.0
+            || y.abs() > 10_000_000.0
+        {
+            return Err(crate::validate::invalid("field rectangle must be positive, finite and within canvas bounds"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub id: FieldId,
     #[serde(default)]
     pub title: String,
+    #[serde(default)]
+    pub rect: FieldRect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+impl Field {
+    pub fn new(id: FieldId, title: impl Into<String>) -> Self {
+        Self { id, title: title.into(), rect: FieldRect::default(), color: None, collapsed: false }
+    }
+    pub fn validate(&self) -> Result<(), Error> {
+        crate::validate::text(&self.title, 4096)?;
+        if let Some(color) = &self.color {
+            crate::validate::palette_color(color)?;
+        }
+        self.rect.validate()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +162,18 @@ pub struct Tag {
     pub id: TagId,
     #[serde(default)]
     pub title: String,
+    /// Palette identifier; unknown bounded identifiers remain round-trippable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+impl Tag {
+    pub fn validate(&self) -> Result<(), Error> {
+        crate::validate::text(&self.title, 4096)?;
+        if let Some(color) = &self.color {
+            crate::validate::palette_color(color)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
