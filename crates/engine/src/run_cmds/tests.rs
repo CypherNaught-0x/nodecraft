@@ -322,6 +322,99 @@ fn usage_exports_in_pages() {
     assert_eq!(rest["next_offset"], Value::Null);
 }
 
+fn hostile_usage_session() -> (Session, String) {
+    let mut log = UsageLog::default();
+    let text = "\"\\\n\r\t\u{0000}é".repeat(50);
+    for n in 0..MAX_EXPORT_ROWS {
+        log.record(nodecraft_exec::cost::UsageEntry {
+            at_ms: n as u64,
+            session: text.clone(),
+            node: id(2),
+            provider: text.clone(),
+            model: text.clone(),
+            cost: usd(1),
+            idempotency_key: format!("{n:04}{}", text),
+            status: nodecraft_exec::cost::Charge::Actual,
+        })
+        .unwrap();
+    }
+    let expected = log.to_csv();
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(Arc::new(log)));
+    (Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources), expected)
+}
+
+#[test]
+fn usage_export_hostile_pages_fit_encoded_result_and_preserve_every_row() {
+    let (mut session, expected) = hostile_usage_session();
+    let header_end = expected.find('\n').unwrap() + 1;
+    let mut joined = expected[..header_end].to_owned();
+    let mut offset = 0;
+    loop {
+        let page = session.dispatch("usage.export_csv", &json!({"offset":offset})).unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 768 * 1024);
+        crate::commands::validate_json(&page).unwrap();
+        assert_eq!(page["total"], json!(MAX_EXPORT_ROWS));
+        let csv = page["csv"].as_str().unwrap();
+        assert!(csv.starts_with(&expected[..header_end]));
+        joined.push_str(&csv[header_end..]);
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset);
+                offset = next;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(joined, expected);
+}
+
+#[test]
+fn usage_export_zero_limit_is_rejected_by_enabled_and_dispatch() {
+    let (mut session, _) = hostile_usage_session();
+    let p = json!({"limit":0});
+    assert_eq!(session.enabled("usage.export_csv", &p).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(session.dispatch("usage.export_csv", &p).unwrap_err().kind, ErrorKind::InvalidInput);
+    let page = session.dispatch("usage.export_csv", &json!({"offset":usize::MAX})).unwrap();
+    assert_eq!(page["next_offset"], Value::Null);
+}
+
+#[test]
+fn csv_escape_accounting_matches_serde_for_all_controls_and_unicode() {
+    let text = (0_u8..=31).map(char::from).collect::<String>() + "\"\\é🦀";
+    assert_eq!(escaped_csv_bytes(text.as_bytes()).unwrap() + 2, serde_json::to_vec(&text).unwrap().len());
+}
+
+#[test]
+fn csv_small_injected_ceiling_admits_exact_rows_and_never_stalls() {
+    let mut log = UsageLog::default();
+    for n in 0..3 {
+        log.record(nodecraft_exec::cost::UsageEntry {
+            at_ms: n,
+            session: "s".into(),
+            node: id(2),
+            provider: "p".into(),
+            model: "m".into(),
+            cost: usd(1),
+            idempotency_key: format!("k{n}"),
+            status: nodecraft_exec::cost::Charge::Actual,
+        })
+        .unwrap();
+    }
+    let params = ExportParams { offset: 0, limit: Some(1) };
+    let mut row = Vec::new();
+    log.write_csv_rows(&mut row, 0, 1).unwrap();
+    let envelope = serde_json::to_vec(&json!({"csv":"", "total":3,"next_offset":usize::MAX})).unwrap().len();
+    let ceiling = escaped_csv_bytes(&row).unwrap() + envelope;
+    let page = csv_page(&log, &params, ceiling).unwrap();
+    assert_eq!(page["csv"], String::from_utf8(row).unwrap());
+    assert_eq!(page["next_offset"], 1);
+    assert!(serde_json::to_vec(&page).unwrap().len() <= ceiling);
+    assert_eq!(csv_page(&log, &params, ceiling - 1).unwrap_err().kind, ErrorKind::InvalidInput);
+    let terminal = csv_page(&log, &ExportParams { offset: usize::MAX, limit: Some(1) }, ceiling).unwrap();
+    assert_eq!(terminal["next_offset"], Value::Null);
+}
+
 fn install_run_resources(s: &mut Session, catalog: RunCatalog) {
     s.swap_resource(Some(catalog));
     s.swap_resource(Some(BudgetState { budgets: Budgets::default(), spent: Spent::default() }));
