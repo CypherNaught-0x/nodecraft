@@ -3,6 +3,7 @@
 //! Pure Rust (std + serde_json). External tools (`cargo`) are invoked through
 //! `std::process::Command`.
 
+mod decisions;
 mod layers;
 mod version;
 mod workspace;
@@ -17,8 +18,9 @@ commands:
   layers          enforce the crate dependency layering (docs/architecture.md)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
   catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
+  decisions       check docs/decisions/: one dated file per decision, none in decisions.md
   ci              fmt --check, clippy -D warnings, test, layers, wasm (stops at first failure;
-                  `test` includes catalog-check)
+                  `test` includes catalog-check, `layers` includes decisions)
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
 ";
@@ -35,13 +37,14 @@ fn main() -> ExitCode {
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
-        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "version")) => root().and_then(|root| {
+        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "version")) => root().and_then(|root| {
             eprintln!("xtask workspace: {}", root.display());
             match command {
                 "layers" => cmd_layers(&root),
                 "wasm" => cmd_wasm(&root),
                 "ci" => cmd_ci(&root),
                 "catalog-check" => cmd_catalog_check(&root),
+                "decisions" => decisions::check(&root),
                 _ => version::run(&root, &rest),
             }
         }),
@@ -161,7 +164,7 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
         ("fmt", cargo_step(&["fmt", "--all", "--", "--check"])),
         ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--features", "nodecraft-providers/openai-images", "--", "-D", "warnings"])),
         ("test", cargo_step(&["test", "--workspace", "--features", "nodecraft-providers/openai-images"])),
-        ("layers", Box::new(|| cmd_layers(root))),
+        ("layers", Box::new(|| cmd_layers(root).and_then(|()| decisions::check(root)))),
         ("wasm", Box::new(|| cmd_wasm(root))),
     ];
     let mut done = Vec::new();
