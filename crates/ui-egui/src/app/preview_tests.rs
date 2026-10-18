@@ -45,3 +45,37 @@ fn a_corrupt_image_says_so_without_panicking() {
     h.state_mut().session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap();
     assert!(wait_for(&mut h, "Can't preview this image").is_some());
 }
+
+#[test]
+fn a_downscaled_image_card_announces_source_dimensions() {
+    let mut h = harness();
+    let rgba: Vec<u8> = (0..1024 * 768).flat_map(|pixel| [(pixel % 251) as u8, ((pixel / 1024) % 251) as u8, 90, 255]).collect();
+    let png = nodecraft_media::encode_png(1024, 768, &rgba, &Default::default()).unwrap();
+    let canvas = h.state().canvas;
+    import_files(
+        &mut h.state_mut().session,
+        canvas,
+        nodecraft_graph::Position { x: 200.0, y: -110.0 },
+        300.0,
+        &[Incoming { name: "public-example.png", bytes: &png }],
+        &[NodeId::from_bytes([42; 16])],
+    )
+    .unwrap();
+    let source_label = wait_for(&mut h, "Image 1024×768").is_some();
+    let thumbnail_label = h.query_by_label("Image 512×384").is_some();
+    assert!(source_label || thumbnail_label, "fixture must reach a decoded image, not merely time out");
+    assert!(source_label, "the decoded source is 1024×768; old thumbnail label present: {thumbnail_label}");
+    assert!(!thumbnail_label);
+    assert_eq!(h.state().previews.bytes(), 512 * 384 * 4, "texture accounting still uses the reduced thumbnail");
+    let fitted = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Mesh(mesh) if mesh.vertices.len() == 4 && mesh.texture_id != egui::TextureId::default() => Some(mesh.calc_bounds()),
+            _ => None,
+        })
+        .expect("the real card paints the preview image mesh");
+    assert!(fitted.width() > 0.0 && fitted.height() > 0.0);
+    assert!((fitted.width() * 3.0 - fitted.height() * 4.0).abs() < 0.01, "the painted preview remains 4:3: {fitted:?}");
+}
