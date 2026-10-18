@@ -8,6 +8,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
+| **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded authenticated downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
@@ -143,3 +144,56 @@ never runs in CI, and requires fresh human spending authorization plus both
 NODECRAFT_LIVE_OPENAI_IMAGES=1 and NODECRAFT_LIVE_OPENAI_IMAGES_ACKNOWLEDGE_COST=1 before it
 reads OPENAI_API_KEY. Explicit --ignored selection is also required. No paid call was used to
 validate this adapter. Ordinary cargo xtask ci enables the feature for tests/Clippy/wasm.
+
+## Replicate predictions
+
+The optional `replicate` adapter uses the public predictions API and two catalog-pinned model
+versions, verified against their public schemas on 2026-10-18. SDXL supports 512/768/1024 dimensions,
+one to four images, optional negative prompt and seed, and up to 100 inference steps. Its mask is a
+PNG matching the upright input image: black preserves and white repaints. The small hello-world
+model returns scalar text; text resembling a URL remains text. Runtime hints are provider-reported,
+not measurements or price estimates. A pinned version may be retired or upgraded by the service;
+returned model/version mismatches are refused rather than silently accepted.
+
+Inputs use local data URIs only: PNG/JPEG/WebP file bytes before base64 are capped at 256,000 bytes each and 512,000 aggregate. The complete encoded JSON request has a separate 4 MiB cap. Every image header,
+claimed MIME and aggregate geometry is checked before sequential codec validation. Images are capped
+at 4096 per edge, 16,777,216 pixels each and 32,000,000 aggregate; codec allocation allowance is
+128 MiB. The complete encoded request is admitted before URI construction. API replies are capped at
+2 MiB, 64 object fields, 256 values and depth 16. A borrowed lexical pass separately budgets the
+ignored root input echo, complete output, 256 KiB of other encoded string metadata, and 64 KiB of
+framing/scalars/whitespace. Root input/output regions are exclusive; duplicate root regions are refused.
+Before decoding, encoding or submitting, a conservative count reserves the input echo together with the
+maximum admitted output and the other response regions. It allows ASCII-escaped Unicode and escaped
+slashes, charges numeric spellings up to 64 bytes, and reserves 2,048 bytes for known absent SDXL
+defaults/finite normalization. The 19-field pinned schema's absent defaults require less than 496 bytes;
+this reserve does not promise unlimited future fields or arbitrary expanded equivalent JSON. A queued
+null output remains possible even under lowered text limits. Impossible simultaneous maxima (such as
+two control-heavy maximum text roles plus image and mask) are refused before a paid submit. Individual
+input maxima therefore remain subject to this aggregate echo budget as well as the 4 MiB request cap.
+Requested output cardinality is checked before typed deserialization/unescaping; bounded output arrays
+then use ordinary serde parsing, not a custom visitor. No owned echoed-input tree is constructed.
+Unknown echoed inputs/logs are ignored within their separate finite bounds.
+
+A versioned handle captures the pinned model, output shape and requested count. Even an immediately
+finished prediction first publishes this handle. Polling and best-effort cancellation use only its
+validated prediction ID. Lost poll/download replies can resume that prediction; ambiguous submission
+without a handle is never automatically replayed. Explicit manual submission or a cold restart without
+a retained handle can still incur a second charge. Cancellation is not proof that execution or billing
+stopped. Partial nonempty success up to the requested count is accepted; expired outputs are reported
+without automatic paid regeneration.
+
+All output URLs are admitted before downloads: HTTPS on replicate.delivery or its subdomains, no
+credentials/fragment/nonstandard port. Bearer-authenticated API and file requests never follow
+redirects. Each file is capped at 16 MiB and its actual HTTP response cap is reduced by the remaining
+48 MiB aggregate allowance. PNG/JPEG/WebP bytes are decoded and validated before publishing the whole
+Completed result. No partial result escapes after a late corrupt file. The lifetime budget includes
+API bytes, retained output bytes, a bounded Vec-to-Arc copy and codec allowance; this is not an RSS bound.
+
+Pricing is `ByUsage` USD with no fabricated estimate or actual cost. A paid registration with an unknown
+estimate is refused under every finite budget cap, including zero. An explicitly uncapped host may
+proceed after its own partial-price consent; absent monetary evidence can produce no money ledger row,
+not a claim of free execution. `price=None` is reserved for trusted free/local host registration.
+The library does not implement a desktop paid enqueue host. Native no-redirect HTTP is supported;
+builtin browser HTTP refuses before fetch. Wasm compilation does not demonstrate browser networking.
+The ignored live smoke test requires both explicit environment opt-ins and fresh human spending
+permission; ordinary tests use synthetic fixtures and local listeners only.
