@@ -106,5 +106,7 @@ amounts are also the run's cumulative ceiling per currency (#366,
 fan-out, concurrent jobs, retries under a new key, requeues and replacements) is debited at its
 estimate under the usage log's lock and refused before the provider when it would pass the
 accepted amount. Releases on no-delivery evidence credit it back; unresolved and completed
-charges keep their debit. Unknown-price work stays limited to steps the quote listed as unpriced
-under partial consent, and the host budgets apply as before.
+charges keep their debit. Unknown-price jobs are bounded by the accepted `unpriced_jobs` count
+the same way (never refunded), and the host budgets apply as before. An authorized run's jobs
+carry their bound price privately, so the host can't replace it, and a runner without a budget
+refuses their paid work.

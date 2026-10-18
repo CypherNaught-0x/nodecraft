@@ -62,20 +62,20 @@ fn money(n: u64) -> Money {
     Money::new(Currency::USD, n)
 }
 fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob {
-    QueuedJob {
-        provider: nodecraft_engine::provider_routing::RegisteredProvider::default_instance(Arc::new(OpenAiImages::new(
+    QueuedJob::new(
+        nodecraft_engine::provider_routing::RegisteredProvider::default_instance(Arc::new(OpenAiImages::new(
             Secret::new("fixture-key-not-real").unwrap(),
             http,
         )))
         .unwrap(),
-        job: ProviderJob {
+        ProviderJob {
             model: FLARE.into(),
             params: serde_json::Map::new(),
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-image-1".into(),
         },
-        price: price.map(|estimate| JobPrice::new(NodeId::from_bytes([1; 16]), "openai-images.flare".into(), estimate)),
-    }
+        price.map(|estimate| JobPrice::new(NodeId::from_bytes([1; 16]), "openai-images.flare".into(), estimate)),
+    )
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {
     let budget = JobBudget {

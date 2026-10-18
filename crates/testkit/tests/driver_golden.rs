@@ -1361,10 +1361,16 @@ fn literal_local_adapter_lane_is_distinct_from_actual_source_runner_lane() {
 /// The deferred-fan-out session from `concurrent_deferred_paid_jobs_share_session_project_caps_and_currency`:
 /// one deferred step quoted as one USD 40 job that becomes two at run time.
 fn fan_out_session() -> Session {
+    fan_out_session_with("mock-counted")
+}
+
+/// [`fan_out_session`] with both of the step's models set to `model`.
+fn fan_out_session_with(model: &str) -> Session {
     let base = multi_session(true);
     let mut p = base.document().clone();
     let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
-    node.params.insert("second".into(), Value::Text("mock-counted".into()));
+    node.params.insert("model".into(), Value::Text(model.into()));
+    node.params.insert("second".into(), Value::Text(model.into()));
     Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
     let mut kinds = kinds::registry().unwrap();
     kinds.register(Box::new(ActionSource(source_descriptor()))).unwrap();
@@ -1439,4 +1445,116 @@ fn a_cancel_before_the_provider_leaves_room_for_the_requeue() {
     assert_eq!(out.jobs[0].terminal, Some("cancelled"));
     assert_eq!(out.jobs[1].terminal, Some("done"));
     assert_eq!(out.adapters[0].counters().submits, 1);
+}
+
+#[test]
+fn unknown_price_fan_out_is_bounded_by_the_accepted_job_count() {
+    // One deferred unknown-price step (mock-counted + mock-usage) quoted as one job that becomes
+    // two at run time: the accepted count, not a price, bounds it.
+    for (accepted, submits) in [(1, 1), (2, 2)] {
+        let mut f = fixture(0);
+        f.epoch_ceiling = 3;
+        f.adapters[0].models.push(("mock-usage".into(), MockModel::new(MockOutput::Text)));
+        let mut r = request();
+        r.amounts.insert("USD".into(), 20);
+        r.unpriced_jobs = Some(accepted);
+        let out = run_driver(multi_session(true), r, f).unwrap();
+        assert_eq!(out.adapters[0].counters().submits, submits, "accepted {accepted}");
+        if submits == 1 {
+            let refused = out.jobs.iter().filter(|j| j.provider && j.terminal == Some("failed")).count();
+            assert_eq!(refused, 1, "the second job is refused before the provider");
+        }
+    }
+    // Partial consent without a count admits no unknown-price job: the run never starts.
+    let mut f = fixture(0);
+    f.epoch_ceiling = 3;
+    f.adapters[0].models.push(("mock-usage".into(), MockModel::new(MockOutput::Text)));
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    r.unpriced_jobs = None;
+    let e = run_driver(multi_session(true), r, f).err().unwrap();
+    assert_eq!(e.outcome.adapters[0].counters().submits, 0);
+}
+
+#[test]
+fn an_accepted_but_lost_reply_keeps_its_debit_and_a_requeue_must_fit() {
+    use nodecraft_providers::{
+        ErrorKind,
+        mock::{MockFailures, MockOperation, MockScript},
+    };
+    let mut f = fixture(0);
+    f.record = false;
+    f.adapters[0].models.push(("mock-counted".into(), MockModel::new(MockOutput::Text)));
+    f.adapters[0].operations.push(MockOperation {
+        id: "operation".into(),
+        model: "mock-counted".into(),
+        sent_keys: vec![nodecraft_engine::jobs::sent_key(BASE, 0)],
+        script: MockScript { lost_replies: Some(MockFailures { count: 4, kind: ErrorKind::Network }), ..Default::default() },
+    });
+    f.actions = vec![Action {
+        trigger: Trigger::Event(JobId(1), "failed"),
+        kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None },
+    }];
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+    let submits = out.adapters[0].counters().submits;
+    assert!(submits >= 1);
+    assert_eq!(out.jobs.len(), 2);
+    assert_eq!(out.jobs[0].terminal, Some("failed"));
+    assert_eq!(out.jobs[1].terminal, Some("failed"), "the requeue would pass the accepted amount");
+    let log = out.budget.log.lock().unwrap();
+    let entries: Vec<_> = log.entries().collect();
+    assert_eq!(entries.len(), 1, "the requeue reserved nothing and never reached the provider");
+    assert_eq!((entries[0].cost.micros, entries[0].status), (20, nodecraft_exec::cost::Charge::Unresolved));
+    drop(log);
+    assert_eq!(out.adapters[0].counters().submits, submits);
+}
+
+#[test]
+fn each_currency_has_its_own_ceiling_through_the_driver() {
+    use nodecraft_types::{Currency, Money};
+    // A job priced EUR 20 with plenty of USD accepted: after a possibly billed attempt, the
+    // requeue must fit the EUR amount, and the USD amount doesn't help.
+    // The mock catalog with mock-counted priced in EUR.
+    let euro_catalog = || {
+        let base = nodecraft_testkit::catalog::mock_catalog().unwrap();
+        let models = base.models().cloned().map(|mut m| {
+            if m.id == "mock-counted" {
+                m.pricing = nodecraft_catalog::Pricing::PerUnit {
+                    unit: nodecraft_catalog::Unit::Image,
+                    price: nodecraft_catalog::Price(Money::new(Currency::EUR, 10)),
+                    count: Some("count".into()),
+                    default_count: None,
+                };
+            }
+            m
+        });
+        nodecraft_catalog::Catalog::from_models(models.collect::<Vec<_>>()).unwrap()
+    };
+    for (accepted, second) in [(20, "failed"), (40, "done")] {
+        let mut f = fixture(1);
+        f.catalog = Some(euro_catalog());
+        f.record = false;
+        f.adapters[0].poll_open = false;
+        f.actions = vec![
+            Action { trigger: Trigger::Update(JobId(1), "submitted"), kind: ActionKind::Cancel(vec![JobId(1)]) },
+            Action {
+                trigger: Trigger::Event(JobId(1), "cancelled"),
+                kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None },
+            },
+        ];
+        if second == "done" {
+            f.actions.push(Action { trigger: Trigger::Epoch(JobId(1), 1, "submitted"), kind: ActionKind::PollGate(0) });
+        }
+        let mut r = request();
+        r.amounts.insert("EUR".into(), accepted);
+        r.amounts.insert("USD".into(), 1_000_000);
+        let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+        assert_eq!(out.jobs.len(), 2);
+        assert_eq!(out.jobs[1].terminal, Some(second), "EUR {accepted}");
+        let log = out.budget.log.lock().unwrap();
+        assert!(log.entries().all(|e| e.cost.currency == Currency::EUR));
+        assert_eq!(log.entries().count(), if second == "done" { 2 } else { 1 });
+    }
 }

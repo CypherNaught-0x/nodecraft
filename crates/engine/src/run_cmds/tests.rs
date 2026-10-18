@@ -194,7 +194,9 @@ fn a_quote_prices_each_step_read_only() {
 /// Quotes `nodes`, then builds `run.start` params accepting that quote with `amounts`.
 fn start_params(s: &mut Session, nodes: &[u8], amounts: Value, partial: bool) -> Value {
     let quoted = s.dispatch("run.quote", &request(nodes)).unwrap();
-    with_accept(nodes, json!({"token": quoted["token"], "amounts": amounts, "partial": partial}))
+    // Partial consent here also accepts a small count of unknown-price jobs (#366).
+    let unpriced = if partial { json!(16) } else { Value::Null };
+    with_accept(nodes, json!({"token": quoted["token"], "amounts": amounts, "partial": partial, "unpriced_jobs": unpriced}))
 }
 
 #[test]
@@ -1022,7 +1024,9 @@ fn validated_multi_model_identities_sum_and_usage_partial_policy_are_preserved()
     let q = s.dispatch("run.quote", &request(&[2])).unwrap();
     assert_eq!(q["steps"][0]["models"], json!(["test.usage", "test.free"]));
     assert_eq!(q["complete"], false);
-    let params = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true}));
+    let missing = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true}));
+    assert!(s.dispatch("run.start", &missing).unwrap_err().message.contains("unpriced_jobs"), "partial consent alone is not a count");
+    let params = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true,"unpriced_jobs":1}));
     s.dispatch("run.start", &params).unwrap();
     assert_eq!(*called.lock().unwrap(), 1);
 }
