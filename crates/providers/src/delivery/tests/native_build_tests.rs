@@ -46,7 +46,9 @@ async fn native_execute_invocation_connect_and_total_timeout_stay_transient_unkn
     let context = SubmitContext::new();
     context.arm();
     let error = context.send(&http, HttpRequest::get(format!("http://{address}")).timeout_ms(500)).await.unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Network);
+    // The bounded closed-port attempt can hit its deadline before the platform reports
+    // connection refusal. Both outcomes follow execute and remain transient/unknown.
+    assert!(matches!(error.kind, ErrorKind::Network | ErrorKind::Timeout));
     assert!(error.is_transient());
     assert!(context.finish_error().is_none());
     // The total request deadline can expire before the transport is first polled.
