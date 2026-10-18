@@ -1423,8 +1423,10 @@ fn a_requeue_after_a_possibly_billed_attempt_must_fit_what_is_left() {
     assert_eq!((entries[0].cost.micros, entries[0].status), (20, nodecraft_exec::cost::Charge::Unresolved));
 }
 
+/// A cancel before the provider never strands the accepted amount; the credit itself is proven by
+/// `the_run_ceiling_is_debited_once_and_credited_only_by_its_owner` in the engine.
 #[test]
-fn a_reservation_released_before_the_provider_frees_its_room() {
+fn a_cancel_before_the_provider_leaves_room_for_the_requeue() {
     let mut f = fixture(0);
     f.record = false;
     f.actions = vec![
@@ -1435,6 +1437,6 @@ fn a_reservation_released_before_the_provider_frees_its_room() {
     r.amounts.insert("USD".into(), 20);
     let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
     assert_eq!(out.jobs[0].terminal, Some("cancelled"));
-    assert_eq!(out.jobs[1].terminal, Some("done"), "the released first reservation was credited back");
+    assert_eq!(out.jobs[1].terminal, Some("done"));
     assert_eq!(out.adapters[0].counters().submits, 1);
 }

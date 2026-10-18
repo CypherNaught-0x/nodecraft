@@ -84,8 +84,22 @@ pub struct JobPrice {
     pub model: String,
     pub estimate: Option<Money>,
     /// The authorized run's accepted-amount ceiling (#366), which every new priced reservation
-    /// is debited against. Only [`crate::run_cmds::AuthorizedRun::queued_job`] attaches one.
-    pub ceiling: Option<crate::run_ceiling::RunCeiling>,
+    /// is debited against. Only [`crate::run_cmds::AuthorizedRun::queued_job`] attaches one, so
+    /// no caller can attach another run's ceiling or widen one.
+    pub(crate) ceiling: Option<crate::run_ceiling::RunCeiling>,
+}
+
+impl JobPrice {
+    /// A price for work outside an authorized run, so with no run ceiling: only the budgets
+    /// apply. Like the estimate itself, this is the trusted host's statement; prices for an
+    /// authorized run come from [`crate::run_cmds::AuthorizedRun::queued_job`].
+    pub fn new(node: NodeId, model: String, estimate: Option<Money>) -> Self {
+        Self { node, model, estimate, ceiling: None }
+    }
+    /// The run ceiling this price is bound to, if it came from an authorized run.
+    pub fn ceiling(&self) -> Option<&crate::run_ceiling::RunCeiling> {
+        self.ceiling.as_ref()
+    }
 }
 
 /// The budgets paid jobs are held to, and the log they are charged in. The host shares the log
@@ -130,6 +144,9 @@ struct Reserved {
     maybe_billed: bool,
     /// Credited back when the reservation is released.
     ceiling: Option<crate::run_ceiling::RunCeiling>,
+    /// This reservation took the run's debit for its key; only that owner's release credits it,
+    /// never a later job that found the key already reserved.
+    debited: bool,
 }
 
 struct RetainedMetadata {
@@ -291,6 +308,7 @@ fn close(budget: &JobBudget, r: &Reserved) {
     if r.maybe_billed {
         let _ = log.settle_target(&r.provider, &r.key, r.estimate, Charge::Unresolved);
     } else if log.release_target(&r.provider, &r.key).is_ok()
+        && r.debited
         && let Some(ceiling) = &r.ceiling
     {
         // Released on evidence that nothing reached the provider: the run may use the room again.
@@ -321,6 +339,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             estimate: entry.cost,
             maybe_billed,
             ceiling: price.ceiling.clone(),
+            debited: false,
         }));
     }
     if log.has_recorded_target(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? {
@@ -372,6 +391,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             estimate,
             maybe_billed,
             ceiling: price.ceiling.clone(),
+            debited,
         })),
         Err(e) if !resumed || matches!(e.kind, nodecraft_types::ErrorKind::Busy | nodecraft_types::ErrorKind::Conflict) => {
             Err(format!("{REFUSAL_PREFIX}{}", e.message))
@@ -847,7 +867,9 @@ impl JobRunner for ProviderRunner {
                         Ok(Some(r)) => {
                             let mut s = lock();
                             let maybe = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.maybe_billed) || r.maybe_billed;
-                            s.reserved.insert(job_id, Reserved { invocation, maybe_billed: maybe, ..r });
+                            // A retry of this job's own attempt keeps the debit it took.
+                            let debited = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.debited) || r.debited;
+                            s.reserved.insert(job_id, Reserved { invocation, maybe_billed: maybe, debited, ..r });
                         }
                         Ok(None) => {}
                         Err(refusal) => return Outcome::Failed { error: refusal, transient: false },
@@ -1249,6 +1271,46 @@ mod tests {
 
     fn spent(b: &JobBudget) -> u64 {
         b.log.lock().unwrap().spent("now").project.get(&nodecraft_types::Currency::USD).map_or(0, |m| m.micros)
+    }
+
+    #[test]
+    fn the_run_ceiling_is_debited_once_and_credited_only_by_its_owner() {
+        let (_, budget) = budgeted(None);
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into());
+        let price = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(20)), ceiling: Some(ceiling.clone()) };
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        let usd_status = || ceiling.status(nodecraft_types::Currency::USD);
+        // The owner's debit; a second job finding the key reserved takes none.
+        let owner = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        assert!(owner.debited);
+        let finder = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        assert!(!finder.debited);
+        assert_eq!(usd_status(), (20, 20));
+        assert!(reserve(&budget, &attempt("b"), &price, false, 1).unwrap_err().contains("accepted"), "one over the ceiling");
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 1, "the refused job recorded nothing");
+        // A possibly billed release keeps the debit; a no-delivery release by the owner frees it.
+        let billed = Reserved { maybe_billed: true, ..owner.clone() };
+        close(&budget, &billed);
+        assert_eq!(usd_status(), (20, 20));
+        let (_, budget) = budgeted(None);
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into());
+        let price = JobPrice { ceiling: Some(ceiling.clone()), ..price };
+        let owner = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        close(&budget, &Reserved { debited: false, ..owner.clone() });
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (20, 20), "only the debit's owner credits it");
+        let owner = reserve(&budget, &attempt("c"), &price, false, 1);
+        assert!(owner.is_err(), "the non-owner close released the estimate but kept the debit");
+        let (_, budget) = budgeted(None);
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into());
+        let price = JobPrice { ceiling: Some(ceiling.clone()), ..price };
+        let owner = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        close(&budget, &owner);
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (20, 0));
+        assert!(reserve(&budget, &attempt("b"), &price, false, 1).unwrap().unwrap().debited, "the room is used again");
+        // Adopted work is debited past the ceiling, never refused.
+        assert!(reserve(&budget, &attempt("d"), &price, true, 1).unwrap().unwrap().debited);
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (20, 40));
     }
 
     #[test]

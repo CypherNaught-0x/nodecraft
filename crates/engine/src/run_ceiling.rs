@@ -26,7 +26,8 @@ use nodecraft_types::{Currency, Money, ProviderTarget};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// Most reservations one run's ceiling tracks at once.
+/// Most debits one run's ceiling records (a run has at most 100,000 jobs). Debits that settle stay
+/// recorded, so this bounds the run's whole life, not just its open reservations.
 pub const MAX_CEILING_RESERVATIONS: usize = 100_000;
 
 #[derive(Debug, Default)]
@@ -78,8 +79,8 @@ impl RunCeiling {
         if ledger.debits.contains_key(&id) {
             return Ok(false);
         }
-        if ledger.debits.len() >= MAX_CEILING_RESERVATIONS {
-            return Err("the run has too many open reservations to track; let some finish first".into());
+        if !adopted && ledger.debits.len() >= MAX_CEILING_RESERVATIONS {
+            return Err("the run has reserved too many jobs to track; quote and start a new run".into());
         }
         let currency = estimate.currency;
         let limit = ledger.limits.get(&currency).copied().unwrap_or(0);
