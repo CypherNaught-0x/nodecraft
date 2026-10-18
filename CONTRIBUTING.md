@@ -15,8 +15,13 @@ Several people (and their coding agents) work on NodeCraft at once. Claims keep 
 building the same thing.
 
 1. Work is tracked in GitHub issues, labelled by area (`area:canvas`, `area:graph`, `area:exec`,
-   `area:providers`, `area:media`, `area:ui`, `area:agent`, `area:infra`). If you want to build
-   something bigger than a bug fix and it has no issue yet, open one first.
+   `area:providers`, `area:media`, `area:ui`, `area:agent`, `area:infra`) and by exactly one
+   `difficulty:easy` / `difficulty:medium` / `difficulty:hard`. Difficulty says what signing up
+   costs, not how urgently a change is wanted — that is the milestone and `future`. If you want to
+   build something bigger than a bug fix and it has no issue yet, open one first and give it both
+   labels. The levels and how to rate them are in
+   [`docs/issue-labels.md`](docs/issue-labels.md); re-rate an issue when the shape of its work
+   changes.
 2. **Comment `/claim` on the issue.** The bot assigns you, adds the `in progress` label and
    replies with your deadline. If someone else holds the issue, it tells you who and when their
    claim lapses.
