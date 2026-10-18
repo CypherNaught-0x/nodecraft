@@ -27,5 +27,6 @@ pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod stale_cmds;
+pub mod turn_into_cmds;
 
 pub use session::{DocChanged, Session};
