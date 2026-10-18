@@ -52,17 +52,28 @@ pub struct TurnInto {
     /// Screen position of the menu's top-left corner.
     pub screen: Pos2,
     pub highlighted: usize,
+    /// What it offers, computed once when it opens (the registry can't change meanwhile).
+    pub entries: Vec<Entry>,
     /// The release that opened the menu must not count as a click elsewhere.
     opened: bool,
 }
 
 impl TurnInto {
-    pub fn new(from: Endpoint, output: PortType, world: Pos2, screen: Pos2) -> Self {
-        Self { from, output, world, screen, highlighted: 0, opened: true }
+    pub fn new(kinds: &Registry, from: Endpoint, output: PortType, world: Pos2, screen: Pos2) -> Self {
+        Self { from, output, world, screen, highlighted: 0, entries: entries(kinds, output), opened: true }
     }
 
     /// One frame: a kind's key, or ↑/↓ and ↵, or a click picks; Escape or a click elsewhere closes.
-    pub fn show(&mut self, ctx: &egui::Context, entries: &[Entry], t: &Tokens) -> Outcome {
+    pub fn show(&mut self, ctx: &egui::Context, t: &Tokens) -> Outcome {
+        let entries = std::mem::take(&mut self.entries);
+        let outcome = self.frame(ctx, &entries, t);
+        self.entries = entries;
+        outcome
+    }
+
+    fn frame(&mut self, ctx: &egui::Context, entries: &[Entry], t: &Tokens) -> Outcome {
+        // Letters typed into a focused text field (search, a card) are that field's, not picks.
+        let field_focused = crate::canvas::text_input_focused(ctx);
         let (up, down, enter, escape, typed) = ctx.input_mut(|i| {
             let typed = i.events.iter().find_map(|event| match event {
                 egui::Event::Text(text) => text.chars().next(),
@@ -79,7 +90,7 @@ impl TurnInto {
         if escape {
             return Outcome::Closed;
         }
-        if let Some(entry) = typed.and_then(|typed| by_key(entries, typed)) {
+        if let Some(entry) = typed.filter(|_| !field_focused).and_then(|typed| by_key(entries, typed)) {
             return Outcome::Chosen(entry.kind.clone());
         }
         let last = entries.len().saturating_sub(1);

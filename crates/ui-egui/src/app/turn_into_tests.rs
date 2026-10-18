@@ -23,7 +23,8 @@ fn chain_harness() -> Harness<'static, NodeCraftApp> {
     chain_harness_with(|descriptor| Box::new(Accepting(descriptor)))
 }
 
-const EMPTY: Pos2 = Pos2::new(880.0, 560.0);
+/// Empty canvas: clear of the cards and of the minimap and search overlays.
+const EMPTY: Pos2 = Pos2::new(520.0, 380.0);
 
 fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<Node> {
     h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().cloned().collect()
@@ -102,6 +103,46 @@ fn escape_or_a_click_elsewhere_closes_it_and_canvas_keys_wait_while_it_is_open()
     }
     assert!(h.state().turn_into.is_none());
     assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn only_empty_canvas_opens_it_not_a_card_or_an_overlay() {
+    let mut h = chain_harness();
+    let from = port_point(&h, 1, noodle::Side::Output);
+    // The middle of a card (node 4, a source with no input to snap to).
+    let card = {
+        let app = h.state();
+        let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(4)).unwrap();
+        app.view.rect_to_screen(app.viewport.min, *app.painted.get(&node.id).unwrap()).center()
+    };
+    // The minimap, in the bottom-right corner.
+    let minimap = h.state().viewport.max - Vec2::new(120.0, 120.0);
+    for (to, place) in [(card, "a card"), (minimap, "the minimap")] {
+        wire_drag(&mut h, from, to);
+        h.run();
+        assert!(h.state().turn_into.is_none(), "dropping on {place} doesn't open the menu");
+    }
+}
+
+#[test]
+fn a_click_on_a_row_picks_it() {
+    let mut h = chain_harness();
+    open_menu(&mut h);
+    h.get_by_label("Turn into Relay").click();
+    h.run();
+    assert!(nodes(&h).iter().any(|n| n.kind == "test.relay" && links(&h).contains(&(chain_id(1), n.id))));
+}
+
+#[test]
+fn search_waits_while_it_is_open_so_letters_stay_picks() {
+    let mut h = chain_harness();
+    open_menu(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(!h.state().search.open, "search can't take focus from under the menu");
+    type_key(&mut h, egui::Key::R, "r");
+    assert!(nodes(&h).iter().any(|n| n.kind == nodecraft_nodes::router::ID), "so R still picks the router");
+    assert_eq!(h.state().search.draft, "", "and nothing was typed into search");
 }
 
 #[test]

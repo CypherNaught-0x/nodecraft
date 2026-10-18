@@ -934,8 +934,7 @@ impl NodeCraftApp {
             }
         }
         if let Some(mut open) = self.turn_into.take() {
-            let entries = turn_into::entries(self.session.kinds(), open.output);
-            match open.show(ui.ctx(), &entries, t) {
+            match open.show(ui.ctx(), t) {
                 turn_into::Outcome::Open => self.turn_into = Some(open),
                 turn_into::Outcome::Closed => {}
                 turn_into::Outcome::Chosen(kind) => self.create_connected(&kind, &open),
@@ -1249,7 +1248,13 @@ impl NodeCraftApp {
             if let Some(id) = wiring.moving {
                 return (Some(("edge.disconnect", json!({"canvas": self.canvas, "id": id}))), None, None);
             }
-            return (None, None, Some(TurnInto::new(wiring.from.clone(), wiring.port_type, world, pointer)));
+            // Only empty canvas: not on a card, and not under an overlay (minimap, search).
+            let on_card = drop_targets(canvas, &self.painted).any(|(_, rect)| rect.contains(world));
+            let on_canvas = self.viewport.contains(pointer) && ui.ctx().layer_id_at(pointer).is_none_or(|layer| layer == ui.layer_id());
+            if on_card || !on_canvas {
+                return (None, None, None);
+            }
+            return (None, None, Some(TurnInto::new(self.session.kinds(), wiring.from.clone(), wiring.port_type, world, pointer)));
         };
         if let Err(message) = accepts(node, input) {
             return (None, Some(message), None);

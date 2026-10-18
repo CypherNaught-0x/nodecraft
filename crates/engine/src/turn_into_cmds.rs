@@ -35,15 +35,18 @@ fn instance_for(kinds: &Registry, kind: &str, id: NodeId, output: PortType) -> R
 }
 
 /// Kinds a noodle carrying `output` can turn into, in registry order: those whose mode accepts
-/// it (the planner's predicate) and that, once created, have an input for it. Sources take no
-/// inputs, so they never appear.
+/// it (the planner's predicate, per instance for kinds whose config changes it) and that, once
+/// created, have an input for it. Sources take no inputs, so they never appear. It instantiates
+/// each candidate, so callers compute it once per menu, not per frame.
 pub fn kinds_accepting(kinds: &Registry, output: PortType) -> Vec<&NodeDescriptor> {
     let probe = NodeId::from_bytes([0; 16]);
-    kinds
-        .compatible(&[output])
-        .filter(|descriptor| descriptor.category != Category::Source)
-        .filter(|descriptor| instance_for(kinds, &descriptor.id, probe, output).is_ok())
-        .collect()
+    let accepts = |descriptor: &NodeDescriptor| {
+        let Ok((node, _)) = instance_for(kinds, &descriptor.id, probe, output) else {
+            return false;
+        };
+        kinds.get(&descriptor.id).is_ok_and(|kind| matches!(kind.instance_mode(&node, &[output]), Ok(Some(_))))
+    };
+    kinds.compatible(&[output]).filter(|descriptor| descriptor.category != Category::Source).filter(|descriptor| accepts(descriptor)).collect()
 }
 
 #[derive(Deserialize)]
