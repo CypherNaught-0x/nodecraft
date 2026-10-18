@@ -29,6 +29,7 @@ pub mod perf_cmds;
 mod persistence;
 pub mod search_cmds;
 
+pub mod run_ceiling;
 pub mod run_cmds;
 pub mod secrets;
 pub mod session;

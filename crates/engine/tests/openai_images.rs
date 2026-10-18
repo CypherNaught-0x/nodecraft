@@ -74,7 +74,7 @@ fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-image-1".into(),
         },
-        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "openai-images.flare".into(), estimate }),
+        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "openai-images.flare".into(), estimate, ceiling: None }),
     }
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {

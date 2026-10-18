@@ -230,6 +230,23 @@ fn a_run_starts_only_with_an_accepted_price_within_the_budgets() {
 }
 
 #[test]
+fn the_accepted_amounts_become_the_runs_ceiling() {
+    let (mut s, started) = session(Budgets::default(), true);
+    let bad = start_params(&mut s, &[2], json!({"USD": 120_000, "usd": 5}), false);
+    assert_eq!(s.dispatch("run.start", &bad).unwrap_err().kind, ErrorKind::InvalidInput, "an invalid currency is refused, not ignored");
+    let ok = start_params(&mut s, &[2], json!({"USD": 150_000}), false);
+    s.dispatch("run.start", &ok).unwrap();
+    let prepared = started.lock().unwrap().pop().unwrap();
+    let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+    assert_eq!(run.ceiling(nodecraft_types::Currency::USD), (150_000, 0));
+    assert_eq!(run.ceiling(nodecraft_types::Currency::EUR), (0, 0), "nothing accepted in EUR");
+    let queued = run.queued_job(progress.jobs[0].id, "fixture").unwrap();
+    let price = queued.price.unwrap();
+    assert_eq!(price.estimate, Some(usd(120_000)));
+    assert!(price.ceiling.is_some(), "every priced job carries the run's ceiling");
+}
+
+#[test]
 fn an_edit_after_the_quote_invalidates_it() {
     let (mut s, started) = session(Budgets::default(), true);
     let params = start_params(&mut s, &[2], json!({"USD": 1_000_000}), false);

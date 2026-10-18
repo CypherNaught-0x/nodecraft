@@ -95,7 +95,7 @@ fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-prediction-1".into(),
         },
-        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "replicate.hello".into(), estimate }),
+        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "replicate.hello".into(), estimate, ceiling: None }),
     }
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {

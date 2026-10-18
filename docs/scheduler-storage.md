@@ -100,7 +100,11 @@ while a named value identifies its endpoint UUID. This column does not imply old
 contained a named instance or that a lane string is restoration authority.
 
 Authorized runs derive each queued job's known, unknown or free price from their retained
-admitted quote; a host cannot replace it with an unbudgeted price argument. Partial consent
-continues to authorize unknown/provisional work under the host budgets. It is not an additional
-per-run cumulative ceiling equal to the accepted provisional totals; that policy remains a
-separate follow-up.
+admitted quote; a host cannot replace it with an unbudgeted price argument. The accepted
+amounts are also the run's cumulative ceiling per currency (#366,
+[decision](decisions/2026-10-18-run-ceiling.md)): every new priced reservation (deferred
+fan-out, concurrent jobs, retries under a new key, requeues and replacements) is debited at its
+estimate under the usage log's lock and refused before the provider when it would pass the
+accepted amount. Releases on no-delivery evidence credit it back; unresolved and completed
+charges keep their debit. Unknown-price work stays limited to steps the quote listed as unpriced
+under partial consent, and the host budgets apply as before.

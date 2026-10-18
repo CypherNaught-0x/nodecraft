@@ -902,8 +902,9 @@ fn isolated_same_key_default_named_lifecycle_keeps_two_charge_identities() {
         Action { trigger: Trigger::Update(JobId(1), "submitted"), kind: ActionKind::Cancel(vec![JobId(1)]) },
         Action { trigger: Trigger::Event(JobId(1), "cancelled"), kind: ActionKind::Requeue { job: JobId(1), key: BASE.into(), replacement: Some(1) } },
     ];
+    // The possibly billed first attempt keeps its debit, so both attempts must be accepted.
     let mut r = request();
-    r.amounts.insert("USD".into(), 20);
+    r.amounts.insert("USD".into(), 40);
     let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
     assert!(!out.recorded);
     assert!(out.results.is_empty());
@@ -1246,8 +1247,9 @@ fn concurrent_deferred_paid_jobs_share_session_project_caps_and_currency() {
                 Budgets { session: Some(Money::new(Currency::USD, cap)), ..Default::default() }
             };
             f.actions.push(Action { trigger: Trigger::At(10), kind: ActionKind::PollGate(0) });
+            // Both fanned-out jobs are accepted (#366), so only the budget cap decides.
             let mut r = request();
-            r.amounts.insert("USD".into(), 40);
+            r.amounts.insert("USD".into(), 80);
             let out = run_driver(s, r, f).unwrap();
             if cap == 80 {
                 assert_eq!(out.adapters[0].counters().submits, 2);
@@ -1354,4 +1356,85 @@ fn literal_local_adapter_lane_is_distinct_from_actual_source_runner_lane() {
     assert_eq!(out.adapters[0].counters().submits, 1);
     assert_eq!(out.deliveries.len(), 1);
     assert!(out.recorded);
+}
+
+/// The deferred-fan-out session from `concurrent_deferred_paid_jobs_share_session_project_caps_and_currency`:
+/// one deferred step quoted as one USD 40 job that becomes two at run time.
+fn fan_out_session() -> Session {
+    let base = multi_session(true);
+    let mut p = base.document().clone();
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    node.params.insert("second".into(), Value::Text("mock-counted".into()));
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    let mut kinds = kinds::registry().unwrap();
+    kinds.register(Box::new(ActionSource(source_descriptor()))).unwrap();
+    let mut d = kinds.get("mock.text").unwrap().descriptor().clone();
+    d.id = "driver.multi".into();
+    d.outputs[0].port_type.many = true;
+    let mut second = d.params.params[0].clone();
+    second.name = "second".into();
+    second.default = Some(Value::Text("mock-counted".into()));
+    d.params.params.push(second);
+    kinds.register(Box::new(Multi(d))).unwrap();
+    Session::with_registries(p, Registry::builtins().unwrap(), kinds).unwrap()
+}
+
+#[test]
+fn deferred_fan_out_past_the_accepted_amount_is_refused_before_the_provider() {
+    use nodecraft_types::{Currency, Money};
+    for (accepted, submits) in [(79, 1), (80, 2)] {
+        let mut f = fixture(1);
+        f.adapters[0].poll_open = false;
+        f.adapters[0].models[0].1.cost = Some(Money::new(Currency::USD, 20));
+        f.scheduler.global = 2;
+        f.scheduler.default_per_lane = 2;
+        f.actions.push(Action { trigger: Trigger::At(10), kind: ActionKind::PollGate(0) });
+        let mut r = request();
+        r.amounts.insert("USD".into(), accepted);
+        let out = run_driver(fan_out_session(), r, f).unwrap();
+        assert_eq!(out.adapters[0].counters().submits, submits, "accepted {accepted}: no budgets, only the run ceiling");
+        let log = out.budget.log.lock().unwrap();
+        assert_eq!(log.entries().count(), submits, "a refused job reserves nothing");
+        if submits == 1 {
+            assert_eq!(out.jobs.iter().filter(|j| j.provider && j.terminal == Some("failed")).count(), 1);
+            assert!(out.deliveries.is_empty(), "the run fails; the accepted sibling's charge is kept, never freed");
+        }
+    }
+}
+
+#[test]
+fn a_requeue_after_a_possibly_billed_attempt_must_fit_what_is_left() {
+    let mut f = fixture(1);
+    f.record = false;
+    f.adapters[0].poll_open = false;
+    f.actions = vec![
+        Action { trigger: Trigger::Update(JobId(1), "submitted"), kind: ActionKind::Cancel(vec![JobId(1)]) },
+        Action { trigger: Trigger::Event(JobId(1), "cancelled"), kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None } },
+    ];
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+    assert_eq!(out.jobs.len(), 2);
+    assert_eq!(out.jobs[1].terminal, Some("failed"));
+    assert_eq!(out.adapters[0].counters().submits, 1, "the requeue never reaches the provider");
+    let log = out.budget.log.lock().unwrap();
+    let entries: Vec<_> = log.entries().collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!((entries[0].cost.micros, entries[0].status), (20, nodecraft_exec::cost::Charge::Unresolved));
+}
+
+#[test]
+fn a_reservation_released_before_the_provider_frees_its_room() {
+    let mut f = fixture(0);
+    f.record = false;
+    f.actions = vec![
+        Action { trigger: Trigger::At(0), kind: ActionKind::Cancel(vec![JobId(1)]) },
+        Action { trigger: Trigger::Event(JobId(1), "cancelled"), kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None } },
+    ];
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+    assert_eq!(out.jobs[0].terminal, Some("cancelled"));
+    assert_eq!(out.jobs[1].terminal, Some("done"), "the released first reservation was credited back");
+    assert_eq!(out.adapters[0].counters().submits, 1);
 }

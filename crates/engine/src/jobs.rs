@@ -83,6 +83,9 @@ pub struct JobPrice {
     pub node: NodeId,
     pub model: String,
     pub estimate: Option<Money>,
+    /// The authorized run's accepted-amount ceiling (#366), which every new priced reservation
+    /// is debited against. Only [`crate::run_cmds::AuthorizedRun::queued_job`] attaches one.
+    pub ceiling: Option<crate::run_ceiling::RunCeiling>,
 }
 
 /// The budgets paid jobs are held to, and the log they are charged in. The host shares the log
@@ -125,6 +128,8 @@ struct Reserved {
     estimate: Money,
     /// The job may have reached the provider: settle as unresolved, never release.
     maybe_billed: bool,
+    /// Credited back when the reservation is released.
+    ceiling: Option<crate::run_ceiling::RunCeiling>,
 }
 
 struct RetainedMetadata {
@@ -283,7 +288,14 @@ fn close(budget: &JobBudget, r: &Reserved) {
     }
     // Neither can fail for an open estimate in its own currency; if one did, the estimate stays
     // charged, which is the safe side.
-    let _ = if r.maybe_billed { log.settle_target(&r.provider, &r.key, r.estimate, Charge::Unresolved) } else { log.release_target(&r.provider, &r.key) };
+    if r.maybe_billed {
+        let _ = log.settle_target(&r.provider, &r.key, r.estimate, Charge::Unresolved);
+    } else if log.release_target(&r.provider, &r.key).is_ok()
+        && let Some(ceiling) = &r.ceiling
+    {
+        // Released on evidence that nothing reached the provider: the run may use the room again.
+        ceiling.credit(&r.provider, &r.key);
+    }
 }
 
 /// Reserves (or adopts) a priced job's estimate. `Err` is the refusal message.
@@ -308,6 +320,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             base: attempt.base.clone(),
             estimate: entry.cost,
             maybe_billed,
+            ceiling: price.ceiling.clone(),
         }));
     }
     if log.has_recorded_target(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? {
@@ -330,6 +343,12 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             return Err(format!("{REFUSAL_PREFIX}{}", block.message()));
         }
     }
+    // The run's accepted-amount ceiling, under the log lock so parallel jobs can't both take
+    // the last of it. An adopted job already ran: debited, never refused.
+    let debited = match &price.ceiling {
+        Some(ceiling) => ceiling.debit(provider, key, estimate, resumed).map_err(|e| format!("{REFUSAL_PREFIX}{e}"))?,
+        None => false,
+    };
     let entry = UsageEntry {
         at_ms,
         session: budget.session.clone(),
@@ -352,11 +371,25 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             base: attempt.base.clone(),
             estimate,
             maybe_billed,
+            ceiling: price.ceiling.clone(),
         })),
         Err(e) if !resumed || matches!(e.kind, nodecraft_types::ErrorKind::Busy | nodecraft_types::ErrorKind::Conflict) => {
             Err(format!("{REFUSAL_PREFIX}{}", e.message))
         }
         Err(_) => Ok(None),
+    }
+    .inspect_err(|_| undo_debit(debited, price, provider, key))
+    .inspect(|reserved| {
+        if reserved.is_none() {
+            undo_debit(debited, price, provider, key);
+        }
+    })
+}
+
+/// Nothing was recorded for this key, so the debit just taken for it is undone.
+fn undo_debit(debited: bool, price: &JobPrice, provider: &nodecraft_types::ProviderTarget, key: &str) {
+    if let (true, Some(ceiling)) = (debited, &price.ceiling) {
+        ceiling.credit(provider, key);
     }
 }
 
@@ -1206,7 +1239,7 @@ mod tests {
         QueuedJob {
             provider: crate::provider_routing::RegisteredProvider::default_instance(provider).unwrap(),
             job,
-            price: Some(JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: micros.map(usd) }),
+            price: Some(JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: micros.map(usd), ceiling: None }),
         }
     }
 

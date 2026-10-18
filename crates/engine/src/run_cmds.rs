@@ -8,7 +8,9 @@
 //!   `accept` the price it was shown: amounts covering the current totals, and `partial: true`
 //!   when some step can't be priced. So no caller (UI, CLI, agent) starts a paid run without
 //!   seeing its cost first, and a price that grew since the quote is refused. The run itself goes
-//!   to the host's `run.start` service, which plans the same request and runs it.
+//!   to the host's `run.start` service, which plans the same request and runs it. The accepted
+//!   amounts stay with the authorized run as its cumulative ceiling (see [`crate::run_ceiling`]),
+//!   so deferred fan-out and retries can't reserve more than was accepted.
 //! - `run.record` (host only): records a run's results, one generation per node, as one undo
 //!   step.
 //! - `usage.export_csv` (read-only): spreadsheet-safe CSV pages, at most 2,000 rows and
@@ -429,7 +431,21 @@ impl PreparedRun {
         self.run.canvas
     }
 }
+/// The accepted amounts by currency: the run's ceiling (#366). A code that isn't a currency is
+/// refused rather than ignored, so the caller never believes it accepted an amount it didn't.
+fn accepted_limits(accept: &Accept) -> Result<BTreeMap<nodecraft_types::Currency, u64>, Error> {
+    accept
+        .amounts
+        .iter()
+        .map(|(code, micros)| {
+            nodecraft_types::Currency::try_from(code.clone())
+                .map(|currency| (currency, *micros))
+                .map_err(|_| invalid("an accepted amount names an invalid currency"))
+        })
+        .collect()
+}
 fn accept_quote(c: &Context<'_>, quote: &nodecraft_exec::cost::Quote, accept: &Accept) -> Result<(), Error> {
+    accepted_limits(accept)?;
     let budget = c.resources.require::<BudgetState>()?;
     if !check(quote, &budget.budgets, &budget.spent)?.allowed() {
         return Err(invalid("the run exceeds current budgets"));
@@ -455,8 +471,9 @@ pub(crate) fn authorize(
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
     accept_quote(c, &prepared.quote, &prepared.accept)?;
+    let ceiling = crate::run_ceiling::RunCeiling::new(accepted_limits(&prepared.accept)?);
     let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
-    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote }, progress))
+    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote, ceiling }, progress))
 }
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.phase == crate::commands::Phase::Preview {
@@ -714,6 +731,8 @@ mod tests;
 /// Authorized work and only the bindings selected by its immutable admission witness.
 pub struct AuthorizedRun {
     quote: nodecraft_exec::cost::Quote,
+    /// What the caller accepted, as a cumulative ceiling on the run's priced reservations.
+    ceiling: crate::run_ceiling::RunCeiling,
     run: nodecraft_exec::run::Run,
     bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
 }
@@ -758,11 +777,15 @@ impl AuthorizedRun {
                     }
                     model.push_str(name);
                 }
-                Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten() })
+                Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten(), ceiling: Some(self.ceiling.clone()) })
             }
         };
         let (_, job) = crate::generate::provider_job(work, key)?;
         Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, price })
+    }
+    /// The run's accepted amount and what it has reserved against it, in micros.
+    pub fn ceiling(&self, currency: nodecraft_types::Currency) -> (u64, u64) {
+        self.ceiling.status(currency)
     }
     pub fn job_done(
         &mut self,
