@@ -100,6 +100,16 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if id.starts_with("canvas.search_") {
+        session.swap_resource(Some(nodecraft_engine::search_cmds::SearchContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            open: true,
+            has_query: true,
+        }));
+        session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
@@ -118,6 +128,8 @@ fn template(id: &str) -> (Session, Value) {
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
+        "canvas.search_query" => json!({"query":"needle"}),
         "canvas.pan_to" => json!({"x":0,"y":0}),
         "edit.undo" => {
             session.dispatch("node.move", &movement).unwrap();
@@ -185,7 +197,19 @@ fn typed_template_panic_hunt() {
                 }
                 Ok(_) => {
                     successes += 1;
-                    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to" | "canvas.stale") {
+                    if matches!(
+                        id,
+                        "canvas.fit_all"
+                            | "canvas.fit_selection"
+                            | "canvas.minimap_toggle"
+                            | "canvas.pan_to"
+                            | "canvas.stale"
+                            | "canvas.search_open"
+                            | "canvas.search_query"
+                            | "canvas.search_next"
+                            | "canvas.search_previous"
+                            | "canvas.search_close"
+                    ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
                         assert_eq!(session.events_since(0).unwrap(), events);
