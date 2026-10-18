@@ -55,7 +55,7 @@ fn enabled_stop(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 }
 
 fn schema() -> Value {
-    crate::command_schemas::empty_schema()
+    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "properties": {}, "required": []})
 }
 
 pub fn specs() -> Vec<CommandSpec> {

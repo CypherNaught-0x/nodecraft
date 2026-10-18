@@ -39,6 +39,36 @@ so local checks do not require nextest.
 - `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`: canvas frame time over
   200- and 1,000-node graphs (see `docs/ui-design.md`, "Level of detail and performance").
 
+## Performance capture
+
+The app can time itself on demand (#151). Nothing is recorded until a capture starts, nothing
+leaves the machine, and the report holds only numbers, metric names and build and platform
+labels, never document contents or paths.
+
+1. Start the app with the project and window size you want to measure, and wait for it to
+   settle.
+2. Run **Start performance capture** from the quick-add palette (double-click empty canvas,
+   type "perf"), or call `perf.start` from the CLI, MCP or the control channel.
+3. Optionally run **Clear performance capture** after warming up: every sample since the last
+   clear counts.
+4. Do the work being measured (pan, zoom, edit, undo, save).
+5. Read the report with `perf.report`, and stop with **Stop performance capture**.
+
+The report (`schema: "nodecraft.perf/1"`) gives, per metric, p50/p95/p99/max in microseconds,
+the samples kept (the latest 4,096), how many were recorded and how many were refused as invalid.
+Metrics:
+- `frame_prepare`: CPU time in the shell per frame;
+- `frame_interval`: the time between frame starts;
+- `dispatch`: any command;
+- `undo`, `redo`, `load` and `save`.
+
+The two frame metrics also count frames over the 60 Hz budget (16,667 µs), and `workload`
+gives the last frame's visible and total nodes and edges. `frame_prepare` excludes GPU work and
+presentation, so it can't prove 60 fps on its own. A metric without a clock (the browser build
+for now) is `supported: false` with `null` values, never zero. Recording costs one bounded push
+per sample. `cargo test -p nodecraft-engine --lib recording_overhead -- --ignored --nocapture`
+prints the cost with capture on and off.
+
 ## xtask
 
 | Command | Does |
