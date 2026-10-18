@@ -29,8 +29,10 @@ use nodecraft_exec::cost::{
 };
 
 mod accounting;
+mod restore;
 pub use accounting::{AccountingFailure, AccountingRetry, AccountingRetryError, CompletionAccounting, CompletionDelivery};
 use nodecraft_types::{Money, NodeId};
+pub use restore::RestoreHandleError;
 
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{JobId, Outcome, Start};
@@ -509,18 +511,35 @@ impl ProviderRunner {
     /// Restores a first-generation handle saved before a restart (from `RunUpdate::Submitted`),
     /// keyed by the provider that issued it and the scheduler's idempotency key, so the job is
     /// resumed rather than submitted again. See [`Self::restore_generation`].
-    pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) {
-        self.restore_generation(provider, idempotency_key, 0, handle);
+    pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) -> Result<(), RestoreHandleError> {
+        self.restore_generation(provider, idempotency_key, 0, handle)
     }
 
     /// Restores a handle saved before a restart with the [`Sent::generation`] it was reported
     /// with: it is stored under the derived key it was sent under, and the job's failure count is
     /// brought back, so the retry resumes that generation and charges under its key.
-    pub fn restore_generation(&self, provider: impl Into<String>, idempotency_key: String, generation: u32, handle: JobHandle) {
+    ///
+    /// Only the legacy/default provider address is validated. Arbitrary adapter strings within
+    /// the target bound and legacy base keys (including keys normalized by [`sent_key`]) remain
+    /// supported; this does not apply the stricter named-restoration key policy.
+    /// On refusal, runner and accounting state are unchanged and the error owns the original
+    /// accepted handle. Keep the persisted provider/base/generation identity until restoration
+    /// succeeds, recover the handle with [`RestoreHandleError::into_handle`], and explicitly retry
+    /// after correcting the address. Never delete the saved identity or submit a replacement.
+    pub fn restore_generation(
+        &self,
+        provider: impl Into<String>,
+        idempotency_key: String,
+        generation: u32,
+        handle: JobHandle,
+    ) -> Result<(), RestoreHandleError> {
         let provider = provider.into();
-        if let Ok(target) = nodecraft_types::ProviderTarget::default_instance(&provider) {
-            self.restore_identity(target, idempotency_key, generation, handle);
-        }
+        let target = match nodecraft_types::ProviderTarget::default_instance(&provider) {
+            Ok(target) => target,
+            Err(cause) => return Err(RestoreHandleError::new(cause, handle)),
+        };
+        self.restore_identity(target, idempotency_key, generation, handle);
+        Ok(())
     }
     /// Trusted host restoration requires the actual endpoint binding, never a parsed lane.
     pub fn restore_target_generation(
@@ -1269,7 +1288,7 @@ mod tests {
         let (runner, budget) = budgeted(Some(100_000));
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         runner.register(JobId(1), priced(provider.clone(), Some(900_000)));
-        runner.restore_handle("flaky", "nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("flaky", "nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done, "already paid for");
         assert_eq!(provider.submits.load(Ordering::SeqCst), 0, "resumed, not resubmitted");
         assert_eq!(spent(&budget), 900_000);
@@ -1295,7 +1314,7 @@ mod tests {
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
         // A handle restored for one provider is never offered to another.
         runner.register(JobId(2), priced(Arc::new(Reports(None)), Some(1)));
-        runner.restore_handle("flaky", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("flaky", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
         assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done, "submitted afresh, not resumed");
     }
 
@@ -1312,7 +1331,7 @@ mod tests {
         // Resumed after a restart, with no estimate, reporting a cost: recorded too.
         let resumed = Arc::new(ResumesWith(usd(900)));
         runner.register(JobId(2), priced(resumed, None));
-        runner.restore_handle("resumes", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("resumes", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
         assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done);
         assert_eq!(spent(&budget), 4_200 + 900);
     }
@@ -1619,6 +1638,7 @@ mod tests {
     mod native_build_tests;
     mod paid_unpriced_tests;
     mod reregister_retry_tests;
+    mod restore_tests;
     mod stale_handle_tests;
     mod strict257_tests;
 }
