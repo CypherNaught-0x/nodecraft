@@ -147,7 +147,7 @@ A crate may depend only on strictly lower layers; `media` depends on no workspac
 and does not affect product code, build configuration, scripts, or executable examples, skip the
 baseline and pre-commit `cargo xtask ci` runs and do not wait for GitHub CI before merging. Run
 `git diff --check` and any relevant documentation validators (for example, `cargo xtask decisions`
-for decision records). The usual review requirement still applies.
+for decision records). The review policy below still applies.
 
 For all other changes, before every commit:
 
@@ -181,11 +181,15 @@ that drive real pointer and key events through the canvas.
 
 ## Landing changes
 
-- **Sub-agent review before every PR, including drafts.** Have a sub-agent review the existing
-  commits on the branch and the newly added code against the intended base before creating the
-  PR. Give the reviewer the issue, acceptance criteria and validation results. Resolve actionable
-  findings, have fixes reviewed again, and record the reviewed commit range and outcome in the PR.
-  Review does not replace the quality gates above.
+- **At most two review rounds.** For changes needing review, use one initial review and at
+  most one verification of the fixes. Read existing PR comments and reviews first; they count
+  toward this limit. Resolve valid findings and run the relevant checks, then land the change
+  without starting another review round. Do not merge a known unresolved correctness defect.
+- **Obvious fixes need no review or approval.** Documentation, formatting, and small, local
+  corrections with clear behavior and focused validation may land without a human or sub-agent
+  review. Once the required quality gates and GitHub checks pass, mark the PR ready and merge
+  without asking for another confirmation. Keep repository-wide protections intact; use a
+  maintainer-authorized exception only when the owner explicitly authorizes it for the PR.
 - **One topic per commit and per PR.** Commits are small, with a clear subject line; a commit
   that fixes an issue says `Fixes #N`.
 - Changes land through **pull requests** and GitHub CI (Linux, Windows, macOS). The owner may push
