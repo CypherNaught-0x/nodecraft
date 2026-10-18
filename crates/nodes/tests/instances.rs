@@ -57,7 +57,7 @@ fn instances_derive_ports_and_schema_from_bounded_config_and_own_mode() {
     assert_eq!(kind.resolve_instance(&node).unwrap().label, "Configured");
     assert_eq!(node.inputs.len(), 1);
     assert!(kind.descriptor().validate_node(&node, true).is_err());
-    kind.plan(&PlanCtx { node: &node, inputs: &[] }).unwrap();
+    kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] }).unwrap();
     let inputs = [PortType { modality: Modality::Text, many: false }];
     assert_eq!(kind.instance_mode(&node, &inputs).unwrap().unwrap().as_str(), "configured");
     assert!(kind.instance_mode(&node, &[]).unwrap().is_none());

@@ -63,7 +63,11 @@ fn money(n: u64) -> Money {
 }
 fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob {
     QueuedJob {
-        provider: Arc::new(OpenAiImages::new(Secret::new("fixture-key-not-real").unwrap(), http)),
+        provider: nodecraft_engine::provider_routing::RegisteredProvider::default_instance(Arc::new(OpenAiImages::new(
+            Secret::new("fixture-key-not-real").unwrap(),
+            http,
+        )))
+        .unwrap(),
         job: ProviderJob {
             model: FLARE.into(),
             params: serde_json::Map::new(),

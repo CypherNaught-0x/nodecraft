@@ -59,7 +59,7 @@ impl AccountingRetry {
                 if log.ledger_identity() != *identity {
                     return Err(AccountingRetryError::LedgerReplaced);
                 }
-                log.settle(&attempt.provider, &attempt.key, *cost, Charge::Actual).map_err(|e| {
+                log.settle_target(&attempt.provider, &attempt.key, *cost, Charge::Actual).map_err(|e| {
                     if e.kind == nodecraft_types::ErrorKind::CurrencyMismatch { AccountingRetryError::CurrencyMismatch } else { AccountingRetryError::Refused }
                 })?;
             }
@@ -123,12 +123,12 @@ pub(super) fn finish(input: Finish<'_>) -> CompletionAccounting {
     if log.ledger_identity() != identity {
         return CompletionAccounting::Failed(AccountingFailure::existing(nodecraft_types::ErrorKind::Conflict, identity, attempt.clone(), cost));
     }
-    match log.charge(&attempt.provider, &attempt.key) {
-        Some(entry) if entry.status != Charge::Actual => match log.settle(&attempt.provider, &attempt.key, cost, Charge::Actual) {
+    match log.charge_target(&attempt.provider, &attempt.key) {
+        Some(entry) if entry.status != Charge::Actual => match log.settle_target(&attempt.provider, &attempt.key, cost, Charge::Actual) {
             Ok(()) => CompletionAccounting::Recorded,
             Err(error) => CompletionAccounting::Failed(AccountingFailure::existing(error.kind, identity, attempt.clone(), cost)),
         },
-        _ if log.has_recorded(&attempt.provider, &attempt.key).unwrap_or(false) => CompletionAccounting::Recorded,
+        _ if log.has_recorded_target(&attempt.provider, &attempt.key).unwrap_or(false) => CompletionAccounting::Recorded,
         _ => CompletionAccounting::Failed(AccountingFailure::existing(nodecraft_types::ErrorKind::NotFound, identity, attempt.clone(), cost)),
     }
 }

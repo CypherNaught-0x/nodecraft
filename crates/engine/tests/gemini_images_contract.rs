@@ -1,6 +1,7 @@
 //! The actual main converter and Run boundary, independent of any optional adapter feature.
 use nodecraft_engine::generate::{produced, provider_job};
 use nodecraft_exec::{
+    admission::{AdmissionLimits, admit_run_with_targets},
     planner::{RunPlan, Step},
     run::{Run, RunLimits, RunOptions},
     scheduler::RetryPolicy,
@@ -8,7 +9,7 @@ use nodecraft_exec::{
 use nodecraft_graph::{Canvas, Change, Port, Project};
 use nodecraft_nodes::{Category, GenerateInput, GenerateOutput, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, Registry};
 use nodecraft_providers::{Completed, Output};
-use nodecraft_types::{CanvasId, Error, Modality, NodeId, ParamSchema, PortType, ProjectId, Value};
+use nodecraft_types::{CanvasId, Error, Modality, NodeId, ParamControl, ParamSchema, ParamSpec, PortType, ProjectId, ProviderTarget, TargetSelection, Value};
 use std::sync::Arc;
 struct Kind(NodeDescriptor);
 impl NodeKind for Kind {
@@ -43,10 +44,20 @@ fn assemble(done: &Completed, text: bool, many: bool) -> nodecraft_exec::run::Pr
         category: Category::Generation,
         inputs: vec![],
         outputs,
-        params: ParamSchema::default(),
+        params: ParamSchema {
+            params: vec![ParamSpec {
+                name: "model".into(),
+                label: "Model".into(),
+                description: None,
+                control: ParamControl::Model,
+                required: true,
+                default: None,
+                visible_if: None,
+            }],
+        },
         quick_add: None,
     };
-    let node = descriptor.instantiate(nid, &Default::default()).unwrap();
+    let node = descriptor.instantiate(nid, &[("model".into(), Value::Text("gemini-images.flash-lite".into()))].into()).unwrap();
     let mut kinds = Registry::builtins().unwrap();
     kinds.register(Box::new(Kind(descriptor))).unwrap();
     let mut project = Project::new(ProjectId::from_bytes([3; 16]), "Fixture").unwrap();
@@ -63,21 +74,29 @@ fn assemble(done: &Completed, text: bool, many: bool) -> nodecraft_exec::run::Pr
                 node: nid,
                 outputs: routes.clone(),
                 provider: "gemini-images".into(),
+                instance: None,
                 model: "gemini-3.1-flash-lite-image".into(),
                 params: Default::default(),
-                inputs: vec![],
+                inputs: vec![GenerateInput { role: "prompt".into(), value: Value::Text("A blue circle".into()) }],
             }]),
         }],
         edges: vec![],
     };
-    let (mut run, start) = Run::start(
-        &plan,
+    let mut targets = TargetSelection::empty();
+    targets.insert(nid, &ProviderTarget::default_instance("gemini-images").unwrap()).unwrap();
+    let (admitted, quote) = admit_run_with_targets(
+        plan,
         cid,
-        project.canvases().get(&cid).unwrap(),
+        project.canvases().get(&cid).unwrap().clone(),
         &kinds,
-        RunOptions { id: [4; 16], first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER },
+        &nodecraft_catalog::Catalog::builtin().unwrap(),
+        AdmissionLimits::default(),
+        &targets,
     )
     .unwrap();
+    assert!(!quote.is_complete(), "catalog admission preserves unknown paid pricing; this converter fixture invokes no provider");
+    let (mut run, start) =
+        Run::start_admitted(admitted, &kinds, RunOptions { id: [4; 16], first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER }).unwrap();
     let converted = produced(&routes, done).unwrap();
     run.job_done(&kinds, start.jobs[0].id, converted.outputs)
 }
@@ -115,6 +134,7 @@ fn graph_media_converter_still_requires_an_asset_resolving_host() {
         node: NodeId::from_bytes([7; 16]),
         outputs: vec![route(Modality::Image)],
         provider: "gemini-images".into(),
+        instance: None,
         model: "gemini-3.1-flash-lite-image".into(),
         params: Default::default(),
         inputs: vec![GenerateInput { role: "image".into(), value: converted.outputs[0].1.clone() }],

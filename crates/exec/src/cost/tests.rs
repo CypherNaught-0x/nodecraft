@@ -2,6 +2,7 @@ use super::*;
 use crate::planner::{Planned, RunMode, plan};
 use nodecraft_graph::{Change, Edge, Endpoint, Port, Position, Project};
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, Registry};
+use nodecraft_types::Value;
 use nodecraft_types::{CanvasId, EdgeId, Modality, ParamControl, ParamSchema, ParamSpec, PortType, ProjectId, Unsigned};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -239,6 +240,7 @@ fn budgets_block_overruns_unknown_prices_and_other_currencies() {
 fn the_usage_log_counts_each_charge_once_and_exports_safe_csv() {
     let mut log = UsageLog::default();
     let entry = |key: &str, micros: u64, session: &str, model: &str| UsageEntry {
+        instance: None,
         at_ms: 1_700_000_000_000,
         session: session.into(),
         node: id(2),
@@ -291,6 +293,7 @@ fn eviction_never_lowers_what_was_spent() {
     for n in 0..MAX_USAGE_ENTRIES + 10 {
         let session = if n < 10 { "earlier" } else { "now" };
         log.record(UsageEntry {
+            instance: None,
             at_ms: 0,
             session: session.into(),
             node: id(2),
@@ -418,6 +421,7 @@ fn deferred_paid_steps_are_estimates_and_currency_mismatches_block() {
 fn the_same_key_from_another_provider_is_another_charge() {
     let mut log = UsageLog::default();
     let entry = |provider: &str| UsageEntry {
+        instance: None,
         at_ms: 0,
         session: "now".into(),
         node: id(2),
@@ -435,6 +439,8 @@ fn the_same_key_from_another_provider_is_another_charge() {
 
 fn charge(key: &str, micros: u64, status: Charge) -> UsageEntry {
     UsageEntry {
+        instance: None,
+
         at_ms: 1,
         session: "now".into(),
         node: id(2),
@@ -632,6 +638,8 @@ fn charges_are_found_after_releases_and_eviction() {
 
 fn entry(session: &str, key: &str, cost: u64) -> UsageEntry {
     UsageEntry {
+        instance: None,
+
         at_ms: 0,
         session: session.into(),
         node: id(2),
@@ -975,4 +983,26 @@ fn csv_row_admission_never_writes_rejected_rows_and_preserves_writer_errors() {
     }
     assert_eq!(log.write_csv_rows(&mut Broken, 0, 2).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
     assert_eq!(log.write_csv_rows_while(&mut Broken, 0, 2, |_| true).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+// Exercise the public quote path for one detached node, rather than the removed
+// private raw-selection helper.
+fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Vec<String>, Result<Option<Money>, Unpriced>) {
+    let mut project = Project::new(ProjectId::from_bytes([9; 16]), "Quote").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    Change::AddNode { canvas: C, node: node.clone() }.apply(&mut project).unwrap();
+    let plan = RunPlan {
+        steps: vec![crate::planner::Step {
+            node: node.id,
+            kind: node.kind.clone(),
+            mode: ModeId::new("quote").unwrap(),
+            after: vec![],
+            inputs: vec![],
+            jobs: None,
+        }],
+        edges: vec![],
+    };
+    let quote = quote(&plan, project.canvases().get(&C).unwrap(), kinds, catalog).unwrap();
+    let step = quote.steps.into_iter().next().unwrap();
+    (step.models, step.per_job)
 }

@@ -128,11 +128,11 @@ fn fresh_start_and_terminal_settle_retire_only_the_scheduler_lease() {
     // Settling leaves an ordinary same-key registration reference intact.
     runner.settle(JobId(1));
     assert!(runner.lock().jobs.get(&JobId(1)).unwrap().scheduler.is_none());
-    assert!(runner.lock().handles.contains_key(&("reregister".into(), "old".into())));
+    assert!(runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
     assert!(matches!(block_on(runner.run(start(1, "old"), CancelToken::default())), Outcome::Failed { transient: true, .. }));
     runner.register(JobId(1), q(p.clone(), "proposed", None));
     runner.settle(JobId(1));
-    assert!(!runner.lock().handles.contains_key(&("reregister".into(), "old".into())));
+    assert!(!runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
     assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
     assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"]);
     assert!(runner.lock().jobs.is_empty() && runner.lock().failures.is_empty() && runner.lock().handles.is_empty());
@@ -381,7 +381,7 @@ fn different_key_precancel_preserves_old_retry_until_admission_or_explicit_settl
             let state = runner.lock();
             assert!(state.metadata.is_empty());
             assert!(state.jobs.get(&JobId(1)).unwrap().scheduler.is_none());
-            assert!(!state.handles.contains_key(&("reregister".into(), "old".into())));
+            assert!(!state.handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
             drop(state);
             assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
             assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"], "host acknowledgement ends the old retry lifetime");

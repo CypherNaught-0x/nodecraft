@@ -1,7 +1,7 @@
 use super::*;
 
 fn metadata(key: &str) -> UsageMetadata<'_> {
-    UsageMetadata { at_ms: 1, session: "a", node: NodeId::from_bytes([1; 16]), provider: "t", model: "m", idempotency_key: key }
+    UsageMetadata { instance: None, at_ms: 1, session: "a", node: NodeId::from_bytes([1; 16]), provider: "t", model: "m", idempotency_key: key }
 }
 
 fn ambiguous() -> UsageLog {
@@ -224,6 +224,7 @@ fn retained_text_exact_boundary_and_one_byte_short_precede_owned_copies() {
     file.sessions.insert(String::new(), [(Currency::USD, usd(n - 1))].into());
     file.quarantined = (0..count)
         .map(|i| UsageEntry {
+            instance: None,
             at_ms: 0,
             session: name.clone(),
             node: NodeId::from_bytes([1; 16]),

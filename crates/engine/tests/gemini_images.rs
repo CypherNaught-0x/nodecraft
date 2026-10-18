@@ -3,13 +3,14 @@
 #![cfg(not(target_arch = "wasm32"))]
 use futures::executor::block_on;
 use nodecraft_engine::jobs::{JobBudget, JobPrice, ProviderRunner, QueuedJob};
+use nodecraft_engine::provider_routing::RegisteredProvider;
 use nodecraft_exec::cost::{Budgets, Charge, UsageLog};
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{Event, JobId, JobSpec, JobState, Lane, Limits, Outcome, RetryPolicy, Scheduler, Start};
 use nodecraft_providers::gemini_images::{GeminiImages, LITE};
 use nodecraft_providers::secrets::Secret;
 use nodecraft_providers::{BoxFuture, ErrorKind, Http, HttpRequest, HttpResponse, JobInput, ProviderError, ProviderJob, RunLimits};
-use nodecraft_types::{Currency, Money, NodeId};
+use nodecraft_types::{Currency, Money, NodeId, ProviderTarget};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -61,16 +62,22 @@ impl Http for Transport {
 fn money(n: u64) -> Money {
     Money::new(Currency::USD, n)
 }
+fn lane() -> Lane {
+    Lane::new(ProviderTarget::default_instance("gemini-images").unwrap().lane_name().unwrap())
+}
 fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob {
+    let provider = RegisteredProvider::default_instance(Arc::new(GeminiImages::new(Secret::new("fixture-key-not-real").unwrap(), http))).unwrap();
+    assert_eq!(provider.target().adapter(), "gemini-images");
+    assert_eq!(provider.target().instance(), None);
     QueuedJob {
-        provider: Arc::new(GeminiImages::new(Secret::new("fixture-key-not-real").unwrap(), http)),
+        provider,
         job: ProviderJob {
             model: LITE.into(),
             params: serde_json::Map::new(),
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-image-1".into(),
         },
-        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "gemini-images.flare".into(), estimate }),
+        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "gemini-images.flash-lite".into(), estimate }),
     }
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {
@@ -99,7 +106,7 @@ fn drive(runner: Arc<ProviderRunner>) -> (Scheduler, Vec<Event>) {
         .add(vec![JobSpec {
             id: JobId(1),
             deps: vec![],
-            lane: Lane::new("gemini-images"),
+            lane: lane(),
             retry: RetryPolicy { max_attempts: 4, base_delay_ms: 1, max_delay_ms: 2 },
             idempotency_key: "fixture-image-1".into(),
         }])
@@ -185,7 +192,7 @@ fn cancellation_before_and_during_real_image_transport_preserves_billing_uncerta
         if !pending {
             cancel.cancel();
         }
-        let mut work = r.run(Start { job: JobId(1), lane: Lane::new("gemini-images"), attempt: 1, idempotency_key: "fixture-image-1".into() }, cancel.clone());
+        let mut work = r.run(Start { job: JobId(1), lane: lane(), attempt: 1, idempotency_key: "fixture-image-1".into() }, cancel.clone());
         if pending {
             let w = futures::task::noop_waker();
             assert!(work.as_mut().poll(&mut std::task::Context::from_waker(&w)).is_pending());

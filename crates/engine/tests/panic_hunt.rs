@@ -134,7 +134,7 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
         session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
-        session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
+        session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
     }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
