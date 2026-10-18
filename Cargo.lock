@@ -2864,6 +2864,7 @@ dependencies = [
  "log",
  "nodecraft-engine",
  "nodecraft-graph",
+ "nodecraft-media",
  "nodecraft-nodes",
  "nodecraft-types",
  "serde",

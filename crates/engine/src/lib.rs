@@ -15,6 +15,7 @@ pub mod file_cmds;
 pub mod generate;
 pub mod graph_cmds;
 pub mod history_cmds;
+pub mod import;
 pub mod jobs;
 pub mod keys_cmds;
 pub mod navigation_cmds;
