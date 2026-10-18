@@ -30,13 +30,14 @@
   upstream/downstream/by-kind, a minimap with zoom-to-fit and zoom-to-selection, incremental search,
   a searchable quick-add palette with per-key shortcuts, "Turn into" when you drop a noodle on
   empty canvas, drag-to-reorder input order badges, copy/cut/paste/duplicate through the OS
-  clipboard, and OS file drop that creates source nodes.
+  clipboard, OS file drop that creates source nodes, pinned discussions and Notes, grid/dependency
+  formatting, and named colour tags with a bounded highlight filter.
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
 - **Keep your keys yours**: an API keys panel over the OS keychain.
 - **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
   you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
-  dispatching the same 58 commands the UI uses.
+  dispatching the same 66 commands the UI uses.
 
 ## What it will do
 
@@ -96,8 +97,8 @@ orientation for contributors and coding agents.
 ## Downloads
 
 Two pre-releases exist. [`v0.2.0-rc.1`](../../releases/tag/v0.2.0-rc.1) is the current build:
-installers for macOS, Windows and Linux of the canvas described above — try it, but know it still
-cannot generate or save from the app. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
+installers for macOS, Windows and Linux of that pre-release snapshot. Build `main` for the latest
+canvas features; generation and saving from the app are still being wired. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
 M0-era build that proved the release pipeline. Signed installers arrive with the first real
 release ([#100](../../issues/100)); macOS and Windows builds are unsigned for now, so the first
 launch shows a warning — [`docs/install.md`](docs/install.md) shows how to open them anyway.
@@ -115,7 +116,7 @@ and checklists for adding commands, node kinds and providers.
 | Milestone | Focus | Where it stands |
 |---|---|---|
 | M0 | Workspace skeleton, lints, CI, empty canvas | done |
-| M1–M2 | Canvas core, organisation tools | canvas nearly done; save/open and fields/tags to wire |
+| M1–M2 | Canvas core, organisation tools | canvas nearly done; save/open and fields UI to wire |
 | M3 | Generation engine, providers, history, cost | engine built and tested, app not wired yet |
 | M4–M5 | Actions, Batch, Techniques, CLI | actions built as a library; M5 not started |
 | M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | not started |
