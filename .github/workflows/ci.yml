@@ -29,7 +29,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: scripts/claim
-      - run: node --test scripts/claim/*.test.js
+      # `node --test` globs the pattern itself. Handed a pattern that matches nothing it reports
+      # `1..0 / # tests 0 / # fail 0` and exits 0, so this job would go green having run no tests at
+      # all. Verified on node v22: in an empty scripts/claim, `node --test scripts/claim/*.test.js`
+      # prints zero tests and exits 0. This is the tooling that assigns issues, so a missing test
+      # file is a failure, not a pass.
+      - name: run the claim bot tests
+        run: |
+          set -eu
+          found=0
+          for f in scripts/claim/*.test.js; do
+            [ -e "$f" ] || continue
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo 'No test files matched scripts/claim/*.test.js.' >&2
+            exit 1
+          fi
+          echo "Running $found claim bot test file(s)."
+          node --test scripts/claim/*.test.js
 
   # The Rust jobs switch themselves on once the workspace exists (milestone M0, docs/plan.md §8).
   rust:
