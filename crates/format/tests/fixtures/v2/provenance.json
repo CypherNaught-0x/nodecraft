@@ -1,0 +1,20 @@
+{
+  "archive_version": 2,
+  "checkpoint": "f66843419a4807ab905996103a9b26c24b745d85d965952110597aa12c3b8ade",
+  "epoch": 11,
+  "features": [
+    "structure.note",
+    "node.config",
+    "all scalar Values",
+    "config media retention",
+    "legacy Field membership",
+    "legacy Tag membership",
+    "node anchor",
+    "ordered replies",
+    "resolved",
+    "remove/detach/restore pins"
+  ],
+  "frames": 3,
+  "journal_magic": "NCRJ0002",
+  "source_commit": "4d2b9df618f8ef724c29e8ce837f5ee8a36fd5f2"
+}

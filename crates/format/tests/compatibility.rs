@@ -57,7 +57,7 @@ fn genuine_v1_frames_use_original_identity_and_current_checkpoint_migrates_once(
     let checkpoint = journal::checkpoint_from_archive(archive.to_vec()).unwrap().1;
     assert_ne!(checkpoint.archive().unwrap(), archive);
     assert_ne!(checkpoint.identity, Blake3::from_bytes(*blake3::hash(archive).as_bytes()));
-    assert_eq!(checkpoint.bytes.get(..8), Some(b"NCRJ0002".as_slice()));
+    assert_eq!(checkpoint.bytes.get(..8), Some(b"NCRJ0003".as_slice()));
     assert!(journal::recover(journal_bytes).unwrap().legacy);
     let recovered = journal::recover(journal_bytes).unwrap();
     assert_eq!(recovered.applied, 3);
@@ -67,7 +67,7 @@ fn genuine_v1_frames_use_original_identity_and_current_checkpoint_migrates_once(
     assert_eq!(journal::recover(&journal::checkpoint(&recovered.snapshot).unwrap().bytes).unwrap().snapshot, recovered.snapshot);
 }
 #[test]
-fn v2_writers_admit_new_values_while_v1_envelopes_refuse_every_replay_role() {
+fn current_writers_admit_new_values_while_v1_envelopes_refuse_every_replay_role() {
     let assets = AssetStore::default();
     for value in scalar_values().into_iter().map(|v| Value::List(vec![Value::List(vec![v])])) {
         let mut n = node();

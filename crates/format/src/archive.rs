@@ -10,7 +10,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -69,7 +69,7 @@ fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
         epoch: u64,
         project: &'a Project,
     }
-    let json = bounded_v2_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
+    let json = bounded_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
     Ok(json)
 }
 
@@ -117,14 +117,6 @@ pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
     let manifest: Manifest = serde_json::from_slice(json).map_err(|_| invalid("invalid project graph or manifest"))?;
     assets.validate_project(&manifest.project)?;
     Ok((Snapshot { project: manifest.project, assets, epoch: manifest.epoch }, version.version))
-}
-
-/// Gate the exact serialized roles, so future typed model additions cannot write a
-/// frozen-v2 archive or record that this version's reader refuses to recover.
-pub(crate) fn bounded_v2_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
-    let bytes = bounded_json(value, cap)?;
-    crate::v2::validate(&bytes)?;
-    Ok(bytes)
 }
 
 pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
@@ -249,7 +241,7 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
             }
             let json = bytes.get(data_start..data_end).ok_or_else(|| invalid("invalid manifest extent"))?;
             let version: Version = serde_json::from_slice(json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
-            if !matches!(version.version, 1 | VERSION) {
+            if !matches!(version.version, 1 | 2 | VERSION) {
                 return Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; use a compatible NodeCraft build"));
             }
         }
@@ -276,8 +268,10 @@ fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
     if from == 1 {
         crate::legacy::validate(json)?;
         Ok(json)
-    } else if from == VERSION {
+    } else if from == 2 {
         crate::v2::validate(json)?;
+        Ok(json)
+    } else if from == VERSION {
         Ok(json)
     } else {
         Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))
