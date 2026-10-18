@@ -136,9 +136,10 @@ Frozen v1 guards remain strict (including input_hash); current v2 can durably re
 results, config and scalar Values. Main's scoped navigation geometry and seeded node/edge IDs stay
 available; Comments/Note use distinct fallible UUID allocation. Main clipboard/quick-add behavior
 remains, yielding during held discussion drags. Landed Search is retained; Layout from the original feature
-foundation is not bundled with Comments. Existing native dark/light captures describe the reviewed
-pre-integration glyph checkpoint; they do not claim this combined tree was newly captured. Browser
-media upload remains awaiting renewed permission and has not been retried.
+foundation is not bundled with Comments. Current review evidence uses a public egui_kittest/wgpu scene with a discussion, reply,
+Note, resolved pin and undo in dark and light themes. Captures are attached to PR #194;
+generated screenshots are never committed. Pointer tests cover retained pin and input-order
+ownership, file hovering, and refusal of file drops and image splitting during a pin drag.
 
 
 MCP classifies all seven local discussion mutation commands as agent-accessible, using the same
