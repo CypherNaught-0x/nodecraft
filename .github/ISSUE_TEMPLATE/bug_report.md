@@ -1,7 +1,7 @@
 ---
 name: Bug report
 about: Something crashes, misbehaves or looks wrong
-labels: bug
+labels: bug, difficulty:medium
 ---
 
 **What happened**
@@ -18,3 +18,7 @@ API keys and anything private.
 
 **Environment**
 NodeCraft version or commit, OS, GPU, and provider/model if a generation was involved.
+
+**Difficulty**
+Starts at `difficulty:medium` — an undiagnosed cause is an open question; a maintainer sets the
+real level against docs/issue-labels.md once the cause is known.

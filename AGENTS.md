@@ -36,10 +36,11 @@ reference screenshots and docs of other products: **study, never ship or commit 
 Several people and their agents work on NodeCraft at once. A claim keeps two of them from
 building the same thing.
 
-1. **Find an issue.** Work is tracked as GitHub issues, labelled `area:*` and grouped in
-   milestones (`M0 Skeleton`, `M1 Canvas core`, …). Issues labelled `future` are claimable once
-   their dependencies land. Building something bigger than a bug fix with no issue? Open one
-   first.
+1. **Find an issue.** Work is tracked as GitHub issues, labelled `area:*`, carrying exactly one
+   `difficulty:*`, and grouped in milestones (`M0 Skeleton`, `M1 Canvas core`, …). Difficulty says
+   what signing up costs; the rubric is `docs/issue-labels.md`. Issues labelled `future` are
+   claimable once their dependencies land. Building something bigger than a bug fix with no issue?
+   Open one first, and give it an `area:*` and a `difficulty:*`.
 2. **Check nobody has it:** the issue has no assignee and no `in progress` label, and
    `gh pr list --state open --search "#N"` finds no PR for it.
 3. **Comment `/claim`** on the issue. The bot (`scripts/claim/claim.js`) assigns you, adds
@@ -237,3 +238,4 @@ that drive real pointer and key events through the canvas.
 | MCP server and its tools | `docs/mcp.md` |
 | Control channel (`nodecraft --control`) | `docs/control.md` |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |
+| Issue difficulty rubric | `docs/issue-labels.md` |
