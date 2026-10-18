@@ -73,4 +73,7 @@ handshake timeout on trusted pipes; the parent controls pipe lifetime and must r
 
 Screenshots and live-only canvas navigation return `unsupported` because no window exists.
 Human-only and paid command restrictions remain shared with MCP/TCP. Graph edits use the same
-validation, revisions and undo. `nodecraft-cli mcp` remains the separate MCP stdio protocol.
+validation, revisions and undo. `nodecraft-cli mcp` remains the separate MCP stdio protocol;
+`nodecraft-cli mcp --bridge [token-file]` forwards MCP calls to the authenticated running app.
+These entrypoints coexist; trusted headless control does not replace the MCP bridge or add a
+live viewport to its own in-memory session.

@@ -70,9 +70,10 @@ fn wait(child: &mut Child) -> ExitStatus {
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
+            let _ = child.wait();
             panic!("control did not exit after EOF/broken stdout");
         }
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -141,8 +142,8 @@ fn headless_ui_and_human_only_operations_are_refused_without_document_changes() 
         ("run.selected", json!({})),
     ] {
         let reply = client.ask(2, "command.run", json!({"id":id,"params":params}));
-        // File commands need desktop registration; absent there is NotFound, never dispatch.
-        let expected = if id.starts_with("file.") || id == "run.selected" { "not_found" } else { "unsupported" };
+        // Persistence file commands are builtins but human-only; generation is not registered.
+        let expected = if id == "run.selected" { "not_found" } else { "unsupported" };
         assert_eq!(reply["error"]["kind"], expected, "{reply}");
         assert!(!reply.to_string().contains("fixture-not-a-secret"));
     }
@@ -168,4 +169,16 @@ fn broken_stdout_and_unknown_options_fail_without_panicking() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("takes no options"));
+}
+
+#[test]
+fn closed_stdout_and_stderr_exit_with_io_failure_instead_of_panicking() {
+    let mut child =
+        Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).arg("control").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Both readers are gone before input unblocks the serving thread's first reply.
+    drop(child.stdout.take());
+    drop(child.stderr.take());
+    child.stdin.take().unwrap().write_all(b"{\"id\":1,\"method\":\"hello\"}\n").unwrap();
+    let status = wait(&mut child);
+    assert_eq!(status.code(), Some(1), "I/O failure must use the normal failure exit, not Rust's panic exit");
 }

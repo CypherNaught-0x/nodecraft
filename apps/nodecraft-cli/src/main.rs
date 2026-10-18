@@ -7,6 +7,7 @@
 mod control;
 
 use std::hash::{BuildHasher, RandomState};
+use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -107,7 +108,7 @@ fn main() -> ExitCode {
         }
         Some("control") if args.len() == 1 => control::run(),
         Some("control") => {
-            eprintln!("error: `control` takes no options\n\n{USAGE}");
+            let _ = writeln!(std::io::stderr(), "error: `control` takes no options\n\n{USAGE}");
             ExitCode::FAILURE
         }
         Some("mcp") => match args.get(1..).unwrap_or_default() {
