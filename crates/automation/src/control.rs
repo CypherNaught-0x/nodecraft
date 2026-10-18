@@ -351,8 +351,7 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
                 let Ok(stream) = stream else { continue };
                 if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     open.fetch_sub(1, Ordering::SeqCst);
-                    let mut stream = stream;
-                    let _ = writeln!(stream, "{}", error_reply(Value::Null, "busy", "too many control connections"));
+                    refuse_busy(stream);
                     continue;
                 }
                 let (token, to_ui, wake, slot) = (token.clone(), to_ui.clone(), Arc::clone(&wake), Arc::clone(&open));
@@ -399,6 +398,17 @@ fn read_hello(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>, deadline: In
             return Ok(Line::Read);
         }
     }
+}
+
+/// Turns a connection away as busy. The client's `hello` is drained briefly after the reply, so
+/// closing doesn't reset the connection and lose the reply (a reset is what an unread `hello`
+/// causes on macOS and Windows). Bounded: a short timeout and one small read.
+fn refuse_busy(mut stream: TcpStream) {
+    let _ = writeln!(stream, "{}", error_reply(Value::Null, "busy", "too many control connections"));
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+    let mut sink = [0u8; 4096];
+    let _ = std::io::Read::read(&mut stream, &mut sink);
 }
 
 fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, wake: &(dyn Fn() + Send + Sync), timeouts: Timeouts) {
@@ -508,7 +518,9 @@ enum Origin {
 /// Reconnect before a call once the app may have closed the connection as idle.
 pub const RECONNECT_AFTER: Duration = Duration::from_secs(540);
 /// Handshakes tried while the app is still freeing the old connection's slot.
-const RECONNECT_ATTEMPTS: u32 = 6;
+pub const RECONNECT_ATTEMPTS: u32 = 6;
+/// How long the app may take to answer `hello`.
+const HELLO_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Longest reply the client reads: a screenshot in base64 plus room.
 const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
@@ -536,7 +548,8 @@ impl Client {
         // The app answers every request within its answer timeout, so this only fires if it
         // hangs. A long reply is read in pieces, each with this timeout.
         let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
-        stream.set_read_timeout(Some(wait)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
+        // The handshake gets a short reply timeout of its own; requests get the long one.
+        stream.set_read_timeout(Some(HELLO_REPLY_TIMEOUT)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
         let mut client = Self {
             reader,
@@ -553,20 +566,23 @@ impl Client {
         if reply.get("protocol").and_then(Value::as_u64) != Some(u64::from(PROTOCOL)) {
             return Err(Error::new(ErrorKind::Unsupported, "the app speaks a different control protocol; use a matching nodecraft-cli"));
         }
+        client.writer.set_read_timeout(Some(wait)).map_err(|e| network(e.to_string()))?;
         Ok(client)
     }
 
     /// How long the connection may sit unused before the next call replaces it (default
     /// [`RECONNECT_AFTER`], under the app's idle timeout). Hosts with a shorter idle timeout, and
-    /// tests, lower it.
+    /// tests, lower it; `Duration::ZERO` reconnects before every call.
     pub fn set_reconnect_after(&mut self, after: Duration) {
         self.reconnect_after = after;
     }
 
     /// Replaces the connection. The old one is closed first, so the replacement doesn't need a
     /// spare slot when the app is at its connection limit. The app frees the slot a moment later,
-    /// so a `Busy` handshake is retried a few times with backoff; nothing else is, and no request
-    /// has been sent yet.
+    /// so a handshake refused as busy, or cut off before its reply (a refused connection can be
+    /// reset), is retried up to [`RECONNECT_ATTEMPTS`] times with backoff (775 ms of waits in
+    /// all). Only `hello` has been sent on those connections, never the caller's request. Worst
+    /// case, each attempt waits out the 5 s connect and 5 s handshake timeouts.
     fn reconnect(&mut self) -> Result<(), Error> {
         let _ = self.writer.shutdown(std::net::Shutdown::Both);
         // Until a replacement works, the next call tries again.
@@ -580,7 +596,7 @@ impl Client {
                 Origin::Addr(addr, token) => Self::connect(addr, &token),
             };
             match tried {
-                Err(e) if e.kind == ErrorKind::Busy && attempt < RECONNECT_ATTEMPTS => {
+                Err(e) if matches!(e.kind, ErrorKind::Busy | ErrorKind::Network) && attempt < RECONNECT_ATTEMPTS => {
                     std::thread::sleep(wait);
                     wait = wait.saturating_mul(2);
                 }
