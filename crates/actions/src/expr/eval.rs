@@ -22,20 +22,6 @@ impl Value {
             Value::List(items) => items.iter().fold(items.len().saturating_mul(16), |n, v| n.saturating_add(v.size())),
         }
     }
-
-    /// Whether lists nest deeper than `limit`, found without recursion (stops at the limit).
-    pub(super) fn deeper_than(&self, limit: usize) -> bool {
-        let mut stack = vec![(self, 0usize)];
-        while let Some((value, depth)) = stack.pop() {
-            if depth > limit {
-                return true;
-            }
-            if let Value::List(items) = value {
-                stack.extend(items.iter().map(|v| (v, depth + 1)));
-            }
-        }
-        false
-    }
 }
 
 /// Fuel is checked against cancellation every this many units.
@@ -43,11 +29,84 @@ const CANCEL_EVERY: u64 = 4096;
 /// Text work costs one fuel unit per this many bytes touched (plus one per step).
 const BYTES_PER_FUEL: usize = 16;
 
-pub(super) struct Machine<'c> {
+/// One fuel/cancellation meter covers input inspection and every action output.
+pub(super) struct Budget<'c> {
     limits: ExprLimits,
     fuel: u64,
     since_check: u64,
     cancel: &'c dyn Fn() -> bool,
+}
+
+impl<'c> Budget<'c> {
+    pub(super) fn new(limits: ExprLimits, cancel: &'c dyn Fn() -> bool) -> Self {
+        Self { limits, fuel: limits.fuel, since_check: 0, cancel }
+    }
+    pub(super) fn spent(&self) -> u64 {
+        self.limits.fuel - self.fuel
+    }
+    pub(super) fn spend(&mut self, units: u64, at: usize) -> Result<(), ExprError> {
+        self.fuel = self.fuel.checked_sub(units).ok_or_else(|| err(ErrorReason::OutOfFuel, at))?;
+        self.since_check = self.since_check.saturating_add(units);
+        if self.since_check >= CANCEL_EVERY {
+            self.since_check = 0;
+            if (self.cancel)() {
+                return Err(err(ErrorReason::Cancelled, at));
+            }
+        }
+        Ok(())
+    }
+    /// Each frame holds one sibling iterator, never all children of a wide list.
+    pub(super) fn inspect(&mut self, value: &Value, at: usize) -> Result<usize, ExprError> {
+        let mut stack = Vec::with_capacity(super::MAX_VALUE_DEPTH + 2);
+        stack.push((std::slice::from_ref(value).iter(), 0usize));
+        let mut bytes = 0usize;
+        while let Some((siblings, depth)) = stack.last_mut() {
+            let depth = *depth;
+            let Some(value) = siblings.next() else {
+                stack.pop();
+                continue;
+            };
+            self.spend(1, at)?;
+            if depth > super::MAX_VALUE_DEPTH {
+                return Err(err(ErrorReason::TooDeep, at));
+            }
+            let charge = match value {
+                Value::Int(_) | Value::Bool(_) => 8,
+                Value::Text(text) => text.len(),
+                Value::List(items) => {
+                    if items.len() > self.limits.list_items {
+                        return Err(err(ErrorReason::TooManyItems, at));
+                    }
+                    if !items.is_empty() {
+                        stack.push((items.iter(), depth + 1));
+                    }
+                    items.len().checked_mul(16).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))?
+                }
+            };
+            bytes = bytes.checked_add(charge).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))?;
+        }
+        Ok(bytes)
+    }
+    pub(super) fn input_size(&self, size: usize, total: &mut usize, oversized: &mut bool) -> Result<(), ExprError> {
+        *total = total.checked_add(size).ok_or_else(|| err(ErrorReason::InputTooLarge, 0))?;
+        if *total > self.limits.input_bytes {
+            return Err(err(ErrorReason::InputTooLarge, 0));
+        }
+        *oversized |= size > self.limits.value_bytes;
+        Ok(())
+    }
+    pub(super) fn input(&mut self, value: &Value, total: &mut usize, oversized: &mut bool) -> Result<(), ExprError> {
+        let size = self.inspect(value, 0)?;
+        self.input_size(size, total, oversized)
+    }
+    pub(super) fn finish_inputs(&self, oversized: bool) -> Result<(), ExprError> {
+        if oversized { Err(err(ErrorReason::ValueTooLarge, 0)) } else { Ok(()) }
+    }
+}
+
+pub(super) struct Machine<'n, 'b, 'c> {
+    budget: &'b mut Budget<'c>,
+    names: &'n [(&'n str, &'n Value)],
     scope: Vec<(String, Value)>,
     held: usize,
 }
@@ -125,48 +184,38 @@ fn same_kind(a: &Key<'_>, b: &Key<'_>) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
-impl<'c> Machine<'c> {
-    pub(super) fn new(limits: ExprLimits, cancel: &'c dyn Fn() -> bool) -> Self {
-        Self { limits, fuel: limits.fuel, since_check: 0, cancel, scope: Vec::new(), held: 0 }
+impl<'n, 'b, 'c> Machine<'n, 'b, 'c> {
+    pub(super) fn new(budget: &'b mut Budget<'c>, names: &'n [(&'n str, &'n Value)], input: usize) -> Result<Self, ExprError> {
+        let mut machine = Self { budget, names, scope: Vec::new(), held: 0 };
+        machine.hold(input, 0)?;
+        Ok(machine)
     }
-
-    pub(super) fn run(&mut self, root: &Node, names: &[(&str, &Value)]) -> Result<Value, ExprError> {
-        for (name, value) in names {
-            self.bind(name, (*value).clone(), 0)?;
-        }
+    pub(super) fn run(&mut self, root: &Node) -> Result<Value, ExprError> {
         self.eval(root)
     }
-
-    pub(super) fn spent(&self) -> u64 {
-        self.limits.fuel.saturating_sub(self.fuel)
-    }
-
     fn spend(&mut self, units: u64, at: usize) -> Result<(), ExprError> {
-        self.fuel = self.fuel.checked_sub(units).ok_or_else(|| err(ErrorReason::OutOfFuel, at))?;
-        self.since_check = self.since_check.saturating_add(units);
-        if self.since_check >= CANCEL_EVERY {
-            self.since_check = 0;
-            if (self.cancel)() {
-                return Err(err(ErrorReason::Cancelled, at));
-            }
-        }
-        Ok(())
+        self.budget.spend(units, at)
     }
     fn spend_bytes(&mut self, bytes: usize, at: usize) -> Result<(), ExprError> {
         self.spend(1 + u64::try_from(bytes / BYTES_PER_FUEL).unwrap_or(u64::MAX), at)
     }
     fn fits(&self, bytes: usize, at: usize) -> Result<(), ExprError> {
-        if bytes > self.limits.value_bytes { Err(err(ErrorReason::ValueTooLarge, at)) } else { Ok(()) }
+        if bytes > self.budget.limits.value_bytes { Err(err(ErrorReason::ValueTooLarge, at)) } else { Ok(()) }
+    }
+    fn scalar_int(&self, value: i64, at: usize) -> Result<Value, ExprError> {
+        self.fits(8, at)?;
+        Ok(Value::Int(value))
+    }
+    fn scalar_bool(&self, value: bool, at: usize) -> Result<Value, ExprError> {
+        self.fits(8, at)?;
+        Ok(Value::Bool(value))
     }
     fn items(&self, n: usize, at: usize) -> Result<(), ExprError> {
-        if n > self.limits.list_items { Err(err(ErrorReason::TooManyItems, at)) } else { Ok(()) }
+        if n > self.budget.limits.list_items { Err(err(ErrorReason::TooManyItems, at)) } else { Ok(()) }
     }
-    /// Checks a produced value against the budgets, charging for its size.
+    /// Every AST result reaches this boundary exactly once.
     fn admit(&mut self, v: Value, at: usize) -> Result<Value, ExprError> {
-        if let Value::List(items) = &v {
-            self.items(items.len(), at)?;
-        }
-        let size = v.size();
+        let size = self.budget.inspect(&v, at)?;
         self.fits(size, at)?;
         self.spend_bytes(size, at)?;
         Ok(v)
@@ -174,8 +223,8 @@ impl<'c> Machine<'c> {
     /// Counts `bytes` as held while other parts are evaluated (names in scope, a left operand,
     /// evaluated arguments, list items so far): at most four maximal values at once.
     fn hold(&mut self, bytes: usize, at: usize) -> Result<(), ExprError> {
-        let total = self.held.saturating_add(bytes);
-        if total > self.limits.value_bytes.saturating_mul(4) {
+        let total = self.held.checked_add(bytes).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))?;
+        if total > self.budget.limits.value_bytes.saturating_mul(4) {
             return Err(err(ErrorReason::ValueTooLarge, at));
         }
         self.held = total;
@@ -185,6 +234,7 @@ impl<'c> Machine<'c> {
         self.held = self.held.saturating_sub(bytes);
     }
     fn bind(&mut self, name: &str, value: Value, at: usize) -> Result<(), ExprError> {
+        self.fits(value.size(), at)?;
         self.hold(value.size(), at)?;
         self.scope.push((name.to_owned(), value));
         Ok(())
@@ -196,28 +246,55 @@ impl<'c> Machine<'c> {
     }
 
     fn eval(&mut self, node: &Node) -> Result<Value, ExprError> {
+        let value = self.eval_inner(node)?;
+        self.admit(value, node.at)
+    }
+
+    fn lookup(&mut self, name: &str, at: usize) -> Result<Value, ExprError> {
+        for index in (0..self.scope.len()).rev() {
+            self.spend(1, at)?;
+            if let Some((key, value)) = self.scope.get(index)
+                && key == name
+            {
+                return Ok(value.clone());
+            }
+        }
+        for index in (0..self.names.len()).rev() {
+            self.spend(1, at)?;
+            if let Some((key, value)) = self.names.get(index) {
+                // The parsed name is <=64 bytes: unequal-length caller keys aren't scanned.
+                if *key == name {
+                    return Ok((*value).clone());
+                }
+            }
+        }
+        Err(err(ErrorReason::UnknownName, at))
+    }
+
+    fn eval_inner(&mut self, node: &Node) -> Result<Value, ExprError> {
         self.spend(1, node.at)?;
         let at = node.at;
         match &node.kind {
-            Kind::Int(n) => Ok(Value::Int(*n)),
-            Kind::Bool(b) => Ok(Value::Bool(*b)),
-            Kind::Str(s) => self.admit(Value::Text(s.clone()), at),
-            Kind::Name(name) => {
-                let value = self.scope.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone()).ok_or_else(|| err(ErrorReason::UnknownName, at))?;
-                self.spend_bytes(value.size(), at)?;
-                Ok(value)
+            Kind::Int(n) => self.scalar_int(*n, at),
+            Kind::Bool(b) => self.scalar_bool(*b, at),
+            Kind::Str(s) => {
+                self.fits(s.len(), at)?;
+                Ok(Value::Text(s.clone()))
             }
+            Kind::Name(name) => self.lookup(name, at),
             Kind::List(items) => {
                 self.items(items.len(), at)?;
+                self.fits(items.len().checked_mul(16).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))?, at)?;
                 let mut out = Vec::with_capacity(items.len());
                 let mut bytes = 0usize;
                 let result = (|| {
                     for item in items {
                         let v = self.eval(item)?;
                         let size = v.size().saturating_add(16);
-                        bytes = bytes.saturating_add(size);
-                        self.fits(bytes, at)?;
+                        let total = bytes.checked_add(size).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))?;
+                        self.fits(total, at)?;
                         self.hold(size, at)?;
+                        bytes = total;
                         out.push(v);
                     }
                     Ok(())
@@ -227,20 +304,29 @@ impl<'c> Machine<'c> {
             }
             Kind::Neg(a) => {
                 let n = int(&self.eval(a)?, a.at)?;
-                n.checked_neg().map(Value::Int).ok_or_else(|| err(ErrorReason::Overflow, at))
+                n.checked_neg().ok_or_else(|| err(ErrorReason::Overflow, at)).and_then(|n| self.scalar_int(n, at))
             }
-            Kind::Not(a) => Ok(Value::Bool(!boolean(&self.eval(a)?, a.at)?)),
+            Kind::Not(a) => {
+                let value = !boolean(&self.eval(a)?, a.at)?;
+                self.scalar_bool(value, at)
+            }
             Kind::And(a, b) => {
                 if !boolean(&self.eval(a)?, a.at)? {
-                    return Ok(Value::Bool(false));
+                    return self.scalar_bool(false, at);
                 }
-                Ok(Value::Bool(boolean(&self.eval(b)?, b.at)?))
+                {
+                    let value = boolean(&self.eval(b)?, b.at)?;
+                    self.scalar_bool(value, at)
+                }
             }
             Kind::Or(a, b) => {
                 if boolean(&self.eval(a)?, a.at)? {
-                    return Ok(Value::Bool(true));
+                    return self.scalar_bool(true, at);
                 }
-                Ok(Value::Bool(boolean(&self.eval(b)?, b.at)?))
+                {
+                    let value = boolean(&self.eval(b)?, b.at)?;
+                    self.scalar_bool(value, at)
+                }
             }
             Kind::If(c, yes, no) => {
                 if boolean(&self.eval(c)?, c.at)? {
@@ -281,16 +367,20 @@ impl<'c> Machine<'c> {
         use BinOp::*;
         match op {
             Add => match (left, right) {
-                (Value::Int(a), Value::Int(b)) => a.checked_add(b).map(Value::Int).ok_or_else(|| err(ErrorReason::Overflow, at)),
+                (Value::Int(a), Value::Int(b)) => a.checked_add(b).ok_or_else(|| err(ErrorReason::Overflow, at)).and_then(|n| self.scalar_int(n, at)),
                 (Value::Text(mut a), Value::Text(b)) => {
                     self.fits(a.len().saturating_add(b.len()), at)?;
                     a.push_str(&b);
-                    self.admit(Value::Text(a), at)
+                    Ok(Value::Text(a))
                 }
                 (Value::List(mut a), Value::List(b)) => {
                     self.items(a.len().saturating_add(b.len()), at)?;
+                    self.fits(
+                        a.iter().chain(b.iter()).fold(a.len().saturating_add(b.len()).saturating_mul(16), |size, value| size.saturating_add(value.size())),
+                        at,
+                    )?;
                     a.extend(b);
-                    self.admit(Value::List(a), at)
+                    Ok(Value::List(a))
                 }
                 _ => Err(err(ErrorReason::TypeMismatch, at)),
             },
@@ -305,11 +395,11 @@ impl<'c> Machine<'c> {
                     Div => a.checked_div(b),
                     _ => a.checked_rem(b),
                 };
-                result.map(Value::Int).ok_or_else(|| err(ErrorReason::Overflow, at))
+                result.ok_or_else(|| err(ErrorReason::Overflow, at)).and_then(|n| self.scalar_int(n, at))
             }
             Eq | Ne => {
                 self.spend_bytes(left.size().min(right.size()), at)?;
-                Ok(Value::Bool((left == right) == (op == Eq)))
+                self.scalar_bool((left == right) == (op == Eq), at)
             }
             Lt | Le | Gt | Ge => {
                 let (a, b) = (key(&left, at)?, key(&right, at)?);
@@ -317,12 +407,15 @@ impl<'c> Machine<'c> {
                     return Err(err(ErrorReason::TypeMismatch, at));
                 }
                 self.spend_bytes(left.size().min(right.size()), at)?;
-                Ok(Value::Bool(match op {
-                    Lt => a < b,
-                    Le => a <= b,
-                    Gt => a > b,
-                    _ => a >= b,
-                }))
+                self.scalar_bool(
+                    match op {
+                        Lt => a < b,
+                        Le => a <= b,
+                        Gt => a > b,
+                        _ => a >= b,
+                    },
+                    at,
+                )
             }
         }
     }
@@ -349,8 +442,7 @@ impl<'c> Machine<'c> {
             return self.per_item(func, args, at);
         }
         let values = self.arguments(args, at)?;
-        let v = self.apply(func, values, args, at)?;
-        self.admit(v, at)
+        self.apply(func, values, args, at)
     }
 
     fn arguments(&mut self, args: &[Node], at: usize) -> Result<Vec<Value>, ExprError> {
@@ -359,8 +451,9 @@ impl<'c> Machine<'c> {
         let evaluated = (|| {
             for arg in args {
                 let v = self.eval(arg)?;
-                held = held.saturating_add(v.size());
+                let total = held.checked_add(v.size()).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))?;
                 self.hold(v.size(), at)?;
+                held = total;
                 values.push(v);
             }
             Ok(())
@@ -379,18 +472,30 @@ impl<'c> Machine<'c> {
         self.spend_bytes(a.size(), at)?;
         let v = match func {
             Func::Len => match &a {
-                Value::Text(t) => Value::Int(i64::try_from(t.chars().count()).unwrap_or(i64::MAX)),
-                Value::List(items) => Value::Int(i64::try_from(items.len()).unwrap_or(i64::MAX)),
+                Value::Text(t) => self.scalar_int(i64::try_from(t.chars().count()).unwrap_or(i64::MAX), at)?,
+                Value::List(items) => self.scalar_int(i64::try_from(items.len()).unwrap_or(i64::MAX), at)?,
                 _ => return Err(err(ErrorReason::TypeMismatch, arg_at(0))),
             },
-            Func::Upper => Value::Text(text(&a, arg_at(0))?.to_uppercase()),
-            Func::Lower => Value::Text(text(&a, arg_at(0))?.to_lowercase()),
+            Func::Upper | Func::Lower => {
+                let text = text(&a, arg_at(0))?;
+                // std uses the same char mappings; contextual lower sigma changes only
+                // sigma's value, not its two-byte UTF-8 length. Keep std's actual output.
+                let bytes = text.chars().try_fold(0usize, |bytes, c| {
+                    let mapped: usize =
+                        if func == Func::Upper { c.to_uppercase().map(char::len_utf8).sum() } else { c.to_lowercase().map(char::len_utf8).sum() };
+                    bytes.checked_add(mapped).ok_or_else(|| err(ErrorReason::ValueTooLarge, at))
+                })?;
+                self.fits(bytes, at)?;
+                Value::Text(if func == Func::Upper { text.to_uppercase() } else { text.to_lowercase() })
+            }
             Func::Trim => Value::Text(text(&a, arg_at(0))?.trim().to_owned()),
             Func::TrimStart => Value::Text(text(&a, arg_at(0))?.trim_start().to_owned()),
             Func::TrimEnd => Value::Text(text(&a, arg_at(0))?.trim_end().to_owned()),
             Func::Chars => {
                 let t = text(&a, arg_at(0))?;
-                self.items(t.chars().count(), at)?;
+                let n = t.chars().count();
+                self.items(n, at)?;
+                self.fits(n.saturating_mul(16).saturating_add(t.len()), at)?;
                 Value::List(t.chars().map(|c| Value::Text(c.into())).collect())
             }
             Func::Contains | Func::Count | Func::IndexOf => {
@@ -402,15 +507,18 @@ impl<'c> Machine<'c> {
                             return Err(err(ErrorReason::EmptySeparator, arg_at(1)));
                         }
                         match func {
-                            Func::Contains => Value::Bool(t.contains(s.as_str())),
-                            Func::Count => Value::Int(i64::try_from(t.matches(s.as_str()).count()).unwrap_or(i64::MAX)),
-                            _ => Value::Int(t.find(s.as_str()).map_or(-1, |byte| i64::try_from(t.get(..byte).map_or(0, |p| p.chars().count())).unwrap_or(-1))),
+                            Func::Contains => self.scalar_bool(t.contains(s.as_str()), at)?,
+                            Func::Count => self.scalar_int(i64::try_from(t.matches(s.as_str()).count()).unwrap_or(i64::MAX), at)?,
+                            _ => self.scalar_int(
+                                t.find(s.as_str()).map_or(-1, |byte| i64::try_from(t.get(..byte).map_or(0, |p| p.chars().count())).unwrap_or(-1)),
+                                at,
+                            )?,
                         }
                     }
                     (Value::List(items), item) => match func {
-                        Func::Contains => Value::Bool(items.contains(item)),
-                        Func::Count => Value::Int(i64::try_from(items.iter().filter(|v| *v == item).count()).unwrap_or(i64::MAX)),
-                        _ => Value::Int(items.iter().position(|v| v == item).map_or(-1, |p| i64::try_from(p).unwrap_or(-1))),
+                        Func::Contains => self.scalar_bool(items.contains(item), at)?,
+                        Func::Count => self.scalar_int(i64::try_from(items.iter().filter(|v| *v == item).count()).unwrap_or(i64::MAX), at)?,
+                        _ => self.scalar_int(items.iter().position(|v| v == item).map_or(-1, |p| i64::try_from(p).unwrap_or(-1)), at)?,
                     },
                     _ => return Err(err(ErrorReason::TypeMismatch, arg_at(0))),
                 }
@@ -418,7 +526,7 @@ impl<'c> Machine<'c> {
             Func::StartsWith | Func::EndsWith => {
                 let b = next()?;
                 let (t, s) = (text(&a, arg_at(0))?, text(&b, arg_at(1))?);
-                Value::Bool(if func == Func::StartsWith { t.starts_with(s) } else { t.ends_with(s) })
+                self.scalar_bool(if func == Func::StartsWith { t.starts_with(s) } else { t.ends_with(s) }, at)?
             }
             Func::Replace => {
                 let (b, c) = (next()?, next()?);
@@ -437,12 +545,26 @@ impl<'c> Machine<'c> {
                 if sep.is_empty() {
                     return Err(err(ErrorReason::EmptySeparator, arg_at(1)));
                 }
-                self.items(t.matches(sep).count().saturating_add(1), at)?;
+                let mut count = 0usize;
+                let mut bytes = 0usize;
+                for part in t.split(sep) {
+                    count += 1;
+                    self.items(count, at)?;
+                    bytes = bytes.saturating_add(16).saturating_add(part.len());
+                    self.fits(bytes, at)?;
+                }
                 Value::List(t.split(sep).map(|p| Value::Text(p.to_owned())).collect())
             }
             Func::Lines => {
                 let t = text(&a, arg_at(0))?;
-                self.items(t.lines().count(), at)?;
+                let mut count = 0usize;
+                let mut bytes = 0usize;
+                for part in t.lines() {
+                    count += 1;
+                    self.items(count, at)?;
+                    bytes = bytes.saturating_add(16).saturating_add(part.len());
+                    self.fits(bytes, at)?;
+                }
                 Value::List(t.lines().map(|p| Value::Text(p.to_owned())).collect())
             }
             Func::Join => {
@@ -526,14 +648,21 @@ impl<'c> Machine<'c> {
                 Value::List(order.into_iter().filter_map(|i| slots.get_mut(i).and_then(Option::take)).collect())
             }
             Func::Text => match a {
-                Value::Int(n) => Value::Text(n.to_string()),
-                Value::Bool(b) => Value::Text(b.to_string()),
+                Value::Int(n) => {
+                    let digits = if n == 0 { 1 } else { n.unsigned_abs().ilog10() as usize + 1 };
+                    self.fits(digits + usize::from(n < 0), at)?;
+                    Value::Text(n.to_string())
+                }
+                Value::Bool(b) => {
+                    self.fits(if b { 4 } else { 5 }, at)?;
+                    Value::Text(b.to_string())
+                }
                 Value::Text(t) => Value::Text(t),
                 Value::List(_) => return Err(err(ErrorReason::TypeMismatch, arg_at(0))),
             },
             Func::Int => match &a {
-                Value::Int(n) => Value::Int(*n),
-                Value::Text(t) => Value::Int(t.trim().parse::<i64>().map_err(|_| err(ErrorReason::InvalidConversion, arg_at(0)))?),
+                Value::Int(n) => self.scalar_int(*n, at)?,
+                Value::Text(t) => self.scalar_int(t.trim().parse::<i64>().map_err(|_| err(ErrorReason::InvalidConversion, arg_at(0)))?, at)?,
                 _ => return Err(err(ErrorReason::TypeMismatch, arg_at(0))),
             },
             Func::First | Func::Last => match a {
@@ -553,6 +682,7 @@ impl<'c> Machine<'c> {
                 let (from, to) = (int(&a, arg_at(0))?, int(&next()?, arg_at(1))?);
                 let n = (i128::from(to) - i128::from(from)).max(0);
                 self.items(usize::try_from(n).unwrap_or(usize::MAX), at)?;
+                self.fits(usize::try_from(n.saturating_mul(24)).unwrap_or(usize::MAX), at)?;
                 Value::List((from..to).map(Value::Int).collect())
             }
             Func::Min | Func::Max => {
@@ -587,11 +717,11 @@ impl<'c> Machine<'c> {
     fn per_item(&mut self, func: Func, args: &[Node], at: usize) -> Result<Value, ExprError> {
         let (Some(list), Some(body)) = (args.first(), args.get(1)) else { return Err(err(ErrorReason::WrongArgumentCount, at)) };
         let Value::List(items) = self.eval(list)? else { return Err(err(ErrorReason::TypeMismatch, list.at)) };
-        let source = items.iter().fold(0usize, |n, v| n.saturating_add(v.size()));
+        let source = items.iter().fold(items.len().saturating_mul(16), |n, v| n.saturating_add(v.size()));
         self.hold(source, at)?;
         let result = self.each(func, items, body, at);
         self.release(source);
-        self.admit(Value::List(result?), at)
+        Ok(Value::List(result?))
     }
 
     fn each(&mut self, func: Func, items: Vec<Value>, body: &Node, at: usize) -> Result<Vec<Value>, ExprError> {

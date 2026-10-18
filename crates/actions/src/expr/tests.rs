@@ -257,7 +257,9 @@ fn one_fuel_budget_covers_every_output() {
     let (mut low, mut high) = (0u64, 1_000_000u64);
     while low + 1 < high {
         let mid = (low + high) / 2;
-        if one.eval(&[], ExprLimits { fuel: mid, ..ExprLimits::default() }, &never).is_ok() {
+        // Input inspection now shares fuel; compare the same admitted scope.
+        let names: Vec<(&str, &Value)> = inputs.iter().map(|(name, value)| (name.as_str(), value)).collect();
+        if one.eval(&names, ExprLimits { fuel: mid, ..ExprLimits::default() }, &never).is_ok() {
             high = mid;
         } else {
             low = mid;
