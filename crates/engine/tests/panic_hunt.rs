@@ -164,6 +164,9 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        "perf.start" | "perf.clear" | "perf.report" => json!({}),
+        // Stop needs a running capture; the hunt checks the refusal never panics.
+        "perf.stop" => json!({}),
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
         "history.extract" => {
@@ -263,6 +266,10 @@ fn typed_template_panic_hunt() {
                             | "run.quote"
                             | "run.start"
                             | "usage.export_csv"
+                            | "perf.start"
+                            | "perf.stop"
+                            | "perf.clear"
+                            | "perf.report"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
