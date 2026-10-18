@@ -5,8 +5,8 @@ the action library (M4) are built and heavily tested, and the current work is co
 the app. Details and exit criteria per milestone: [`docs/plan.md`](docs/plan.md) §7. Work is
 tracked as GitHub issues in milestones; comment `/claim` to take one.
 
-Status is measured from the issues in each milestone as of 2026-10-18: 271 filed, 154 open,
-115 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
+Status is measured from the issues in each milestone as of 2026-10-18: 271 filed, 153 open,
+116 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
 so M1 reads 20/32 where GitHub says 21 closed (#135 was declined rather than built). Status
 describes shipped behaviour, not code that merely exists: a milestone only counts what a person or
 an agent can actually do today.
