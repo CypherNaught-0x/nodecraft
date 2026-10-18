@@ -810,7 +810,15 @@ impl NodeKind for Calls {
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         let outputs = vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Text }];
-        Ok(vec![JobSpec::Generate { node: ctx.node.id, outputs, provider: "mock".into(), model: "m".into(), params: Default::default(), inputs: vec![] }])
+        Ok(vec![JobSpec::Generate {
+            instance: None,
+            node: ctx.node.id,
+            outputs,
+            provider: "mock".into(),
+            model: "m".into(),
+            params: Default::default(),
+            inputs: vec![],
+        }])
     }
 }
 
@@ -824,7 +832,17 @@ fn model_calls_get_their_provider_lane_and_the_source_runner_refuses_them() {
         category: Category::Generation,
         inputs: vec![Port { name: "in".into(), port_type: LIST }],
         outputs: vec![Port { name: "out".into(), port_type: TEXT }],
-        params: ParamSchema::default(),
+        params: ParamSchema {
+            params: vec![nodecraft_types::ParamSpec {
+                name: "model".into(),
+                label: "Model".into(),
+                description: None,
+                control: nodecraft_types::ParamControl::Model,
+                required: false,
+                default: Some(Value::Text("m".into())),
+                visible_if: None,
+            }],
+        },
         quick_add: None,
     };
     kinds.register(Box::new(Calls(calls))).unwrap();
@@ -839,15 +857,40 @@ fn model_calls_get_their_provider_lane_and_the_source_runner_refuses_them() {
         .apply(&mut p)
         .unwrap();
     let canvas = p.canvases().get(&C).unwrap();
-    let Planned::Ready(plan) = crate::planner::plan(canvas, &kinds, &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new()).unwrap() else {
+    assert!(matches!(crate::planner::plan(canvas, &kinds, &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new()).unwrap(), Planned::Blocked(_)));
+    let mut targets = nodecraft_types::TargetSelection::empty();
+    targets.insert(id(2), &nodecraft_types::ProviderTarget::default_instance("mock").unwrap()).unwrap();
+    let Planned::Ready(plan) =
+        crate::planner::plan_with_targets(canvas, &kinds, &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new(), &targets).unwrap()
+    else {
         panic!()
     };
-    let (run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let catalog = crate::admission::tests::free_catalog("m", "mock", "m");
+    let (admitted, _) = crate::admission::admit_default_fixture(plan, C, canvas.clone(), &kinds, &catalog, Default::default()).unwrap();
+    let (run, first) = Run::start_admitted(admitted, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
     let job = first.jobs.first().unwrap();
-    assert_eq!(job.lane, Lane::new("mock"));
+    assert_eq!(job.lane, Lane::for_target(&nodecraft_types::ProviderTarget::default_instance("mock").unwrap()).unwrap());
     let runner = SourceRunner::default();
     runner.register(job.id, run.work(job.id).unwrap().clone());
     let start = Start { job: job.id, lane: job.lane.clone(), attempt: 1, idempotency_key: job.idempotency_key.clone() };
     let outcome = futures::executor::block_on(runner.run(start, crate::driver::CancelToken::default()));
     assert!(matches!(outcome, Outcome::Failed { transient: false, .. }), "{outcome:?}");
+}
+
+#[test]
+fn unadmitted_manual_generate_cannot_escape_as_source_work() {
+    let p = project(&[(1, "source.text", "public")], &[]);
+    let mut plan = plan_of(&p, &[1]);
+    plan.steps[0].jobs = Some(vec![JobSpec::Generate {
+        instance: None,
+        node: id(1),
+        outputs: vec![],
+        provider: "unquoted".into(),
+        model: "unquoted".into(),
+        params: Default::default(),
+        inputs: vec![],
+    }]);
+    let (_, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds(), opts(RUN, 1, RunLimits::default())).unwrap();
+    assert!(first.jobs.is_empty(), "unquoted generation must not be scheduled");
+    assert_eq!(first.failed.len(), 1);
 }

@@ -255,8 +255,16 @@ impl ParamSchema {
     /// `ready` is true, so an unconfigured source can still be placed on the canvas.
     pub fn resolve(&self, supplied: &ParamValues, ready: bool) -> Result<ResolvedParams, Error> {
         self.validate()?;
-        let borrowed = self.resolve_checked(supplied, ready, None)?;
+        let borrowed = self.resolve_checked(supplied, ready, None, false)?;
         Ok(ResolvedParams { values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(), visible: borrowed.visible })
+    }
+
+    /// Borrow effective values without cloning defaults. With `selected`, unrelated node
+    /// parameters are omitted; job maps must pass false to reject every unknown key.
+    /// Callers bounding allocation must admit schema validation/resolution scratch first.
+    pub fn resolve_view<'a>(&'a self, supplied: &'a ParamValues, ready: bool, selected: bool) -> Result<BorrowedResolvedParams<'a>, Error> {
+        self.validate()?;
+        self.resolve_checked(supplied, ready, None, selected)
     }
 
     /// Validate immutable schema data once before checking many instances. The proof borrows
@@ -303,7 +311,7 @@ impl ValidatedParamSchema<'_> {
     /// Uses the same value checks and effective-byte budget as `ParamSchema::resolve`, without
     /// rescanning choice controls or copying large defaults for each instance.
     pub fn resolve_borrowed<'a>(&'a self, supplied: &'a ParamValues, ready: bool) -> Result<BorrowedResolvedParams<'a>, Error> {
-        self.schema.resolve_checked(supplied, ready, Some(&self.choices))
+        self.schema.resolve_checked(supplied, ready, Some(&self.choices), false)
     }
 }
 impl ParamSchema {
@@ -314,6 +322,7 @@ impl ParamSchema {
         supplied: &'a ParamValues,
         ready: bool,
         choices: Option<&BTreeMap<&str, BTreeSet<&str>>>,
+        selected: bool,
     ) -> Result<BorrowedResolvedParams<'a>, Error> {
         let schema = self;
         if supplied.len() > MAX_PARAMS {
@@ -321,6 +330,9 @@ impl ParamSchema {
         }
         let mut bytes = 0_usize;
         for (key, value) in supplied {
+            if selected && !schema.params.iter().any(|spec| spec.name == *key) {
+                continue;
+            }
             let spec = schema.params.iter().find(|spec| spec.name == *key).ok_or_else(|| {
                 if name(key) {
                     Error::new(ErrorKind::InvalidInput, format!("unknown parameter: {key}; migrate this node to the current schema"))
@@ -345,7 +357,11 @@ impl ParamSchema {
         if bytes > MAX_TEXT {
             return Err(invalid("resolved parameters exceed text limit"));
         }
-        let mut values: BTreeMap<&str, &Value> = supplied.iter().map(|(name, value)| (name.as_str(), value)).collect();
+        let mut values: BTreeMap<&str, &Value> = supplied
+            .iter()
+            .filter(|(name, _)| !selected || schema.params.iter().any(|spec| spec.name == **name))
+            .map(|(name, value)| (name.as_str(), value))
+            .collect();
         let mut visible = BTreeSet::new();
         for spec in &schema.params {
             if !values.contains_key(spec.name.as_str())

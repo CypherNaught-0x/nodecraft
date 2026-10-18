@@ -54,6 +54,21 @@ pub(super) fn identity(provider: &str, key: &str) -> Identity {
     *hash.finalize().as_bytes()
 }
 
+pub(super) fn identity_target(provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Identity {
+    let Some(instance) = instance else {
+        return identity(provider, key);
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nodecraft.provider-instance-live.v1\0");
+    hash.update(&u64::try_from(provider.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hash.update(provider.as_bytes());
+    hash.update(&[1]);
+    hash.update(instance.as_bytes());
+    hash.update(&u64::try_from(key.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hash.update(key.as_bytes());
+    *hash.finalize().as_bytes()
+}
+
 pub(super) fn check_key(provider: &str, key: &str) -> Result<(), Error> {
     if provider.len() > MAX_TEXT || key.len() > MAX_TEXT || key.is_empty() {
         Err(Error::new(ErrorKind::InvalidInput, "usage identity is empty or too long"))
@@ -80,6 +95,12 @@ fn all_entries(file: &UsageLogFile) -> impl Iterator<Item = &UsageEntry> {
 }
 
 pub(super) fn check_file_bounds(file: &UsageLogFile) -> Result<(), Error> {
+    if file.provider_identity_version > 1 || (file.provider_identity_version == 1 && file.open_session_ownership == 0) {
+        return Err(bad("unsupported or ambiguous provider identity version"));
+    }
+    if file.provider_identity_version == 0 && all_entries(file).any(|e| e.instance.is_some()) {
+        return Err(bad("scoped charges require provider identity version 1"));
+    }
     if file.open_session_ownership > 2 {
         return Err(bad("unsupported open-session ownership version; use a newer NodeCraft"));
     }
@@ -105,7 +126,7 @@ pub(super) fn check_file_bounds(file: &UsageLogFile) -> Result<(), Error> {
 
 impl Ownership {
     pub(super) fn is_uncertain(&self, e: &UsageEntry) -> bool {
-        self.uncertain.contains(&identity(&e.provider, &e.idempotency_key))
+        self.uncertain.contains(&identity_target(&e.provider, e.instance, &e.idempotency_key))
     }
     pub(super) fn evidence(&self, e: &UsageEntry) -> Option<&LegacyGroupEvidence> {
         self.groups.get(e.session.as_str())?.get(&e.cost.currency)
@@ -156,7 +177,7 @@ impl Ownership {
             }
             for e in all_entries(file).filter(|e| e.status != Charge::Actual && e.cost.micros > 0) {
                 if result.evidence(e).is_some() {
-                    result.uncertain.insert(identity(&e.provider, &e.idempotency_key));
+                    result.uncertain.insert(identity_target(&e.provider, e.instance, &e.idempotency_key));
                 }
             }
             file.sessions = sessions;
@@ -201,18 +222,18 @@ impl Ownership {
                         return Err(bad("ownership indices must be strictly ordered"));
                     }
                     let e = usize::try_from(*index).ok().and_then(|n| entries.get(n)).ok_or_else(|| bad("ownership index out of range"))?;
-                    if e.status == Charge::Actual || e.cost.micros == 0 || result.evidence(e).is_none() {
+                    if e.instance.is_some() || e.status == Charge::Actual || e.cost.micros == 0 || result.evidence(e).is_none() {
                         return Err(bad("invalid uncertain entry"));
                     }
-                    result.uncertain.insert(identity(&e.provider, &e.idempotency_key));
+                    result.uncertain.insert(identity_target(&e.provider, e.instance, &e.idempotency_key));
                     previous = Some(*index);
                 }
             }
             for e in &file.quarantined {
-                if result.evidence(e).is_none() {
+                if e.instance.is_some() || result.evidence(e).is_none() {
                     return Err(bad("quarantined entry has no evidence"));
                 }
-                result.uncertain.insert(identity(&e.provider, &e.idempotency_key));
+                result.uncertain.insert(identity_target(&e.provider, e.instance, &e.idempotency_key));
             }
             let mut sums: BTreeMap<&str, Totals> = BTreeMap::new();
             for e in all_entries(file).filter(|e| result.is_uncertain(e)) {
@@ -229,9 +250,9 @@ impl Ownership {
                 }
             }
         }
-        let mut identities: BTreeMap<Identity, (&str, &str)> = BTreeMap::new();
+        let mut identities: BTreeMap<Identity, (&str, Option<nodecraft_types::ProviderInstanceId>, &str)> = BTreeMap::new();
         for e in all_entries(file) {
-            if identities.insert(identity(&e.provider, &e.idempotency_key), (&e.provider, &e.idempotency_key)).is_some() {
+            if identities.insert(identity_target(&e.provider, e.instance, &e.idempotency_key), (&e.provider, e.instance, &e.idempotency_key)).is_some() {
                 return Err(bad("usage identity collision"));
             }
         }
@@ -257,7 +278,8 @@ impl Ownership {
                 }
             }
         }
-        result.quarantined = std::mem::take(&mut file.quarantined).into_iter().map(|e| (identity(&e.provider, &e.idempotency_key), e)).collect();
+        result.quarantined =
+            std::mem::take(&mut file.quarantined).into_iter().map(|e| (identity_target(&e.provider, e.instance, &e.idempotency_key), e)).collect();
         Ok(result)
     }
 }

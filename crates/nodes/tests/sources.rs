@@ -36,7 +36,7 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
     let mut actual = Vec::new();
     for node in nodes.values() {
         let kind = registry.get(&node.kind).unwrap();
-        actual.extend(kind.plan(&PlanCtx { node, inputs: &[] }).unwrap());
+        actual.extend(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node, inputs: &[] }).unwrap());
     }
     assert_eq!(actual, expected);
     assert_eq!(serde_json::from_str::<Vec<JobSpec>>(&serde_json::to_string(&actual).unwrap()).unwrap(), expected);
@@ -73,7 +73,7 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
             assert_eq!(registry.compatible(&[port]).map(|d| d.id.as_str()).collect::<Vec<_>>(), vec![nodecraft_nodes::router::ID]);
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
             let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()) }];
-            assert!(kind.plan(&PlanCtx { node: &node, inputs: &inputs }).is_err());
+            assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
         }
     }
 }
@@ -84,7 +84,7 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
     for descriptor in registry.descriptors() {
         let kind = registry.get(&descriptor.id).unwrap();
         let node = descriptor.instantiate(NodeId::from_bytes([1; 16]), &ParamValues::new()).unwrap();
-        let result = kind.plan(&PlanCtx { node: &node, inputs: &[] });
+        let result = kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] });
         if descriptor.id == "source.text" {
             assert_eq!(result.unwrap(), vec![JobSpec::Source { node: node.id, output: "out".into(), value: Value::Text(String::new()) }]);
         } else {
@@ -109,7 +109,7 @@ fn tampered_ports_kinds_and_parameters_cannot_be_planned() {
     let mut oversized = valid;
     oversized.params.insert("text".into(), Value::Text("x".repeat(1024 * 1024 + 1)));
     for node in [wrong_kind, wrong_port, unknown_param, wrong_type, oversized] {
-        let error = kind.plan(&PlanCtx { node: &node, inputs: &[] }).unwrap_err();
+        let error = kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] }).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert!(!error.message.contains("never echo"));
     }

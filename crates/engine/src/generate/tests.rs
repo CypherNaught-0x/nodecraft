@@ -15,7 +15,15 @@ fn spec(inputs: Vec<GenerateInput>) -> JobSpec {
     ]
     .into_iter()
     .collect();
-    JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: routes(), provider: "mock".into(), model: "mock-image".into(), params, inputs }
+    JobSpec::Generate {
+        instance: None,
+        node: NodeId::from_bytes([1; 16]),
+        outputs: routes(),
+        provider: "mock".into(),
+        model: "mock-image".into(),
+        params,
+        inputs,
+    }
 }
 
 #[test]
@@ -88,7 +96,15 @@ fn standalone_empty_containers_count_toward_admission() {
 }
 
 fn bare(inputs: Vec<GenerateInput>) -> JobSpec {
-    JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: vec![], provider: "p".into(), model: "m".into(), params: Default::default(), inputs }
+    JobSpec::Generate {
+        instance: None,
+        node: NodeId::from_bytes([1; 16]),
+        outputs: vec![],
+        provider: "p".into(),
+        model: "m".into(),
+        params: Default::default(),
+        inputs,
+    }
 }
 fn param(value: Value) -> JobSpec {
     let mut job = bare(vec![]);

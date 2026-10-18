@@ -61,7 +61,7 @@ fn setup(paid: bool) -> (ProviderRunner, JobBudget) {
     (runner, budget)
 }
 fn has(runner: &ProviderRunner, provider: &str, key: &str) -> bool {
-    runner.lock().handles.contains_key(&(provider.into(), key.into()))
+    runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance(provider).unwrap(), key.into()))
 }
 fn charge(budget: &JobBudget, provider: &str, key: &str) -> Option<(u64, Charge)> {
     budget.log.lock().unwrap().charge(provider, key).map(|e| (e.cost.micros, e.status))
