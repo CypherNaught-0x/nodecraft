@@ -143,26 +143,27 @@ impl Provider for Gated {
 }
 
 #[test]
-fn two_runs_reporting_the_same_failed_generation_advance_the_count_once() {
+fn shared_active_key_is_busy_and_late_older_failure_cannot_regress_restored_generation() {
     let provider = Arc::new(Gated { open: Default::default(), keys: StdMutex::default() });
-    let (runner, _budget) = budgeted(Some(1_000_000));
+    let (runner, budget) = budgeted(Some(1_000_000));
     let shared = |id| Start { idempotency_key: "shared".into(), ..job(id) };
     for id in [1, 2] {
         runner.register(JobId(id), priced(provider.clone(), Some(10)));
     }
-    // Both runs pick their key before either learns that generation 0 failed.
-    let mut a = runner.run(shared(1), CancelToken::default());
-    let mut b = runner.run(shared(2), CancelToken::default());
+    let mut old = runner.run(shared(1), CancelToken::default());
     let waker = futures::task::noop_waker();
-    for run in [&mut a, &mut b] {
-        assert!(run.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
-    }
+    assert!(old.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+    assert!(matches!(block_on(runner.run(shared(2), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+    assert_eq!(*provider.keys.lock().unwrap(), ["shared"], "duplicate must not invoke provider");
+    // Explicit host restore ordering, not two normally admitted concurrent same-key runs:
+    // restoring generation3 while generation0 is pending must survive that older failure.
+    runner.restore_generation("gated", "shared".into(), 3, JobHandle { remote_id: "shared#3".into(), data: serde_json::Value::Null });
     provider.open.store(true, Ordering::SeqCst);
-    assert!(matches!(block_on(a), Outcome::Failed { .. }));
-    assert!(matches!(block_on(b), Outcome::Failed { .. }));
-    assert_eq!(runner.lock().failures.get(&("gated".to_owned(), "shared".to_owned())), Some(&1), "one generation failed, not two");
-    assert_eq!(block_on(runner.run(shared(1), CancelToken::default())), Outcome::Done);
-    assert_eq!(*provider.keys.lock().unwrap(), ["shared", "shared", "shared#1"], "no generation is skipped");
+    assert!(matches!(block_on(old), Outcome::Failed { .. }));
+    assert_eq!(runner.lock().failures.get(&("gated".into(), "shared".into())), Some(&3), "max(existing, captured+1), not regression or skipped generation");
+    assert_eq!(block_on(runner.run(shared(2), CancelToken::default())), Outcome::Done);
+    assert_eq!(*provider.keys.lock().unwrap(), ["shared"], "restored generation resumes without submit");
+    assert_eq!(budget.log.lock().unwrap().charge("gated", "shared#3").unwrap().status, Charge::Actual);
 }
 
 #[test]

@@ -322,6 +322,55 @@ fn usage_exports_in_pages() {
     assert_eq!(rest["next_offset"], Value::Null);
 }
 
+#[test]
+fn usage_snapshot_pagination_observes_finalized_actuals_and_conservative_budget_constructor() {
+    use nodecraft_exec::cost::{Charge, UsageMetadata};
+    let mut log = UsageLog::default();
+    let metadata = |key| UsageMetadata { at_ms: 1, session: "s", node: id(2), provider: "test", model: "m", idempotency_key: key };
+    let mut first = log.reserve_metadata(metadata("first")).unwrap();
+    let mut second = log.reserve_metadata(metadata("second")).unwrap();
+    let _held = log.reserve_metadata(metadata("held")).unwrap();
+    log.finalize_metadata(&mut second, usd(3)).unwrap();
+    log.finalize_metadata(&mut first, usd(2)).unwrap();
+    assert_eq!(log.metadata_statistics().finalized, 2);
+    let budget = BudgetState::from_usage(Budgets::default(), &log, "s");
+    assert_eq!(budget.spent.session.get(&Currency::USD), Some(&usd(5)));
+    assert_eq!(log.charge("test", "first").unwrap().status, Charge::Actual);
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(Arc::new(log)));
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let one = session.dispatch("usage.export_csv", &json!({"limit": 1})).unwrap();
+    assert_eq!(one["total"], 2);
+    assert_eq!(one["next_offset"], 1);
+    assert!(one["csv"].as_str().unwrap().contains(",actual,first"));
+    let two = session.dispatch("usage.export_csv", &json!({"offset": 1, "limit": 1})).unwrap();
+    assert_eq!(two["next_offset"], Value::Null);
+    assert!(two["csv"].as_str().unwrap().contains(",actual,second"));
+
+    let uncertain: UsageLog = serde_json::from_str(include_str!("../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+    let state = BudgetState::from_usage(Budgets::default(), &uncertain, "a");
+    assert_eq!(state.spent.session, uncertain.budget_view("a").admission.session);
+    assert_eq!(state.spent.project, uncertain.budget_view("a").admission.project);
+    assert_ne!(state.spent.session, uncertain.reported_spent("a").session);
+    assert_eq!(state.spent.project, uncertain.reported_spent("a").project);
+}
+
+#[test]
+fn run_quote_consumes_conservative_usage_state_without_changing_reporting() {
+    let uncertain: UsageLog = serde_json::from_str(include_str!("../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+    // 120000 quoted + raw5 fits120007; conservative10 does not.
+    let mut resources = Resources::default();
+    resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
+    resources.insert(BudgetState::from_usage(Budgets { session: Some(usd(120007)), ..Budgets::default() }, &uncertain, "a"));
+    let before = serde_json::to_string(&uncertain).unwrap();
+    let retained = Arc::new(uncertain);
+    resources.insert(UsageSnapshot(Arc::clone(&retained)));
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let quote = session.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(quote["allowed"], false, "{quote}");
+    assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
+}
+
 fn hostile_usage_session() -> (Session, String) {
     let mut log = UsageLog::default();
     let text = "\"\\\n\r\t\u{0000}é".repeat(50);
@@ -714,4 +763,69 @@ fn oversized_requests_and_advisory_values_cannot_authorize_start() {
         assert!(s.enabled("run.quote", &request(&[2])).is_ok());
         assert_eq!(price(&s, &request(&[2])).unwrap().token, before);
     }
+}
+
+#[test]
+fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells() {
+    use nodecraft_exec::cost::{Charge, UsageEntry, UsageMetadata};
+    let mut log = UsageLog::default();
+    let heavy = "\u{1}".repeat(500);
+    let add = |log: &mut UsageLog, n: usize| {
+        log.record(UsageEntry {
+            at_ms: n as u64,
+            session: heavy.clone(),
+            node: id(2),
+            provider: heavy.clone(),
+            model: heavy.clone(),
+            cost: usd(1),
+            idempotency_key: format!("{n:03}{heavy}"),
+            status: Charge::Actual,
+        })
+        .unwrap();
+    };
+    for n in 0..100 {
+        add(&mut log, n)
+    }
+    let metadata = |key| UsageMetadata { at_ms: 101, session: "s", node: id(2), provider: "overlay", model: "m", idempotency_key: key };
+    let mut first = log.reserve_metadata(metadata("first-overlay")).unwrap();
+    let mut second = log.reserve_metadata(metadata("second-overlay")).unwrap();
+    let _held = log.reserve_metadata(metadata("held-not-listed")).unwrap();
+    for n in 100..200 {
+        add(&mut log, n)
+    }
+    log.finalize_metadata(&mut second, usd(3)).unwrap();
+    log.finalize_metadata(&mut first, usd(2)).unwrap();
+    assert_eq!(log.metadata_statistics().held, 1);
+    assert_eq!(log.metadata_statistics().finalized, 2);
+    let expected = log.to_csv();
+    let before = serde_json::to_string(&log).unwrap();
+    let retained = Arc::new(log);
+    let mut resources = Resources::default();
+    resources.insert(UsageSnapshot(retained.clone()));
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources);
+    let header_end = expected.find('\n').unwrap() + 1;
+    let mut joined = expected[..header_end].to_owned();
+    let mut offset = 0;
+    let mut pages = 0;
+    loop {
+        let page = session.dispatch("usage.export_csv", &json!({"offset":offset})).unwrap();
+        assert_eq!(page["total"], 202);
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 768 * 1024);
+        let csv = page["csv"].as_str().unwrap();
+        joined.push_str(&csv[header_end..]);
+        pages += 1;
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset);
+                offset = next
+            }
+            None => break,
+        }
+    }
+    assert!(pages > 1, "actual encoded byte ceiling must split this fixture");
+    assert_eq!(joined, expected);
+    assert!(!joined.contains("held-not-listed"));
+    assert!(joined.find("first-overlay").unwrap() < joined.find("second-overlay").unwrap());
+    assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
+    assert_eq!(retained.metadata_statistics().finalized, 2, "read-only export must not flush overlays");
 }

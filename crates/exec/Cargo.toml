@@ -24,3 +24,7 @@ futures = { workspace = true }
 [dev-dependencies]
 futures = { workspace = true, features = ["executor", "thread-pool"] }
 proptest.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Exact pin: safe allocator instrumentation for allocation-free finalization regressions.
+allocation-counter = "=0.8.1"
