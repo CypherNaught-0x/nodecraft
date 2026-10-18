@@ -23,6 +23,9 @@ mod error;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
+/// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
+#[cfg(any(test, feature = "testkit"))]
+pub mod mock;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
 mod provider;
@@ -40,3 +43,7 @@ pub use provider::{
     BoxFuture, CancelSignal, Clock, Completed, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Submission, Usage,
 };
 pub use task::{DEFAULT_JOB_DEADLINE_MS, Downloaded, RunFailure, RunLimits, RunUpdate, check_media, fetch_output, resume, run_to_completion};
+
+#[cfg(test)]
+#[path = "mock/tests.rs"]
+mod mock_tests;

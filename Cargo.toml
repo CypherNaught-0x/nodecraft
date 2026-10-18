@@ -27,6 +27,7 @@ nodecraft-agent = { path = "crates/agent" }
 nodecraft-automation = { path = "crates/automation" }
 nodecraft-ui-egui = { path = "crates/ui-egui" }
 nodecraft-testkit = { path = "crates/testkit" }
+nodecraft-provider-testkit = { path = "crates/provider-testkit" }
 
 # craft-libs, pinned by immutable rev (bump deliberately, one PR per bump)
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["serde"] }
