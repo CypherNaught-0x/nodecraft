@@ -148,8 +148,47 @@ fn free_beats_paid_in_any_currency_on_a_tie_and_currencies_never_compare() {
     ]
     .concat();
     let catalog = Catalog::from_toml(&toml).unwrap();
-    // Free first; EUR and USD don't compare as amounts, so the id breaks their tie.
+    // Free first; then currencies group by code (EUR before USD), never compared as amounts.
     assert_eq!(ids(&catalog.select(&Request { wiring: prompt_only(), ..Request::default() }).ranked), ["y.free", "x.euro", "z.usd"]);
+}
+
+#[test]
+fn the_price_order_is_transitive_for_every_input_order() {
+    // Same quality and latency, so price decides. A pairwise "different currencies tie" rule
+    // would make these three cyclic (a < b, b < c by id, c < a by USD amount).
+    let models = [
+        model("a.usd_expensive", "a", 10, 3, r#"{ type = "per_call", price = "0.010000 USD" }"#, PROMPT),
+        model("b.eur", "b", 10, 3, r#"{ type = "per_call", price = "0.005000 EUR" }"#, PROMPT),
+        model("c.usd_cheap", "c", 10, 3, r#"{ type = "per_call", price = "0.001000 USD" }"#, PROMPT),
+        model("d.free", "d", 10, 3, r#"{ type = "free" }"#, PROMPT),
+        model("e.usage", "e", 10, 3, r#"{ type = "by_usage", currency = "USD" }"#, PROMPT),
+    ];
+    let expected = ["d.free", "b.eur", "c.usd_cheap", "a.usd_expensive", "e.usage"];
+    let catalog = Catalog::from_toml(&models.concat()).unwrap();
+    let choices = catalog.select(&Request { wiring: prompt_only(), ..Request::default() }).ranked;
+    assert_eq!(ids(&choices), expected);
+    // The comparator itself, over every ordered triple: transitive and antisymmetric.
+    for x in &choices {
+        for y in &choices {
+            assert_eq!(rank(Effort::Balanced, x, y), rank(Effort::Balanced, y, x).reverse());
+            for z in &choices {
+                if rank(Effort::Balanced, x, y).is_lt() && rank(Effort::Balanced, y, z).is_lt() {
+                    assert!(rank(Effort::Balanced, x, z).is_lt(), "{} < {} < {}", x.model.id, y.model.id, z.model.id);
+                }
+            }
+        }
+    }
+    // Sorting any permutation gives the same order.
+    let mut rotated = choices.clone();
+    for _ in 0..rotated.len() {
+        rotated.rotate_left(1);
+        let mut sorted = rotated.clone();
+        sorted.sort_by(|a, b| rank(Effort::Balanced, a, b));
+        assert_eq!(ids(&sorted), expected);
+        sorted.reverse();
+        sorted.sort_by(|a, b| rank(Effort::Balanced, a, b));
+        assert_eq!(ids(&sorted), expected);
+    }
 }
 
 #[test]

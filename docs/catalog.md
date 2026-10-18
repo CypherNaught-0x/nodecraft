@@ -61,8 +61,10 @@ default = { type = "unsigned", value = "1" }
   - *best*: best quality, then quickest;
   - *balanced*: quality minus a waiting penalty of 0 up to 30 s, 1 up to 2 min, and 2 beyond.
 
-  Ties go to free models, then known prices before usage-priced ones, then the cheaper price
-  within one currency (currencies are never compared), then the id.
+  Ties go to free models, then known prices grouped by currency code (alphabetically; amounts
+  in different currencies are never compared) and cheaper first within a currency, then
+  usage-priced models, then the id. The order is total, so ranking is the same for any input
+  order.
 
   While a budget is set, usage-priced models and models priced in another currency are refused,
   since they can't be shown to fit. Every refused model keeps its reason. When nothing fits,

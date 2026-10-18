@@ -173,18 +173,17 @@ fn wait_penalty(latency_s: u32) -> i32 {
     }
 }
 
-/// Free first, then known prices before usage-priced ones; within one currency, cheaper first.
-/// Prices in different currencies aren't comparable, so they tie (the id decides).
+/// Free first, then known prices, then usage-priced ones. Known prices are grouped by currency
+/// code (alphabetically; amounts in different currencies are never compared as values) and
+/// ordered cheaper first within a currency. A lexicographic key, so the order is total and
+/// transitive, as `sort_by` requires.
 fn by_price(a: Option<Money>, b: Option<Money>) -> Ordering {
-    let rank = |p: Option<Money>| match p {
-        Some(p) if p.micros == 0 => 0u8,
-        Some(_) => 1,
-        None => 2,
+    let key = |p: Option<Money>| match p {
+        Some(p) if p.micros == 0 => (0u8, String::new(), 0u64),
+        Some(p) => (1, String::from(p.currency), p.micros),
+        None => (2, String::new(), 0),
     };
-    rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
-        (Some(a), Some(b)) if a.currency == b.currency => a.micros.cmp(&b.micros),
-        _ => Ordering::Equal,
-    })
+    key(a).cmp(&key(b))
 }
 
 fn rank(effort: Effort, a: &Choice<'_>, b: &Choice<'_>) -> Ordering {
