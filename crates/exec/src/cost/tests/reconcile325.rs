@@ -556,3 +556,29 @@ fn a_stage_of_one_group_does_not_spend_another_groups_review() {
     log.reconcile_ownership(&stage(&log, Holder::Named, &[], &["a1"]), 1).unwrap();
     assert_eq!(log.ownership_group("b", Currency::USD).unwrap().token, b_token, "named-only stages leave the earlier total alone");
 }
+
+#[test]
+fn a_group_past_the_exception_limit_splits_in_bounded_stages() {
+    // 1,500 charges of 1: 750 were in the named total and 750 folded, a split no default holder
+    // plus 1,000 exceptions can express in one decision.
+    let keys: Vec<String> = (0..1_500).map(|n| format!("k{n:04}")).collect();
+    let opens: Vec<(&str, &str, u64)> = keys.iter().map(|k| ("a", k.as_str(), 1)).collect();
+    let mut log = legacy(&opens, &[("a", 750)], 750);
+    let named: Vec<&str> = keys.iter().take(750).map(String::as_str).collect();
+    let folded: Vec<&str> = keys.iter().skip(750).map(String::as_str).collect();
+    let mut first = stage(&log, Holder::Named, &[], &named);
+    first.only.as_mut().unwrap().extend(folded.iter().take(250).map(|k| ("t".to_owned(), (*k).to_owned())));
+    first.except = folded.iter().take(250).map(|k| ("t".to_owned(), (*k).to_owned())).collect();
+    let record = log.reconcile_ownership(&first, 1).unwrap();
+    assert!(record.partial);
+    assert_eq!((record.charges.len(), record.moved_from_earlier), (1_000, usd(250)));
+    let mut log = reload(&log);
+    let rest: Vec<&str> = folded.iter().skip(250).copied().collect();
+    let last = log.reconcile_ownership(&stage(&log, Holder::Earlier, &[], &rest), 2).unwrap();
+    assert!(!last.partial);
+    assert_eq!(last.moved_from_earlier, usd(500));
+    let log = reload(&log);
+    assert_eq!(log.ownership_groups().count(), 0);
+    assert_eq!(log.reported_spent("a").session.get(&Currency::USD), Some(&usd(1_500)));
+    assert_eq!(log.reported_spent(EARLIER_SESSIONS).session.get(&Currency::USD), Some(&usd(0)));
+}
