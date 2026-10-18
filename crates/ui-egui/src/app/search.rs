@@ -7,6 +7,10 @@ fn search_id(id: &str) -> bool {
     matches!(id, "canvas.search_open" | "canvas.search_query" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close")
 }
 impl NodeCraftApp {
+    /// Exact live search commands, for trusted frontend dispatch through this app host.
+    pub fn is_search_command(id: &str) -> bool {
+        search_id(id)
+    }
     pub(super) fn search_input_id(&self) -> egui::Id {
         egui::Id::new("canvas_search_query").with(self.canvas)
     }
