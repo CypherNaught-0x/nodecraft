@@ -52,7 +52,8 @@ fn keep_unrecovered(recovery: &std::path::Path) -> Result<Option<PathBuf>, Error
         if !kept.exists() {
             std::fs::copy(recovery, &kept).map_err(unreadable)?;
             // On disk before the original is checkpointed over.
-            std::fs::File::open(&kept).and_then(|file| file.sync_all()).map_err(unreadable)?;
+            // Windows flushes only files opened for writing.
+            std::fs::OpenOptions::new().write(true).open(&kept).and_then(|file| file.sync_all()).map_err(unreadable)?;
             return Ok(Some(kept));
         }
     }
