@@ -16,6 +16,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
+| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 
 ## Chat conversations and tools
 
@@ -262,3 +263,81 @@ deadline still requests best-effort cancellation when a handle exists. Provider-
 `metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
 duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
 nor a typed runtime-usage schema is supplied by this safety follow-up.
+
+
+## fal.ai queue models
+
+The optional `fal` feature supports five explicit live aliases, checked against official HTTP
+schemas on 2026-10-18: `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
+`fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, and `fal-ai/esrgan`. These names are not
+immutable weight versions; upstream schema/model availability can change. Hosts inject a Secret
+and HTTP transport. The library never reads credentials, project keys or live-test variables.
+It does not supply a desktop paid-run service or production canvas media-input resolver.
+
+FLUX requests 512–1024 dimensions in multiples of 64, one to four PNG outputs, one to four steps
+and optional u32 seed. Wan selects 480p/16fps, 17–81 frames and three aspect ratios, explicitly
+turning interpolation off. Kokoro selects af_heart/am_adam and speed 0.5–2.0, returning WAV.
+Trellis selects resolution 512 and one inline image, returning GLB2. ESRGAN selects scale2,
+RealESRGAN_x4plus, face=false and PNG. Advanced/unknown parameters and extra roles refuse
+before HTTP. Image-to-3D/upscale input contracts are direct-adapter capabilities; their engine
+fixtures use an explicitly test-only immutable asset resolver. No shipping resolver is implied.
+
+The catalog uses ByUsage USD for FLUX/Wan/Kokoro/ESRGAN: unknown is not zero/free. Every finite
+budget cap refuses an unknown paid quote before invocation; an uncapped host still needs actual
+run.quote/run.start partial-price consent. Trellis512 has a dated 0.25 USD per-call estimate,
+verified from the [official endpoint](https://fal.ai/models/fal-ai/trellis-2/api?platform=http).
+Absent monetary usage never becomes a provider-observed invoice: existing runner estimate
+fallback is separate. Unknown-price completions may have no numeric money row, not free work.
+
+Accepted receipts publish a versioned handle before polling, even for already-completed work.
+Persist it to resume after restart without another create. Model-specific operation roots are
+explicitly allowlisted: FLUX uses fal-ai/flux, Wan fal-ai/wan, Kokoro fal-ai/kokoro, Trellis and
+ESRGAN their complete model names. Request IDs are one ASCII alphanumeric/hyphen/underscore
+segment, up to 128 bytes; percent escapes, slashes, dots and URL normalization aliases refuse.
+Only FLUX additionally accepts the full-root status/result(/response)/cancel family printed
+in the [generic queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue).
+Families cannot be mixed. Cancellation uses an admitted RETURNED URL; the short-root /cancel
+allowlist composes the generic cancellation contract with each official model HTTP app root,
+not observed per-model paid receipts. Missing/unknown routes refuse, never get guessed.
+
+No ambiguous create is automatically replayed. X-Fal-No-Retry and disabled fallback are sent,
+but these headers and local idempotency keys do not establish remote billing deduplication.
+Cancellation is best effort, including ALREADY_COMPLETED/NOT_FOUND, and is not nonbilling
+proof. Local poll/result/download/validation failures retain an accepted handle and unfinished
+run ownership; only validated remote terminal failure ends that generation. A retained handle
+cannot guarantee remote CDN retention: expired outputs can remain lost without paid replay.
+No partial Completed is published after a later output fails validation.
+
+API and CDN requests use the explicit no-redirect transport operation. Queue origin alone gets
+auth; output requests carry none. CDN URLs must be HTTPS fal.media or DNS-label subdomains,
+without credentials/explicit ports/fragments; bounded signed queries stay opaque and out of
+errors. Other storage hosts refuse safely. Builtin browser transport refuses no-redirect
+before fetch; successful wasm compilation does not imply browser fal networking support.
+
+Operation limits are lower-only: one PNG/JPEG/WebP input at most 1 MiB / 1024²; aggregate text and
+parameter strings 16 KiB; serialized request 2 MiB; API body 2 MiB; metadata 256 KiB; JSON depth 32 and
+4096 items. Four output files maximum, 16 MiB each / 48 MiB total; image axes 4096 and aggregate
+16,777,216 pixels. Every descriptor is admitted before downloads; actual HTTP body caps shrink
+with remaining aggregate capacity. Full image codecs and actual geometry are checked; WAV,
+MP4 and GLB2 receive bounded container-envelope validation, not complete audio/video/mesh codec
+or playback validation. Media names/MIME alone never validate bytes. All returned files survive
+in order on success. Asset/graph conversion quotas can still refuse with original paid
+CompletionDelivery retained by the host; adapter errors before Completed retain only the
+accepted remote handle, not a hidden partial-file cache.
+
+Known-owner worksheet (MiB): borrowed input/text2; input inspection2+combined decoded/rotation128
++scratch1=131; URI/request/native body clone/API reply/metadata/scratch phase 12; metadata phase 6;
+download validation2+metadata1+API reply2+media48+Vec-to-Arc overlap16+combined decoded/rotation128
++scratch1=198. Separate bounded container/admin allowance 4 gives 202 MiB conservative logical
+payload envelope. Pixel/orientation objects drop before the next codec/encoder phase.16-bit
+PNG and orientation are included. Existing media preflight uses decoder.total_bytes plus an
+orientation copy against 128 MiB; most codecs ignore their private allocation limit. The 202 MiB
+worksheet is NOT total allocator calls/RSS or a private codec-workspace bound. Codec-private
+workspace, allocator overhead, transport/TLS/kernel buffering, caller graph/history and other
+concurrent jobs are additional. Actual retained capacities and copies are audited separately.
+
+Unit/engine/native tests use synthetic official-shape JSON and originally authored small media,
+not authenticated receipts or paid output. The ignored live test requires fresh human spending
+authorization, explicit --ignored, NODECRAFT_LIVE_FAL=1 and
+NODECRAFT_LIVE_FAL_ACKNOWLEDGE_COST=1 BEFORE reading test-only FAL_KEY. It requests one small
+FLUX image; normal CI never runs it. No paid call was used for adapter validation.

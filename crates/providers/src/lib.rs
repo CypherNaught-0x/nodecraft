@@ -20,6 +20,8 @@
 pub mod comfyui;
 mod delivery;
 mod error;
+#[cfg(feature = "fal")]
+pub mod fal;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;

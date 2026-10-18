@@ -36,7 +36,7 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 [dev-dependencies]
 nodecraft-provider-testkit = { workspace = true }
 # Exercise the real image adapter through the runner, not only a policy fixture.
-nodecraft-providers = { workspace = true, features = ["openai-images", "replicate"] }
+nodecraft-providers = { workspace = true, features = ["openai-images", "replicate", "fal"] }
 nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
