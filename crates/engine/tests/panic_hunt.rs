@@ -109,7 +109,7 @@ fn template(id: &str) -> (Session, Value) {
             has_query: true,
         }));
         session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
-
+    }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
         session.swap_resource(Some(RunCatalog(std::sync::Arc::new(nodecraft_catalog::Catalog::builtin().unwrap()))));
@@ -222,7 +222,6 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_next"
                             | "canvas.search_previous"
                             | "canvas.search_close"
-
                             | "run.quote"
                             | "run.start"
                             | "usage.export_csv"
