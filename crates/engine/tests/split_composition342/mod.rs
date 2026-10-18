@@ -130,7 +130,7 @@ fn corrupt_native_source_or_existing_tile_never_gets_repaired_by_the_split() {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("project.json", options).unwrap();
-        zip.write_all(&serde_json::to_vec(&json!({"version":2,"epoch":0,"project":project})).unwrap()).unwrap();
+        zip.write_all(&serde_json::to_vec(&json!({"version":4,"epoch":0,"project":project})).unwrap()).unwrap();
         let bad_input = vec![b'x'; input.len()];
         let bad_tile = vec![b'x'; tile.len()];
         let mut bodies = [

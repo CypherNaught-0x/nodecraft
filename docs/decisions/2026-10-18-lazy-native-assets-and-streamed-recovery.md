@@ -2,8 +2,12 @@
 
 Native storage explicitly advertises a streaming capability and uses immutable typed archive,
 checkpoint and replay plans. Frozen small v1 and NCRJ0001 remain bounded compatibility paths;
-container v2 adds canonical stored ZIP64 and large extents while retaining the frozen-v1 graph
-role gate. This version allocation does not implement the separate newer-graph format proposal.
+container v4 adds canonical stored ZIP64 and large extents while retaining the frozen-v1 graph
+role gate. Versions 2/3 remain assigned to Comments/Tags (#194/#199). Streaming uses archive v4 and
+NCRJ0004; its small compatible output stays v1. Incompatible families return Unsupported
+before decoding graph payloads or checkpoint lengths. The unmerged streaming-v2 prototype
+has no published compatibility promise. This resolves #359 without reinterpreting the genuine
+Comments-v2 fixtures or assigning two layouts to one magic.
 
 Indexed descriptors are unverified. Native Open copies/revalidates a self-contained private base
 before installing state, so external overwrite/deletion cannot invalidate recovery. Body checks

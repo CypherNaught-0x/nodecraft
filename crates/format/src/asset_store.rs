@@ -723,7 +723,7 @@ mod cache_lifetime147 {
         assert_eq!(context.retained_usage().unwrap(), (0, 0));
         assert_eq!(cache_size(&context), (1, 3));
         let project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([42; 16]), "Public fixture").unwrap();
-        let json = serde_json::to_vec(&serde_json::json!({"version":2,"epoch":0,"project":project})).unwrap();
+        let json = serde_json::to_vec(&serde_json::json!({"version":4,"epoch":0,"project":project})).unwrap();
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         writer.start_file("project.json", options).unwrap();

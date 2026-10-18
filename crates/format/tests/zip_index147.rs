@@ -48,7 +48,7 @@ impl AssetSource for Meter {
 #[test]
 fn actual_pinned_writer_classic_and_forced_zip64_are_indexed_without_asset_reads() {
     for forced in [false, true] {
-        let bytes = encoded(2, forced, &vec![53; 1024 * 1024]);
+        let bytes = encoded(4, forced, &vec![53; 1024 * 1024]);
         let mut zip = ZipArchive::new(Cursor::new(&bytes)).unwrap();
         let file = zip.by_index(1).unwrap();
         let start = file.data_start().unwrap();
@@ -57,8 +57,8 @@ fn actual_pinned_writer_classic_and_forced_zip64_are_indexed_without_asset_reads
         let input = AssetRange::new(source.clone(), 0, source.byte_len()).unwrap();
         let metrics = StreamMetrics::default();
         let index = ArchiveIndex::read(&input, &TransferCancel::default(), &metrics).unwrap();
-        assert_eq!(index.version(), 2);
-        assert_eq!(index.manifest(), b"{\"version\":2}");
+        assert_eq!(index.version(), 4);
+        assert_eq!(index.manifest(), b"{\"version\":4}");
         assert_eq!(index.entries().len(), 2);
         let asset = index.entries().iter().find(|e| matches!(e.name, EntryName::Asset(_))).unwrap();
         assert_eq!(asset.data_offset, start);
@@ -79,7 +79,7 @@ fn legacy_constraints_and_raw_version_gate_remain_explicit() {
 }
 #[test]
 fn hostile_metadata_and_manifest_crc_refuse_before_any_asset_verification() {
-    let original = encoded(2, false, b"payload");
+    let original = encoded(4, false, b"payload");
     let index = ArchiveIndex::read(&range(original.clone()), &TransferCancel::default(), &StreamMetrics::default()).unwrap();
     let body = index.entries().iter().find(|e| matches!(e.name, EntryName::Asset(_))).unwrap().data_offset as usize;
     let mut payload_corrupt = original.clone();
@@ -208,7 +208,7 @@ fn virtual_large() -> VirtualZip {
     virtual_with_length(u32::MAX as u64 + 1)
 }
 fn virtual_with_length(length: u64) -> VirtualZip {
-    let manifest = b"{\"version\":2}";
+    let manifest = b"{\"version\":4}";
     let name = format!("assets/{}", "0".repeat(64));
     let mut beginning = local(b"project.json", manifest.len() as u64, crc32fast::hash(manifest), false);
     beginning.extend_from_slice(manifest);
@@ -288,7 +288,7 @@ fn zip64_threshold_sentinels_and_extra_fields_are_not_truncated_or_guessed() {
         assert_eq!(index.entries().get(1).unwrap().data.byte_len(), length);
         assert_eq!(source.body_reads.load(Ordering::Relaxed), 0);
     }
-    let original = encoded(2, true, b"fixture");
+    let original = encoded(4, true, b"fixture");
     let index = ArchiveIndex::read(&range(original.clone()), &TransferCancel::default(), &StreamMetrics::default()).unwrap();
     let central_asset = index.identity().directory_offset as usize + 46 + b"project.json".len();
     let extra = central_asset + 46 + 71;

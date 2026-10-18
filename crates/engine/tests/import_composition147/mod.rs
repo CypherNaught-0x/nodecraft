@@ -98,7 +98,7 @@ fn archive(path: &std::path::Path, project: &Project, hash: nodecraft_types::Bla
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("project.json", options).unwrap();
-    zip.write_all(&serde_json::to_vec(&json!({"version":2,"epoch":0,"project":project})).unwrap()).unwrap();
+    zip.write_all(&serde_json::to_vec(&json!({"version":4,"epoch":0,"project":project})).unwrap()).unwrap();
     zip.start_file(format!("assets/{hash}"), options).unwrap();
     zip.write_all(body).unwrap();
     zip.finish().unwrap();

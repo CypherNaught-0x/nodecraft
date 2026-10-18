@@ -254,7 +254,7 @@ fn zip_checks(path: &Path, large: Blake3, tiny: Blake3, bytes: u64, heavy: bool,
     let input = file_range(path);
     let index = ArchiveIndex::read(&input, &TransferCancel::default(), metrics).unwrap();
     // Small calibration fits frozen wire1; the real >4GiB proof must remain wire2.
-    assert_eq!(index.version(), if heavy { 2 } else { 1 });
+    assert_eq!(index.version(), if heavy { 4 } else { 1 });
     let large_entry = index.entries().iter().find(|e| e.name == EntryName::Asset(large)).unwrap();
     let tiny_entry = index.entries().iter().find(|e| e.name == EntryName::Asset(tiny)).unwrap();
     assert_eq!(large_entry.data.byte_len(), bytes);
@@ -371,7 +371,7 @@ fn run_roundtrip(bytes: u64, heavy: bool) {
     let recovery = second.join("recovery");
     let mut envelope = [0; 80];
     File::open(&recovery).unwrap().read_exact(&mut envelope).unwrap();
-    assert_eq!(&envelope[..8], b"NCRJ0002");
+    assert_eq!(&envelope[..8], b"NCRJ0004");
     assert_eq!(u64::from_le_bytes(envelope[8..16].try_into().unwrap()), a);
     assert!(std::fs::metadata(&recovery).unwrap().len() > j);
     {

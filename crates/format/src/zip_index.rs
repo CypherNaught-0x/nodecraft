@@ -199,7 +199,7 @@ impl ArchiveIndex {
                     return Err(invalid("format v1 requires legacy classic ZIP size limits"));
                 }
             }
-            2 => {}
+            4 => {}
             _ => return Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter")),
         }
         cancel.check()?;

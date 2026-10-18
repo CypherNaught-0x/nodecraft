@@ -126,7 +126,7 @@ fn archive(project: &Project, hash: Blake3, body: &[u8]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     writer.start_file("project.json", options).unwrap();
-    writer.write_all(&serde_json::to_vec(&serde_json::json!({"version":2,"epoch":0,"project":project})).unwrap()).unwrap();
+    writer.write_all(&serde_json::to_vec(&serde_json::json!({"version":4,"epoch":0,"project":project})).unwrap()).unwrap();
     writer.start_file(format!("assets/{hash}"), options).unwrap();
     writer.write_all(body).unwrap();
     writer.finish().unwrap().into_inner()
@@ -173,7 +173,7 @@ fn empty_native_saved_bytes_open_in_frozen_small_decoder_without_changing_capabi
     let checkpoint = nodecraft_format::CheckpointPlan::new(plan.clone()).unwrap();
     let mut journal = Vec::new();
     checkpoint.write_to(&mut journal, &cancel, &metrics).unwrap();
-    assert_eq!(&journal[..8], b"NCRJ0002");
+    assert_eq!(&journal[..8], b"NCRJ0004");
     assert_eq!(&journal[80..], bytes);
     assert_eq!(checkpoint.archive().digest(), plan.digest());
 }

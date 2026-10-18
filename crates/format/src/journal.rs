@@ -239,6 +239,9 @@ impl RecoveryDamageReason {
 }
 
 pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
+    if bytes.get(..4) == Some(b"NCRJ") && bytes.get(..8).is_some_and(|magic| magic != MAGIC) {
+        return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Unsupported, "unsupported recovery checkpoint version"));
+    }
     if bytes.len() > MAX_JOURNAL_BYTES || bytes.get(..8) != Some(MAGIC.as_slice()) {
         return Err(invalid("invalid recovery file or size limit exceeded"));
     }

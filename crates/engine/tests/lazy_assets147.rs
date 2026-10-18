@@ -413,7 +413,7 @@ fn corrupt_chosen_and_restored_history_refuse_before_append_but_other_inactive_b
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     writer.start_file("project.json", options).unwrap();
-    writer.write_all(&serde_json::to_vec(&json!({"version":2,"epoch":0,"project":graph})).unwrap()).unwrap();
+    writer.write_all(&serde_json::to_vec(&json!({"version":4,"epoch":0,"project":graph})).unwrap()).unwrap();
     for (hash, body) in [(good, PNG), (bad, b"evil".as_slice())] {
         writer.start_file(format!("assets/{hash}"), options).unwrap();
         writer.write_all(body).unwrap();
@@ -782,7 +782,7 @@ fn unknown_reader_duplicate_never_repairs_corrupt_indexed_content() {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("project.json", options).unwrap();
-    zip.write_all(&serde_json::to_vec(&json!({"version":2,"epoch":0,"project":graph})).unwrap()).unwrap();
+    zip.write_all(&serde_json::to_vec(&json!({"version":4,"epoch":0,"project":graph})).unwrap()).unwrap();
     zip.start_file(format!("assets/{hash}"), options).unwrap();
     zip.write_all(b"evil").unwrap();
     let dir = tempfile::tempdir().unwrap();

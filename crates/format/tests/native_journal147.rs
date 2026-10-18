@@ -42,7 +42,7 @@ fn checkpoint_plan_reserves_before_publication_binds_host_and_clones_one_claim()
     let mut expected = Vec::new();
     plan.write_to(&mut expected, &cancel, &metrics).unwrap();
     assert_eq!(bytes, expected);
-    assert_eq!(&bytes[..8], b"NCRJ0002");
+    assert_eq!(&bytes[..8], b"NCRJ0004");
     assert!(storage.checkpoint_plan(&plan, &cancel, &metrics).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }

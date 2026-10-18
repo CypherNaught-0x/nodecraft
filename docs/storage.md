@@ -15,24 +15,29 @@ with a failed checkpoint still reports `saved: true`, adopts its savepoint, and 
 successful checkpoint before editing.
 
 Native output selects numeric wire v1 when the actual stored-ZIP layout fits every frozen
-small limit and uses no ZIP64 field or footer; otherwise it selects numeric v2. This does not
+small limit and uses no ZIP64 field or footer; otherwise it selects numeric v4. This does not
 change native capability: both outputs stay sealed StreamingV2 plans, and byte-only defaults
-still refuse them before I/O. Native checkpoints retain the 80-byte NCRJ0002 envelope even
-when the embedded archive is v1. Existing numeric-v2 archives remain readable.
+still refuse them before I/O. Native checkpoints retain the 80-byte NCRJ0004 envelope even
+when the embedded archive is v1. Wire versions 2 and 3 belong to the Comments/Tags graph families and are refused here.
+The unmerged streaming-v2 prototype is not a supported on-disk format.
 
 Small/default hosts keep frozen v1 and NCRJ0001. V1 is buffered: 16 MiB per asset, 48 MiB total,
 64 MiB archive, 4 MiB manifest, 1,024 assets; frames are 64 MiB, journal 128 MiB. Compatibility
 defaults reject large/lazy plans before reads or byte-method writes. Wasm builds retain this
 fallible capability boundary; a browser streaming host is not supplied here.
 
-Native container v2 admits canonical stored ZIP64: 8 GiB per asset, 64 GiB total retained logical
+Native container v4 admits canonical stored ZIP64: 8 GiB per asset, 64 GiB total retained logical
 assets, 65 GiB archive, 4 MiB manifest and 1,024 assets. Directory metadata is at most 512 KiB and
 1,025 entries including `project.json`. Compression, encryption, archive comments, directories,
 symlinks, split archives, duplicate/overlapping/hidden extents and arbitrary names are rejected.
 Only `project.json` and `assets/<lowercase BLAKE3>` regular entries are accepted. Local/directory
 metadata, ZIP64 sentinels/extras/footer and CRC declarations must agree. V1 does not accept ZIP64.
 Version admission precedes typed graph decoding; v1 graph compatibility remains checked under
-v2, and no external format proposal is silently assigned the same version meaning.
+v4. Graph schema versions 2/3 are reserved for #194/#199; a later integration must
+explicitly combine their graph gates with this streaming container.
+
+The historical physical runs below used the unmerged prototype v2 headers. They establish
+streaming mechanics and byte counts, not a fresh physical run of the v4 allocation.
 
 ## Lazy admission and verified consumption
 
@@ -139,7 +144,7 @@ retains its charge and cleanup debt. No quota maximum is preallocated. A prepare
 promoted into a reserved base before a destination atomic stage uses the serialized staging
 allowance. Pinned old generations can cause safe prepublication refusal.
 
-NCRJ0002 begins with an 80-byte envelope: magic, archive length, archive BLAKE3 and a domain-bound
+NCRJ0004 begins with an 80-byte envelope: magic, archive length, archive BLAKE3 and a domain-bound
 header digest. Checkpoint identity binds archive length/digest; every tail frame binds identity
 and monotonic sequence. Frames are at most 65 GiB, tails 65 GiB, journals 132 GiB and record JSON
 16 MiB. Distinct recorded asset identities/lengths stay within 1,024/64 GiB until a successful

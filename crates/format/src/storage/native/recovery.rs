@@ -1,4 +1,4 @@
-//! NCRJ2 recovery: immutable checkpoint authority and one aggregate frame-body stage.
+//! NCRJ4 recovery: immutable checkpoint authority and one aggregate frame-body stage.
 //! Outer physical damage wins over inner semantic damage; cancellation/I/O remain errors.
 use super::*;
 use crate::{
@@ -203,8 +203,8 @@ pub(super) fn recover(
         file.take(MAX_JOURNAL_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| io_error("cannot read legacy recovery"))?;
         return Ok(NativeRecovered { recovered: crate::journal::recover(&bytes)?, wire: durability::Wire::Legacy });
     }
-    if &magic != b"NCRJ0002" {
-        return Err(invalid("unsupported recovery checkpoint version"));
+    if &magic != b"NCRJ0004" {
+        return Err(Error::new(ErrorKind::Unsupported, "unsupported recovery checkpoint version; use a compatible NodeCraft build"));
     }
     let mut header = [0; 80];
     header.get_mut(..8).ok_or_else(|| invalid("invalid checkpoint header"))?.copy_from_slice(&magic);

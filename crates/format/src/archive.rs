@@ -114,7 +114,7 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
     Ok(Snapshot { project: manifest.project, assets, epoch: manifest.epoch })
 }
 
-/// Structurally decode a bounded index. Version2 assets remain explicitly unverified until
+/// Structurally decode a bounded index. Version4 assets remain explicitly unverified until
 /// consumption; legacy-v1 content validation retains its published eager admission semantics.
 pub fn decode_indexed(index: &crate::zip_index::ArchiveIndex, context: crate::AssetContext) -> Result<Snapshot, Error> {
     let snapshot = decode_indexed_presence(index, context)?;

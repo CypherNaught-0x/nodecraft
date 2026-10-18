@@ -217,7 +217,7 @@ fn checkpoint_header_archive_digest_truncation_and_version_are_hard_errors() {
     let mut digest = checkpoint.clone();
     digest[16] ^= 1;
     let mut h = blake3::Hasher::new();
-    h.update(b"nodecraft.recovery.header.v2");
+    h.update(b"nodecraft.recovery.header.v4");
     h.update(&digest[..48]);
     digest[48..80].copy_from_slice(h.finalize().as_bytes());
     for bytes in [Vec::new(), checkpoint[..79].to_vec(), checkpoint[..checkpoint.len() - 1].to_vec(), version, length, header, digest] {
@@ -370,7 +370,7 @@ fn many_small_frames_pack_before_backing_exhaustion_and_cancel_refuses_before_re
 }
 
 #[test]
-fn native_open_preserves_exact_v1_archive_inside_v2_and_fresh_recovery_eagerly_verifies_it() {
+fn native_open_preserves_exact_v1_archive_inside_streaming_and_fresh_recovery_eagerly_verifies_it() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("v1.ncraft");
     let recovery_path = dir.path().join("recovery");
@@ -411,23 +411,23 @@ fn native_open_preserves_exact_v1_archive_inside_v2_and_fresh_recovery_eagerly_v
 }
 fn wrapped_archive(archive: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"NCRJ0002");
+    bytes.extend_from_slice(b"NCRJ0004");
     bytes.extend_from_slice(&(archive.len() as u64).to_le_bytes());
     bytes.extend_from_slice(blake3::hash(archive).as_bytes());
     let mut hash = blake3::Hasher::new();
-    hash.update(b"nodecraft.recovery.header.v2");
+    hash.update(b"nodecraft.recovery.header.v4");
     hash.update(&bytes);
     bytes.extend_from_slice(hash.finalize().as_bytes());
     bytes.extend_from_slice(archive);
     bytes
 }
 #[test]
-fn valid_checkpoint_digest_does_not_bypass_eager_v1_asset_hash_or_deferred_v2_consumer_verification() {
+fn valid_checkpoint_digest_does_not_bypass_eager_v1_asset_hash_or_deferred_streaming_consumer_verification() {
     use std::io::{Cursor, Write};
     let hash = Blake3::from_bytes(*blake3::hash(b"good").as_bytes());
     let mut project = root(AssetStore::default()).project;
     Change::AddNode { canvas: canvas(), node: source(1, hash) }.apply(&mut project).unwrap();
-    for version in [1, 2] {
+    for version in [1, 4] {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         writer.start_file("project.json", options).unwrap();
@@ -462,7 +462,7 @@ fn stored_restored_content_corruption_requires_replacement_checkpoint_before_app
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     writer.start_file("project.json", options).unwrap();
-    writer.write_all(&serde_json::to_vec(&serde_json::json!({"version":2,"epoch":0,"project":project})).unwrap()).unwrap();
+    writer.write_all(&serde_json::to_vec(&serde_json::json!({"version":4,"epoch":0,"project":project})).unwrap()).unwrap();
     writer.start_file(format!("assets/{hash}"), options).unwrap();
     writer.write_all(b"evil").unwrap();
     let archive = writer.finish().unwrap().into_inner();

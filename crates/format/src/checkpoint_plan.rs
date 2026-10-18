@@ -3,13 +3,13 @@ use crate::asset_source::{StreamMetrics, TransferCancel};
 use crate::{ArchivePlan, StorageCapability, invalid};
 use nodecraft_types::{Blake3, Error};
 use std::{collections::BTreeMap, io::Write};
-const MAGIC: &[u8; 8] = b"NCRJ0002";
-const HEADER_DOMAIN: &[u8] = b"nodecraft.recovery.header.v2";
-const IDENTITY_DOMAIN: &[u8] = b"nodecraft.recovery.identity.v2";
+const MAGIC: &[u8; 8] = b"NCRJ0004";
+const HEADER_DOMAIN: &[u8] = b"nodecraft.recovery.header.v4";
+const IDENTITY_DOMAIN: &[u8] = b"nodecraft.recovery.identity.v4";
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_header(header: &[u8; 80]) -> Result<(u64, Blake3, Blake3), Error> {
     if header.get(..8) != Some(MAGIC.as_slice()) {
-        return Err(invalid("invalid recovery checkpoint version"));
+        return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Unsupported, "unsupported recovery checkpoint version"));
     }
     let length = u64::from_le_bytes(
         header.get(8..16).ok_or_else(|| invalid("truncated checkpoint header"))?.try_into().map_err(|_| invalid("invalid checkpoint extent"))?,

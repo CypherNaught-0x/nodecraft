@@ -18,8 +18,7 @@ All integers are little-endian.
 | 1 | flags: `0` unencrypted, `1` encrypted (any other value is refused) |
 | *encrypted only:* 1 | key derivation: `1` = Argon2id v0x13 |
 | 4 + 4 + 4 | Argon2id memory (KiB), passes, lanes |
-| 16 | salt (random per backup) |
-| 19 | nonce prefix (random per backup; never reuse a salt and prefix pair with the same passphrase) |
+| 16 | salt (random per backup; never reuse one with the same passphrase) |
 
 Then the **payload**: a 4-byte manifest length, the manifest as JSON, and every entry's bytes in
 manifest order.
@@ -32,8 +31,10 @@ manifest order.
   XChaCha20-Poly1305 and stored as ciphertext plus a 16-byte tag. Each nonce is the 19-byte
   prefix, a big-endian 32-bit chunk counter and a final byte, `1` for the last chunk and `0`
   otherwise. The header bytes are the associated data of every chunk. The writer never makes an
-  empty last chunk, but readers accept one. The key is Argon2id(passphrase, salt) with the
-  header's parameters, 32 bytes.
+  empty last chunk, but readers accept one. Argon2id(passphrase, salt) with the header's
+  parameters produces 51 bytes: the first 32 are the key, the last 19 the nonce prefix. A fresh
+  salt therefore gives a fresh key and prefix, and no caller-chosen nonce can repeat a keystream
+  (#385).
 
 ## Manifest
 
@@ -77,9 +78,13 @@ For an unencrypted one, a bad trailer or entry hash reads as `Authentication`, a
 reads as `InvalidInput`. Extra data and unsafe paths read as `InvalidInput`, and a newer version
 or option as `Unsupported`. A passphrase given for an unencrypted backup is refused
 (`Authentication`): an encrypted backup may have been swapped for a crafted plain one. A writer
-whose entry failed refuses further entries and `finish`, so no incomplete backup looks complete. Hosts write
-restored entries to a staging folder and publish them only after `finish` succeeds, so a failed
-restore leaves existing work untouched.
+whose entry failed refuses further entries and `finish`, so no incomplete backup looks complete.
+A reader also remains failed after any entry hash, authentication, truncation, source-I/O or
+destination-I/O error. Later entry reads and `finish` return the first actionable error before
+further source or destination work; they cannot resume a partially consumed entry. Partial output
+must be discarded. Repeated end-of-entry `None` results remain successful, but do not replace the
+whole-container checks in `finish`. Hosts write restored entries to a staging folder and publish
+them only after `finish` succeeds, so a failed restore leaves existing work untouched.
 
 ## Secrets
 

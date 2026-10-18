@@ -74,7 +74,7 @@ fn native_large_save_and_lazy_open_use_private_immutable_bytes_after_original_de
     assert_eq!(std::fs::metadata(&path).unwrap().len(), plan.byte_len());
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
     let manifest: serde_json::Value = serde_json::from_reader(zip.by_name("project.json").unwrap()).unwrap();
-    assert_eq!(manifest["version"], 2);
+    assert_eq!(manifest["version"], 4);
     drop(zip);
     drop(storage);
     let mut reopened = NativeStorage::new(dir.path().join("recovery-b")).unwrap();
@@ -100,7 +100,7 @@ fn native_large_save_and_lazy_open_use_private_immutable_bytes_after_original_de
     }
     let mut recovery = Vec::new();
     checkpoint.write_to(&mut recovery, &cancel, &metrics).unwrap();
-    assert_eq!(&recovery[..8], b"NCRJ0002");
+    assert_eq!(&recovery[..8], b"NCRJ0004");
     assert_eq!(recovery.len() as u64, checkpoint.byte_len());
     assert_eq!(checkpoint.archive().digest(), plan.digest());
     // Raw archive bytes are preserved in Open's checkpoint, never re-encoded after source deletion.

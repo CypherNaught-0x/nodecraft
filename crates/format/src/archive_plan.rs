@@ -73,10 +73,10 @@ impl ArchivePlan {
             } else {
                 drop(candidate);
                 let json =
-                    crate::archive::bounded_json(&Manifest { version: 2, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
+                    crate::archive::bounded_json(&Manifest { version: 4, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
                 crate::compatibility::validate(&json)?;
                 let layout = layout(json.len() as u64, assets.values().copied())?;
-                (2, json, layout)
+                (4, json, layout)
             };
             let workspace = snapshot.assets.context().0.workspace.as_ref().ok_or_else(unsupported)?;
             let sealed = workspace.generate_archive(layout.bytes, cancel, metrics, |output| {
