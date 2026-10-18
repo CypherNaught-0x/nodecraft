@@ -36,6 +36,8 @@ impl Resources {
     }
 }
 
+type RunHandler = Box<dyn FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error>>;
+
 type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
 
 /// Host services run only after a handler returns a Service effect. The session guards and
@@ -44,16 +46,33 @@ type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
 /// idempotency and reconciliation. Only document/history preservation is the session's guarantee.
 #[derive(Default)]
 pub struct Services {
+    run_host: Option<RunHandler>,
     handlers: BTreeMap<&'static str, ServiceHandler>,
 }
 impl Services {
     pub fn register(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        if id == crate::run_cmds::RUN_SERVICE {
+            return Err(invalid("use the typed run host registration"));
+        }
         validate_id(id)?;
         if self.handlers.contains_key(id) {
             return Err(Error::new(ErrorKind::Conflict, "host service is already registered"));
         }
         self.handlers.insert(id, Box::new(handler));
         Ok(())
+    }
+    pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        if self.run_host.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "run host already registered"));
+        }
+        self.run_host = Some(Box::new(handler));
+        Ok(())
+    }
+    pub fn contains_run_host(&self) -> bool {
+        self.run_host.is_some()
+    }
+    pub(crate) fn invoke_run_host(&mut self, prepared: crate::run_cmds::PreparedRun) -> Result<Value, Error> {
+        self.run_host.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "run host is unavailable"))?(prepared)
     }
     pub fn contains(&self, id: &str) -> bool {
         self.handlers.contains_key(id)
@@ -73,9 +92,11 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
-    /// Current document revision; view-host and draft requests must match it exactly.
-    pub revision: u64,
+    pub(crate) routing: &'a crate::provider_routing::RoutingAuthority,
+    pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
+    /// The document's revision: bumped by every edit, undo and redo.
+    pub revision: u64,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -83,6 +104,8 @@ pub struct Context<'a> {
     pub services: &'a Services,
     pub phase: Phase,
     pub file: crate::file_cmds::FileStatus,
+    /// The session's performance recorder, for `perf.report`.
+    pub perf: &'a crate::perf::Recorder,
 }
 impl Context<'_> {
     /// Session::enabled/dispatch graph-stage every returned document effect once,
@@ -96,13 +119,34 @@ impl Context<'_> {
 }
 
 pub enum Effect {
-    Open { location: nodecraft_format::StorageLocation, discard_dirty: bool },
-    Save { location: Option<nodecraft_format::StorageLocation> },
-    Service { capability: &'static str, request: Value },
-    None { result: Value },
-    Edit { changes: Changeset, result: Value, gesture: Option<String> },
+    Open {
+        location: nodecraft_format::StorageLocation,
+        discard_dirty: bool,
+    },
+    Save {
+        location: Option<nodecraft_format::StorageLocation>,
+    },
+    PreparedRun {
+        prepared: Box<crate::run_cmds::PreparedRun>,
+    },
+    Service {
+        capability: &'static str,
+        request: Value,
+    },
+    None {
+        result: Value,
+    },
+    Edit {
+        changes: Changeset,
+        result: Value,
+        gesture: Option<String>,
+    },
     Undo,
     Redo,
+    /// Start, stop or clear the session's performance recorder (`perf_cmds`).
+    Perf {
+        action: crate::perf_cmds::PerfAction,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -139,6 +183,12 @@ impl Registry {
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
             .chain(crate::comment_cmds::specs())
+            .chain(crate::run_cmds::specs())
+            .chain(crate::perf_cmds::specs())
+            .chain(crate::ownership_cmds::specs())
+            .chain(crate::order_cmds::specs())
+            .chain(crate::history_cmds::specs())
+            .chain(crate::turn_into_cmds::specs())
         {
             registry.register(spec)?;
         }

@@ -18,14 +18,23 @@
 
 #[cfg(feature = "comfyui")]
 pub mod comfyui;
+mod delivery;
 mod error;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
+/// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
+#[cfg(any(test, feature = "testkit"))]
+pub mod mock;
+#[cfg(feature = "openai-images")]
+pub mod openai_images;
 mod provider;
+#[cfg(feature = "replicate")]
+pub mod replicate;
 pub mod secrets;
 mod task;
 
+pub use delivery::{HttpFailure, RequestContext, SubmitContext};
 pub use error::{ErrorKind, ProviderError};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;
@@ -34,3 +43,7 @@ pub use provider::{
     BoxFuture, CancelSignal, Clock, Completed, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Submission, Usage,
 };
 pub use task::{DEFAULT_JOB_DEADLINE_MS, Downloaded, RunFailure, RunLimits, RunUpdate, check_media, fetch_output, resume, run_to_completion};
+
+#[cfg(test)]
+#[path = "mock/tests.rs"]
+mod mock_tests;

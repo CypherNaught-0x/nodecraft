@@ -78,6 +78,7 @@ struct Prepared {
     admission: Option<PersistentAdmission>,
     source: SourceStamp,
     state: u64,
+    next_execution_generation: u64,
 }
 struct SourceStamp {
     identity: Arc<()>,
@@ -104,6 +105,7 @@ impl PersistentAdmission {
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
 pub struct Session {
     view_identity: std::sync::Arc<()>,
+    routing: crate::provider_routing::RoutingAuthority,
     document: Project,
     registry: Registry,
     kinds: nodecraft_nodes::Registry,
@@ -121,6 +123,8 @@ pub struct Session {
     admission_identity: Arc<()>,
     #[cfg(test)]
     replay_limit: usize,
+    execution: crate::execution_identity::ExecutionSource,
+    perf: crate::perf::Recorder,
 }
 
 impl Session {
@@ -134,12 +138,17 @@ impl Session {
 
     pub fn with_registries(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry) -> Result<Self, Error> {
         document.validate()?;
-        Ok(Self {
+        let execution = crate::execution_identity::ExecutionSource::new()?;
+        Ok(Self::from_validated(document, registry, kinds, execution))
+    }
+    fn from_validated(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry, execution: crate::execution_identity::ExecutionSource) -> Self {
+        Self {
             view_identity: std::sync::Arc::new(()),
             document,
             registry,
             kinds,
             resources: Resources::default(),
+            routing: Default::default(),
             services: Services::default(),
             undo: History::default(),
             redo: History::default(),
@@ -153,7 +162,17 @@ impl Session {
             admission_identity: Arc::new(()),
             #[cfg(test)]
             replay_limit: MAX_HISTORY_BYTES,
-        })
+            execution,
+            perf: crate::perf::Recorder::default(),
+        }
+    }
+
+    /// The performance recorder (#151): off until `perf.start`; the host gives it a clock.
+    pub fn perf(&self) -> &crate::perf::Recorder {
+        &self.perf
+    }
+    pub fn perf_mut(&mut self) -> &mut crate::perf::Recorder {
+        &mut self.perf
     }
 
     /// Non-persistent host identity; retained tokens prevent address reuse across Session replacement.
@@ -170,6 +189,10 @@ impl Session {
     pub fn kinds(&self) -> &nodecraft_nodes::Registry {
         &self.kinds
     }
+    #[cfg(test)]
+    pub(crate) fn exhaust_execution_generation(&mut self) {
+        self.execution.exhaust();
+    }
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -178,6 +201,13 @@ impl Session {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.entries.is_empty()
+    }
+
+    /// Install endpoint authority atomically. Generic resources cannot change this nonce.
+    pub fn set_provider_routing(&mut self, routing: crate::provider_routing::ProviderRouting) -> Result<(), Error> {
+        let nonce = crate::execution_identity::nonce()?;
+        self.routing = crate::provider_routing::RoutingAuthority { routing, nonce: Some(nonce) };
+        Ok(())
     }
 
     /// Replace a host-owned capability without discarding other injected resources.
@@ -189,9 +219,25 @@ impl Session {
     pub fn register_host_service(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
         self.services.register(id, handler)
     }
+    /// Receives/enqueues typed work. Authorize outside dispatch before scheduling.
+    pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        self.services.register_run_host(handler)
+    }
+    pub fn authorize_prepared_run(
+        &self,
+        prepared: crate::run_cmds::PreparedRun,
+        options: nodecraft_exec::run::RunOptions,
+    ) -> Result<(crate::run_cmds::AuthorizedRun, nodecraft_exec::run::Progress), Error> {
+        guard(|| crate::run_cmds::authorize(&self.context(Phase::Dispatch), prepared, options))
+    }
     pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
+        // All constructor failures, including entropy, precede durable checkpointing.
+        snapshot.project.validate()?;
+        let registry = Registry::builtins()?;
+        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let execution = crate::execution_identity::ExecutionSource::new()?;
         let persistence = crate::persistence::Persistence::new(storage, &snapshot)?;
-        let mut session = Self::new(snapshot.project)?;
+        let mut session = Self::from_validated(snapshot.project, registry, kinds, execution);
         session.assets = snapshot.assets;
         session.persistence = Some(persistence);
         Ok(session)
@@ -200,9 +246,21 @@ impl Session {
         &self.assets
     }
     pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
+        let next = self.execution.next()?;
         let hash = self.assets.insert(bytes)?;
         self.admission_identity = Arc::new(());
+        self.execution.advance(next);
         Ok(hash)
+    }
+    /// Drops assets nothing refers to any more (not the document, nor its undo or redo history),
+    /// as a save does: for an import whose nodes couldn't be added after all.
+    pub fn prune_assets(&mut self) -> Result<(), Error> {
+        let next = self.execution.next()?;
+        let roots = self.retained_assets()?;
+        self.assets.retain(&roots);
+        self.admission_identity = Arc::new(());
+        self.execution.advance(next);
+        Ok(())
     }
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
         self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
@@ -238,10 +296,11 @@ impl Session {
         self
     }
 
-    fn context(&self, phase: Phase) -> Context<'_> {
+    pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
-            revision: self.revision,
+            routing: &self.routing,
             document: &self.document,
+            revision: self.revision,
             kinds: &self.kinds,
             can_undo: self.can_undo(),
             can_redo: self.can_redo(),
@@ -249,6 +308,8 @@ impl Session {
             services: &self.services,
             phase,
             file: self.file_status(),
+            execution: &self.execution,
+            perf: &self.perf,
         }
     }
 
@@ -270,9 +331,18 @@ impl Session {
 
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let before = self.file_status();
+        // Capture commands don't time themselves.
+        let start = if id.starts_with("perf.") { None } else { self.perf.now() };
         let result = self.dispatch_inner(id, params);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
+        }
+        // Only commands that ran count: a refusal is fast and would pull the latencies down.
+        if let Some(start) = start.filter(|_| result.is_ok()) {
+            self.perf.record_since(crate::perf::Metric::Dispatch, start);
+            if let Some(metric) = crate::perf::Metric::of_command(id) {
+                self.perf.record_since(metric, start);
+            }
         }
         result
     }
@@ -289,6 +359,21 @@ impl Session {
                 validate_json(&result)?;
                 return Ok(result);
             }
+            Effect::PreparedRun { prepared } => {
+                return guard(|| {
+                    let result = self.services.invoke_run_host(*prepared)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            Effect::Perf { action } => {
+                match action {
+                    crate::perf_cmds::PerfAction::Start => self.perf.set_enabled(true),
+                    crate::perf_cmds::PerfAction::Stop => self.perf.set_enabled(false),
+                    crate::perf_cmds::PerfAction::Clear => self.perf.clear(),
+                }
+                return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
+            }
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
                 return guard(|| {
@@ -298,11 +383,13 @@ impl Session {
                 });
             }
             Effect::Save { location } => {
+                let next = self.execution.next()?;
                 let roots = self.retained_assets()?;
                 let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
                 let ready = storage.save(&self.document, &self.assets, self.state, location)?;
                 self.assets.retain(&roots);
                 self.admission_identity = Arc::new(());
+                self.execution.advance(next);
                 self.gesture = None;
                 return Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}));
             }
@@ -311,6 +398,7 @@ impl Session {
                     return Err(Error::new(ErrorKind::Conflict, "opening would discard unsaved changes"));
                 }
                 let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+                let next = self.execution.next()?;
                 let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
                 let snapshot = storage.open(location, revision)?;
                 self.document = snapshot.project;
@@ -319,7 +407,7 @@ impl Session {
                 self.redo = History::default();
                 self.gesture = None;
                 self.state = revision;
-                self.publish(revision, spec.id);
+                self.publish(revision, spec.id, next);
                 return Ok(serde_json::json!({"opened":true,"read_only":self.file_status().read_only}));
             }
             document_effect => document_effect,
@@ -358,11 +446,12 @@ impl Session {
         }
         self.document = prepared.document;
         self.state = prepared.state;
-        self.publish(revision, command);
+        self.publish(revision, command, prepared.next_execution_generation);
         Ok(prepared.result)
     }
-    fn publish(&mut self, revision: u64, command: &'static str) {
+    fn publish(&mut self, revision: u64, command: &'static str, next_execution_generation: u64) {
         self.revision = revision;
+        self.execution.advance(next_execution_generation);
         self.admission_identity = Arc::new(());
         self.events.push_back(DocChanged { revision, command });
         if self.events.len() > MAX_EVENTS {
@@ -392,6 +481,7 @@ impl Session {
     }
 
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
+        let next_execution_generation = self.execution.next()?;
         self.context(Phase::Dispatch).editable()?;
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
             Effect::Edit { changes, result, gesture } => {
@@ -430,7 +520,7 @@ impl Session {
                 let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
-            Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } => {
+            Effect::None { .. } | Effect::PreparedRun { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }
         };
@@ -453,6 +543,7 @@ impl Session {
             result,
             admission,
             source: SourceStamp { identity: Arc::clone(&self.admission_identity), revision: self.revision },
+            next_execution_generation,
             state,
         })
     }

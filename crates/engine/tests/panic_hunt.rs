@@ -83,9 +83,19 @@ fn panic_hunt() {
     }
 }
 
+fn gen_id(n: u8) -> nodecraft_types::GenerationId {
+    nodecraft_types::GenerationId::from_bytes([n; 16])
+}
+
 fn template(id: &str) -> (Session, Value) {
     use common::*;
     let mut document = project();
+    if id == "run.start" {
+        document = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([0; 16]), "Run corpus").unwrap();
+        nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(canvas(), "Canvas") }.apply(&mut document).unwrap();
+        let source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(1), &std::collections::BTreeMap::new()).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    }
     if id == "edge.connect" {
         nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
     }
@@ -100,6 +110,15 @@ fn template(id: &str) -> (Session, Value) {
         let mut comment = nodecraft_graph::Comment::new(root, "Original", nodecraft_graph::Position::default());
         comment.replies.push(nodecraft_graph::CommentReply { id: reply, text: "Reply".into() });
         nodecraft_graph::Change::PutComment { canvas: canvas(), comment }.apply(&mut document).unwrap();
+    }
+    if id.starts_with("history.") {
+        // Two results on node 1, oldest first; `history.next` starts at the older one.
+        for n in [0x21, 0x22] {
+            let generation = nodecraft_graph::Generation::new(gen_id(n), vec![nodecraft_types::Value::Text(format!("take {n}"))]);
+            nodecraft_graph::Change::AddGeneration { canvas: canvas(), id: node_id(1), index: usize::from(n - 0x21), generation }.apply(&mut document).unwrap();
+        }
+        let active = if id == "history.next" { 0x21 } else { 0x22 };
+        nodecraft_graph::Change::SetActiveGeneration { canvas: canvas(), id: node_id(1), generation: Some(gen_id(active)) }.apply(&mut document).unwrap();
     }
     let mut session = if id.starts_with("file.") {
         let mut storage = nodecraft_format::MemoryStorage::default();
@@ -145,6 +164,22 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if id.starts_with("run.") || id == "usage.export_csv" {
+        use nodecraft_engine::run_cmds::*;
+        session.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
+        session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
+        session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
+        session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
+    }
+    if id.starts_with("usage.ownership") || id == "usage.reconcile_ownership" {
+        use nodecraft_engine::ownership_cmds::*;
+        // One quarantined group, so adversarial params reach token and holder checks.
+        let legacy: nodecraft_exec::cost::UsageLog =
+            serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+        session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(legacy.clone()))));
+        let log = std::sync::Arc::new(std::sync::Mutex::new(legacy));
+        session.register_host_service(OWNERSHIP_SERVICE, ownership_service(log, std::sync::Arc::new(|| 0))).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "comment.create" => json!({"canvas":canvas(),"id":nodecraft_types::CommentId::from_bytes([20;16]),"text":"New","pos":{"x":1,"y":2}}),
@@ -164,13 +199,44 @@ fn template(id: &str) -> (Session, Value) {
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
+        // The fixture's inputs take one noodle each, so this is refused; the hunt checks it never panics.
+        "edge.reorder" => json!({"canvas":canvas(),"to":{"node":node_id(2),"port":"in"},"edges":[edge().id]}),
         "canvas.stale" => json!({"canvas":canvas()}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
         }
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
+        "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
+        "run.start" => {
+            let mut request = json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]});
+            let quote = session.dispatch("run.quote", &request).unwrap();
+            request["accept"] = json!({"token":quote["token"],"amounts":{},"partial":true});
+            request
+        }
+        "run.record" => {
+            json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
+        }
+        "usage.export_csv" => json!({}),
+        "perf.start" | "perf.clear" | "perf.report" => json!({}),
+        // Stop needs a running capture; the hunt checks the refusal never panics.
+        "perf.stop" => json!({}),
+        "usage.ownership" => json!({"session":"a","currency":"USD","offset":0,"limit":1}),
+        "usage.reconcile_ownership" => {
+            // A real token for the fixture's group, so mutations reach the holder and exception checks.
+            let legacy: nodecraft_exec::cost::UsageLog =
+                serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+            let token: String = legacy.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
+            json!({"session":"a","currency":"USD","token":token,"holder":"earlier","except":[{"provider":"t","key":"old"}],"only":[{"provider":"t","key":"old"}],"dry_run":true})
+        }
+        "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
+        "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
+        "history.extract" => {
+            json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"node":node_id(7),"pos":{"x":1,"y":2}})
+        }
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
+        "node.create_connected" => json!({"canvas":canvas(),"id":node_id(7),"kind":"structure.router","pos":{"x":1,"y":2},
+            "from":{"node":node_id(1),"port":"out"},"edge":nodecraft_types::EdgeId::from_bytes([0x77; 16])}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
         "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
         "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
@@ -225,8 +291,13 @@ fn typed_template_panic_hunt() {
                 }
             }
         }
-        for params in cases {
-            let (mut session, _) = template(id);
+        for mut params in cases {
+            let (mut session, fresh) = template(id);
+            // Keep the valid token bound to this exact template Session; preserve deliberately
+            // mutated/missing tokens and all other mutations for the adversarial cases.
+            if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
+                params["accept"]["token"] = fresh["accept"]["token"].clone();
+            }
             let before = session.document().clone();
             let revision = session.revision();
             let events = session.events_since(0).unwrap();
@@ -257,6 +328,15 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_next"
                             | "canvas.search_previous"
                             | "canvas.search_close"
+                            | "run.quote"
+                            | "run.start"
+                            | "usage.export_csv"
+                            | "perf.start"
+                            | "perf.stop"
+                            | "perf.clear"
+                            | "perf.report"
+                            | "usage.ownership"
+                            | "usage.reconcile_ownership"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
@@ -284,4 +364,18 @@ fn typed_template_panic_hunt() {
         }
     }
     assert!(successes >= 7);
+}
+
+#[test]
+fn run_start_template_reaches_the_registered_host() {
+    let (mut session, params) = template("run.start");
+    let before = session.document().clone();
+    let events = session.events_since(0).unwrap();
+    let revision = session.revision();
+    let history = (session.can_undo(), session.can_redo());
+    assert_eq!(session.dispatch("run.start", &params).unwrap(), json!({"run":"accepted"}));
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), revision);
+    assert_eq!(session.events_since(0).unwrap(), events);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
 }

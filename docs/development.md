@@ -39,6 +39,41 @@ so local checks do not require nextest.
 - `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`: canvas frame time over
   200- and 1,000-node graphs (see `docs/ui-design.md`, "Level of detail and performance").
 
+## Performance capture
+
+The app can time itself on demand (#151). Nothing is recorded until a capture starts, nothing
+leaves the machine, and the report holds only numbers, metric names and build and platform
+labels, never document contents or paths.
+
+1. Start the app with the project and window size you want to measure, and wait for it to
+   settle.
+2. Run **Start performance capture** from the quick-add palette (double-click empty canvas,
+   type "perf"), or call `perf.start` from the CLI, MCP or the control channel.
+3. Optionally run **Clear performance capture** after warming up: every sample since the last
+   clear counts.
+4. Do the work being measured (pan, zoom, edit, undo, save).
+5. Read the report with `perf.report`. From the palette, **Performance report** copies it to the
+   clipboard. Stop with **Stop performance capture**. The headless CLI session (`control`, `mcp`)
+   records too.
+
+The report (`schema: "nodecraft.perf/1"`) gives, per metric, p50/p95/p99/max in microseconds,
+the samples kept (the latest 4,096), how many were recorded and how many were refused as invalid.
+Metrics:
+- `frame_prepare`: CPU time in the shell per frame;
+- `frame_interval`: the time between frame starts;
+- `dispatch`: any command;
+- `undo`, `redo`, `load` and `save`.
+
+The two frame metrics also count frames over budget: 16,667 µs to prepare, and 1.5 × that
+between frames, which leaves room for scheduling jitter. The app redraws only on input, so an
+interval over 250 ms is counted as `idle` rather than kept as a slow frame. Only commands that
+ran are timed; refusals aren't. `workload` gives the last frame's visible and total nodes and
+edges. `environment` adds the CPU count and, in the desktop app, the GPU adapter and backend. `frame_prepare` excludes GPU work and
+presentation, so it can't prove 60 fps on its own. A metric without a clock (the browser build
+for now) is `supported: false` with `null` values, never zero. Recording costs one bounded push
+per sample (about 90 ns in a debug build). `cargo test -p nodecraft-engine --lib recording_overhead -- --ignored --nocapture`
+prints the cost with capture on and off.
+
 ## xtask
 
 | Command | Does |
@@ -46,6 +81,7 @@ so local checks do not require nextest.
 | `cargo xtask layers` | print the crate → layer table and fail on layering violations |
 | `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate |
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
+| `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
 | `cargo xtask version [set X.Y.Z]` | print or set the workspace version (Cargo.toml + Cargo.lock) |
 
@@ -70,3 +106,15 @@ unrelated/outside directory fails instead of falling back. Selecting a workspace
 Set `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` at build time to stamp `--version` and the
 About box; the packaging scripts do this (`packaging/env.sh`). Without them a build reports
 `(dev build)`.
+
+
+## Optional video service
+
+See [media-video.md](media-video.md) for explicit installed-tool configuration, a real roundtrip
+consumer, protocol tests and native fixture checks. `cargo test -p nodecraft-media --features video`
+requires no FFmpeg installation; actual codec tests are explicit and never download tools.
+
+Native `nodecraft-exec` tests use the pinned `allocation-counter` dev-dependency to measure
+allocation-free metadata finalization. Its allocator applies to the entire exec test binary, including
+unrelated tests, so coordinate any additional test allocator instrumentation. Production and wasm
+allocators are unchanged.

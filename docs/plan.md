@@ -563,7 +563,8 @@ NodeCraft/
 ├─ CONTRIBUTING.md       claiming issues, non-negotiable rules, tests, checklists
 ├─ README.md
 ├─ ROADMAP.md            one-page status
-├─ docs/                 plan.md (this file), architecture.md, development.md, decisions.md,
+├─ docs/                 plan.md (this file), architecture.md, development.md, decisions.md (guide),
+│                        decisions/ (one dated file per decision),
 │                        ui-design.md, node-catalog.md, providers.md
 ├─ crates/ apps/ xtask/  as in §4.1
 ├─ assets/               icons (original, licensed), catalog data
@@ -620,7 +621,8 @@ Testing strategy:
 
 All builds are distributed as **GitHub releases**. `.github/workflows/release.yml` follows the
 shared Craft release workflow (`storytold/craft-common-actions`) but is NodeCraft's own, so that
-releases don't depend on signing secrets (docs/decisions.md). It runs the per-app `packaging/`
+releases don't depend on signing secrets (see the
+[M0 release decision](decisions/2026-10-16-m0-skeleton.md)). It runs the per-app `packaging/`
 scripts (`packaging/env.sh`, `packaging/{macos,windows,linux}/…`, modelled on PhotoCraft's).
 
 - **Flow:** bump `[workspace.package] version` with `cargo xtask version set X.Y.Z`, merge
@@ -677,6 +679,10 @@ Still open:
 
 Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) and a demo.
 
+This section is the plan: what each milestone is *for*. Where each one actually *stands* — and the
+parts of a later milestone already built ahead of their host — is tracked in
+[`../ROADMAP.md`](../ROADMAP.md), which is updated when a milestone task lands.
+
 | M | Name | Contents | Exit criterion |
 |---|---|---|---|
 | 0 | **Skeleton** | Workspace, lints, xtask layers/wasm, CI, AGENTS.md, empty crates, eframe window | `cargo run` opens a themed empty canvas on all three OSes |
@@ -702,7 +708,9 @@ Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) a
 - [x] `xtask layers` (table of crate → layer, fails on violations) and `xtask wasm`
 - [x] `ci.yml` (claim-bot tests now; Rust jobs switch on when `Cargo.toml` lands), `claim.yml`,
       PR and issue templates, `CONTRIBUTING.md`, licences
-- [ ] Switch CI to nextest once there are enough test binaries to matter
+- [x] Switch CI to nextest once there are enough test binaries to matter (#49: `ci.yml` runs
+      `cargo nextest run --workspace --profile ci` on Linux, Windows and macOS, with the nextest
+      archive pinned and sha256-verified)
 - [x] craft-libs dependencies pinned in `[workspace.dependencies]` (§5)
 - [x] `AGENTS.md`, `docs/architecture.md` (from §4), `docs/decisions.md`, `ROADMAP.md`
 - [x] `release.yml` calling the shared Craft release workflow, `packaging/` scripts, `xtask version`

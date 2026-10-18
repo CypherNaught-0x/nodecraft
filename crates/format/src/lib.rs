@@ -6,6 +6,7 @@
 
 mod archive;
 mod assets;
+pub mod backup;
 mod compatibility;
 pub mod journal;
 mod legacy;

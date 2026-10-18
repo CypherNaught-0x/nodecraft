@@ -49,6 +49,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("automation", Class::Layer(5)),
     ("ui-egui", Class::Layer(5)),
     ("testkit", Class::Testkit),
+    ("provider-testkit", Class::Testkit),
     // apps and tooling
     ("nodecraft", Class::Exempt),
     ("cli", Class::Exempt),
@@ -107,6 +108,7 @@ pub enum Violation {
     StandaloneHasWorkspaceDep { krate: String, dep: String },
     TestkitAsNormalDep { krate: String },
     UiOutsideShell { krate: String, dep: String },
+    ProviderFacadeWorkspaceDep { dep: String, kind: DepKind },
 }
 
 impl std::fmt::Display for Violation {
@@ -122,10 +124,13 @@ impl std::fmt::Display for Violation {
                 write!(f, "{krate}: standalone crate must not depend on workspace crate {dep}")
             }
             Violation::TestkitAsNormalDep { krate } => {
-                write!(f, "{krate}: nodecraft-testkit may only be a dev-dependency")
+                write!(f, "{krate}: test tooling may only be a dev-dependency")
             }
             Violation::UiOutsideShell { krate, dep } => {
                 write!(f, "{krate} depends on UI crate `{dep}`; UI toolkits are only allowed in ui-egui and the apps")
+            }
+            Violation::ProviderFacadeWorkspaceDep { dep, kind } => {
+                write!(f, "nodecraft-provider-testkit -> {dep} [{kind:?}]: workspace dependencies may only be nodecraft-providers or nodecraft-types")
             }
         }
     }
@@ -143,7 +148,14 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
             continue; // exempt
         };
         for d in &c.deps {
-            // Self dev-dependencies (e.g. to enable features in tests) are fine.
+            // This facade must never depend back on its consumers, including through a
+            // self edge. Check every workspace dependency kind before the generic bypass.
+            if short_name(&c.name) == "provider-testkit" && d.workspace && !matches!(d.name.as_str(), "nodecraft-providers" | "nodecraft-types") {
+                out.push(Violation::ProviderFacadeWorkspaceDep { dep: d.name.clone(), kind: d.kind });
+                continue;
+            }
+            // Preserve the existing generic same-package exemption, commonly used for
+            // self dev-dependencies enabling test features. Facade workspace edges are above.
             if d.name == c.name {
                 continue;
             }
@@ -301,6 +313,17 @@ mod tests {
     }
 
     #[test]
+    fn provider_facade_has_only_lower_dependencies_and_is_dev_only_for_every_consumer() {
+        assert!(check(&[c("nodecraft-provider-testkit", &[("nodecraft-providers", Normal, true), ("nodecraft-types", Normal, true)])]).is_empty());
+        for consumer in ["nodecraft-nodes", "nodecraft-exec", "nodecraft-engine", "nodecraft-testkit"] {
+            assert!(check(&[c(consumer, &[("nodecraft-provider-testkit", Dev, true)])]).is_empty());
+            assert!(matches!(check(&[c(consumer, &[("nodecraft-provider-testkit", Normal, true)])])[..], [Violation::TestkitAsNormalDep { .. }]));
+        }
+        assert!(matches!(check(&[c("nodecraft-exec", &[("nodecraft-providers", Dev, true)])])[..], [Violation::Upward { .. }]));
+        assert!(matches!(check(&[c("nodecraft-media", &[("nodecraft-provider-testkit", Dev, true)])])[..], [Violation::StandaloneHasWorkspaceDep { .. }]));
+    }
+
+    #[test]
     fn apps_and_xtask_exempt() {
         for app in ["nodecraft", "nodecraft-cli", "nodecraft-web", "xtask"] {
             assert!(check(&[c(app, &[("egui", Normal, false), ("nodecraft-ui-egui", Normal, true)])]).is_empty());
@@ -325,5 +348,72 @@ mod tests {
         assert!(graph.deps[0].workspace && !graph.deps[1].workspace);
         assert_eq!(graph.deps[2].kind, Dev);
         assert!(check(&g).is_empty());
+    }
+    #[test]
+    fn provider_facade_rejects_every_other_workspace_target_in_every_kind() {
+        for kind in [Normal, Dev, Build] {
+            for target in [
+                "nodecraft-nodes",
+                "nodecraft-exec",
+                "nodecraft-engine",
+                "nodecraft-testkit",
+                "nodecraft-ui-egui",
+                "nodecraft-cli",
+                "xtask",
+                "nodecraft-unregistered",
+            ] {
+                let v = check(&[c("nodecraft-provider-testkit", &[(target, kind, true)])]);
+                assert!(
+                    matches!(&v[..], [Violation::ProviderFacadeWorkspaceDep { dep, kind: actual }] if dep == target && *actual == kind),
+                    "facade accepted {target} [{kind:?}]: {v:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn provider_facade_self_workspace_edges_are_not_generic_self_exemptions() {
+        for kind in [Normal, Dev, Build] {
+            let v = check(&[c("nodecraft-provider-testkit", &[("nodecraft-provider-testkit", kind, true)])]);
+            assert!(
+                matches!(&v[..], [Violation::ProviderFacadeWorkspaceDep { dep, kind: actual }] if dep == "nodecraft-provider-testkit" && *actual == kind),
+                "facade self-edge accepted [{kind:?}]: {v:?}"
+            );
+        }
+    }
+    #[test]
+    fn provider_facade_allowed_targets_external_rules_and_consumer_boundaries() {
+        for kind in [Normal, Dev, Build] {
+            for target in ["nodecraft-providers", "nodecraft-types"] {
+                assert!(check(&[c("nodecraft-provider-testkit", &[(target, kind, true)])]).is_empty());
+            }
+            assert!(check(&[c("nodecraft-provider-testkit", &[("serde", kind, false)])]).is_empty());
+            assert!(matches!(check(&[c("nodecraft-provider-testkit", &[("egui", kind, false)])])[..], [Violation::UiOutsideShell { .. }]));
+            for consumer in ["nodecraft-nodes", "nodecraft-exec", "nodecraft-engine", "nodecraft-testkit"] {
+                let v = check(&[c(consumer, &[("nodecraft-provider-testkit", kind, true)])]);
+                if kind == Dev {
+                    assert!(v.is_empty());
+                } else {
+                    assert!(matches!(v[..], [Violation::TestkitAsNormalDep { .. }]));
+                }
+            }
+            assert!(matches!(check(&[c("nodecraft-media", &[("nodecraft-provider-testkit", kind, true)])])[..], [Violation::StandaloneHasWorkspaceDep { .. }]));
+            // Existing generic self-edge and exempt-app policy is intentionally unchanged.
+            for workspace in [false, true] {
+                assert!(check(&[c("nodecraft-exec", &[("nodecraft-exec", kind, workspace)])]).is_empty());
+            }
+            assert!(check(&[c("nodecraft-cli", &[("nodecraft-provider-testkit", kind, true)])]).is_empty());
+        }
+    }
+    #[test]
+    fn facade_metadata_uses_canonical_names_and_rejects_unregistered_path_targets() {
+        let g = from_metadata(&serde_json::json!({"packages":[
+            {"name":"nodecraft-provider-testkit","dependencies":[
+                {"name":"nodecraft-engine","rename":"providers","kind":"dev","path":"/x/engine"},
+                {"name":"nodecraft-unregistered","kind":"build","path":"/x/unknown"}]},
+            {"name":"nodecraft-engine","dependencies":[]}
+        ]}))
+        .unwrap();
+        let v = check(&g);
+        assert_eq!(v.len(), 2, "{v:?}");
     }
 }

@@ -57,18 +57,7 @@ fn discussion_mutations_are_discoverable_undoable_and_recover_through_real_mcp()
     let (mut server, storage) = setup();
     let listed = tool(&mut server, "command_list", json!({}));
     let commands = listed["structuredContent"]["commands"].as_array().unwrap();
-    for id in [
-        "comment.create",
-        "comment.edit",
-        "comment.reply",
-        "comment.reply_remove",
-        "comment.move",
-        "comment.resolve",
-        "comment.remove",
-        "comment.open",
-        "comment.compose",
-        "canvas.comments_toggle",
-    ] {
+    for id in ["comment.create", "comment.edit", "comment.reply", "comment.reply_remove", "comment.move", "comment.resolve", "comment.remove"] {
         assert!(AGENT_COMMANDS.contains(&id));
         let spec = commands.iter().find(|spec| spec["id"] == id).unwrap();
         assert_eq!(spec["params_schema"]["type"], "object");
@@ -102,7 +91,7 @@ fn discussion_mutations_are_discoverable_undoable_and_recover_through_real_mcp()
         let reply = command(&mut server, id, params);
         assert_eq!(reply["isError"], true, "{id}: {reply}");
         if matches!(id, "comment.open" | "comment.compose" | "canvas.comments_toggle") {
-            assert!(reply["content"][0]["text"].as_str().unwrap().starts_with("unsupported:"), "{reply}");
+            assert!(HUMAN_ONLY.contains(&id));
         }
         let session = server.session().unwrap();
         assert_eq!(session.document(), &before);

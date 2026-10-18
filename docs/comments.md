@@ -142,7 +142,8 @@ media upload remains awaiting renewed permission and has not been retried.
 
 
 MCP classifies all seven local discussion mutation commands as agent-accessible, using the same
-Session validation, undo and journal admission. The three discussion view commands are discoverable
-but require a live scoped discussion host; a headless call returns Unsupported without document,
-history or recovery changes. Keys and file commands retain their human-only policy. This does not
+Session validation, undo and journal admission. The three discussion view commands are temporarily
+human-only until the live control bridge supplies their scoped host capability. MCP neither lists
+nor runs those view commands; custom engine hosts without the capability return Unsupported.
+Keys and file commands retain their human-only policy. This does not
 add a full-thread inspection endpoint or claim that canvas_inspect returns discussion bodies.

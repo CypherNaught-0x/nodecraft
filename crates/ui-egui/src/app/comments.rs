@@ -46,12 +46,16 @@ impl NodeCraftApp {
             canvas: self.canvas,
             revision: self.session.revision(),
             blocked: self.palette.is_some()
+                || self.turn_into.is_some()
+                || self.reordering.is_some()
+                || ctx.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
                 || self.wiring.is_some()
                 || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
                 || ((canvas::text_input_focused(ctx) || self.text_focused) && !own)
                 || self.drag.is_some()
                 || self.marquee.is_some()
                 || self.navigation.pointer_owned
+                || self.navigation.drag.is_some()
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || ctx.dragged_id().is_some_and(|id| !self.comments.marker_ids.contains(&id)),
@@ -957,6 +961,61 @@ mod tests {
         assert_eq!(h.state().comments.drafts.get(&h.state().comments.editing.unwrap()).unwrap().text, text, "composition should focus its own editor");
     }
     #[test]
+    #[ignore = "renders public review evidence to NODECRAFT_COMMENTS_EVIDENCE"]
+    fn render_comments_review_evidence() {
+        let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_COMMENTS_EVIDENCE").unwrap());
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_size(Vec2::new(1200.0, 850.0))
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+        h.render().unwrap().save(folder.join("before.png")).unwrap();
+        compose(&mut h, "Review the dawn colors");
+        h.get_by_role_and_label(Role::Button, "Save message").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Reply").click();
+        h.run();
+        h.event(egui::Event::Text("Keep the soft light in the next pass.".into()));
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Save message").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Add Note").click();
+        h.run();
+        let note =
+            h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().find(|node| node.kind == "structure.note").unwrap().id;
+        let world = h.state().view.to_world(h.state().viewport.min, Pos2::new(840.0, 350.0));
+        let canvas = h.state().canvas;
+        h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas,"id":note,"pos":{"x":world.x,"y":world.y}})).unwrap();
+        h.run();
+        h.render().unwrap().save(folder.join("discussion-note.png")).unwrap();
+        h.get_by_role_and_label(Role::Button, "Resolve").click();
+        h.run();
+        let resolved = h.state().session.document().clone();
+        h.render().unwrap().save(folder.join("resolved.png")).unwrap();
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        h.run();
+        assert_ne!(h.state().session.document(), &resolved);
+        h.render().unwrap().save(folder.join("undo.png")).unwrap();
+        h.state_mut().theme = ThemeKind::Light;
+        h.run();
+        h.render().unwrap().save(folder.join("light.png")).unwrap();
+    }
+    #[test]
+    fn file_hover_blocks_discussion_commands_until_it_leaves() {
+        let mut h = harness();
+        h.input_mut().hovered_files.push(egui::HoveredFile::default());
+        h.step();
+        let before = h.state().session.document().clone();
+        let ctx = h.ctx.clone();
+        assert!(h.state_mut().comments_enabled(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+        assert!(h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+        assert_eq!(h.state().session.document(), &before);
+        h.input_mut().hovered_files.clear();
+        h.run();
+        h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).unwrap();
+        assert!(h.state().comments.open);
+    }
+    #[test]
     fn real_compose_reply_resolve_note_and_undo_use_shared_commands() {
         let mut h = harness();
         let original = h.state().session.document().clone();
@@ -1359,6 +1418,24 @@ mod more_tests {
         let revision = h.state().session.revision();
         let events = h.state().session.events_since(0).unwrap();
         let history = (h.state().session.can_undo(), h.state().session.can_redo());
+        #[derive(Debug)]
+        struct UnreadDrop;
+        impl egui::DroppedFile for UnreadDrop {
+            fn path(&self) -> &std::path::Path {
+                panic!("a held discussion pin must refuse drops before touching the file");
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                panic!("a held discussion pin must not read a dropped file");
+            }
+        }
+        h.input_mut().dropped_files.push(Arc::new(UnreadDrop));
+        h.step();
+        assert!(h.state().comments.drag.is_some());
+        assert_eq!(h.state().notice.as_deref(), Some("Finish moving the discussion pin before dropping files."));
+        let tokens = *h.state().theme.tokens();
+        h.state_mut().split_grid(NodeId::from_bytes([3; 16]), 2, 2, &tokens);
+        assert_eq!(h.state().notice.as_deref(), Some("Finish moving the discussion pin before splitting an image."));
+        assert_eq!(h.state().session.document(), &before);
         h.event(egui::Event::Key { key: egui::Key::T, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
         h.step();
         assert!(

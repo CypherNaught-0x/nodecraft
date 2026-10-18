@@ -123,6 +123,7 @@ struct JobState {
 
 /// One run of a plan. See the module docs.
 pub struct Run {
+    pub(crate) admission: Option<(crate::admission::Witness, crate::admission::Usage)>,
     id: [u8; 16],
     canvas_id: CanvasId,
     /// The canvas as the run was planned: what deferred steps are planned against and input
@@ -207,8 +208,33 @@ impl Run {
     /// it). Input hashes share one byte budget for the run; once it is spent, later results are
     /// recorded without a hash (unknown, never stale).
     pub fn start(plan: &RunPlan, canvas_id: CanvasId, canvas: &Canvas, kinds: &Registry, options: RunOptions) -> Result<(Self, Progress), Error> {
+        Self::start_owned(plan.clone(), canvas_id, canvas.clone(), kinds, options, None)
+    }
+
+    /// Consume the immutable catalog-admitted work; never clone its snapshot or re-plan it.
+    pub fn start_admitted(admitted: crate::admission::AdmittedRunPlan, kinds: &Registry, mut options: RunOptions) -> Result<(Self, Progress), Error> {
+        let crate::admission::AdmittedRunPlan { plan, canvas_id, canvas, witness, mut usage } = admitted;
+        options.limits.list_items = options.limits.list_items.min(usage.limits.list_items);
+        options.limits.step_bytes = options.limits.step_bytes.min(usage.limits.step_bytes);
+        options.limits.run_bytes = options.limits.run_bytes.min(usage.limits.run_bytes);
+        if usage.bytes > options.limits.run_bytes || usage.steps.values().any(|n| *n > options.limits.step_bytes) {
+            return Err(crate::admission::cap());
+        }
+        usage.limits = options.limits;
+        Self::start_owned(plan, canvas_id, canvas, kinds, options, Some((witness, usage)))
+    }
+
+    fn start_owned(
+        plan: RunPlan,
+        canvas_id: CanvasId,
+        canvas: Canvas,
+        kinds: &Registry,
+        options: RunOptions,
+        admission: Option<(crate::admission::Witness, crate::admission::Usage)>,
+    ) -> Result<(Self, Progress), Error> {
         let mut steps: BTreeMap<NodeId, StepState> = BTreeMap::new();
-        for step in &plan.steps {
+        let ready: Vec<NodeId> = plan.steps.iter().filter(|s| s.after.is_empty()).map(|s| s.node).collect();
+        for step in plan.steps {
             if canvas.nodes().get(&step.node).is_none() {
                 return Err(invalid("a planned node is not on the canvas"));
             }
@@ -223,15 +249,16 @@ impl Run {
                 earlier.dependents.push(step.node);
                 waiting = waiting.saturating_add(1);
             }
-            steps.insert(step.node, StepState { step: step.clone(), status: Status::Waiting(waiting), jobs: Vec::new(), dependents: Vec::new() });
+            steps.insert(step.node, StepState { step, status: Status::Waiting(waiting), jobs: Vec::new(), dependents: Vec::new() });
         }
-        let hasher = InputHasher::new(canvas, kinds, MAX_QUERY_BYTES)?;
+        let hasher = InputHasher::new(&canvas, kinds, MAX_QUERY_BYTES)?;
         let open_steps = steps.len();
-        let ready: Vec<NodeId> = plan.steps.iter().map(|s| s.node).filter(|n| steps.get(n).is_some_and(|s| s.status == Status::Waiting(0))).collect();
+
         let mut run = Self {
             id: options.id,
             canvas_id,
-            canvas: canvas.clone(),
+            canvas,
+            admission,
             hasher,
             steps,
             jobs: BTreeMap::new(),
@@ -369,6 +396,7 @@ impl Run {
     /// Hands out a ready step's jobs: the planned ones, or ones planned now from this run's
     /// outputs. A step with no jobs finishes at once; the steps that makes ready are returned.
     fn begin(&mut self, kinds: &Registry, node: NodeId) -> (Progress, Vec<NodeId>) {
+        let eager = self.steps.get(&node).is_some_and(|s| s.step.jobs.is_some());
         let planned = match self.steps.get_mut(&node) {
             Some(state) => match state.step.jobs.take() {
                 Some(jobs) => Ok(jobs),
@@ -381,17 +409,41 @@ impl Run {
             Ok(jobs) if self.jobs.len().saturating_add(jobs.len()) > MAX_RUN_JOBS => Err(format!("the run would have more than {MAX_RUN_JOBS} jobs")),
             other => other,
         };
+        let jobs = jobs.and_then(|mut jobs| {
+            let instance = self.canvas.nodes().get(&node).ok_or_else(|| "the step node is missing".to_owned())?;
+            crate::generation_contract::validate_outputs(instance, &jobs).map_err(str::to_owned)?;
+            if jobs.iter().any(|job| matches!(job, JobSpec::Generate { .. })) && self.admission.is_none() {
+                return Err("generation requires catalog admission".into());
+            }
+            if let Some((witness, _)) = &self.admission {
+                crate::generation_contract::validate_targets(instance, &jobs, &witness.targets).map_err(|reason| reason.message().to_owned())?;
+            }
+            if !eager && let Some((witness, usage)) = &mut self.admission {
+                witness.normalize(node, &mut jobs, usage).map_err(|e| e.message)?;
+            }
+            Ok(jobs)
+        });
         let jobs = match jobs {
             Ok(jobs) => jobs,
             Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
+        let Some(instance) = self.canvas.nodes().get(&node) else {
+            return (self.fail(node, "the step node is missing".into()), Vec::new());
+        };
+        if let Err(reason) = crate::generation_contract::validate_outputs(instance, &jobs) {
+            return (self.fail(node, reason.into()), Vec::new());
+        }
+        let lanes = match jobs.iter().map(lane).collect::<Result<Vec<_>, _>>() {
+            Ok(lanes) => lanes,
+            Err(error) => return (self.fail(node, error.message), Vec::new()),
+        };
         let mut progress = Progress::default();
         let mut ids = Vec::with_capacity(jobs.len());
-        for work in jobs {
+        for (work, lane) in jobs.into_iter().zip(lanes) {
             let id = JobId(self.next_job);
             let Some(next) = self.next_job.checked_add(1) else { return (self.fail(node, "the run ran out of job ids".into()), Vec::new()) };
             self.next_job = next;
-            progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane: lane(&work), retry: self.retry, idempotency_key: self.key(id) });
+            progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane, retry: self.retry, idempotency_key: self.key(id) });
             self.jobs.insert(id, JobState { step: node, work, done: false, outputs: Vec::new() });
             ids.push(id);
         }
@@ -431,6 +483,26 @@ impl Run {
                 return Err(format!("its {} input takes one value", input.port));
             }
         }
+        if self.admission.is_some() {
+            use crate::admission::measure::{add, mul, values};
+            let mut charge = mul(state.step.inputs.len(), std::mem::size_of::<InputValue>()).map_err(|e| e.message)?;
+            for input in &state.step.inputs {
+                charge = add(charge, input.port.len()).map_err(|e| e.message)?;
+                for source in &input.from {
+                    for item in self.input_items(source, input.port_type.many)? {
+                        charge = add(
+                            charge,
+                            add(if input.port_type.many { std::mem::size_of::<Value>() } else { 0 }, values(item).map_err(|e| e.message)?)
+                                .map_err(|e| e.message)?,
+                        )
+                        .map_err(|e| e.message)?;
+                    }
+                }
+            }
+            if let Some((_, usage)) = &mut self.admission {
+                usage.reserve(node, charge).map_err(|e| e.message)?;
+            }
+        }
         // This copy pass is admitted in full. Keep its charge even if kind planning rejects it.
         self.run_bytes = run_bytes;
         let mut inputs = Vec::with_capacity(state.step.inputs.len());
@@ -448,7 +520,12 @@ impl Run {
         }
         let node = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
         let kind = kinds.get(&node.kind).map_err(|e| e.message)?;
-        kind.plan(&PlanCtx { node, inputs: &inputs }).map_err(|e| e.message)
+        kind.plan(&PlanCtx {
+            targets: self.admission.as_ref().map_or(&nodecraft_types::EMPTY_TARGET_SELECTION, |(witness, _)| &witness.targets),
+            node,
+            inputs: &inputs,
+        })
+        .map_err(|e| e.message)
     }
 
     /// The planner's logical value size, but with scratch space bounded by depth, not list
@@ -588,11 +665,11 @@ impl Run {
 }
 
 /// The lane a job runs on: local work shares one lane.
-fn lane(work: &JobSpec) -> Lane {
+fn lane(work: &JobSpec) -> Result<Lane, Error> {
     match work {
-        JobSpec::Source { .. } => Lane::new(LOCAL_LANE),
-        // One lane per provider, so the scheduler's per-provider limits apply.
-        JobSpec::Generate { provider, .. } => Lane::new(provider.as_str()),
+        JobSpec::Source { .. } => Ok(Lane::new(LOCAL_LANE)),
+        // Every provider identity uses the canonical namespace, including defaults.
+        JobSpec::Generate { provider, instance, .. } => Ok(Lane::new(nodecraft_types::ProviderTarget::new(provider, *instance)?.lane_name()?)),
     }
 }
 
@@ -640,3 +717,76 @@ impl crate::driver::JobRunner for SourceRunner {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod output_contract_tests;
+
+#[cfg(test)]
+mod endpoint_lane_before {
+    use super::*;
+    #[test]
+    fn provider_named_local_does_not_share_the_source_lane() {
+        let node = NodeId::from_bytes([7; 16]);
+        let source = JobSpec::Source { node, output: "out".into(), value: Value::Text("fixture".into()) };
+        let provider = JobSpec::Generate {
+            instance: None,
+            node,
+            outputs: vec![],
+            provider: "local".into(),
+            model: "fixture".into(),
+            params: Default::default(),
+            inputs: vec![],
+        };
+        assert_ne!(lane(&source), lane(&provider), "a provider named local must not consume deterministic-source concurrency");
+    }
+}
+
+#[cfg(test)]
+mod endpoint_concurrency_tests {
+    use super::*;
+    #[test]
+    fn typed_endpoint_lanes_keep_local_separate_and_respect_lane_and_global_caps() {
+        let a = nodecraft_types::ProviderTarget::named("local", nodecraft_types::ProviderInstanceId::from_bytes([0; 16])).unwrap();
+        let b = nodecraft_types::ProviderTarget::named("local", nodecraft_types::ProviderInstanceId::from_bytes([1; 16])).unwrap();
+        let default = nodecraft_types::ProviderTarget::default_instance("local").unwrap();
+        let mut limits = scheduler::Limits { global: 3, default_per_lane: 1, ..Default::default() };
+        limits.set_target_limit(&a, 1).unwrap();
+        limits.set_target_limit(&b, 1).unwrap();
+        let mut scheduler = scheduler::Scheduler::new(limits);
+        let lanes = [
+            Lane::for_target(&a).unwrap(),
+            Lane::for_target(&a).unwrap(),
+            Lane::for_target(&b).unwrap(),
+            Lane::new(LOCAL_LANE),
+            Lane::for_target(&default).unwrap(),
+        ];
+        scheduler
+            .add(
+                lanes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, lane)| scheduler::JobSpec {
+                        id: JobId(n as u64),
+                        deps: vec![],
+                        lane,
+                        retry: RetryPolicy::NEVER,
+                        idempotency_key: format!("key{n}"),
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let started = scheduler.start_ready(0);
+        assert_eq!(started.len(), 3);
+        assert_eq!(started.iter().filter(|s| s.lane == Lane::for_target(&a).unwrap()).count(), 1);
+        assert!(started.iter().any(|s| s.lane == Lane::for_target(&b).unwrap()));
+        assert!(started.iter().any(|s| s.lane.0 == LOCAL_LANE));
+        assert!(scheduler.start_ready(0).is_empty());
+        scheduler.report(JobId(0), Outcome::Done, 0).unwrap();
+        let next = scheduler.start_ready(0);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].job, JobId(1));
+        assert!(nodecraft_types::ProviderTarget::default_instance(&"x".repeat(513)).is_err());
+        let maximum = nodecraft_types::ProviderTarget::named(&"x".repeat(512), nodecraft_types::ProviderInstanceId::from_bytes([9; 16])).unwrap();
+        assert!(maximum.lane_name().unwrap().len() <= 1061);
+    }
+}

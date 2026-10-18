@@ -15,6 +15,7 @@ nodecraft-engine = { workspace = true }
 nodecraft-graph.workspace = true
 nodecraft-types.workspace = true
 nodecraft-nodes.workspace = true
+nodecraft-media.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
@@ -22,7 +23,7 @@ eframe = { workspace = true, features = ["wgpu", "accesskit"] }
 craft-ui = { workspace = true }
 craft-quit = { workspace = true }
 log = { workspace = true }
-getrandom = { version = "0.3.4", features = ["wasm_js"] }
+getrandom.workspace = true
 
 [dev-dependencies]
-egui_kittest = { workspace = true }
+egui_kittest = { workspace = true, features = ["wgpu"] }

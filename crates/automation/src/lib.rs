@@ -4,6 +4,7 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+pub mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod control;
 pub mod mcp;
@@ -17,5 +18,7 @@ use nodecraft_types::{CanvasId, Error, ProjectId};
 pub fn blank_session(project: ProjectId, canvas: CanvasId) -> Result<Session, Error> {
     let mut document = Project::new(project, "Untitled")?;
     Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }]).apply(&mut document)?;
-    Session::new(document)
+    let mut session = Session::new(document)?;
+    session.perf_mut().set_clock(nodecraft_engine::perf::native_clock());
+    Ok(session)
 }

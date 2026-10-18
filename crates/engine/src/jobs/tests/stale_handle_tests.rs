@@ -61,14 +61,14 @@ fn setup(paid: bool) -> (ProviderRunner, JobBudget) {
     (runner, budget)
 }
 fn has(runner: &ProviderRunner, provider: &str, key: &str) -> bool {
-    runner.lock().handles.contains_key(&(provider.into(), key.into()))
+    runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance(provider).unwrap(), key.into()))
 }
 fn charge(budget: &JobBudget, provider: &str, key: &str) -> Option<(u64, Charge)> {
     budget.log.lock().unwrap().charge(provider, key).map(|e| (e.cost.micros, e.status))
 }
 
 #[test]
-fn same_provider_key_change_removes_old_handle_and_matching_retry_resumes() {
+fn same_provider_proposed_key_keeps_scheduler_handle_and_matching_retry_resumes() {
     for paid in [false, true] {
         let (runner, budget) = setup(paid);
         let provider = Arc::new(Controlled::new("controlled", true));
@@ -80,7 +80,7 @@ fn same_provider_key_change_removes_old_handle_and_matching_retry_resumes() {
         assert!(matches!(block_on(runner.run(starting(1, "old"), CancelToken::default())), Outcome::Failed { transient: true, .. }));
         assert_eq!(provider.submits.load(Ordering::SeqCst), 1, "matching retry resumes");
         runner.register(JobId(1), queued(provider, "new"));
-        assert!(!has(&runner, "controlled", "old"), "changed key no longer needs old retry handle");
+        assert!(has(&runner, "controlled", "old"), "proposed registration does not retire the scheduler retry");
         assert_eq!(runner.lock().jobs[&JobId(1)].job.idempotency_key, "new");
         if paid {
             runner.settle(JobId(1));

@@ -18,6 +18,10 @@
 //! Dynamic instance/validation hooks own their internal allocations. Descriptor defaults are
 //! admitted before authoritative validation; additional/transformed effective values returned by
 //! custom validators are admitted before hashing. Native hooks may allocate before returning.
+//! Rejected recipes retain a sanitized reason of at most 256 bytes, charged once (128 + reason
+//! bytes). Detailed stale reports reserve another 576 bytes before routing or recipe hooks, even
+//! when no unknown result is found. Standalone diagnostics pay those bytes before construction.
+//! Reports can refuse earlier; the 256 MiB ceiling and legacy v2 hash budgets are unchanged.
 //!
 //! **Recipe versions:** the hash starts with a domain tag ([`DOMAIN`]). The stored hash carries no
 //! version, so after a change to the recipe an old result can't be told from one whose inputs
@@ -27,7 +31,10 @@
 use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::{Category, Registry};
 use nodecraft_types::{Blake3, Error, ErrorKind, NodeId, ParamValues, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+};
 
 /// Domain tag mixed into every hash. Bump it when what is hashed changes; results stamped under
 /// an older tag are then reported stale (see the module docs).
@@ -36,6 +43,26 @@ pub const DOMAIN: &[u8] = b"nodecraft.input-hash.v2";
 /// Admission budget for recipes, resolved values and upstream outputs, each once.
 /// Scalar/media JSON uses conservative encoded-size reservations, not exact bytes hashed.
 pub const MAX_QUERY_BYTES: usize = 256 * 1024 * 1024;
+
+/// A checked result whose current input hash is unknown, with its actual failing node.
+/// Reasons are the same bounded public-safe messages as [`input_hash`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashDiagnostic {
+    pub node: NodeId,
+    pub cause: NodeId,
+    pub error: Error,
+}
+
+/// Known stale results plus the first local invalidity, in canvas NodeId order.
+/// `unknown_total` counts checked results with recorded hashes whose current hash is unavailable,
+/// including multiple results sharing one rejected upstream node; it is not a unique-node count.
+/// A stale set alone is not proof that every other node is fresh.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleReport {
+    pub nodes: BTreeSet<NodeId>,
+    pub unknown_total: usize,
+    pub unknown: Option<HashDiagnostic>,
+}
 
 /// Fixed cost charged per value on top of its payload, so huge lists of tiny values count too.
 const VALUE_COST: usize = 16;
@@ -175,11 +202,54 @@ fn charge_stored(meter: &mut Meter, node: &Node) -> Result<(), Error> {
 }
 
 /// A node's recipe digest, or why its kind rejects it (then it has no meaningful hash: unknown).
-type Recipe = Result<[u8; 32], Error>;
+type Recipe = Result<[u8; 32], CachedRejection>;
+
+const MAX_REJECTION_REASON_BYTES: usize = 256;
+const REJECTION_PREFIX_BYTES: usize = MAX_REJECTION_REASON_BYTES - 3; // UTF-8 ellipsis
+const CACHE_REJECTION_OVERHEAD: usize = 128;
+const MAX_DIAGNOSTIC_BYTES: usize = 512;
+const DIAGNOSTIC_OUTPUT_OVERHEAD: usize = 64;
+
+struct CachedRejection {
+    kind: ErrorKind,
+    reason: String,
+}
+#[derive(Clone, Copy)]
+enum InvalidHash {
+    Router(NodeId),
+    Target(NodeId),
+    Source(NodeId),
+}
+enum HashResult {
+    Ready(Blake3),
+    Invalid(InvalidHash),
+}
+fn diagnostic_char(ch: char) -> char {
+    if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}' | '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+        ' '
+    } else {
+        ch
+    }
+}
+// Counting and copying each inspect at most 254 scalars, irrespective of native hook message
+// length. No original Error/message clone or full-input formatting is needed.
+fn reason_shape(text: &str) -> (usize, bool) {
+    let mut bytes = 0usize;
+    for ch in text.chars().map(diagnostic_char) {
+        if bytes.saturating_add(ch.len_utf8()) > REJECTION_PREFIX_BYTES {
+            return (bytes, true);
+        }
+        bytes += ch.len_utf8();
+    }
+    (bytes, false)
+}
 
 /// Resolved feeds of every node, owned so a hasher can outlive the borrow of its canvas:
 /// target → (port, position, upstream, upstream port).
 type Feeds = BTreeMap<NodeId, Vec<(String, u32, NodeId, String)>>;
+
+// Created only by the report constructor after charging its own meter; consumed once.
+struct DiagnosticCredit;
 
 /// Input hashes over one canvas, reusable across queries: routers are resolved once, and each
 /// node's recipe and each upstream output are digested once (memoized), all charged to one byte
@@ -194,13 +264,28 @@ pub struct InputHasher {
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
     outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
     meter: Meter,
+    diagnostic_credit: Option<DiagnosticCredit>,
+    #[cfg(test)]
+    diagnostic_cache_bytes: usize,
+    #[cfg(test)]
+    diagnostic_output_bytes: usize,
 }
 
 impl InputHasher {
     /// A hasher for `canvas` with a byte budget of `budget` across all its queries.
     pub fn new(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<Self, Error> {
-        let incoming = crate::routing::incoming(canvas, kinds)?;
+        Self::with_meter(canvas, kinds, Meter { left: budget, hashed: 0, refused: false }, None)
+    }
+
+    fn for_report(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<Self, Error> {
         let mut meter = Meter { left: budget, hashed: 0, refused: false };
+        // Routing itself invokes router validation hooks, so reserve before constructing it.
+        meter.charge(MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD)?;
+        Self::with_meter(canvas, kinds, meter, Some(DiagnosticCredit))
+    }
+
+    fn with_meter(canvas: &Canvas, kinds: &Registry, mut meter: Meter, diagnostic_credit: Option<DiagnosticCredit>) -> Result<Self, Error> {
+        let incoming = crate::routing::incoming(canvas, kinds)?;
         let mut feeds: Feeds = BTreeMap::new();
         for (target, list) in &incoming.feeds {
             let mut owned = Vec::with_capacity(list.len());
@@ -215,10 +300,21 @@ impl InputHasher {
         for ((target, _), router) in &incoming.invalid {
             invalid.entry(*target).or_insert(*router);
         }
-        Ok(Self { feeds, invalid, recipes: BTreeMap::new(), outputs: BTreeMap::new(), meter })
+        Ok(Self {
+            feeds,
+            invalid,
+            recipes: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            meter,
+            diagnostic_credit,
+            #[cfg(test)]
+            diagnostic_cache_bytes: 0,
+            #[cfg(test)]
+            diagnostic_output_bytes: 0,
+        })
     }
 
-    /// Admission bytes charged so far, including scalar/media reservations and the feed index.
+    /// Admission bytes charged so far, including values, feed index and retained/returned diagnostics.
     pub fn hashed(&self) -> usize {
         self.meter.hashed
     }
@@ -226,9 +322,9 @@ impl InputHasher {
     /// Kind, configuration and shaping parameters: the visible resolved values when the kind is
     /// installed (hidden ones and defaults as the kind applies them), else what is stored.
     /// Outer `Err`: the query is over budget.
-    fn recipe(&mut self, kinds: &Registry, node: &Node) -> Result<Recipe, Error> {
+    fn recipe(&mut self, kinds: &Registry, node: &Node) -> Result<Option<[u8; 32]>, Error> {
         if let Some(recipe) = self.recipes.get(&node.id) {
-            return Ok(recipe.clone());
+            return Ok(recipe.as_ref().ok().copied());
         }
         charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
@@ -294,8 +390,90 @@ impl InputHasher {
                 }
             },
         };
-        self.recipes.insert(node.id, recipe.clone());
-        Ok(recipe)
+        let recipe = match recipe {
+            Ok(digest) => Ok(digest),
+            Err(rejected) => Err(self.cache_rejection(rejected)?),
+        };
+        let digest = recipe.as_ref().ok().copied();
+        self.recipes.insert(node.id, recipe);
+        Ok(digest)
+    }
+
+    fn cache_rejection(&mut self, rejected: Error) -> Result<CachedRejection, Error> {
+        let text = if rejected.message.is_empty() { "the node kind rejected this node" } else { &rejected.message };
+        let (prefix, truncated) = reason_shape(text);
+        let bytes = prefix.saturating_add(if truncated { 3 } else { 0 });
+        // New ownership is admitted before allocating/copying even a bounded prefix. Native
+        // hooks own the original returned Error; we retain only this bounded public-safe reason.
+        self.meter.charge(CACHE_REJECTION_OVERHEAD.saturating_add(bytes))?;
+        let mut reason = String::with_capacity(bytes);
+        for ch in text.chars().map(diagnostic_char) {
+            if reason.len().saturating_add(ch.len_utf8()) > prefix {
+                break;
+            }
+            reason.push(ch);
+        }
+        if truncated {
+            reason.push('…');
+        }
+        #[cfg(test)]
+        {
+            self.diagnostic_cache_bytes += reason.len();
+        }
+        Ok(CachedRejection { kind: rejected.kind, reason })
+    }
+
+    fn diagnostic(&mut self, invalid: InvalidHash) -> Result<Error, Error> {
+        let rejection = match invalid {
+            InvalidHash::Router(_) => None,
+            InvalidHash::Target(node) | InvalidHash::Source(node) => Some(
+                self.recipes
+                    .get(&node)
+                    .and_then(|r| r.as_ref().err())
+                    .ok_or_else(|| Error::new(ErrorKind::Internal, "a rejected hash has no cached reason"))?,
+            ),
+        };
+        if self.meter.refused {
+            return Err(too_large());
+        }
+        if self.diagnostic_credit.take().is_none() {
+            self.meter.charge(MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD)?;
+        }
+        // Fixed role text + canonical UUID + at most 256 reason bytes fits below 512. Write
+        // directly into the admitted String, never an intermediate formatted native Error.
+        let mut message = String::with_capacity(MAX_DIAGNOSTIC_BYTES);
+        let kind = match invalid {
+            InvalidHash::Router(router) => {
+                write!(&mut message, "inputs depend on invalid router {router}; check its configuration and ports")
+                    .map_err(|_| Error::new(ErrorKind::Internal, "a hash diagnostic could not be formatted"))?;
+                ErrorKind::InvalidInput
+            }
+            InvalidHash::Target(_) => {
+                let Some(rejection) = rejection else { return Err(Error::new(ErrorKind::Internal, "a target rejection has no reason")) };
+                message.push_str(&rejection.reason);
+                rejection.kind
+            }
+            InvalidHash::Source(source) => {
+                let Some(rejection) = rejection else { return Err(Error::new(ErrorKind::Internal, "a source rejection has no reason")) };
+                write!(&mut message, "upstream source {source} is invalid: ")
+                    .map_err(|_| Error::new(ErrorKind::Internal, "a hash diagnostic could not be formatted"))?;
+                message.push_str(&rejection.reason);
+                rejection.kind
+            }
+        };
+        #[cfg(test)]
+        {
+            self.diagnostic_output_bytes += message.len();
+        }
+        Ok(Error::new(kind, message))
+    }
+
+    fn reported(&mut self, node: NodeId, invalid: InvalidHash) -> Result<HashDiagnostic, Error> {
+        let cause = match invalid {
+            InvalidHash::Router(id) | InvalidHash::Target(id) | InvalidHash::Source(id) => id,
+        };
+        // Move the admitted Error: two fixed IDs and Error fit its reserved 64-byte overhead.
+        Ok(HashDiagnostic { node, cause, error: self.diagnostic(invalid)? })
     }
 
     /// The content of `upstream`'s result on `port`: `produced` (a run's own outputs, in
@@ -333,19 +511,27 @@ impl InputHasher {
     /// A node's output digest is memoized the first time it is read, so give a node's produced
     /// outputs before hashing anything downstream of it.
     pub fn hash(&mut self, canvas: &Canvas, kinds: &Registry, id: NodeId, produced: &BTreeMap<NodeId, Vec<Value>>) -> Result<Option<Blake3>, Error> {
-        // A shared admission failure ends this query, including memoized lookups. Node-local
-        // invalidity never sets this flag. A successful exact-budget query may still reuse caches.
+        self.hash_detailed(canvas, kinds, id, produced).map(|result| match result {
+            HashResult::Ready(digest) => Some(digest),
+            HashResult::Invalid(_) => None,
+        })
+    }
+
+    fn hash_detailed(&mut self, canvas: &Canvas, kinds: &Registry, id: NodeId, produced: &BTreeMap<NodeId, Vec<Value>>) -> Result<HashResult, Error> {
+        // A shared admission failure ends this query, including memoized lookups. A local
+        // rejection stays unknown when its bounded record fits; metadata admission can fail too.
+        // A successful exact-budget query may still reuse caches.
         if self.meter.refused {
             return Err(too_large());
         }
-        if self.invalid.contains_key(&id) {
-            return Ok(None);
+        if let Some(router) = self.invalid.get(&id) {
+            return Ok(HashResult::Invalid(InvalidHash::Router(*router)));
         }
         let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "node is not on this canvas"))?;
         let mut w = Writer::new();
         match self.recipe(kinds, node)? {
-            Ok(recipe) => w.digest(&recipe),
-            Err(_) => return Ok(None),
+            Some(recipe) => w.digest(&recipe),
+            None => return Ok(HashResult::Invalid(InvalidHash::Target(node.id))),
         }
         let mut feeds: BTreeMap<String, Vec<(u32, NodeId, String)>> = BTreeMap::new();
         for (port, order, from, from_port) in self.feeds.get(&id).into_iter().flatten() {
@@ -363,11 +549,11 @@ impl InputHasher {
                 match canvas.nodes().get(&from) {
                     // A source contributes its recipe: what it emits.
                     Some(upstream) if is_source(kinds, upstream) => match self.recipe(kinds, upstream)? {
-                        Ok(recipe) => {
+                        Some(recipe) => {
                             w.text("source");
                             w.digest(&recipe);
                         }
-                        Err(_) => return Ok(None),
+                        None => return Ok(HashResult::Invalid(InvalidHash::Source(upstream.id))),
                     },
                     // Anything else contributes the content of the result it lends.
                     Some(upstream) => match self.output(upstream, &from_port, produced.get(&from).map(Vec::as_slice))? {
@@ -381,7 +567,7 @@ impl InputHasher {
                 }
             }
         }
-        Ok(Some(Blake3::from_bytes(w.finish())))
+        Ok(HashResult::Ready(Blake3::from_bytes(w.finish())))
     }
 }
 
@@ -391,22 +577,18 @@ fn is_source(kinds: &Registry, node: &Node) -> bool {
 
 /// The hash a result of `id` would record if it ran now. `Err` when the node isn't on the canvas,
 /// its kind rejects it (or a source feeding it), its routers can't be resolved, or the canvas is
-/// too large to hash.
+/// too large to hash. Local failures retain a bounded public-safe reason; upstream source/router
+/// errors identify their node, without rerunning kind hooks. Diagnostic copies share the query budget.
 pub fn input_hash(canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<Blake3, Error> {
     input_hash_within(canvas, kinds, id, MAX_QUERY_BYTES)
 }
 
 fn input_hash_within(canvas: &Canvas, kinds: &Registry, id: NodeId, budget: usize) -> Result<Blake3, Error> {
     let mut hasher = InputHasher::new(canvas, kinds, budget)?;
-    if hasher.invalid.contains_key(&id) {
-        return Err(Error::new(ErrorKind::InvalidInput, "its inputs depend on an invalid router"));
+    match hasher.hash_detailed(canvas, kinds, id, &BTreeMap::new())? {
+        HashResult::Ready(digest) => Ok(digest),
+        HashResult::Invalid(invalid) => Err(hasher.diagnostic(invalid)?),
     }
-    if let Some(node) = canvas.nodes().get(&id)
-        && let Err(rejected) = hasher.recipe(kinds, node)?
-    {
-        return Err(rejected);
-    }
-    hasher.hash(canvas, kinds, id, &BTreeMap::new())?.ok_or_else(|| Error::new(ErrorKind::InvalidInput, "a source feeding it is invalid"))
 }
 
 /// Nodes whose active result is stale: its recorded input hash differs from the current one, or
@@ -418,18 +600,39 @@ pub fn stale(canvas: &Canvas, kinds: &Registry) -> Result<BTreeSet<NodeId>, Erro
     stale_within(canvas, kinds, MAX_QUERY_BYTES).map(|(stale, _)| stale)
 }
 
+/// [`stale`] with one bounded diagnostic and a count of locally invalid checked results.
+/// Uses the same hasher/cache and never repeats hooks to recover a reason. One 576-byte output
+/// is reserved before routing or hashing, even without an unknown result. Formatting consumes it
+/// without another charge; refusal returns an error, not a partial report.
+pub fn stale_report(canvas: &Canvas, kinds: &Registry) -> Result<StaleReport, Error> {
+    query_stale(canvas, kinds, MAX_QUERY_BYTES, true).map(|(report, _)| report)
+}
+
 /// [`stale`] with its own admission budget; also returns charged bytes (including reservations).
 fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTreeSet<NodeId>, usize), Error> {
+    query_stale(canvas, kinds, budget, false).map(|(report, charged)| (report.nodes, charged))
+}
+
+fn query_stale(canvas: &Canvas, kinds: &Registry, budget: usize, details: bool) -> Result<(StaleReport, usize), Error> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
-    let mut query = InputHasher::new(canvas, kinds, budget)?;
+    let mut query = if details { InputHasher::for_report(canvas, kinds, budget)? } else { InputHasher::new(canvas, kinds, budget)? };
     let none = BTreeMap::new();
     let mut stale = BTreeSet::new();
+    let mut unknown_total = 0usize;
+    let mut first_unknown = None;
     for node in canvas.nodes().values() {
         let recorded = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).and_then(|g| g.input_hash);
-        if let Some(recorded) = recorded
-            && query.hash(canvas, kinds, node.id, &none)?.is_some_and(|now| now != recorded)
-        {
-            stale.insert(node.id);
+        if let Some(recorded) = recorded {
+            match query.hash_detailed(canvas, kinds, node.id, &none)? {
+                HashResult::Ready(now) if now != recorded => {
+                    stale.insert(node.id);
+                }
+                HashResult::Invalid(invalid) if details => {
+                    unknown_total = unknown_total.saturating_add(1);
+                    first_unknown.get_or_insert((node.id, invalid));
+                }
+                _ => {}
+            }
         }
     }
     // Downstream of a stale node, every result is stale too (seen-set walk; graphs are acyclic
@@ -450,7 +653,8 @@ fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTr
             }
         }
     }
-    Ok((stale, query.meter.hashed))
+    let unknown = first_unknown.map(|(node, invalid)| query.reported(node, invalid)).transpose()?;
+    Ok((StaleReport { nodes: stale, unknown_total, unknown }, query.meter.hashed))
 }
 
 #[cfg(test)]

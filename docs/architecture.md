@@ -33,7 +33,8 @@ every CI run, and fails on an unregistered crate.
 | L5 | `agent` | in-canvas agent: LLM tool loop over engine commands | engine |
 | L5 | `automation` | control channel (JSON), MCP server, HTTP serve mode | engine |
 | L5 | `ui-egui` | egui shell: canvas widget, node cards, panels, editors, theme tokens | engine |
-| dev only | `testkit` | fixtures, mock provider, snapshot helpers | engine |
+| dev only | `testkit` | graph fixtures, mock compatibility reexport, snapshot helpers | engine |
+| dev only | `provider-testkit` | provider-only mock/type reexports for lower-layer tests | providers, types |
 | exempt | `apps/nodecraft`, `apps/nodecraft-cli`, `xtask` | binaries and tooling | anything |
 
 ```mermaid
@@ -60,7 +61,16 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
-- **`testkit` is a dev-dependency only.**
+- **Layered consumers use `testkit` and `provider-testkit` as dev-dependencies only.** Apps and
+  tooling keep their existing exemption; standalone media permits neither. The provider facade's
+  workspace dependencies are restricted to providers and types in every dependency kind,
+  including rejection of facade self-edges before generic same-package exemptions. It exposes the opt-in `providers::mock` implementation and the
+  same external provider types; lower crates use the facade only in tests. Provider unit tests
+  use their local `crate::mock` and local Provider trait to avoid duplicate-crate trait identity.
+  The higher testkit preserves `testkit::mock` by reexporting providers directly, without a
+  forbidden normal dependency on another testkit crate. Neither testkit class is in the normal
+  wasm sweep; `cargo xtask wasm` separately checks the facade and opt-in providers/testkit mock,
+  and refuses the wasm gate if either the normal sweep or that extra invocation fails.
 
 ## Core data types
 
@@ -234,7 +244,9 @@ AddNode restore spelling and the complete changeset envelope, avoiding a second 
 pass. Parameter decoding borrows JSON and reports allowlisted field paths and error categories,
 never raw input values or arbitrary map keys. Native panic unwinding returns an
 internal error while preserving document/history/events; abort-only targets still depend on
-validation. History limits and explicit drag tokens are specified in `decisions.md`. Each
+validation. History limits and explicit drag tokens are specified in the
+[engine-session decision](decisions/2026-10-16-engine-command-sessions.md), with the later
+[history-step limit update](decisions/2026-10-17-200-node-performance.md). Each
 subscriber calls `events_since(cursor)` and advances its own cursor to the last notification;
 an expired cursor requires reading the current document and revision again. These notifications
 are an invalidation log, not a persistence or collaboration journal. Applied changeset events
@@ -289,6 +301,17 @@ null is the reset sentinel for a parameter, not a stored Value variant.
 rendering. Builtin sessions require no separate Registry resource; custom sessions inject kinds
 once through `Session::with_registries`. The query remains read-only and its enabled check only
 checks the canvas, leaving staleness computation to dispatch.
+
+The response preserves `nodes` as the known stale set and adds `unknown_total` plus `unknown`
+(null or `{node, cause, kind, reason}`). Only active results with recorded input hashes are
+checked. Local invalid hashes do not themselves seed staleness; unknown is not proof of freshness.
+The first diagnostic follows canvas NodeId order and identifies the actual rejected target,
+source or router. It reuses the query's cached, bounded public-safe reason without another hook
+call. More unknown results are counted rather than collected into an unbounded message list.
+The existing 576-byte diagnostic reservation shares the hash query's sticky admission budget;
+global refusal returns an error without a partial report. Enabled/Preview remain cheap. The
+legacy `stale()` set API and quote callers keep their behavior; completed paid runs still retain
+results with unknown hashes when hashing fails. Control/MCP expose the command's same JSON.
 
 ## Project persistence (#54)
 
@@ -521,3 +544,10 @@ prefix damage recovery, staged Open rollback, source access/locks and sync gener
 same persistence path. No second Comments save/append service exists. Save availability validates
 the current bounded manifest; incremental edits keep their existing replay/graph limits rather than
 imposing the archive's smaller manifest ceiling on every edit.
+
+## Optional native video sidecar
+
+`media/video` provides the standalone bounded native FFmpeg service described in
+[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
+tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
+is separate. Feature-on wasm exposes an Unsupported host setup path.

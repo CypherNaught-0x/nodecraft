@@ -9,12 +9,12 @@ fn note_has_no_ports_and_plans_no_work() {
     assert!(node.inputs.is_empty() && node.outputs.is_empty());
     assert_eq!(node.params.get("text"), Some(&Value::Text(String::new())));
     assert!(kind.mode(&[]).is_some());
-    assert!(kind.plan(&PlanCtx { node: &node, inputs: &[] }).unwrap().is_empty());
+    assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] }).unwrap().is_empty());
     let inputs =
         [InputValue { port: "in".into(), port_type: PortType { modality: Modality::Text, many: false }, value: Value::Text("not a wire destination".into()) }];
     assert!(kind.mode(&[inputs[0].port_type]).is_none());
-    assert!(kind.plan(&PlanCtx { node: &node, inputs: &inputs }).is_err());
+    assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
     let mut stale = node;
     stale.params.insert("text".into(), Value::Text("x".repeat(1024 * 1024 + 1)));
-    assert!(kind.plan(&PlanCtx { node: &stale, inputs: &[] }).is_err());
+    assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &stale, inputs: &[] }).is_err());
 }

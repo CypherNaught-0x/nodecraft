@@ -240,6 +240,19 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
         if bytes.get(local_name_start..data_start) != Some(name) || data_end > start {
             return Err(invalid("invalid local ZIP entry extent"));
         }
+        if manifest {
+            // Identify an incompatible family before applying small-host asset limits or
+            // decoding graph data. Streaming writers put this bounded entry first.
+            #[derive(Deserialize)]
+            struct Version {
+                version: u32,
+            }
+            let json = bytes.get(data_start..data_end).ok_or_else(|| invalid("invalid manifest extent"))?;
+            let version: Version = serde_json::from_slice(json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
+            if !matches!(version.version, 1 | VERSION) {
+                return Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; use a compatible NodeCraft build"));
+            }
+        }
         ranges.push((offset, data_end));
         cursor = name_end;
     }

@@ -221,3 +221,73 @@ composition, direct box/Gaussian oracles, all blur families, capacities, subnorm
 request syntax and adapters. Native serial/rayon tests compare exact bytes. The ignored
 `image::tests::write_contact_sheet` writes a public-safe original review image under `/tmp`, not
 into the repository; fixture creation needs no downloaded assets or attribution from another app.
+
+
+## GPU library backend (#89)
+
+`nodecraft_gpu::image::GpuExecutor` executes the same 13 typed request families, including all
+eight blur variants, on wgpu. It accepts the canonical immutable `Raster`/`ImageInputs` and
+returns the same `ImageResult`. This is a usable headless library backend; engine command/live
+recompute integration remains #88. The GPU API does not currently add encoded/decoded/view
+normalization adapters. Media decoding and SDR normalization remain CPU responsibilities.
+
+`request()` acquires a fresh compatible adapter and matching device/queue together.
+`request_with_options(GpuOptions)` selects enabled backends, power preference and whether a
+fallback adapter is required, while still requesting its own fresh adapter. Required limits and
+features are checked before device creation. Arbitrary externally supplied adapters/pairs are
+deliberately unsupported: caller history and pair identity cannot be proven at this boundary. The executor exposes cloned device/queue handles for
+hosts that share the created pair. Import of an existing eframe-owned pair is not implemented.
+No adapter, unsupported limits, device failure, mapping failure and admission refusal are errors;
+there is no silent CPU fallback. Identity and duplicate results intentionally share CPU storage.
+
+Execution is async. Native hosts acquire a cloneable device-only `poll_handle()` **before**
+borrowing the executor in `execute`, then drive its nonblocking poll from their event loop.
+Polling the shared original device is an alternative. The native `image_actions` example shows
+a ten-second completion deadline and one-millisecond timer schedule, without a background thread
+or busy loop. The library never sleeps or blocks waiting for GPU progress. Browser WebGPU uses
+its event loop; compiling wasm does not prove browser runtime parity. No WebGL compute claim is
+made. A dropped execution future retains its single pending submission in the executor; another
+operation is refused until completion. Device loss and failed initial upload poison the executor;
+recreate it explicitly rather than repeatedly submitting to a dead device. Ordinary admission
+failures do not poison it. Mapping cleanup and synchronous create/submit/map calls
+are scoped so driver validation errors cannot reach wgpu's default panic handler.
+
+This is a **hybrid** implementation. Shared action-owned f64 preparation preserves matcher hard
+thresholds, final quantized Key/Replace alpha, rational geometry and nearest sample decisions.
+The GPU performs color transforms, composition, sampling and convolution. Optional decision
+planes are explicitly charged; no CPU-rendered final operation is uploaded under a GPU label.
+Computed transparent pixels have zero RGB; admitted raw permutations preserve hidden RGB.
+Arbitrary nearest rotation is computed; only the reference's eligible quarter-turn shortcut is
+raw. Blurred padding keeps the reference's two intermediate RGBA8 quantizations.
+
+Common input/output/work validation runs before proportional allocation. Extra CPU preparation,
+LE packing, GPU input/output/readback, decision planes, stage controls and bounded scratch share
+`ImageLimits`. Defaults remain hard maxima. Separable effects choose the largest output stripe
+height in 1..=128 that fits the **whole** memory/device/work plan, including global halos and
+repeated horizontal work. At most 128 allocation-free candidates are checked. Horizontal floats
+retain the CPU reference's f32 stage; box sums restart at each stripe's global origin. Blurred
+padding stores an immutable packed cover stage, writes quantized blur into the output, then
+composites only after all stripes finish. Later halos never read already-blurred cover pixels.
+Area resampling uses bounded hierarchical block sums rather than one million-term f32 chain.
+
+The GPU's footprint can exceed CPU row-ring storage. Full packed buffers, device binding limits,
+and minimum halos can legitimately refuse CPU-admitted requests; no promise that every maximum
+CPU-sized image fits every GPU is made. The bound covers logical requested buffers and visible
+host capacities, not allocator pages, driver bookkeeping, GPU register storage or global memory
+across multiple executors/caller-retained results. Shared CPU scratch is conservatively reserved
+in addition to GPU scratch. Counters distinguish actual preparation/packing, encoded dispatches
+and completed readbacks; an encoded invalid submission is not proof of completed GPU work.
+
+Exact paths/decisions and output shape are tested exactly. Established opaque/well-conditioned
+fixtures retain maximum straight-RGBA byte error two. Only explicitly marked adversarial samples
+with `min(CPU alpha, GPU alpha) <= 2` may instead use maximum alpha error `2/255` and maximum
+per-channel **premultiplied linear RGB** error `2/255`, calculated from returned bytes. Their
+straight-channel maxima are reported. This exception never waives hard decisions, raw-byte
+contracts or computed zero-alpha canonicalization. These are tested tolerances, not a universal
+precision proof across f32 backends. There is no HDR/ICC or speedup claim.
+
+Actual-device tests are explicitly ignored in ordinary CI: run
+`cargo test -p nodecraft-gpu actual_gpu_ -- --ignored --nocapture` on a compatible adapter.
+Unavailable hardware fails that run, rather than passing as GPU validation. Pure admission and
+stripe arithmetic tests run normally. Record adapter/backend, real dispatch/readback counts,
+observed errors and platforms actually executed with any result report.
