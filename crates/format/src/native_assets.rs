@@ -53,7 +53,10 @@ impl NativeAssetWorkspace {
         let cleanup = CleanupTable::new(&quota)?;
         for _ in 0..8 {
             let root = parent.join(format!("nodecraft-assets-{}-{}", std::process::id(), next_id()?));
+            #[cfg(unix)]
             let mut builder = std::fs::DirBuilder::new();
+            #[cfg(not(unix))]
+            let builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
