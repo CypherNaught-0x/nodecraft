@@ -918,6 +918,9 @@ a choice a later contributor might otherwise undo.
 
 ## 2026-10-17 · Frozen-v1 compatibility during format integration (#54)
 
+Historical writer policy: the v1-only write restriction below is superseded by Comments-v2.
+The frozen v1 read/role contract remains authoritative.
+
 - Version1 and NCRJ0001 remain frozen to08586e. Contextual raw read/write guards reject newer
   graph representations before typed interpretation or publication, with value-free Unsupported
   errors. Existing reviewed v1/v2/v3 migration fixtures and numbering remain authoritative.
@@ -1039,7 +1042,8 @@ a choice a later contributor might otherwise undo.
 - Keep legacy root text and add defaulted flat replies, resolved state and optional node-relative
   anchors. Node deletion detaches discussions instead of deleting their content; undo stores only
   pin IDs/offsets beside the restored node/edges.
-- Preserve valid-final transaction ordering. Structural batches with possible discussions certify
+- Preserve valid-final transaction ordering. Structural batches intersecting original or incoming
+  pin relationships (canvas plus node identity, including restored pin metadata) certify
   A→B→A→B and identical inverse spelling, preflighting actual redo under graph/history/journal
   caps. One extra clone/two probe applications are an explicit bounded tradeoff; move-only edits
   stay on their existing single-stage path.
@@ -1053,3 +1057,25 @@ a choice a later contributor might otherwise undo.
   are v2 additions too. Later Tags/Fields integrate as v3 with lossless v1/v2 defaults; old headers
   reject their actual reserved roles even when values are null/default, without rejecting harmless
   unrelated extension objects. This avoids competing incompatible v2 writers.
+- Gate exact serialized archive/recovery JSON on writes and replay admission too, so a future
+  typed model cannot emit reserved semantic roles under a frozen header.
+- Generate shell IDs as fallible UUIDv4 using native entropy or browser Web Crypto. Comment IDs
+  check live roots/replies plus retained drafts; Notes use the independent NodeId namespace.
+  Retry at most16 collisions, preserve document/history/drafts on failure, and keep randomness
+  out of pure graph/types crates. Tags can adopt the same typed shell pattern in its own change.
+
+
+## 2026-10-18 · Comments-v2 integration with landed persistence (#68)
+
+- Current writers emit v2/NCRJ0002; frozen v1 raw reads use the landed134 contextual guard,
+  including stamped-generation refusal. Compatibility tests retain genuine v1 archive/frame
+  envelopes and separately prove current-v2 success for config/scalars/stamped results.
+- Keep134's private admitted replay/source identity and incremental asset checks, lock/access,
+  sync and physical-damage prefix protocol. Every forward/inverse/actual future redo remains
+  admitted before publication; migration checkpoints precede new-version appends.
+- Actual-main navigation supplies authoritative instance world rectangles; Comments derives
+  safe node pin offsets from those and zoom-scaled port/marker extents. Landed Search is retained with shared gesture ownership;
+  no unlanded Layout implementation is imported. Held discussion drags also exclude current-main quick-add
+  and clipboard mutation admission; a rejected creation key remains unconsumed.
+- Retain main's existing seeded node/edge allocation API for its callers, while discussions and
+  Note creation use the independently reviewed fallible UUID allocator in separate namespaces.

@@ -51,13 +51,15 @@ pub struct Discussions {
     pub last_focus: Option<egui::Id>,
     pub focus_pending: Option<u64>,
     pub drag: Option<PinDrag>,
+    /// Display-only displacement retained after dropping an active pin; invalidated by a
+    /// different anchor, thread, session or closing the panel. Never persisted.
+    pub placement: Option<(CommentId, Position, egui::Vec2)>,
     pub gesture_cancelled: bool,
     pub session: Option<std::sync::Arc<()>>,
     pub pins: BTreeMap<CommentId, Position>,
     pub marker_ids: Vec<egui::Id>,
     pub stamp: Option<(ProjectId, CanvasId, u64)>,
     next_draft: u64,
-    next_id: u64,
 }
 pub struct PinDrag {
     pub session: std::sync::Arc<()>,
@@ -68,6 +70,8 @@ pub struct PinDrag {
     pub node: Option<NodeId>,
     pub start: egui::Pos2,
     pub origin: Position,
+    pub offset: egui::Vec2,
+    pub display_origin: egui::Pos2,
     pub cancelled: bool,
 }
 impl Discussions {
@@ -90,15 +94,15 @@ impl Discussions {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.placement = None;
         self.editing = None;
         self.drafts.retain(|_, draft| draft.dirty || draft.error.is_some());
     }
-    /// A local-only allocator, checked against all live entity and retained draft IDs. No
-    /// sharing identity/randomness contract is implied; collaborative allocation belongs to121.
-    pub fn allocate(&mut self, project: &nodecraft_graph::Project) -> Result<[u8; 16], Error> {
+    /// Fresh UUIDv4 checked against live roots/replies and retained draft IDs. Native
+    /// entropy and browser Web Crypto share a fallible shell-only boundary.
+    pub fn allocate_comment(&self, project: &nodecraft_graph::Project) -> Result<CommentId, Error> {
         let mut used = std::collections::BTreeSet::new();
         for canvas in project.canvases().values() {
-            used.extend(canvas.nodes().keys().map(|id| *id.as_bytes()));
             for root in canvas.comments().values() {
                 used.insert(*root.id.as_bytes());
                 used.extend(root.replies.iter().map(|reply| *reply.id.as_bytes()));
@@ -110,21 +114,53 @@ impl Discussions {
                 used.insert(*id.as_bytes());
             }
         }
-        for _ in 0..=used.len() {
-            self.next_id = self.next_id.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "local identifier limit reached"))?;
-            let mut bytes = [0xfe; 16];
-            if let Some(tail) = bytes.get_mut(8..) {
-                tail.copy_from_slice(&self.next_id.to_be_bytes());
-            }
-            if !used.contains(&bytes) {
-                return Ok(bytes);
-            }
-        }
-        Err(Error::new(ErrorKind::Conflict, "cannot allocate a local identifier"))
+        crate::ids::random_id(|bytes| used.contains(bytes)).map(CommentId::from_bytes)
     }
 }
 pub fn message_count(count: usize) -> String {
     format!("{count} {}", if count == 1 { "message" } else { "messages" })
+}
+
+pub(crate) fn checkbox_visuals(visuals: &mut egui::Visuals, t: &crate::theme::Tokens) {
+    // The shared widget fill matches the panel; an explicit contrasting outline is
+    // essential for an unchecked checkbox, not just its checked glyph.
+    for widget in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
+        widget.bg_stroke = egui::Stroke::new(t.handle_stroke, t.text);
+        widget.fg_stroke = egui::Stroke::new(t.handle_stroke, t.text);
+        widget.corner_radius = egui::CornerRadius::same(t.comment_marker_radius);
+    }
+}
+
+pub(crate) fn pin_bubble(ui: &mut egui::Ui, t: &crate::theme::Tokens, resolved: bool, active: bool, messages: usize) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(t.comment_marker_size), egui::Sense::click_and_drag());
+    let body = rect.shrink(t.comment_marker_ring);
+    let body = egui::Rect::from_min_max(body.min, body.max - egui::vec2(0.0, t.comment_marker_tail));
+    let fill = if resolved { t.panel_fill } else { t.text };
+    let glyph = if resolved { t.text } else { t.canvas_bg };
+    let stroke = egui::Stroke::new(t.handle_stroke, t.text);
+    let painter = ui.painter();
+    painter.rect(body, t.comment_marker_radius, fill, stroke, egui::StrokeKind::Inside);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            body.left_bottom() + egui::vec2(t.comment_marker_tail, 0.0),
+            body.left_bottom() + egui::vec2(t.comment_marker_tail, t.comment_marker_tail),
+            body.center_bottom(),
+        ],
+        fill,
+        stroke,
+    ));
+    if resolved {
+        // Geometry stays recognizable with the actual bundled font on every platform.
+        let mark = body.shrink(t.comment_marker_tail);
+        painter.add(egui::Shape::line(vec![mark.left_center(), mark.center_bottom(), mark.right_top()], egui::Stroke::new(t.handle_stroke, glyph)));
+    } else {
+        painter.text(body.center(), egui::Align2::CENTER_CENTER, messages.to_string(), egui::FontId::proportional(t.body_size), glyph);
+    }
+    if active || response.has_focus() {
+        // A second outline is a non-colour active cue in both themes.
+        painter.rect_stroke(rect, t.comment_marker_radius, stroke, egui::StrokeKind::Inside);
+    }
+    response
 }
 pub fn preview(text: &str) -> String {
     let mut out: String = text.chars().take(128).collect();
@@ -254,6 +290,53 @@ mod tests {
             error: None,
         }
     }
+    #[test]
+    fn resolved_pin_paints_check_geometry_without_font_and_retains_active_outline() {
+        for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+            for resolved in [false, true] {
+                for active in [false, true] {
+                    let ctx = egui::Context::default();
+                    let tokens = theme.tokens();
+                    let mut bubble = egui::Rect::NOTHING;
+                    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        bubble = pin_bubble(ui, tokens, resolved, active, 7).rect;
+                    });
+                    output.textures_delta.clear();
+                    let paths: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Path(path) if !path.closed && path.points.len() == 3 => Some(path),
+                            _ => None,
+                        })
+                        .collect();
+                    let texts: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if resolved {
+                        assert_eq!(paths.len(), 1, "resolved state must paint a stroked check, independent of font glyphs");
+                        let path = paths[0];
+                        assert!(path.points.iter().all(|point| bubble.contains(*point)));
+                        assert!(path.points[0].x < path.points[1].x && path.points[1].x < path.points[2].x);
+                        assert!(path.points[1].y > path.points[0].y && path.points[0].y > path.points[2].y);
+                        assert_eq!(path.stroke.width, tokens.handle_stroke);
+                        assert!(texts.is_empty(), "resolved marker must not depend on text rendering");
+                    } else {
+                        assert!(paths.is_empty());
+                        assert_eq!(texts, ["7"], "unresolved message count remains visible");
+                    }
+                    let outlines = output.shapes.iter().filter(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.rect == bubble)).count();
+                    assert_eq!(outlines, usize::from(active), "active marker retains a separate outer outline");
+                }
+            }
+        }
+    }
+
     #[test]
     fn aggregate_draft_limits_refuse_new_buffers_without_eviction() {
         let mut state = Discussions::default();

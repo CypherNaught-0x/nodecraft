@@ -87,7 +87,7 @@ fn revision_value<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<O
     u64::deserialize(deserializer).map(Some)
 }
 fn revision(c: &Context<'_>, expected: Option<u64>) -> Result<(), Error> {
-    c.ensure_editable()?;
+    c.editable()?;
     if expected.is_some_and(|expected| expected != c.revision) {
         return Err(Error::new(ErrorKind::Conflict, "discussion changed; review the current document before saving"));
     }

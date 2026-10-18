@@ -485,7 +485,7 @@ cheap. Opt-in `validation-metrics` exists for deterministic downstream tests, wi
 counter cost. Graph cloning/application, structural validation and byte-budget serialization still
 traverse the project per admitted edit; this is not a constant-time or linear-total edit claim.
 
-### Runtime result recording and frozen-v1 storage
+### Runtime result recording and frozen-v1 storage (historical; current writers use Comments v2)
 
 The current `exec::run::Run` returns caller-owned completed results; it does not mutate a
 Session or automatically wire desktop execution. A host can turn a result into one changeset
@@ -503,3 +503,21 @@ restore metadata plus certified exact F/I/R staging preserves undo/redo budgets.
 is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
 authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
 explicit Save/Cancel, versioned migration and later v3 ownership are specified in that contract.
+
+
+### Comments-v2 on the current persistence host
+
+Comments advances current archive writers to version2 and recovery writers to NCRJ0002. Frozen
+v1 reads retain the landed contextual guard, including Generation.input_hash and default/null
+reserved-role refusal; original archive bytes still determine legacy frame identity. Opening or
+recovering legacy data must establish a new atomic v2 checkpoint before appending v2 edits.
+Current v2 admits config, scalar Values, stamped generations and local threads; future Tag/Field
+roles still reject. The earlier frozen-v1 runtime/storage restrictions above describe the previous
+writer and are superseded for current writes, not weakened for v1 reads.
+
+Private prepared admission, immutable referenced bytes, source identity/revision, complete-source
+changed-asset validation, ordered valid-final batches, actual canonical redo reservations, physical
+prefix damage recovery, staged Open rollback, source access/locks and sync generations remain the
+same persistence path. No second Comments save/append service exists. Save availability validates
+the current bounded manifest; incremental edits keep their existing replay/graph limits rather than
+imposing the archive's smaller manifest ceiling on every edit.

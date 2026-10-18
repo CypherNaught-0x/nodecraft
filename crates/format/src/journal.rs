@@ -79,10 +79,7 @@ fn replay_references(changes: &Changeset, assets: &AssetStore, record_cap: usize
     #[cfg(any(test, feature = "validation-metrics"))]
     crate::validation_metrics::record(|metrics| metrics.replay_preflights = metrics.replay_preflights.saturating_add(1));
     changes.validate_payload()?;
-    // Admit every raw role before interpreting referenced assets. A persistent v1
-    // root plus these complete payload guards preserves representation inductively.
-    let json = crate::archive::bounded_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes }, record_cap)?;
-    crate::compatibility::validate(&json)?;
+    let json = crate::archive::bounded_v2_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes }, record_cap)?;
     let referenced = crate::assets_in_changes(changes)?;
     let mut binary = 56_usize; // outer length/hash40 + payload JSON length/asset count16
     for hash in &referenced {
@@ -143,9 +140,9 @@ fn frame_admitted(identity: Blake3, sequence: u64, changes: &Changeset, assets: 
         return Err(invalid("recovery asset count exceeds limit"));
     }
     let record = RecordRef { checkpoint: identity, sequence, changes };
+    // Both public frame() and the private admitted capability already checked these immutable
+    // v2 roles with the longest sequence; identity/sequence cannot substitute graph payloads.
     let json = crate::archive::bounded_json(&record, MAX_CHANGES_BYTES)?;
-    // Admission already checked the immutable changes using the longest sequence.
-    // Identity/sequence only replace fixed typed record fields, never graph roles.
     let mut payload = Vec::new();
     payload.extend_from_slice(&(json.len() as u64).to_le_bytes());
     payload.extend_from_slice(&json);
@@ -328,13 +325,13 @@ mod tests {
         assert_eq!(added, additional);
         assert!(frame(identity, 17, &changes, &assets, &additional).is_err(), "arbitrary callers must still validate their actual store");
         assert!(AdmittedReplay::new(changes, &assets).is_err());
-        let unsupported = Changeset::new(vec![Change::SetParam {
+        let v2_scalar = Changeset::new(vec![Change::SetParam {
             canvas: CanvasId::from_bytes([1; 16]),
             id: NodeId::from_bytes([2; 16]),
             name: "future".into(),
             value: Some(Value::Bool(true)),
         }]);
-        assert_eq!(frame(identity, 17, &unsupported, &assets, &Default::default()).unwrap_err().kind, nodecraft_types::ErrorKind::Unsupported);
+        assert!(frame(identity, 17, &v2_scalar, &assets, &Default::default()).is_ok());
     }
     fn replay_measurement(nodes: u128, frames: u64) {
         use nodecraft_graph::{Canvas, Position, Project};

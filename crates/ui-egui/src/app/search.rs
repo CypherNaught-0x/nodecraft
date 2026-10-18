@@ -30,6 +30,8 @@ impl NodeCraftApp {
                 || (self.text_focused && !own_focus && !self.search_focused)
                 || self.drag.is_some()
                 || self.marquee.is_some()
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
                 || ctx.dragged_id().is_some()
                 || self.navigation.pointer_owned,
             open: self.search.open,
@@ -269,7 +271,8 @@ impl NodeCraftApp {
         if self.search.open && (was_scanning || self.search.scanning) {
             ctx.request_repaint();
         }
-        let gesture = self.drag.is_some() || self.marquee.is_some() || ctx.dragged_id().is_some();
+        let gesture =
+            self.drag.is_some() || self.marquee.is_some() || self.comments.drag.is_some() || self.comments.gesture_cancelled || ctx.dragged_id().is_some();
         !gesture && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| rect.contains(p)))
     }
 }
@@ -381,12 +384,13 @@ mod tests {
     #[test]
     fn popup_and_existing_box_gesture_exclude_search_opening() {
         let mut h = harness();
-        let from = Pos2::new(40.0, 40.0);
+        // Begin on bare canvas below the new Comments toolbar.
+        let from = h.state().viewport.min + Vec2::new(30.0, 120.0);
         h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
         h.hover_at(from);
         h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
         h.run();
-        h.hover_at(Pos2::new(100.0, 100.0));
+        h.hover_at(from + Vec2::new(60.0, 60.0));
         h.run();
         assert!(h.state().marquee.is_some());
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
@@ -394,7 +398,7 @@ mod tests {
         assert!(!h.state().search.open);
         assert!(h.state().marquee.is_some());
         h.event(egui::Event::PointerButton {
-            pos: Pos2::new(100.0, 100.0),
+            pos: from + Vec2::new(60.0, 60.0),
             button: egui::PointerButton::Primary,
             pressed: false,
             modifiers: egui::Modifiers::NONE,

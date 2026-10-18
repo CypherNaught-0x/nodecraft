@@ -65,6 +65,16 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.search_next",
     "canvas.search_previous",
     "canvas.search_close",
+    "comment.create",
+    "comment.edit",
+    "comment.reply",
+    "comment.reply_remove",
+    "comment.move",
+    "comment.resolve",
+    "comment.remove",
+    "comment.open",
+    "comment.compose",
+    "canvas.comments_toggle",
     "keys.status",
 ];
 /// Commands only a person may run: `keys.set` takes a secret, which must not pass through an

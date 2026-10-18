@@ -11,6 +11,6 @@ mod validate;
 pub use changes::{Change, Changeset, StagedChanges};
 pub use model::{Canvas, Comment, CommentPin, CommentReply, Edge, Endpoint, Field, Generation, Node, Port, Position, Project, Tag};
 pub use validate::{
-    MAX_HISTORY, MAX_CHANGES, MAX_CHANGESET_BYTES, MAX_COMMENT_BYTES, MAX_COMMENT_REPLIES, MAX_NODE_BYTES, MAX_PROJECT_BYTES, MAX_REPLY_BYTES, MAX_VALUE_DEPTH,
+    MAX_CHANGES, MAX_CHANGESET_BYTES, MAX_COMMENT_BYTES, MAX_COMMENT_REPLIES, MAX_HISTORY, MAX_NODE_BYTES, MAX_PROJECT_BYTES, MAX_REPLY_BYTES, MAX_VALUE_DEPTH,
     MAX_VALUE_ITEMS,
 };

@@ -22,6 +22,7 @@ eframe = { workspace = true, features = ["wgpu", "accesskit"] }
 craft-ui = { workspace = true }
 craft-quit = { workspace = true }
 log = { workspace = true }
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }

@@ -73,6 +73,8 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
+    /// Current document revision; view-host and draft requests must match it exactly.
+    pub revision: u64,
     pub document: &'a Project,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,

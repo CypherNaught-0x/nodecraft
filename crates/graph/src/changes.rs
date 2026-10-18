@@ -208,15 +208,10 @@ impl Changeset {
 
     fn prepare_certified(changes: &[Change], project: &Project, limit: usize) -> Result<StagedChanges, Error> {
         validate_changes_payload(changes, limit)?;
-        let structural = changes.iter().any(|change| matches!(change, Change::AddNode { .. } | Change::RemoveNode { .. } | Change::RestoreNode { .. }));
-        let comments = project.canvases.values().any(|canvas| !canvas.comments.is_empty())
-            || changes.iter().any(|change| {
-                matches!(change, Change::PutComment { .. } | Change::SetCommentPin { .. })
-                    || matches!(change, Change::AddCanvas { canvas } if !canvas.comments.is_empty())
-            });
+        let certify_pins = needs_pin_certification(changes, project);
         let mut draft = project.clone();
         let inverse = stage_once(changes, &mut draft, limit)?;
-        let actual_redo = if structural && comments {
+        let actual_redo = if certify_pins {
             #[cfg(test)]
             PROBE_CLONES.with(|count| count.set(count.get() + 1));
             let mut probe = draft.clone();
@@ -234,6 +229,38 @@ impl Changeset {
         };
         Ok(StagedChanges { document: draft, inverse, actual_redo })
     }
+}
+
+/// Only node lifetime changes can grow the canonical replay's pin metadata. Include
+/// original and incoming relationships, even ones repaired later in a valid-final batch.
+/// MoveNode and SetNode still receive normal final world-position validation in stage_once.
+fn needs_pin_certification(changes: &[Change], project: &Project) -> bool {
+    let mut nodes = std::collections::BTreeSet::new();
+    for change in changes {
+        match change {
+            Change::AddNode { canvas, node } | Change::RestoreNode { canvas, node, .. } => {
+                nodes.insert((*canvas, node.id));
+            }
+            Change::RemoveNode { canvas, id } => {
+                nodes.insert((*canvas, *id));
+            }
+            _ => {}
+        }
+    }
+    if nodes.is_empty() {
+        return false;
+    }
+    let touches = |canvas, node: Option<NodeId>| node.is_some_and(|node| nodes.contains(&(canvas, node)));
+    project.canvases.values().any(|canvas| canvas.comments.values().any(|root| touches(canvas.id, root.node)))
+        || changes.iter().any(|change| match change {
+            Change::PutComment { canvas, comment } => touches(*canvas, comment.node),
+            Change::SetCommentPin { canvas, node, .. } => touches(*canvas, *node),
+            Change::AddCanvas { canvas } => canvas.comments.values().any(|root| touches(canvas.id, root.node)),
+            // Restoration may replace a root's former anchor, so its nonempty pin
+            // metadata requires certification even without an incoming comment change.
+            Change::RestoreNode { pins, .. } => !pins.is_empty(),
+            _ => false,
+        })
 }
 
 #[cfg(test)]
@@ -872,6 +899,67 @@ mod tests {
         eprintln!(
             "1000-node/1000-pin debug measurement: moves={move_time:?}; certified removals={structural_time:?}; stage passes1/3, extra probe clones0/1, anchor visits1000/3000"
         );
+    }
+
+    #[test]
+    fn ten_thousand_nodes_with_unrelated_comments_keep_one_stage_for_structural_edits() {
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Stress").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Changeset::new((1u128..=10_000).map(|n| Change::AddNode { canvas, node: Node::new(NodeId::from_bytes(n.to_be_bytes()), "source.text") }).collect())
+            .apply(&mut project)
+            .unwrap();
+        let mut root = Comment::new(CommentId::from_bytes([3; 16]), "Unrelated", Position::default());
+        // An existing node pin elsewhere in the same canvas must be unrelated too.
+        root.node = Some(NodeId::from_bytes(10_000u128.to_be_bytes()));
+        Change::PutComment { canvas, comment: root }.apply(&mut project).unwrap();
+        let remove = Change::RemoveNode { canvas, id: NodeId::from_bytes(1u128.to_be_bytes()) };
+        for changes in
+            [vec![remove.clone()], vec![remove, Change::AddNode { canvas, node: Node::new(NodeId::from_bytes(10_001u128.to_be_bytes()), "source.text") }]]
+        {
+            STAGE_PASSES.with(|c| c.set(0));
+            PROBE_CLONES.with(|c| c.set(0));
+            let staged = Changeset::new(changes).stage_certified(&project).unwrap();
+            assert_eq!(STAGE_PASSES.with(|c| c.get()), 1);
+            assert_eq!(PROBE_CLONES.with(|c| c.get()), 0);
+            assert!(staged.actual_redo.is_none());
+            let mut restored = staged.document;
+            staged.inverse.apply(&mut restored).unwrap();
+            assert_eq!(restored, project);
+        }
+    }
+
+    #[test]
+    fn pin_certification_tracks_original_incoming_and_cross_canvas_relationships() {
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let other = CanvasId::from_bytes([2; 16]);
+        let id = NodeId::from_bytes([3; 16]);
+        let root_id = CommentId::from_bytes([4; 16]);
+        let project = Project::new(ProjectId::from_bytes([0; 16]), "Test").unwrap();
+        let add = Change::AddNode { canvas, node: Node::new(id, "source.text") };
+        let mut root = Comment::new(root_id, "Future pin", Position::default());
+        root.node = Some(id);
+        let pin = Change::SetCommentPin { canvas, id: root_id, node: Some(id), pos: Position::default() };
+        assert!(needs_pin_certification(&[pin.clone(), add.clone()], &project));
+        assert!(needs_pin_certification(&[Change::PutComment { canvas, comment: root.clone() }, add.clone()], &project));
+        assert!(!needs_pin_certification(&[Change::PutComment { canvas: other, comment: root.clone() }, add.clone()], &project));
+        let mut snapshot = Canvas::new(canvas, "Incoming");
+        snapshot.comments.insert(root_id, root);
+        assert!(needs_pin_certification(&[Change::AddCanvas { canvas: snapshot.clone() }, add.clone()], &project));
+        let mut original = project;
+        original.canvases.insert(canvas, snapshot);
+        // Deleting/reanchoring the root later cannot hide the original relationship.
+        assert!(needs_pin_certification(&[add.clone(), Change::RemoveComment { canvas, id: root_id }], &original));
+        assert!(!needs_pin_certification(&[Change::SetNode { canvas, node: Node::new(id, "source.text") }, pin], &original));
+        assert!(needs_pin_certification(
+            &[Change::RestoreNode {
+                canvas: other,
+                node: Node::new(id, "source.text"),
+                edges: vec![],
+                pins: vec![CommentPin { id: root_id, offset: Position::default() }],
+            }],
+            &Project::new(ProjectId::from_bytes([0; 16]), "Test").unwrap()
+        ));
     }
 
     #[test]

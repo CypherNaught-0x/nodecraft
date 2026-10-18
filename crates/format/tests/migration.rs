@@ -54,6 +54,45 @@ fn exact_v1_archive_and_original_hash_journal_migrate_losslessly() {
     assert_eq!(next.applied, 1);
     assert!(next.snapshot.project.canvases().values().any(|canvas| canvas.title() == "Migrated"));
 }
+
+#[test]
+fn v2_writers_round_trip_pins_replies_resolved_notes_and_recovery_rejects_bad_references() {
+    use nodecraft_graph::{Comment, CommentReply, Node, Position};
+    use nodecraft_types::{CommentId, NodeId, Value};
+    let mut snapshot = decode(ARCHIVE).unwrap();
+    let scene = snapshot.project.canvases().values().next().unwrap();
+    let canvas = scene.id();
+    let node = *scene.nodes().keys().next().unwrap();
+    let id = CommentId::from_bytes([0x88; 16]);
+    let mut root = Comment::new(id, "Review ☀", Position { x: 400.0, y: 80.0 });
+    root.node = Some(node);
+    root.resolved = true;
+    root.replies.push(CommentReply { id: CommentId::from_bytes([0x89; 16]), text: "Flat reply".into() });
+    let mut note = Node::new(NodeId::from_bytes([0x90; 16]), "structure.note");
+    note.params.insert("text".into(), Value::Text("Local note".into()));
+    Changeset::new(vec![Change::PutComment { canvas, comment: root }, Change::AddNode { canvas, node: note }]).apply(&mut snapshot.project).unwrap();
+    let bytes = encode(&snapshot).unwrap();
+    assert_eq!(decode(&bytes).unwrap(), snapshot);
+    let checkpoint = journal::checkpoint(&snapshot).unwrap();
+    let changes = Changeset::new(vec![Change::SetCommentResolved { canvas, id, resolved: false }]);
+    let mut recovery = checkpoint.bytes.clone();
+    recovery.extend(journal::frame(checkpoint.identity, 1, &changes, &snapshot.assets, &Default::default()).unwrap());
+    let recovered = journal::recover(&recovery).unwrap();
+    let mut expected = snapshot.clone();
+    changes.apply(&mut expected.project).unwrap();
+    assert_eq!(recovered.snapshot, expected);
+
+    let missing = NodeId::from_bytes([0xee; 16]);
+    let mut malformed = manifest(&bytes);
+    malformed["project"]["canvases"][canvas.to_string()]["comments"][id.to_string()]["node"] = serde_json::json!(missing);
+    assert!(decode(&replace_manifest(&bytes, &malformed)).is_err());
+    // A standalone record has no source document; recovery still checks the relation
+    // after staging, while live writers must stage before publishing the frame.
+    let bad = Changeset::new(vec![Change::SetCommentPin { canvas, id, node: Some(missing), pos: Position::default() }]);
+    let mut recovery = checkpoint.bytes;
+    recovery.extend(journal::frame(checkpoint.identity, 1, &bad, &snapshot.assets, &Default::default()).unwrap());
+    assert!(journal::recover(&recovery).is_err());
+}
 #[test]
 fn v1_headers_reject_v2_fields_and_future_versions_before_typed_graph_decode() {
     let base = manifest(ARCHIVE);

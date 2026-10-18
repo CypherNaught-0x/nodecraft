@@ -16,7 +16,7 @@ mod validation_metrics;
 pub use validation_metrics::{ValidationMetrics, take_validation_metrics};
 mod v2;
 
-pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, encode, validate_v1_project};
+pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, encode, validate_current_project, validate_v1_project};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::NativeStorage;

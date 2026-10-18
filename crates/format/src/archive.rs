@@ -56,6 +56,12 @@ pub fn validate_v1_project(project: &Project) -> Result<(), Error> {
     project.validate()?;
     crate::compatibility::project(project)
 }
+/// Current writer admission for Save availability. The real archive manifest has this same cap;
+/// incremental document edits use bounded replay admission instead of imposing it per edit.
+pub fn validate_current_project(project: &Project) -> Result<(), Error> {
+    project.validate()?;
+    manifest_json(project, u64::MAX).map(|_| ())
+}
 fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
     #[derive(Serialize)]
     struct ManifestRef<'a> {
@@ -63,8 +69,7 @@ fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
         epoch: u64,
         project: &'a Project,
     }
-    let json = bounded_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
-    crate::compatibility::validate(&json)?;
+    let json = bounded_v2_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
     Ok(json)
 }
 
@@ -109,10 +114,17 @@ pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
     }
     let version: Version = serde_json::from_slice(&json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
     let json = migrate(version.version, &json)?;
-    crate::compatibility::validate(json)?;
     let manifest: Manifest = serde_json::from_slice(json).map_err(|_| invalid("invalid project graph or manifest"))?;
     assets.validate_project(&manifest.project)?;
     Ok((Snapshot { project: manifest.project, assets, epoch: manifest.epoch }, version.version))
+}
+
+/// Gate the exact serialized roles, so future typed model additions cannot write a
+/// frozen-v2 archive or record that this version's reader refuses to recover.
+pub(crate) fn bounded_v2_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
+    let bytes = bounded_json(value, cap)?;
+    crate::v2::validate(&bytes)?;
+    Ok(bytes)
 }
 
 pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {

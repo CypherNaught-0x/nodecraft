@@ -93,3 +93,37 @@ fn operation(value: &Value) -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// Serialize future-model stand-ins through the same gate used by archive encode,
+    /// journal frame and replay admission; current typed models cannot express v3 fields.
+    #[test]
+    fn writer_boundary_rejects_future_semantics_in_snapshots_and_all_record_roles() {
+        for (collection, body, key, value) in [
+            ("tags", "tag", "color", json!(null)),
+            ("fields", "field", "rect", json!(null)),
+            ("fields", "field", "color", json!(null)),
+            ("fields", "field", "collapsed", json!(false)),
+        ] {
+            let mut canvas = json!({"tags":{},"fields":{}});
+            canvas[collection]["id"] = json!({"title":"Future"});
+            canvas[collection]["id"][key] = value.clone();
+            let snapshot = json!({"version":2,"project":{"canvases":{"canvas":canvas.clone()}}});
+            let incoming = json!({"changes":{"changes":[{"type":"add_canvas","canvas":canvas}]}});
+            let mut change = json!({"type":format!("put_{body}")});
+            change[body] = json!({"title":"Future"});
+            change[body][key] = value;
+            let record = json!({"changes":{"changes":[change]}});
+            for payload in [snapshot, incoming, record] {
+                assert!(crate::archive::bounded_v2_json(&payload, 4096).is_err(), "{collection}/{key}");
+            }
+        }
+        let future = json!({"changes":{"changes":[{"type":"future_operation"}]}});
+        assert!(crate::archive::bounded_v2_json(&future, 4096).is_err());
+        let extension = json!({"version":2,"project":{"canvases":{"canvas":{"unrelated":{"tags":{"color":null}}}}}});
+        assert!(crate::archive::bounded_v2_json(&extension, 4096).is_ok());
+    }
+}

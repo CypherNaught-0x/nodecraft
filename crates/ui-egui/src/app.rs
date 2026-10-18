@@ -304,6 +304,8 @@ pub struct NodeCraftApp {
     palette: Option<Palette>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
+    /// Exact prior text owner survives egui's pre-frame Escape focus loss.
+    last_text_focus: Option<egui::Id>,
     schemas: SchemaCache,
     cache_clock: u64,
     next_gesture: u64,
@@ -436,6 +438,7 @@ impl NodeCraftApp {
             wiring: None,
             palette: None,
             text_focused: false,
+            last_text_focus: None,
             schemas: SchemaCache::default(),
             cache_clock: 0,
             next_gesture: 0,
@@ -451,6 +454,7 @@ impl NodeCraftApp {
         self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -500,7 +504,13 @@ impl NodeCraftApp {
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
             // focus must never become a node in the (autosaved) project.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
+            let busy = self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
+                || egui::Popup::is_any_open(ui.ctx())
+                || self.keys.open;
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
@@ -562,6 +572,8 @@ impl NodeCraftApp {
             let busy = self.drag.is_some()
                 || self.marquee.is_some()
                 || self.wiring.is_some()
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
                 || self.navigation.drag.is_some()
                 || self.navigation.pointer_owned
                 || egui::Popup::is_any_open(ui.ctx());
@@ -947,9 +959,11 @@ impl NodeCraftApp {
         self.navigation.finish_frame(ui.ctx());
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
+        self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
         self.keys_button(ui, viewport);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
+        ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
     }
 
     /// Top-right button that opens the API keys panel.

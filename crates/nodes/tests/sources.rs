@@ -91,6 +91,7 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(node.inputs.is_empty() && node.outputs.is_empty());
                 assert!(result.unwrap().is_empty());
             }
+            "structure.router" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
             "source.image" | "source.video" | "source.audio" => {
                 assert!(node.params.is_empty());
                 assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);

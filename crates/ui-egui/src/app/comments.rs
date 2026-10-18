@@ -45,7 +45,9 @@ impl NodeCraftApp {
             project: self.session.document().id(),
             canvas: self.canvas,
             revision: self.session.revision(),
-            blocked: (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
+            blocked: self.palette.is_some()
+                || self.wiring.is_some()
+                || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
                 || ((canvas::text_input_focused(ctx) || self.text_focused) && !own)
                 || self.drag.is_some()
                 || self.marquee.is_some()
@@ -97,6 +99,7 @@ impl NodeCraftApp {
                 self.comments.open = true;
                 self.comments.editing = None;
                 self.comments.drafts.retain(|_, draft| draft.dirty || draft.error.is_some());
+                self.comments.placement = None;
                 self.comments.active = Some(id);
                 self.comments.message = None;
                 self.comments.chunk = 0;
@@ -106,7 +109,7 @@ impl NodeCraftApp {
                     .map_err(|_| Error::new(ErrorKind::InvalidInput, "pin position is unavailable"))?;
                 let node: Option<NodeId> = serde_json::from_value(request.get("node").cloned().unwrap_or(Json::Null))
                     .map_err(|_| Error::new(ErrorKind::InvalidInput, "pin node is unavailable"))?;
-                let id = CommentId::from_bytes(self.comments.allocate(self.session.document())?);
+                let id = self.comments.allocate_comment(self.session.document())?;
                 self.begin_draft(ctx, Target::Create(id), Some((node, pos)))?;
             }
             _ => return Err(Error::new(ErrorKind::InvalidInput, "unknown discussion intent")),
@@ -115,16 +118,17 @@ impl NodeCraftApp {
         Ok(json!({"open":self.comments.open,"drafts":self.comments.drafts.len()}))
     }
     pub(super) fn compose_on_node(&mut self, ctx: &egui::Context, node: NodeId, owner: Option<egui::Id>) {
-        self.navigation.geometry.refresh(&self.session, self.canvas, self.theme);
-        let Some(size) = self.navigation.geometry.sizes.get(&node) else {
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
+        let Some(rect) = self.navigation.geometry.rects.get(&node) else {
             self.notice = Some("Node geometry is unavailable; use a canvas pin instead.".into());
             return;
         };
         let t = self.theme.tokens();
         let outputs =
             self.session.document().canvases().get(&self.canvas).and_then(|canvas| canvas.nodes().get(&node)).is_some_and(|node| !node.outputs.is_empty());
-        let (_, _, right, _) = card::outer_insets(t, self.view.zoom, outputs);
-        let offset = Position { x: size.x + right + t.navigation_gap / self.view.zoom, y: size.y * 0.5 };
+        let size = rect.size();
+        let right = if outputs { t.port_radius.max(t.port_min_radius / self.view.zoom) } else { 0.0 };
+        let offset = Position { x: size.x + right + (t.comment_marker_gap + t.comment_marker_ring) / self.view.zoom, y: size.y * 0.5 };
         if let Err(error) = self.dispatch_comments_scoped(ctx, "comment.compose", &json!({"node":node,"pos":offset}), owner) {
             self.notice = Some(error.message);
         }
@@ -200,8 +204,8 @@ impl NodeCraftApp {
             return;
         }
         let new_id = if as_new {
-            match self.comments.allocate(self.session.document()) {
-                Ok(id) => Some(CommentId::from_bytes(id)),
+            match self.comments.allocate_comment(self.session.document()) {
+                Ok(id) => Some(id),
                 Err(error) => {
                     self.notice = Some(error.message);
                     return;
@@ -273,7 +277,7 @@ impl NodeCraftApp {
                     if self.discussion_context(ctx, None).blocked {
                         return Err(Error::new(ErrorKind::Conflict, "finish active editor or gesture before adding a Note"));
                     }
-                    let id = NodeId::from_bytes(self.comments.allocate(self.session.document())?);
+                    let id = crate::ids::note_id(self.session.document())?;
                     let mut node = self.session.kinds().get("structure.note")?.instantiate_instance(id, Default::default(), &Default::default())?;
                     let pos = self.view.to_world(self.viewport.min, self.viewport.center());
                     node.pos = Position { x: pos.x, y: pos.y };
@@ -342,6 +346,7 @@ impl NodeCraftApp {
                         self.session.dispatch("comment.remove", &json!({"canvas":self.canvas,"id":id,"expected_revision":self.session.revision()})).map(|_| ());
                     if result.is_ok() {
                         self.comments.active = None;
+                        self.comments.placement = None;
                     }
                 }
             }
@@ -412,7 +417,7 @@ impl NodeCraftApp {
             }
         }
         let available = !self.discussion_context(&ctx, None).blocked;
-        let toolbar_pos = self.viewport.min + Vec2::new(t.navigation_margin + t.layout_button_width + t.navigation_gap, t.navigation_margin);
+        let toolbar_pos = self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin);
         let toolbar = egui::Area::new(egui::Id::new("comments_toolbar")).order(egui::Order::Foreground).fixed_pos(toolbar_pos).show(&ctx, |ui| {
             ui.add_enabled(available, egui::Button::new("Comments").min_size(Vec2::new(t.comments_button_width, t.navigation_toolbar_height)))
         });
@@ -463,7 +468,7 @@ impl NodeCraftApp {
                 let Some(root) = scene.comments().get(id) else {
                     continue;
                 };
-                if root.resolved && !self.comments.show_resolved {
+                if root.resolved && !self.comments.show_resolved && !(self.comments.open && self.comments.active == Some(*id)) {
                     continue;
                 }
                 let pos = self.comments.drag.as_ref().filter(|drag| drag.id == *id).map_or(*pos, |drag| {
@@ -486,25 +491,63 @@ impl NodeCraftApp {
                     break;
                 }
                 visible += 1;
+                let anchor_screen = screen;
+                let dragging = self.comments.drag.as_ref().filter(|drag| drag.id == *id && !drag.cancelled);
+                let placement = self
+                    .comments
+                    .placement
+                    .filter(|(placed, position, _)| *placed == *id && *position == root.pos && self.comments.open && self.comments.active == Some(*id));
                 let key = ((screen.x / t.comment_marker_size).floor() as i32, (screen.y / t.comment_marker_size).floor() as i32);
                 let count = coincident.entry(key).or_default();
                 screen.x += (*count % 4) as f32 * t.navigation_gap;
                 screen.y += (*count / 4) as f32 * t.navigation_gap;
                 *count = count.saturating_add(1);
+                // Keep the selected bubble visible beside its panel. A leader preserves
+                // the actual persisted anchor; this displacement is view state only.
+                if let Some(drag) = dragging {
+                    // Keep the original display displacement through the gesture. Re-projecting
+                    // each moving hidden anchor would pin the bubble against the panel edge.
+                    let delta = ctx.pointer_interact_pos().map_or(Vec2::ZERO, |pointer| pointer - drag.start);
+                    screen = drag.display_origin + delta;
+                } else if let Some((_, _, offset)) = placement {
+                    screen = anchor_screen + offset;
+                } else if self.comments.open && self.comments.active == Some(*id) {
+                    let width = t.comments_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
+                    let height = t.comments_height.min((self.viewport.height() - 2.0 * t.navigation_margin - t.navigation_toolbar_height).max(1.0));
+                    let panel = Rect::from_min_size(
+                        self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap),
+                        Vec2::new(width, height),
+                    );
+                    if panel.intersects(Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size))) {
+                        let anchor = screen;
+                        let right = panel.right() + t.comment_marker_gap;
+                        if right + t.comment_marker_size <= self.viewport.right() - t.navigation_margin {
+                            screen.x = right;
+                        } else {
+                            screen.x = self.viewport.right() - t.comment_marker_size - t.navigation_margin;
+                            screen.y = panel.top() - t.comment_marker_size - t.navigation_gap;
+                        }
+                        ui.painter().line_segment([anchor, screen], egui::Stroke::new(t.handle_stroke, t.text_muted));
+                    }
+                }
                 let area =
                     egui::Area::new(egui::Id::new("comment_pin").with(id)).order(egui::Order::Foreground).movable(false).fixed_pos(screen).show(&ctx, |ui| {
                         let response = ui
-                            .add_enabled(
-                                available,
-                                egui::Button::new(if root.resolved { "R".to_owned() } else { format!("{}", root.replies.len() + 1) })
-                                    .min_size(Vec2::splat(t.comment_marker_size))
-                                    .sense(Sense::click_and_drag()),
-                            )
+                            .add_enabled_ui(available, |ui| {
+                                crate::comments::pin_bubble(
+                                    ui,
+                                    t,
+                                    root.resolved,
+                                    self.comments.open && self.comments.active == Some(*id),
+                                    root.replies.len() + 1,
+                                )
+                            })
+                            .inner
                             .on_hover_text(format!(
                                 "{} — {} messages{}",
                                 crate::comments::preview(&root.text),
                                 root.replies.len() + 1,
-                                if root.resolved { " (resolved)" } else { "" }
+                                if root.resolved { " (resolved; reopen in Comments)" } else { " (open discussion)" }
                             ));
                         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Discussion pin {id}")));
                         response
@@ -529,6 +572,8 @@ impl NodeCraftApp {
                         node: root.node,
                         start,
                         origin: root.pos,
+                        offset: screen - anchor_screen,
+                        display_origin: screen,
                         cancelled: false,
                     });
                 }
@@ -545,13 +590,17 @@ impl NodeCraftApp {
             if !ctx.input(|i| i.pointer.primary_down())
                 && let Some(drag) = self.comments.drag.take()
                 && !drag.cancelled
-                && let Err(error) = self
+            {
+                match self
                     .session
                     .dispatch("comment.move", &json!({"canvas":self.canvas,"id":drag.id,"node":drag.node,"pos":drag.pos,"expected_revision":drag.revision}))
-            {
-                self.notice = Some(error.message);
+                {
+                    Ok(_) => self.comments.placement = Some((drag.id, drag.pos, drag.offset)),
+                    Err(error) => self.notice = Some(error.message),
+                }
             }
         }
+
         if self.comments.open {
             let width = t.comments_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
             let height = t.comments_height.min((self.viewport.height() - 2.0 * t.navigation_margin - t.navigation_toolbar_height).max(1.0));
@@ -597,7 +646,10 @@ impl NodeCraftApp {
                                         }
                                     });
                                 });
-                                ui.checkbox(&mut self.comments.show_resolved, "Show resolved");
+                                ui.scope(|ui| {
+                                    crate::comments::checkbox_visuals(ui.visuals_mut(), t);
+                                    ui.checkbox(&mut self.comments.show_resolved, "Show resolved");
+                                });
                                 let scene = self.session.document().canvases().get(&self.canvas);
                                 if let Some(scene) = scene {
                                     let mut count = 0usize;
@@ -691,8 +743,8 @@ impl NodeCraftApp {
                                             self.comments.chunk = 0;
                                         }
                                         if !root.resolved && ui.button("Reply").clicked() {
-                                            match self.comments.allocate(self.session.document()) {
-                                                Ok(bytes) => action = Some(Action::Edit(Target::NewReply(root.id, CommentId::from_bytes(bytes)))),
+                                            match self.comments.allocate_comment(self.session.document()) {
+                                                Ok(id) => action = Some(Action::Edit(Target::NewReply(root.id, id))),
                                                 Err(error) => self.notice = Some(error.message),
                                             }
                                         }
@@ -1012,6 +1064,90 @@ mod more_tests {
         }
     }
     #[test]
+    fn active_and_resolved_bubbles_and_filter_work_in_both_themes() {
+        for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+            let mut h = harness();
+            h.state_mut().theme = theme;
+            crate::theme::apply(&h.ctx, theme);
+            let canvas = h.state().canvas;
+            let id = CommentId::from_bytes([9; 16]);
+            h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Discuss framing","pos":{"x":0,"y":0}})).unwrap();
+            h.run();
+            let label = format!("Discussion pin {id}");
+            h.get_by_role_and_label(Role::Button, &label).click();
+            h.run();
+            assert_eq!(h.state().comments.active, Some(id));
+            let pin = h.get_by_role_and_label(Role::Button, &label).rect();
+            let panel = h.ctx.memory(|m| m.area_rect(egui::Id::new("discussions_panel"))).unwrap();
+            assert!(!panel.intersects(pin), "active bubble must stay beside the panel");
+            let revision = h.state().session.revision();
+            h.get_by_role_and_label(Role::Button, "Resolve").click();
+            h.run();
+            assert_eq!(h.state().session.revision(), revision + 1);
+            assert!(h.state().session.document().canvases().get(&canvas).unwrap().comments().get(&id).unwrap().resolved);
+            h.get_by_role_and_label(Role::Button, &label);
+            h.get_by_role_and_label(Role::Button, "Reopen");
+            h.get_by_role_and_label(Role::CheckBox, "Show resolved").click();
+            h.run();
+            assert!(h.state().comments.show_resolved);
+            h.get_by_role_and_label(Role::Button, "Resolved · Discuss framing · 1 message");
+            h.get_by_role_and_label(Role::CheckBox, "Show resolved").click();
+            h.run();
+            assert!(!h.state().comments.show_resolved);
+            assert_eq!(h.state().session.revision(), revision + 1, "filter is pure view state");
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+            h.run();
+            assert!(!h.state().session.document().canvases().get(&canvas).unwrap().comments().get(&id).unwrap().resolved);
+            h.get_by_role_and_label(Role::Button, "Resolve");
+            h.get_by_role_and_label(Role::Button, "Resolve").click();
+            h.run();
+            h.get_by_role_and_label(Role::Button, "Close comments").click();
+            h.run();
+            assert!(h.query_by_role_and_label(Role::Button, &label).is_none(), "closed resolved pins obey the filter");
+        }
+    }
+
+    #[test]
+    fn failed_entropy_preserves_document_history_and_existing_draft() {
+        let mut h = harness();
+        h.key_press(egui::Key::C);
+        h.run();
+        h.event(egui::Event::Text("Retain draft on allocation failure".into()));
+        h.run();
+        let key = h.state().comments.editing.unwrap();
+        h.get_by_role_and_label(Role::CheckBox, "Show resolved").click();
+        h.run();
+        let document = h.state().session.document().clone();
+        let history = (h.state().session.revision(), h.state().session.can_undo(), h.state().session.can_redo());
+        let ctx = h.ctx.clone();
+        crate::ids::FAIL_ENTROPY.with(|flag| flag.set(true));
+        let result = h.state_mut().dispatch_comments(&ctx, "comment.compose", &json!({"pos":{"x":20,"y":30}}));
+        h.state_mut().discussion_action(&ctx, Action::Note);
+        crate::ids::FAIL_ENTROPY.with(|flag| flag.set(false));
+        assert!(result.is_err());
+        assert!(h.state().notice.as_ref().unwrap().contains("randomness"));
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!((h.state().session.revision(), h.state().session.can_undo(), h.state().session.can_redo()), history);
+        assert_eq!(h.state().comments.drafts.get(&key).unwrap().text, "Retain draft on allocation failure");
+    }
+
+    #[test]
+    fn default_node_pin_offset_clears_body_and_header_at_low_and_high_zoom() {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        let node = NodeId::from_bytes([3; 16]);
+        for zoom in [0.15, 1.0, 2.0] {
+            h.state_mut().view.zoom = zoom;
+            h.state_mut().compose_on_node(&ctx, node, None);
+            let draft = h.state().comments.drafts.get(&h.state().comments.editing.unwrap()).unwrap();
+            let size = h.state().navigation.geometry.rects.get(&node).unwrap().size();
+            let t = h.state().theme.tokens();
+            assert!(draft.pos.x > size.x + t.comment_marker_ring / zoom);
+            assert!(draft.pos.y > 0.0 && draft.pos.y < size.y);
+            h.state_mut().discussion_action(&ctx, Action::Cancel);
+        }
+    }
+    #[test]
     fn node_context_pin_follows_move_detaches_on_delete_and_restores_on_undo() {
         let mut h = harness();
         let node = NodeId::from_bytes([3; 16]);
@@ -1096,6 +1232,161 @@ mod more_tests {
         h.run();
         assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().comments().get(&id).unwrap().pos, Position::default());
     }
+    #[test]
+    fn displaced_open_panel_pin_tracks_pointer_and_releases_without_jump() {
+        for (width, zoom, pinned) in [(1100.0, 1.0, false), (1100.0, 2.0, true), (420.0, 0.5, true)] {
+            let base = harness();
+            let canvas = base.state().canvas;
+            let app = NodeCraftApp::from_session(Session::new(base.state().session.document().clone()).unwrap(), canvas).unwrap();
+            let mut h = Harness::builder().with_size(Vec2::new(width, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+            h.state_mut().view.zoom = zoom;
+            h.run();
+            let id = CommentId::from_bytes([9; 16]);
+            let target = h.state().viewport.min + Vec2::new(100.0, 160.0);
+            let world = h.state().view.to_world(h.state().viewport.min, target);
+            let node = pinned.then_some(NodeId::from_bytes([3; 16]));
+            let node_pos = node.map(|id| h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().pos).unwrap_or_default();
+            let origin = Position { x: world.x - node_pos.x, y: world.y - node_pos.y };
+            h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Behind panel","node":node,"pos":origin})).unwrap();
+            let ctx = h.ctx.clone();
+            h.state_mut().dispatch_comments(&ctx, "comment.open", &json!({"id":id})).unwrap();
+            h.run();
+            let label = format!("Discussion pin {id}");
+            let from = h.get_by_role_and_label(Role::Button, &label).rect().center();
+            assert!(from.distance(target) > 50.0, "fixture must actually be displaced");
+            let original = h.state().session.document().clone();
+            let revision = h.state().session.revision();
+            // A plain click must not adopt the temporary displayed position as its anchor.
+            h.get_by_role_and_label(Role::Button, &label).click();
+            h.run();
+            assert_eq!(h.state().session.document(), &original);
+            let direction = if width < 500.0 { -1.0 } else { 1.0 };
+            for cancel in [true, false] {
+                let from = h.get_by_role_and_label(Role::Button, &label).rect().center();
+                h.hover_at(from);
+                h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+                h.run();
+                for dx in [12.0, 24.0, 36.0].map(|dx| dx * direction) {
+                    h.hover_at(from + Vec2::new(dx, 0.0));
+                    h.run();
+                    let displayed = h.get_by_role_and_label(Role::Button, &label).rect().center();
+                    assert!((displayed - (from + Vec2::new(dx, 0.0))).length() < 1.0, "bubble must follow small horizontal deltas: {displayed:?}");
+                    assert_eq!(h.state().session.revision(), revision);
+                }
+                if cancel {
+                    h.key_press(egui::Key::Escape);
+                    h.run();
+                }
+                h.event(egui::Event::PointerButton {
+                    pos: from + Vec2::new(36.0 * direction, 0.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.run();
+                if cancel {
+                    assert_eq!(h.state().session.document(), &original);
+                    assert_eq!(h.state().session.revision(), revision);
+                } else {
+                    assert_eq!(h.state().session.revision(), revision + 1);
+                    let root = h.state().session.document().canvases().get(&canvas).unwrap().comments().get(&id).unwrap();
+                    assert_eq!(root.node, node);
+                    assert!((root.pos.x - origin.x - 36.0 * direction / zoom).abs() < 0.001);
+                    assert_eq!(root.pos.y, origin.y);
+                    let displayed = h.get_by_role_and_label(Role::Button, &label).rect().center();
+                    assert!((displayed - (from + Vec2::new(36.0 * direction, 0.0))).length() < 1.0, "release must retain the visible drop");
+                    let moved = h.state().session.document().clone();
+                    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+                    h.run();
+                    assert_eq!(h.state().session.document(), &original);
+                    h.state_mut().session.dispatch("edit.redo", &json!({})).unwrap();
+                    h.run();
+                    assert_eq!(h.state().session.document(), &moved);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn note_text_is_searchable_through_landed_search_without_document_mutation() {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        h.state_mut().discussion_action(&ctx, Action::Note);
+        let id = *h.state().selection.nodes().iter().next().unwrap();
+        let canvas = h.state().canvas;
+        h.state_mut()
+            .session
+            .dispatch("node.param_set", &json!({"canvas":canvas,"id":id,"name":"text","value":{"type":"text","value":"Unique shoreline note"}}))
+            .unwrap();
+        h.run();
+        let before = h.state().session.document().clone();
+        let revision = h.state().session.revision();
+        let events = h.state().session.events_since(0).unwrap();
+        let history = (h.state().session.can_undo(), h.state().session.can_redo());
+        h.state_mut().dispatch_search(&ctx, "canvas.search_open", &json!({})).unwrap();
+        h.run();
+        h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"Unique shoreline"})).unwrap();
+        h.run();
+        assert_eq!(h.state().search.results, vec![id]);
+        h.state_mut().dispatch_search(&ctx, "canvas.search_next", &json!({})).unwrap();
+        h.run();
+        assert!(h.state().selection.contains(id));
+        assert_eq!(h.state().session.document(), &before);
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().session.events_since(0).unwrap(), events);
+        assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    }
+
+    #[test]
+    fn held_discussion_pin_does_not_admit_main_quick_add_keys() {
+        let mut h = harness();
+        let canvas = h.state().canvas;
+        let id = CommentId::from_bytes([9; 16]);
+        h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Held pin","pos":{"x":0,"y":0}})).unwrap();
+        h.run();
+        let label = format!("Discussion pin {id}");
+        let from = h.get_by_role_and_label(Role::Button, &label).rect().center();
+        h.hover_at(from);
+        h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run();
+        h.hover_at(from + Vec2::new(35.0, 15.0));
+        h.run();
+        assert!(h.state().comments.drag.is_some());
+        let ctx = h.ctx.clone();
+        assert!(h.state_mut().dispatch_search(&ctx, "canvas.search_open", &json!({})).is_err());
+        assert!(!h.state().search.open);
+        let before = h.state().session.document().clone();
+        let revision = h.state().session.revision();
+        let events = h.state().session.events_since(0).unwrap();
+        let history = (h.state().session.can_undo(), h.state().session.can_redo());
+        h.event(egui::Event::Key { key: egui::Key::T, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.step();
+        assert!(
+            h.ctx.input(|i| i.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::T, pressed: true, .. }))),
+            "rejected quick-add must not consume T"
+        );
+        h.event(egui::Event::Key { key: egui::Key::T, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        assert_eq!(h.state().session.document(), &before, "held comment drag owns input before quick-add admission");
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().session.events_since(0).unwrap(), events);
+        assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: from + Vec2::new(35.0, 15.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert_eq!(h.state().session.document(), &before);
+        h.hover_at(h.state().viewport.min + Vec2::new(800.0, 120.0));
+        h.key_press(egui::Key::T);
+        h.run();
+        assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), before.canvases().get(&canvas).unwrap().nodes().len() + 1);
+    }
+
     #[test]
     fn full_accepted_tail_survives_edit_blur_and_cancel_with_bounded_retention() {
         let mut h = harness();
@@ -1273,8 +1564,6 @@ mod more_tests {
         h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::M);
         h.run();
         assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).is_err());
-        assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).is_err());
-        assert!(h.state_mut().dispatch_search(&ctx, "canvas.search_open", &json!({})).is_err());
         assert_eq!(h.state().view, view);
         h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":NodeId::from_bytes([3;16]),"title":"External edit"})).unwrap();
         h.run();

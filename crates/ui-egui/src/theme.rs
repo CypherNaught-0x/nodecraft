@@ -54,6 +54,10 @@ pub struct Tokens {
     pub comments_width: f32,
     pub comments_height: f32,
     pub comment_marker_size: f32,
+    pub comment_marker_tail: f32,
+    pub comment_marker_ring: f32,
+    pub comment_marker_gap: f32,
+    pub comment_marker_radius: u8,
     pub comments_button_width: f32,
     pub navigation_width: f32,
     pub minimap_height: f32,
@@ -129,6 +133,10 @@ pub const DARK: Tokens = Tokens {
     comments_width: 340.0,
     comments_height: 500.0,
     comment_marker_size: 30.0,
+    comment_marker_tail: 6.0,
+    comment_marker_ring: 3.0,
+    comment_marker_gap: 12.0,
+    comment_marker_radius: 6,
     comments_button_width: 110.0,
     navigation_width: 320.0,
     minimap_height: 160.0,
@@ -269,6 +277,20 @@ mod tests {
             assert!(contrast(t.text, t.card_fill) >= 7.0, "{kind:?} body text");
             assert!(contrast(t.text_muted, t.canvas_bg) >= 4.5, "{kind:?} card label");
             assert!(contrast(t.handle_glyph, t.handle_fill) >= 7.0, "{kind:?} handle");
+        }
+    }
+
+    #[test]
+    fn discussion_checkbox_has_contrasting_unchecked_border_and_checked_glyph() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            let mut v = visuals(kind);
+            crate::comments::checkbox_visuals(&mut v, t);
+            for widget in [&v.widgets.inactive, &v.widgets.hovered, &v.widgets.active] {
+                assert!(widget.bg_stroke.width >= 1.0);
+                assert!(contrast(widget.bg_stroke.color, widget.bg_fill) >= 3.0, "{kind:?} unchecked boundary");
+                assert!(contrast(widget.fg_stroke.color, widget.bg_fill) >= 4.5, "{kind:?} checked glyph");
+            }
         }
     }
 
