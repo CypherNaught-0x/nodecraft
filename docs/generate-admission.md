@@ -9,18 +9,18 @@ Runtime conversion remains authoritative; refusal leaves the original job/result
 Request admission checks depth 32, 4,096 aggregate visits (including empty containers), 4,096
 flattened inputs, and 1 MiB aggregate text per original value. All parameters, input roots and
 repeated flattened roles share a 64 MiB conservative representation/work budget. Strings cost
-6*UTF8 bytes+34; values128; input roots/emitted leaves64 plus their charged role. Provider, model,
+6 * UTF8 bytes + 34; values 128; input roots/emitted leaves 64 plus their charged role. Provider, model,
 parameter names and idempotency key count. Media inputs remain unsupported. These logical bounds
 are not exact JSON sizes, allocator backing or RSS limits.
 
-Results retain the 4,096 item/route ceiling,1 MiB aggregate routed text,256 MiB binary item/raw
-aggregate ceiling and8 MiB converted representation/work budget. Existing route/record/string/media
+Results retain the 4,096 item/route ceiling, 1 MiB aggregate routed text, 256 MiB binary item/raw
+aggregate ceiling and 8 MiB converted representation/work budget. Existing route/record/string/media
 charges remain. A private borrowed classification proof additionally costs 64 logical bytes per
 result plus 32 for its root, identically on native and wasm. Compile-time checks bound the private
 Rust representations by those constants. Near-budget results previously admitted can now be
-refused for this extra scratch charge. Reservation is fallible; an unexpected reported capacity
-above the requested count is an operational refusal, not a target-dependent semantic charge.
-Allocator rounding outside reported capacity is not measured. Bounded admission scratch may
+refused for this extra scratch charge. Reservation is fallible. Rust may legally reserve more capacity than requested, so capacity equality
+is not an admission condition. The proof charge bounds logical records/work, not allocator capacity,
+rounding or resident memory. Bounded admission scratch may
 allocate before late semantic failure; owned output strings, asset hashing/Arc clones and output
 records wait until every result is admitted. Immutable borrowed text is UTF8-validated once.
 
@@ -30,7 +30,17 @@ one standard UTF8 BOM followed by an exact-limit payload. It applies to every te
 buffer: a no-BOM input up to limit+3 may still be scanned and then refused by the unchanged trimmed
 text limit. All leading BOMs are still removed within the raw bound. Repeated BOM padding above
 the raw bound is now refused even when trimming would yield small text: an intentional work-bound
-compatibility tightening. Late invalid UTF8 within the bound still fails before any conversion.
+compatibility tightening. A separate cumulative budget charges every raw text-byte occurrence before UTF8 validation:
+`routed_text_limit + 3 * actual_result_item_count`, with checked arithmetic. Repeated BOM bytes and
+repeated occurrences of the same Arc each count. The configured item ceiling does not provide unused
+allowance; actual items do. Direct Output::Text and binary media require no UTF8 scan and are not
+charged to this budget, although each contributes the same bounded three-byte occurrence allowance.
+They retain their raw, routed-text and representation checks. Several individually valid BOM-padded
+items may therefore be refused together even when trimming would yield little or no text. Refusal
+can follow earlier admitted scans but precedes the offending scan and every owned conversion.
+The counter describes admitted scan bytes, not exact decoder instructions or RSS. Media sniffing
+remains a separate bounded-prefix pass for each item. Late invalid UTF8 within the remaining scan
+budget still fails before any conversion; over-budget invalid tails are refused before that scan.
 Missing-route diagnostics name only the closed modality, never provider-controlled payloads.
 
 ## Planned pre-run and edit-time feedback (not implemented here)
