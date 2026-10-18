@@ -297,6 +297,8 @@ pub struct NodeCraftApp {
     store: Option<nodecraft_engine::settings::SettingsStore>,
     pub viewport: Rect,
     pub notice: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    drop_acquisition: drop::Acquisition,
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
@@ -426,6 +428,8 @@ impl NodeCraftApp {
             store: None,
             viewport: Rect::NOTHING,
             notice: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            drop_acquisition: drop::Acquisition::new(),
             editors: BTreeMap::new(),
             drag: None,
             marquee: None,
@@ -460,11 +464,12 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
+        let drop_blocks = self.poll_drop(ui, t);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
             let command = ui.input_mut(|input| {
                 self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
                     spec.shortcut
@@ -500,7 +505,12 @@ impl NodeCraftApp {
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
             // focus must never become a node in the (autosaved) project.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
+            let busy = self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || egui::Popup::is_any_open(ui.ctx())
+                || self.keys.open
+                || self.drop_pointer_owned();
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
@@ -600,7 +610,7 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks;
+        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || drop_blocks;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !overlay_blocks
@@ -952,7 +962,7 @@ impl NodeCraftApp {
             .values()
             .any(|editor| editor.hidden_dirty)
             .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
-        if let Some(notice) = self.notice.as_deref().or(hidden_draft_notice) {
+        if let Some(notice) = self.notice.as_deref().or(hidden_draft_notice).filter(|_| !self.drop_pending()) {
             egui::Area::new(ui.id().with("notice"))
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))

@@ -27,6 +27,14 @@ node --test scripts/claim/*.test.js  # the claim bot
 UI behaviour is tested headless with `egui_kittest` (see `crates/ui-egui/src/app.rs`): the tests
 drive pointer and key events through the real canvas and check the resulting view and card state.
 
+Native file-drop tests live under `app::drop` in `ui-egui`. They use isolated instances of the
+same fixed-worker machinery with bounded backend gates, fake monotonic clocks and real temporary
+files; they do not open a hanging FIFO. Run `cargo test -p nodecraft-ui-egui --lib app::drop`.
+The ordinary UI tests include persistent Session Open/Save, cancellation, stale delivery, pointer
+ownership, captured placement and one-step undo. Acquisition tests cap reported read work and
+owned buffer capacity; those counters are not total process RSS or physical device I/O. Windows
+and other platforms still need their native CI; local macOS results do not prove them.
+
 GitHub CI runs `cargo nextest run --workspace --profile ci` and then `cargo test --doc --workspace`
 on Linux, Windows and macOS. The workflow pins nextest and verifies each release archive against
 a checked-in SHA-256 before extracting it. When updating nextest, update the version and all three

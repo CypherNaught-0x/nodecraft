@@ -2874,6 +2874,7 @@ dependencies = [
  "egui_kittest",
  "log",
  "nodecraft-engine",
+ "nodecraft-format",
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-nodes",

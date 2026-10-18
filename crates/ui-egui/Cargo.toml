@@ -24,5 +24,6 @@ craft-quit = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+nodecraft-format = { workspace = true }
 egui_kittest = { workspace = true }
 nodecraft-media = { workspace = true }

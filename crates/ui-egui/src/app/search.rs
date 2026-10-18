@@ -32,7 +32,8 @@ impl NodeCraftApp {
                 || self.drag.is_some()
                 || self.marquee.is_some()
                 || ctx.dragged_id().is_some()
-                || self.navigation.pointer_owned,
+                || self.navigation.pointer_owned
+                || self.drop_pointer_owned(),
             open: self.search.open,
             has_query: !self.search.query.is_empty()
                 && self.search.draft.len() <= MAX_QUERY_BYTES
