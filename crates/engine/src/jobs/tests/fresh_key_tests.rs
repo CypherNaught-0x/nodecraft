@@ -80,7 +80,7 @@ fn a_lost_reply_on_the_fresh_generation_resumes_it_under_the_same_key() {
 }
 
 #[test]
-fn a_requeue_or_forget_starts_counting_again() {
+fn a_requeue_starts_counting_again() {
     let provider = Dedupes::new(vec![Poll::Failed, Poll::Done, Poll::Done]);
     let (runner, _budget) = budgeted(Some(1_000_000));
     runner.register(JobId(1), priced(provider.clone(), Some(10)));
@@ -104,4 +104,95 @@ fn derived_keys_are_deterministic_ascii_and_bounded() {
     for key in [first, sent_key(&long, u32::MAX), sent_key("nodecraft:ü:ß", 1), sent_key(&"é".repeat(100), 0)] {
         assert!(key.is_ascii() && key.len() <= MAX_SENT_KEY, "{key}");
     }
+}
+
+/// Submits wait until `open`; every poll reports the generation failed, except under a derived key.
+struct Gated {
+    open: std::sync::atomic::AtomicBool,
+    keys: StdMutex<Vec<String>>,
+}
+
+impl Provider for Gated {
+    fn id(&self) -> &str {
+        "gated"
+    }
+    fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        let key = job.idempotency_key.clone();
+        self.keys.lock().unwrap().push(key.clone());
+        Box::pin(futures::future::poll_fn(move |_| {
+            if self.open.load(Ordering::SeqCst) {
+                std::task::Poll::Ready(Ok(Submission::Queued(JobHandle { remote_id: key.clone(), data: serde_json::Value::Null })))
+            } else {
+                std::task::Poll::Pending
+            }
+        }))
+    }
+    fn poll<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+        let fresh = h.remote_id.contains('#');
+        Box::pin(async move {
+            if fresh {
+                Ok(JobProgress::Done(Completed::new(vec![Output::Text("ok".into())])))
+            } else {
+                Ok(JobProgress::Failed(ProviderError::new(ErrorKind::Server, "out of memory")))
+            }
+        })
+    }
+    fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[test]
+fn two_runs_reporting_the_same_failed_generation_advance_the_count_once() {
+    let provider = Arc::new(Gated { open: Default::default(), keys: StdMutex::default() });
+    let (runner, _budget) = budgeted(Some(1_000_000));
+    let shared = |id| Start { idempotency_key: "shared".into(), ..job(id) };
+    for id in [1, 2] {
+        runner.register(JobId(id), priced(provider.clone(), Some(10)));
+    }
+    // Both runs pick their key before either learns that generation 0 failed.
+    let mut a = runner.run(shared(1), CancelToken::default());
+    let mut b = runner.run(shared(2), CancelToken::default());
+    let waker = futures::task::noop_waker();
+    for run in [&mut a, &mut b] {
+        assert!(run.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+    }
+    provider.open.store(true, Ordering::SeqCst);
+    assert!(matches!(block_on(a), Outcome::Failed { .. }));
+    assert!(matches!(block_on(b), Outcome::Failed { .. }));
+    assert_eq!(runner.lock().failures.get(&("gated".to_owned(), "shared".to_owned())), Some(&1), "one generation failed, not two");
+    assert_eq!(block_on(runner.run(shared(1), CancelToken::default())), Outcome::Done);
+    assert_eq!(*provider.keys.lock().unwrap(), ["shared", "shared", "shared#1"], "no generation is skipped");
+}
+
+#[test]
+fn a_restored_generation_resumes_under_its_derived_key_after_a_restart() {
+    // Generation 0 fails; generation 1 loses its replies, so its handle is what the host saved.
+    let provider = Dedupes::new(vec![Poll::Failed, Poll::Lost, Poll::Lost, Poll::Done]);
+    type Saved = Arc<StdMutex<Vec<(String, u32, JobHandle)>>>;
+    let saved: Saved = Arc::default();
+    let sink = Arc::clone(&saved);
+    let before = ProviderRunner::new(
+        Arc::new(InstantRuntime(AtomicU64::new(0))),
+        RunLimits { max_poll_errors: 1, ..RunLimits::default() },
+        Arc::new(|_, _| {}),
+        Arc::new(move |_, sent: Sent<'_>, update| {
+            if let RunUpdate::Submitted(handle) = update {
+                sink.lock().unwrap().push((sent.key.to_owned(), sent.generation, handle));
+            }
+        }),
+    );
+    before.register(JobId(1), priced(provider.clone(), None));
+    assert!(matches!(block_on(before.run(job(1), CancelToken::default())), Outcome::Failed { .. }));
+    assert!(matches!(block_on(before.run(Start { attempt: 2, ..job(1) }, CancelToken::default())), Outcome::Failed { transient: true, .. }));
+    let (key, generation, handle) = saved.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((key.as_str(), generation), ("nodecraft:r:1#1", 1));
+    // A new runner after a restart: the host restores what it saved.
+    let (after, budget) = budgeted(Some(1_000_000));
+    after.register(JobId(1), priced(provider.clone(), Some(100_000)));
+    after.restore_generation("dedupes", "nodecraft:r:1".into(), generation, handle);
+    assert_eq!(block_on(after.run(Start { attempt: 3, ..job(1) }, CancelToken::default())), Outcome::Done);
+    assert_eq!(provider.keys(), ["nodecraft:r:1", "nodecraft:r:1#1"], "resumed, not submitted again");
+    let log = budget.log.lock().unwrap();
+    assert_eq!(log.entries().map(|e| e.idempotency_key.as_str()).collect::<Vec<_>>(), ["nodecraft:r:1#1"], "charged under the key it was sent under");
 }

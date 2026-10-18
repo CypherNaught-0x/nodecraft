@@ -1087,6 +1087,10 @@ a choice a later contributor might otherwise undo.
   never charges twice.
 - **The usage log charges each generation under the key its provider saw**, so two generations
   are two charges, as they are on the provider's bill.
-- **The counter is in memory.** A requeue under a new scheduler key, `forget` or a restart starts
-  from zero; after a restart the first retry reuses the base key, which at worst returns the
-  failed generation again and fails the attempt once more (no extra charge).
+- **One failed generation advances the count once:** each attempt remembers its generation, and
+  a reported failure raises the count to `generation + 1`, so two runs that saw the same
+  generation fail don't skip the next one.
+- **The count survives a restart only through the host.** The update sink reports each attempt's
+  `Sent { key, generation }`; a host that saves `Submitted` handles saves the generation with
+  them and restores with `restore_generation`, which puts the handle back under its derived key
+  and restores the count. A requeue under a new scheduler key, or `forget`, starts from zero.

@@ -34,8 +34,18 @@ use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, 
 /// `AddGeneration` changeset; budgets charge the usage's reported cost).
 pub type OutputSink = dyn Fn(JobId, Completed) + Send + Sync;
 
-/// Progress reports while a job runs (queue panel, status cards).
-pub type UpdateSink = dyn Fn(JobId, RunUpdate) + Send + Sync;
+/// Progress reports while a job runs (queue panel, status cards), with the key the attempt was
+/// sent under. A host that persists `RunUpdate::Submitted` handles saves `Sent::generation`
+/// with them and passes it back to [`ProviderRunner::restore_generation`] after a restart.
+pub type UpdateSink = dyn Fn(JobId, Sent<'_>, RunUpdate) + Send + Sync;
+
+/// What an attempt was sent as: its key and its generation (how many generations the provider
+/// had reported failed before it, #223; the key is `sent_key(scheduler key, generation)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sent<'a> {
+    pub key: &'a str,
+    pub generation: u32,
+}
 
 /// Start of every error for a job the budgets refused; such jobs are never retried.
 pub const REFUSAL_PREFIX: &str = "budget: ";
@@ -128,7 +138,9 @@ pub const MAX_SENT_KEY: usize = 64;
 /// `base#n` after the provider reported `n` generations failed, so a provider that dedupes on the
 /// key starts a new generation instead of returning the failed one. Deterministic per attempt (a
 /// lost reply resends the same key), ASCII, and at most [`MAX_SENT_KEY`] long: a key that
-/// wouldn't fit keeps an ASCII prefix and a hash of the whole base key.
+/// wouldn't fit, or isn't ASCII, keeps an ASCII prefix and a hash of the whole base key, even at
+/// generation 0. Scheduler keys (`nodecraft:r…`) are short ASCII without `#`, so they go out
+/// unchanged at first and never collide with another key's derived form.
 pub fn sent_key(base: &str, failures: u32) -> String {
     if failures == 0 && base.len() <= MAX_SENT_KEY && base.is_ascii() {
         return base.to_owned();
@@ -357,11 +369,25 @@ impl ProviderRunner {
         }
     }
 
-    /// Restores handles saved before a restart (from `RunUpdate::Submitted`), keyed by the
-    /// provider that issued them and the idempotency key, so those jobs are resumed rather than
-    /// submitted again.
+    /// Restores a first-generation handle saved before a restart (from `RunUpdate::Submitted`),
+    /// keyed by the provider that issued it and the scheduler's idempotency key, so the job is
+    /// resumed rather than submitted again. See [`Self::restore_generation`].
     pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) {
-        self.lock().handles.insert((provider.into(), idempotency_key), handle);
+        self.restore_generation(provider, idempotency_key, 0, handle);
+    }
+
+    /// Restores a handle saved before a restart with the [`Sent::generation`] it was reported
+    /// with: it is stored under the derived key it was sent under, and the job's failure count is
+    /// brought back, so the retry resumes that generation and charges under its key.
+    pub fn restore_generation(&self, provider: impl Into<String>, idempotency_key: String, generation: u32, handle: JobHandle) {
+        let provider = provider.into();
+        let mut s = self.lock();
+        let key = sent_key(&idempotency_key, generation);
+        if generation > 0 {
+            let n = s.failures.entry((provider.clone(), idempotency_key)).or_insert(0);
+            *n = (*n).max(generation);
+        }
+        s.handles.insert((provider, key), handle);
     }
 
     /// Drops a finished job's registration and handle (call when the scheduler forgets it).
@@ -431,7 +457,7 @@ impl JobRunner for ProviderRunner {
             let provider_id = queued.provider.id().to_owned();
             // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
             // step so `forget` finds the handle stored under it.
-            let key = {
+            let (key, generation) = {
                 let mut s = lock();
                 let old = s.jobs.get_mut(&start.job).map(|registered| std::mem::replace(&mut registered.job.idempotency_key, start.idempotency_key.clone()));
                 // Requeued under a new key: the old key's handle and failure count are done with.
@@ -440,8 +466,8 @@ impl JobRunner for ProviderRunner {
                     s.prune_handle(&old);
                 }
                 // After provider-reported failures, a fresh generation goes under a derived key.
-                let failures = s.failures.get(&(provider_id.clone(), start.idempotency_key.clone())).copied().unwrap_or(0);
-                sent_key(&start.idempotency_key, failures)
+                let generation = s.failures.get(&(provider_id.clone(), start.idempotency_key.clone())).copied().unwrap_or(0);
+                (sent_key(&start.idempotency_key, generation), generation)
             };
             // Only a handle this job's current provider issued, under the key now sent, resumes.
             let handle = lock().handles.get(&(provider_id.clone(), key.clone())).cloned();
@@ -503,7 +529,7 @@ impl JobRunner for ProviderRunner {
                             r.maybe_billed = true;
                         }
                     }
-                    on_update(job_id, update);
+                    on_update(job_id, Sent { key: &key, generation }, update);
                 };
                 let result = match handle {
                     Some(handle) => nodecraft_providers::resume(queued.provider.as_ref(), &handle, &signal, &clock, limits, record).await,
@@ -557,10 +583,11 @@ impl JobRunner for ProviderRunner {
                             let mut s = lock();
                             s.handles.remove(&(provider_id.clone(), key.clone()));
                             // The provider ran and failed this generation: a retry is a new one,
-                            // under the next derived key.
+                            // under the next derived key. Two runs reporting the same failed
+                            // generation advance the count once.
                             if failure.finished && failure.handle.is_some() {
                                 let n = s.failures.entry((provider_id.clone(), start.idempotency_key.clone())).or_insert(0);
-                                *n = n.saturating_add(1);
+                                *n = (*n).max(generation.saturating_add(1));
                             }
                         }
                         // A submit lost in transit (or answered with a garbled or "it ran" reply) may
@@ -659,7 +686,7 @@ mod tests {
             Arc::new(InstantRuntime(AtomicU64::new(0))),
             RunLimits { max_poll_errors: 5, ..RunLimits::default() },
             Arc::new(move |id, out| sink.lock().unwrap().push((id, out.outputs))),
-            Arc::new(|_, _| {}),
+            Arc::new(|_, _, _| {}),
         );
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
         runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
@@ -706,7 +733,7 @@ mod tests {
     #[test]
     fn a_job_the_provider_failed_is_submitted_again_on_retry() {
         let provider = Arc::new(FailsOnce { submits: AtomicU64::new(0), polls: AtomicU64::new(0) });
-        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _, _| {}));
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
         runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
         assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
@@ -717,7 +744,7 @@ mod tests {
 
     #[test]
     fn unknown_jobs_and_cancellation() {
-        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _, _| {}));
         assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
@@ -782,7 +809,7 @@ mod tests {
             Arc::new(InstantRuntime(AtomicU64::new(0))),
             RunLimits { max_poll_errors: 1, ..RunLimits::default() },
             Arc::new(|_, _| {}),
-            Arc::new(|_, _| {}),
+            Arc::new(|_, _, _| {}),
         )
         .with_budget(budget.clone());
         (runner, budget)
@@ -910,7 +937,7 @@ mod tests {
 
     #[test]
     fn handles_left_by_a_provider_change_or_requeue_are_dropped_without_a_budget() {
-        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _| {}));
+        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _, _| {}));
         let a = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 100 });
         runner.register(JobId(1), priced(a.clone(), None));
         assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
