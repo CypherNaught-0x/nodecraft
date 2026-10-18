@@ -22,6 +22,8 @@ comfyui = []
 openai-images = ["dep:base64", "dep:blake3"]
 # Version-pinned predictions, polling, cancellation and bounded authenticated file downloads.
 replicate = ["dep:base64"]
+# Stateless Gemini Interactions image generation and editing.
+gemini-images = ["dep:base64"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 

@@ -98,6 +98,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
         vec![
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
+            ("gemini-images.pro", true),
+            ("gemini-images.nano-banana-2.1", true),
+            ("gemini-images.flash-lite", true),
             ("openai-images.flare", true),
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
@@ -384,5 +387,24 @@ fn measured_usage_pricing_is_never_free_and_keeps_schema_admission() {
     }
     for bad in ["type = \"by_usage\"", "type = \"by_usage\"\ncurrency = \"usd\"", "type = \"by_usage\"\ncurrency = \"USD\"\nreason = \"free\""] {
         assert!(toml::from_str::<Pricing>(bad).is_err());
+    }
+}
+
+#[test]
+fn gemini_models_have_exact_wire_options_and_unknown_cost() {
+    let c = Catalog::builtin().unwrap();
+    let models: Vec<_> = c.models().filter(|m| m.provider == "gemini-images").collect();
+    assert_eq!(models.len(), 3);
+    for m in models {
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), None);
+        assert_eq!(m.mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 14);
+        assert_eq!(m.params.params.len(), 2);
+        let mut p = ParamValues::new();
+        p.insert("image_size".into(), Value::Text("1024px".into()));
+        assert!(m.quote(&p).is_err());
+        if m.provider_model == "gemini-3.1-flash-lite-image" {
+            p.insert("image_size".into(), Value::Text("2K".into()));
+            assert!(m.quote(&p).is_err());
+        }
     }
 }

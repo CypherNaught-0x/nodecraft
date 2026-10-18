@@ -133,7 +133,13 @@ fn wasm_set(root: &Path) -> Result<Vec<String>, String> {
 fn cmd_wasm(root: &Path) -> Result<(), String> {
     let set = wasm_set(root)?;
     let mut c = cargo(root);
-    c.args(["check", "--target", "wasm32-unknown-unknown", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate"]);
+    c.args([
+        "check",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--features",
+        "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images",
+    ]);
     for pkg in &set {
         c.args(["-p", pkg]);
     }
@@ -169,13 +175,21 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
                 "--workspace",
                 "--all-targets",
                 "--features",
-                "nodecraft-providers/openai-images,nodecraft-providers/replicate",
+                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images",
                 "--",
                 "-D",
                 "warnings",
             ]),
         ),
-        ("test", cargo_step(&["test", "--workspace", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate"])),
+        (
+            "test",
+            cargo_step(&[
+                "test",
+                "--workspace",
+                "--features",
+                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images",
+            ]),
+        ),
         ("layers", Box::new(|| cmd_layers(root).and_then(|()| decisions::check(root)))),
         ("wasm", Box::new(|| cmd_wasm(root))),
     ];
