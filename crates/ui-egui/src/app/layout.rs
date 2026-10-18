@@ -13,7 +13,10 @@ struct PassiveToolbar {
     focus: egui::Id,
     viewport: Rect,
 }
-struct PassiveToolbarInput;
+#[derive(Default)]
+struct PassiveToolbarInput {
+    swallowed_primary: bool,
+}
 impl egui::plugin::Plugin for PassiveToolbarInput {
     fn debug_name(&self) -> &'static str {
         "layout passive toolbar"
@@ -25,31 +28,46 @@ impl egui::plugin::Plugin for PassiveToolbarInput {
             d.remove::<PassiveToolbar>(id);
             owner
         });
-        let Some(owner) = owner else { return };
-        if egui::Popup::is_any_open(ctx)
-            || ctx.memory(|m| m.focused()) != Some(owner.focus)
-            || input.screen_rect.unwrap_or_else(|| ctx.viewport_rect()) != owner.viewport
-        {
-            return;
-        }
         let other = [egui::PointerButton::Secondary, egui::PointerButton::Middle, egui::PointerButton::Extra1, egui::PointerButton::Extra2];
-        if ctx.input(|i| other.into_iter().any(|button| i.pointer.button_down(button)))
-            || input.events.iter().any(|event| matches!(event, egui::Event::PointerButton { button, .. } if *button != egui::PointerButton::Primary))
-        {
-            return;
+        let owner = owner.filter(|owner| {
+            input.focused
+                && !egui::Popup::is_any_open(ctx)
+                && ctx.memory(|m| m.focused()) == Some(owner.focus)
+                && input.screen_rect.unwrap_or_else(|| ctx.viewport_rect()) == owner.viewport
+                && !ctx.input(|i| other.into_iter().any(|button| i.pointer.button_down(button)))
+                && !input.events.iter().any(|event| matches!(event, egui::Event::PointerButton { button, .. } if *button != egui::PointerButton::Primary))
+        });
+        if !input.focused {
+            self.swallowed_primary = false;
         }
-        // Remove only toolbar presses/releases, before egui derives PointerState. Motion,
-        // position, velocity, hover and unrelated buttons keep their ordinary lifecycle.
+        let mut delivered_down = ctx.input(|i| i.pointer.primary_down());
+        // A delivered editor press always gets its release, even over this toolbar.
+        // A swallowed press owns its matching release anywhere, after owner expiry too.
+        // Motion, hover and unrelated buttons keep their ordinary lifecycle.
         input.events.retain(|event| {
-            !matches!(event,
-                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, .. }
-                if owner.rect.contains(*pos) && ctx.layer_id_at(*pos) == Some(owner.layer)
-            )
+            if let egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, .. } = event {
+                if *pressed {
+                    if self.swallowed_primary {
+                        return false;
+                    }
+                    if !delivered_down && owner.as_ref().is_some_and(|owner| owner.rect.contains(*pos) && ctx.layer_id_at(*pos) == Some(owner.layer)) {
+                        self.swallowed_primary = true;
+                        return false;
+                    }
+                    delivered_down = true;
+                } else if self.swallowed_primary {
+                    self.swallowed_primary = false;
+                    return false;
+                } else {
+                    delivered_down = false;
+                }
+            }
+            true
         });
     }
 }
 fn passive_toolbar(ctx: &egui::Context) {
-    ctx.add_plugin(PassiveToolbarInput);
+    ctx.add_plugin(PassiveToolbarInput::default());
 }
 impl NodeCraftApp {
     fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> LayoutContext {
@@ -414,6 +432,33 @@ mod tests {
         h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
         h.run();
         assert!(!h.ctx.input(|i| i.pointer.any_down()));
+    }
+    #[test]
+    fn passive_toolbar_preserves_delivered_releases_and_consumes_whole_swallowed_sequences() {
+        for (press_on_toolbar, release_on_toolbar) in [(false, true), (true, false), (true, true), (false, false)] {
+            let mut h = harness();
+            h.get_all_by_role_and_label(egui::accesskit::Role::TextInput, "Text").next().unwrap().click();
+            h.run();
+            let editor = h.get_all_by_role_and_label(egui::accesskit::Role::TextInput, "Text").next().unwrap().rect().center();
+            let toolbar = h.get_by_role_and_label(egui::accesskit::Role::Button, "Format selection").rect().center();
+            let focus = h.ctx.memory(|m| m.focused());
+            let before = h.state().session.document().clone();
+            let from = if press_on_toolbar { toolbar } else { editor };
+            let to = if release_on_toolbar { toolbar } else { editor };
+            h.hover_at(from);
+            h.run();
+            h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.step();
+            assert_eq!(h.ctx.input(|i| i.pointer.primary_down()), !press_on_toolbar);
+            h.hover_at(to);
+            h.run();
+            h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+            assert!(!h.ctx.input(|i| i.pointer.primary_down()), "release must finish the delivered press: {press_on_toolbar} → {release_on_toolbar}");
+            assert_eq!(h.ctx.input(|i| i.pointer.primary_released()), !press_on_toolbar, "only delivered presses have delivered releases");
+            assert_eq!(h.ctx.memory(|m| m.focused()), focus);
+            assert_eq!(h.state().session.document(), &before);
+        }
     }
     #[test]
     fn hovered_files_block_layout_until_the_drop_leaves() {
