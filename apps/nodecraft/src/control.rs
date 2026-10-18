@@ -162,10 +162,6 @@ struct LiveCommands<'a> {
     app: &'a mut NodeCraftApp,
     ctx: &'a egui::Context,
 }
-fn navigation(id: &str) -> bool {
-    // Routing only: the shared automation gate has already classified command.run.
-    matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
-}
 impl LiveCommands<'_> {
     fn navigation_idle(&self) -> Result<(), nodecraft_types::Error> {
         // The internal minimap bridge permits its own pan intents during a drag. External
@@ -181,7 +177,7 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
         &self.app.session
     }
     fn enabled(&mut self, id: &str, params: &serde_json::Value) -> Result<(), nodecraft_types::Error> {
-        if navigation(id) {
+        if NodeCraftApp::is_navigation_command(id) {
             self.navigation_idle()?;
             self.app.navigation_enabled(self.ctx, id, params)
         } else {
@@ -189,7 +185,7 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
         }
     }
     fn dispatch(&mut self, id: &str, params: &serde_json::Value) -> Result<serde_json::Value, nodecraft_types::Error> {
-        if navigation(id) {
+        if NodeCraftApp::is_navigation_command(id) {
             self.navigation_idle()?;
             self.app.dispatch_navigation(self.ctx, id, params)
         } else {

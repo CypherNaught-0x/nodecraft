@@ -438,8 +438,8 @@ impl McpServer {
         let unknown = || Err((INVALID_PARAMS, format!("unknown tool {}", name.chars().take(64).collect::<String>())));
         let result = match (&mut self.backend, name.as_str()) {
             (_, "ids_new") => self.ids_new(&args),
-            (Backend::Local(session), "command_list") => command_list(session.as_mut(), &args),
-            (Backend::Local(session), "command_run") => command_run(session.as_mut(), args),
+            (Backend::Local(session), "command_list") => command_list(&mut **session, &args),
+            (Backend::Local(session), "command_run") => command_run(&mut **session, args),
             (Backend::Local(session), "canvas_inspect") => canvas_inspect(session, &args),
             #[cfg(not(target_arch = "wasm32"))]
             (Backend::Bridge(client), tool @ ("command_list" | "command_run" | "canvas_inspect")) => {

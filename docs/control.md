@@ -57,9 +57,9 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 - The app answers 16 requests per frame.
 - Up to 4 screenshots can be pending, each at most 64 MiB of PNG.
 
-The issue also asks for a stdio transport. The desktop app has no stdin worth reading, and
-headless stdio automation is `nodecraft-cli mcp`. A stdio control mode is a follow-up (see
-`docs/decisions.md`).
+The current control transport is authenticated TCP. Headless stdio automation is available through
+`nodecraft-cli mcp`; a separate stdio control transport is tracked by #269 and is not part of the
+live canvas command bridge described below (see `docs/decisions.md`).
 
 ### Live canvas commands
 
