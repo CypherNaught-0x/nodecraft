@@ -15,7 +15,7 @@ use std::{
 };
 
 /// The report's format; bump it when a field changes meaning.
-pub const REPORT_SCHEMA: &str = "nodecraft.perf/1";
+pub const REPORT_SCHEMA: &str = "nodecraft.perf/2";
 /// Samples kept per metric.
 pub const MAX_SAMPLES: usize = 4096;
 /// One frame at 60 Hz, in microseconds.
@@ -23,11 +23,11 @@ pub const FRAME_BUDGET_US: u64 = 16_667;
 /// Longer samples are dropped as invalid (a suspended machine or a clock jump, not a frame or
 /// a command): one hour.
 pub const MAX_SAMPLE_US: u64 = 3_600_000_000;
-/// A frame interval longer than this is the app idling (it redraws only on input), not a slow
-/// frame: it is counted as idle, not kept.
+/// An interval longer than this is filtered as idle because the app redraws on input.
+/// This is a gap heuristic, not a presentation or dropped-frame observation.
 pub const IDLE_GAP_US: u64 = 250_000;
-/// An interval this much over [`FRAME_BUDGET_US`] counts as a missed frame (one and a half
-/// budgets): a frame on time at 60 Hz lands around 16,667 µs, give or take scheduling jitter.
+/// Frame-start interval over-budget threshold (one and a half frame budgets).
+/// This allows scheduling jitter; it does not count observed missed presentations.
 pub const INTERVAL_BUDGET_US: u64 = FRAME_BUDGET_US * 3 / 2;
 
 /// A monotonic microsecond clock from the platform, where it has one (not in the browser yet).
@@ -53,6 +53,12 @@ pub enum Metric {
     FrameInterval,
     /// Any command, start to finish (`Session::dispatch`).
     Dispatch,
+    /// Clone/apply/validation/inverse work inside a successful Changeset::stage call.
+    GraphStage,
+    /// The same boundary when Changeset::stage returns an error; never mixed with successes.
+    GraphStageRefused,
+    /// Real presentation timestamps are not available from the current hosts.
+    Presentation,
     Undo,
     Redo,
     /// Opening a project (`file.open`).
@@ -62,7 +68,18 @@ pub enum Metric {
 }
 
 impl Metric {
-    pub const ALL: [Metric; 7] = [Metric::FramePrepare, Metric::FrameInterval, Metric::Dispatch, Metric::Undo, Metric::Redo, Metric::Load, Metric::Save];
+    pub const ALL: [Metric; 10] = [
+        Metric::FramePrepare,
+        Metric::FrameInterval,
+        Metric::Dispatch,
+        Metric::GraphStage,
+        Metric::GraphStageRefused,
+        Metric::Presentation,
+        Metric::Undo,
+        Metric::Redo,
+        Metric::Load,
+        Metric::Save,
+    ];
 
     /// The time a frame metric's sample may take before it counts as over budget.
     fn budget(self) -> Option<u64> {
@@ -90,7 +107,10 @@ impl Metric {
 pub struct Workload {
     pub visible_nodes: usize,
     pub total_nodes: usize,
-    pub visible_edges: usize,
+    /// Adaptive rendered-curve stroke-envelope intersections, not pixel/occlusion visibility.
+    /// None means this frame's observation was unavailable, not zero visible edges.
+    pub visible_edges: Option<usize>,
+    pub visibility_unavailable: Option<&'static str>,
     pub total_edges: usize,
 }
 
@@ -165,17 +185,26 @@ impl Recorder {
     }
     /// The time since `start` (from [`Self::now`]) recorded as one sample of `metric`.
     pub fn record_since(&mut self, metric: Metric, start: u64) {
+        if metric == Metric::Presentation {
+            return;
+        }
         if let Some(end) = self.now() {
-            match end.checked_sub(start) {
-                Some(elapsed) => self.record(metric, elapsed),
-                // A clock that ran backwards gives no sample.
-                None => self.count_invalid(metric),
-            }
+            self.record_between(metric, start, end);
+        }
+    }
+    pub(crate) fn record_between(&mut self, metric: Metric, start: u64, end: u64) {
+        if !self.enabled || metric == Metric::Presentation {
+            return;
+        }
+        match end.checked_sub(start) {
+            Some(elapsed) => self.record(metric, elapsed),
+            None => self.count_invalid(metric),
         }
     }
     /// One sample of `metric`, in microseconds; ignored while not recording.
+    /// Presentation is always unsupported and cannot accept injected samples.
     pub fn record(&mut self, metric: Metric, micros: u64) {
-        if !self.enabled {
+        if !self.enabled || metric == Metric::Presentation {
             return;
         }
         if micros > MAX_SAMPLE_US {
@@ -218,7 +247,14 @@ impl Recorder {
                 MetricReport {
                     metric,
                     unit: "us",
-                    supported: self.has_clock(),
+                    supported: metric != Metric::Presentation && self.has_clock(),
+                    unavailable_reason: if metric == Metric::Presentation {
+                        Some("presentation_timestamps_not_available")
+                    } else if !self.has_clock() {
+                        Some("clock_not_available")
+                    } else {
+                        None
+                    },
                     samples: sorted.len(),
                     recorded: self.recorded.get(&metric).copied().unwrap_or(0),
                     invalid: self.invalid.get(&metric).copied().unwrap_or(0),
@@ -240,7 +276,8 @@ impl Recorder {
             interval_budget_us: INTERVAL_BUDGET_US,
             idle_gap_us: IDLE_GAP_US,
             warm_up: "none: every sample since the last clear is kept; clear after warming up",
-            note: "frame_prepare is CPU time in the shell, not end-to-end; it alone doesn't show 60 fps",
+            note: "frame_prepare is shell CPU preparation, not GPU/presentation; frame_interval over-budget counts are interval-gap heuristics, not observed dropped frames",
+            edge_visibility: "adaptive open-curve stroke envelope against painter clip; conservative at joins/AA/corners; no pixel or occlusion guarantee",
             metrics,
             workload: self.workload,
             environment: Environment {
@@ -287,6 +324,7 @@ pub struct Report {
     pub idle_gap_us: u64,
     pub warm_up: &'static str,
     pub note: &'static str,
+    pub edge_visibility: &'static str,
     pub metrics: Vec<MetricReport>,
     pub workload: Option<Workload>,
     pub environment: Environment,
@@ -297,6 +335,7 @@ pub struct MetricReport {
     pub metric: Metric,
     pub unit: &'static str,
     pub supported: bool,
+    pub unavailable_reason: Option<&'static str>,
     /// Samples kept (at most [`MAX_SAMPLES`]); percentiles are over these.
     pub samples: usize,
     /// Samples recorded since the last clear, including ones since dropped for space.
@@ -329,3 +368,6 @@ pub struct Environment {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests371;

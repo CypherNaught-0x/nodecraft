@@ -12,6 +12,19 @@ use serde_json::Value;
 
 use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_json};
 
+/// One completed actual graph stage, with no document/error ownership.
+struct StageObservation {
+    start: u64,
+    end: u64,
+    refused: bool,
+}
+impl StageObservation {
+    fn record(self, recorder: &mut crate::perf::Recorder) {
+        let metric = if self.refused { crate::perf::Metric::GraphStageRefused } else { crate::perf::Metric::GraphStage };
+        recorder.record_between(metric, self.start, self.end);
+    }
+}
+
 /// Enough to undo building a 1,000-node graph (about 3,000 steps, #65); the byte budget below is
 /// what bounds memory.
 pub const MAX_HISTORY_STEPS: usize = 4096;
@@ -401,8 +414,14 @@ impl Session {
             }
             document_effect => document_effect,
         };
-        let prepared = guard(|| self.prepare(effect))?;
-        self.commit_prepared(prepared, spec.id)
+        let mut stage = None;
+        let prepared = guard(|| self.prepare_observed(effect, Some(&mut stage)));
+        // Preserve completed staging observations even if later admission fails. A stage
+        // that unwinds cannot finish its observation and contributes no fabricated sample.
+        if let Some(stage) = stage {
+            stage.record(&mut self.perf);
+        }
+        self.commit_prepared(prepared?, spec.id)
     }
     fn commit_prepared(&mut self, mut prepared: Prepared, command: &'static str) -> Result<Value, Error> {
         if !prepared.source.matches(self) {
@@ -448,7 +467,19 @@ impl Session {
         }
     }
 
+    fn stage(&self, changes: &Changeset, observation: &mut Option<&mut Option<StageObservation>>) -> Result<(Project, Changeset), Error> {
+        let start = observation.as_ref().and_then(|_| self.perf.now());
+        let result = changes.stage(&self.document);
+        let end = observation.as_ref().and_then(|_| self.perf.now());
+        if let (Some(slot), Some(start), Some(end)) = (observation.as_deref_mut(), start, end) {
+            *slot = Some(StageObservation { start, end, refused: result.is_err() });
+        }
+        result
+    }
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
+        self.prepare_observed(effect, None)
+    }
+    fn prepare_observed(&self, effect: Effect, mut observation: Option<&mut Option<StageObservation>>) -> Result<Prepared, Error> {
         let next_execution_generation = self.execution.next()?;
         self.context(Phase::Dispatch).editable()?;
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
@@ -458,7 +489,7 @@ impl Session {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let (document, inverse) = changes.stage(&self.document)?;
+                let (document, inverse) = self.stage(&changes, &mut observation)?;
                 // Graph canonical sizing includes the operation array. History stores the full
                 // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
                 changes.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12))?;
@@ -474,12 +505,12 @@ impl Session {
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let (document, inverse) = self.stage(&entry.inverse, &mut observation)?;
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let (document, inverse) = self.stage(&entry.inverse, &mut observation)?;
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
             Effect::None { .. } | Effect::PreparedRun { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {

@@ -312,6 +312,7 @@ pub struct NodeCraftApp {
     previews: crate::preview::Previews,
     /// When the last timed frame started, for the frame interval (#151).
     last_frame: Option<u64>,
+    frame_workload: Option<nodecraft_engine::perf::Workload>,
     /// The rows × columns last chosen for "Split into grid".
     split_size: (u32, u32),
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
@@ -441,6 +442,7 @@ impl NodeCraftApp {
             palette: None,
             previews: crate::preview::Previews::default(),
             last_frame: None,
+            frame_workload: None,
             split_size: (2, 2),
             turn_into: None,
             text_focused: false,
@@ -832,12 +834,27 @@ impl NodeCraftApp {
             let moving = self.wiring.as_ref().and_then(|w| w.moving);
             // Widened by the halo so noodles just outside the edge still paint their stroke.
             let visible = self.view.visible_world(viewport).expand((t.wire_width_selected + t.wire_halo) / self.view.zoom);
+            // Diagnostic-only: do not read options or flatten again while capture is off.
+            let visibility = self.session.perf().enabled().then(|| {
+                // Context accessors must not be nested inside its options read lock.
+                let pixels_per_point = ui.ctx().pixels_per_point();
+                let clip = painter.clip_rect();
+                ui.ctx().tessellation_options(|options| metrics::visibility::Visibility::new(clip, pixels_per_point, options))
+            });
+            let mut visible_edges = Some(0usize);
+            if matches!(visibility, Some(None)) {
+                visible_edges = None;
+            }
             for (id, curve, modality) in &curves {
                 // The curve lies inside its control points' hull; skip ones entirely off screen.
                 if Some(*id) == moving || !Rect::from_points(curve).intersects(visible) {
                     continue;
                 }
                 let points = curve.map(|p| self.view.to_screen(viewport.min, p));
+                if let Some(Some(visibility)) = &visibility {
+                    let widest = if self.selection.contains_edge(*id) { t.wire_width_selected + t.wire_halo } else { t.wire_width };
+                    visible_edges = visible_edges.and_then(|count| visibility.intersects(points, widest).map(|hit| count.saturating_add(usize::from(hit))));
+                }
                 if self.selection.contains_edge(*id) {
                     painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
                         points,
@@ -853,6 +870,15 @@ impl NodeCraftApp {
                     egui::Color32::TRANSPARENT,
                     egui::Stroke::new(width, t.wire(*modality)),
                 ));
+            }
+            if visibility.is_some() {
+                self.frame_workload = Some(nodecraft_engine::perf::Workload {
+                    visible_nodes: self.painted.len(),
+                    total_nodes: canvas.nodes().len(),
+                    visible_edges,
+                    total_edges: canvas.edges().len(),
+                    visibility_unavailable: visible_edges.is_none().then_some("invalid_curve_geometry_or_options"),
+                });
             }
             // Badges show where their numbers can be read; dragging one reorders the input.
             if !overlay_blocks && self.view.zoom >= card::BODY_MIN_ZOOM {
