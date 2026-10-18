@@ -4,8 +4,11 @@
   describes direct delivery URLs for browsers/third parties and removal of Authorization handling.
   Delivery GETs carry no bearer key; both API and delivery requests retain no-redirect transport.
 - A rejected successful create reply may already represent paid work. An independent complete
-  borrowed JSON scanner admits only a unique root ASCII ID within the existing 2 MiB/depth-16
-  envelope, then requests one bounded best-effort cancel using a locally constructed API endpoint.
+  JSON scanner retains only a unique root ASCII ID in fixed 128-decoded-byte storage within the
+  existing 2 MiB/depth-16 envelope, then requests one bounded best-effort cancel using a locally
+  constructed API endpoint. Bounded semantic decoding recognizes escaped ID/status keys and values;
+  keys retain a 256-raw-byte spelling cap. Duplicate semantic IDs reject the receipt; duplicate
+  statuses cannot prove termination. Full prediction/output admission remains separate.
   Application metadata/output rejection does not prevent this receipt-only cleanup. Malformed,
   truncated or missing bytes cannot be rescued by substring parsing. No output authority or
   whole-submit nonacceptance proof comes from a lifecycle receipt.
