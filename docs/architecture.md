@@ -299,6 +299,17 @@ rendering. Builtin sessions require no separate Registry resource; custom sessio
 once through `Session::with_registries`. The query remains read-only and its enabled check only
 checks the canvas, leaving staleness computation to dispatch.
 
+The response preserves `nodes` as the known stale set and adds `unknown_total` plus `unknown`
+(null or `{node, cause, kind, reason}`). Only active results with recorded input hashes are
+checked. Local invalid hashes do not themselves seed staleness; unknown is not proof of freshness.
+The first diagnostic follows canvas NodeId order and identifies the actual rejected target,
+source or router. It reuses the query's cached, bounded public-safe reason without another hook
+call. More unknown results are counted rather than collected into an unbounded message list.
+The existing 576-byte diagnostic reservation shares the hash query's sticky admission budget;
+global refusal returns an error without a partial report. Enabled/Preview remain cheap. The
+legacy `stale()` set API and quote callers keep their behavior; completed paid runs still retain
+results with unknown hashes when hashing fails. Control/MCP expose the command's same JSON.
+
 ## Project persistence (#54)
 
 `format::Snapshot` combines a validated graph, immutable content-addressed `AssetStore`, and a

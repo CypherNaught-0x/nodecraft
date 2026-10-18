@@ -216,11 +216,11 @@ fn the_active_result_is_what_downstream_nodes_are_built_on() {
     Change::SetActiveGeneration { canvas: C, id: down, generation: Some(g(9)) }.apply(&mut project).unwrap();
     let mut s = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();
     let stale = |s: &mut Session| s.dispatch("canvas.stale", &json!({"canvas": C})).unwrap();
-    assert_eq!(stale(&mut s), json!({"nodes": []}));
+    assert_eq!(stale(&mut s), json!({"nodes": [], "unknown_total": 0, "unknown": null}));
     s.dispatch("history.previous", &at()).unwrap();
-    assert_eq!(stale(&mut s), json!({"nodes": [down]}), "built on take 2, but take 1 is active now");
+    assert_eq!(stale(&mut s), json!({"nodes": [down], "unknown_total": 0, "unknown": null}), "built on take 2, but take 1 is active now");
     s.dispatch("history.next", &at()).unwrap();
-    assert_eq!(stale(&mut s), json!({"nodes": []}));
+    assert_eq!(stale(&mut s), json!({"nodes": [], "unknown_total": 0, "unknown": null}));
 }
 
 #[test]

@@ -18,8 +18,25 @@ fn stale(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.phase == Phase::Preview {
         return Ok(Effect::None { result: Value::Null });
     }
-    let nodes: Vec<_> = nodecraft_exec::staleness::stale(canvas, c.kinds)?.into_iter().collect();
-    Ok(Effect::None { result: json!({ "nodes": nodes }) })
+    let report = nodecraft_exec::staleness::stale_report(canvas, c.kinds)?;
+    let nodes: Vec<_> = report.nodes.into_iter().collect();
+    let unknown = report.unknown.map_or(Value::Null, diagnostic_json);
+    let mut result = serde_json::Map::new();
+    result.insert("nodes".into(), json!(nodes));
+    result.insert("unknown_total".into(), json!(report.unknown_total));
+    result.insert("unknown".into(), unknown);
+    Ok(Effect::None { result: Value::Object(result) })
+}
+
+fn diagnostic_json(diagnostic: nodecraft_exec::staleness::HashDiagnostic) -> Value {
+    // The reason is already admitted and bounded. Move its String, not a borrowed json! clone.
+    // Fixed UUIDs, ErrorKind and at most 512 reason bytes fit 4096 encoded bytes even at 6x escaping.
+    let mut object = serde_json::Map::new();
+    object.insert("node".into(), json!(diagnostic.node));
+    object.insert("cause".into(), json!(diagnostic.cause));
+    object.insert("kind".into(), json!(diagnostic.error.kind));
+    object.insert("reason".into(), Value::String(diagnostic.error.message));
+    Value::Object(object)
 }
 
 /// Cheap: the canvas and the registry exist. The stale set itself is only computed on dispatch.
@@ -41,11 +58,14 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: stale_schema,
-        params_doc: "{canvas: CanvasId} -> {nodes: [NodeId]}; nodes whose active result no longer matches its inputs, or was built on a stale upstream result. Read-only.",
+        params_doc: "{canvas: CanvasId} -> {nodes: [NodeId], unknown_total, unknown: null|{node, cause, kind, reason}}; stale results, plus the first locally invalid checked result and its actual failing node. Only results with recorded hashes are checked; unknown_total counts those locally invalid results. Read-only.",
         enabled: enabled_stale,
         run: stale,
     }]
 }
+
+#[cfg(test)]
+mod diagnostic_tests;
 
 #[cfg(test)]
 mod tests {
@@ -72,7 +92,7 @@ mod tests {
         assert!(session.enabled("canvas.stale", &params).is_ok());
         let before = session.document().clone();
         let revision = session.revision();
-        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes":[],"unknown_total":0,"unknown":null}));
         assert_eq!(session.revision(), revision);
         assert_eq!(session.document(), &before);
         assert!(!session.can_undo());
@@ -188,17 +208,17 @@ mod tests {
         let mut session = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();
         let params = json!({"canvas": canvas});
         assert!(session.enabled("canvas.stale", &params).is_ok());
-        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes":[],"unknown_total":0,"unknown":null}));
         session.dispatch("node.param_set", &json!({"canvas":canvas,"id":id,"name":"text","value":{"type":"text","value":"changed"}})).unwrap();
         let before = session.document().clone();
         let revision = session.revision();
-        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": [id]}));
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes":[id],"unknown_total":0,"unknown":null}));
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);
         assert!(session.can_undo());
         assert!(!session.can_redo());
         session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
-        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes": []}));
+        assert_eq!(session.dispatch("canvas.stale", &params).unwrap(), json!({"nodes":[],"unknown_total":0,"unknown":null}));
         assert!(session.can_redo());
     }
     struct CountingKind {
@@ -279,7 +299,7 @@ mod tests {
             assert_eq!(session.dispatch("canvas.stale", &params).unwrap_err().kind, kind);
         }
         assert_eq!(resolutions.load(Ordering::SeqCst), 0);
-        assert_eq!(session.dispatch("canvas.stale", &json!({"canvas":canvas})).unwrap(), json!({"nodes":[node]}));
+        assert_eq!(session.dispatch("canvas.stale", &json!({"canvas":canvas})).unwrap(), json!({"nodes":[node],"unknown_total":0,"unknown":null}));
         // Dispatch preserves authoritative validate_instance hooks; the default hook may
         // resolve again. Availability does no resolution, but a successful query must resolve.
         assert!(resolutions.load(Ordering::SeqCst) >= 1);

@@ -802,6 +802,102 @@ fn diagnostic_project(kinds: &Registry) -> Project {
     project
 }
 
+fn diagnostic_results(project: &mut Project) {
+    for n in [20, 21] {
+        let mut node = project.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().clone();
+        let generation = GenerationId::from_bytes([n; 16]);
+        node.history.push(Generation { id: generation, outputs: vec![], input_hash: Some(Blake3::from_bytes([0; 32])) });
+        node.active = Some(generation);
+        Change::SetNode { canvas: C, node }.apply(project).unwrap();
+    }
+}
+
+#[test]
+fn report_shares_legacy_sweep_hooks_and_preserves_unknown_and_stale_semantics() {
+    let (mut project, kinds, calls) = diagnostic_sources("choose another source");
+    diagnostic_results(&mut project);
+    let canvas = project.canvases().get(&C).unwrap();
+    let legacy = stale(canvas, &kinds).unwrap();
+    let legacy_calls = calls.swap(0, std::sync::atomic::Ordering::SeqCst);
+    assert!(legacy_calls > 0);
+    let report = stale_report(canvas, &kinds).unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), legacy_calls);
+    assert_eq!(report.nodes, legacy);
+    assert_eq!(report.unknown_total, 2);
+    let first = report.unknown.unwrap();
+    assert_eq!((first.node, first.cause, first.error.kind), (id(20), id(1), ErrorKind::Unsupported));
+    assert!(first.error.message.contains("choose another source"));
+    assert!(std::mem::size_of::<HashDiagnostic>() <= DIAGNOSTIC_OUTPUT_OVERHEAD);
+    // No recorded hash means no new validation just to manufacture diagnostics.
+    let (project, kinds, calls) = diagnostic_sources("unused reason");
+    let report = stale_report(project.canvases().get(&C).unwrap(), &kinds).unwrap();
+    assert_eq!(report.unknown_total, 0);
+    assert_eq!(report.unknown, None);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn report_output_uses_exact_existing_reservation_and_refuses_before_construction() {
+    let (mut project, kinds, _) = diagnostic_sources("bounded reason");
+    diagnostic_results(&mut project);
+    let canvas = project.canvases().get(&C).unwrap();
+    let (silent, charged) = query_stale(canvas, &kinds, MAX_QUERY_BYTES, false).unwrap();
+    let (report, total) = query_stale(canvas, &kinds, MAX_QUERY_BYTES, true).unwrap();
+    let output = MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD;
+    assert_eq!(total, charged + output);
+    assert_eq!(query_stale(canvas, &kinds, total, true).unwrap().0, report);
+    assert!(query_stale(canvas, &kinds, total - 1, true).is_err());
+    assert_eq!(query_stale(canvas, &kinds, charged, false).unwrap().0, silent);
+    let (canvas, kinds, mut exact) = empty_query(output);
+    let diagnostic = exact.reported(id(20), InvalidHash::Router(id(1))).unwrap();
+    assert_eq!(diagnostic.cause, id(1));
+    assert!(exact.diagnostic_output_bytes > 0);
+    assert_eq!(exact.meter.left, 0);
+    let (_, _, mut short) = empty_query(output - 1);
+    assert!(short.reported(id(20), InvalidHash::Router(id(1))).is_err());
+    assert_eq!(short.diagnostic_output_bytes, 0);
+    assert!(short.meter.refused);
+    assert_eq!(short.hash(&canvas, &kinds, id(99), &BTreeMap::new()).unwrap_err().message, too_large().message);
+}
+
+#[test]
+fn report_shared_rejected_source_reuses_cache_and_target_rejection_names_target() {
+    let (mut project, kinds, calls) = diagnostic_sources("shared rejection");
+    diagnostic_results(&mut project);
+    Changeset::new(vec![Change::Disconnect { canvas: C, id: EdgeId::from_bytes([2; 16]) }, Change::Connect { canvas: C, edge: edge(2, 1, 21, 0) }])
+        .apply(&mut project)
+        .unwrap();
+    let report = stale_report(project.canvases().get(&C).unwrap(), &kinds).unwrap();
+    assert_eq!(report.unknown_total, 2);
+    assert_eq!(calls.swap(0, std::sync::atomic::Ordering::SeqCst), 1);
+    let mut source = project.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
+    let generation = GenerationId::from_bytes([1; 16]);
+    source.history.push(Generation { id: generation, outputs: vec![], input_hash: Some(Blake3::from_bytes([0; 32])) });
+    source.active = Some(generation);
+    Change::SetNode { canvas: C, node: source }.apply(&mut project).unwrap();
+    let report = stale_report(project.canvases().get(&C).unwrap(), &kinds).unwrap();
+    assert_eq!(report.unknown_total, 3);
+    let first = report.unknown.unwrap();
+    assert_eq!((first.node, first.cause), (id(1), id(1)));
+    assert_eq!(first.error.kind, ErrorKind::Unsupported);
+    assert_eq!(first.error.message, "shared rejection");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn report_keeps_known_stale_results_when_an_unrelated_hash_is_unknown() {
+    let (mut project, kinds, _) = diagnostic_sources("bad source");
+    diagnostic_results(&mut project);
+    let source = kinds.get("source.text").unwrap().instantiate_instance(id(2), Default::default(), &Default::default()).unwrap();
+    Change::SetNode { canvas: C, node: source }.apply(&mut project).unwrap();
+    let canvas = project.canvases().get(&C).unwrap();
+    let report = stale_report(canvas, &kinds).unwrap();
+    assert_eq!(report.nodes, stale(canvas, &kinds).unwrap());
+    assert_eq!(report.nodes, [id(21)].into_iter().collect());
+    assert_eq!(report.unknown_total, 1);
+    assert_eq!(report.unknown.unwrap().cause, id(1));
+}
+
 #[test]
 fn diagnostics_identify_invalid_routers() {
     let kinds = kinds();
