@@ -19,7 +19,12 @@
 //!   room, and a dearer one is reported in the usage log as it is. Unknown-price admissions are
 //!   never given back: without a price, a release proves nothing worth refunding.
 //! - **Adopted work.** A job adopted after it was already submitted is debited (or counted) even
-//!   past the ceiling, and its debit is never refunded: the work happened.
+//!   past the ceiling, and its debit is never refunded: the work happened. That holds when the
+//!   usage log already has a row for its key from an earlier run: each run accounts the work it
+//!   adopts once, keyed by provider and key.
+//! - **Saturation.** If a currency's reserved total overflows, the exact exposure is lost: later
+//!   credits no longer reduce it, and new work in that currency is refused for the rest of the
+//!   run.
 //!
 //! The ceiling lives only in the authorized run built from the prepared run's own acceptance;
 //! nothing outside this crate can create or widen one, and it isn't saved: a reloaded session
@@ -40,6 +45,9 @@ type Reservation = (ProviderTarget, String);
 struct Ledger {
     limits: BTreeMap<Currency, u64>,
     reserved: BTreeMap<Currency, u64>,
+    /// Currencies whose reserved total overflowed: the exact exposure is lost, so credits no
+    /// longer reduce it and new work in that currency is refused for the rest of the run.
+    saturated: BTreeSet<Currency>,
     /// Debits by reservation, so a credit applies once and only to this run's own debit.
     debits: BTreeMap<Reservation, Money>,
     unpriced_limit: u64,
@@ -110,7 +118,7 @@ impl RunCeiling {
         let after = reserved.checked_add(estimate.micros);
         let full = ledger.debits.len() >= MAX_CEILING_RESERVATIONS;
         if !adopted {
-            if after.is_none_or(|after| after > limit) {
+            if ledger.saturated.contains(&currency) || after.is_none_or(|after| after > limit) {
                 return Err(if limit == 0 {
                     format!("the run's accepted amounts include nothing in {currency}, so this job can't be charged")
                 } else {
@@ -120,6 +128,9 @@ impl RunCeiling {
             if full {
                 return Err("the run has reserved too many jobs to track; quote and start a new run".into());
             }
+        }
+        if after.is_none() {
+            ledger.saturated.insert(currency);
         }
         ledger.reserved.insert(currency, after.unwrap_or(u64::MAX));
         if full {
@@ -133,7 +144,9 @@ impl RunCeiling {
     /// run didn't debit, or one already credited, changes nothing.
     pub(crate) fn credit(&self, provider: &ProviderTarget, key: &str) {
         let mut ledger = self.ledger();
-        if let Some(money) = ledger.debits.remove(&(provider.clone(), key.to_owned())) {
+        if let Some(money) = ledger.debits.remove(&(provider.clone(), key.to_owned()))
+            && !ledger.saturated.contains(&money.currency)
+        {
             let reserved = ledger.reserved.entry(money.currency).or_default();
             *reserved = reserved.saturating_sub(money.micros);
         }

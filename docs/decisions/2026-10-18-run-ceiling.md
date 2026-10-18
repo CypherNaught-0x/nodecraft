@@ -39,7 +39,13 @@
   keeps its debit, even if its key is reused.
 - **Adopted work.** A job adopted after it was already submitted is debited or counted even past
   the ceiling, never refused, and never refunded: failing to record its charge in the usage log
-  is not evidence that nothing was delivered.
+  is not evidence that nothing was delivered. The usage log is shared across runs, so a key it
+  already holds (an open, settled or retired charge from an earlier run) still counts in the run
+  that adopts it, at the row's amount (or as an unknown-price admission), once per run by
+  provider and key. New work on such a key is admitted only within this run's room.
+- **Saturation.** If a currency's reserved total overflows (adopted work at extreme catalog
+  prices), its exact exposure is lost: later credits no longer reduce it, and new work in that
+  currency is refused for the rest of the run.
 - **Estimates, not bills.** The debit stays at the estimate when the charge settles; a cheaper
   actual never frees room. A dearer actual is recorded in the usage log as billed; the ceiling
   bounds new admission and claims nothing about provider pricing, refunds or cancellation.

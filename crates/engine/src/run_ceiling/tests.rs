@@ -95,3 +95,34 @@ fn clones_share_one_ledger() {
     assert_eq!(ceiling, copy);
     assert_ne!(ceiling, RunCeiling::new(BTreeMap::new(), 0));
 }
+
+#[test]
+fn a_saturated_total_is_never_reopened_by_credits() {
+    let ceiling = ceiling(u64::MAX, 0);
+    assert!(ceiling.debit(&target(), "legit", usd(100), false).unwrap());
+    ceiling.debit(&target(), "h1", usd(u64::MAX - 100), true).unwrap();
+    ceiling.debit(&target(), "h2", usd(u64::MAX - 100), true).unwrap();
+    assert_eq!(ceiling.status(Currency::USD), (u64::MAX, u64::MAX));
+    // The legitimate reservation is released without delivery: its credit can't reopen room
+    // that the adopted work's lost exposure fills.
+    ceiling.credit(&target(), "legit");
+    assert_eq!(ceiling.status(Currency::USD), (u64::MAX, u64::MAX));
+    assert!(ceiling.debit(&target(), "fresh", usd(100), false).is_err());
+    assert!(ceiling.debit(&target(), "fresh", usd(1), false).is_err(), "no new work in that currency");
+    // Another currency is unaffected.
+    let other = RunCeiling::new([(Currency::USD, u64::MAX), (Currency::EUR, 10)].into(), 0);
+    other.debit(&target(), "h", usd(u64::MAX), true).unwrap();
+    other.debit(&target(), "h2", usd(1), true).unwrap();
+    assert!(other.debit(&target(), "e", Money::new(Currency::EUR, 10), false).unwrap());
+}
+
+#[test]
+fn exact_totals_still_refund_exactly() {
+    let ceiling = ceiling(u64::MAX, 0);
+    ceiling.debit(&target(), "a", usd(u64::MAX - 100), true).unwrap();
+    assert!(ceiling.debit(&target(), "b", usd(100), false).unwrap());
+    assert_eq!(ceiling.status(Currency::USD), (u64::MAX, u64::MAX), "exactly full, not saturated");
+    ceiling.credit(&target(), "b");
+    assert_eq!(ceiling.status(Currency::USD), (u64::MAX, u64::MAX - 100));
+    assert!(ceiling.debit(&target(), "c", usd(100), false).unwrap());
+}

@@ -354,7 +354,10 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
         return Err(format!("{REFUSAL_PREFIX}historical charge ownership is uncertain; inspect the usage log before retrying"));
     }
     if let Some(entry) = log.charge_target(provider, key) {
-        // A retry of a job already reserved (or settled) under this key: nothing new to charge.
+        // A retry of a job already reserved (or settled) under this key: nothing new to charge
+        // in the log, which is shared across runs. This run still accounts the work once (a
+        // same-run retry finds its own debit); the debit is never credited from here.
+        account_in_run(price, provider, key, Some(entry.cost), resumed)?;
         return Ok((entry.status == Charge::Estimate).then(|| Reserved {
             identity: log.ledger_identity(),
             invocation: 0,
@@ -368,6 +371,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
         }));
     }
     if log.has_recorded_target(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? {
+        account_in_run(price, provider, key, price.estimate, resumed)?;
         return Ok(None);
     }
     let Some(estimate) = price.estimate else {
@@ -434,6 +438,18 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             undo_debit(debited && !resumed, price, provider, key);
         }
     })
+}
+
+/// Accounts work whose key the usage log already holds (from this run or an earlier one) in this
+/// run's ceiling: at `exposure` when it has a price, as one unknown-price admission when not.
+/// Adopted work is accounted past the ceiling; new work is refused past it.
+fn account_in_run(price: &JobPrice, provider: &nodecraft_types::ProviderTarget, key: &str, exposure: Option<Money>, resumed: bool) -> Result<(), String> {
+    let Some(ceiling) = &price.ceiling else { return Ok(()) };
+    match exposure {
+        Some(money) => ceiling.debit(provider, key, money, resumed).map(|_| ()),
+        None => ceiling.admit_unpriced(provider, key, resumed),
+    }
+    .map_err(|e| format!("{REFUSAL_PREFIX}{e}"))
 }
 
 /// Nothing was recorded for this key, so the debit just taken for it is undone.
@@ -1383,6 +1399,66 @@ mod tests {
         let refused = block_on(runner.run(job(1), CancelToken::default()));
         assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no budget")), "{refused:?}");
         assert_eq!(provider.submits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn work_adopted_from_an_earlier_runs_row_counts_in_the_new_run() {
+        // Run A reserved "old" (USD 80) in the shared log and it may have been billed. Run B,
+        // accepting USD 100, adopts that submission: it accounts the 80 even though the log needs
+        // no new row, so a fresh 80 doesn't fit.
+        let (_, budget) = budgeted(None);
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        let usd_ceiling = |limit: u64, unpriced: u64| crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, limit)].into(), unpriced);
+        let price = |estimate: Option<u64>, ceiling: &crate::run_ceiling::RunCeiling| JobPrice {
+            node: NodeId::from_bytes([5; 16]),
+            model: "test.img".into(),
+            estimate: estimate.map(usd),
+            ceiling: Some(ceiling.clone()),
+        };
+        let run_a = usd_ceiling(100, 0);
+        reserve(&budget, &attempt("old"), &price(Some(80), &run_a), false, 1).unwrap().unwrap();
+        let run_b = usd_ceiling(100, 0);
+        let adopted = reserve(&budget, &attempt("old"), &price(Some(80), &run_b), true, 1).unwrap().unwrap();
+        assert!(!adopted.debited, "never credited from the adoption path");
+        assert_eq!(run_b.status(nodecraft_types::Currency::USD), (100, 80));
+        assert!(reserve(&budget, &attempt("fresh"), &price(Some(80), &run_b), false, 1).unwrap_err().contains("accepted"));
+        // Re-adopting the same submission in run B accounts nothing more.
+        reserve(&budget, &attempt("old"), &price(Some(80), &run_b), true, 1).unwrap();
+        assert_eq!(run_b.status(nodecraft_types::Currency::USD), (100, 80));
+        // Once settled, the row still counts in a run that adopts it, priced or not.
+        budget.log.lock().unwrap().settle_target(&target, "old", usd(80), Charge::Actual).unwrap();
+        let run_c = usd_ceiling(100, 0);
+        assert!(reserve(&budget, &attempt("old"), &price(Some(80), &run_c), true, 1).unwrap().is_none());
+        assert_eq!(run_c.status(nodecraft_types::Currency::USD), (100, 80));
+        let run_d = usd_ceiling(100, 1);
+        reserve(&budget, &attempt("old"), &price(None, &run_d), true, 1).unwrap();
+        assert_eq!(run_d.status(nodecraft_types::Currency::USD), (100, 80), "the row's own amount is accounted");
+        // New work on a key another run holds is admitted only within this run's room.
+        let run_e = usd_ceiling(50, 0);
+        assert!(reserve(&budget, &attempt("old"), &price(Some(80), &run_e), false, 1).is_err());
+    }
+
+    #[test]
+    fn credits_cannot_reopen_room_after_adopted_exposure_saturates() {
+        // Admitted prices only: a legitimate USD 100 reservation, then two adopted submissions at
+        // u64::MAX − 100 whose log rows are refused by the per-charge bound.
+        let (_, budget) = budgeted(None);
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, u64::MAX)].into(), 0);
+        let price =
+            |micros: u64| JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(micros)), ceiling: Some(ceiling.clone()) };
+        let legit = reserve(&budget, &attempt("legit"), &price(100), false, 1).unwrap().unwrap();
+        for key in ["h1", "h2"] {
+            assert!(reserve(&budget, &attempt(key), &price(u64::MAX - 100), true, 1).unwrap().is_none(), "adopted, uncharged");
+        }
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (u64::MAX, u64::MAX));
+        // The legitimate reservation is released on no-delivery evidence: the room stays shut.
+        close(&budget, &legit);
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 0, "released");
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (u64::MAX, u64::MAX));
+        assert!(reserve(&budget, &attempt("fresh"), &price(100), false, 1).unwrap_err().contains("accepted"));
     }
 
     #[test]
