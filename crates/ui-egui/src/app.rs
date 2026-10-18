@@ -1042,14 +1042,18 @@ impl NodeCraftApp {
             HistoryIntent::Delete(generation) => ("history.delete", json!({"canvas": self.canvas, "id": id, "generation": generation})),
             HistoryIntent::Extract(generation) => {
                 let document = self.session.document();
-                let source = document.canvases().get(&self.canvas)?.nodes().get(&id)?;
-                let seed = ("extract", id, generation, self.session.revision());
-                let (Some(node), Some(result)) = (ids::node_id(document, seed), ids::generation_id(document, seed)) else {
+                let canvas = document.canvases().get(&self.canvas)?;
+                let source = canvas.nodes().get(&id)?;
+                let Some(node) = ids::node_id(document, ("extract", id, generation, self.session.revision())) else {
                     self.notice = Some("Couldn't find a free id for the extracted result".into());
                     return None;
                 };
-                let pos = json!({"x": source.pos.x + t.card_width + t.card_padding * 4.0, "y": source.pos.y});
-                ("history.extract", json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "result": result, "pos": pos}))
+                // Beside the node, stepping down past earlier extracts rather than on top of them.
+                let x = source.pos.x + t.card_width + t.card_padding * 4.0;
+                let step = t.card_min_height + t.card_padding * 2.0;
+                let taken = |y: f32| canvas.nodes().values().any(|n| (n.pos.x - x).abs() < t.card_width / 2.0 && (n.pos.y - y).abs() < step / 2.0);
+                let y = (0..64u8).map(|row| source.pos.y + f32::from(row) * step).find(|y| !taken(*y)).unwrap_or(source.pos.y);
+                ("history.extract", json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "pos": {"x": x, "y": y}}))
             }
         })
     }

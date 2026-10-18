@@ -55,6 +55,9 @@ fn select_sets_and_clears_the_active_result_as_one_undo_step() {
     assert_eq!(s.enabled("history.select", &unknown).unwrap_err().kind, ErrorKind::NotFound);
     let same = json!({"canvas": C, "id": N, "generation": g(3)});
     assert_eq!(s.enabled("history.select", &same).unwrap_err().kind, ErrorKind::Conflict, "no empty undo steps");
+    s.dispatch("history.select", &json!({"canvas": C, "id": N, "generation": null})).unwrap();
+    let error = s.dispatch("history.select", &json!({"canvas": C, "id": N, "generation": null})).unwrap_err();
+    assert_eq!(error.message, "no result is active");
 }
 
 #[test]
@@ -108,7 +111,7 @@ fn clear_removes_every_result_in_one_undo_step() {
 }
 
 fn extract(s: &mut Session, extra: Json) -> Result<Json, nodecraft_types::Error> {
-    let mut params = json!({"canvas": C, "id": N, "generation": g(1), "node": NodeId::from_bytes([7; 16]), "result": g(70), "pos": {"x": 400, "y": 10}});
+    let mut params = json!({"canvas": C, "id": N, "generation": g(1), "node": NodeId::from_bytes([7; 16]), "pos": {"x": 400, "y": 10}});
     for (key, value) in extra.as_object().unwrap() {
         params[key] = value.clone();
     }
@@ -116,24 +119,108 @@ fn extract(s: &mut Session, extra: Json) -> Result<Json, nodecraft_types::Error>
 }
 
 #[test]
-fn extract_adds_a_source_node_with_the_result_already_active() {
+fn extract_adds_a_source_node_holding_the_result() {
     let mut s = texts(2);
     let new = NodeId::from_bytes([7; 16]);
     assert_eq!(extract(&mut s, json!({})).unwrap(), json!({"id": new}));
     let extracted = node(&s, new);
     assert_eq!(extracted.kind, "source.text");
     assert_eq!(extracted.params.get("text"), Some(&Value::Text("take 1".into())));
-    assert_eq!(extracted.active, Some(g(70)));
-    assert_eq!(extracted.history, [Generation::new(g(70), vec![Value::Text("take 1".into())])], "no input hash: never stale");
+    assert!(extracted.history.is_empty() && extracted.active.is_none(), "a source feeds downstream from its parameter");
     assert_eq!((extracted.pos.x, extracted.pos.y), (400.0, 10.0));
     assert_eq!(history(&s), [g(1), g(2)], "the source keeps its results");
     let staled = s.dispatch("canvas.stale", &json!({"canvas": C})).unwrap();
     assert!(!staled["nodes"].as_array().unwrap().contains(&json!(new)));
-    // The caller's ids must be fresh.
-    let error = extract(&mut s, json!({"node": NodeId::from_bytes([8; 16]), "result": g(2)})).unwrap_err();
-    assert_eq!(error.kind, ErrorKind::InvalidInput, "{}", error.message);
+    // The caller's id must be fresh.
+    let error = extract(&mut s, json!({"node": N})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict, "{}", error.message);
     s.dispatch("edit.undo", &Json::Null).unwrap();
     assert!(!s.document().canvases().get(&C).unwrap().nodes().contains_key(&new));
+}
+
+#[test]
+fn extract_makes_an_image_source_from_an_image_result() {
+    let asset = |n: u8| {
+        Value::Media(nodecraft_types::AssetRef {
+            hash: nodecraft_types::Blake3::from_bytes([n; 32]),
+            mime: "image/png".parse().unwrap(),
+            meta: Default::default(),
+        })
+    };
+    let mut s = session(2, vec![("image", Modality::Image, false)], |n| vec![asset(n)]);
+    extract(&mut s, json!({"generation": g(2)})).unwrap();
+    let extracted = node(&s, NodeId::from_bytes([7; 16]));
+    assert_eq!(extracted.kind, "source.image");
+    assert_eq!(extracted.params.get("asset"), Some(&asset(2)));
+}
+
+#[test]
+fn extract_refuses_a_result_recorded_for_other_outputs() {
+    // The node had one output when this result was recorded; it has two now.
+    let mut s = session(1, vec![("a", Modality::Text, false), ("b", Modality::Text, false)], |_| vec![Value::Text("old".into())]);
+    let error = extract(&mut s, json!({"port": "b"})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict, "{}", error.message);
+    assert_eq!(extract(&mut s, json!({"port": "a"})).unwrap_err().kind, ErrorKind::Conflict, "not read by position either");
+}
+
+/// A generator with one text input and one text output.
+struct Gen(nodecraft_nodes::NodeDescriptor);
+impl nodecraft_nodes::NodeKind for Gen {
+    fn descriptor(&self) -> &nodecraft_nodes::NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<nodecraft_nodes::ModeId> {
+        nodecraft_nodes::ModeId::new("gen").ok()
+    }
+    fn plan(&self, _: &nodecraft_nodes::PlanCtx<'_>) -> Result<Vec<nodecraft_nodes::JobSpec>, nodecraft_types::Error> {
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn the_active_result_is_what_downstream_nodes_are_built_on() {
+    let text = PortType { modality: Modality::Text, many: false };
+    let descriptor = nodecraft_nodes::NodeDescriptor {
+        id: "test.gen".into(),
+        label: "Gen".into(),
+        category: nodecraft_nodes::Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: text }],
+        outputs: vec![Port { name: "out".into(), port_type: text }],
+        params: Default::default(),
+        quick_add: None,
+    };
+    let (up, down) = (N, NodeId::from_bytes([4; 16]));
+    let mut project = Project::new(ProjectId::from_bytes([0; 16]), "History").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    for id in [up, down] {
+        Change::AddNode { canvas: C, node: descriptor.instantiate(id, &Default::default()).unwrap() }.apply(&mut project).unwrap();
+    }
+    for n in [1, 2] {
+        let generation = Generation::new(g(n), vec![Value::Text(format!("take {n}"))]);
+        Change::AddGeneration { canvas: C, id: up, index: usize::from(n - 1), generation }.apply(&mut project).unwrap();
+    }
+    Change::SetActiveGeneration { canvas: C, id: up, generation: Some(g(2)) }.apply(&mut project).unwrap();
+    let edge = nodecraft_graph::Edge {
+        id: nodecraft_types::EdgeId::from_bytes([5; 16]),
+        from: nodecraft_graph::Endpoint { node: up, port: "out".into() },
+        to: nodecraft_graph::Endpoint { node: down, port: "in".into() },
+        order: 0,
+    };
+    Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Gen(descriptor))).unwrap();
+    // The downstream result was made from take 2.
+    let hash = nodecraft_exec::staleness::input_hash(project.canvases().get(&C).unwrap(), &kinds, down).unwrap();
+    let made = Generation { id: g(9), outputs: vec![Value::Text("from take 2".into())], input_hash: Some(hash) };
+    Change::AddGeneration { canvas: C, id: down, index: 0, generation: made }.apply(&mut project).unwrap();
+    Change::SetActiveGeneration { canvas: C, id: down, generation: Some(g(9)) }.apply(&mut project).unwrap();
+    let mut s = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let stale = |s: &mut Session| s.dispatch("canvas.stale", &json!({"canvas": C})).unwrap();
+    assert_eq!(stale(&mut s), json!({"nodes": []}));
+    s.dispatch("history.previous", &at()).unwrap();
+    assert_eq!(stale(&mut s), json!({"nodes": [down]}), "built on take 2, but take 1 is active now");
+    s.dispatch("history.next", &at()).unwrap();
+    assert_eq!(stale(&mut s), json!({"nodes": []}));
 }
 
 #[test]

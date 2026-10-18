@@ -1164,14 +1164,19 @@ section-anchor bookmarks should be updated to the corresponding dated file in th
 - **Deleting the active result activates its newer neighbour, else its older one**, so a node
   with results keeps an active one until the last is gone.
 - **Extracting a result makes a source node** (`source.text`/`image`/`video`/`audio` by the
-  port's modality) whose parameter holds the value and whose single result is already active,
-  without an input hash, so it feeds downstream at once and is never stale. A list output needs
-  an item index; mesh and document results can't be extracted until those source kinds exist.
-  The caller supplies the new node and generation ids, as for `node.create`.
+  port's modality) whose parameter holds the value. Downstream nodes read a source's parameter,
+  not a result, so the new node feeds them at once, never runs, and is never stale. It gets no
+  history: editing its parameter can't leave a stale copy beside it. A list output needs an item
+  index; a result recorded for a different port layout is refused (results are positional, as
+  in the planner); mesh and document results wait for those source kinds. The caller supplies
+  the new node id, as for `node.create`; the shell places it beside the source, stepping down
+  past earlier extracts.
 - **The strip reserves one card row** under the parameters and draws on the card's bottom edge:
-  ‹ position › and Clear, then one chip per result (click to use, right-click for use, extract
-  or delete). ← and → step while the card has focus. Chips show a text preview on hover;
-  thumbnails wait for asset decoding in the shell.
+  ‹ position › and Clear, then chips for at most 12 results around the active one (click to
+  use, right-click to use, extract or delete). The cap keeps a node with hundreds of results as
+  cheap per frame as one with a few; ‹ › reach the rest. ← and → step while the card or a strip
+  control has focus (a clicked chip takes focus). Hover previews are built only for the hovered
+  chip; thumbnails wait for asset decoding in the shell.
 - **Not in this part:** the `+/−` variation counter and its history-or-canvas preference (needs
   the planner to emit several jobs per node and `run.record` to take several results per node),
   and copy/export of a result (host clipboard and save services).

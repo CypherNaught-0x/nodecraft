@@ -2,7 +2,7 @@
 //! through results, delete one or all of them, and extract one to the canvas as a source node.
 //! History is kept oldest first; every edit is one undo step.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
-use nodecraft_graph::{Change, Changeset, Generation, Node, Position};
+use nodecraft_graph::{Change, Changeset, Node, Position};
 use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, Modality, NodeId, ParamValues, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -47,9 +47,8 @@ struct ExtractParams {
     /// Which item of a list output to extract.
     #[serde(default)]
     item: Option<usize>,
-    /// Fresh ids, supplied by the caller so replay stays deterministic.
+    /// The new node's id, supplied by the caller so replay stays deterministic.
     node: NodeId,
-    result: GenerationId,
     pos: Position,
 }
 
@@ -78,7 +77,8 @@ fn select(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         index_of(node, generation)?;
     }
     if node.active == p.generation {
-        return Err(Error::new(ErrorKind::Conflict, "that result is already active"));
+        let message = if p.generation.is_some() { "that result is already active" } else { "no result is active" };
+        return Err(Error::new(ErrorKind::Conflict, message));
     }
     Ok(edit(vec![Change::SetActiveGeneration { canvas: p.canvas, id: p.id, generation: p.generation }], json!({"active": p.generation})))
 }
@@ -150,8 +150,8 @@ fn source_kind(modality: Modality) -> Result<(&'static str, &'static str), Error
     }
 }
 
-/// A new source node holding one result, with that result already active so downstream nodes
-/// can use it without a run. Its result has no input hash, so it is never stale.
+/// A new source node holding one result as its parameter. Downstream nodes read a source's
+/// parameter (not a result), so it feeds them at once, never runs, and is never stale.
 fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ExtractParams = params(value)?;
     if !(p.pos.x.is_finite() && p.pos.y.is_finite() && p.pos.x.abs() <= MAX_COORDINATE && p.pos.y.abs() <= MAX_COORDINATE) {
@@ -166,6 +166,10 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         None => 0,
     };
     let port = source.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no outputs"))?;
+    // Results are positional: one recorded for a different port layout can't be read by port.
+    if generation.outputs.len() != source.outputs.len() {
+        return Err(Error::new(ErrorKind::Conflict, "this result was made for different outputs than the node has now"));
+    }
     let output = generation.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the result has no value for that output"))?;
     let value = match (output, p.item) {
         (Value::List(items), Some(item)) => items.get(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?,
@@ -177,8 +181,6 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let supplied: ParamValues = [(parameter.to_owned(), value.clone())].into_iter().collect();
     let mut extracted = c.kinds.get(kind)?.instantiate_instance(p.node, BTreeMap::new(), &supplied)?;
     extracted.pos = p.pos;
-    extracted.history.push(Generation::new(p.result, vec![value.clone()]));
-    extracted.active = Some(p.result);
     let changes = Changeset::new(vec![Change::AddNode { canvas: p.canvas, node: extracted }]);
     c.preview_changes(&changes)?;
     Ok(Effect::Edit { changes, result: json!({"id": p.node}), gesture: None })
@@ -230,9 +232,9 @@ fn extract_schema() -> Json {
     let coordinate = json!({"type": "number", "minimum": -MAX_COORDINATE, "maximum": MAX_COORDINATE});
     object(
         json!({"canvas": uuid(), "id": uuid(), "generation": uuid(), "port": {"type": "string", "maxLength": 256},
-            "item": {"type": "integer", "minimum": 0}, "node": uuid(), "result": uuid(),
+            "item": {"type": "integer", "minimum": 0}, "node": uuid(),
             "pos": {"type": "object", "required": ["x", "y"], "additionalProperties": false, "properties": {"x": coordinate, "y": coordinate}}}),
-        &["canvas", "id", "generation", "node", "result", "pos"],
+        &["canvas", "id", "generation", "node", "pos"],
     )
 }
 
@@ -294,7 +296,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: extract_schema,
-            params_doc: "{canvas, id: NodeId, generation, port?: output name (default the first), item?: list index, node: new NodeId, result: new GenerationId, pos: {x, y}} -> {id}; adds a source node holding that value, already active. The caller supplies the new ids.",
+            params_doc: "{canvas, id: NodeId, generation, port?: output name (default the first), item?: list index, node: new NodeId, pos: {x, y}} -> {id}; adds a source node (text, image, video or audio) whose parameter is that value, so it feeds downstream nodes at once. The caller supplies the new id.",
             enabled: enabled_extract,
             run: extract,
         },

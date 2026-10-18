@@ -5,7 +5,7 @@
 //! and a probe counter, checked against the ids already taken. Collaboration (#119) will need ids
 //! that are unique across peers too.
 use nodecraft_graph::Project;
-use nodecraft_types::{EdgeId, GenerationId, NodeId};
+use nodecraft_types::{EdgeId, NodeId};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Probes before giving up (a project would need ~2^63 ids for one to collide).
@@ -30,15 +30,6 @@ pub fn fresh(seed: impl Hash, taken: impl Fn([u8; 16]) -> bool) -> Option<[u8; 1
 /// A node id unused on every canvas.
 pub fn node_id(project: &Project, seed: impl Hash) -> Option<NodeId> {
     fresh(seed, |bytes| project.canvases().values().any(|c| c.nodes().contains_key(&NodeId::from_bytes(bytes)))).map(NodeId::from_bytes)
-}
-
-/// A generation id unused in every node's history.
-pub fn generation_id(project: &Project, seed: impl Hash) -> Option<GenerationId> {
-    let taken = |bytes| {
-        let id = GenerationId::from_bytes(bytes);
-        project.canvases().values().any(|c| c.nodes().values().any(|n| n.history.iter().any(|g| g.id == id)))
-    };
-    fresh(seed, taken).map(GenerationId::from_bytes)
 }
 
 /// An edge id unused on every canvas.

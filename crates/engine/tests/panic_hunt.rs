@@ -165,7 +165,7 @@ fn template(id: &str) -> (Session, Value) {
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
         "history.extract" => {
-            json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"node":node_id(7),"result":gen_id(0x70),"pos":{"x":1,"y":2}})
+            json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"node":node_id(7),"pos":{"x":1,"y":2}})
         }
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
