@@ -95,14 +95,14 @@ orientation for contributors and coding agents.
 
 ## Downloads
 
-One pre-release exists, [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1), and it is an **M0-era
-build**: it proves the release pipeline and ships installers for macOS, Windows and Linux, but
-predates almost everything above. Build from source for the current canvas. Signed installers
-arrive with the first real release ([#100](../../issues/100)); macOS and Windows builds are
-unsigned for now, so the first launch shows a warning — [`docs/install.md`](docs/install.md) shows
-how to open them anyway. Release builds ship `nodecraft-cli` with the integrated MCP server; rc.1
-offered it as a separate download for macOS only, while Linux and Windows bundle it in their
-packages.
+Two pre-releases exist. [`v0.2.0-rc.1`](../../releases/tag/v0.2.0-rc.1) is the current build:
+installers for macOS, Windows and Linux of the canvas described above — try it, but know it still
+cannot generate or save from the app. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
+M0-era build that proved the release pipeline. Signed installers arrive with the first real
+release ([#100](../../issues/100)); macOS and Windows builds are unsigned for now, so the first
+launch shows a warning — [`docs/install.md`](docs/install.md) shows how to open them anyway.
+Release builds ship `nodecraft-cli` with the integrated MCP server, bundled in the Linux and
+Windows packages and also as a separate macOS download.
 
 ## Contributing
 
