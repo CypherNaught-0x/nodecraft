@@ -130,7 +130,7 @@ fn wasm_set(root: &Path) -> Result<Vec<String>, String> {
 fn cmd_wasm(root: &Path) -> Result<(), String> {
     let set = wasm_set(root)?;
     let mut c = cargo(root);
-    c.args(["check", "--target", "wasm32-unknown-unknown"]);
+    c.args(["check", "--target", "wasm32-unknown-unknown", "--features", "nodecraft-providers/openai-images"]);
     for pkg in &set {
         c.args(["-p", pkg]);
     }
@@ -159,8 +159,8 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
     };
     let steps: Vec<Step<'_>> = vec![
         ("fmt", cargo_step(&["fmt", "--all", "--", "--check"])),
-        ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])),
-        ("test", cargo_step(&["test", "--workspace"])),
+        ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--features", "nodecraft-providers/openai-images", "--", "-D", "warnings"])),
+        ("test", cargo_step(&["test", "--workspace", "--features", "nodecraft-providers/openai-images"])),
         ("layers", Box::new(|| cmd_layers(root))),
         ("wasm", Box::new(|| cmd_wasm(root))),
     ];

@@ -214,6 +214,13 @@ pub type ChunkSink<'a> = dyn FnMut(&[u8]) -> Result<(), ProviderError> + 'a;
 pub trait Http: MaybeSendSync {
     fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>>;
 
+    /// One bounded request with no redirect following, including same-origin redirects.
+    /// Implementations opt in to this operation; refusing it must not construct a legacy send.
+    /// This trusted transport contract supplies no affirmative nonbilling evidence.
+    fn send_no_redirect(&self, _request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        Box::pin(async { Err(ProviderError::new(ErrorKind::UnsupportedInput, "this transport cannot send without following redirects")) })
+    }
+
     /// Request-local evidence. Legacy implementations are unknown before future construction.
     fn send_with_delivery<'a>(&'a self, request: HttpRequest, context: &'a crate::RequestContext) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
         context.unknown();
@@ -430,6 +437,24 @@ mod reqwest_impl {
         }
     }
     impl Http for ReqwestHttp {
+        fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            return Box::pin(async move {
+                let cap = request.max_response_bytes;
+                let response = self.send_once(&request, None).await?;
+                let status = response.status().as_u16();
+                let headers = response.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_owned()))).collect();
+                // The reqwest request has consumed its body clone; release our original before decoding.
+                drop(request);
+                let body = read_body(response, cap).await?;
+                Ok(HttpResponse { status, headers, body })
+            });
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = request;
+                Box::pin(async { Err(ProviderError::new(ErrorKind::UnsupportedInput, "no-redirect image requests need a native or audited host transport")) })
+            }
+        }
         fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
             Box::pin(self.send_inner(request, None))
         }
