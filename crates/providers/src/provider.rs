@@ -138,6 +138,13 @@ pub trait Provider: MaybeSendSync {
     /// APIs return [`Submission::Finished`].
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>>;
 
+    /// Evidence-aware runner entry. Legacy constructors may already have effects, so taint
+    /// synchronously before invoking them. Only audited crate adapters can prove nonacceptance.
+    fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        context.unknown();
+        self.submit(job)
+    }
+
     /// Reports how a submitted job is doing.
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>>;
 

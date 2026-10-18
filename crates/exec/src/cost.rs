@@ -741,6 +741,11 @@ impl UsageLog {
         self.pending.values()
     }
 
+    /// How many entries are listed.
+    pub fn listed(&self) -> usize {
+        self.entries.len()
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &UsageEntry> {
         self.entries.iter()
     }
@@ -763,8 +768,28 @@ impl UsageLog {
 
     /// Streams the CSV of [`UsageLog::to_csv`] to `out`, a row at a time.
     pub fn write_csv(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        self.write_csv_rows(out, 0, usize::MAX)
+    }
+
+    /// The CSV header and up to `limit` listed entries from `offset` on (for paged exports).
+    pub fn write_csv_rows(&self, out: &mut impl std::io::Write, offset: usize, limit: usize) -> std::io::Result<()> {
+        self.write_csv_rows_while(out, offset, limit, |_| true).map(|_| ())
+    }
+
+    /// Writes the same header and rows as [`Self::write_csv_rows`], stopping before the first
+    /// complete row rejected by `accept`. The borrowed row includes CRLF; no partial rejected
+    /// row is written. Returns the number written (excluding the header). Formatting scratch is
+    /// bounded by the admitted entry's four [`MAX_TEXT`] fields, not by the page size.
+    pub fn write_csv_rows_while(
+        &self,
+        out: &mut impl std::io::Write,
+        offset: usize,
+        limit: usize,
+        mut accept: impl FnMut(&[u8]) -> bool,
+    ) -> std::io::Result<usize> {
         out.write_all(b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n")?;
-        for e in &self.entries {
+        let mut written = 0;
+        for e in self.entries().skip(offset).take(limit) {
             let amount = format_money(e.cost);
             let amount = amount.split_once(' ').map_or(amount.as_str(), |(n, _)| n).to_owned();
             let row = [
@@ -778,10 +803,18 @@ impl UsageLog {
                 e.status.as_str().to_owned(),
                 cell(&e.idempotency_key),
             ];
-            out.write_all(row.join(",").as_bytes())?;
+            let mut row = row.join(",");
+            let body_len = row.len();
+            row.push_str("\r\n");
+            if !accept(row.as_bytes()) {
+                break;
+            }
+            // Preserve the existing writer's row-body/CRLF calls and error propagation.
+            out.write_all(row.get(..body_len).unwrap_or_default().as_bytes())?;
             out.write_all(b"\r\n")?;
+            written += 1;
         }
-        Ok(())
+        Ok(written)
     }
 }
 
