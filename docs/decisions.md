@@ -17,6 +17,13 @@ a choice a later contributor might otherwise undo.
   out-of-step reply, the next call reconnects. The call that failed is reported, never resent,
   so a command can't run twice.
 
+## 2026-10-17 · Scoped live control navigation (#262)
+
+- MCP and control share command admission and result envelopes. A trusted frontend host supplies
+  fresh availability and dispatch through Session or the supported live navigation bridge.
+  Navigation capabilities are scoped to each call and restored on success or failure; the control
+  protocol never installs a global capability or duplicates the automation permission lists.
+
 ## 2026-10-17 · Control channel (#115)
 
 - **Local TCP with a token file.** `nodecraft --control` binds 127.0.0.1 only, on a random port.

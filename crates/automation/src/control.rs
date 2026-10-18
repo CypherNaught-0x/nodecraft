@@ -200,14 +200,20 @@ impl Call {
 /// Answers every request except [`Request::Screenshot`] (which needs the window: the host takes
 /// one and calls [`screenshot_answer`]). `None` for a screenshot.
 pub fn answer(session: &mut Session, request: &Request) -> Option<Result<Value, Error>> {
+    answer_with(session, request)
+}
+
+/// Live hosts may supply scoped view dispatch; classification and reply envelopes remain the
+/// same as headless control and MCP. Screenshots still belong to the window's capture path.
+pub fn answer_with<H: crate::commands::CommandHost + ?Sized>(host: &mut H, request: &Request) -> Option<Result<Value, Error>> {
     Some(match request {
-        Request::ListCommands(args) => mcp::command_list(session, args),
-        Request::RunCommand(args) => mcp::command_run(session, args.clone()),
-        Request::Inspect(args) => mcp::canvas_inspect(session, args),
-        Request::State => mcp::canvas_inspect(session, &Map::new()).map(|mut overview| {
+        Request::ListCommands(args) => mcp::command_list(host, args),
+        Request::RunCommand(args) => mcp::command_run(host, args.clone()),
+        Request::Inspect(args) => mcp::canvas_inspect(host.session(), args),
+        Request::State => mcp::canvas_inspect(host.session(), &Map::new()).map(|mut overview| {
             if let Some(o) = overview.as_object_mut() {
-                o.insert("can_undo".into(), json!(session.can_undo()));
-                o.insert("can_redo".into(), json!(session.can_redo()));
+                o.insert("can_undo".into(), json!(host.session().can_undo()));
+                o.insert("can_redo".into(), json!(host.session().can_redo()));
             }
             overview
         }),

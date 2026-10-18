@@ -2616,6 +2616,7 @@ dependencies = [
  "craft-quit",
  "eframe",
  "egui",
+ "egui_kittest",
  "log",
  "nodecraft-automation",
  "nodecraft-engine",
