@@ -16,6 +16,8 @@ choice and its consequences. Use links relative to that new file (for example, `
 
 Do not append to this index or maintain a shared list of entries. Independent decisions should
 only add their own files, so parallel changes do not conflict on a common insertion point.
+`cargo xtask ci` checks this (`cargo xtask decisions`): it refuses dated entries here and record
+files whose name or first heading doesn't follow the pattern above.
 Read existing records before changing a choice others rely on.
 
 Historical records retain their original text, including superseded limits and compatibility
