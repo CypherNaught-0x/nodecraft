@@ -6,7 +6,7 @@
 use nodecraft_engine::{
     Session,
     commands::Registry,
-    jobs::{CompletionDelivery, JobBudget, JobPrice, ProviderRunner},
+    jobs::{CompletionDelivery, JobBudget, ProviderRunner},
     provider_routing::{ProviderRouting, RegisteredProvider},
     run_cmds::{BudgetState, PreparedRun, RunCatalog},
 };
@@ -245,13 +245,7 @@ async fn drive(url: &str, bad: bool, replace: bool) -> Driven {
         .with_budget(budget.clone()),
     );
     let spec = &progress.jobs[0];
-    let queued = run
-        .queued_job(
-            spec.id,
-            &spec.idempotency_key,
-            Some(JobPrice { node: N, model: "native-model".into(), estimate: Some(Money::new(Currency::USD, 100_000)) }),
-        )
-        .unwrap();
+    let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
     runner.register(spec.id, queued.clone());
     let mut scheduler = Scheduler::new(Limits::default());
     scheduler.add(progress.jobs).unwrap();

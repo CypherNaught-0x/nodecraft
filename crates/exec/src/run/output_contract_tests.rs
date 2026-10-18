@@ -207,7 +207,7 @@ fn eager_planner_rejects_a_foreign_generate_owner() {
     let (project, kinds) = fixture_owner(vec![vec![route("out", Modality::Text)]], false, Some(UP));
     let result = plan(project.canvases().get(&C).unwrap(), &kinds, &RunMode::Selected, &BTreeSet::from([TARGET]), &BTreeSet::new()).unwrap();
     assert!(
-        matches!(result, Planned::Blocked(ref blockers) if blockers.iter().any(|b| b.node == TARGET && matches!(b.reason, crate::planner::Reason::Invalid(_))))
+        matches!(result, Planned::Blocked(ref blockers) if blockers.iter().any(|b| b.node == TARGET && matches!(b.reason, crate::planner::Reason::ProviderTarget(crate::planner::TargetReason::Mismatch))))
     );
 }
 #[test]

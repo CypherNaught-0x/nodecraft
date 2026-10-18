@@ -416,7 +416,7 @@ impl Run {
                 return Err("generation requires catalog admission".into());
             }
             if let Some((witness, _)) = &self.admission {
-                crate::generation_contract::validate_targets(instance, &jobs, &witness.targets).map_err(str::to_owned)?;
+                crate::generation_contract::validate_targets(instance, &jobs, &witness.targets).map_err(|reason| reason.message().to_owned())?;
             }
             if !eager && let Some((witness, usage)) = &mut self.admission {
                 witness.normalize(node, &mut jobs, usage).map_err(|e| e.message)?;

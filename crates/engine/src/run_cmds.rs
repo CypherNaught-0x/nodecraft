@@ -251,6 +251,45 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     Ok(hash.finalize().to_hex().to_string())
 }
 
+// Fixed UUID/static reason records only. Bound before each retained format, including
+// separators when reused by run.start. Native hook strings never enter this report.
+const BLOCKED_BYTES: usize = 16 * 1024;
+fn blocked_reasons(blockers: &[nodecraft_exec::planner::Blocker]) -> Vec<String> {
+    use nodecraft_exec::planner::{Reason, TargetReason};
+    let mut bytes = 0usize;
+    let mut out = Vec::new();
+    for blocker in blockers.iter().take(if blockers.len() > 100 { 99 } else { 100 }) {
+        let (code, text) = match blocker.reason {
+            Reason::NoResult => ("input_unavailable", "input result is unavailable; run its upstream node first"),
+            Reason::UnknownKind => ("unknown_kind", "node kind is not installed; install its definition"),
+            Reason::UnsupportedInputs => ("unsupported_inputs", "input types are unsupported; check the node connections"),
+            Reason::Invalid(_) => ("node_validation", "check node parameters, connections and installed kind"),
+            Reason::ProviderTarget(TargetReason::MissingSelection) => ("endpoint_missing", "no provider endpoint is selected for this node"),
+            Reason::ProviderTarget(TargetReason::Mismatch) => ("endpoint_mismatch", "work does not match the selected provider endpoint"),
+        };
+        let extent = 36 + code.len() + text.len() + 12;
+        if bytes + extent > BLOCKED_BYTES {
+            break;
+        }
+        bytes += extent;
+        out.push(format!("node {} [{code}]: {text}", blocker.node));
+    }
+    if out.len() < blockers.len() {
+        // Pre-reserved fixed trailer space is within the conservative per-row allowance.
+        if bytes + 80 <= BLOCKED_BYTES {
+            out.push(format!("[blockers_omitted]: {} additional blockers", blockers.len() - out.len()));
+        }
+    }
+    out
+}
+fn admission_reason(error: &Error) -> &'static str {
+    if error.kind == ErrorKind::Budget {
+        "[admission_limit]: run exceeds admission resource limits; reduce the selection or request size"
+    } else {
+        "[catalog_mismatch]: select an installed catalog model and check its visible parameters"
+    }
+}
+
 fn priced(
     document: &nodecraft_graph::Project,
     kinds: &nodecraft_nodes::Registry,
@@ -270,21 +309,8 @@ fn priced(
         Planned::Blocked(blockers) => {
             // Admission diagnostics never copy native hook messages, node titles or
             // unknown model values into a report. One hundred fixed UUID/code records.
-            let reasons: Vec<String> = blockers
-                .iter()
-                .take(100)
-                .map(|b| {
-                    let reason = match b.reason {
-                        nodecraft_exec::planner::Reason::NoResult => "input result is unavailable",
-                        nodecraft_exec::planner::Reason::UnknownKind => "node kind is not installed",
-                        nodecraft_exec::planner::Reason::UnsupportedInputs => "input types are unsupported",
-                        nodecraft_exec::planner::Reason::Invalid(_) => "node planning or validation failed",
-                    };
-                    format!("node {}: {reason}", b.node)
-                })
-                .collect();
-            let response =
-                json!({"blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
+            let reasons = blocked_reasons(&blockers);
+            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
@@ -297,9 +323,10 @@ fn priced(
         nodecraft_exec::admission::MAX_SCRATCH_BYTES.checked_sub(scratch_headroom).ok_or_else(|| invalid("run request metadata exceeds scratch limit"))?,
     ) {
         Ok(priced) => priced,
-        Err(_) => {
+        Err(error) => {
+            let reason = admission_reason(&error);
             return Ok(Priced {
-                response: json!({"blocked":["catalog selection or parameters are invalid"],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[]}),
+                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[]}),
                 totals: BTreeMap::new(),
                 complete: false,
                 allowed: false,
@@ -429,7 +456,7 @@ pub(crate) fn authorize(
     }
     accept_quote(c, &prepared.quote, &prepared.accept)?;
     let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
-    Ok((AuthorizedRun { run, bindings: prepared.bindings }, progress))
+    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote }, progress))
 }
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.phase == crate::commands::Phase::Preview {
@@ -451,8 +478,9 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let mode = mode_of(&run)?;
     let requested = run.nodes.iter().copied().collect();
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
-    let Planned::Ready(plan) = plan_with_targets(canvas, c.kinds, &mode, &requested, &stale, c.routing.routing.targets())? else {
-        return Err(invalid("run planning is blocked"));
+    let plan = match plan_with_targets(canvas, c.kinds, &mode, &requested, &stale, c.routing.routing.targets())? {
+        Planned::Ready(plan) => plan,
+        Planned::Blocked(blockers) => return Err(invalid(blocked_reasons(&blockers).join("; "))),
     };
     #[cfg(test)]
     PREPARED_COPIES.with(|n| n.set(n.get() + 1));
@@ -460,7 +488,8 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let temporary = nodecraft_exec::admission::measure::add(metadata, request_scratch(&run)?)?;
     limits.scratch_bytes = limits.scratch_bytes.checked_sub(temporary).ok_or_else(|| invalid("run request metadata exceeds scratch limit"))?;
     let (mut admitted, quote) =
-        nodecraft_exec::admission::admit_run_with_targets(plan, run.canvas, canvas.clone(), c.kinds, catalog.catalog(), limits, c.routing.routing.targets())?;
+        nodecraft_exec::admission::admit_run_with_targets(plan, run.canvas, canvas.clone(), c.kinds, catalog.catalog(), limits, c.routing.routing.targets())
+            .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
     // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
     admitted.reserve_metadata(metadata)?;
@@ -684,6 +713,7 @@ mod tests;
 
 /// Authorized work and only the bindings selected by its immutable admission witness.
 pub struct AuthorizedRun {
+    quote: nodecraft_exec::cost::Quote,
     run: nodecraft_exec::run::Run,
     bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
 }
@@ -705,9 +735,33 @@ impl AuthorizedRun {
             .ok_or_else(|| invalid("job has no provider binding"))
     }
     /// Convert admitted work using its captured binding, without another registry lookup.
-    pub fn queued_job(&self, id: nodecraft_exec::scheduler::JobId, key: &str, price: Option<crate::jobs::JobPrice>) -> Result<crate::jobs::QueuedJob, Error> {
+    pub fn queued_job(&self, id: nodecraft_exec::scheduler::JobId, key: &str) -> Result<crate::jobs::QueuedJob, Error> {
         let binding = self.binding(id)?;
-        let (_, job) = crate::generate::provider_job(self.run.work(id).ok_or_else(|| invalid("job is unavailable"))?, key)?;
+        let work = self.run.work(id).ok_or_else(|| invalid("job is unavailable"))?;
+        let nodecraft_nodes::JobSpec::Generate { node, .. } = work else { return Err(invalid("job is not generated work")) };
+        let step = self.quote.steps.iter().find(|step| step.node == *node).ok_or_else(|| invalid("job has no admitted price"))?;
+        let price = match &step.per_job {
+            Ok(None) => None, // Explicitly free catalog selections, not absent host metadata.
+            amount => {
+                let length = step
+                    .models
+                    .iter()
+                    .try_fold(0usize, |n, model| n.checked_add(model.len()))
+                    .and_then(|n| n.checked_add(step.models.len().saturating_sub(1)))
+                    .filter(|n| *n <= nodecraft_exec::cost::MAX_TEXT)
+                    .ok_or_else(|| invalid("admitted price model label exceeds accounting bounds"))?;
+                let mut model = String::new();
+                model.try_reserve_exact(length).map_err(|_| invalid("admitted price label could not be allocated"))?;
+                for name in &step.models {
+                    if !model.is_empty() {
+                        model.push('+');
+                    }
+                    model.push_str(name);
+                }
+                Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten() })
+            }
+        };
+        let (_, job) = crate::generate::provider_job(work, key)?;
         Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, price })
     }
     pub fn job_done(

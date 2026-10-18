@@ -5,7 +5,7 @@ use super::{
 };
 use nodecraft_engine::{
     Session, generate,
-    jobs::{CompletionAccounting, CompletionDelivery, JobBudget, JobPrice, ProviderRunner},
+    jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner},
     provider_routing::{ProviderRouting, RegisteredProvider},
     run_cmds::{AuthorizedRun, BudgetState, PreparedRun, RunCatalog},
 };
@@ -369,7 +369,6 @@ struct Controller {
     acks: Vec<Ack>,
     actions: Vec<Option<Action>>,
     bindings: Vec<RegisteredProvider>,
-    prices: BTreeMap<NodeId, Option<JobPrice>>,
     notified: BTreeSet<JobId>,
     requests: BTreeMap<JobId, nodecraft_engine::jobs::QueuedJob>,
     running: BTreeMap<JobId, String>,
@@ -535,7 +534,6 @@ impl Controller {
             acks: Vec::with_capacity(128),
             actions: Vec::with_capacity(32),
             bindings: Vec::with_capacity(64),
-            prices: BTreeMap::new(),
             notified: BTreeSet::new(),
             requests: BTreeMap::new(),
             running: BTreeMap::new(),
@@ -686,12 +684,6 @@ impl Controller {
             if bytes > 1024 {
                 return Err("quote_models");
             }
-            let price = match step.per_job {
-                Ok(None) => None,
-                Ok(Some(estimate)) => Some(JobPrice { node: step.node, model: step.models.join("+"), estimate: Some(estimate) }),
-                Err(_) => Some(JobPrice { node: step.node, model: step.models.join("+"), estimate: None }),
-            };
-            self.prices.insert(step.node, price);
         }
         match self.fixture.before_authorize {
             AuthorityChange::None => {}
@@ -797,11 +789,10 @@ impl Controller {
                     self.sources.register(spec.id, work.clone());
                     lock(&self.shared).source_jobs.insert(spec.id);
                 }
-                JobSpec::Generate { node, .. } => {
+                JobSpec::Generate { .. } => {
                     let charge = bounds::work(work, &spec.idempotency_key, attempts)?;
                     Ownership::charge(&mut self.out.ownership.admin, charge, 4 * MIB)?;
-                    let price = self.prices.get(node).cloned().flatten();
-                    let queued = run.queued_job(spec.id, &spec.idempotency_key, price).map_err(|_| "provider_job")?;
+                    let queued = run.queued_job(spec.id, &spec.idempotency_key).map_err(|_| "provider_job")?;
                     self.requests.insert(spec.id, queued.clone());
                     self.runner.register(spec.id, queued);
                 }

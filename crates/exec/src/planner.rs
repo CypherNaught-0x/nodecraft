@@ -71,6 +71,21 @@ pub struct RunPlan {
     pub edges: Vec<(NodeId, NodeId)>,
 }
 
+/// Static target-selection failures; never contains provider or native hook text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetReason {
+    MissingSelection,
+    Mismatch,
+}
+impl TargetReason {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::MissingSelection => "no provider endpoint is selected for this node",
+            Self::Mismatch => "generated work does not match the selected provider endpoint",
+        }
+    }
+}
+
 /// Why a node can't run yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -82,6 +97,8 @@ pub enum Reason {
     UnsupportedInputs,
     /// The kind rejected the node (e.g. a required parameter is empty).
     Invalid(String),
+    /// Checked endpoint selection failed.
+    ProviderTarget(TargetReason),
 }
 
 /// A node that blocks the run, with the input and upstream node to highlight where they apply.
@@ -106,6 +123,7 @@ impl Blocker {
             (Reason::UnknownKind, _, Some(up)) if up != self.node => format!("Can't run {node}: the node kind of {} isn't available.", name(up)),
             (Reason::UnknownKind, ..) => format!("Can't run {node}: its node kind isn't available."),
             (Reason::UnsupportedInputs, ..) => format!("Can't run {node}: it doesn't accept this combination of inputs."),
+            (Reason::ProviderTarget(reason), ..) => format!("Can't run {node}: {}.", reason.message()),
             (Reason::Invalid(message), _, Some(up)) if up != self.node => format!("Can't run {node}: {} has a problem: {message}", name(up)),
             (Reason::Invalid(message), ..) => format!("Can't run {node}: {message}"),
         }
@@ -422,7 +440,7 @@ impl<'a> Graph<'a> {
                     .plan(&PlanCtx { targets: self.targets, node, inputs: &values })
                     .map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?;
                 crate::generation_contract::validate_targets(node, &jobs, self.targets)
-                    .map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
+                    .map_err(|reason| vec![blocker(None, None, Reason::ProviderTarget(reason))])?;
                 crate::generation_contract::validate_outputs(node, &jobs).map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
                 Some(jobs)
             }

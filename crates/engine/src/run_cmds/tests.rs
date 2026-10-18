@@ -1051,7 +1051,7 @@ fn endpoint_authorization_captures_named_binding_and_rotation_invalidates_queued
     s.swap_resource(Some(ProviderRouting::new()));
     let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
     assert!(run.binding(progress.jobs[0].id).unwrap().same_binding(&selected));
-    let queued = run.queued_job(progress.jobs[0].id, "captured-endpoint", None).unwrap();
+    let queued = run.queued_job(progress.jobs[0].id, "captured-endpoint").unwrap();
     assert!(queued.provider.same_binding(&selected));
     let params = start_params(&mut s, &[2], json!({"USD":120_000}), false);
     s.dispatch("run.start", &params).unwrap();
@@ -1104,6 +1104,9 @@ fn endpoint_selection_is_explicit_even_for_registered_defaults() {
     let quote = s.dispatch("run.quote", &request(&[2])).unwrap();
     assert_eq!(quote["allowed"], false);
     assert!(quote["blocked"].as_array().is_some_and(|b| !b.is_empty()));
+    assert!(quote["blocked"][0].as_str().unwrap().contains("endpoint_missing"));
+    let params = with_accept(&[2], json!({"token":quote["token"],"amounts":{"USD":120_000}}));
+    assert!(s.dispatch("run.start", &params).unwrap_err().message.contains("endpoint_missing"));
 }
 
 fn scoped_csv(log: &UsageLog) -> String {
@@ -1248,9 +1251,11 @@ fn actual_authorized_run_queues_captured_endpoint_into_provider_runner_after_rot
     )
     .with_budget(budget);
     let spec = &progress.jobs[0];
-    let queued = run
-        .queued_job(spec.id, &spec.idempotency_key, Some(crate::jobs::JobPrice { node: id(2), model: "test.img".into(), estimate: Some(usd(120_000)) }))
-        .unwrap();
+    let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
+    let admitted_price = queued.price.as_ref().expect("paid admission cannot become unbudgeted");
+    assert_eq!(admitted_price.node, id(2));
+    assert_eq!(admitted_price.model, "test.img");
+    assert_eq!(admitted_price.estimate, Some(usd(120_000)));
     assert!(queued.provider.same_binding(&binding));
     runner.register(spec.id, queued);
     let outcome = futures::executor::block_on(runner.run(
@@ -1322,4 +1327,73 @@ fn first_inline_source_hook_sees_authoritative_selection_without_preparation_rep
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let (_, job) = crate::generate::provider_job(run.work(progress.jobs[0].id).unwrap(), "source-selection").unwrap();
     assert!(job.inputs.iter().any(|i| matches!(i,nodecraft_providers::JobInput::Text {text,..} if text=="target-before-source")));
+}
+
+#[test]
+fn authorized_quote_preserves_known_unknown_and_free_prices_without_host_input() {
+    for pricing in [nodecraft_catalog::Pricing::Free, nodecraft_catalog::Pricing::ByUsage { currency: Currency::USD }] {
+        let (session, started) = session(Budgets::default(), true);
+        let mut model = Catalog::from_toml(CATALOG).unwrap().get("test.img").unwrap().clone();
+        model.pricing = pricing.clone();
+        let mut resources = Resources::default();
+        resources.insert(RunCatalog::new(Catalog::from_models([model]).unwrap()).unwrap());
+        resources.insert(BudgetState { budgets: Default::default(), spent: Default::default() });
+        let mut s = session.with_resources(resources);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut routing = crate::provider_routing::ProviderRouting::new();
+        let binding = routing.bind_default(Arc::new(CapturedProvider(calls.clone()))).unwrap();
+        routing.select(id(2), "test", binding.target()).unwrap();
+        s.set_provider_routing(routing).unwrap();
+        let params = start_params(&mut s, &[2], json!({}), true);
+        s.dispatch("run.start", &params).unwrap();
+        let prepared = started.lock().unwrap().pop().unwrap();
+        let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+        let spec = &progress.jobs[0];
+        let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
+        if pricing == nodecraft_catalog::Pricing::Free {
+            assert!(queued.price.is_none());
+        } else {
+            let price = queued.price.as_ref().unwrap();
+            assert_eq!(price.node, id(2));
+            assert_eq!(price.model, "test.img");
+            assert_eq!(price.estimate, None, "unknown paid work must stay budgeted");
+        }
+        assert!(run.queued_job(nodecraft_exec::scheduler::JobId(u64::MAX), "missing").is_err());
+        let runner = crate::jobs::ProviderRunner::new(Arc::new(EndpointRuntime), Default::default(), Arc::new(|_, _| {}), Arc::new(|_, _, _| {})).with_budget(
+            crate::jobs::JobBudget {
+                log: Arc::new(Mutex::new(UsageLog::default())),
+                budgets: Arc::new(Mutex::new(Budgets { per_call: Some(usd(0)), ..Default::default() })),
+                session: "price-bound".into(),
+                wall_clock_ms: Arc::new(|| 0),
+            },
+        );
+        runner.register(spec.id, queued);
+        use nodecraft_exec::driver::JobRunner;
+        let outcome = futures::executor::block_on(runner.run(
+            nodecraft_exec::scheduler::Start { job: spec.id, lane: spec.lane.clone(), attempt: 1, idempotency_key: spec.idempotency_key.clone() },
+            Default::default(),
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(pricing == nodecraft_catalog::Pricing::Free));
+        assert_eq!(matches!(outcome, nodecraft_exec::scheduler::Outcome::Done), pricing == nodecraft_catalog::Pricing::Free);
+    }
+}
+
+#[test]
+fn bounded_static_blockers_preserve_action_and_never_echo_native_text() {
+    use nodecraft_exec::planner::{Blocker, Reason, TargetReason};
+    let blockers: Vec<_> =
+        (0..101).map(|_| Blocker { node: id(2), port: None, upstream: None, reason: Reason::Invalid("private-hook-secret".repeat(1000)) }).collect();
+    let output = blocked_reasons(&blockers);
+    assert_eq!(output.len(), 100, "omission trailer stays inside the existing hundred-record cap");
+    assert!(output.last().unwrap().contains("2 additional"));
+    let text = output.join("; ");
+    assert!(text.len() <= BLOCKED_BYTES);
+    assert!(!text.contains("private-hook"));
+    assert!(text.contains("node_validation"));
+    for reason in [TargetReason::MissingSelection, TargetReason::Mismatch] {
+        let text = blocked_reasons(&[Blocker { node: id(2), port: None, upstream: None, reason: Reason::ProviderTarget(reason) }]);
+        assert!(text[0].contains(if reason == TargetReason::MissingSelection { "endpoint_missing" } else { "endpoint_mismatch" }));
+    }
+    assert!(admission_reason(&Error::new(ErrorKind::Budget, "private-error")).contains("admission_limit"));
+    assert!(admission_reason(&Error::new(ErrorKind::InvalidInput, "private-error")).contains("catalog_mismatch"));
 }
