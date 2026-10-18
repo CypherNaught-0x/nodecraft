@@ -33,6 +33,7 @@ enum Script {
     Response(u16, Vec<u8>),
     Pending,
     Prediction { lose_poll: bool },
+    DownloadAuth,
 }
 struct Transport {
     script: Script,
@@ -43,7 +44,7 @@ impl Http for Transport {
         panic!("Replicate must opt in to no redirect")
     }
     fn send_no_redirect(&self, r: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
-        assert!(r.url.contains("/predictions"));
+        assert!(r.url.contains("/predictions") || (matches!(&self.script, Script::DownloadAuth) && r.url.starts_with("https://replicate.delivery/")));
         if r.url.ends_with("/predictions") {
             assert!(!r.body.is_empty());
         }
@@ -66,6 +67,13 @@ impl Http for Transport {
                 let (model, version) = HELLO.split_once(':').unwrap();
                 let body = serde_json::to_vec(&serde_json::json!({"id":"fixture-prediction","model":model,"version":version,"status":if n==1 {"starting"} else {"succeeded"},"output":"Hello fixture"})).unwrap();
                 Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body }) })
+            }
+            Script::DownloadAuth => {
+                let n = self.requests.load(Ordering::SeqCst);
+                assert_eq!(r.method, if n == 1 { nodecraft_providers::HttpMethod::Post } else { nodecraft_providers::HttpMethod::Get });
+                let (model, version) = nodecraft_providers::replicate::SDXL.split_once(':').unwrap();
+                let body = serde_json::to_vec(&serde_json::json!({"id":"fixture-prediction","model":model,"version":version,"status":if n==1 {"starting"}else{"succeeded"},"output":["https://replicate.delivery/expired"]})).unwrap();
+                Box::pin(async move { Ok(HttpResponse { status: if n == 3 { 403 } else { 200 }, headers: vec![], body }) })
             }
             Script::Pending => Box::pin(futures::future::pending()),
         }
@@ -229,4 +237,45 @@ fn exhausted_internal_poll_retry_is_resumed_by_driver_with_the_same_prediction()
     let entries = b.log.lock().unwrap().entries().map(|e| (e.cost, e.status)).collect::<Vec<_>>();
     // Existing runner settlement uses its host-supplied estimate when provider cost is absent.
     assert_eq!(entries, vec![(money(7), Charge::Actual)]);
+}
+
+#[test]
+fn rejected_create_cancels_once_and_preserves_safe_id_in_driver_failure_after_settlement() {
+    let (model, _) = HELLO.split_once(':').unwrap();
+    let body =
+        serde_json::to_vec(&serde_json::json!({"id":"retained-accepted-id","model":model,"version":"hidden","status":"processing","output":null})).unwrap();
+    let t = Arc::new(Transport { script: Script::Response(200, body), requests: AtomicUsize::new(0) });
+    let (r, b, out) = runner(Budgets::default());
+    r.register(JobId(1), registration(t.clone(), Some(Some(money(7)))));
+    let (mut scheduler, events) = drive(r.clone());
+    let Some(JobState::Failed { error }) = scheduler.state(JobId(1)) else { panic!("failed") };
+    assert!(error.contains("retained-accepted-id") && error.contains("unconfirmed"));
+    assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+    assert_eq!(out.load(Ordering::SeqCst), 0);
+    assert_eq!(t.requests.load(Ordering::SeqCst), 2, "one create and one best-effort cancel");
+    r.settle(JobId(1));
+    assert_eq!(b.log.lock().unwrap().entries().map(|e| (e.cost, e.status)).collect::<Vec<_>>(), [(money(7), Charge::Unresolved)]);
+    r.forget(JobId(1));
+    let Some(JobState::Failed { error }) = scheduler.state(JobId(1)) else { panic!("diagnostic remains in scheduler") };
+    assert!(error.contains("retained-accepted-id"));
+    scheduler.forget_finished();
+    assert!(scheduler.state(JobId(1)).is_none(), "explicitly forgetting the failure also loses its diagnostic; no durable handle promised");
+    assert_eq!(t.requests.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn inaccessible_cdn_link_is_terminal_without_api_key_advice_or_another_create() {
+    let t = Arc::new(Transport { script: Script::DownloadAuth, requests: AtomicUsize::new(0) });
+    let (r, b, out) = runner(Budgets::default());
+    let mut q = registration(t.clone(), Some(Some(money(7))));
+    q.job.model = nodecraft_providers::replicate::SDXL.into();
+    r.register(JobId(1), q);
+    let (s, events) = drive(r);
+    let Some(JobState::Failed { error }) = s.state(JobId(1)) else { panic!("failure") };
+    assert!(error.contains("output link"));
+    assert!(!error.contains("API key"));
+    assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+    assert_eq!(t.requests.load(Ordering::SeqCst), 3);
+    assert_eq!(out.load(Ordering::SeqCst), 0);
+    assert_eq!(b.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved]);
 }

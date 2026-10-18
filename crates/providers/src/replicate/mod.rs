@@ -1,5 +1,6 @@
 //! Version-pinned Replicate predictions. No remote deduplication or exact monetary quote.
 //! Production requests never follow redirects; builtin browser transport refuses this operation.
+mod receipt;
 mod request;
 mod response;
 #[cfg(test)]
@@ -174,6 +175,30 @@ impl Replicate {
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         Ok(Self { key, http, limits: limits.validate()? })
     }
+    // IDs become URL paths and diagnostics, neither of which has secret_header redaction.
+    fn check_id(&self, id: &str) -> Result<(), ProviderError> {
+        if id.contains(self.key.expose()) {
+            return Err(malformed("Replicate identifier contains configured credentials and was redacted"));
+        }
+        Ok(())
+    }
+    async fn reject_accepted(&self, id: &str, mut error: ProviderError) -> ProviderError {
+        if self.check_id(id).is_err() {
+            error.message.push_str("; accepted identifier redacted; cancellation could not safely be requested; billing remains uncertain");
+            return error;
+        }
+        let req = self.authenticate(HttpRequest {
+            method: HttpMethod::Post,
+            ..HttpRequest::get(self.endpoint(&format!("predictions/{id}/cancel"))).max_response_bytes(self.limits.response_bytes).timeout_ms(15_000)
+        });
+        let confirmed = match self.http.send_no_redirect(req).await {
+            Ok(reply) if reply.is_success() => receipt::parse(&reply.body, self.limits.response_bytes).is_some_and(|r| r.id == id && r.terminal),
+            _ => false,
+        };
+        let disposition = if confirmed { "terminal status observed" } else { "cancellation unconfirmed" };
+        error.message = format!("{}; accepted prediction {id}: {disposition}; prior billing remains uncertain", error.message);
+        error
+    }
     fn endpoint(&self, path: &str) -> String {
         format!("{API}/{path}")
     }
@@ -190,12 +215,27 @@ impl Replicate {
             ..HttpRequest::get(self.endpoint("predictions")).header("Content-Type", "application/json").max_response_bytes(self.limits.response_bytes)
         });
         let reply = self.http.send_no_redirect(req).await.map_err(transport)?;
-        let parsed = response::parse(&reply, record, self.limits)?;
-        parsed.identity(None, record)?;
-        Ok(Submission::Queued(record.handle(&parsed.id)))
+        let receipt = reply.is_success().then(|| receipt::parse(&reply.body, self.limits.response_bytes)).flatten();
+        let admitted = response::parse(&reply, record, self.limits).and_then(|parsed| {
+            parsed.identity(None, record)?;
+            let accepted = receipt.as_ref().ok_or_else(|| malformed("invalid complete Replicate create receipt"))?;
+            if accepted.id != parsed.id {
+                return Err(malformed("Replicate create receipt does not match"));
+            }
+            self.check_id(accepted.id)?;
+            Ok(parsed)
+        });
+        match admitted {
+            Ok(parsed) => Ok(Submission::Queued(record.handle(&parsed.id))),
+            Err(error) => match receipt {
+                Some(receipt) => Err(self.reject_accepted(receipt.id, error).await),
+                None => Err(error),
+            },
+        }
     }
     async fn progress(&self, h: &JobHandle) -> Result<JobProgress, ProviderError> {
         let record = Record::read(h)?;
+        self.check_id(&h.remote_id)?;
         let req = self.authenticate(HttpRequest::get(self.endpoint(&format!("predictions/{}", h.remote_id))).max_response_bytes(self.limits.response_bytes));
         let reply = self.http.send_no_redirect(req).await.map_err(transport)?;
         let parsed = response::parse(&reply, record, self.limits)?;
@@ -234,7 +274,7 @@ impl Replicate {
                 Ok(out)
             }
             response::AdmittedOutput::Images(urls) => {
-                // Validate the complete URL list before attaching credentials or beginning downloads.
+                // Admit every URL before any credential-free delivery request.
                 for u in &urls {
                     response::delivery_url(u)?;
                 }
@@ -248,10 +288,10 @@ impl Replicate {
                     if cap == 0 {
                         return Err(malformed("Replicate aggregate output capacity exhausted before download"));
                     }
-                    let req = self.authenticate(HttpRequest::get(u.as_ref()).max_response_bytes(cap));
+                    let req = HttpRequest::get(u.as_ref()).max_response_bytes(cap);
                     observe(4);
                     let reply = self.http.send_no_redirect(req).await.map_err(transport)?;
-                    response::status(&reply, l)?;
+                    response::download_status(&reply, l, cap)?;
                     if reply.body.len() > cap {
                         return Err(malformed("Replicate download exceeds remaining capacity"));
                     }
@@ -283,6 +323,9 @@ impl Provider for Replicate {
     fn retry_ambiguous_submit(&self) -> bool {
         false
     }
+    fn poll_interval_ms(&self, _progress: &JobProgress) -> u64 {
+        2_000
+    }
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(self.create(job))
     }
@@ -292,6 +335,7 @@ impl Provider for Replicate {
     fn cancel<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
             let record = Record::read(h)?;
+            self.check_id(&h.remote_id)?;
             let req = self.authenticate(HttpRequest {
                 method: HttpMethod::Post,
                 ..HttpRequest::get(self.endpoint(&format!("predictions/{}/cancel", h.remote_id))).max_response_bytes(self.limits.response_bytes)
