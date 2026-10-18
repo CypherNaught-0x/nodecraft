@@ -283,6 +283,8 @@ mod navigation;
 mod order;
 mod search;
 mod split;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod storage;
 mod tags;
 
 pub struct NodeCraftApp {
@@ -319,6 +321,8 @@ pub struct NodeCraftApp {
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// The window title last sent, so it is only sent when it changes.
+    title: String,
     /// Image previews on cards (#386).
     previews: crate::preview::Previews,
     /// When the last timed frame started, for the frame interval (#151).
@@ -355,6 +359,17 @@ impl NodeCraftApp {
     /// The app with settings from `store`, which it saves while running and flushes on exit.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Result<Self, Error> {
+        Self::with_settings_and_storage(ctx, store, None)
+    }
+
+    /// [`Self::with_settings`], with project files when `storage` is given (#406): save and open
+    /// work, edits are journalled for recovery, and `storage.open` is opened at startup.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_settings_and_storage(
+        ctx: &egui::Context,
+        store: nodecraft_engine::settings::SettingsStore,
+        storage: Option<storage::StorageSetup>,
+    ) -> Result<Self, Error> {
         let settings = store.get().clone();
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
@@ -369,7 +384,34 @@ impl NodeCraftApp {
                 None
             }
         };
-        let mut app = Self::with_services(services)?;
+        // Storage that can't start (another window holds the journal, or the project won't
+        // open) still opens the window, without project files, and says why.
+        let mut problem = None;
+        let stored = storage.and_then(|setup| match Self::storage_session(setup) {
+            Ok(stored) => Some(stored),
+            Err(error) => {
+                log::error!("project storage unavailable: {}", error.message);
+                problem = Some(format!("Project files are unavailable: {}", error.message));
+                None
+            }
+        });
+        let mut kept = None;
+        let mut app = match stored {
+            Some((session, canvas, unrecovered, open_error)) => {
+                kept = unrecovered;
+                if let Some(error) = open_error {
+                    problem = Some(format!("That project couldn't be opened: {}", error.message));
+                }
+                Self::from_session(session.with_services(services), canvas)?
+            }
+            None => Self::with_services(services)?,
+        };
+        app.notice = problem.or_else(|| {
+            kept.map(|path| {
+                log::warn!("kept an earlier session's recovery journal as {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+                "Unsaved work from a session that didn't close cleanly was kept in the recovery folder.".to_owned()
+            })
+        });
         app.key_results = results;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -396,6 +438,19 @@ impl NodeCraftApp {
     /// The headless app with these host services on its session (the keychain, for one).
     pub fn with_services(services: nodecraft_engine::commands::Services) -> Result<Self, Error> {
         let kinds = nodecraft_nodes::Registry::builtins()?;
+        let (document, canvas) = Self::starter_document(&kinds)?;
+        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
+        Self::from_session(session, canvas)
+    }
+
+    /// The browser build has no project files yet (#99).
+    #[cfg(target_arch = "wasm32")]
+    fn file_shortcut(&mut self, _save: bool, _save_as: bool) -> Option<String> {
+        Some("Saving isn't available in the browser yet.".into())
+    }
+
+    /// The project a new window starts with: one canvas holding a sample Text node.
+    fn starter_document(kinds: &nodecraft_nodes::Registry) -> Result<(Project, CanvasId), Error> {
         let canvas = CanvasId::from_bytes([1; 16]);
         let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Untitled")?;
         Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document)?;
@@ -404,8 +459,7 @@ impl NodeCraftApp {
         let mut node = kinds.get("source.text")?.descriptor().instantiate(NodeId::from_bytes([3; 16]), &values)?;
         node.pos = nodecraft_graph::Position { x: -160.0, y: -110.0 };
         Change::AddNode { canvas, node }.apply(&mut document)?;
-        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
-        Self::from_session(session, canvas)
+        Ok((document, canvas))
     }
     pub fn from_session(mut session: Session, canvas: CanvasId) -> Result<Self, Error> {
         if !session.document().canvases().contains_key(&canvas) {
@@ -483,6 +537,7 @@ impl NodeCraftApp {
             wiring: None,
             reordering: None,
             palette: None,
+            title: String::new(),
             previews: crate::preview::Previews::default(),
             last_frame: None,
             split_size: (2, 2),
@@ -561,6 +616,15 @@ impl NodeCraftApp {
         let tag_blocks = self.tag_overlay(ui);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
+        // Save and open (#406) work from a text field too (no field uses them); not while the palette
+        // or "Turn into" is open. Without a file yet, saving needs a location: say how to give one.
+        if self.palette.is_none() && self.turn_into.is_none() {
+            let (save_as, save, open) =
+                ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
+            if save || save_as || open {
+                self.notice = self.file_shortcut(save, save_as);
+            }
+        }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
@@ -1572,6 +1636,8 @@ fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, na
             "2" => key = Some(egui::Key::Num2),
             "M" => key = Some(egui::Key::M),
             "F" => key = Some(egui::Key::F),
+            "S" => key = Some(egui::Key::S),
+            "O" => key = Some(egui::Key::O),
             "C" => key = Some(egui::Key::C),
             "Enter" => key = Some(egui::Key::Enter),
             "Escape" => key = Some(egui::Key::Escape),
@@ -1596,6 +1662,14 @@ fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, na
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let title = self.window_title();
+            if title != self.title {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+                self.title = title;
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(results) = &self.key_results {
             self.keys.tick(ctx.input(|i| i.time));
@@ -1630,6 +1704,8 @@ impl eframe::App for NodeCraftApp {
         self.show(ui);
     }
     fn on_exit(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.close_storage();
         #[cfg(not(target_arch = "wasm32"))]
         // A read-only store (newer schema, unwritable folder) was reported at startup.
         if let Some(store) = &mut self.store
