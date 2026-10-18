@@ -4,7 +4,7 @@
 use crate::theme::Tokens;
 use egui::{RichText, Sense};
 use nodecraft_graph::{Generation, Node};
-use nodecraft_types::{GenerationId, Value};
+use nodecraft_types::{GenerationId, Modality, Value};
 
 /// Rows of controls the strip draws: the step controls, then the results.
 pub const ROWS: usize = 2;
@@ -75,11 +75,13 @@ pub const MAX_EXTRACT_ITEMS: usize = 12;
 /// [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
 pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
     let mut targets = Vec::new();
-    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+    // Only what a source node can hold (text, image, video, audio).
+    let extractable = |port: &nodecraft_graph::Port| !matches!(port.port_type.modality, Modality::Mesh | Modality::Document);
+    for (port, value) in node.outputs.iter().zip(&generation.outputs).filter(|(port, _)| extractable(port)) {
         match value {
             Value::List(items) => {
                 for item in 0..items.len().min(MAX_EXTRACT_ITEMS) {
-                    targets.push((format!("{} item {}", port.name, item + 1), Some(port.name.clone()), Some(item)));
+                    targets.push((format!("{}: item {} of {}", port.name, item + 1, items.len()), Some(port.name.clone()), Some(item)));
                 }
             }
             _ => targets.push((port.name.clone(), Some(port.name.clone()), None)),
@@ -144,7 +146,8 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
     let newer = active.is_none_or(|index| index + 1 < count);
     let mut intent = None;
     let mut focused = card_focused;
-    // While a chip has focus, focus follows the active result as ←/→ move the window.
+    // After ←/→ from a focused chip, focus moves to the new active chip in the next frame (the
+    // window may have moved). Only then: clicking elsewhere must be able to take focus away.
     let follow_key = ui.id().with(("history_chip_focus", node.id));
     let follow = ui.data(|d| d.get_temp::<bool>(follow_key)).unwrap_or(false);
     let mut button_focus = false;
@@ -221,7 +224,7 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
         }
     });
     focused |= chip_focus;
-    ui.data_mut(|d| d.insert_temp(follow_key, chip_focus || (follow && !button_focus && focused)));
+    let mut stepped = false;
     if focused && intent.is_none() {
         let (left, right) = ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
         if left && older {
@@ -229,7 +232,9 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
         } else if right && newer {
             intent = Some(HistoryIntent::Next);
         }
+        stepped = intent.is_some();
     }
+    ui.data_mut(|d| d.insert_temp(follow_key, stepped && chip_focus));
     intent
 }
 
@@ -237,7 +242,7 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
 mod tests {
     use super::*;
     use nodecraft_graph::Port;
-    use nodecraft_types::{Modality, NodeId, PortType};
+    use nodecraft_types::{NodeId, PortType};
 
     fn result(outputs: Vec<Value>) -> Generation {
         Generation::new(GenerationId::from_bytes([1; 16]), outputs)
@@ -265,7 +270,10 @@ mod tests {
         let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), items]));
         assert_eq!(targets.len(), 1 + MAX_EXTRACT_ITEMS);
         assert_eq!(targets[0], ("caption".into(), Some("caption".into()), None));
-        assert_eq!(targets[1], ("takes item 1".into(), Some("takes".into()), Some(0)));
+        assert_eq!(targets[1], ("takes: item 1 of 20".into(), Some("takes".into()), Some(0)));
+        node.outputs.push(Port { name: "mesh".into(), port_type: PortType { modality: Modality::Mesh, many: false } });
+        let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), Value::List(vec![]), Value::Text("m".into())]));
+        assert_eq!(targets.len(), 1, "an empty list and a mesh output offer nothing");
     }
 
     #[test]

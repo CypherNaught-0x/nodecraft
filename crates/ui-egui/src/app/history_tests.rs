@@ -78,6 +78,31 @@ fn screen_rect(app: &NodeCraftApp) -> Rect {
 }
 
 #[test]
+fn clicking_elsewhere_after_a_chip_takes_focus_and_arrows_back() {
+    let mut h = with_results(3);
+    h.get_by_label("Result 2 of 3").click();
+    h.run();
+    assert_eq!(card(h.state()).active, Some(g(2)));
+    h.key_press(egui::Key::ArrowLeft);
+    h.run();
+    h.run();
+    assert_eq!(card(h.state()).active, Some(g(1)), "the chip steps");
+    // Now the card's text field: it gets focus, and ← moves its cursor, not the history.
+    let field = screen_rect(h.state()).min + Vec2::new(50.0, 55.0);
+    h.hover_at(field);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: field, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+    h.run();
+    assert!(h.state().text_focused, "the text field keeps the focus it was given");
+    h.key_press(egui::Key::ArrowRight);
+    h.run();
+    h.run();
+    assert_eq!(card(h.state()).active, Some(g(1)), "arrows belong to the text field");
+}
+
+#[test]
 fn a_card_with_many_results_draws_a_bounded_window_of_chips() {
     let mut h = with_results(40);
     assert!(h.query_by_label("Result 40 of 40, active").is_some());
