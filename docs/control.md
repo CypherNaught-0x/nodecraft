@@ -72,7 +72,8 @@ connecting; this is not a bound on filesystem stalls.
 
 The current control transport is authenticated TCP. Headless stdio automation is available through
 `nodecraft-cli mcp`; a separate stdio control transport is tracked by #269 and is not part of the
-live canvas command bridge described below (see `docs/decisions.md`).
+live canvas command bridge described below (see the
+[control-channel decision](decisions/2026-10-17-control-channel.md)).
 
 ### Live canvas commands
 
