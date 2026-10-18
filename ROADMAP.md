@@ -5,8 +5,8 @@ the action library (M4) are built and heavily tested, and the current work is co
 the app. Details and exit criteria per milestone: [`docs/plan.md`](docs/plan.md) §7. Work is
 tracked as GitHub issues in milestones; comment `/claim` to take one.
 
-Status is measured from the issues in each milestone as of 2026-10-18: 268 filed, 156 open,
-110 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
+Status is measured from the issues in each milestone as of 2026-10-18: 269 filed, 156 open,
+111 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
 so M1 reads 20/32 where GitHub says 21 closed (#135 was declined rather than built). Status
 describes shipped behaviour, not code that merely exists: a milestone only counts what a person or
 an agent can actually do today.
@@ -15,7 +15,7 @@ an agent can actually do today.
 |---|---|---|---|
 | 0 | **Skeleton** — workspace, lints, xtask, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph + changesets + undo, commands, canvas widget, `.ncraft` | 🟡 nearly — see caveat | 20/32 |
-| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 3/9 |
+| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 4/9 |
 | 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 16/30 |
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | ⬜ not started | 0/16 |
@@ -36,9 +36,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   search (⌘F), double-click quick-add palette with per-key shortcuts, "Turn into" on
   drop-to-empty, input-order badges with drag-to-reorder, copy/cut/paste/duplicate through the OS
   clipboard, OS file drop as source nodes, per-node generation history strip, local pinned
-  discussions with Note nodes (#68), an API keys panel backed by the OS keychain.
+  discussions with Note nodes (#68), grid/dependency formatting of selected nodes (#70), an API keys panel backed by the OS keychain.
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
-  command dispatch under a panic guard; 57 registered commands with typed JSON params.
+  command dispatch under a panic guard; 58 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
   running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots). See [`docs/mcp.md`](docs/mcp.md) and [`docs/control.md`](docs/control.md).
@@ -89,8 +89,8 @@ The open pull requests say what is in flight; the near-term order that makes the
    (#83, #84), then stale badges with one-click refresh (#211).
 4. **Action nodes** — expose the CPU/GPU operations as node kinds (#410) with live recompute
    (#88, #90).
-5. **Organise** — fields (#66), tags (#67) and auto-format (#70); comments and Note nodes
-   shipped (#68); persistence versioning for them (#193).
+5. **Organise** — fields (#66), tags (#67) and persistence versioning (#193); comments/Notes
+   (#68) and selected-node auto-format (#70) have shipped.
 6. **Then M5**: batch, Technique Builder, app mode, library, and the CLI `run`/`quote`/`inspect`
    that turn a canvas into a reusable command, and the first signed release (#100).
 
@@ -122,3 +122,7 @@ The open pull requests say what is in flight; the near-term order that makes the
   catalog-to-adapter construction (#409), action node kinds (#410) and shipping the FFmpeg
   sidecar (#411). Cards now render image previews (#386) and discussions shipped (#68), so stats,
   milestone counts and command counts (now 57) are refreshed.
+
+- **2026-10-18** — selected-node auto-format shipped (#70): grid and dependency ordering use
+  actual card geometry and one undo step. Comments/Notes (#68) remain available alongside the
+  Format control; the command registry now has 58 entries.
