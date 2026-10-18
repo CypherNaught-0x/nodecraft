@@ -5,26 +5,26 @@ the action library (M4) are built and heavily tested, and the current work is co
 the app. Details and exit criteria per milestone: [`docs/plan.md`](docs/plan.md) §7. Work is
 tracked as GitHub issues in milestones; comment `/claim` to take one.
 
-Status is measured from the issues in each milestone as of 2026-10-18: 228 filed, 127 open, 99
-closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*, so
-M1 reads 19/28 where GitHub says 20 closed (#135 was declined rather than built). Status describes
-shipped behaviour, not code that merely exists: a milestone only counts what a person or an agent
-can actually do today.
+Status is measured from the issues in each milestone as of 2026-10-18: 268 filed, 156 open,
+110 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
+so M1 reads 20/32 where GitHub says 21 closed (#135 was declined rather than built). Status
+describes shipped behaviour, not code that merely exists: a milestone only counts what a person or
+an agent can actually do today.
 
 | M | Name | Status | Done |
 |---|---|---|---|
 | 0 | **Skeleton** — workspace, lints, xtask, CI, release pipeline, themed canvas | ✅ done | 10/10 |
-| 1 | **Canvas core** — graph + changesets + undo, commands, canvas widget, `.ncraft` | 🟡 nearly — see caveat | 19/28 |
-| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 2/8 |
-| 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 14/27 |
-| 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 4/10 |
-| 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | ⬜ not started | 0/15 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ⬜ not started | 0/5 |
-| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar only | 1/13 |
-| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | ⬜ not started | 0/6 |
-| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/5 |
-| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/5 |
-| — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/25 |
+| 1 | **Canvas core** — graph + changesets + undo, commands, canvas widget, `.ncraft` | 🟡 nearly — see caveat | 20/32 |
+| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 3/9 |
+| 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 16/30 |
+| 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
+| 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | ⬜ not started | 0/16 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ⬜ not started | 0/6 |
+| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar only | 1/15 |
+| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | ⬜ not started | 0/7 |
+| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
+| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
+| — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/26 |
 
 ## What works today
 
@@ -35,10 +35,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   upstream/downstream/kind, minimap with zoom-to-fit and zoom-to-selection (Shift+1/Shift+2/Shift+M), incremental
   search (⌘F), double-click quick-add palette with per-key shortcuts, "Turn into" on
   drop-to-empty, input-order badges with drag-to-reorder, copy/cut/paste/duplicate through the OS
-  clipboard, OS file drop as source nodes, per-node generation history strip, an API keys panel
-  backed by the OS keychain.
+  clipboard, OS file drop as source nodes, per-node generation history strip, local pinned
+  discussions with Note nodes (#68), an API keys panel backed by the OS keychain.
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
-  command dispatch under a panic guard; 41 registered commands with typed JSON params.
+  command dispatch under a panic guard; 57 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
   running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots). See [`docs/mcp.md`](docs/mcp.md) and [`docs/control.md`](docs/control.md).
@@ -52,40 +52,45 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 - **The app cannot generate.** Nothing constructs a provider adapter or supplies the run host
   resources, so `run.quote`/`run.start` report *unsupported*, there is no Run button, and no
-  `Category::Generation` node kind is registered outside the testkit. Four adapters (LLM
-  endpoints, OpenAI Images, Replicate, ComfyUI) work as libraries with contract tests, and the
-  catalog carries 6 models across those three provider families.
+  `Category::Generation` node kind is registered outside the testkit (#409, #362; #83, #84). Four
+  adapters (LLM endpoints, OpenAI Images, Replicate, ComfyUI) work as libraries with contract
+  tests, and the catalog carries 6 models across those three provider families.
 - **The app cannot save or open.** `.ncraft` archives, content-addressed assets, atomic writes and
   crash recovery all exist, but no host configures project storage for a session, so `file.*`
-  reports *unsupported*. There is also no file picker yet.
-- **Actions do not run.** 13 image and 4 text operations exist in CPU and WGSL form, but no action
-  node kind reaches them and cards do not render image pixels yet, so nothing recomputes live.
+  reports *unsupported* (#406). There is also no file picker (#407) and no recovery prompt
+  (#408).
+- **Actions do not run.** 13 image operations exist in CPU and WGSL form and 4 text operations in
+  CPU form plus the bounded expression language (#165), but no action node kind reaches them
+  (#410) and nothing recomputes live (#88). Cards do render image previews now (#386).
 - **The in-canvas agent is a 5-line stub.** `crates/agent` has no code; the MCP server and control
   channel are what external agents use today.
 - **No browser build.** Every library crate compiles to wasm and `web` is reserved in the layer
   map, but there is no `apps/nodecraft-web`. Dropping files in a browser is an explicit
   *unsupported*.
 - **FFmpeg is CI-only.** The video sidecar exists behind a `video` feature that no product crate
-  enables yet; there are no video or audio nodes, and no video actions.
-- **Not started**: fields/tags/comments UI (the data model and changes exist, nothing edits them),
+  enables yet (#411); the `source.video` and `source.audio` kinds carry metadata, but there is no
+  playback UI (#105, #106), no video actions (#108) and no video generation.
+- **Not started**: fields and tags UI (the data model and changes exist, nothing edits them),
   batch, Techniques, app mode, library, Layer/Timeline/Mask editors, Elements, 3D, PDF,
-  collaboration, auto-updates, and 25 of the advertised providers (fal.ai, Google, ElevenLabs,
-  Seedream/Seedance, Kling, Tripo, Meshy and the `future` list).
+  collaboration, auto-updates, and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai, Gemini
+  and Seedream are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
+  Tripo, Meshy and the 25 `future` names have no work started).
 
 ## Next up
 
 The open pull requests say what is in flight; the near-term order that makes the engine usable is:
 
-1. **Wire the app to storage** — session storage plus a file picker, so save, open and crash
-   recovery work in `cargo run -p nodecraft` (#147 lazy assets is open, follow-ups #334/#335).
-2. **Wire a run host** — construct adapters from the catalog, register the `run.start` service and
-   the host resources, and put a Run button on the card (#211, #201, #275, #157).
+1. **Wire the app to storage** — session storage (#406), a file picker (#407) and a recovery
+   prompt (#408), so save, open and crash recovery work in `cargo run -p nodecraft` (#147 lazy
+   assets and #193 persistence versioning feed the same path).
+2. **Wire a run host** — construct adapters from the catalog (#409), register the `run.start`
+   service and the host resources (#362), and put a Run button on the card (#211, #201, #157).
 3. **First generation node kinds** — image/text generation kinds so there is something to run
    (#83, #84), then stale badges with one-click refresh (#211).
-4. **Action nodes** — expose the CPU/GPU operations as nodes with live recompute (#88, #90) and
-   render image previews on cards.
-5. **Organise** — fields (#66), tags (#67), comments and Note nodes (#68), auto-format (#70),
-   persistence versioning for them (#193).
+4. **Action nodes** — expose the CPU/GPU operations as node kinds (#410) with live recompute
+   (#88, #90).
+5. **Organise** — fields (#66), tags (#67) and auto-format (#70); comments and Note nodes
+   shipped (#68); persistence versioning for them (#193).
 6. **Then M5**: batch, Technique Builder, app mode, library, and the CLI `run`/`quote`/`inspect`
    that turn a canvas into a reusable command, and the first signed release (#100).
 
@@ -112,3 +117,8 @@ The open pull requests say what is in flight; the near-term order that makes the
 - **2026-10-18** — `v0.2.0-rc.1` published: the first build cut from the post-M0 tree, with
   installers for macOS and Windows and packages plus Flatpaks for Linux. A pre-release on
   purpose — the app still cannot generate or save; the 0.2.0 GA belongs with the M3 wiring above.
+- **2026-10-18** — ticket audit against this file: six missing tickets filed for work the roadmap
+  named but nothing owned — desktop storage (#406), file picker (#407), recovery prompt (#408),
+  catalog-to-adapter construction (#409), action node kinds (#410) and shipping the FFmpeg
+  sidecar (#411). Cards now render image previews (#386) and discussions shipped (#68), so stats,
+  milestone counts and command counts (now 57) are refreshed.
