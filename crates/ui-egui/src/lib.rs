@@ -13,6 +13,7 @@ pub mod ids;
 pub mod keys;
 pub mod navigation;
 pub mod noodle;
+pub mod order;
 pub mod palette;
 pub mod search;
 pub mod selection;

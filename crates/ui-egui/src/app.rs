@@ -276,6 +276,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
 }
 
 mod navigation;
+mod order;
 mod search;
 
 pub struct NodeCraftApp {
@@ -301,6 +302,8 @@ pub struct NodeCraftApp {
     /// from here, not the evictable schema cache, so it matches what is on screen.
     painted: BTreeMap<NodeId, Rect>,
     wiring: Option<Wiring>,
+    /// The input order badge being dragged: its list input and edge.
+    reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
@@ -424,6 +427,7 @@ impl NodeCraftApp {
             marquee: None,
             painted: BTreeMap::new(),
             wiring: None,
+            reordering: None,
             palette: None,
             turn_into: None,
             text_focused: false,
@@ -798,6 +802,13 @@ impl NodeCraftApp {
                     egui::Color32::TRANSPARENT,
                     egui::Stroke::new(width, t.wire(*modality)),
                 ));
+            }
+            // Badges show where their numbers can be read; dragging one reorders the input.
+            if !overlay_blocks && self.view.zoom >= card::BODY_MIN_ZOOM {
+                let badges = order::Badges { canvas_id: self.canvas, view: &self.view, reordering: &mut self.reordering };
+                wire_command = badges.show(ui, canvas, &curves, viewport, t);
+            } else {
+                self.reordering = None;
             }
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -1381,6 +1392,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod order_tests;
 #[cfg(test)]
 mod perf;
 #[cfg(test)]
