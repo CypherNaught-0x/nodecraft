@@ -14,7 +14,8 @@
 //! - **Adopt resumed jobs.** A job resumed from a stored handle was already submitted: it is
 //!   recorded without a cap check, since its money is already spent.
 //! - **Settle.** A finished job is charged what the provider reported, or its estimate. A job the
-//!   provider certainly never billed (refused at submit: bad key, invalid input) is released. A job
+//!   provider provably never accepted (pre-invocation cancellation or audited whole-submit
+//!   evidence) is released. Diagnostic kinds alone never supply that proof. A job
 //!   that may have been billed (it got a handle, or its submit got no clear answer: a timeout, a
 //!   network or server error, a garbled reply, or one saying it ran or expired;
 //!   `RunFailure::uncertain`) keeps its reservation while the scheduler may retry it, and is charged as
@@ -591,8 +592,8 @@ impl JobRunner for ProviderRunner {
                             }
                         }
                         // A submit lost in transit (or answered with a garbled or "it ran" reply) may
-                        // still have been accepted and billed; one cancelled before it was sent,
-                        // or refused, certainly wasn't (#227).
+                        // still have been accepted and billed. Only affirmative whole-submit
+                        // evidence proves nonacceptance; generic refusal kinds do not (#250).
                         let lost = failure.uncertain;
                         let reserved = {
                             let mut s = lock();
@@ -1016,40 +1017,40 @@ mod tests {
     }
 
     #[test]
-    fn certain_rejections_are_released_and_lost_submits_are_charged() {
+    fn legacy_submit_errors_are_charged_and_preinvocation_cancel_is_free() {
         let (runner, budget) = budgeted(Some(1_000_000));
         runner.register(JobId(1), priced(Arc::new(SubmitFails(ErrorKind::Auth)), Some(300_000)));
         assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
-        assert_eq!(spent(&budget), 0, "a rejected key never reached a model");
-        assert_eq!(budget.log.lock().unwrap().entries().count(), 0);
+        assert_eq!(spent(&budget), 300_000, "legacy Auth does not prove absence of acceptance");
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 1);
         runner.register(JobId(2), priced(Arc::new(SubmitFails(ErrorKind::Network)), Some(300_000)));
         assert!(matches!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Failed { transient: true, .. }));
-        assert_eq!(spent(&budget), 300_000, "a lost submit may have been accepted: held");
+        assert_eq!(spent(&budget), 600_000, "a lost submit may have been accepted: held");
         runner.settle(JobId(2));
         assert_eq!(budget.log.lock().unwrap().entries().last().map(|e| e.status), Some(Charge::Unresolved));
-        assert_eq!(spent(&budget), 300_000);
+        assert_eq!(spent(&budget), 600_000);
         // Cancelled before it started: nothing reserved.
         let provider = Arc::new(Reports(None));
         runner.register(JobId(3), priced(provider, Some(5)));
         let token = CancelToken::default();
         token.cancel();
         assert_eq!(block_on(runner.run(job(3), token)), Outcome::Cancelled);
-        assert_eq!(spent(&budget), 300_000);
+        assert_eq!(spent(&budget), 600_000);
     }
 
     #[test]
-    fn garbled_or_it_ran_submit_replies_are_charged_and_refusals_released() {
-        // #227: a reply that can't be read, or one saying the job ran (and failed or expired),
-        // may follow an accepted submission: charged as unresolved. Refusals are released.
+    fn legacy_submit_kinds_cannot_release_reservations_without_evidence() {
+        // Generic diagnostics alone cannot prove whole-submit nonacceptance, even for a
+        // legacy adapter returning a refusal-looking error. All remain unresolved.
         let (runner, budget) = budgeted(Some(10_000_000));
         let mut expected = 0;
         for (n, (kind, charged)) in [
             (ErrorKind::Malformed, true),
             (ErrorKind::JobFailed, true),
             (ErrorKind::Expired, true),
-            (ErrorKind::UnsupportedInput, false),
-            (ErrorKind::BlockedContent, false),
-            (ErrorKind::Budget, false),
+            (ErrorKind::UnsupportedInput, true),
+            (ErrorKind::BlockedContent, true),
+            (ErrorKind::Budget, true),
         ]
         .into_iter()
         .enumerate()
@@ -1222,6 +1223,7 @@ mod tests {
         assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
     }
 
+    mod delivery_evidence_tests;
     mod fresh_key_tests;
     mod paid_unpriced_tests;
     mod stale_handle_tests;

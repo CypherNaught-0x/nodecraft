@@ -10,8 +10,8 @@
 - **Settle by what may have been billed.**
   - A finished job settles to the provider's reported cost in the estimate's currency, otherwise
     to the estimate.
-  - A job the provider certainly never billed (refused at submit: a bad key, invalid input,
-    cancelled before start) is released.
+  - Cancellation before invocation or affirmative whole-submit nonacceptance evidence releases
+    a fresh reservation. Generic diagnostic kinds alone do not prove this (see #250 below).
   - A job that got a handle, or whose submit was lost to a timeout, network or server error,
     keeps its reservation while a retry can come. When it is forgotten, settled, or requeued
     under a fresh key, it is charged its estimate as `unresolved`.
