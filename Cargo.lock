@@ -2939,6 +2939,7 @@ dependencies = [
  "getrandom 0.3.4",
  "log",
  "nodecraft-engine",
+ "nodecraft-format",
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-nodes",
