@@ -77,6 +77,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.quote",
     "run.start",
     "usage.export_csv",
+    "perf.start",
+    "perf.stop",
+    "perf.clear",
+    "perf.report",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
