@@ -4,7 +4,10 @@
 //! `quote`, `inspect`, `commands`, `providers`, `comfy` and `serve` arrive with their milestones
 //! (docs/plan.md §4.8).
 
+mod control;
+
 use std::hash::{BuildHasher, RandomState};
+use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -17,6 +20,7 @@ const USAGE: &str = "\
 usage: nodecraft-cli <command>
 
 commands:
+  control         serve headless control JSON over stdin/stdout (a new, empty project)
   mcp             serve NodeCraft to an MCP client over stdin/stdout (a new, empty project)
   mcp --bridge [token-file]
                   serve the running app instead (started with `nodecraft --control`); the
@@ -101,6 +105,11 @@ fn main() -> ExitCode {
         Some("--version" | "-V" | "version") => {
             println!("nodecraft-cli {}", nodecraft_engine::build_info::long_version());
             ExitCode::SUCCESS
+        }
+        Some("control") if args.len() == 1 => control::run(),
+        Some("control") => {
+            let _ = writeln!(std::io::stderr(), "error: `control` takes no options\n\n{USAGE}");
+            ExitCode::FAILURE
         }
         Some("mcp") => match args.get(1..).unwrap_or_default() {
             [] => mcp(),

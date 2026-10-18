@@ -70,11 +70,6 @@ connecting; this is not a bound on filesystem stalls.
 - The app answers 16 requests per frame.
 - Up to 4 screenshots can be pending, each at most 64 MiB of PNG.
 
-The current control transport is authenticated TCP. Headless stdio automation is available through
-`nodecraft-cli mcp`; a separate stdio control transport is tracked by #269 and is not part of the
-live canvas command bridge described below (see the
-[control-channel decision](decisions/2026-10-17-control-channel.md)).
-
 ### Live canvas commands
 
 `command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
@@ -84,3 +79,24 @@ live availability for parameterless commands. These operations change only the v
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
 Classification is shared with MCP; the live host does not grant access to human-only or paid
 commands. Screenshot requests retain their separate asynchronous capture path.
+
+## Headless stdio
+
+`nodecraft-cli control` serves the same methods against a new empty in-memory project on
+stdin/stdout. Its parent process is trusted: no token, token file, socket or keychain service is
+created. `hello` with empty params is optional and reports the same app/version/protocol; TCP
+still requires its token handshake. This is headless control, not a bridge to a running app.
+
+Requests are processed one at a time. Only newline-delimited JSON replies go to stdout;
+diagnostics go to stderr. The shared 4 MiB request limit applies. Blank lines are ignored.
+Malformed JSON, invalid UTF-8 and oversized lines return `invalid_input` with a null id, discard
+that line, and recover at the next line. EOF processes a final unterminated line and exits
+successfully; input/output failure exits nonzero with a diagnostic. There is no socket idle or
+handshake timeout on trusted pipes; the parent controls pipe lifetime and must read replies.
+
+Screenshots and live-only canvas navigation return `unsupported` because no window exists.
+Human-only and paid command restrictions remain shared with MCP/TCP. Graph edits use the same
+validation, revisions and undo. `nodecraft-cli mcp` remains the separate MCP stdio protocol;
+`nodecraft-cli mcp --bridge [token-file]` forwards MCP calls to the authenticated running app.
+These entrypoints coexist; trusted headless control does not replace the MCP bridge or add a
+live viewport to its own in-memory session.

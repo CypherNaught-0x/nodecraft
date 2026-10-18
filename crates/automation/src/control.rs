@@ -33,6 +33,9 @@ use serde_json::{Map, Value, json};
 
 use crate::mcp::{self, Line, MAX_MESSAGE_BYTES};
 
+/// Trusted parent-process transport; TCP always uses token-authenticated connections.
+pub mod stdio;
+
 /// The protocol version `hello` reports.
 pub const PROTOCOL: u32 = 1;
 /// Clients connected at once; more are turned away.
@@ -266,13 +269,13 @@ fn error_value(id: Value, e: &Error) -> Value {
 
 /// One connection's protocol state: unauthenticated until a correct `hello`.
 pub struct Connection {
-    token: Token,
+    token: Option<Token>,
     authed: bool,
 }
 
 impl Connection {
     pub fn new(token: Token) -> Self {
-        Self { token, authed: false }
+        Self { token: Some(token), authed: false }
     }
 
     pub fn is_authed(&self) -> bool {
@@ -298,7 +301,7 @@ impl Connection {
         };
         if !self.authed {
             let presented = params.get("token").and_then(Value::as_str).unwrap_or_default();
-            if method == "hello" && self.token.matches(presented) {
+            if method == "hello" && self.token.as_ref().is_some_and(|token| token.matches(presented)) {
                 self.authed = true;
                 return Step::Reply(json!({"id": id, "result": {"app": "nodecraft", "version": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL}}));
             }
