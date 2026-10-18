@@ -9,27 +9,44 @@ use nodecraft_graph::Position;
 
 /// Largest file read from a drop: the project's per-asset cap (text files are smaller still).
 pub const MAX_DROP_BYTES: usize = MAX_MEDIA_BYTES;
+/// Most bytes read for one drop, all files together: what the project's asset store can hold,
+/// so a drop of many large files can't hold hundreds of MiB in memory in one frame.
+pub const MAX_DROP_TOTAL_BYTES: usize = 48 * 1024 * 1024;
 
-/// A dropped file's bytes, refusing anything over [`MAX_DROP_BYTES`] before reading it.
+/// A dropped file's bytes, at most `limit`. Only regular files are read, and never more than
+/// `limit + 1` bytes, whatever size the file claims: a pipe, a device or a file that grows after
+/// the size check can't make the read unbounded. egui's own `bytes()` reads the whole file.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_bounded(file: &egui::DroppedFileHandle) -> Result<Vec<u8>, String> {
-    let too_big = || format!("files over {} MiB can't be added", MAX_DROP_BYTES / (1024 * 1024));
-    let len = std::fs::metadata(file.path()).map_err(|_| "the file can't be read".to_owned())?.len();
-    if len > MAX_DROP_BYTES as u64 {
-        return Err(too_big());
+fn read_bounded(file: &egui::DroppedFileHandle, limit: usize) -> Result<Vec<u8>, Unread> {
+    use std::io::Read;
+    let unreadable = |_| Unread::Other("the file can't be read".to_owned());
+    let meta = std::fs::metadata(file.path()).map_err(unreadable)?;
+    if !meta.is_file() {
+        return Err(Unread::Other("only files can be added, not folders or devices".into()));
     }
-    // The file may have grown since: check what was actually read too.
-    let bytes = file.bytes().map_err(|_| "the file can't be read".to_owned())?;
-    if bytes.len() > MAX_DROP_BYTES {
-        return Err(too_big());
+    if meta.len() > limit as u64 {
+        return Err(Unread::TooBig);
+    }
+    let mut bytes = Vec::new();
+    let take = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    std::fs::File::open(file.path()).map_err(unreadable)?.take(take).read_to_end(&mut bytes).map_err(unreadable)?;
+    if bytes.len() > limit {
+        return Err(Unread::TooBig);
     }
     Ok(bytes)
 }
 
-/// Browsers only read dropped files asynchronously; that path isn't wired yet.
+/// Browsers only read dropped files asynchronously; that path isn't wired yet (#319).
 #[cfg(target_arch = "wasm32")]
-fn read_bounded(_: &egui::DroppedFileHandle) -> Result<Vec<u8>, String> {
-    Err("dropping files is only available in the desktop app for now".to_owned())
+fn read_bounded(_: &egui::DroppedFileHandle, _: usize) -> Result<Vec<u8>, Unread> {
+    Err(Unread::Other("dropping files is only available in the desktop app for now".to_owned()))
+}
+
+/// Why a dropped file wasn't read.
+enum Unread {
+    /// Larger than the limit it was read with.
+    TooBig,
+    Other(String),
 }
 
 /// A file's name for messages.
@@ -52,15 +69,28 @@ impl NodeCraftApp {
         }
         let mut skipped = Vec::new();
         let mut read = Vec::new();
+        let mut left = MAX_DROP_TOTAL_BYTES;
         for (index, file) in dropped.iter().enumerate() {
             let name = name_of(file);
             if index >= MAX_FILES {
                 skipped.push((name, format!("at most {MAX_FILES} files are added at once")));
                 continue;
             }
-            match read_bounded(file) {
-                Ok(bytes) => read.push((name, bytes)),
-                Err(why) => skipped.push((name, why)),
+            if left == 0 {
+                skipped.push((name, format!("a drop reads at most {} MiB", MAX_DROP_TOTAL_BYTES / (1024 * 1024))));
+                continue;
+            }
+            match read_bounded(file, MAX_DROP_BYTES.min(left)) {
+                Ok(bytes) => {
+                    left = left.saturating_sub(bytes.len());
+                    read.push((name, bytes));
+                }
+                // Too big for what this drop has left, not for a file on its own.
+                Err(Unread::TooBig) if left < MAX_DROP_BYTES => {
+                    skipped.push((name, format!("a drop reads at most {} MiB", MAX_DROP_TOTAL_BYTES / (1024 * 1024))));
+                }
+                Err(Unread::TooBig) => skipped.push((name, format!("files over {} MiB can't be added", MAX_DROP_BYTES / (1024 * 1024)))),
+                Err(Unread::Other(why)) => skipped.push((name, why)),
             }
         }
         // The first card is centred under the pointer; the rest follow in a row.

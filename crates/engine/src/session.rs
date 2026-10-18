@@ -211,6 +211,16 @@ impl Session {
         self.execution.advance(next);
         Ok(hash)
     }
+    /// Drops assets nothing refers to any more (not the document, nor its undo or redo history),
+    /// as a save does: for an import whose nodes couldn't be added after all.
+    pub fn prune_assets(&mut self) -> Result<(), Error> {
+        let next = self.execution.next()?;
+        let roots = self.retained_assets()?;
+        self.assets.retain(&roots);
+        self.admission_identity = Arc::new(());
+        self.execution.advance(next);
+        Ok(())
+    }
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
         self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
     }
