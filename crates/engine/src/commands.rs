@@ -140,6 +140,7 @@ impl Registry {
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
             .chain(crate::run_cmds::specs())
+            .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::turn_into_cmds::specs())
         {

@@ -145,6 +145,8 @@ fn template(id: &str) -> (Session, Value) {
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
+        // The fixture's inputs take one noodle each, so this is refused; the hunt checks it never panics.
+        "edge.reorder" => json!({"canvas":canvas(),"to":{"node":node_id(2),"port":"in"},"edges":[edge().id]}),
         "canvas.stale" => json!({"canvas":canvas()}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
