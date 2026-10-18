@@ -37,7 +37,7 @@ default = { type = "unsigned", value = "1" }
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.
-- **Pricing** is `free`, `per_call` (`price`) or `per_unit` (`unit` = `image`, `second`,
+- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`) or `per_unit` (`unit` = `image`, `second`,
   `megapixel`, `thousand_tokens` or `thousand_characters`; `price`; a `count` parameter and/or a
   `default_count` ≥ 1). The count is the parameter's value *after* schema defaults, so the quote
   matches what runs; `count` must be a numeric control (`unsigned`, `integer` or `slider`, not a
@@ -46,6 +46,9 @@ default = { type = "unsigned", value = "1" }
   `thousand_*` prices are per 1000 counted units. Prices are decimal strings with a currency,
   at most six decimals, and quotes round up. Token- and character-priced models without a
   `count` are quoted at run time.
+  `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
+  returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
+  make the incomplete price explicit. Token counters are not an exact monetary invoice.
   Check prices against the provider's pricing page when adding or updating a model, and say in
   the PR where they came from.
 - **Swapping models** keeps parameters by name when the new model accepts the value, fills the

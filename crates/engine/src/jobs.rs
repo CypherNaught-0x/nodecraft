@@ -435,10 +435,10 @@ impl CancelSignal for TokenSignal {
     }
 }
 
-fn outcome(error: &ProviderError) -> Outcome {
+fn outcome(error: &ProviderError, will_retry: bool) -> Outcome {
     match error.kind {
         ErrorKind::Cancelled => Outcome::Cancelled,
-        _ => Outcome::Failed { error: error.to_string(), transient: error.is_transient() },
+        _ => Outcome::Failed { error: error.to_string(), transient: will_retry },
     }
 }
 
@@ -595,18 +595,22 @@ impl JobRunner for ProviderRunner {
                         // still have been accepted and billed. Only affirmative whole-submit
                         // evidence proves nonacceptance; generic refusal kinds do not (#250).
                         let lost = failure.uncertain;
+                        // Use the captured provider that executed this attempt, even if its job
+                        // registration was replaced while awaiting the response.
+                        let will_retry =
+                            failure.error.is_transient() && (failure.handle.is_some() || !failure.uncertain || queued.provider.retry_ambiguous_submit());
                         let reserved = {
                             let mut s = lock();
                             if let Some(r) = s.reserved.get_mut(&job_id).filter(|r| r.matches(&attempt)) {
                                 r.maybe_billed |= failure.handle.is_some() || lost;
                             }
                             // A retry may still come for transient failures: keep the reservation.
-                            if failure.is_transient() { None } else { s.take_reserved(job_id, &attempt) }
+                            if will_retry { None } else { s.take_reserved(job_id, &attempt) }
                         };
                         if let (Some(budget), Some(r)) = (&budget, reserved) {
                             close(budget, &r);
                         }
-                        outcome(&failure.error)
+                        outcome(&failure.error, will_retry)
                     }
                 }
             }
@@ -1223,6 +1227,7 @@ mod tests {
         assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no session id")), "{refused:?}");
     }
 
+    mod ambiguous_retry_tests;
     mod delivery_evidence_tests;
     mod fresh_key_tests;
     mod paid_unpriced_tests;

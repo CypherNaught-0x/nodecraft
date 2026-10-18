@@ -34,6 +34,8 @@ serde_path_to_error.workspace = true
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 
 [dev-dependencies]
+# Exercise the real image adapter through the runner, not only a policy fixture.
+nodecraft-providers = { workspace = true, features = ["openai-images"] }
 nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }

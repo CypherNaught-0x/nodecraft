@@ -67,7 +67,8 @@ impl RunFailure {
         Self { error, handle: None, finished: false, uncertain: !proven }
     }
 
-    /// Worth retrying: transient, and either never submitted or resumable by handle.
+    /// Diagnostic transience only. A caller must also check uncertainty, any resumable handle,
+    /// and the provider's ambiguous-submit retry policy before authorizing another submit.
     pub fn is_transient(&self) -> bool {
         self.error.is_transient()
     }
