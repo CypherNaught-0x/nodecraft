@@ -81,14 +81,16 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "perf.stop",
     "perf.clear",
     "perf.report",
+    "usage.ownership",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
 /// remain human-only until MCP/control enforce allowed read/write roots (#116); native path
 /// canonicalization is not filesystem authorization. Engine/native callers retain their existing
 /// file access. `run.record` writes the results of a run the host executed: an agent must not
-/// fabricate them.
-pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove", "file.open", "file.save", "file.save_as", "run.record"];
+/// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
+/// charges against their own provider records (#325).
+pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove", "file.open", "file.save", "file.save_as", "run.record", "usage.reconcile_ownership"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;

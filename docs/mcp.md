@@ -70,7 +70,10 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
 and `keys.remove` deletes a key with no undo. `file.open`, `file.save` and `file.save_as` are
 temporarily human-only until MCP enforces allowed read/write roots (#116); they remain available
-through the engine and native app. A new command stays hidden until it is added to one of the
+through the engine and native app. `run.record` writes results the host ran, and
+`usage.reconcile_ownership` records a person's judgement about historical charges against their
+own provider records (#325); agents can still review those charges with `usage.ownership`. A new
+command stays hidden until it is added to one of the
 lists, and a test fails until then.
 
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
