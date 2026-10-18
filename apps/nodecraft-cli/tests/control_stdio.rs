@@ -77,6 +77,22 @@ fn wait(child: &mut Child) -> ExitStatus {
     }
 }
 
+// Closing our pipe reader is not immediately observable by the child: a sibling test thread may
+// be mid-spawn and hold an inherited copy of the read end until its exec closes it. Keep sending
+// requests until a reply write fails, instead of betting that the very first reply does.
+fn send_until_exit(child: &mut Child) -> ExitStatus {
+    let mut input = child.stdin.take().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        if input.write_all(b"{\"id\":1,\"method\":\"hello\"}\n").and_then(|()| input.flush()).is_err() {
+            break; // The child already closed stdin on its way out.
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(input);
+    wait(child)
+}
+
 #[test]
 fn trusted_parent_can_negotiate_edit_inspect_and_undo() {
     let mut client = Client::new();
@@ -159,8 +175,7 @@ fn broken_stdout_and_unknown_options_fail_without_panicking() {
     let mut child =
         Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).arg("control").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     drop(child.stdout.take());
-    child.stdin.take().unwrap().write_all(b"{\"id\":1,\"method\":\"hello\"}\n").unwrap();
-    assert!(!wait(&mut child).success());
+    assert!(!send_until_exit(&mut child).success());
     let mut error = String::new();
     std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut error).unwrap();
     assert!(error.contains("control stdio I/O failed"), "{error}");
@@ -178,7 +193,6 @@ fn closed_stdout_and_stderr_exit_with_io_failure_instead_of_panicking() {
     // Both readers are gone before input unblocks the serving thread's first reply.
     drop(child.stdout.take());
     drop(child.stderr.take());
-    child.stdin.take().unwrap().write_all(b"{\"id\":1,\"method\":\"hello\"}\n").unwrap();
-    let status = wait(&mut child);
+    let status = send_until_exit(&mut child);
     assert_eq!(status.code(), Some(1), "I/O failure must use the normal failure exit, not Rust's panic exit");
 }
