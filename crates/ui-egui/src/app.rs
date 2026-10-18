@@ -395,11 +395,20 @@ impl NodeCraftApp {
                 None
             }
         });
+        let mut kept = None;
         let mut app = match stored {
-            Some((session, canvas)) => Self::from_session(session.with_services(services), canvas)?,
+            Some((session, canvas, unrecovered)) => {
+                kept = unrecovered;
+                Self::from_session(session.with_services(services), canvas)?
+            }
             None => Self::with_services(services)?,
         };
-        app.notice = problem;
+        app.notice = problem.or_else(|| {
+            kept.map(|path| {
+                log::warn!("kept an earlier session's recovery journal at {}", path.display());
+                "Unsaved work from a session that didn't close cleanly was kept in the recovery folder.".to_owned()
+            })
+        });
         app.key_results = results;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);

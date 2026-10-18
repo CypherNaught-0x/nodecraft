@@ -106,3 +106,20 @@ fn a_second_window_cannot_take_the_same_journal() {
     let second = NodeCraftApp::with_services_and_storage(Default::default(), StorageSetup { recovery: dir.0.join("recovery"), open: None });
     assert!(second.is_err(), "the recovery journal is locked");
 }
+
+#[test]
+fn an_earlier_sessions_journal_is_kept_not_overwritten() {
+    let dir = Scratch::new("keep");
+    let journal = dir.0.join("recovery");
+    {
+        // A session edits and "crashes": no clean close, so its journal stays.
+        let mut crashed = app(&dir.0, None);
+        add_text(&mut crashed, 80);
+    }
+    let before = std::fs::read(&journal).unwrap();
+    assert!(!before.is_empty());
+    let (_, _, kept) = NodeCraftApp::storage_session(StorageSetup { recovery: journal.clone(), open: None }).unwrap();
+    let kept = kept.expect("the earlier journal was kept");
+    assert_eq!(std::fs::read(&kept).unwrap(), before, "byte for byte");
+    assert_eq!(kept.file_name().unwrap(), "recovery.unrecovered-1");
+}

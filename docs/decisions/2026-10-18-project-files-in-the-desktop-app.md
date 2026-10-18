@@ -10,6 +10,9 @@
   without project files, and a notice says why.
 - **A project path on the command line is opened at startup**, and the window title shows its
   file name, with a dot while there are unsaved changes.
+- **A crashed session's journal is never overwritten.** Starting a session checkpoints the
+  journal, so with the lock held the app first copies a non-empty journal aside, as
+  `session.journal.unrecovered-<n>`, and says so. Recovery (#408) offers it.
 - **Shortcuts:**
   - ⌘S/Ctrl+S saves a project that has a file.
   - Choosing a file (⇧⌘S, ⌘O, or ⌘S on an untitled project) needs the file dialogs (#407); until

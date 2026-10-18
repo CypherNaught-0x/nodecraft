@@ -18,16 +18,40 @@ pub struct StorageSetup {
     pub open: Option<PathBuf>,
 }
 
+/// Copies a non-empty journal at `recovery` to a fresh `<name>.unrecovered-<n>` beside it, and
+/// returns where. Call with the journal's lock held.
+fn keep_unrecovered(recovery: &std::path::Path) -> Result<Option<PathBuf>, Error> {
+    let unreadable = |_| Error::new(ErrorKind::Conflict, "an earlier session's recovery journal can't be kept, so it wasn't replaced");
+    match std::fs::metadata(recovery) {
+        Ok(meta) if meta.len() > 0 => {}
+        // Nothing to keep: no journal yet, or an empty one.
+        _ => return Ok(None),
+    }
+    let name = recovery.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "session.journal".into());
+    for n in 1..=999u32 {
+        let kept = recovery.with_file_name(format!("{name}.unrecovered-{n}"));
+        if !kept.exists() {
+            std::fs::copy(recovery, &kept).map_err(unreadable)?;
+            return Ok(Some(kept));
+        }
+    }
+    Err(Error::new(ErrorKind::Conflict, "too many unrecovered journals are kept; recover or remove some first"))
+}
+
 impl NodeCraftApp {
     /// A session over native storage, starting from the sample project or the file in `setup`,
-    /// and the canvas to show.
-    pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId), Error> {
+    /// and the canvas to show, plus where an earlier session's unrecovered journal was kept.
+    pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>), Error> {
         let kinds = nodecraft_nodes::Registry::builtins()?;
         let (document, canvas) = Self::starter_document(&kinds)?;
         if let Some(folder) = setup.recovery.parent() {
             std::fs::create_dir_all(folder).map_err(|_| Error::new(ErrorKind::Unsupported, "the recovery folder can't be created"))?;
         }
-        let storage = NativeStorage::new(setup.recovery)?;
+        // The lock comes first: once held, no other window is using this journal.
+        let storage = NativeStorage::new(setup.recovery.clone())?;
+        // A journal left by a session that didn't close cleanly holds unsaved work. Starting a
+        // session checkpoints over it, so keep a copy first (recovery offers it, #408).
+        let kept = keep_unrecovered(&setup.recovery)?;
         let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
         let mut session = Session::with_storage(snapshot, Box::new(storage))?;
         let mut canvas = canvas;
@@ -36,13 +60,13 @@ impl NodeCraftApp {
             session.dispatch("file.open", &json!({"location": location, "discard_dirty": true}))?;
             canvas = session.document().canvases().keys().next().copied().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project has no canvas"))?;
         }
-        Ok((session, canvas))
+        Ok((session, canvas, kept))
     }
 
     /// [`Self::storage_session`] wrapped in an app with `services`.
     #[cfg(test)]
     pub(super) fn with_services_and_storage(services: nodecraft_engine::commands::Services, setup: StorageSetup) -> Result<Self, Error> {
-        let (session, canvas) = Self::storage_session(setup)?;
+        let (session, canvas, _) = Self::storage_session(setup)?;
         Self::from_session(session.with_services(services), canvas)
     }
 
