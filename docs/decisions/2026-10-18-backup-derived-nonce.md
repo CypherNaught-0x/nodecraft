@@ -3,8 +3,9 @@
 - **Only the salt is caller randomness.** The first container design took both the Argon2id
   salt and the XChaCha20 STREAM nonce prefix from the caller. A host that reused both with one
   passphrase would reuse the keystream. Argon2id now outputs 51 bytes: the first 32 are the
-  key, the last 19 the nonce prefix. A fresh salt gives a fresh key and a fresh prefix, and
-  nothing the caller picks can make two backups share a nonce under one key.
+  key, the last 19 the nonce prefix. A fresh salt gives a fresh key and a fresh prefix; given
+  one, nothing else the caller picks can make two backups share a nonce under one key. The salt
+  must still be fresh: the same passphrase, salt and parameters repeat both.
 - **Sound to split.** Argon2's variable-length output is pseudorandom across every byte, so key
   and prefix are independent, the usual "KDF to key and IV" pattern. Reusing a salt with the
   same passphrase still repeats both; hosts take the salt from the platform's random source.

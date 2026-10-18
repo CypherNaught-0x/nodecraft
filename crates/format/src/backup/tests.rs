@@ -122,8 +122,9 @@ fn truncation_and_trailing_data_are_detected() {
     // Dropping a whole middle chunk breaks the counter.
     let sealed = write(protection("pw"), &files);
     let chunk = BACKUP_CHUNK_BYTES + 16;
-    let mut spliced = sealed.get(..59 + chunk).unwrap().to_vec();
-    spliced.extend_from_slice(sealed.get(59 + 2 * chunk..).unwrap());
+    let header = BackupHeader::read(&mut sealed.as_slice()).unwrap().1.len();
+    let mut spliced = sealed.get(..header + chunk).unwrap().to_vec();
+    spliced.extend_from_slice(sealed.get(header + 2 * chunk..).unwrap());
     assert_eq!(read(&spliced, Some("pw")).unwrap_err().kind, ErrorKind::Authentication);
 }
 
@@ -450,9 +451,10 @@ fn the_nonce_prefix_is_derived_from_the_salt_not_stored() {
 }
 
 #[test]
-fn the_key_and_prefix_split_is_pinned() {
-    // Known answer: the prefix is bytes 32..51 of Argon2id(passphrase, salt) at FAST, so a
-    // swapped or resized split can't pass the round trips unnoticed.
+fn the_key_and_prefix_split_matches_a_recomputed_derivation() {
+    // Not a fixed vector: Argon2id is recomputed here with a raw 51-byte output, and the prefix
+    // must be bytes 32..51 and the key bytes ..32, so a swapped or resized split can't pass the
+    // round trips unnoticed.
     let params = argon2::Params::new(FAST.memory_kib, FAST.iterations, FAST.lanes, Some(51)).unwrap();
     let mut raw = [0u8; 51];
     argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into(b"pw", &[3; 16], &mut raw).unwrap();
