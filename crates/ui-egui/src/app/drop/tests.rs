@@ -140,3 +140,20 @@ fn a_dropped_fifo_is_refused_without_blocking_the_worker() {
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[text]);
     assert_eq!(nodes(&h).len(), before + 1, "the worker is free again: {:?}", h.state().notice);
 }
+
+#[test]
+fn hdr394_drop_shows_an_actionable_notice_without_adding_nodes() {
+    let (mut h, _worker) = drop_harness();
+    let count = nodes(&h).len();
+    let scratch = Scratch::new("hdr394");
+    let exr = scratch.write("sample.exr", b"\x76\x2f\x31\x01");
+    drop_at(&mut h, Pos2::new(600.0, 300.0), &[exr]);
+    assert_eq!(h.state().notice.as_deref(), Some("sample.exr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
+    assert_eq!(nodes(&h).len(), count);
+    assert!(!h.state().session.can_undo());
+    let hdr = scratch.write("sample.hdr", b"#?RGBE\n");
+    drop_at(&mut h, Pos2::new(600.0, 300.0), &[hdr]);
+    assert_eq!(h.state().notice.as_deref(), Some("sample.hdr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
+    assert_eq!(nodes(&h).len(), count);
+    assert!(!h.state().session.can_undo());
+}
