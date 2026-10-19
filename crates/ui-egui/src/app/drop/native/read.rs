@@ -92,7 +92,10 @@ impl From<Failure> for ReadError {
 fn one(shared: &Shared, path: &Path, cap: usize, work: &mut Work, state: &State) -> Result<Vec<u8>, ReadError> {
     state.check()?;
     work.check()?;
-    let mut file = shared.backend.open(path).map_err(|_| ReadError::File(Reason::Unreadable))?;
+    let mut file = shared
+        .backend
+        .open(path)
+        .map_err(|error| ReadError::File(if error.kind() == io::ErrorKind::IsADirectory { Reason::Nonregular } else { Reason::Unreadable }))?;
     state.check()?;
     let (regular, length) = file.metadata().map_err(|_| ReadError::File(Reason::Unreadable))?;
     state.check()?;

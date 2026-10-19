@@ -696,6 +696,24 @@ fn opened_object_failures_skip_individually_and_keep_a_later_regular_file() {
     idle(&worker.service);
 }
 #[test]
+fn a_folder_that_cannot_be_opened_is_skipped_as_not_a_file() {
+    struct Folder;
+    impl Acquirer for Folder {
+        fn open(&self, _: &Path) -> io::Result<Box<dyn OpenedFile>> {
+            Err(io::ErrorKind::IsADirectory.into())
+        }
+    }
+    let worker = TestService { service: Service::spawn(Arc::new(Folder), Arc::new(Monotonic)).unwrap() };
+    let mut ticket = start(&worker.service, &handles(&["folder"]));
+    let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
+    assert!(batch.files.is_empty());
+    assert_eq!(batch.skipped.count, 1);
+    assert_eq!(batch.skipped.first.as_ref().unwrap().1, Reason::Nonregular);
+    drop(batch);
+    drop(ticket);
+    idle(&worker.service);
+}
+#[test]
 fn ready_delivery_resumes_after_an_owned_release_outside_cancel() {
     use crate::app::tests::harness;
     let (worker, _, entered, release) = gated(0);

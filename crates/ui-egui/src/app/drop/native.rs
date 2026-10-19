@@ -131,7 +131,11 @@ impl Acquirer for Filesystem {
         // regular file ignore the flag. Other Unix special files can still block (decision record).
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
-        Ok(Box::new(options.open(path)?))
+        // Windows refuses to open a folder as a file, so its regular-file check never runs; a
+        // stat (which never blocks on special files) tells a folder from an unreadable file.
+        let file =
+            options.open(path).map_err(|error| if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) { io::ErrorKind::IsADirectory.into() } else { error })?;
+        Ok(Box::new(file))
     }
 }
 struct Lease(Arc<AtomicBool>);
