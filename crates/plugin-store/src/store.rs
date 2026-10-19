@@ -20,8 +20,8 @@
 use crate::archive::{self, ArchiveLimits, Package, wire};
 use nodecraft_plugin::id::{HostId, PackageId, RegisteredId};
 use nodecraft_plugin::json::{self, Json, Limits};
-use nodecraft_plugin::lock::{self, Installed};
-use nodecraft_plugin::manifest::Version;
+use nodecraft_plugin::lock;
+use nodecraft_plugin::manifest::{Dependency, Version};
 use nodecraft_plugin::signature::{self, Provenance, TrustStore};
 use nodecraft_plugin::{PackageDigest, register};
 use nodecraft_types::{Error, ErrorKind};
@@ -44,7 +44,9 @@ pub trait StoreBackend {
     /// Stores an archive under its digest (durably, before the index names it).
     fn write_object(&mut self, digest: &PackageDigest, bytes: &[u8]) -> Result<(), Error>;
     fn remove_object(&mut self, digest: &PackageDigest) -> Result<(), Error>;
-    /// Every stored archive's digest (to remove the ones the index no longer names).
+    /// Stored archives that may be swept if the index doesn't name them. A backend another
+    /// process writes leaves out recent ones: they may belong to an import whose index isn't
+    /// written yet.
     fn list_objects(&self) -> Result<Vec<PackageDigest>, Error>;
 }
 
@@ -66,6 +68,10 @@ pub struct Entry {
     pub license: String,
     /// Who signed it, as checked at import against the trust file then.
     pub signed_by: Option<String>,
+    /// The IDs it registers and its exact dependency locks, so the store's checks never need
+    /// to open archives.
+    pub registrations: Vec<String>,
+    pub dependencies: Vec<Dependency>,
 }
 
 /// The store's state.
@@ -209,10 +215,28 @@ impl<B: StoreBackend> Store<B> {
         let mut ids = BTreeSet::new();
         for (id, (digest, _)) in &self.index.active {
             if id != except {
-                ids.extend(self.load_digest(digest)?.manifest.registered_ids().map(|r| r.to_string()));
+                ids.extend(self.entry(digest)?.registrations.iter().cloned());
             }
         }
         Ok(ids)
+    }
+
+    fn entry(&self, digest: &PackageDigest) -> Result<&Entry, Error> {
+        self.index.objects.get(digest).ok_or_else(|| Error::new(ErrorKind::Internal, "the plugin store's index names a package it doesn't keep"))
+    }
+
+    /// Re-reads the index if another NodeCraft changed it since this store last read or wrote
+    /// it, so every request starts from the store's current state.
+    pub fn refresh(&mut self) -> Result<(), Error> {
+        let current = self.backend.read_index()?;
+        if current != self.seen {
+            self.index = match &current {
+                Some(bytes) => decode_index(bytes)?,
+                None => Index::default(),
+            };
+            self.seen = current;
+        }
+        Ok(())
     }
 
     fn report(&self, package: &Package, provenance: Provenance, bytes: usize, replaced: Option<PackageDigest>) -> ImportReport {
@@ -227,6 +251,8 @@ impl<B: StoreBackend> Store<B> {
             bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
             license: package.manifest.license.clone(),
             signed_by,
+            registrations: package.manifest.registered_ids().map(|id| id.to_string()).collect(),
+            dependencies: package.manifest.dependencies.clone(),
         };
         ImportReport {
             entry,
@@ -346,21 +372,21 @@ impl<B: StoreBackend> Store<B> {
         }
         let loaded = self.load_digest(&digest)?;
         provenance(&loaded, trust)?;
-        // Dependencies must be enabled, so only enabled packages are read.
-        let mut enabled = BTreeMap::new();
-        for (id, (d, s)) in &self.index.active {
-            if id != package && *s == State::Enabled {
-                enabled.insert(id.clone(), (self.load_digest(d)?, *d));
+        // Every lock names an installed, enabled package at exactly that version and digest.
+        // Enabled packages had their own locks checked when enabled, and stay put while
+        // enabled, so the chain below them holds too.
+        for dep in &loaded.manifest.dependencies {
+            match self.index.active.get(&dep.package_id) {
+                Some((d, _)) if *d != dep.digest || self.entry(d)?.version != dep.version => {
+                    return Err(conflict(format!("its dependencies aren't met ({} isn't installed at the locked version)", dep.package_id)));
+                }
+                Some((_, State::Disabled)) => return Err(conflict(format!("enable {} first", dep.package_id))),
+                Some((_, State::Enabled)) => {}
+                None => return Err(conflict(format!("its dependencies aren't met ({} isn't installed)", dep.package_id))),
             }
         }
-        let installed: BTreeMap<PackageId, Installed<'_>> =
-            enabled.iter().map(|(id, (p, d))| (id.clone(), Installed { manifest: &p.manifest, digest: *d })).collect();
-        if let Err(e) = lock::resolve(&loaded.manifest, &installed) {
-            let off = loaded.manifest.dependencies.iter().find(|dep| !enabled.contains_key(&dep.package_id) && self.index.active.contains_key(&dep.package_id));
-            return Err(match off {
-                Some(dep) => conflict(format!("enable {} first", dep.package_id)),
-                None => conflict(format!("its dependencies aren't met ({e})")),
-            });
+        if depth(&self.index, &digest)? > lock::MAX_DEPTH {
+            return Err(conflict("its dependencies nest deeper than 8"));
         }
         let mut registered: BTreeSet<String> = taken.clone();
         registered.extend(self.installed_ids(package)?);
@@ -387,7 +413,7 @@ impl<B: StoreBackend> Store<B> {
             return Ok(());
         }
         for (id, (d, s)) in &self.index.active {
-            if id != package && *s == State::Enabled && self.load_digest(d)?.manifest.dependencies.iter().any(|dep| dep.package_id == *package) {
+            if id != package && *s == State::Enabled && self.entry(d)?.dependencies.iter().any(|dep| dep.package_id == *package) {
                 return Err(conflict(format!("disable {id} first; it depends on this package")));
             }
         }
@@ -400,7 +426,7 @@ impl<B: StoreBackend> Store<B> {
     fn locked(&self) -> Result<BTreeMap<PackageDigest, Vec<PackageId>>, Error> {
         let mut locked: BTreeMap<PackageDigest, Vec<PackageId>> = BTreeMap::new();
         for (id, (digest, _)) in &self.index.active {
-            for dep in self.load_digest(digest)?.manifest.dependencies {
+            for dep in &self.entry(digest)?.dependencies {
                 locked.entry(dep.digest).or_default().push(id.clone());
             }
         }
@@ -453,6 +479,24 @@ impl<B: StoreBackend> Store<B> {
     }
 }
 
+/// How many levels of dependencies lie below `digest`, from the index: a level-by-level walk
+/// over a seen set, stopping past the limit.
+fn depth(index: &Index, digest: &PackageDigest) -> Result<usize, Error> {
+    let mut seen = BTreeSet::from([*digest]);
+    let mut level = vec![*digest];
+    let mut depth = 0;
+    while depth <= lock::MAX_DEPTH {
+        let next: Vec<PackageDigest> =
+            level.iter().filter_map(|d| index.objects.get(d)).flat_map(|e| e.dependencies.iter().map(|dep| dep.digest)).filter(|d| seen.insert(*d)).collect();
+        if next.is_empty() {
+            break;
+        }
+        depth += 1;
+        level = next;
+    }
+    Ok(depth)
+}
+
 /// A package's signature checked against `trust` now.
 fn provenance(package: &Package, trust: &TrustStore) -> Result<Provenance, Error> {
     signature::verify(&package.digest, package.signature.as_ref(), trust, package.manifest.publisher_key_id.as_ref()).map_err(wire)
@@ -476,6 +520,19 @@ fn encode_index(index: &Index) -> Result<String, Error> {
             if let Some(key) = &e.signed_by {
                 m.insert("signed_by".to_owned(), s(key.clone()));
             }
+            m.insert("registrations".to_owned(), Json::Array(e.registrations.iter().map(|r| s(r.clone())).collect()));
+            let deps = e
+                .dependencies
+                .iter()
+                .map(|d| {
+                    Json::Object(BTreeMap::from([
+                        ("digest".to_owned(), s(d.digest.to_string())),
+                        ("package_id".to_owned(), s(d.package_id.to_string())),
+                        ("version".to_owned(), s(d.version.to_string())),
+                    ]))
+                })
+                .collect();
+            m.insert("dependencies".to_owned(), Json::Array(deps));
             Json::Object(m)
         })
         .collect();
@@ -527,6 +584,31 @@ fn decode_index(bytes: &[u8]) -> Result<Index, Error> {
                 Some(Json::Str(s)) => Some(s),
                 None => None,
                 Some(_) => return Err(damaged()),
+            },
+            registrations: match m.remove("registrations") {
+                Some(Json::Array(items)) if items.len() <= nodecraft_plugin::manifest::MAX_REGISTRATIONS => items
+                    .into_iter()
+                    .map(|i| match i {
+                        Json::Str(id) if RegisteredId::parse(&id).is_ok() => Ok(id),
+                        _ => Err(damaged()),
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(damaged()),
+            },
+            dependencies: match m.remove("dependencies") {
+                Some(Json::Array(items)) if items.len() <= nodecraft_plugin::manifest::MAX_DEPENDENCIES => items
+                    .into_iter()
+                    .map(|i| {
+                        let Json::Object(mut d) = i else { return Err(damaged()) };
+                        let dep = Dependency {
+                            package_id: PackageId::parse(&text(&mut d, "package_id")?).map_err(|_| damaged())?,
+                            version: Version::parse(&text(&mut d, "version")?).map_err(|_| damaged())?,
+                            digest: PackageDigest::parse(&text(&mut d, "digest")?).map_err(|_| damaged())?,
+                        };
+                        if d.is_empty() { Ok(dep) } else { Err(damaged()) }
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(damaged()),
             },
         };
         if !m.is_empty() || index.objects.insert(entry.digest, entry).is_some() || index.objects.len() > MAX_OBJECTS {

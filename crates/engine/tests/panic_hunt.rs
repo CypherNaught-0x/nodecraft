@@ -290,6 +290,11 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
+        // The plugins service isn't registered here either.
+        "plugins.list" | "plugins.prune" => json!({}),
+        "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
+        "plugins.enable" | "plugins.disable" | "plugins.uninstall" => json!({"package_id":"io.example.palette"}),
+        "plugins.rollback" => json!({"package_id":"io.example.palette","digest":format!("blake3:{}", "0".repeat(64))}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)

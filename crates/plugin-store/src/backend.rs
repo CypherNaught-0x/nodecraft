@@ -61,6 +61,9 @@ mod native {
         move |_| Error::new(ErrorKind::Internal, detail)
     }
 
+    /// How old a stored file must be before an unindexed one is swept.
+    const SETTLED: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
     /// Largest stored file read back (an archive is at most 32 MiB; the index 4 MiB).
     const MAX_READ: u64 = 64 * 1024 * 1024;
 
@@ -70,7 +73,8 @@ mod native {
             // Index writes a crash interrupted.
             if let Ok(entries) = std::fs::read_dir(&root) {
                 for entry in entries.flatten().take(1024) {
-                    if entry.file_name().to_str().is_some_and(|n| n.starts_with("index.json.") && n.ends_with(".new")) {
+                    let settled = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= SETTLED);
+                    if settled && entry.file_name().to_str().is_some_and(|n| n.starts_with("index.json.") && n.ends_with(".new")) {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
@@ -146,6 +150,12 @@ mod native {
             let entries = std::fs::read_dir(self.root.join("objects")).map_err(io("the plugin store can't be read"))?;
             let mut digests = Vec::new();
             for entry in entries.flatten().take(4 * crate::store::MAX_OBJECTS) {
+                // Another window or the CLI may be importing right now: its archive is written
+                // before its index. Only files settled for a while are candidates.
+                let settled = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= SETTLED);
+                if !settled {
+                    continue;
+                }
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
                 if name.ends_with(".new") {

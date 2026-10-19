@@ -92,6 +92,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "perf.clear",
     "perf.report",
     "usage.ownership",
+    "plugins.list",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
@@ -99,8 +100,16 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// canonicalization is not filesystem authorization. Engine/native callers retain their existing
 /// file access. `run.record` writes the results of a run the host executed: an agent must not
 /// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
-/// charges against their own provider records (#325).
+/// charges against their own provider records (#325). `plugins.*` changes read package files and
+/// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
+    "plugins.import",
+    "plugins.update",
+    "plugins.enable",
+    "plugins.disable",
+    "plugins.rollback",
+    "plugins.uninstall",
+    "plugins.prune",
     "keys.set",
     "keys.remove",
     "file.open",

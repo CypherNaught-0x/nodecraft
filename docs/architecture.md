@@ -284,7 +284,9 @@ feasibility phase. It is a delivery/contract plan, not a currently implemented p
 Its phase A, the package and wire contract, is the standalone `plugin` crate
 ([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
 Phase B's verifier and local store are `plugin-store`; data packages install disabled and
-nothing in them executes.
+nothing in them executes. The engine's `plugins.*` commands reach the store through the host's
+`plugins.store` service; the desktop app keeps it in `<settings>/plugins/store` with the trust file
+`<settings>/plugins/trust.json`, and refuses any package ID the app itself registers.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions

@@ -581,3 +581,21 @@ proptest::proptest! {
         proptest::prop_assert_eq!(again.index(), st.index());
     }
 }
+
+#[test]
+fn an_import_in_flight_elsewhere_isnt_swept_and_refresh_sees_other_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let open = || Store::open(crate::FolderBackend::new(dir.path().to_path_buf()).unwrap()).unwrap();
+    let mut a = open();
+    // Another process has written its archive but not yet its index.
+    let mut backend = crate::FolderBackend::new(dir.path().to_path_buf()).unwrap();
+    let digest = digest_of(&spec("io.example.inflight"));
+    crate::StoreBackend::write_object(&mut backend, &digest, &package(&spec("io.example.inflight"))).unwrap();
+    let _b = open();
+    assert!(crate::StoreBackend::read_object(&backend, &digest).is_ok(), "a fresh archive isn't swept");
+    // A change made by another store is seen at the next request.
+    open().import(&package(&spec("io.example.other")), &TrustStore::default(), false).unwrap();
+    assert!(a.index().active.is_empty());
+    a.refresh().unwrap();
+    assert!(a.index().active.contains_key(&id("io.example.other")));
+}
