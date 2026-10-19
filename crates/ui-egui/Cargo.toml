@@ -28,4 +28,6 @@ log = { workspace = true }
 getrandom.workspace = true
 
 [dev-dependencies]
+nodecraft-format.workspace = true
+nodecraft-media = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu"] }
