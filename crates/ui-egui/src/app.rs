@@ -369,6 +369,23 @@ pub struct NodeCraftApp {
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
 }
 impl NodeCraftApp {
+    /// Cancel one owner at a time: noodle, input order, marquee, then selection.
+    fn cancel_canvas_gesture(&mut self) {
+        if self.wiring.take().is_some() {
+            return;
+        }
+        if self.reordering.take().is_some() {
+            return;
+        }
+        match &mut self.marquee {
+            Some(marquee) if !marquee.cancelled => {
+                marquee.cancelled = true;
+                self.selection = marquee.base.clone();
+            }
+            _ => self.selection.clear(),
+        }
+    }
+
     pub fn new(ctx: &egui::Context) -> Result<Self, Error> {
         let mut app = Self::headless()?;
         app.apply_settings(ctx, &NodeCraftSettings::default());
@@ -794,6 +811,7 @@ impl NodeCraftApp {
             let busy = self.drag.is_some()
                 || self.marquee.is_some()
                 || self.wiring.is_some()
+                || self.reordering.is_some()
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || self.navigation.drag.is_some()
@@ -819,16 +837,9 @@ impl NodeCraftApp {
                     self.create_node(&kind, self.view.to_world(viewport.min, at));
                 }
             }
-            // Escape closes an open menu or leaves a text field first, then drops a noodle being
-            // dragged, then cancels a box select, then clears.
-            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) && self.wiring.take().is_none() {
-                match &mut self.marquee {
-                    Some(marquee) if !marquee.cancelled => {
-                        marquee.cancelled = true;
-                        self.selection = marquee.base.clone();
-                    }
-                    _ => self.selection.clear(),
-                }
+            // Menus and editors own Escape before canvas gestures; comments consume it above.
+            if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) {
+                self.cancel_canvas_gesture();
             }
         }
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
