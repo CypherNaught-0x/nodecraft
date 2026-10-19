@@ -94,3 +94,41 @@ fn shutting_down_skips_queued_decodes() {
     // At most the one decode in progress finishes; a 2048² decode takes well under this.
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
 }
+
+#[test]
+fn source_dimensions_survive_inline_thumbnail_sizes_and_ready_hits_without_reads() {
+    let ctx = egui::Context::default();
+    let bytes = png(1024, 768);
+    let hash = Blake3::from_bytes([91; 32]);
+    for (edge, thumbnail) in [(128, [128, 96]), (512, [512, 384])] {
+        let mut previews = Previews::inline(&ctx, hash, edge, &bytes);
+        let mut reads = 0;
+        match previews.request(&ctx, hash, edge as f32, || {
+            reads += 1;
+            Some(bytes.clone())
+        }) {
+            Preview::Ready { size, source_size, .. } => {
+                assert_eq!(size, thumbnail);
+                assert_eq!(source_size, [1024, 768]);
+            }
+            _ => panic!("ready"),
+        }
+        assert_eq!(reads, 0, "Ready hits do not read or probe again");
+        assert_eq!(previews.bytes(), thumbnail[0] as usize * thumbnail[1] as usize * 4);
+    }
+}
+
+#[test]
+fn smaller_pending_fallback_retains_source_dimensions_without_another_read() {
+    let ctx = egui::Context::default();
+    let hash = Blake3::from_bytes([92; 32]);
+    let mut previews = Previews::inline(&ctx, hash, 128, &png(1024, 768));
+    previews.entries.insert((hash, 512), Entry::Pending);
+    let mut reads = 0;
+    let shown = previews.request(&ctx, hash, 512.0, || {
+        reads += 1;
+        None
+    });
+    assert!(matches!(shown, Preview::Ready { size: [128, 96], source_size: [1024, 768], .. }));
+    assert_eq!(reads, 0);
+}
