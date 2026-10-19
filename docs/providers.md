@@ -8,6 +8,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
+| **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and direct-adapter reference editing | Three stable Gemini models, unknown usage price; canvas resolver/mixed/list routing limitations below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -97,8 +98,10 @@ default to unknown; observing zero socket accepts or matching an error kind gran
 evidence. This is an adapter contract, not a sandbox or an automatic enforcement guarantee.
 Browser delivery remains conservative.
 
-Only the audited LLM Provider path can currently certify a whole submission: local validation
-or a native pre-execute build failure, with no earlier possible delivery or outstanding work.
+The audited LLM Provider path can certify a whole submission after local validation or a native
+pre-execute build failure, with no earlier possible delivery or outstanding work. Gemini Images
+can certify pure local validation failure, but deliberately marks delivery unknown before
+constructing its no-redirect HTTP future; a native builder failure there remains conservative.
 Legacy Provider and Http implementations default to unknown before their future constructors
 are called, for **all** error kinds. Comfy remains conservative because submission may query
 history/queue/catalogs, upload inputs and dispatch a prompt. A generic Auth, RateLimited or
@@ -286,6 +289,31 @@ duration field, so it remains ignored and cost stays unknown. Neither future dea
 nor a typed runtime-usage schema is supplied by this safety follow-up.
 
 
+## Gemini Images (`gemini-images` feature)
+
+The existing host provider factory reads the `gemini` keychain account for `gemini-images`,
+using the same readiness and routing path as other catalog adapters. Construction sends no
+requests; this adds no paid-run host or production media-input resolver.
+
+GeminiImages uses the stateless Gemini Interactions REST API at the fixed Google origin, with store/background/stream false. Supported stable model IDs are gemini-nano-banana-2.1, gemini-3.1-flash-lite-image and gemini-3-pro-image. Vertex and retired Imagen endpoints are not implemented. The catalog offers generation and direct-adapter editing with up to fourteen ordered PNG/JPEG/WebP references. Lite is not optimized for multiple-reference or sequential editing. No masks, remote URLs, conversation state, search/tools, count, quality or output-format switches. Output is explicitly inline JPEG. Lite's wire image_size is `1K` per REST enum and guide, despite its model page's conflicting `1024px` prose. Other models offer 1K/2K/4K; the documented local ten-aspect subset is in the catalog.
+
+Pass an API key as a Secret from the host's OS credential store, not a project field. The adapter uses x-goog-api-key as a secret header, generic User-Agent, no redirect following, and no automatic replay of uncertain paid requests. The local idempotency key is not a remote deduplication guarantee. A timeout, redirect, malformed response or cancellation after dispatch may still be billed. Poll has no resumable handle and cancel cannot confirm remote cancellation. Builtin browser transport explicitly refuses no-redirect requests; wasm compilation is supported with an audited host transport. No keys, prompts or provider response excerpts appear in adapter diagnostics.
+
+Pricing is ByUsage USD, unknown rather than free; token counts do not become actual currency. Every finite budget cap, including zero, refuses an unknown paid registration before transport. An explicitly uncapped host may run. Missing or malformed optional usage never discards otherwise valid images; returned Usage.cost is None. Main can have no numeric ledger record when neither estimate nor actual cost is available; this provider does not repair that limitation or imply a zero bill.
+
+The adapter preserves all final image/text blocks in order and validates the complete image collection before returning Completed. Unknown output types, URI-only output, corrupt later images and incomplete/nonterminal responses refuse rather than silently publish partial results. Thought summaries are bounded private metadata, not final output. Text-only output reports an actionable malformed/no-image result; the selected Interactions schema does not expose generateContent finishReason/safetyRatings, so arbitrary 403 or a text sentence is not guessed to be BlockedContent.
+
+Current canvas limitations are explicit: generate::provider_job cannot resolve graph Media assets, so catalog editing data does not implement end-to-end canvas editing. Direct ProviderJob::Media editing works with supplied bytes. generate::produced needs a Text route for mixed text/images, and Run requires list ports for multiple values; scalar image ports refuse multiple images. Hosts must retain the original paid Completed while conversion/assembly may refuse, not drop text/images or retry generation. This is caller responsibility, not automatic durable result retention. Tests exercise the actual converter and Run boundaries without changing engine behavior.
+
+Local lower-only limits: prompt 128,000 bytes / 32,000 characters; 15 inputs / 14 references; 8 MiB per input and 48 MiB total; 64 MiB request; 65 MiB response; 16 final images; 8 MiB per output and 48 MiB total. Structural limits are 64 steps / 256 content items, JSON depth 16 / 8,192 members / 16,384 values / 4,096 strings, 256 KiB metadata including 64 KiB text, and 64 MiB aggregate image base64. Images have an 8,192-pixel axis cap, 17,203,200 pixels per image and 34,406,400 pixels total. These shared image limits apply to references as well as outputs. The aggregate admits two largest documented 4K outputs, not sixteen maximum-size images; every byte, count and pixel bound still applies. Any later invalid or excessive image refuses the whole collection.
+
+For Nano and Pro, requested 1K/2K/4K geometry is checked against lowered axis, per-image, two-image aggregate and JPEG pixel/orientation allowances before reference decoding or POST. This cannot predict the actual returned count or encoded byte length. Lite has no separately identified dimension table in the checked guide: its default envelope is supported, but lowering any geometry or codec allowance conservatively refuses before POST. Actual probe and full codec validation remain mandatory for every image; the 256 MiB codec setting reserves pixels and possible orientation copies, not all codec workspace.
+
+The synchronous request allowance is 300 seconds, providing local service/body-transfer headroom for expensive work without automatically replaying it. This is not a measured service SLA, the engine's total RunLimits deadline, or proof that timeout/cancellation avoids billing. Catalog latency remains an approximate 120-second hint. The fixed request encoder uses a 4,096-byte stack buffer. The [tracked phase worksheet](decisions/2026-10-18-gemini-images.md#resource-ownership) charges known JPEG input/metadata copies and keeps every phase below the existing 628 MiB logical envelope; it does not bound allocator capacities, codec-private workspace, transport internals, concurrent host owners or RSS.
+
+Original synthetic fixtures run offline. The ignored native smoke requires NODECRAFT_LIVE_GEMINI_IMAGES=1 plus NODECRAFT_LIVE_GEMINI_IMAGES_ACKNOWLEDGE_COST=1 and explicit spending authorization; optional second paid edit additionally requires NODECRAFT_LIVE_GEMINI_IMAGES_EDIT=1. No live test is selected in CI. Current source has not been validated against a paid service call.
+
+Contract checked 2026-10-18: [REST](https://ai.google.dev/api/interactions-api), [image guide](https://ai.google.dev/gemini-api/docs/image-generation), [Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image), [Nano](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1), [Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image).
 ## fal.ai queue models
 
 The optional `fal` feature supports five explicit live aliases, checked against official HTTP

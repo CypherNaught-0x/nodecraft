@@ -22,6 +22,8 @@ mod delivery;
 mod error;
 #[cfg(feature = "fal")]
 pub mod fal;
+#[cfg(feature = "gemini-images")]
+pub mod gemini_images;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
