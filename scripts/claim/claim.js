@@ -10,7 +10,7 @@
 const LABEL = 'in progress';
 const LABEL_COLOR = 'fbca04';
 const LABEL_DESCRIPTION = 'Someone is working on this';
-const CLAIM_HOURS = 72;
+const CLAIM_HOURS = 24;
 const PR_IDLE_DAYS = 14;
 const HOUR = 3600 * 1000;
 

@@ -25,7 +25,7 @@ building the same thing.
 2. **Comment `/claim` on the issue.** The bot assigns you, adds the `in progress` label and
    replies with your deadline. If someone else holds the issue, it tells you who and when their
    claim lapses.
-3. **Open a draft PR within 72 hours** that references the issue (`Fixes #N` in the body,
+3. **Open a draft PR within 24 hours** that references the issue (`Fixes #N` in the body,
    `<summary> (#N)` as the title). An empty commit is fine to start:
    `git commit --allow-empty -m "claim: #N"`. If no PR shows up in time, the claim lapses and
    the issue is free again.
