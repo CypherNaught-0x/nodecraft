@@ -125,6 +125,8 @@ pub enum Effect {
     },
     Save {
         location: Option<nodecraft_format::StorageLocation>,
+        /// Write on the host's save runner, when it has one, instead of inline.
+        background: bool,
     },
     PreparedRun {
         prepared: Box<crate::run_cmds::PreparedRun>,
