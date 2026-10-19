@@ -1205,3 +1205,29 @@ fn report_credit_is_consumed_once_without_double_charge_or_sticky_refusal_escape
     assert!(refused.reported(id(20), InvalidHash::Router(id(1))).is_err());
     assert_eq!(refused.diagnostic_output_bytes, 0);
 }
+
+#[test]
+fn a_chain_of_batches_deeper_than_the_limit_is_unknown_not_a_stack_overflow() {
+    let kinds = kinds();
+    let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Deep").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let depth = u8::try_from(MAX_BATCH_DEPTH + 8).unwrap();
+    let mut changes = Vec::new();
+    for n in 1..=depth {
+        let mut batch = kinds.get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(n), Default::default(), &Default::default()).unwrap();
+        batch.params.insert("text".into(), Value::Text("a".into()));
+        changes.push(Change::AddNode { canvas: C, node: batch });
+    }
+    let sink = depth + 1;
+    changes.push(Change::AddNode { canvas: C, node: kinds.get("test.gen").unwrap().descriptor().instantiate(id(sink), &Default::default()).unwrap() });
+    for n in 1..=depth {
+        let from = Endpoint { node: id(n), port: "item".into() };
+        let to = Endpoint { node: id(n + 1), port: "in".into() };
+        changes.push(Change::Connect { canvas: C, edge: Edge { id: EdgeId::from_bytes([n; 16]), from, to, order: 0 } });
+    }
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let canvas = project.canvases().get(&C).unwrap();
+    assert!(input_hash(canvas, &kinds, id(sink)).is_err(), "too deep to know");
+    assert!(input_hash(canvas, &kinds, id(2)).is_ok(), "a shallow batch still hashes");
+    assert!(stale(canvas, &kinds).unwrap().is_empty());
+}

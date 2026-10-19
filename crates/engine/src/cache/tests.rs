@@ -166,3 +166,32 @@ fn more_than_a_step_of_hits_settles_over_rounds() {
     let canvas = s.document().canvases().get(&CANVAS).unwrap();
     assert!(canvas.nodes().values().filter(|n| n.kind == "text.replace").all(|n| n.active.is_some()), "every node settled");
 }
+
+#[test]
+fn a_copied_fanned_result_keeps_its_item_tags() {
+    // Review of #479: a copy without its tags would turn per-item values into one plain list.
+    let kinds = Registry::builtins().unwrap();
+    let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "P").unwrap();
+    nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
+    for id in [BLUR, TWIN] {
+        let node = kinds.get("image.blur").unwrap().descriptor().instantiate(id, &BTreeMap::new()).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: CANVAS, node }.apply(&mut project).unwrap();
+    }
+    let hash = nodecraft_exec::staleness::input_hash(project.canvases().get(&CANVAS).unwrap(), &kinds, BLUR).unwrap();
+    let batch = NodeId::from_bytes([30; 16]);
+    let items: Vec<_> = [1u8, 2].iter().map(|n| vec![nodecraft_graph::ItemKey { batch, item: nodecraft_types::ItemId::from_bytes([*n; 16]) }]).collect();
+    let generation = nodecraft_graph::Generation {
+        id: nodecraft_types::GenerationId::from_bytes([40; 16]),
+        outputs: vec![Value::List(vec![Value::Text("a".into()), Value::Text("b".into())])],
+        input_hash: Some(hash),
+        items: items.clone(),
+    };
+    nodecraft_graph::Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();
+    let mut n = 50u8;
+    let found = super::hits(&project, CANVAS, &kinds, [TWIN], || {
+        n += 1;
+        Ok(nodecraft_types::GenerationId::from_bytes([n; 16]))
+    })
+    .unwrap();
+    assert!(matches!(found.as_slice(), [super::Hit::Copy { node, generation }] if *node == TWIN && generation.items == items), "{found:?}");
+}

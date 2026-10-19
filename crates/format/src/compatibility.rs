@@ -63,7 +63,8 @@ fn node(item: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn generation(item: &Value) -> Result<(), Error> {
-    if item.get("input_hash").is_some() {
+    // Item tags (#92) are as unknown to version 1 as input hashes.
+    if item.get("input_hash").is_some() || item.get("items").is_some() {
         return Err(unsupported());
     }
     if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
@@ -253,7 +254,7 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
             if !node.config.is_empty() || node.kind == "structure.note" {
                 return Err(unsupported());
             }
-            if node.history.iter().any(|generation| generation.input_hash.is_some()) {
+            if node.history.iter().any(|generation| generation.input_hash.is_some() || !generation.items.is_empty()) {
                 return Err(unsupported());
             }
             for value in node.params.values().chain(node.history.iter().flat_map(|generation| &generation.outputs)) {
@@ -287,6 +288,20 @@ mod tests {
             items: Vec::new(),
         });
         nodes.push(hashed);
+        // Fanned results (#92) carry item tags version 1 can't read.
+        let mut itemed = nodes[0].clone();
+        let key = nodecraft_graph::ItemKey { batch: NodeId::from_bytes([7; 16]), item: nodecraft_types::ItemId::from_bytes([8; 16]) };
+        itemed.history.push(Generation {
+            id: GenerationId::from_bytes([5; 16]),
+            outputs: vec![Wire::List(vec![Wire::Text("a".into())])],
+            input_hash: None,
+            items: vec![vec![key]],
+        });
+        let mut v1 = Project::new(ProjectId::from_bytes([4; 16]), "Items").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(c, "C") }.apply(&mut v1).unwrap();
+        Change::AddNode { canvas: c, node: itemed.clone() }.apply(&mut v1).unwrap();
+        assert!(project(&v1).is_err(), "never written as version 1");
+        nodes.push(itemed);
         for value in [
             serde_json::json!({"type":"bool","value":true}),
             serde_json::json!({"type":"number","value":1.5}),
