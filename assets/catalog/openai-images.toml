@@ -71,6 +71,54 @@ name = "output_compression"
 label = "Compression (JPEG/WebP)"
 control = { type = "unsigned", min = "0", max = "100" }
 
+# Only n has a verified cross-model meaning. Other names carry no compatibility claim.
+# OpenAI create-image API, checked 2026-10-19: n counts 1..10 generated images.
+# https://developers.openai.com/api/reference/resources/images/methods/generate
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "openai-images.sunburst"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "n"
+unit = "count"
+meaning = "generated_image_count"
+
+[[model.parameter_contract.schema.params]]
+name = "size"
+label = "Size"
+control = { type = "choice", options = [{ value = "1024x1024", label = "1024x1024" }, { value = "1536x1024", label = "1536x1024" }, { value = "1024x1536", label = "1024x1536" }, { value = "auto", label = "auto" }] }
+default = { type = "text", value = "1024x1024" }
+
+[[model.parameter_contract.schema.params]]
+name = "quality"
+label = "Quality"
+control = { type = "choice", options = [{ value = "low", label = "low" }, { value = "medium", label = "medium" }, { value = "high", label = "high" }, { value = "xhigh", label = "xhigh" }, { value = "max", label = "max" }, { value = "auto", label = "auto" }] }
+default = { type = "text", value = "auto" }
+
+[[model.parameter_contract.schema.params]]
+name = "background"
+label = "Background"
+control = { type = "choice", options = [{ value = "opaque", label = "opaque" }, { value = "transparent", label = "transparent" }, { value = "auto", label = "auto" }] }
+default = { type = "text", value = "auto" }
+
+[[model.parameter_contract.schema.params]]
+name = "output_format"
+label = "Output format"
+control = { type = "choice", options = [{ value = "png", label = "png" }, { value = "jpeg", label = "jpeg" }, { value = "webp", label = "webp" }] }
+default = { type = "text", value = "png" }
+
+[[model.parameter_contract.schema.params]]
+name = "n"
+label = "Images"
+control = { type = "unsigned", min = "1", max = "10" }
+default = { type = "unsigned", value = "1" }
+
+[[model.parameter_contract.schema.params]]
+name = "output_compression"
+label = "Compression (JPEG/WebP)"
+control = { type = "unsigned", min = "0", max = "100" }
+
 [[model]]
 id = "openai-images.flare"
 provider = "openai-images"
@@ -135,6 +183,54 @@ control = { type = "unsigned", min = "1", max = "10" }
 default = { type = "unsigned", value = "1" }
 
 [[model.params.params]]
+name = "output_compression"
+label = "Compression (JPEG/WebP)"
+control = { type = "unsigned", min = "0", max = "100" }
+
+# Only n has a verified cross-model meaning. Other names carry no compatibility claim.
+# OpenAI create-image API, checked 2026-10-19: n counts 1..10 generated images.
+# https://developers.openai.com/api/reference/resources/images/methods/generate
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "openai-images.flare"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "n"
+unit = "count"
+meaning = "generated_image_count"
+
+[[model.parameter_contract.schema.params]]
+name = "size"
+label = "Size"
+control = { type = "choice", options = [{ value = "1024x1024", label = "1024x1024" }, { value = "1536x1024", label = "1536x1024" }, { value = "1024x1536", label = "1024x1536" }, { value = "auto", label = "auto" }] }
+default = { type = "text", value = "1024x1024" }
+
+[[model.parameter_contract.schema.params]]
+name = "quality"
+label = "Quality"
+control = { type = "choice", options = [{ value = "low", label = "low" }, { value = "medium", label = "medium" }, { value = "high", label = "high" }, { value = "xhigh", label = "xhigh" }, { value = "max", label = "max" }, { value = "auto", label = "auto" }] }
+default = { type = "text", value = "auto" }
+
+[[model.parameter_contract.schema.params]]
+name = "background"
+label = "Background"
+control = { type = "choice", options = [{ value = "opaque", label = "opaque" }, { value = "transparent", label = "transparent" }, { value = "auto", label = "auto" }] }
+default = { type = "text", value = "auto" }
+
+[[model.parameter_contract.schema.params]]
+name = "output_format"
+label = "Output format"
+control = { type = "choice", options = [{ value = "png", label = "png" }, { value = "jpeg", label = "jpeg" }, { value = "webp", label = "webp" }] }
+default = { type = "text", value = "png" }
+
+[[model.parameter_contract.schema.params]]
+name = "n"
+label = "Images"
+control = { type = "unsigned", min = "1", max = "10" }
+default = { type = "unsigned", value = "1" }
+
+[[model.parameter_contract.schema.params]]
 name = "output_compression"
 label = "Compression (JPEG/WebP)"
 control = { type = "unsigned", min = "0", max = "100" }

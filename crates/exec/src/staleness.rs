@@ -161,6 +161,68 @@ impl Writer {
         }
         Ok(())
     }
+    fn generation_contract(&mut self, contract: &nodecraft_nodes::NodeContract, meter: &mut Meter) -> Result<(), Error> {
+        // instance_contract is a trusted native hook, like validate_instance above. Its
+        // returned owner is charged here; serialization streams twice with bounded scratch,
+        // first for exact encoded admission then hashing, never a full encoded copy.
+        let mut retained = std::mem::size_of::<nodecraft_nodes::NodeContract>();
+        let mut retain = |bytes: usize| -> Result<(), Error> {
+            retained = retained.checked_add(bytes).ok_or_else(too_large)?;
+            Ok(())
+        };
+        retain(contract.kind.len())?;
+        retain(contract.owned_groups.len().checked_mul(std::mem::size_of::<nodecraft_types::Contract>()).ok_or_else(too_large)?)?;
+        retain(contract.inputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::InputContract>()).ok_or_else(too_large)?)?;
+        for input in &contract.inputs {
+            retain(input.port.len())?;
+            retain(input.role.len())?;
+        }
+        retain(contract.outputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::OutputContract>()).ok_or_else(too_large)?)?;
+        for output in &contract.outputs {
+            retain(output.port.len())?;
+            retain(output.role.len())?;
+        }
+        retain(contract.modes.len().checked_mul(std::mem::size_of::<nodecraft_nodes::ModeContract>()).ok_or_else(too_large)?)?;
+        for mode in &contract.modes {
+            retain(mode.mode.as_str().len())?;
+            retain(mode.inputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::PortCount>()).ok_or_else(too_large)?)?;
+            for input in &mode.inputs {
+                retain(input.port.len())?;
+            }
+        }
+        for group in contract.parameter_groups() {
+            retained = retained.checked_add(crate::admission::measure::contract(group).map_err(|_| too_large())?).ok_or_else(too_large)?;
+        }
+        meter.charge(retained)?;
+        struct Sink<'a> {
+            hash: Option<&'a mut blake3::Hasher>,
+            bytes: usize,
+        }
+        impl std::io::Write for Sink<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes = self
+                    .bytes
+                    .checked_add(bytes.len())
+                    .filter(|n| *n <= MAX_QUERY_BYTES)
+                    .ok_or_else(|| std::io::Error::other("contract hash exceeds admission"))?;
+                if let Some(hash) = &mut self.hash {
+                    hash.update(bytes);
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Sink { hash: None, bytes: 0 };
+        serde_json::to_writer(&mut count, contract).map_err(|_| too_large())?;
+        meter.charge(count.bytes)?;
+        self.text("generation.parameter-contract.v1");
+        self.len(count.bytes);
+        let mut hash = Sink { hash: Some(&mut self.0), bytes: 0 };
+        serde_json::to_writer(&mut hash, contract).map_err(|_| too_large())?;
+        Ok(())
+    }
     fn finish(self) -> [u8; 32] {
         *self.0.finalize().as_bytes()
     }
@@ -372,6 +434,10 @@ impl InputHasher {
                         match kind.validate_instance(node, false) {
                             Err(rejected) => Err(rejected),
                             Ok(resolved) => {
+                                if node.kind == nodecraft_nodes::generation::KIND {
+                                    let contract = kind.instance_contract(node)?;
+                                    w.generation_contract(&contract, &mut self.meter)?;
+                                }
                                 for (name, value) in &resolved.values {
                                     let admitted = node.params.get(name).or_else(|| admitted_defaults.get(name.as_str()).copied().flatten());
                                     if admitted.is_none() {

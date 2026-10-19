@@ -121,6 +121,14 @@ hidden-value policy, identity/cost/shape effects, meaning tags and cross-field c
 (`types::Contract`), and adds port roles, wire bounds and input-selected modes
 (`nodes::NodeContract`). `NodeKind::contract` defaults to one derived from the descriptor;
 registration validates it, and `node.describe` returns it to the CLI and MCP.
+`NodeContract.params` remains node-owned; optional `owned_groups` carry disjoint model-owned
+contracts. `parameter_groups()` and combined `resolve()` preserve their namespaces and original
+parameter IDs. Aggregate schema/count/byte limits apply before ownership copies. Legacy empty
+groups preserve existing contracts. The engine's `GenerationCatalog` pairs the real registered
+`generation.image` definitions with the same runtime RunCatalog nonce. Targeted binding checks
+and Session catalog accessors detect resource replacement without a document edit; semantic
+contracts never serialize that runtime nonce. Custom `with_registries` callers retain their own
+composition. The default Session adds generation definitions but no paid run host.
 
 ### Instance schemas, configuration and migration
 

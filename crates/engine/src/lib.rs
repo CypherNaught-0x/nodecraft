@@ -35,6 +35,7 @@ mod persistence;
 pub mod plugin_cmds;
 pub mod search_cmds;
 
+pub mod generation_catalog;
 pub mod run_ceiling;
 pub mod run_cmds;
 pub mod secrets;

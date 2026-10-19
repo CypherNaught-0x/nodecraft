@@ -153,7 +153,10 @@ impl Session {
     }
 
     pub fn with_registry(document: Project, registry: Registry) -> Result<Self, Error> {
-        Self::with_registries(document, registry, nodecraft_nodes::Registry::builtins()?)
+        let (kinds, generation) = crate::generation_catalog::default_registry()?;
+        let mut session = Self::with_registries(document, registry, kinds)?;
+        generation.install(&mut session);
+        Ok(session)
     }
 
     pub fn with_registries(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry) -> Result<Self, Error> {
@@ -239,6 +242,15 @@ impl Session {
         Ok(())
     }
 
+    /// Borrow the current paired generation definitions. UI draft stamps must retain
+    /// generation_catalog_stamp in addition to Session identity and document revision.
+    pub fn generation_catalog(&self) -> Result<&crate::generation_catalog::GenerationCatalog, Error> {
+        crate::generation_catalog::GenerationCatalog::current(&self.resources)
+    }
+    pub fn generation_catalog_stamp(&self) -> Result<crate::generation_catalog::GenerationCatalogStamp, Error> {
+        Ok(self.generation_catalog()?.stamp())
+    }
+
     /// Replace a host-owned capability without discarding other injected resources.
     /// A host may scope a live view snapshot to one enabled/dispatch call and restore it after.
     pub fn swap_resource<T: std::any::Any>(&mut self, value: Option<T>) -> Option<T> {
@@ -263,11 +275,12 @@ impl Session {
         // All constructor failures, including entropy, precede durable checkpointing.
         snapshot.project.validate()?;
         let registry = Registry::builtins()?;
-        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let (kinds, generation) = crate::generation_catalog::default_registry()?;
         let execution = crate::execution_identity::ExecutionSource::new()?;
         let identity = Arc::new(());
         let (persistence, snapshot) = crate::persistence::Persistence::new(storage, snapshot)?;
         let mut session = Self::from_validated_identity(snapshot.project, registry, kinds, execution, identity);
+        generation.install(&mut session);
         session.assets = snapshot.assets;
         session.persistence = Some(persistence);
         Ok(session)
