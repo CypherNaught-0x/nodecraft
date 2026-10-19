@@ -279,6 +279,8 @@ struct CachedRejection {
     kind: ErrorKind,
     reason: String,
 }
+/// How many batches feeding batches staleness follows before calling a result unknown.
+const MAX_BATCH_DEPTH: usize = 32;
 #[derive(Clone, Copy)]
 enum InvalidHash {
     Router(NodeId),
@@ -328,6 +330,10 @@ pub struct InputHasher {
     recipes: BTreeMap<NodeId, Recipe>,
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
     outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
+    /// Batch hashes (#92): `None` while one is being hashed, so a cycle of batches ends.
+    batches: BTreeMap<NodeId, Option<Result<Blake3, InvalidHash>>>,
+    /// Batches being hashed right now; a chain deeper than [`MAX_BATCH_DEPTH`] is unknown.
+    batch_depth: usize,
     meter: Meter,
     diagnostic_credit: Option<DiagnosticCredit>,
     #[cfg(test)]
@@ -370,6 +376,8 @@ impl InputHasher {
             invalid,
             recipes: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            batches: BTreeMap::new(),
+            batch_depth: 0,
             meter,
             diagnostic_credit,
             #[cfg(test)]
@@ -624,6 +632,41 @@ impl InputHasher {
                 self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
                 w.text(&from_port);
                 match canvas.nodes().get(&from) {
+                    // A batch (#92) never runs: it contributes its items' recipe, which is its
+                    // own settings and whatever feeds it.
+                    Some(upstream) if upstream.kind == nodecraft_nodes::batch::ID => match self.batches.get(&from) {
+                        Some(Some(Ok(digest))) => {
+                            w.text("batch");
+                            w.digest(digest.as_bytes());
+                        }
+                        Some(Some(Err(invalid))) => return Ok(HashResult::Invalid(*invalid)),
+                        // Batches feeding each other in a loop: there's nothing to hash.
+                        Some(None) => w.text("cycle"),
+                        // Batches feeding batches recurse: bound the depth so a hostile file
+                        // can't exhaust the stack (the planner refuses such chains anyway).
+                        None if self.batch_depth >= MAX_BATCH_DEPTH => {
+                            self.batches.insert(from, Some(Err(InvalidHash::Target(from))));
+                            return Ok(HashResult::Invalid(InvalidHash::Target(from)));
+                        }
+                        None => {
+                            self.batches.insert(from, None);
+                            self.batch_depth = self.batch_depth.saturating_add(1);
+                            let hashed = self.hash_detailed(canvas, kinds, from, produced);
+                            self.batch_depth = self.batch_depth.saturating_sub(1);
+                            let result = match hashed? {
+                                HashResult::Ready(digest) => Ok(digest),
+                                HashResult::Invalid(invalid) => Err(invalid),
+                            };
+                            self.batches.insert(from, Some(result));
+                            match result {
+                                Ok(digest) => {
+                                    w.text("batch");
+                                    w.digest(digest.as_bytes());
+                                }
+                                Err(invalid) => return Ok(HashResult::Invalid(invalid)),
+                            }
+                        }
+                    },
                     // A source contributes its recipe: what it emits.
                     Some(upstream) if is_source(kinds, upstream) => match self.recipe(kinds, upstream)? {
                         Some(recipe) => {

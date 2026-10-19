@@ -72,7 +72,12 @@ fn fixture_reason(router: bool, reason: &str) -> (Session, Arc<AtomicUsize>) {
         let mut consumer = kinds.get("test.consumer").unwrap().instantiate_instance(id(target), Default::default(), &Default::default()).unwrap();
         consumer.config.insert("private".into(), Value::Text("unrelated-private-fixture".into()));
         let g = GenerationId::from_bytes([target; 16]);
-        consumer.history.push(Generation { id: g, outputs: vec![Value::Text("result".into())], input_hash: Some(Blake3::from_bytes([0; 32])) });
+        consumer.history.push(Generation {
+            id: g,
+            outputs: vec![Value::Text("result".into())],
+            input_hash: Some(Blake3::from_bytes([0; 32])),
+            items: Vec::new(),
+        });
         consumer.active = Some(g);
         changes.extend([
             Change::AddNode { canvas: C, node: upstream },

@@ -102,7 +102,7 @@ pub fn hits(
             if let Some(own) = node.history.iter().find(|g| g.input_hash == Some(current)) {
                 round.push(Hit::Own { node: *id, generation: own.id });
             } else if let Some((_, other)) = index.get(&(node.kind.as_str(), current)).filter(|(owner, _)| owner != id) {
-                let generation = Generation { id: fresh()?, outputs: other.outputs.clone(), input_hash: Some(current) };
+                let generation = Generation { id: fresh()?, outputs: other.outputs.clone(), input_hash: Some(current), items: other.items.clone() };
                 if nodecraft_exec::run::record_changes(canvas_id, node, generation.clone()).is_ok() {
                     round.push(Hit::Copy { node: *id, generation });
                 }

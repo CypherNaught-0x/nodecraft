@@ -108,6 +108,8 @@ struct StepState {
     step: Step,
     status: Status,
     jobs: Vec<JobId>,
+    /// For a fanned step (#92): the item each of `jobs` is for.
+    job_items: Vec<usize>,
     /// Steps that come after this one.
     dependents: Vec<NodeId>,
 }
@@ -249,7 +251,7 @@ impl Run {
                 earlier.dependents.push(step.node);
                 waiting = waiting.saturating_add(1);
             }
-            steps.insert(step.node, StepState { step, status: Status::Waiting(waiting), jobs: Vec::new(), dependents: Vec::new() });
+            steps.insert(step.node, StepState { step, status: Status::Waiting(waiting), jobs: Vec::new(), job_items: Vec::new(), dependents: Vec::new() });
         }
         let hasher = InputHasher::new(&canvas, kinds, MAX_QUERY_BYTES)?;
         let open_steps = steps.len();
@@ -399,10 +401,18 @@ impl Run {
         let eager = self.steps.get(&node).is_some_and(|s| s.step.jobs.is_some());
         let planned = match self.steps.get_mut(&node) {
             Some(state) => match state.step.jobs.take() {
-                Some(jobs) => Ok(jobs),
+                Some(jobs) => Ok((jobs, state.step.fanout.as_ref().map(|f| f.jobs.clone()).unwrap_or_default())),
                 None => self.materialise(kinds, node),
             },
             None => return (Progress::default(), Vec::new()),
+        };
+        let (planned, counts) = match planned {
+            Ok((jobs, counts)) => (Ok(jobs), counts),
+            Err(reason) => (Err(reason), Vec::new()),
+        };
+        let job_items = match item_of_jobs(&counts, planned.as_ref().map_or(0, Vec::len)) {
+            Ok(items) => items,
+            Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
         let jobs = match planned {
             Ok(jobs) if jobs.len() > MAX_STEP_JOBS => Err(format!("it would run more than {MAX_STEP_JOBS} jobs")),
@@ -450,6 +460,7 @@ impl Run {
         let left = ids.len();
         if let Some(state) = self.steps.get_mut(&node) {
             state.jobs = ids;
+            state.job_items = job_items;
             state.status = Status::Running(left);
         }
         if left == 0 {
@@ -460,42 +471,53 @@ impl Run {
         (progress, Vec::new())
     }
 
-    /// Plans a deferred step from this run's outputs, within [`RunLimits`] (#210).
-    fn materialise(&mut self, kinds: &Registry, node: NodeId) -> Result<Vec<JobSpec>, String> {
+    /// Plans a deferred step from this run's outputs, within [`RunLimits`] (#210): its jobs and,
+    /// for a fanned step (#92), how many of them each item has. Each item is planned like a step
+    /// of its own; all of them count towards the run's bytes.
+    fn materialise(&mut self, kinds: &Registry, node: NodeId) -> Result<(Vec<JobSpec>, Vec<usize>), String> {
         let state = self.steps.get(&node).ok_or("the step is gone")?;
-        let mut step_bytes = 0usize;
+        let cells: Vec<&[crate::planner::PlannedInput]> = match &state.step.fanout {
+            Some(fanout) => fanout.cells.iter().map(Vec::as_slice).collect(),
+            None => vec![state.step.inputs.as_slice()],
+        };
         let mut run_bytes = self.run_bytes;
         // Sources are immutable throughout this synchronous call. Validate the complete shape
         // and budget using borrowed slices before copying any accepted prefix of a failing step.
-        for input in &state.step.inputs {
-            let mut count = 0usize;
-            for source in &input.from {
-                let items = self.input_items(source, input.port_type.many)?;
-                count = count.checked_add(items.len()).ok_or("too many input values")?;
-                if input.port_type.many && count > self.limits.list_items {
-                    return Err(format!("its {} input would have more than {} items", input.port, self.limits.list_items));
+        for inputs in &cells {
+            let mut step_bytes = 0usize;
+            for input in *inputs {
+                let mut count = 0usize;
+                for source in &input.from {
+                    let items = self.input_items(source, input.port_type.many)?;
+                    count = count.checked_add(items.len()).ok_or("too many input values")?;
+                    if input.port_type.many && count > self.limits.list_items {
+                        return Err(format!("its {} input would have more than {} items", input.port, self.limits.list_items));
+                    }
+                    for item in items {
+                        self.admit_input(item, &mut step_bytes, &mut run_bytes)?;
+                    }
                 }
-                for item in items {
-                    self.admit_input(item, &mut step_bytes, &mut run_bytes)?;
+                if !input.port_type.many && count != 1 {
+                    return Err(format!("its {} input takes one value", input.port));
                 }
-            }
-            if !input.port_type.many && count != 1 {
-                return Err(format!("its {} input takes one value", input.port));
             }
         }
         if self.admission.is_some() {
             use crate::admission::measure::{add, mul, values};
-            let mut charge = mul(state.step.inputs.len(), std::mem::size_of::<InputValue>()).map_err(|e| e.message)?;
-            for input in &state.step.inputs {
-                charge = add(charge, input.port.len()).map_err(|e| e.message)?;
-                for source in &input.from {
-                    for item in self.input_items(source, input.port_type.many)? {
-                        charge = add(
-                            charge,
-                            add(if input.port_type.many { std::mem::size_of::<Value>() } else { 0 }, values(item).map_err(|e| e.message)?)
-                                .map_err(|e| e.message)?,
-                        )
-                        .map_err(|e| e.message)?;
+            let mut charge = 0usize;
+            for inputs in &cells {
+                charge = add(charge, mul(inputs.len(), std::mem::size_of::<InputValue>()).map_err(|e| e.message)?).map_err(|e| e.message)?;
+                for input in *inputs {
+                    charge = add(charge, input.port.len()).map_err(|e| e.message)?;
+                    for source in &input.from {
+                        for item in self.input_items(source, input.port_type.many)? {
+                            charge = add(
+                                charge,
+                                add(if input.port_type.many { std::mem::size_of::<Value>() } else { 0 }, values(item).map_err(|e| e.message)?)
+                                    .map_err(|e| e.message)?,
+                            )
+                            .map_err(|e| e.message)?;
+                        }
                     }
                 }
             }
@@ -505,27 +527,41 @@ impl Run {
         }
         // This copy pass is admitted in full. Keep its charge even if kind planning rejects it.
         self.run_bytes = run_bytes;
-        let mut inputs = Vec::with_capacity(state.step.inputs.len());
-        for input in &state.step.inputs {
-            let mut values = Vec::new();
-            for source in &input.from {
-                for item in self.input_items(source, input.port_type.many)? {
-                    values.push(item.clone());
-                    #[cfg(test)]
-                    self.copied_input_bytes.set(self.copied_input_bytes.get().saturating_add(crate::planner::value_bytes(item)));
+        let instance = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
+        let kind = kinds.get(&instance.kind).map_err(|e| e.message)?;
+        let fanned = state.step.fanout.is_some();
+        let mut jobs = Vec::new();
+        let mut counts = Vec::with_capacity(if fanned { cells.len() } else { 0 });
+        for planned in &cells {
+            let mut inputs = Vec::with_capacity(planned.len());
+            for input in *planned {
+                let mut values = Vec::new();
+                for source in &input.from {
+                    for item in self.input_items(source, input.port_type.many)? {
+                        values.push(item.clone());
+                        #[cfg(test)]
+                        self.copied_input_bytes.set(self.copied_input_bytes.get().saturating_add(crate::planner::value_bytes(item)));
+                    }
                 }
+                let value = if input.port_type.many { Value::List(values) } else { values.into_iter().next().ok_or("the preflight input is gone")? };
+                inputs.push(InputValue { port: input.port.clone(), port_type: input.port_type, value });
             }
-            let value = if input.port_type.many { Value::List(values) } else { values.into_iter().next().ok_or("the preflight input is gone")? };
-            inputs.push(InputValue { port: input.port.clone(), port_type: input.port_type, value });
+            let planned = kind
+                .plan(&PlanCtx {
+                    targets: self.admission.as_ref().map_or(&nodecraft_types::EMPTY_TARGET_SELECTION, |(witness, _)| &witness.targets),
+                    node: instance,
+                    inputs: &inputs,
+                })
+                .map_err(|e| e.message)?;
+            if fanned {
+                counts.push(planned.len());
+            }
+            jobs.extend(planned);
+            if jobs.len() > MAX_STEP_JOBS {
+                return Err(format!("it would run more than {MAX_STEP_JOBS} jobs"));
+            }
         }
-        let node = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
-        let kind = kinds.get(&node.kind).map_err(|e| e.message)?;
-        kind.plan(&PlanCtx {
-            targets: self.admission.as_ref().map_or(&nodecraft_types::EMPTY_TARGET_SELECTION, |(witness, _)| &witness.targets),
-            node,
-            inputs: &inputs,
-        })
-        .map_err(|e| e.message)
+        Ok((jobs, counts))
     }
 
     /// The planner's logical value size, but with scratch space bounded by depth, not list
@@ -577,6 +613,10 @@ impl Run {
         let (value, splice) = match source {
             InputSource::Value(value) => (value, false),
             InputSource::Step { node, port, list } => (self.step_output(*node, port)?, *list && many),
+            InputSource::Item { node, port, index } => match self.step_output(*node, port)? {
+                Value::List(values) => (values.get(*index).ok_or_else(|| format!("{} has no result for one of its items", self.title(*node)))?, false),
+                _ => return Err(format!("{} didn't produce a result per item", self.title(*node))),
+            },
         };
         Ok(match value {
             Value::List(items) if splice => items.as_slice(),
@@ -625,12 +665,19 @@ impl Run {
         (progress, ready)
     }
 
-    /// Assembles a step's outputs and stamps its input hash.
+    /// Assembles a step's outputs and stamps its input hash. A fanned step (#92) assembles each
+    /// item as a step of its own, and each output becomes a list with one value per item.
     fn assemble(&mut self, kinds: &Registry, node: NodeId) -> Result<StepResult, String> {
         let target = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
-        let job_ids = self.steps.get(&node).map(|s| s.jobs.clone()).unwrap_or_default();
-        let mut per_port: Vec<Vec<Value>> = vec![Vec::new(); target.outputs.len()];
-        for job in job_ids {
+        let (job_ids, job_items, items) = match self.steps.get(&node) {
+            Some(state) => (state.jobs.clone(), state.job_items.clone(), state.step.fanout.as_ref().map(|f| f.items.clone())),
+            None => (Vec::new(), Vec::new(), None),
+        };
+        let cells = items.as_ref().map_or(1, Vec::len);
+        let mut per_cell: Vec<Vec<Vec<Value>>> = vec![vec![Vec::new(); target.outputs.len()]; cells];
+        for (n, job) in job_ids.into_iter().enumerate() {
+            let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
+            let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
             let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
             for (port, value) in outputs {
                 let index = target.outputs.iter().position(|p| p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
@@ -641,27 +688,62 @@ impl Run {
                 slot.push(value);
             }
         }
-        let mut outputs = Vec::with_capacity(per_port.len());
-        for (port, values) in target.outputs.iter().zip(per_port) {
-            if port.port_type.many {
-                outputs.push(Value::List(values));
-            } else {
-                let mut values = values.into_iter();
-                match (values.next(), values.next()) {
-                    (Some(value), None) => outputs.push(value),
-                    (None, _) => return Err(format!("it produced nothing on its {} output", port.name)),
-                    _ => return Err(format!("it produced several values on its single {} output", port.name)),
+        let mut assembled = Vec::with_capacity(cells);
+        for per_port in per_cell {
+            let mut outputs = Vec::with_capacity(per_port.len());
+            for (port, values) in target.outputs.iter().zip(per_port) {
+                if port.port_type.many {
+                    outputs.push(Value::List(values));
+                } else {
+                    let mut values = values.into_iter();
+                    match (values.next(), values.next()) {
+                        (Some(value), None) => outputs.push(value),
+                        (None, _) => return Err(format!("it produced nothing on its {} output", port.name)),
+                        _ => return Err(format!("it produced several values on its single {} output", port.name)),
+                    }
                 }
             }
+            assembled.push(outputs);
         }
+        let outputs = match &items {
+            None => assembled.into_iter().next().unwrap_or_default(),
+            // Transpose: per port, one value per item.
+            Some(_) => {
+                let mut ports: Vec<Vec<Value>> = vec![Vec::with_capacity(cells); target.outputs.len()];
+                for outputs in assembled {
+                    for (port, value) in ports.iter_mut().zip(outputs) {
+                        port.push(value);
+                    }
+                }
+                ports.into_iter().map(Value::List).collect()
+            }
+        };
         // What it was made from: the planned canvas, with this run's upstream outputs. An
         // over-budget hash is recorded as unknown rather than failing a paid result.
         let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
-        let generation = Generation { id: self.generation_id(node), outputs, input_hash };
+        let generation = Generation { id: self.generation_id(node), outputs, input_hash, items: items.unwrap_or_default() };
         generation.validate().map_err(|e| format!("its result can't be recorded: {}", e.message))?;
         self.produced.insert(node, generation.outputs.clone());
         Ok(StepResult { node, generation })
     }
+}
+
+/// The item each job is for, from how many jobs each item has; empty when not fanned.
+fn item_of_jobs(counts: &[usize], jobs: usize) -> Result<Vec<usize>, String> {
+    if counts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut items = Vec::with_capacity(jobs);
+    for (item, count) in counts.iter().enumerate() {
+        if items.len().saturating_add(*count) > jobs {
+            return Err("its items' jobs don't add up".into());
+        }
+        items.extend(std::iter::repeat_n(item, *count));
+    }
+    if items.len() != jobs {
+        return Err("its items' jobs don't add up".into());
+    }
+    Ok(items)
 }
 
 /// The lane a job runs on: local work shares one lane.

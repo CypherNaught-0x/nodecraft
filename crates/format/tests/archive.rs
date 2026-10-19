@@ -50,7 +50,7 @@ fn assets_deduplicate_validate_hashes_and_cover_nested_generation_history() {
     Change::AddCanvas { canvas: Canvas::new(canvas, "Assets") }.apply(&mut s.project).unwrap();
     let asset = Value::Media(AssetRef { hash: digest, mime: "text/plain".parse().unwrap(), meta: MediaMeta::default() });
     let mut node = Node::new(NodeId::from_bytes([3; 16]), "source.image");
-    node.history.push(Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![Value::List(vec![asset])], input_hash: None });
+    node.history.push(Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![Value::List(vec![asset])], input_hash: None, items: Vec::new() });
     Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
     let bytes = encode(&s).unwrap();
     let loaded = decode(&bytes).unwrap();
@@ -266,7 +266,7 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
         canvas: CanvasId::from_bytes([1; 16]),
         id: NodeId::from_bytes([2; 16]),
         index: 0,
-        generation: Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None },
+        generation: Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None, items: Vec::new() },
     }]);
     assert!(journal::frame(id, 1, &changes, &assets, &Default::default()).is_err());
     let Change::AddGeneration { mut generation, .. } = changes.changes.into_iter().next().unwrap() else { panic!() };

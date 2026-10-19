@@ -68,10 +68,13 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
         for input in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document] {
             let port = PortType { modality: input, many: false };
             assert!(kind.mode(&[port]).is_none());
-            // The router takes a wire of any modality (it is created with the wire's); action
-            // kinds (#410) take their own modality.
-            let compatible: Vec<&str> = registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| *id != nodecraft_nodes::router::ID).collect();
-            assert!(registry.compatible(&[port]).any(|d| d.id == nodecraft_nodes::router::ID));
+            // Routers and batches take a wire of any modality (they are created with the wire's);
+            // action kinds (#410) take their own modality.
+            let structure = [nodecraft_nodes::router::ID, nodecraft_nodes::batch::ID];
+            let compatible: Vec<&str> = registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| !structure.contains(id)).collect();
+            for id in structure {
+                assert!(registry.compatible(&[port]).any(|d| d.id == id));
+            }
             for id in compatible {
                 let action = registry.get(id).unwrap().descriptor();
                 assert_eq!(action.category, nodecraft_nodes::Category::Action, "{id}");
@@ -98,7 +101,7 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(node.inputs.is_empty() && node.outputs.is_empty());
                 assert!(result.unwrap().is_empty());
             }
-            "structure.router" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
+            "structure.router" | "structure.batch" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
             "source.image" | "source.video" | "source.audio" => {
                 assert!(node.params.is_empty());
                 assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);

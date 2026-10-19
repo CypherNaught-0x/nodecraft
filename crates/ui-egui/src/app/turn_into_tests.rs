@@ -42,7 +42,7 @@ fn open_menu(h: &mut Harness<'static, NodeCraftApp>) {
     wire_drag(h, from, EMPTY);
     h.run();
     assert!(h.state().turn_into.is_some(), "a new noodle dropped on empty canvas opens the menu");
-    for label in ["Turn into Router", "Turn into Collect", "Turn into Relay"] {
+    for label in ["Turn into Batch", "Turn into Router", "Turn into Collect", "Turn into Relay"] {
         assert!(h.query_by_label(label).is_some(), "{label}");
     }
     assert!(h.query_by_label("Turn into Text").is_none(), "sources take no inputs");
@@ -73,11 +73,14 @@ fn a_kinds_key_creates_it_where_the_noodle_dropped_connected_in_one_undo_step() 
 fn arrows_and_enter_pick_and_a_list_input_takes_the_noodle() {
     let mut h = chain_harness();
     open_menu(&mut h);
-    h.key_press(egui::Key::ArrowDown);
-    h.run();
+    // Batch, Router, then Collect.
+    for _ in 0..2 {
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+    }
     h.key_press(egui::Key::Enter);
     h.run();
-    let collect = nodes(&h).into_iter().find(|n| n.kind == "test.collect").expect("the second row");
+    let collect = nodes(&h).into_iter().find(|n| n.kind == "test.collect").expect("the third row");
     let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
     assert!(canvas.edges().values().any(|e| e.from.node == chain_id(1) && e.to == Endpoint { node: collect.id, port: "items".into() }));
 }

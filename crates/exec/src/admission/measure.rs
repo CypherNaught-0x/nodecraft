@@ -135,19 +135,35 @@ pub(crate) fn step(s: &crate::planner::Step) -> Result<usize, Error> {
     use crate::planner::{InputSource, PlannedInput};
     let mut n = add(size_of::<crate::planner::Step>() + LINK, add(s.kind.len(), s.mode.as_str().len())?)?;
     n = add(n, mul(s.after.len(), size_of::<NodeId>())?)?;
-    n = add(n, mul(s.inputs.len(), size_of::<PlannedInput>())?)?;
-    for i in &s.inputs {
-        n = add(n, i.port.len())?;
-        n = add(n, mul(i.from.len(), size_of::<InputSource>())?)?;
-        for v in &i.from {
-            n = add(
-                n,
-                match v {
-                    InputSource::Value(v) => values(v)?,
-                    InputSource::Step { port, .. } => port.len(),
-                },
-            )?;
+    let planned = |inputs: &[PlannedInput]| -> Result<usize, Error> {
+        let mut n = mul(inputs.len(), size_of::<PlannedInput>())?;
+        for i in inputs {
+            n = add(n, i.port.len())?;
+            n = add(n, mul(i.from.len(), size_of::<InputSource>())?)?;
+            for v in &i.from {
+                n = add(
+                    n,
+                    match v {
+                        InputSource::Value(v) => values(v)?,
+                        InputSource::Step { port, .. } | InputSource::Item { port, .. } => port.len(),
+                    },
+                )?;
+            }
         }
+        Ok(n)
+    };
+    n = add(n, planned(&s.inputs)?)?;
+    if let Some(f) = &s.fanout {
+        n = add(n, size_of::<crate::planner::Fanout>())?;
+        n = add(n, mul(f.items.len(), size_of::<nodecraft_graph::ItemTag>())?)?;
+        for tag in &f.items {
+            n = add(n, mul(tag.len(), size_of::<nodecraft_graph::ItemKey>())?)?;
+        }
+        n = add(n, mul(f.cells.len(), size_of::<Vec<PlannedInput>>())?)?;
+        for cell in &f.cells {
+            n = add(n, planned(cell)?)?;
+        }
+        n = add(n, mul(f.jobs.len(), size_of::<usize>())?)?;
     }
     Ok(n)
 }

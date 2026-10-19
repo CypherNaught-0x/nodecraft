@@ -92,7 +92,15 @@ fn job(node: NodeId, params: ParamValues) -> JobSpec {
 }
 fn plan(jobs: Option<Vec<JobSpec>>) -> RunPlan {
     RunPlan {
-        steps: vec![Step { node: id(1), kind: "fixture.generate".into(), mode: ModeId::new("generate").unwrap(), after: vec![], inputs: vec![], jobs }],
+        steps: vec![Step {
+            node: id(1),
+            kind: "fixture.generate".into(),
+            mode: ModeId::new("generate").unwrap(),
+            after: vec![],
+            inputs: vec![],
+            jobs,
+            fanout: None,
+        }],
         edges: vec![],
     }
 }
@@ -296,6 +304,7 @@ fn deferred_input_copies_and_jobs_keep_the_same_transferred_ledger() {
             after: vec![],
             inputs: vec![],
             jobs: Some(vec![JobSpec::Source { node: id(2), output: "out".into(), value: Value::Text("upstream".into()) }]),
+            fanout: None,
         },
     );
     plan.edges = vec![(id(2), id(1))];

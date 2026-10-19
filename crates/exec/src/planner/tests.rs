@@ -58,14 +58,27 @@ fn kinds() -> Registry {
         outputs: vec![Port { name: "items".into(), port_type: LIST }],
         ..relay
     };
-    kinds.register(Box::new(Relay(split))).unwrap();
+    kinds.register(Box::new(Relay(split.clone()))).unwrap();
+    // One single input, one single output: what a batch fans out.
+    let single =
+        NodeDescriptor { id: "test.single".into(), label: "Single".into(), outputs: vec![Port { name: "out".into(), port_type: TEXT }], ..split.clone() };
+    kinds.register(Box::new(Relay(single))).unwrap();
+    // Two single inputs, to pair two batches.
+    let pair = NodeDescriptor {
+        id: "test.pair".into(),
+        label: "Pair".into(),
+        inputs: vec![Port { name: "a".into(), port_type: TEXT }, Port { name: "b".into(), port_type: TEXT }],
+        outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+        ..split
+    };
+    kinds.register(Box::new(Relay(pair))).unwrap();
     kinds
 }
 fn of_kind(n: u8, kind: &str, result: Option<Value>) -> Node {
     let mut node = kinds().get(kind).unwrap().descriptor().instantiate(id(n), &BTreeMap::new()).unwrap();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![result], input_hash: None });
+        node.history.push(Generation { id: generation, outputs: vec![result], input_hash: None, items: Vec::new() });
         node.active = Some(generation);
     }
     node
@@ -103,7 +116,7 @@ fn relay(n: u8, result: Option<&str>) -> Node {
     node.title = "Relay".into();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())], input_hash: None });
+        node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())], input_hash: None, items: Vec::new() });
         node.active = Some(generation);
     }
     node
@@ -556,10 +569,195 @@ fn an_unusable_active_result_is_rerun_not_waited_on() {
     // schedules 2 again instead of blocking 3 on a result it can't use.
     let mut stale_layout = relay(2, None);
     let generation = GenerationId::from_bytes([2; 16]);
-    stale_layout.history.push(Generation { id: generation, outputs: vec![], input_hash: None });
+    stale_layout.history.push(Generation { id: generation, outputs: vec![], input_hash: None, items: Vec::new() });
     stale_layout.active = Some(generation);
     let p = project(vec![text(1, "a"), stale_layout, relay(3, None)], &[(1, 2), (2, 3)]);
     let canvas = p.canvases().get(&C).unwrap();
     let plan = ready(plan_run(canvas, &kinds(), &RunMode::WithUpstream, &ids(&[3]), &BTreeSet::new()).unwrap());
     assert_eq!(order(&plan), vec![id(2), id(3)]);
+}
+
+// Batches (#92).
+
+fn batch(n: u8, items: &str, pairing: &str) -> Node {
+    let mut node = kinds().get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(n), Default::default(), &Default::default()).unwrap();
+    node.params.insert("text".into(), Value::Text(items.into()));
+    node.params.insert("pairing".into(), Value::Text(pairing.into()));
+    node
+}
+fn wired(nodes: Vec<Node>, links: &[(u8, &str, u8, &str)]) -> Project {
+    let mut p = project(nodes, &[]);
+    // Single inputs take order 0; list inputs keep noodle order.
+    let mut orders: BTreeMap<(u8, &str), u32> = BTreeMap::new();
+    let changes = links
+        .iter()
+        .enumerate()
+        .map(|(e, (from, out, to, port))| {
+            let order = orders.entry((*to, port)).or_insert(0);
+            let change = wire(u16::try_from(e).unwrap(), (*from, out), (*to, port), *order);
+            *order += 1;
+            change
+        })
+        .collect();
+    nodecraft_graph::Changeset::new(changes).apply(&mut p).unwrap();
+    p
+}
+fn plan_of(p: &Project, nodes: &[u8]) -> Planned {
+    plan_run(p.canvases().get(&C).unwrap(), &kinds(), &RunMode::Selected, &ids(nodes), &BTreeSet::new()).unwrap()
+}
+fn blocked(planned: Planned) -> String {
+    match planned {
+        Planned::Blocked(blockers) => match blockers.as_slice() {
+            [Blocker { reason: Reason::Invalid(message), .. }] => message.clone(),
+            other => panic!("unexpected blockers: {other:?}"),
+        },
+        Planned::Ready(plan) => panic!("planned: {plan:?}"),
+    }
+}
+fn single(n: u8) -> Node {
+    of_kind(n, "test.single", None)
+}
+fn fanned_values(step: &Step) -> Vec<Vec<Value>> {
+    step.fanout
+        .as_ref()
+        .unwrap()
+        .cells
+        .iter()
+        .map(|cell| {
+            cell.iter()
+                .map(|input| match input.from.as_slice() {
+                    [InputSource::Value(value)] => value.clone(),
+                    other => panic!("unexpected sources {other:?}"),
+                })
+                .collect()
+        })
+        .collect()
+}
+fn texts(values: &[&str]) -> Vec<Value> {
+    values.iter().map(|v| Value::Text((*v).into())).collect()
+}
+
+#[test]
+fn a_batch_fans_a_single_input_out_once_per_item() {
+    let p = wired(vec![batch(1, "fox\n  \nowl\nfox", "cross"), single(2)], &[(1, "item", 2, "in")]);
+    let plan = ready(plan_of(&p, &[2]));
+    assert_eq!(order(&plan), vec![id(2)], "the batch never runs");
+    let step = plan.steps.first().unwrap();
+    assert!(step.inputs.is_empty());
+    assert_eq!(fanned_values(step), vec![texts(&["fox"]), texts(&["owl"]), texts(&["fox"])], "blank lines are skipped, repeats kept");
+    let fanout = step.fanout.as_ref().unwrap();
+    assert_eq!(fanout.jobs, vec![1, 1, 1]);
+    assert_eq!(step.jobs.as_ref().unwrap().len(), 3);
+    // Every item has its own id, repeats included, and ids are stable across plans.
+    let tags: BTreeSet<_> = fanout.items.iter().collect();
+    assert_eq!(tags.len(), 3);
+    assert_eq!(ready(plan_of(&p, &[2])).steps.first().unwrap().fanout.as_ref().unwrap().items, fanout.items);
+
+    // Running the batch on its own is an error: it has nothing to run.
+    assert!(plan_run(p.canvases().get(&C).unwrap(), &kinds(), &RunMode::Selected, &ids(&[1]), &BTreeSet::new()).is_err());
+}
+
+#[test]
+fn a_list_input_collects_every_item() {
+    let p = wired(vec![batch(1, "a\nb", "cross"), relay(2, None)], &[(1, "item", 2, "in")]);
+    let plan = ready(plan_of(&p, &[2]));
+    let step = plan.steps.first().unwrap();
+    assert!(step.fanout.is_none());
+    assert_eq!(step.inputs.first().unwrap().from, vec![InputSource::Value(Value::Text("a".into())), InputSource::Value(Value::Text("b".into()))]);
+}
+
+#[test]
+fn two_batches_pair_by_cross_or_zip() {
+    let pair = |a: &str, b: &str, pa: &str, pb: &str| {
+        let pair = of_kind(3, "test.pair", None);
+        wired(vec![batch(1, a, pa), batch(2, b, pb), pair], &[(1, "item", 3, "a"), (2, "item", 3, "b")])
+    };
+    let plan = ready(plan_of(&pair("a\nb", "x\ny\nz", "cross", "cross"), &[3]));
+    let values = fanned_values(plan.steps.first().unwrap());
+    assert_eq!(values.len(), 6);
+    assert_eq!(values.first().unwrap(), &texts(&["a", "x"]));
+    assert_eq!(values.last().unwrap(), &texts(&["b", "z"]));
+
+    let plan = ready(plan_of(&pair("a\nb", "x\ny", "zip", "zip"), &[3]));
+    assert_eq!(fanned_values(plan.steps.first().unwrap()), vec![texts(&["a", "x"]), texts(&["b", "y"])]);
+    // Each zipped item names both batches.
+    assert!(plan.steps.first().unwrap().fanout.as_ref().unwrap().items.iter().all(|tag| tag.len() == 2));
+
+    // Never a silent change of size: unequal zips and mixed settings are errors.
+    let message = blocked(plan_of(&pair("a\nb", "x\ny\nz", "zip", "zip"), &[3]));
+    assert!(message.contains("2 and 3 items"), "{message}");
+    let message = blocked(plan_of(&pair("a\nb", "x\ny", "zip", "cross"), &[3]));
+    assert!(message.contains("disagree"), "{message}");
+}
+
+#[test]
+fn one_batch_reaching_a_node_twice_joins_on_its_items() {
+    // 1 (batch) → 2, 3 (singles) → 4 (pair): one run per item, not every combination.
+    let p = wired(
+        vec![batch(1, "a\nb\nc", "cross"), single(2), single(3), of_kind(4, "test.pair", None)],
+        &[(1, "item", 2, "in"), (1, "item", 3, "in"), (2, "out", 4, "a"), (3, "out", 4, "b")],
+    );
+    let plan = ready(plan_of(&p, &[2, 3, 4]));
+    let last = plan.steps.iter().find(|s| s.node == id(4)).unwrap();
+    let fanout = last.fanout.as_ref().unwrap();
+    assert_eq!(fanout.items.len(), 3);
+    assert!(last.jobs.is_none(), "its inputs come from this run");
+    for (index, cell) in fanout.cells.iter().enumerate() {
+        let sources: Vec<_> = cell.iter().flat_map(|input| input.from.clone()).collect();
+        assert_eq!(sources, vec![InputSource::Item { node: id(2), port: "out".into(), index }, InputSource::Item { node: id(3), port: "out".into(), index }]);
+    }
+}
+
+#[test]
+fn batch_plans_that_cant_run_say_why() {
+    let message = blocked(plan_of(&wired(vec![batch(1, "  \n", "cross"), single(2)], &[(1, "item", 2, "in")]), &[2]));
+    assert!(message.contains("no items"), "{message}");
+
+    let message =
+        blocked(plan_of(&wired(vec![batch(1, "a", "cross"), batch(2, "b", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]), &[3]));
+    assert!(message.contains("another batch"), "{message}");
+
+    let message = blocked(plan_of(
+        &wired(vec![text(4, "a"), single(1), batch(2, "b", "cross"), single(3)], &[(4, "out", 1, "in"), (1, "out", 2, "in"), (2, "item", 3, "in")]),
+        &[1, 3],
+    ));
+    assert!(message.contains("run the nodes feeding it first"), "{message}");
+
+    // The fan-out is bounded before anything is built.
+    let many: String = (0..nodecraft_nodes::batch::MAX_ITEMS).map(|n| format!("{n}\n")).collect();
+    let pair = of_kind(3, "test.pair", None);
+    let message = blocked(plan_of(&wired(vec![batch(1, &many, "cross"), batch(2, "x\ny", "cross"), pair], &[(1, "item", 3, "a"), (2, "item", 3, "b")]), &[3]));
+    assert!(message.contains("more than"), "{message}");
+
+    let message = blocked(plan_of(&wired(vec![batch(1, "a", "bogus"), single(2)], &[(1, "item", 2, "in")]), &[2]));
+    assert!(message.contains("parameter"), "{message}");
+}
+
+#[test]
+fn an_existing_fanned_result_fans_its_consumers_out() {
+    let p = wired(vec![batch(1, "a\nb", "cross"), single(2), single(3)], &[(1, "item", 2, "in"), (2, "out", 3, "in")]);
+    let plan = ready(plan_of(&p, &[2]));
+    let items = plan.steps.first().unwrap().fanout.as_ref().unwrap().items.clone();
+    // Record a fanned result on 2, as a run would.
+    let canvas = p.canvases().get(&C).unwrap();
+    let mut node = canvas.nodes().get(&id(2)).unwrap().clone();
+    let generation = GenerationId::from_bytes([2; 16]);
+    node.history.push(Generation { id: generation, outputs: vec![Value::List(texts(&["A", "B"]))], input_hash: None, items: items.clone() });
+    node.active = Some(generation);
+    let p = wired(vec![batch(1, "a\nb", "cross"), node, single(3)], &[(1, "item", 2, "in"), (2, "out", 3, "in")]);
+    let plan = ready(plan_of(&p, &[3]));
+    let step = plan.steps.first().unwrap();
+    assert_eq!(fanned_values(step), vec![texts(&["A"]), texts(&["B"])]);
+    assert_eq!(step.fanout.as_ref().unwrap().items, items, "consumers keep their source items");
+}
+
+#[test]
+fn a_fanned_step_is_quoted_per_item_even_when_its_jobs_come_later() {
+    let p = wired(vec![batch(1, "a\nb\nc", "cross"), single(2), single(3)], &[(1, "item", 2, "in"), (2, "out", 3, "in")]);
+    let plan = ready(plan_of(&p, &[2, 3]));
+    let catalog = nodecraft_catalog::Catalog::builtin().unwrap();
+    let quote = crate::admission::quote(&plan, p.canvases().get(&C).unwrap(), &kinds(), &catalog).unwrap();
+    let jobs = |n: u8| quote.steps.iter().find(|s| s.node == id(n)).map(|s| (s.jobs, s.jobs_known)).unwrap();
+    assert_eq!(jobs(2), (3, true));
+    assert_eq!(jobs(3), (3, false));
 }
