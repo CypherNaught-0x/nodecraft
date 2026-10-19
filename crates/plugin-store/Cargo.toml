@@ -1,0 +1,21 @@
+[package]
+name = "nodecraft-plugin-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: plugin data-package verification and the local package store"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-plugin = { workspace = true }
+nodecraft-types = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }

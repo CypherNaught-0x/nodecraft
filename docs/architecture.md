@@ -22,6 +22,7 @@ every CI run, and fails on an unregistered crate.
 | L0 standalone | `media` | sniffing, decode/encode, thumbnails, metadata; image first, video/audio probes behind features | none allowed |
 | L0 standalone | `plugin` | the plugin package and wire contract: IDs, canonical JSON, manifest, inventory digest, signatures, frames and messages, locks, preservation ([spec](plugin-wire.md)) | none allowed |
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
+| L1 | `plugin-store` | verifying `.ncraft-plugin` data packages and the local package store: install disabled, enable all-or-nothing, update, rollback, uninstall ([decision](decisions/2026-10-19-plugin-data-package-store.md)) | plugin, types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
@@ -282,6 +283,8 @@ The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated e
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
 Its phase A, the package and wire contract, is the standalone `plugin` crate
 ([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
+Phase B's verifier and local store are `plugin-store`; data packages install disabled and
+nothing in them executes.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions

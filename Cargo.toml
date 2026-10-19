@@ -15,6 +15,7 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }
 nodecraft-plugin = { path = "crates/plugin" }
+nodecraft-plugin-store = { path = "crates/plugin-store" }
 nodecraft-comfy = { path = "crates/comfy" }
 nodecraft-graph = { path = "crates/graph" }
 nodecraft-nodes = { path = "crates/nodes" }
