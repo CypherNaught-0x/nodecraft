@@ -202,7 +202,7 @@ impl NodeCraftApp {
     /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
         // Quitting waits for a save still writing; until it publishes, the project is unsaved.
-        if let Some(Err(error)) = self.session.finish_save() {
+        if let Some(Err(error)) = self.session.finish_file() {
             log::warn!("project not saved: {}", error.message);
         }
         let status = self.session.file_status();
@@ -223,16 +223,20 @@ impl NodeCraftApp {
             Some(_) | None => "Untitled".to_owned(),
         };
         let dirty = if status.available && status.dirty { " •" } else { "" };
-        let saving = if status.saving { " (saving…)" } else { "" };
-        format!("{name}{dirty}{saving} — NodeCraft")
+        let busy = match status.operation.map(|operation| operation.kind) {
+            Some(nodecraft_engine::file_cmds::FileOperationKind::Save) => " (saving…)",
+            Some(nodecraft_engine::file_cmds::FileOperationKind::Open) => " (opening…)",
+            None => "",
+        };
+        format!("{name}{dirty}{busy} — NodeCraft")
     }
 
     /// Picks up a background save's outcome (#461): a failure becomes the notice, and while
     /// one is writing the frames keep coming so its end is seen promptly.
     pub(super) fn poll_save(&mut self, ctx: &egui::Context) {
-        match self.session.poll_save() {
+        match self.session.poll_file() {
             Some(result) => self.file_save_completed(ctx, result),
-            None if self.session.file_status().saving => ctx.request_repaint_after(std::time::Duration::from_millis(16)),
+            None if self.session.file_status().operation.is_some() => ctx.request_repaint_after(std::time::Duration::from_millis(16)),
             None => {}
         }
     }

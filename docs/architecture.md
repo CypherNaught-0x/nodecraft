@@ -380,9 +380,16 @@ carry content state IDs, so undo/redo to the saved state clears dirty even thoug
 of `DocChanged`; saving does not manufacture document edits.
 A host that installs a `SaveRunner` (the native app) can pass `background: true` to `file.save`/
 `file.save_as`: the snapshot is taken on the calling thread, the file work runs as a `SaveJob` on
-the host's thread, and the result is `{saved:false,saving:true}` until `Session::poll_save`
+the host's thread, and the result is `{saved:false,saving:true}` until `Session::poll_file`
 reports the outcome. Every later change waits for the pending save first; reads do not
-(`docs/decisions/2026-10-19-background-saves.md`).
+(`docs/decisions/2026-10-19-background-saves.md`). `file.open` takes `background` too and returns
+`{opened:false,opening:true}`; until it settles, pure reads run and every edit, run, import or
+other file command is refused as `Busy`, since the document is about to be replaced.
+`file.cancel` (a read, so it never waits) asks the pending operation to stop: a save stops until
+its destination is published, an open until its replacement checkpoint is, and the outcome says
+which happened. `FileStatus::operation` gives the kind, phase (`preparing`, `reading`, `writing`,
+`checkpointing`) and whether a cancel was asked for
+(`docs/decisions/2026-10-19-background-open-and-cancel.md`).
 
 `ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
 active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only

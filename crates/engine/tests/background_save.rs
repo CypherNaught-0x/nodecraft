@@ -111,16 +111,16 @@ fn a_background_save_returns_at_once_and_publishes_when_its_job_finishes() {
     assert!(status.saving && status.dirty && status.location.is_none(), "nothing is published yet: {status:?}");
     assert!(session.status_revision() > revision, "hosts see the save start");
     assert!(saved(&storage).is_none());
-    assert!(session.poll_save().is_none(), "still writing");
+    assert!(session.poll_file().is_none(), "still writing");
 
     gate.release();
     let revision = session.status_revision();
-    assert_eq!(session.poll_save().unwrap().unwrap(), json!({"saved": true, "recovery_ready": true, "read_only": false}));
+    assert_eq!(session.poll_file().unwrap().unwrap(), json!({"saved": true, "recovery_ready": true, "read_only": false}));
     let status = session.file_status();
     assert!(!status.saving && !status.dirty && status.location.is_some(), "{status:?}");
     assert!(session.status_revision() > revision, "hosts see the save end");
     assert_eq!(&saved(&storage).unwrap().project, session.document());
-    assert!(session.poll_save().is_none(), "reported once");
+    assert!(session.poll_file().is_none(), "reported once");
     // The session keeps its storage: the next save and edits work as before.
     session.dispatch("node.move", &movement(20)).unwrap();
     assert_eq!(session.dispatch("file.save", &json!({})).unwrap()["saved"], true);
@@ -144,7 +144,7 @@ fn an_edit_waits_for_the_save_which_holds_the_state_before_the_edit() {
     assert_eq!(saved(&storage).unwrap().project, before, "the file holds the snapshot, not the later edit");
     let status = session.file_status();
     assert!(!status.saving && status.dirty && status.location.is_some(), "saved, then edited: {status:?}");
-    assert_eq!(session.poll_save().unwrap().unwrap()["saved"], true, "the outcome the edit waited for is kept for the host");
+    assert_eq!(session.poll_file().unwrap().unwrap()["saved"], true, "the outcome the edit waited for is kept for the host");
     assert!(session.can_undo());
 }
 
@@ -163,10 +163,10 @@ fn reads_do_not_wait_but_saves_and_quitting_do() {
     background_save_as(&mut session);
     gate.release();
     // Waits for the second save even though the first one's outcome is still unreported.
-    assert_eq!(session.finish_save().unwrap().unwrap()["saved"], true);
+    assert_eq!(session.finish_file().unwrap().unwrap()["saved"], true);
     assert!(!session.file_status().saving);
     assert_eq!(storage.0.lock().unwrap().saves, 2);
-    assert!(session.finish_save().is_none());
+    assert!(session.finish_file().is_none());
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn a_failed_or_panicking_background_save_reports_and_keeps_the_storage() {
         }
         background_save_as(&mut session);
         gate.release();
-        let error = session.poll_save().unwrap().unwrap_err();
+        let error = session.poll_file().unwrap().unwrap_err();
         assert!(matches!(error.kind, ErrorKind::Conflict | ErrorKind::Internal), "{error:?}");
         let status = session.file_status();
         assert!(!status.saving && status.dirty && status.location.is_none(), "nothing was published: {status:?}");
@@ -195,7 +195,7 @@ fn a_failed_or_panicking_background_save_reports_and_keeps_the_storage() {
         session.dispatch("node.move", &movement(20)).unwrap();
         background_save_as(&mut session);
         gate.release();
-        assert_eq!(session.poll_save().unwrap().unwrap()["saved"], true);
+        assert_eq!(session.poll_file().unwrap().unwrap()["saved"], true);
         assert_eq!(&saved(&storage).unwrap().project, session.document());
     }
 }
@@ -207,7 +207,7 @@ fn saves_run_inline_without_a_thread_or_a_sendable_storage() {
     session.dispatch("node.move", &movement(10)).unwrap();
     assert_eq!(background_save_as(&mut session)["saved"], true);
     assert!(!session.file_status().saving && !session.file_status().dirty);
-    assert!(session.poll_save().is_none());
+    assert!(session.poll_file().is_none());
     assert_eq!(&saved(&storage).unwrap().project, session.document());
 
     // Without `background`, the save is inline even with a runner.
@@ -229,7 +229,7 @@ fn a_job_dropped_unrun_is_reported_and_refuses_further_edits() {
     let (mut session, _) = setup(Arc::new(Drops));
     session.dispatch("node.move", &movement(10)).unwrap();
     background_save_as(&mut session);
-    let error = session.poll_save().unwrap().unwrap_err();
+    let error = session.poll_file().unwrap().unwrap_err();
     assert_eq!(error.kind, ErrorKind::Internal);
     assert!(session.file_status().recovery_required);
     assert!(session.dispatch("node.move", &movement(20)).is_err(), "no edit can be journalled any more");
@@ -268,5 +268,5 @@ fn a_drop_during_a_save_waits_for_it_instead_of_failing() {
     let imported = nodecraft_engine::import::import_files(&mut session, common::canvas(), at, 100.0, &files, &[common::node_id(9)]).unwrap();
     release.join().unwrap();
     assert_eq!(imported.nodes, vec![common::node_id(9)]);
-    assert_eq!(session.poll_save().unwrap().unwrap()["saved"], true);
+    assert_eq!(session.poll_file().unwrap().unwrap()["saved"], true);
 }

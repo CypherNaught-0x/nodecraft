@@ -125,6 +125,19 @@ struct PendingSave {
     roots: std::collections::BTreeSet<nodecraft_types::Blake3>,
     next: u64,
 }
+/// A background open's session-side completion: the revision and authority it publishes.
+struct PendingOpen {
+    revision: u64,
+    next: u64,
+    identity: Arc<()>,
+}
+enum PendingFile {
+    Save(PendingSave),
+    Open(PendingOpen),
+}
+fn opening() -> Error {
+    Error::new(ErrorKind::Busy, "a project is still opening; wait for it, or cancel it with file.cancel")
+}
 
 /// Owns the document and is its only command mutation path. Read access is immutable.
 /// The panic guard stages edits before publication; native unwinding preserves the live state.
@@ -146,8 +159,8 @@ pub struct Session {
     assets: AssetStore,
     persistence: Option<crate::persistence::Persistence>,
     save_runner: Option<Arc<dyn crate::save_runner::SaveRunner>>,
-    /// A background save still writing: what to finish once it has published.
-    saving: Option<PendingSave>,
+    /// A background save or open still running: what to finish once it has.
+    pending: Option<PendingFile>,
     /// The outcome of a background save that an edit waited for, until the host polls it.
     settled: Option<Result<Value, Error>>,
     status_revision: u64,
@@ -199,7 +212,7 @@ impl Session {
             assets: AssetStore::default(),
             persistence: None,
             save_runner: None,
-            saving: None,
+            pending: None,
             settled: None,
             status_revision: 0,
             admission_identity: identity,
@@ -297,32 +310,40 @@ impl Session {
     pub fn assets(&self) -> &AssetStore {
         &self.assets
     }
-    /// Lets `file.save` and `file.save_as` with `background` write on `runner` (#461).
+    /// Lets `file.save`, `file.save_as` and `file.open` with `background` run on `runner` (#461,
+    /// #367).
     pub fn set_save_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
         self.save_runner = Some(runner);
     }
-    /// The latest background save's outcome once it has finished, the same value `file.save`
-    /// returns inline; `None` while it is still writing or when there was none.
-    pub fn poll_save(&mut self) -> Option<Result<Value, Error>> {
-        self.latest_save(false)
+    /// The latest background save's or open's outcome once it has finished, the same value
+    /// `file.save` or `file.open` returns inline; `None` while it is still running or when
+    /// there was none.
+    pub fn poll_file(&mut self) -> Option<Result<Value, Error>> {
+        self.latest_file(false)
     }
-    /// [`Self::poll_save`], waiting for a background save to finish (before quitting, say).
-    pub fn finish_save(&mut self) -> Option<Result<Value, Error>> {
-        self.latest_save(true)
+    /// [`Self::poll_file`], waiting for a background operation to finish (before quitting, say).
+    pub fn finish_file(&mut self) -> Option<Result<Value, Error>> {
+        self.latest_file(true)
     }
-    fn latest_save(&mut self, wait: bool) -> Option<Result<Value, Error>> {
+    fn latest_file(&mut self, wait: bool) -> Option<Result<Value, Error>> {
+        // An open settling now supersedes an earlier save's stashed outcome: the open needed
+        // `discard_dirty` to start, so that save's result no longer describes the project.
         let settled = self.settled.take();
-        self.settle_save(wait).or(settled)
+        self.settle_file(wait).or(settled)
     }
-    fn settle_save(&mut self, wait: bool) -> Option<Result<Value, Error>> {
+    fn settle_file(&mut self, wait: bool) -> Option<Result<Value, Error>> {
         let before = self.file_status();
         let outcome = self.persistence.as_mut()?.settle(wait)?;
-        let pending = self.saving.take();
-        let result = outcome.map(|ready| {
-            if let Some(pending) = pending {
-                self.saved(pending);
+        let pending = self.pending.take();
+        let result = outcome.and_then(|settled| match (settled, pending) {
+            (crate::persistence::Settled::Saved(ready), pending) => {
+                if let Some(PendingFile::Save(pending)) = pending {
+                    self.saved(pending);
+                }
+                Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}))
             }
-            serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only})
+            (crate::persistence::Settled::Opened(snapshot), Some(PendingFile::Open(pending))) => Ok(self.install(snapshot, pending)),
+            (crate::persistence::Settled::Opened(_), _) => Err(Error::new(ErrorKind::Internal, "an open finished without the session waiting for it")),
         });
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
@@ -331,16 +352,33 @@ impl Session {
     }
     /// Every change to the document, its assets or its storage first waits for a background
     /// save, so the save publishes exactly the state it snapshotted. Keeps the outcome for
-    /// [`Self::poll_save`]; a later save's outcome replaces an earlier one, since it describes
-    /// the file as it now is.
-    pub(crate) fn settle_for_edit(&mut self) {
-        if self.saving.is_some() {
-            match self.settle_save(true) {
-                Some(outcome) => self.settled = Some(outcome),
-                // Nothing was pending after all: never wait (or re-dispatch) for it again.
-                None => self.saving = None,
+    /// [`Self::poll_file`]; a later save's outcome replaces an earlier one, since it describes
+    /// the file as it now is. During a background open it refuses instead: the document is
+    /// about to be replaced, so the change would be lost or land on the wrong project.
+    pub(crate) fn settle_for_edit(&mut self) -> Result<(), Error> {
+        match self.pending {
+            None => Ok(()),
+            Some(PendingFile::Open(_)) => Err(opening()),
+            Some(PendingFile::Save(_)) => {
+                match self.settle_file(true) {
+                    Some(outcome) => self.settled = Some(outcome),
+                    // Nothing was pending after all: never wait (or re-dispatch) for it again.
+                    None => self.pending = None,
+                }
+                Ok(())
             }
         }
+    }
+    /// Publishes an opened project: the new document, fresh history and the open's authority.
+    fn install(&mut self, snapshot: Snapshot, pending: PendingOpen) -> Value {
+        self.document = snapshot.project;
+        self.assets = snapshot.assets;
+        self.undo = History::default();
+        self.redo = History::default();
+        self.gesture = None;
+        self.state = pending.revision;
+        self.publish(pending.revision, "file.open", pending.next, pending.identity);
+        serde_json::json!({"opened":true,"read_only":self.file_status().read_only})
     }
     fn saved(&mut self, pending: PendingSave) {
         self.assets.retain(&pending.roots);
@@ -349,7 +387,7 @@ impl Session {
         self.gesture = None;
     }
     pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
-        self.settle_for_edit();
+        self.settle_for_edit()?;
         self.import_small(bytes)
     }
     /// Host housekeeping: remove logical assets absent from the document and all undo/redo
@@ -358,7 +396,7 @@ impl Session {
     /// physical reclamation: readers and preparations retain their pins. Ordinary source Drop
     /// may perform owned cleanup and retain debt; no explicit fallible step follows publication.
     pub fn collect_assets(&mut self) -> Result<bool, Error> {
-        self.settle_for_edit();
+        self.settle_for_edit()?;
         guard(|| {
             let roots = self.retained_assets()?;
             let changed = self.assets.hashes().any(|hash| !roots.contains(hash));
@@ -389,7 +427,7 @@ impl Session {
     /// session's file, or untitled), history starts fresh, and the change is published like an
     /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
     pub fn recover(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
-        self.settle_for_edit();
+        self.settle_for_edit()?;
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
         }
@@ -446,7 +484,7 @@ impl Session {
         staged: &AssetStore,
         base: u64,
     ) -> Result<(), Error> {
-        self.settle_for_edit();
+        self.settle_for_edit()?;
         if self.revision != base {
             return Err(Error::new(ErrorKind::Conflict, "the results are out of date"));
         }
@@ -502,7 +540,7 @@ impl Session {
     }
     /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
     pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {
-        self.settle_for_edit();
+        self.settle_for_edit()?;
         let before = self.file_status();
         let result =
             self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?.close(self.state, discard_dirty);
@@ -559,6 +597,9 @@ impl Session {
             // Handlers describe effects without I/O. Preview custom edits through the same
             // admission boundary as dispatch; services and file I/O are never invoked here.
             match (spec.run)(&context, params)? {
+                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::CancelFile => Ok(()),
+                // Dispatch refuses everything else until the open settles.
+                _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
                 _ => Ok(()),
             }
@@ -590,10 +631,16 @@ impl Session {
             (spec.enabled)(&context, params)?;
             (spec.run)(&context, params)
         })?;
-        let reads = matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::PreparedRun { .. });
-        if !reads && self.saving.is_some() {
+        let reads = matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::PreparedRun { .. } | Effect::CancelFile);
+        // A run would start on the project being replaced, so only pure reads go past an open.
+        if matches!(self.pending, Some(PendingFile::Open(_)))
+            && !matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::CancelFile)
+        {
+            return Err(opening());
+        }
+        if !reads && self.pending.is_some() {
             // The save's outcome can change what this command may do: decide again after it.
-            self.settle_for_edit();
+            self.settle_for_edit()?;
             return self.dispatch_inner(id, params);
         }
         let effect = match effect {
@@ -607,6 +654,13 @@ impl Session {
                     validate_json(&result)?;
                     Ok(result)
                 });
+            }
+            Effect::CancelFile => {
+                let cancelling = self.persistence.as_ref().is_some_and(|persistence| persistence.cancel());
+                if cancelling {
+                    self.status_revision = self.status_revision.saturating_add(1);
+                }
+                return Ok(serde_json::json!({"cancelling":cancelling}));
             }
             Effect::Perf { action } => {
                 match action {
@@ -633,34 +687,33 @@ impl Session {
                 let pending = PendingSave { roots, next };
                 let read_only = self.file_status().read_only;
                 return Ok(match saving {
-                    crate::persistence::Saving::Done(ready) => {
+                    crate::persistence::Started::Done(ready) => {
                         self.saved(pending);
                         serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":read_only})
                     }
-                    crate::persistence::Saving::Started => {
-                        self.saving = Some(pending);
+                    crate::persistence::Started::Started => {
+                        self.pending = Some(PendingFile::Save(pending));
                         serde_json::json!({"saved":false,"saving":true,"recovery_ready":false,"read_only":read_only})
                     }
                 });
             }
-            Effect::Open { location, discard_dirty } => {
+            Effect::Open { location, discard_dirty, background } => {
                 if self.file_status().dirty && !discard_dirty {
                     return Err(Error::new(ErrorKind::Conflict, "opening would discard unsaved changes"));
                 }
                 let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
                 let next = self.execution.next()?;
-                let identity = Arc::new(());
+                let pending = PendingOpen { revision, next, identity: Arc::new(()) };
                 self.reserve_event()?;
+                let runner = if background { self.save_runner.clone() } else { None };
                 let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
-                let snapshot = storage.open(location, revision)?;
-                self.document = snapshot.project;
-                self.assets = snapshot.assets;
-                self.undo = History::default();
-                self.redo = History::default();
-                self.gesture = None;
-                self.state = revision;
-                self.publish(revision, spec.id, next, identity);
-                return Ok(serde_json::json!({"opened":true,"read_only":self.file_status().read_only}));
+                return Ok(match storage.open(location, revision, runner.as_deref())? {
+                    crate::persistence::Started::Done(snapshot) => self.install(snapshot, pending),
+                    crate::persistence::Started::Started => {
+                        self.pending = Some(PendingFile::Open(pending));
+                        serde_json::json!({"opened":false,"opening":true})
+                    }
+                });
             }
             document_effect => document_effect,
         };
@@ -826,7 +879,13 @@ impl Session {
                 let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
-            Effect::None { .. } | Effect::PreparedRun { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {
+            Effect::None { .. }
+            | Effect::PreparedRun { .. }
+            | Effect::Service { .. }
+            | Effect::Open { .. }
+            | Effect::Save { .. }
+            | Effect::Perf { .. }
+            | Effect::CancelFile => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }
         };
