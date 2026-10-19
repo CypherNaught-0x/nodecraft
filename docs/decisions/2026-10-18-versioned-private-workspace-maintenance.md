@@ -1,5 +1,7 @@
 ## 2026-10-18 · Versioned private workspace maintenance (#363)
 
+Constructor failure policy is refined by [Best-effort constructor maintenance](2026-10-19-best-effort-workspace-construction.md) (#445); the authority and bounds below remain unchanged.
+
 Private native assets receive a versioned root-matched lifetime marker held by their workspace
 Arc, including retained sources/readers/captures. Payload handles and cleanup permits close before
 the final lock. Recovery is self-contained; an unlocked valid new-protocol root can therefore be
