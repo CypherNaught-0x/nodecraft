@@ -314,6 +314,57 @@ pub fn validate(v: &Value) -> Result<(), String> {
     }
     Ok(())
 }
+fn markdown_text(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '`' => escaped.push_str("&#96;"),
+            '\\' => escaped.push_str("&#92;"),
+            '|' => escaped.push_str("&#124;"),
+            ':' => escaped.push_str("&#58;"),
+            '/' => escaped.push_str("&#47;"),
+            '(' => escaped.push_str("&#40;"),
+            ')' => escaped.push_str("&#41;"),
+            '[' => escaped.push_str("&#91;"),
+            ']' => escaped.push_str("&#93;"),
+            '*' => escaped.push_str("&#42;"),
+            '_' => escaped.push_str("&#95;"),
+            '#' => escaped.push_str("&#35;"),
+            '~' => escaped.push_str("&#126;"),
+            c if c.is_control() => escaped.push(' '),
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+fn comparison_header(base: &Value, current: &Value) -> Result<String, String> {
+    // Only allowlisted, already-public envelope fields; never configuration or local tool paths.
+    // Validated text is <=4096 bytes; escaping expands each character by at most six bytes.
+    let mut header = String::from("# Performance comparison\n\n");
+    for (label, report) in [("Baseline", base), ("Current", current)] {
+        let source = report.get("source").ok_or_else(err)?;
+        header.push_str(&format!(
+            "{label}: revision {}; source fingerprint {}; definitions {}; dirty {}.\n\n",
+            text(source, "revision")?,
+            text(source, "fingerprint")?,
+            text(report, "definitions")?,
+            source.get("dirty").and_then(Value::as_bool).ok_or_else(err)?,
+        ));
+    }
+    let environment = base.get("environment").ok_or_else(err)?;
+    header.push_str(&format!(
+        "Shared machine class: {}; CPU model: {}.\n\n",
+        markdown_text(text(environment, "machine")?),
+        markdown_text(text(environment, "cpu_model")?)
+    ));
+    if [base, current].iter().any(|r| r.pointer("/source/dirty").and_then(Value::as_bool) == Some(true)) {
+        header.push_str("**Dirty source warning:** at least one measurement includes uncommitted source; its revision alone does not identify the measured tree. Use the recorded source fingerprint.\n\n");
+    }
+    Ok(header)
+}
 pub fn compare(base: &Value, current: &Value) -> Result<(bool, String), String> {
     validate(base)?;
     validate(current)?;
@@ -327,8 +378,9 @@ pub fn compare(base: &Value, current: &Value) -> Result<(bool, String), String> 
     }
     let a = base.get("records").and_then(Value::as_array).ok_or_else(err)?;
     let b = current.get("records").and_then(Value::as_array).ok_or_else(err)?;
-    let mut markdown = String::from(
-        "# Performance comparison\n\nInformational, matched nearest-rank quantiles. Policy baseline-quantile-plus-3iqr-v1: each matched baseline quantile plus three times that workload's interquartile range. This provisional engineering allowance is not a confidence interval, stable SLA or FPS target. Isolated extremes remain in range/max, without inflating every budget. A new calibration is required after incompatible workload/environment changes.\n\n| Workload | Quantile | Baseline ns | Current ns | Change ns | Change % | Budget ns | Signal |\n|---|---|---:|---:|---:|---:|---:|---|\n",
+    let mut markdown = comparison_header(base, current)?;
+    markdown.push_str(
+        "Informational, matched nearest-rank quantiles. Policy baseline-quantile-plus-3iqr-v1: each matched baseline quantile plus three times that workload's interquartile range. This provisional engineering allowance is not a confidence interval, stable SLA or FPS target. Isolated extremes remain in range/max, without inflating every budget. A new calibration is required after incompatible workload/environment changes.\n\n| Workload | Quantile | Baseline ns | Current ns | Change ns | Change % | Budget ns | Signal |\n|---|---|---:|---:|---:|---:|---:|---|\n",
     );
     let mut regression = false;
     let mut dispersion = String::from(

@@ -142,3 +142,31 @@ fn old_unrecorded_build_configuration_is_not_silently_upgraded() {
     missing["environment"].as_object_mut().unwrap().remove("cargo");
     assert!(validate(&missing).is_err());
 }
+
+#[test]
+fn comparison_provenance_is_public_escaped_bounded_and_dirty_qualified() {
+    let mut a = fixture();
+    a["environment"]["cpu_model"] = json!("<script>[cpu](https://invalid) `code` | & *em*\n# heading");
+    a["environment"]["cargo"] = json!("cargo /private/not-rendered");
+    let mut b = a.clone();
+    b["source"]["revision"] = json!("e".repeat(40));
+    b["source"]["fingerprint"] = json!("f".repeat(40));
+    b["source"]["dirty"] = json!(true);
+    let (_, md) = compare(&a, &b).unwrap();
+    assert!(md.contains(&format!("Baseline: revision {}", "b".repeat(40))));
+    assert!(md.contains(&format!("Current: revision {}; source fingerprint {}", "e".repeat(40), "f".repeat(40))));
+    assert!(md.contains(&format!("definitions {}", "a".repeat(40))));
+    assert!(md.contains("Shared machine class: fixture-cpu"));
+    assert!(md.contains("Dirty source warning"));
+    assert!(md.contains("&lt;script&gt;&#91;cpu&#93;&#40;https&#58;&#47;&#47;invalid&#41; &#96;code&#96; &#124; &amp; &#42;em&#42; &#35; heading"));
+    assert!(!md.contains("<script>"));
+    assert!(!md.contains("[cpu]"));
+    assert!(!md.contains("flags_fingerprint"));
+    assert!(!md.contains("/private/not-rendered"));
+    assert!(!md.contains("https://"));
+    assert!(!compare(&fixture(), &fixture()).unwrap().1.contains("Dirty source warning"));
+    a["environment"]["cpu_model"] = json!("<".repeat(4096));
+    assert!(compare(&a, &a).unwrap().1.len() < 100_000);
+    a["environment"]["cpu_model"] = json!("<".repeat(4097));
+    assert!(compare(&a, &a).is_err());
+}

@@ -19,12 +19,22 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     c.current_dir(root).args(args);
     output(c)
 }
+fn source_input_error() -> String {
+    "source input missing or unreadable; stage intentional deletions or restore readable inputs".into()
+}
 fn hash(root: &Path, paths: &[String]) -> Result<String, String> {
     let mut content = String::new();
     for chunk in paths.chunks(16) {
+        for path in chunk {
+            let path = root.join(path);
+            if !fs::metadata(&path).map_err(|_| source_input_error())?.is_file() {
+                return Err(source_input_error());
+            }
+            let _readable = File::open(path).map_err(|_| source_input_error())?;
+        }
         let mut c = Command::new("git");
         c.current_dir(root).args(["hash-object", "--"]).args(chunk);
-        let hashes = output(c)?;
+        let hashes = output(c).map_err(|_| source_input_error())?;
         let ids: Vec<_> = hashes.lines().collect();
         if ids.len() != chunk.len() {
             return Err("source hash count mismatch".into());
@@ -338,4 +348,26 @@ pub fn comparison(root: &Path, args: &[&str]) -> Result<u8, String> {
         }
     );
     Ok(if signal { 2 } else { 0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unstaged_deleted_source_has_actionable_private_path_free_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]).unwrap();
+        fs::write(root.join("private-name.txt"), "fixture").unwrap();
+        git(root, &["add", "--", "private-name.txt"]).unwrap();
+        let paths = vec!["private-name.txt".to_owned()];
+        assert!(hash(root, &paths).is_ok());
+        fs::remove_file(root.join("private-name.txt")).unwrap();
+        assert!(git(root, &["ls-files", "-co", "--exclude-standard", "-z"]).unwrap().contains("private-name.txt"));
+        assert_eq!(hash(root, &paths).unwrap_err(), source_input_error());
+        git(root, &["rm", "--cached", "--quiet", "--", "private-name.txt"]).unwrap();
+        assert!(git(root, &["ls-files", "-co", "--exclude-standard", "-z"]).unwrap().is_empty());
+        assert!(hash(root, &[]).is_ok());
+    }
 }

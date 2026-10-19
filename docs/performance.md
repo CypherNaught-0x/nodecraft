@@ -16,15 +16,15 @@ CARGO_TARGET_DIR=target/perf-build CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
 
 Use a public hardware class, not your hostname, account or project name. The report adds the
 public CPU model, logical CPU count, OS/architecture, full rustc version/host and release profile.
-Cargo/build/Rustflags configuration is fingerprinted, never printed. Version2 of the envelope
-adds actual Cargo version and selected-config provenance; old version1 reports lack that evidence
+Cargo/build/Rustflags configuration is fingerprinted, never printed. Version 2 of the envelope
+adds actual Cargo version and selected-config provenance; old version 1 reports lack that evidence
 and are rejected, not retroactively upgraded from today's files.
 
 Cargo probes the invocation directory and its ancestors, then Cargo-home. The collector hashes
 those ordered private locations and each selected `config` or `config.toml` file, honoring legacy
-`config` precedence (the other file is ignored). Bounds:32ancestor directories plus Cargo-home,
-4KiB per input location,64KiB per selected regular file,256KiB total;128relevant environment
-entries/64KiB total.
+`config` precedence (the other file is ignored). Bounds: 32 ancestor directories plus Cargo-home,
+4 KiB per input location, 64 KiB per selected regular file, 256 KiB total; 128 relevant environment
+entries/64 KiB total.
 All Cargo environment options are included conservatively except credential values and ephemeral
 jobserver descriptors; Rust compiler/flags/toolchain and Rayon options are included. Windows
 variable names are normalized for its case-insensitive lookup. Inputs are checked before and after
@@ -40,7 +40,10 @@ transparent instrumentation wrappers and their other inputs remain trusted and m
 See [Cargo's configuration precedence](https://doc.rust-lang.org/cargo/reference/config.html).
 
 The output directory must be new; within the checkout it must be Git-ignored. Nothing uploads
-from the local command. A previous baseline is never overwritten automatically.
+from the local command. A previous baseline is never overwritten automatically. Missing/unreadable
+source inputs refuse collection; stage an intentional deletion or restore a readable input rather than omitting it from
+the fingerprint. Config-defined compiler/wrapper overrides have a category-specific refusal; their
+private values and paths are not included in the error.
 
 The tool resolves the invoking workspace, fingerprints its tracked and unignored source bytes
 and executable modes, and records full revision/dirty state. It cleans only workspace **release**
@@ -131,10 +134,10 @@ A large IQR still gives poor sensitivity and is reported rather than called stab
 For canvas, the spread also includes changing script/visibility phases; it is not a pure machine-jitter
 estimate. Whole-script budgets can therefore be broad even on a quiet host.
 
-Initial shared-machine measurements exposed range/median ratios up to135.46 in dispatch,
-29.54 in memory storage and8.75 in native storage. Using the whole range as an allowance would
-hide meaningful regressions; it was rejected. That historical version1 report remains diagnostic only because its external Cargo configuration
-was not captured. A corrected version2 collection supplies the initial comparable per-workload
+Initial shared-machine measurements exposed range/median ratios up to 135.46 in dispatch,
+29.54 in memory storage and 8.75 in native storage. Using the whole range as an allowance would
+hide meaningful regressions; it was rejected. That historical version 1 report remains diagnostic
+only because its external Cargo configuration was not captured. A corrected version 2 collection supplies the initial comparable per-workload
 baseline; no approved blocking budgets or measured cross-revision performance win is implied.
 Repeat controlled runs when establishing a stable-machine policy, document why its budgets are
 useful, and version policy changes deliberately. Never calibrate against a known degraded
@@ -145,6 +148,10 @@ regression signal; **3** malformed, incomplete, incomparable or failed execution
 without a requested baseline says **not compared**, not a regression pass. Comparator tests prove
 an unchanged pair, median-preserving tail slowdown, zero baseline, missing/duplicate records,
 under-sampled tails, unavailable metrics, incompatible environments and hostile JSON admission.
+The readable comparison identifies both source revisions/fingerprints, definition fingerprints and
+dirty flags, plus the shared public machine/CPU class. A dirty-source warning requires using the
+recorded fingerprint rather than treating HEAD as the complete measured tree. Only these existing
+public envelope fields are rendered; private build configuration is never included.
 Input is capped at 8 MiB with depth/string/token preflight before owned JSON parsing; records and
 ordered samples are separately bounded. These are tooling limits, not process-RSS guarantees.
 
@@ -152,7 +159,10 @@ To update a baseline: choose a clean intended source revision and public hardwar
 into a new directory; inspect correctness/counts, sample distributions and provenance; retain
 that report with its source identity and a reason for replacement. Review the policy/data change
 with the PR. Toolchain, dependency, workload or hardware changes are often incomparable and call
-for a fresh baseline rather than relaxed validation. Bulky run artifacts stay ignored.
+for a fresh baseline rather than relaxed validation. The fixture/dependency fingerprint deliberately
+includes the workspace manifest and Cargo.lock: dependency or workspace-version changes may refuse
+comparison even when the timed source is unchanged. This conservative boundary is intentional; there
+is no dependency-change bypass. Bulky run artifacts stay ignored.
 
 ## CI and investigation
 
@@ -160,7 +170,16 @@ for a fresh baseline rather than relaxed validation. Bulky run artifacts stay ig
 and readable artifacts. A manual run may select a previous successful performance workflow run
 ID as its explicit baseline. Malformed/incomplete/incomparable evidence fails the step; a measured
 slowdown is visibly reported but informational on shared hardware. Without a selected baseline,
-the workflow explicitly publishes only collection, no comparison verdict. Actions are pinned.
+the workflow explicitly publishes only collection, no comparison verdict. Actions and Rust 1.99.1 are
+pinned; that toolchain was observed in PR #478's successful hosted Linux correctness job. Updating it
+requires a new comparable performance baseline. Shared GitHub runner CPU models can also change;
+exact environment comparison then refuses rather than equating different hardware.
+
+The first hosted performance workflow execution is still pending. Ordinary hosted correctness CI
+and local release collection do not establish its Ubuntu runtime, build-watchdog margin or recurring
+baseline stability. Run it deliberately after the workflow exists on the default branch, retain its
+actual result, and adjust operational limits only from that evidence. No hosted performance pass is
+claimed here.
 
 Investigate a signal by checking the compared revision/fixture/environment identities, actual
 counts and supported metrics first, then raw sample order/range/MAD and each matching quantile.

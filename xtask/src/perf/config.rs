@@ -85,8 +85,10 @@ fn selected(dir: &Path, total: &mut usize) -> Result<Value, String> {
             .get("build")
             .and_then(toml::Value::as_table)
             .is_some_and(|b| ["rustc", "rustc-wrapper", "rustc-workspace-wrapper"].iter().any(|k| b.contains_key(*k)));
+        if compiler {
+            return Err("unsupported Cargo build compiler/wrapper override; see docs/performance.md".into());
+        }
         if config.keys().any(|k| !supported.contains(&k.as_str()))
-            || compiler
             || response_file(&config)
             || config.get("resolver").and_then(toml::Value::as_table).is_some_and(|r| r.contains_key("lockfile-path"))
         {
@@ -256,6 +258,14 @@ value=1"#,
             write(&dir.join(".cargo/config.toml"), &format!("#{}", "x".repeat(60000)));
         }
         assert!(inputs(&deep, &home, &BTreeMap::new()).is_err());
+    }
+    #[test]
+    fn compiler_override_diagnostic_is_specific_without_private_values() {
+        let (_dir, root, home) = fixture();
+        for key in ["rustc", "rustc-wrapper", "rustc-workspace-wrapper"] {
+            write(&root.join(".cargo/config.toml"), &format!("[build]\n{key}=\"/private/compiler\"\n"));
+            assert_eq!(inputs(&root, &home, &BTreeMap::new()).unwrap_err(), "unsupported Cargo build compiler/wrapper override; see docs/performance.md");
+        }
     }
     #[test]
     fn environment_bounds_and_unsupported_options_refuse_before_hashing() {
