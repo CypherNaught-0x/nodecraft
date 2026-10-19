@@ -115,7 +115,7 @@ pub fn of_kind(canvas: &Canvas, kind: &str) -> BTreeSet<NodeId> {
 }
 
 /// Nodes whose card touches the world-space box (`rect_of` gives a card's world rect).
-pub fn in_box(canvas: &Canvas, world: Rect, rect_of: impl Fn(&Node) -> Rect) -> BTreeSet<NodeId> {
+pub fn in_box(canvas: &Canvas, world: Rect, mut rect_of: impl FnMut(&Node) -> Rect) -> BTreeSet<NodeId> {
     canvas.nodes().values().filter(|node| rect_of(node).intersects(world)).map(|node| node.id).collect()
 }
 
