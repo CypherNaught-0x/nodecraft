@@ -200,7 +200,7 @@ fn all_forward_asset_roles_fail_before_append_and_do_not_invalidate_a_valid_prep
                 canvas: canvas(),
                 id: id(1),
                 index: 0,
-                generation: Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![nested], input_hash: None },
+                generation: Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![nested], input_hash: None, items: Vec::new() },
             },
             Change::AddNode { canvas: canvas(), node: node.clone() },
             Change::RestoreNode { canvas: canvas(), node: node.clone(), edges: vec![], pins: vec![] },

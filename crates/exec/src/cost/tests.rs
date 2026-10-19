@@ -1000,6 +1000,7 @@ fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Vec<String>,
             after: vec![],
             inputs: vec![],
             jobs: None,
+            fanout: None,
         }],
         edges: vec![],
     };

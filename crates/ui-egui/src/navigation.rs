@@ -18,6 +18,7 @@ pub(crate) struct SessionIdentity;
 pub struct Geometry {
     key: Option<(ProjectId, CanvasId, u64, ThemeKind)>,
     session_identity: Option<Arc<SessionIdentity>>,
+    generation_definition: Option<[u8; 32]>,
     pub rects: BTreeMap<NodeId, Rect>,
     /// Checked instance sizes for layout (two scalars), excluding navigation placeholders.
     pub sizes: BTreeMap<NodeId, Vec2>,
@@ -35,6 +36,7 @@ impl Geometry {
     }
     pub fn refresh(&mut self, session: &mut Session, canvas: CanvasId, theme: ThemeKind) {
         let identity = Self::identity(session);
+        let generation_definition = crate::app::admission::definition_snapshot(session);
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
@@ -45,10 +47,14 @@ impl Geometry {
             return;
         };
         let key = (document.id(), canvas, session.revision(), theme);
-        if self.key == Some(key) && self.session_identity.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, &identity)) {
+        if self.key == Some(key)
+            && self.generation_definition == generation_definition
+            && self.session_identity.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, &identity))
+        {
             return;
         }
         self.key = Some(key);
+        self.generation_definition = generation_definition;
         self.session_identity = Some(identity);
         self.rects.clear();
         self.sizes.clear();
@@ -114,6 +120,21 @@ fn instance_info<'a>(
     let Ok(kind) = session.kinds().get(&node.kind) else {
         return placeholder();
     };
+    if node.kind == nodecraft_nodes::generation::KIND {
+        // The model-owned conditions and current definition binding are the same
+        // authority used by painting and marquee admission, including placeholders.
+        let Some(admitted) = crate::app::admission::admit_uncached(session, node) else { return placeholder() };
+        let descriptor = admitted.descriptor;
+        let rect = card::world_rect(node, Some(&descriptor), t);
+        if !valid_rect(rect) {
+            return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
+        }
+        return Ok((
+            rect,
+            Some(card::world_size(node, Some(&descriptor), t)),
+            if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() },
+        ));
+    }
     let Ok(descriptor) = kind.instance(node) else {
         return placeholder();
     };

@@ -162,7 +162,7 @@ impl NodeCraftApp {
     /// A session over native storage, starting from the sample project or the file in `setup`,
     /// and the canvas to show, plus where an earlier session's unrecovered journal was kept.
     pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>, Option<Error>), Error> {
-        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
         let (document, canvas) = Self::starter_document(&kinds)?;
         if let Some(folder) = setup.recovery.parent() {
             std::fs::create_dir_all(folder).map_err(|_| Error::new(ErrorKind::Unsupported, "the recovery folder can't be created"))?;

@@ -5,6 +5,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 pub mod app;
+mod bulk;
 pub mod canvas;
 pub mod card;
 pub mod clipboard;
@@ -12,6 +13,7 @@ pub mod comments;
 pub mod history;
 pub mod ids;
 pub mod keys;
+pub mod model_picker;
 pub mod navigation;
 pub mod noodle;
 pub mod order;

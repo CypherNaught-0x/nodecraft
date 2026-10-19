@@ -45,7 +45,7 @@ fn describe(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         Target::Kind(kind) => json!({"contract": c.kinds.contract(kind)?}),
         Target::Node(node) => {
             let contract = c.kinds.get(&node.kind)?.instance_contract(node)?;
-            let resolution = contract.params.resolve(&node.params, true)?;
+            let resolution = contract.resolve(&node.params, true)?;
             json!({"contract": contract, "resolution": resolution})
         }
     };

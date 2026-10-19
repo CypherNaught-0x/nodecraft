@@ -44,6 +44,12 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
         Sniffed::new("text/plain; charset=utf-16be", Text)
     } else if at(0, b"\x89PNG\r\n\x1a\n") {
         Sniffed::new("image/png", Image)
+    } else if at(0, b"\x76\x2f\x31\x01") {
+        // Recognition only: generic OpenEXR magic does not certify the ACES subset.
+        Sniffed::new("image/x-exr", Image)
+    } else if at(0, b"#?RGBE\n") || at(0, b"#?RADIANCE\n") {
+        // The complete first line outranks text, even in a header-only input.
+        Sniffed::new("image/vnd.radiance", Image)
     } else if at(0, b"\xFF\xD8\xFF") {
         Sniffed::new("image/jpeg", Image)
     } else if at(0, b"GIF87a") || at(0, b"GIF89a") {
@@ -228,5 +234,27 @@ mod tests {
             let _ = sniff(b"RIFF\0\0\0\0WEB".get(..len.min(11)).unwrap_or_default());
         }
         assert_eq!(mime(b"BM"), Some("text/plain"), "a bare 'BM' is too short to be a bitmap");
+    }
+}
+
+#[cfg(test)]
+mod hdr394_recognition {
+    use super::*;
+    #[test]
+    fn hdr394_signatures_precede_text_and_near_misses_stay_unchanged() {
+        for (bytes, mime) in [
+            (b"\x76\x2f\x31\x01".as_slice(), "image/x-exr"),
+            (b"#?RGBE\n".as_slice(), "image/vnd.radiance"),
+            (b"#?RADIANCE\n".as_slice(), "image/vnd.radiance"),
+            (b"#?RGBE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\xff\x80\x40\x81".as_slice(), "image/vnd.radiance"),
+        ] {
+            assert_eq!(sniff(bytes), Some(Sniffed { mime, kind: MediaKind::Image }));
+        }
+        for text in [b"#?RGBE".as_slice(), b"#?RGBE prose\n", b"#?RADIANCEX\n", b" #?RGBE\n", b"#?RGBE\r\n"] {
+            assert_eq!(sniff(text).unwrap().kind, MediaKind::Text);
+        }
+        assert_eq!(sniff(b"\x76\x2f\x31\x02"), None);
+        assert_eq!(sniff(b"\x76\x2f\x31").unwrap().kind, MediaKind::Text);
+        assert_eq!(sniff(b""), None);
     }
 }

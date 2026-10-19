@@ -8,7 +8,7 @@ use crate::{
 use nodecraft_catalog::{Catalog, ModelDescriptor, Pricing};
 use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::{Category, JobSpec, Registry};
-use nodecraft_types::{CanvasId, Currency, Error, ErrorKind, Money, NodeId, ParamControl, ParamSchema, ParamValues, Value};
+use nodecraft_types::{CanvasId, Error, ErrorKind, Money, NodeId, ParamControl, ParamSchema, ParamValues, Value};
 use std::{collections::BTreeMap, mem::size_of};
 pub mod measure;
 #[cfg(test)]
@@ -62,6 +62,7 @@ struct Selected {
     provider: String,
     remote: String,
     schema: ParamSchema,
+    semantic: bool,
 }
 struct Allowed {
     id: String,
@@ -89,6 +90,10 @@ pub struct AdmittedRunPlan {
     pub(crate) usage: Usage,
 }
 impl AdmittedRunPlan {
+    /// Borrow the already-admitted node identities, without allocating or reviving work.
+    pub fn planned_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.plan.steps.iter().map(|s| s.node)
+    }
     /// Borrow precisely the selected model targets, including implicit defaults.
     pub fn selected_targets(&self) -> impl Iterator<Item = (NodeId, &str, Option<nodecraft_types::ProviderInstanceId>)> {
         self.witness.steps.iter().flat_map(move |(node, allowed)| {
@@ -130,7 +135,21 @@ impl Witness {
             if measure::scratch(&s.schema)? > self.scratch {
                 return Err(cap());
             }
-            let Ok(v) = s.schema.resolve_view(params, true, false) else { continue };
+            let v = if s.semantic {
+                // The source's shared Contract was resolved before admission. A generated
+                // job must match that EXACT submission; applying defaults here would revive
+                // disabled/hidden settings. Equality only traverses admitted scalar values.
+                if params.len() != a.expected.len() || params.iter().any(|(k, v)| a.expected.get(k) != Some(v)) {
+                    continue;
+                }
+                nodecraft_types::BorrowedResolvedParams {
+                    values: params.iter().map(|(k, v)| (k.as_str(), v)).collect(),
+                    visible: params.keys().cloned().collect(),
+                }
+            } else {
+                let Ok(v) = s.schema.resolve_view(params, true, false) else { continue };
+                v
+            };
             let same = v.values.iter().filter(|(k, _)| v.visible.contains(**k)).count() == a.expected.len()
                 && v.values.iter().filter(|(k, _)| v.visible.contains(**k)).all(|(k, v)| a.expected.get(*k) == Some(*v));
             if !same {
@@ -182,6 +201,14 @@ impl Usage {
         self.bytes = total;
         Ok(())
     }
+}
+fn resolution_scratch(model: &ModelDescriptor) -> Result<usize, Error> {
+    let base = measure::scratch(&model.params)?;
+    // Shared semantic resolution retains states and a submission simultaneously. Each
+    // validated map/default aggregate is <=1 MiB; shells/keys fit in the extra two MiB.
+    // Legacy borrowed resolution keeps its original allowance.
+    let n = measure::add(base, if model.parameter_contract.is_some() { 4 * 1024 * 1024 } else { 0 })?;
+    if n > MAX_SCRATCH_BYTES { Err(cap()) } else { Ok(n) }
 }
 struct Selection<'a> {
     node: NodeId,
@@ -238,7 +265,7 @@ fn selection<'a>(
                 selected.push(Selection { node: node.id, model: Err(Unpriced::UnknownModel(id.clone())), source: node });
                 continue;
             };
-            let scratch = measure::add(measure::mul(selected.len() + 1, size_of::<Selection<'_>>())?, measure::scratch(&model.params)?)?;
+            let scratch = measure::add(measure::mul(selected.len() + 1, size_of::<Selection<'_>>())?, resolution_scratch(model)?)?;
             if scratch > scratch_limit {
                 return Err(cap());
             }
@@ -274,7 +301,7 @@ fn quote_bound(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<usize, Erro
         measure::add(measure::mul(plan.steps.len(), size_of::<StepQuote>() + 2048)?, measure::mul(selected.len(), size_of::<String>() + 1024)?)?,
     )?;
     let n = measure::add(n, measure::mul(selected.len(), size_of::<Selection<'_>>())?)?;
-    let peak = selected.iter().filter_map(|s| s.model.as_ref().ok()).try_fold(0usize, |max, m| Ok::<_, Error>(max.max(measure::scratch(&m.params)?)))?;
+    let peak = selected.iter().filter_map(|s| s.model.as_ref().ok()).try_fold(0usize, |max, m| Ok::<_, Error>(max.max(resolution_scratch(m)?)))?;
     let n = measure::add(n, peak)?;
     if n > MAX_SCRATCH_BYTES {
         return Err(cap());
@@ -307,14 +334,10 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             #[cfg(test)]
             QUOTE_COPIES.with(|n| n.set(n.get() + 1));
             models.push(model.id.clone());
-            if model.pricing == Pricing::Free {
+            if model.pricing == Pricing::Free && model.parameter_contract.is_none() {
                 continue;
             }
-            let v = model.params.resolve_view(&s.source.params, false, true).map_err(safe_error)?;
-            match model
-                .pricing
-                .quote_lookup(|key| if v.visible.contains(key) { v.values.get(key).copied() } else { None }, model.pricing.currency().unwrap_or(Currency::USD))
-            {
+            match model.quote_selected(&s.source.params) {
                 Ok(Some(m)) => match total {
                     Some(t) => match t.checked_add(m) {
                         Ok(sum) => total = Some(sum),
@@ -331,7 +354,12 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             node: step.node,
             models,
             per_job,
-            jobs: step.jobs.as_ref().map_or(1, |j| u64::try_from(j.len()).unwrap_or(u64::MAX)),
+            // A fanned step (#92) planned later runs at least one job per item.
+            jobs: match (&step.jobs, &step.fanout) {
+                (Some(jobs), _) => u64::try_from(jobs.len()).unwrap_or(u64::MAX),
+                (None, Some(fanout)) => u64::try_from(fanout.items.len().max(1)).unwrap_or(u64::MAX),
+                (None, None) => 1,
+            },
             jobs_known: step.jobs.is_some(),
         };
         if let Ok(Some(m)) = item.total() {
@@ -421,8 +449,16 @@ pub fn admit_run_with_targets(
         {
             witness_size = add(witness_size, target.logical_bytes().saturating_add(size_of::<nodecraft_types::TargetChoice>()))?;
         }
-        let expected = model.params.resolve_view(&s.source.params, true, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
-        witness_size = add(witness_size, add(size_of::<Allowed>(), add(model.id.len(), measure::resolved(&expected)?)?)?)?;
+        let expected_charge = if model.parameter_contract.is_some() {
+            // Temporary owned resolution/submission was pre-admitted by resolution_scratch;
+            // this pass measures the retained witness BEFORE its later construction.
+            let expected = model.effective_params(&s.source.params, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
+            measure::params(&expected)?
+        } else {
+            let expected = model.params.resolve_view(&s.source.params, true, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
+            measure::resolved(&expected)?
+        };
+        witness_size = add(witness_size, add(size_of::<Allowed>(), add(model.id.len(), expected_charge)?)?)?;
     }
     witness_size = add(witness_size, mul(plan.steps.len(), size_of::<(NodeId, Vec<Allowed>)>() + measure::LINK)?)?;
     let limit = limits.witness_bytes.min(MAX_WITNESS_BYTES);
@@ -461,9 +497,9 @@ pub fn admit_run_with_targets(
             provider: model.provider.clone(),
             remote: model.provider_model.clone(),
             schema: model.params.clone(),
+            semantic: model.parameter_contract.is_some(),
         });
-        let v = model.params.resolve_view(&s.source.params, true, true).map_err(safe_error)?;
-        let expected = v.values.into_iter().filter(|(k, _)| v.visible.contains(*k)).map(|(k, v)| (k.to_owned(), v.clone())).collect();
+        let expected = model.effective_params(&s.source.params, true).map_err(safe_error)?;
         witness.steps.entry(s.node).or_default().push(Allowed { id: model.id.clone(), expected });
     }
     for step in &plan.steps {

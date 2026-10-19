@@ -32,6 +32,8 @@ pub(crate) const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
 struct CachedSchema {
     descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
     visible: BTreeSet<String>,
+    enabled: Option<BTreeSet<String>>,
+    catalog: Option<nodecraft_engine::generation_catalog::GenerationCatalogStamp>,
     descriptor_bytes: usize,
     borrowed_identity: Option<usize>,
     revision: u64,
@@ -54,9 +56,21 @@ struct SchemaCache {
 impl SchemaCache {
     /// Bytes an entry adds on its own (overhead, visibility names, an owned descriptor).
     fn own_bytes(entry: &CachedSchema) -> usize {
-        let names = entry.visible.iter().map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
+        let names = entry.visible.iter().chain(entry.enabled.iter().flatten()).map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
         let owned = if entry.borrowed_identity.is_none() { entry.descriptor_bytes } else { 0 };
         256usize.saturating_add(names).saturating_add(owned)
+    }
+    // Before geometry reads, invalidate only generation entries whose runtime resource/
+    // definition binding changed. No document hashing or per-node payload walk in paint.
+    fn refresh_generation(&mut self, session: &Session) {
+        let current = session.generation_catalog().ok().and_then(|catalog| {
+            catalog.validate_definition_binding(session.kinds().get(nodecraft_nodes::generation::KIND).ok()?).ok()?;
+            Some(catalog.stamp())
+        });
+        let gone: Vec<_> = self.entries.iter().filter(|(_, entry)| entry.catalog.is_some() && entry.catalog != current).map(|(id, _)| *id).collect();
+        for id in gone {
+            self.remove(&id);
+        }
     }
     fn get(&self, id: &NodeId) -> Option<&CachedSchema> {
         self.entries.get(id)
@@ -141,13 +155,29 @@ pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> 
     counter.0.checked_mul(4).filter(|bytes| *bytes <= MAX_SCHEMA_CACHE_BYTES)
 }
 fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
-    if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision()) {
+    let kind = session.kinds().get(&node.kind).ok()?;
+    let catalog = if node.kind == nodecraft_nodes::generation::KIND {
+        let binding = session.generation_catalog().and_then(|catalog| {
+            catalog.validate_definition_binding(kind)?;
+            Ok(catalog.stamp())
+        });
+        match binding {
+            Ok(stamp) => Some(stamp),
+            Err(_) => {
+                cache.remove(&node.id);
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision() && entry.catalog == catalog) {
         if let Some(entry) = cache.entries.get_mut(&node.id) {
             entry.last_used = clock;
         }
         return cache.get(&node.id);
     }
-    let admission::Admitted { descriptor, visible, bytes } = admission::admit(session, node, Some(cache))?;
+    let admission::Admitted { descriptor, visible, enabled, bytes } = admission::admit(session, node, Some(cache))?;
     let (descriptor, borrowed_identity, bytes) = match descriptor {
         Cow::Borrowed(descriptor) => {
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
@@ -161,7 +191,10 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
         }
         Cow::Owned(descriptor) => (Arc::new(descriptor), None, bytes),
     };
-    cache.insert(node.id, CachedSchema { descriptor, visible, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock });
+    cache.insert(
+        node.id,
+        CachedSchema { descriptor, visible, enabled, catalog, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock },
+    );
     while cache.bytes > MAX_SCHEMA_CACHE_BYTES {
         let oldest = cache.entries.iter().filter(|(id, _)| **id != node.id).min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id);
         if let Some(id) = oldest {
@@ -206,6 +239,11 @@ const DUPLICATE_OFFSET: f32 = 40.0;
 
 /// Screen points within which a click selects a noodle.
 const NOODLE_HIT: f32 = 6.0;
+
+/// How many floating areas quick-add will inspect for the pointer before refusing the key. The
+/// bound keeps the ownership scan O(areas); tests assert against this value so the cap and the
+/// fixture can't drift apart (#267).
+pub(crate) const MAX_QUICK_ADD_AREAS: usize = 256;
 
 fn curves(canvas: &Canvas, painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
     canvas
@@ -267,7 +305,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
     }
     cache.rect(session, node, t)
 }
-mod admission;
+pub(crate) mod admission;
 
 mod comments;
 mod drop;
@@ -277,6 +315,7 @@ mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
 mod metrics;
+mod models;
 mod navigation;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
@@ -318,6 +357,7 @@ pub struct NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     drop_acquisition: drop::Acquisition,
     editors: BTreeMap<NodeId, EditorState>,
+    bulk: crate::bulk::Panel,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
     /// World rectangles painted this frame: authoritative for selection, noodle anchors,
@@ -356,6 +396,9 @@ pub struct NodeCraftApp {
     split_shown: Option<(NodeId, u32, u32)>,
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
+    model_choice: Option<models::ModelChoice>,
+    /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
+    model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
     /// Exact previous text owner survives Escape and disabled-toolbar interaction.
@@ -499,16 +542,16 @@ impl NodeCraftApp {
     fn register_plugins(services: &mut nodecraft_engine::commands::Services, dir: std::path::PathBuf) -> Result<(), Error> {
         use nodecraft_engine::plugin_cmds::{PluginHost, register_plugin_service};
         let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
-        taken.extend(nodecraft_nodes::Registry::builtins()?.descriptors().map(|d| d.id.clone()));
+        taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
         let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?)?;
         register_plugin_service(services, store, PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() })
     }
 
     /// The headless app with these host services on its session (the keychain, for one).
     pub fn with_services(services: nodecraft_engine::commands::Services) -> Result<Self, Error> {
-        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
         let (document, canvas) = Self::starter_document(&kinds)?;
-        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
+        let session = Session::new(document)?.with_services(services);
         Self::from_session(session, canvas)
     }
 
@@ -605,6 +648,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             drop_acquisition: drop::Acquisition::new(),
             editors: BTreeMap::new(),
+            bulk: Default::default(),
             drag: None,
             marquee: None,
             painted: BTreeMap::new(),
@@ -629,6 +673,8 @@ impl NodeCraftApp {
             split_seen: None,
             split_shown: None,
             turn_into: None,
+            model_choice: None,
+            model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
             schemas: SchemaCache::default(),
@@ -675,6 +721,16 @@ impl NodeCraftApp {
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
+        // Dismissing or choosing from a palette must not replay another key from the same
+        // input frame as a canvas shortcut. Keep ownership even after palette.show closes it.
+        let palette_owned_input = self.palette.is_some();
+        // The "Turn into" menu takes letters for kinds exactly as a text field does, and its entry
+        // keys are those kinds' quick-add letters. Real backends deliver `Event::Key` and
+        // `Event::Text` in one raw-input frame, so one keypress arrives in this same frame: a pick
+        // closes the menu and clears `self.turn_into` before `quick_add` runs at the end of the
+        // frame, and the inline `turn_into.is_some()` gate would be too late. Keep the ownership
+        // frozen even after the menu closes, so one keypress creates one node (#267).
+        let turn_into_owned_input = self.turn_into.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.poll_save(ui.ctx());
@@ -702,6 +758,7 @@ impl NodeCraftApp {
         if self.marquee.as_ref().is_none_or(|m| m.cancelled) {
             self.marquee_geometry.clear();
         }
+        self.schemas.refresh_generation(&self.session);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
@@ -718,7 +775,47 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
-        let comments_blocks = self.comments_overlay(ui);
+        let mut model_blocks = self.model_overlay(ui);
+        let bulk_enabled = !model_blocks
+            && !file_owns_input
+            && !file_menu_owns_input
+            && self.session.file_status().operation.is_none()
+            && !self.drop_pointer_owned()
+            && self.drag.is_none()
+            && self.marquee.is_none()
+            && self.wiring.is_none()
+            && self.reordering.is_none()
+            && self.comments.drag.is_none()
+            && !self.comments.gesture_cancelled
+            && !self.navigation.pointer_owned
+            && self.navigation.drag.is_none()
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+            && !self.keys.open
+            && (!canvas::text_input_focused(ui.ctx()) || self.bulk.owns_text_focus(ui.ctx()))
+            && (!egui::Popup::is_any_open(ui.ctx()) || self.bulk.owns_popup(ui.ctx()))
+            && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
+        let (bulk_blocks, bulk_request) = self.bulk.show(ui, &self.session, self.canvas, self.selection.nodes(), bulk_enabled, t);
+        if bulk_enabled && let Some(request) = bulk_request {
+            let result = match request {
+                crate::bulk::Intent::Parameters(params) => self.session.dispatch("node.params_set_bulk", &params).map(|_| ()),
+                crate::bulk::Intent::OpenModel { canvas, exact_ids, revision } => {
+                    let result = self.open_model_picker(canvas, exact_ids, revision);
+                    if result.is_ok() {
+                        model_blocks = true;
+                    }
+                    result
+                }
+            };
+            match result {
+                Ok(()) => self.notice = None,
+                Err(error) => {
+                    self.bulk.failed(error.message.clone());
+                    self.notice = Some(error.message);
+                }
+            }
+        }
+        let comments_blocks = if model_blocks { true } else { self.comments_overlay(ui) };
         // A context menu is not permission to commit a dirty editor draft.
         if self.text_focused
             && !egui::Popup::is_any_open(ui.ctx())
@@ -732,14 +829,14 @@ impl NodeCraftApp {
             ui.ctx().memory_mut(|m| m.request_focus(owner));
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
         }
-        let tag_blocks = self.tag_overlay(ui);
+        let tag_blocks = if model_blocks { true } else { self.tag_overlay(ui) };
         let drop_blocks = self.poll_drop(ui, t);
-        let search_blocks = self.search_overlay(ui);
+        let search_blocks = if model_blocks { true } else { self.search_overlay(ui) };
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
         // Save and open (#406) work from a text field too (no field uses them); not while the palette
         // or "Turn into" is open. Without a file yet, saving needs a location: say how to give one.
-        if self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks && self.palette.is_none() && self.turn_into.is_none() {
             let (save_as, save, open) =
                 ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
             if save || save_as || open {
@@ -752,7 +849,7 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks && !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
             // Held minimap input owns mutation keys through release. Fresh presses still
             // use the post-undo/delete admission below, since those edits can change availability.
             let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
@@ -805,6 +902,7 @@ impl NodeCraftApp {
                 || self.marquee.is_some()
                 || self.wiring.is_some()
                 || minimap_owned
+                || bulk_blocks
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || egui::Popup::is_any_open(ui.ctx())
@@ -870,36 +968,9 @@ impl NodeCraftApp {
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 self.selection.replace(canvas.nodes().keys().copied().collect());
             }
-            // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
-            // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
-            let busy = self.drag.is_some()
-                || self.marquee.is_some()
-                || self.wiring.is_some()
-                || self.reordering.is_some()
-                || self.comments.drag.is_some()
-                || self.comments.gesture_cancelled
-                || minimap_owned
-                || egui::Popup::is_any_open(ui.ctx());
-            if !self.text_focused && !busy {
-                let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
-                    self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
-                let pressed = ui.input_mut(|i| {
-                    let found = i.events.iter().find_map(|event| match event {
-                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
-                            bindings.iter().find(|(m, k, _)| k == key && m == modifiers).map(|(m, k, kind)| (*m, *k, kind.clone()))
-                        }
-                        _ => None,
-                    });
-                    let (modifiers, key, kind) = found?;
-                    // Consume every event of that key, repeats included.
-                    i.events.retain(|event| !matches!(event, egui::Event::Key { key: k, modifiers: m, .. } if *k == key && *m == modifiers));
-                    Some(kind)
-                });
-                if let Some(kind) = pressed {
-                    let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
-                    self.create_node(&kind, self.view.to_world(viewport.min, at));
-                }
-            }
+            // Quick-add moved to the end of the frame (`quick_add` below), after every floating
+            // Window has laid out, so the canvas can tell whether it really owns the pointer.
+            // Its admission gate keeps this frame's `minimap_owned` freeze; see #267 and #361.
             // Menus and editors own Escape before canvas gestures; comments consume it above.
             if escape && !self.text_focused && !egui::Popup::is_any_open(ui.ctx()) {
                 self.cancel_canvas_gesture();
@@ -913,10 +984,12 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let layout_blocks = self.layout_overlay(ui);
+        let layout_blocks = if model_blocks { true } else { self.layout_overlay(ui) };
         #[cfg(not(target_arch = "wasm32"))]
         let file_owns_input = file_owns_input || self.files.owns_input();
         let overlay_blocks = self.navigation_overlay(ui, minimap_press)
+            || model_blocks
+            || bulk_blocks
             || search_blocks
             || layout_blocks
             || comments_blocks
@@ -1025,6 +1098,7 @@ impl NodeCraftApp {
                     card::CardView {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
+                        enabled: schema.and_then(|cached| cached.enabled.as_ref()),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
                         image,
                         grid: self.split_shown.filter(|(id, ..)| *id == node.id).map(|(_, rows, columns)| {
@@ -1075,7 +1149,8 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     }
-                    if (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
+                    if !model_blocks
+                        && (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
                         && (!self.text_focused && !canvas::text_input_focused(ui.ctx()) || egui::Popup::is_any_open(ui.ctx()))
                     {
                         r.context_menu(|ui| {
@@ -1184,7 +1259,8 @@ impl NodeCraftApp {
                             .intents
                             .into_iter()
                             .filter(|intent| {
-                                !file_owns_input
+                                !model_blocks
+                                    && !file_owns_input
                                     && !file_menu_owns_input
                                     && (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
                                     && (!canvas_blocks || !matches!(intent, Intent::Move(_)))
@@ -1210,8 +1286,7 @@ impl NodeCraftApp {
                 }
             }
             // Double-click empty canvas (not a noodle) for the quick-add palette.
-            if !file_owns_input
-                && !file_menu_owns_input
+            if !canvas_blocks
                 && background.double_clicked()
                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
             {
@@ -1354,7 +1429,17 @@ impl NodeCraftApp {
         if let Some((node, owner)) = comment_target {
             self.compose_on_node(ui.ctx(), node, Some(owner));
         }
+        if let Some(id) = intents.iter().find_map(|(id, intent)| matches!(intent, Intent::Model).then_some(*id))
+            && let Err(error) = self.open_model_picker(self.canvas, vec![id], self.session.revision())
+        {
+            self.notice = Some(error.message);
+        }
         for (id, intent) in intents {
+            // A model-opening click can make a text draft lose focus in this same pass.
+            // Preserve its draft; never auto-commit it before constructing the preview.
+            if self.model_frame_owned {
+                continue;
+            }
             let (command, params, editing) = match intent {
                 Intent::Move(pos) => {
                     if let Some(drag) = &mut self.drag
@@ -1372,6 +1457,7 @@ impl NodeCraftApp {
                     Some((command, params)) => (command, params, None),
                     None => continue,
                 },
+                Intent::Model => continue,
             };
             match self.session.dispatch(command, &params) {
                 Ok(_) => {
@@ -1403,7 +1489,18 @@ impl NodeCraftApp {
             self.marquee_geometry.clear();
         }
         self.view.pan_by(pan);
-        self.drop_files(ui, viewport, t);
+        // All canvas gestures (including late card/port pan) have now been admitted.
+        // Close before the palette can consume the first Escape meant for that gesture.
+        // The `self.view != view_before` arm is not covered by the earlier close: cards and order
+        // badges only collect their pan, which `view.pan_by` applies just above, after that check
+        // ran. A reorder drag holds neither `drag` nor `marquee` nor `wiring`, so it needs its own
+        // arm too (#267).
+        if self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || self.reordering.is_some() || self.view != view_before {
+            self.palette = None;
+        }
+        if !self.model_frame_owned {
+            self.drop_files(ui, viewport, t);
+        }
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
             match open.show(ui.ctx(), &entries, t) {
@@ -1442,6 +1539,7 @@ impl NodeCraftApp {
         self.navigation.finish_frame(ui.ctx());
         self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
+        self.bulk.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
         self.keys_button(ui, viewport);
@@ -1449,7 +1547,110 @@ impl NodeCraftApp {
         self.file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
+        // Floating UI must lay out before final quick-add admission, including a Window's first
+        // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
+        // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
+        // mutation keys, and a quick-add creates a node, so it carries into the gate below.
+        // `model_blocks` and `bulk_blocks` are this frame's model-swap (#472) and bulk-panel (#473)
+        // admissions. Main's inline quick-add ran inside that canvas-keys guard, so the relocated
+        // version carries both terms forward (same precedent as #460's drop guard).
+        // A menu that was open when the frame began keeps owning its own key even after it has
+        // closed: its pick and quick-add's press arrive in the same raw-input frame (#267).
+        if !palette_owned_input && !turn_into_owned_input {
+            self.quick_add(ui, viewport, minimap_press.unwrap_or_default(), model_blocks, bulk_blocks);
+        }
         ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
+    }
+
+    /// Hosts embedding floating Windows must lay them out before this app's final admission.
+    /// The framework top-layer query alone misses a new Window's noninteractable sizing pass;
+    /// current AreaState rectangles cover that pass too, including transformed title/chrome.
+    fn canvas_owns_quick_add_pointer(&self, ui: &egui::Ui) -> bool {
+        // No viewport test here on purpose: main has always created at the viewport centre when
+        // the pointer sits outside the canvas (`minimap_drag_owns_quick_add_keys_until_pointer
+        // _release`), and a point outside the canvas is not over a floating window either. The
+        // area scan below still refuses a window that reaches past the canvas edge.
+        let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) else { return true };
+        let canvas = ui.layer_id();
+        let canvas_family = |layer: egui::LayerId| {
+            layer == canvas
+                // Canvas-owned navigation is not a floating Window, so quick-add over a visible
+                // minimap stays available; a *held* minimap gesture is refused by the busy gate.
+                || layer == egui::LayerId::new(egui::Order::Foreground, ui.id().with("navigation_overlay"))
+                || (layer.order == canvas.order && self.painted.keys().any(|id| layer.id == ui.id().with(("node_layer", *id))))
+        };
+        if ui.ctx().layer_id_at(pointer).is_some_and(|layer| layer.order >= canvas.order && !canvas_family(layer)) {
+            return false;
+        }
+        // UI-owned area metadata, inspected only for a fresh candidate. Fail closed without
+        // consuming the key if an embedding host exceeds this bounded inspection allowance.
+        let layers = ui.ctx().memory(|m| m.areas().visible_layer_ids());
+        if layers.len() > MAX_QUICK_ADD_AREAS {
+            return false;
+        }
+        !layers.into_iter().any(|layer| {
+            if layer.order < canvas.order || canvas_family(layer) {
+                return false;
+            }
+            egui::AreaState::load(ui.ctx(), layer.id).is_some_and(|area| {
+                let rect = area.rect();
+                let rect = ui.ctx().layer_transform_to_global(layer).map_or(rect, |transform| transform * rect);
+                !rect.is_finite() || rect.contains(pointer)
+            })
+        })
+    }
+
+    /// A kind's `quick_add` key creates it under the pointer: a fresh press (not a repeat) with
+    /// exactly the bound modifiers, nothing else holding input, and the canvas holding the
+    /// pointer. Runs last in the frame so floating Windows have laid out (#267); it keeps every
+    /// gate main's inline version had, including the frozen minimap admission from #361 and the
+    /// model-swap (#472) and bulk-panel (#473) admissions.
+    fn quick_add(&mut self, ui: &egui::Ui, viewport: Rect, minimap_owned: bool, model_blocks: bool, bulk_blocks: bool) {
+        let busy = self.drag.is_some()
+            || self.marquee.is_some()
+            || self.wiring.is_some()
+            || self.reordering.is_some()
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
+            || minimap_owned
+            // #472: a model swap in flight owns every canvas key, so it owns this one too. Main's
+            // inline quick-add ran inside the canvas-keys guard that starts with `!model_blocks`,
+            // so the relocated version carries that term forward (as #460's drop guard was).
+            || model_blocks
+            // #473: the bulk parameter panel owns the pointer and canvas keys while it holds input.
+            // Main's inline quick-add sat behind that guard in the canvas-keys block, so the
+            // relocated version carries it forward (same precedent as #460's drop guard).
+            || bulk_blocks
+            || self.navigation.pointer_owned
+            || self.navigation.drag.is_some()
+            // #460: the pending native-drop control owns the pointer and every canvas key while
+            // it is held. Main's inline quick-add sat behind that guard in the canvas-keys block,
+            // so the relocated version carries it forward (#335).
+            || self.drop_pointer_owned()
+            || egui::Popup::is_any_open(ui.ctx());
+        // The "Turn into" menu takes letters for kinds, exactly as a text field does.
+        if self.text_focused || canvas::text_input_focused(ui.ctx()) || self.palette.is_some() || self.turn_into.is_some() || busy {
+            return;
+        }
+        // Borrow binding metadata; no owned list or kind string until admission succeeds.
+        let candidate = ui.input(|i| {
+            i.events.iter().find_map(|event| {
+                let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = event else { return None };
+                self.session.kinds().descriptors().find_map(|d| {
+                    let (m, k) = quick_add_key(d.quick_add.as_deref()?)?;
+                    (k == *key && m == *modifiers).then_some((m, k, d.id.as_str()))
+                })
+            })
+        });
+        let Some((modifiers, key, kind)) = candidate else { return };
+        if !self.canvas_owns_quick_add_pointer(ui) {
+            return;
+        }
+        let kind = kind.to_owned();
+        ui.input_mut(|i| i.events.retain(|event| !matches!(event, egui::Event::Key { key: k, modifiers: m, .. } if *k == key && *m == modifiers)));
+        let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
+        self.create_node(&kind, self.view.to_world(viewport.min, at));
+        ui.ctx().request_repaint();
     }
 
     /// Top-right button that opens the API keys panel.
@@ -1910,6 +2111,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod generation_tests;
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]

@@ -7,7 +7,7 @@ use crate::{
 use nodecraft_catalog::{Price, Unit};
 use nodecraft_graph::{Canvas, Change, Port, Project};
 use nodecraft_nodes::{GenerateOutput, ModeId, NodeDescriptor, NodeKind, PlanCtx};
-use nodecraft_types::{Modality, ParamSpec, PortType, ProjectId, Unsigned, VisibleIf};
+use nodecraft_types::{Currency, Modality, ParamSpec, PortType, ProjectId, Unsigned, VisibleIf};
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 fn id(n: u8) -> NodeId {
     NodeId::from_bytes([n; 16])
@@ -28,6 +28,7 @@ fn schema(count: u64) -> ParamSchema {
 }
 fn catalog(count: u64) -> Catalog {
     let model = ModelDescriptor {
+        parameter_contract: None,
         id: "selected".into(),
         provider: "mock".into(),
         provider_model: "remote".into(),
@@ -91,7 +92,15 @@ fn job(node: NodeId, params: ParamValues) -> JobSpec {
 }
 fn plan(jobs: Option<Vec<JobSpec>>) -> RunPlan {
     RunPlan {
-        steps: vec![Step { node: id(1), kind: "fixture.generate".into(), mode: ModeId::new("generate").unwrap(), after: vec![], inputs: vec![], jobs }],
+        steps: vec![Step {
+            node: id(1),
+            kind: "fixture.generate".into(),
+            mode: ModeId::new("generate").unwrap(),
+            after: vec![],
+            inputs: vec![],
+            jobs,
+            fanout: None,
+        }],
         edges: vec![],
     }
 }
@@ -198,6 +207,7 @@ fn value_and_map_logical_formula_counts_payload_once() {
 
 pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
     Catalog::from_models([ModelDescriptor {
+        parameter_contract: None,
         id: id.into(),
         provider: provider.into(),
         provider_model: remote.into(),
@@ -294,6 +304,7 @@ fn deferred_input_copies_and_jobs_keep_the_same_transferred_ledger() {
             after: vec![],
             inputs: vec![],
             jobs: Some(vec![JobSpec::Source { node: id(2), output: "out".into(), value: Value::Text("upstream".into()) }]),
+            fanout: None,
         },
     );
     plan.edges = vec![(id(2), id(1))];

@@ -161,6 +161,68 @@ impl Writer {
         }
         Ok(())
     }
+    fn generation_contract(&mut self, contract: &nodecraft_nodes::NodeContract, meter: &mut Meter) -> Result<(), Error> {
+        // instance_contract is a trusted native hook, like validate_instance above. Its
+        // returned owner is charged here; serialization streams twice with bounded scratch,
+        // first for exact encoded admission then hashing, never a full encoded copy.
+        let mut retained = std::mem::size_of::<nodecraft_nodes::NodeContract>();
+        let mut retain = |bytes: usize| -> Result<(), Error> {
+            retained = retained.checked_add(bytes).ok_or_else(too_large)?;
+            Ok(())
+        };
+        retain(contract.kind.len())?;
+        retain(contract.owned_groups.len().checked_mul(std::mem::size_of::<nodecraft_types::Contract>()).ok_or_else(too_large)?)?;
+        retain(contract.inputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::InputContract>()).ok_or_else(too_large)?)?;
+        for input in &contract.inputs {
+            retain(input.port.len())?;
+            retain(input.role.len())?;
+        }
+        retain(contract.outputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::OutputContract>()).ok_or_else(too_large)?)?;
+        for output in &contract.outputs {
+            retain(output.port.len())?;
+            retain(output.role.len())?;
+        }
+        retain(contract.modes.len().checked_mul(std::mem::size_of::<nodecraft_nodes::ModeContract>()).ok_or_else(too_large)?)?;
+        for mode in &contract.modes {
+            retain(mode.mode.as_str().len())?;
+            retain(mode.inputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::PortCount>()).ok_or_else(too_large)?)?;
+            for input in &mode.inputs {
+                retain(input.port.len())?;
+            }
+        }
+        for group in contract.parameter_groups() {
+            retained = retained.checked_add(crate::admission::measure::contract(group).map_err(|_| too_large())?).ok_or_else(too_large)?;
+        }
+        meter.charge(retained)?;
+        struct Sink<'a> {
+            hash: Option<&'a mut blake3::Hasher>,
+            bytes: usize,
+        }
+        impl std::io::Write for Sink<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes = self
+                    .bytes
+                    .checked_add(bytes.len())
+                    .filter(|n| *n <= MAX_QUERY_BYTES)
+                    .ok_or_else(|| std::io::Error::other("contract hash exceeds admission"))?;
+                if let Some(hash) = &mut self.hash {
+                    hash.update(bytes);
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Sink { hash: None, bytes: 0 };
+        serde_json::to_writer(&mut count, contract).map_err(|_| too_large())?;
+        meter.charge(count.bytes)?;
+        self.text("generation.parameter-contract.v1");
+        self.len(count.bytes);
+        let mut hash = Sink { hash: Some(&mut self.0), bytes: 0 };
+        serde_json::to_writer(&mut hash, contract).map_err(|_| too_large())?;
+        Ok(())
+    }
     fn finish(self) -> [u8; 32] {
         *self.0.finalize().as_bytes()
     }
@@ -217,6 +279,8 @@ struct CachedRejection {
     kind: ErrorKind,
     reason: String,
 }
+/// How many batches feeding batches staleness follows before calling a result unknown.
+const MAX_BATCH_DEPTH: usize = 32;
 #[derive(Clone, Copy)]
 enum InvalidHash {
     Router(NodeId),
@@ -266,6 +330,10 @@ pub struct InputHasher {
     recipes: BTreeMap<NodeId, Recipe>,
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
     outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
+    /// Batch hashes (#92): `None` while one is being hashed, so a cycle of batches ends.
+    batches: BTreeMap<NodeId, Option<Result<Blake3, InvalidHash>>>,
+    /// Batches being hashed right now; a chain deeper than [`MAX_BATCH_DEPTH`] is unknown.
+    batch_depth: usize,
     meter: Meter,
     diagnostic_credit: Option<DiagnosticCredit>,
     #[cfg(test)]
@@ -308,6 +376,8 @@ impl InputHasher {
             invalid,
             recipes: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            batches: BTreeMap::new(),
+            batch_depth: 0,
             meter,
             diagnostic_credit,
             #[cfg(test)]
@@ -372,6 +442,10 @@ impl InputHasher {
                         match kind.validate_instance(node, false) {
                             Err(rejected) => Err(rejected),
                             Ok(resolved) => {
+                                if node.kind == nodecraft_nodes::generation::KIND {
+                                    let contract = kind.instance_contract(node)?;
+                                    w.generation_contract(&contract, &mut self.meter)?;
+                                }
                                 for (name, value) in &resolved.values {
                                     let admitted = node.params.get(name).or_else(|| admitted_defaults.get(name.as_str()).copied().flatten());
                                     if admitted.is_none() {
@@ -558,6 +632,41 @@ impl InputHasher {
                 self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
                 w.text(&from_port);
                 match canvas.nodes().get(&from) {
+                    // A batch (#92) never runs: it contributes its items' recipe, which is its
+                    // own settings and whatever feeds it.
+                    Some(upstream) if upstream.kind == nodecraft_nodes::batch::ID => match self.batches.get(&from) {
+                        Some(Some(Ok(digest))) => {
+                            w.text("batch");
+                            w.digest(digest.as_bytes());
+                        }
+                        Some(Some(Err(invalid))) => return Ok(HashResult::Invalid(*invalid)),
+                        // Batches feeding each other in a loop: there's nothing to hash.
+                        Some(None) => w.text("cycle"),
+                        // Batches feeding batches recurse: bound the depth so a hostile file
+                        // can't exhaust the stack (the planner refuses such chains anyway).
+                        None if self.batch_depth >= MAX_BATCH_DEPTH => {
+                            self.batches.insert(from, Some(Err(InvalidHash::Target(from))));
+                            return Ok(HashResult::Invalid(InvalidHash::Target(from)));
+                        }
+                        None => {
+                            self.batches.insert(from, None);
+                            self.batch_depth = self.batch_depth.saturating_add(1);
+                            let hashed = self.hash_detailed(canvas, kinds, from, produced);
+                            self.batch_depth = self.batch_depth.saturating_sub(1);
+                            let result = match hashed? {
+                                HashResult::Ready(digest) => Ok(digest),
+                                HashResult::Invalid(invalid) => Err(invalid),
+                            };
+                            self.batches.insert(from, Some(result));
+                            match result {
+                                Ok(digest) => {
+                                    w.text("batch");
+                                    w.digest(digest.as_bytes());
+                                }
+                                Err(invalid) => return Ok(HashResult::Invalid(invalid)),
+                            }
+                        }
+                    },
                     // A source contributes its recipe: what it emits.
                     Some(upstream) if is_source(kinds, upstream) => match self.recipe(kinds, upstream)? {
                         Some(recipe) => {

@@ -987,3 +987,58 @@ fn cancel_uses_actual_same_frame_release_positions_and_explicit_nonpointer_activ
         idle(&worker.service);
     }
 }
+
+#[test]
+fn model_picker_yields_to_drop_control_through_release_but_not_ordinary_pending_io() {
+    use crate::app::tests::harness;
+    use nodecraft_types::{ErrorKind, NodeId, ParamValues, Value};
+    for reversed in [false, true] {
+        let (worker, _, entered, release) = gated(0);
+        let mut h = harness();
+        let canvas = h.state().canvas;
+        let id = NodeId::from_bytes([157; 16]);
+        let values: ParamValues =
+            [("model".into(), Value::Text("openai-images.sunburst".into())), ("prompt".into(), Value::Text("Public model choice".into()))].into();
+        let node = h.state().session.kinds().get("generation.image").unwrap().instantiate_instance(id, Default::default(), &values).unwrap();
+        h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas":canvas,"node":node})).unwrap();
+        h.state_mut().drop_acquisition.service = Ok(worker.service.clone());
+        h.input_mut().dropped_files = handles(&["slow"]);
+        h.step();
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        h.run();
+        let before = h.state().session.document().clone();
+        let revision = h.state().session.revision();
+        let at = h.state().drop_acquisition.rect.center();
+        let press = egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE };
+        if reversed {
+            h.event(press);
+            h.hover_at(at);
+        } else {
+            h.hover_at(at);
+            h.event(press);
+        }
+        h.step();
+        assert!(h.state().drop_pointer_owned());
+        assert_eq!(h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap_err().kind, ErrorKind::Conflict);
+        let outside = at + egui::vec2(400.0, -200.0);
+        h.hover_at(outside);
+        h.step();
+        assert!(h.state().drop_pointer_owned());
+        assert_eq!(h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap_err().kind, ErrorKind::Conflict);
+        h.event(egui::Event::PointerButton { pos: outside, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.step();
+        assert!(h.state().drop_pointer_owned());
+        assert_eq!(h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap_err().kind, ErrorKind::Conflict);
+        h.step();
+        assert!(!h.state().drop_pointer_owned());
+        assert!(h.state().drop_pending());
+        h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().model_choice.is_none());
+        assert_eq!(h.state().session.document(), &before);
+        h.state_mut().drop_acquisition.pending = None;
+        drop(release);
+        idle(&worker.service);
+    }
+}

@@ -60,6 +60,13 @@ impl RunCatalog {
     pub fn new(catalog: Catalog) -> Result<Self, Error> {
         Ok(Self(Arc::new(CatalogSnapshot { catalog, nonce: crate::execution_identity::nonce()? })))
     }
+    pub(crate) fn definition_identity(&self) -> [u8; 32] {
+        self.0.nonce
+    }
+    /// Same immutable catalog admission snapshot; content equality alone is not consent.
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     pub fn catalog(&self) -> &Catalog {
         &self.0.catalog
     }
@@ -297,15 +304,14 @@ fn admission_reason(error: &Error) -> &'static str {
     }
 }
 
-fn priced(
-    document: &nodecraft_graph::Project,
-    kinds: &nodecraft_nodes::Registry,
-    catalog: &Catalog,
-    budget: &BudgetState,
-    p: &RunParams,
-    token: String,
-    targets: &nodecraft_types::TargetSelection,
-) -> Result<Priced, Error> {
+fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error> {
+    let document = c.document;
+    let kinds = c.kinds;
+    let catalog = c.resources.require::<RunCatalog>()?;
+    let catalog = catalog.catalog();
+    let budget = c.resources.require::<BudgetState>()?;
+    let targets = c.routing.routing.targets();
+    let resources = c.resources;
     let canvas = document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     let mode = mode_of(p)?;
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
@@ -321,6 +327,7 @@ fn priced(
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
+    crate::generation_catalog::validate_plan(resources, kinds, canvas, run_plan.steps.iter().map(|s| s.node))?;
     let scratch_headroom = request_scratch(p)?;
     let priced = match nodecraft_exec::admission::quote_with_scratch(
         &run_plan,
@@ -364,9 +371,8 @@ fn priced(
 
 fn priced_in(c: &Context<'_>, p: &RunParams) -> Result<Priced, Error> {
     let catalog = c.resources.require::<RunCatalog>()?;
-    let budget = c.resources.require::<BudgetState>()?;
     let token = binding(c, catalog, p, MAX_BINDING_BYTES)?;
-    priced(c.document, c.kinds, catalog.catalog(), budget, p, token, c.routing.routing.targets())
+    priced(c, p, token)
 }
 
 fn run_quote(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
@@ -487,6 +493,8 @@ pub(crate) fn authorize(
     if prepared.routing_nonce != c.routing.nonce || binding(c, catalog, &prepared.run, MAX_BINDING_BYTES)? != prepared.accept.token {
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
+    let canvas = c.document.canvases().get(&prepared.run.canvas).ok_or_else(|| invalid("canvas does not exist"))?;
+    crate::generation_catalog::validate_plan(c.resources, c.kinds, canvas, prepared.admitted.planned_nodes())?;
     accept_quote(c, &prepared.quote, &prepared.accept)?;
     let ceiling = crate::run_ceiling::RunCeiling::new(accepted_limits(&prepared.accept)?, prepared.accept.unpriced_jobs.unwrap_or(0));
     let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
@@ -516,6 +524,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         Planned::Ready(plan) => plan,
         Planned::Blocked(blockers) => return Err(invalid(blocked_reasons(&blockers).join("; "))),
     };
+    crate::generation_catalog::validate_plan(c.resources, c.kinds, canvas, plan.steps.iter().map(|s| s.node))?;
     #[cfg(test)]
     PREPARED_COPIES.with(|n| n.set(n.get() + 1));
     let mut limits = nodecraft_exec::admission::AdmissionLimits::default();

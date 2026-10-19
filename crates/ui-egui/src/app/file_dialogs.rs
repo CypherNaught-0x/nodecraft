@@ -25,6 +25,7 @@ impl Stamp {
         Arc::ptr_eq(&self.session, &app.session.view_identity())
             && self.revision == app.session.revision()
             && !app.editors.values().any(EditorState::has_uncommitted)
+            && !app.bulk.has_uncommitted()
     }
 }
 enum Purpose {
@@ -95,6 +96,9 @@ impl FileDialogs {
     pub(super) fn owns_navigation(&self, ctx: &egui::Context) -> bool {
         self.pending.is_some() || self.menu_open || self.owner_frame == Some(ctx.cumulative_frame_nr())
     }
+    pub(super) fn blocks_model_picker(&self) -> bool {
+        self.pending.is_some() || self.menu_open || self.owner_frame.is_some()
+    }
     fn own_frame(&mut self, ctx: &egui::Context) {
         self.owner_frame = Some(ctx.cumulative_frame_nr());
     }
@@ -127,6 +131,8 @@ fn admitted(path: &Path, save: bool) -> Result<&str, String> {
 impl NodeCraftApp {
     fn file_busy(&self, ctx: &egui::Context) -> bool {
         self.session.file_status().operation.is_some()
+            || self.model_choice.is_some()
+            || self.model_frame_owned
             || self.recovery.is_some()
             || self.files.menu_open
             || egui::Popup::is_any_open(ctx)
@@ -161,7 +167,7 @@ impl NodeCraftApp {
             self.notice = Some("Saving and opening are unavailable in this window.".into());
             return;
         }
-        if self.editors.values().any(EditorState::has_uncommitted) {
+        if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
             return;
         }
@@ -291,6 +297,11 @@ impl NodeCraftApp {
     }
     /// Called before canvas input. A completion/choice keeps ownership for this entire frame.
     pub(super) fn file_dialog_frame(&mut self, ctx: &egui::Context) -> bool {
+        // The public model-opening intent has no egui Context. Keep this marker only for
+        // the current completed-frame epoch, including later passes after a File completion.
+        if self.files.owner_frame != Some(ctx.cumulative_frame_nr()) {
+            self.files.owner_frame = None;
+        }
         if self.files.pending.is_some() || self.files.menu_open {
             self.files.own_frame(ctx);
         }
@@ -405,7 +416,13 @@ impl NodeCraftApp {
             .fixed_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 4.0))
             .show(ui.ctx(), |ui| {
                 egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding * 0.5).show(ui, |ui| {
-                    if ui.add_enabled(self.recovery.is_none() && self.files.pending.is_none(), egui::Button::new("File")).clicked() {
+                    if ui
+                        .add_enabled(
+                            self.recovery.is_none() && self.files.pending.is_none() && self.model_choice.is_none() && !self.model_frame_owned,
+                            egui::Button::new("File"),
+                        )
+                        .clicked()
+                    {
                         self.files.menu_open = !self.files.menu_open;
                         self.files.own_frame(ui.ctx());
                         ui.ctx().request_repaint();
@@ -478,7 +495,7 @@ impl NodeCraftApp {
             && self.files.pending.is_none()
             && !self.file_busy(ui.ctx())
         {
-            if self.editors.values().any(EditorState::has_uncommitted) {
+            if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() {
                 self.notice = Some("Finish or discard the current field edits before opening a project.".into());
             } else {
                 self.choose_open(path, Stamp::capture(self));

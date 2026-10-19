@@ -205,6 +205,15 @@ pub(crate) fn namespace(value: &str) -> bool {
         && value.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'))
 }
 
+/// Lossless catalog-model namespace. Parameter names contain no slash, so the final slash
+/// separates a stable parameter id from its exact model identity.
+pub fn model_namespace(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_NAMESPACE
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_' | b'/'))
+        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 impl Contract {
     /// A contract that adds nothing to `schema`: every parameter gets its implied rule.
     pub fn from_schema(namespace: impl Into<String>, owner: ParamOwner, schema: ParamSchema) -> Self {
@@ -229,8 +238,8 @@ impl Contract {
         if self.version.major != ContractVersion::CURRENT.major {
             return Err(Error::new(ErrorKind::Unsupported, "this parameter contract needs a newer NodeCraft"));
         }
-        if !namespace(&self.namespace) {
-            return Err(invalid("a contract namespace is a dotted lowercase id"));
+        if !(if self.owner == ParamOwner::Model { model_namespace(&self.namespace) } else { namespace(&self.namespace) }) {
+            return Err(invalid("a contract namespace must be a bounded lowercase owner id"));
         }
         self.schema.validate()?;
         if self.rules.len() > self.schema.params.len() || self.checks.len() > MAX_CHECKS {

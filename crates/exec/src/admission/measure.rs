@@ -135,19 +135,35 @@ pub(crate) fn step(s: &crate::planner::Step) -> Result<usize, Error> {
     use crate::planner::{InputSource, PlannedInput};
     let mut n = add(size_of::<crate::planner::Step>() + LINK, add(s.kind.len(), s.mode.as_str().len())?)?;
     n = add(n, mul(s.after.len(), size_of::<NodeId>())?)?;
-    n = add(n, mul(s.inputs.len(), size_of::<PlannedInput>())?)?;
-    for i in &s.inputs {
-        n = add(n, i.port.len())?;
-        n = add(n, mul(i.from.len(), size_of::<InputSource>())?)?;
-        for v in &i.from {
-            n = add(
-                n,
-                match v {
-                    InputSource::Value(v) => values(v)?,
-                    InputSource::Step { port, .. } => port.len(),
-                },
-            )?;
+    let planned = |inputs: &[PlannedInput]| -> Result<usize, Error> {
+        let mut n = mul(inputs.len(), size_of::<PlannedInput>())?;
+        for i in inputs {
+            n = add(n, i.port.len())?;
+            n = add(n, mul(i.from.len(), size_of::<InputSource>())?)?;
+            for v in &i.from {
+                n = add(
+                    n,
+                    match v {
+                        InputSource::Value(v) => values(v)?,
+                        InputSource::Step { port, .. } | InputSource::Item { port, .. } => port.len(),
+                    },
+                )?;
+            }
         }
+        Ok(n)
+    };
+    n = add(n, planned(&s.inputs)?)?;
+    if let Some(f) = &s.fanout {
+        n = add(n, size_of::<crate::planner::Fanout>())?;
+        n = add(n, mul(f.items.len(), size_of::<nodecraft_graph::ItemTag>())?)?;
+        for tag in &f.items {
+            n = add(n, mul(tag.len(), size_of::<nodecraft_graph::ItemKey>())?)?;
+        }
+        n = add(n, mul(f.cells.len(), size_of::<Vec<PlannedInput>>())?)?;
+        for cell in &f.cells {
+            n = add(n, planned(cell)?)?;
+        }
+        n = add(n, mul(f.jobs.len(), size_of::<usize>())?)?;
     }
     Ok(n)
 }
@@ -182,4 +198,53 @@ pub(crate) fn job(job: &JobSpec, canonical: Option<&nodecraft_types::BorrowedRes
         }
     }
     Ok(n)
+}
+
+/// Dynamic children of a shared parameter contract. Bounds are checked while walking and
+/// before any caller clones it; this is logical ownership, not allocator/RSS accounting.
+pub fn contract(c: &nodecraft_types::Contract) -> Result<usize, Error> {
+    use nodecraft_types::{Check, Condition, ParamRule};
+    fn condition(c: &Condition, depth: usize) -> Result<usize, Error> {
+        if depth > 8 {
+            return Err(cap());
+        }
+        let body = match c {
+            Condition::Present { param } | Condition::Compare { param, .. } => param.len(),
+            Condition::Equals { param, value } => add(param.len(), values(value)?)?,
+            Condition::In { param, values: vs } => {
+                if vs.len() > 64 {
+                    return Err(cap());
+                }
+                vs.iter().try_fold(add(param.len(), mul(vs.len(), size_of::<Value>())?)?, |n, v| add(n, values(v)?))?
+            }
+            Condition::All { of } | Condition::Any { of } => {
+                if of.len() > 64 {
+                    return Err(cap());
+                }
+                of.iter().try_fold(mul(of.len(), size_of::<Condition>())?, |n, c| add(n, condition(c, depth + 1)?))?
+            }
+            Condition::Not { condition: c } => add(size_of::<Condition>(), condition(c, depth + 1)?)?,
+        };
+        if body > MAX_WITNESS_BYTES { Err(cap()) } else { Ok(body) }
+    }
+    if c.rules.len() > 256 || c.checks.len() > 64 {
+        return Err(cap());
+    }
+    let mut n = add(c.namespace.len(), schema(&c.schema)?)?;
+    n = add(n, mul(c.rules.len(), size_of::<ParamRule>())?)?;
+    for r in &c.rules {
+        n = add(n, add(r.param.len(), r.meaning.as_ref().map_or(0, String::len))?)?;
+        for term in [&r.visible_when, &r.enabled_when].into_iter().flatten() {
+            n = add(n, condition(term, 1)?)?;
+        }
+    }
+    n = add(n, mul(c.checks.len(), size_of::<Check>())?)?;
+    for c in &c.checks {
+        n = add(n, add(c.id.len(), c.message.len())?)?;
+        if let Some(term) = &c.when {
+            n = add(n, condition(term, 1)?)?;
+        }
+        n = add(n, condition(&c.require, 1)?)?;
+    }
+    if n > MAX_WITNESS_BYTES { Err(cap()) } else { Ok(n) }
 }

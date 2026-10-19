@@ -68,8 +68,25 @@ fn kinds() -> Registry {
         outputs: vec![Port { name: "items".into(), port_type: LIST }],
         ..join
     };
-    kinds.register(Box::new(Split(split))).unwrap();
+    kinds.register(Box::new(Split(split.clone()))).unwrap();
+    let upper = NodeDescriptor { id: "test.upper".into(), label: "Upper".into(), outputs: vec![Port { name: "out".into(), port_type: TEXT }], ..split };
+    kinds.register(Box::new(Upper(upper))).unwrap();
     kinds
+}
+
+/// Text in, text out: upper case.
+struct Upper(NodeDescriptor);
+impl NodeKind for Upper {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("upper").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        let text = ctx.inputs.first().map(|i| text_of(&i.value)).unwrap_or_default();
+        Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value: Value::Text(text.to_uppercase()) }])
+    }
 }
 
 fn id(n: u16) -> NodeId {
@@ -893,4 +910,72 @@ fn unadmitted_manual_generate_cannot_escape_as_source_work() {
     let (_, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds(), opts(RUN, 1, RunLimits::default())).unwrap();
     assert!(first.jobs.is_empty(), "unquoted generation must not be scheduled");
     assert_eq!(first.failed.len(), 1);
+}
+
+/// 5 (batch "fox\nowl") → upper 2 → upper 3 → join 4 (collects every item).
+fn batched() -> Project {
+    let kinds = kinds();
+    let mut p = project(&[(2, "test.upper", ""), (3, "test.upper", ""), (4, "test.join", "")], &[(2, "out", 3, 0), (3, "out", 4, 0)]);
+    let mut batch = kinds.get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(5), Default::default(), &Default::default()).unwrap();
+    batch.params.insert("text".into(), Value::Text("fox\nowl".into()));
+    Changeset::new(vec![
+        Change::AddNode { canvas: C, node: batch },
+        Change::Connect {
+            canvas: C,
+            edge: Edge {
+                id: EdgeId::from_bytes([50; 16]),
+                from: Endpoint { node: id(5), port: "item".into() },
+                to: Endpoint { node: id(2), port: "in".into() },
+                order: 0,
+            },
+        },
+    ])
+    .apply(&mut p)
+    .unwrap();
+    p
+}
+
+#[test]
+fn a_batch_runs_each_item_through_a_chain_and_records_its_items() {
+    let mut p = batched();
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2, 3, 4]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    assert_eq!(first.jobs.len(), 2, "one job per item, known up front");
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(run.is_finished());
+    let result = |n: u16| finished.iter().find(|r| r.node == id(n)).unwrap().generation.clone();
+    // One value per item, in item order, tagged with the item it came from.
+    assert_eq!(result(2).outputs, vec![Value::List(vec![Value::Text("FOX".into()), Value::Text("OWL".into())])]);
+    assert_eq!(result(3).outputs, result(2).outputs);
+    assert_eq!(result(2).items.len(), 2);
+    assert_eq!(result(3).items, result(2).items, "items keep their ids downstream");
+    // A list input collects every item into one run.
+    assert!(result(4).items.is_empty());
+    assert_eq!(output(&finished, 4), "(FOX+OWL)");
+
+    for result in &finished {
+        let node = p.canvases().get(&C).unwrap().nodes().get(&result.node).unwrap().clone();
+        Changeset::new(record_changes(C, &node, result.generation.clone()).unwrap()).apply(&mut p).unwrap();
+    }
+    assert!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
+    // A recorded fanned result fans its consumers out again, without rerunning it.
+    let plan = plan_of(&p, &[3]);
+    assert_eq!(plan.steps.first().unwrap().fanout.as_ref().unwrap().items, result(2).items);
+    // Editing the batch's items makes everything downstream stale.
+    Change::SetParam { canvas: C, id: id(5), name: "text".into(), value: Some(Value::Text("fox\nbat".into())) }.apply(&mut p).unwrap();
+    assert_eq!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap(), [id(2), id(3), id(4)].into_iter().collect());
+}
+
+#[test]
+fn a_failed_item_fails_its_step_rather_than_dropping_a_row() {
+    let p = batched();
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2, 3]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, failed, _) = drive(&mut run, &kinds, first, &[id(2)].into_iter().collect());
+    assert!(finished.is_empty(), "{finished:?}");
+    assert!(failed.iter().any(|f| f.node == id(2)));
+    assert!(run.is_finished());
 }

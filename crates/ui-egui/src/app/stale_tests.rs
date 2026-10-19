@@ -122,6 +122,7 @@ fn diagnostic_with_downstream(downstream: bool) -> (NodeCraftApp, Arc<AtomicUsiz
             id: generation,
             outputs: vec![Value::Text("Result".into())],
             input_hash: if downstream && n == 21 { None } else { Some(Blake3::from_bytes([0; 32])) },
+            items: Vec::new(),
         });
         node.active = Some(generation);
         Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();

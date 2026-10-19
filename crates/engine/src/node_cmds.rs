@@ -43,7 +43,21 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         .get(&p.canvas)
         .and_then(|canvas| canvas.nodes().get(&p.id))
         .ok_or_else(|| Error::new(ErrorKind::NotFound, "node does not exist"))?;
-    let descriptor = c.kinds.get(&node.kind)?.resolve_instance(node)?;
+    if crate::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &p.name) {
+        return Err(Error::new(ErrorKind::Unsupported, "use node.model_preview then node.set_model to change this model"));
+    }
+    let kind = c.kinds.get(&node.kind)?;
+    let generation = if node.kind == nodecraft_nodes::generation::KIND {
+        let catalog = crate::generation_catalog::GenerationCatalog::current(c.resources)?;
+        catalog.validate_instance_binding(kind, node)?;
+        let contract = kind.instance_contract(node)?;
+        // Shared borrowed validation admits aggregate values before the proposed map copy.
+        contract.resolve(&node.params, false)?;
+        Some(contract)
+    } else {
+        None
+    };
+    let descriptor = kind.resolve_instance(node)?;
     if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
         return Err(crate::commands::invalid("node ports do not match its instance descriptor"));
     }
@@ -63,6 +77,24 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         None => {
             proposed.remove(&p.name);
         }
+    }
+    if let Some(contract) = generation {
+        let resolution = contract.resolve(&proposed, false)?;
+        if let Some(issue) = resolution.issues.first() {
+            return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
+        }
+        if p.value.is_some() && !resolution.get(&p.name).is_some_and(|state| state.enabled) {
+            return Err(crate::commands::invalid("parameter is disabled by the current model settings"));
+        }
+        let mut changes = vec![Change::SetParam { canvas: p.canvas, id: p.id, name: p.name.clone(), value: p.value }];
+        // Reset publication shares one invertible mutation with its controller edit. Do not
+        // materialize defaults; only remove existing explicit overrides named by resolution.
+        for state in resolution.params {
+            if state.reset && proposed.contains_key(&state.name) {
+                changes.push(Change::SetParam { canvas: p.canvas, id: p.id, name: state.name, value: None });
+            }
+        }
+        return Ok(Effect::Edit { changes: Changeset::new(changes), result: Json::Null, gesture: None });
     }
     descriptor.params.resolve(&proposed, false)?;
     Ok(edit(Change::SetParam { canvas: p.canvas, id: p.id, name: p.name, value: p.value }))

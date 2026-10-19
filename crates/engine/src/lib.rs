@@ -6,6 +6,7 @@
 
 pub mod action_exec;
 pub mod build_info;
+pub mod bulk_cmds;
 pub mod cache;
 pub mod cache_cmds;
 pub mod clipboard_cmds;
@@ -25,6 +26,8 @@ pub mod jobs;
 pub mod keys_cmds;
 pub mod layout_cmds;
 pub mod live_actions;
+pub mod model_cmds;
+pub mod model_swap;
 pub mod navigation_cmds;
 pub mod node_cmds;
 pub mod order_cmds;
@@ -35,6 +38,7 @@ mod persistence;
 pub mod plugin_cmds;
 pub mod search_cmds;
 
+pub mod generation_catalog;
 pub mod run_ceiling;
 pub mod run_cmds;
 pub mod save_runner;

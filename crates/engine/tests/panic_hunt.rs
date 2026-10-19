@@ -50,6 +50,10 @@ fn panic_hunt() {
             "reply",
             "resolved",
             "expected_revision",
+            "ids",
+            "revision",
+            "model",
+            "preview_binding",
         ] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
@@ -64,6 +68,12 @@ fn panic_hunt() {
     corpus.push(json!({"canvas":common::canvas(),"edge":common::edge(),"replace":[common::edge().id, common::edge().id]}));
     corpus.push(json!({"canvas":common::canvas(),"nodes":[common::node_id(1), common::node_id(1)],"edges":[common::edge().id]}));
     corpus.push(json!({"canvas":common::canvas(),"nodes":vec![common::node_id(9); 20_000]}));
+    // Bulk decoding must be exercised with the complete envelope, beyond its target preflight.
+    for raw in [Value::Null, json!("wrong"), json!({"type":"list","value":[null]}), json!({"type":"number","value":1e100})] {
+        corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(2)],"revision":0,"name":"text","value":raw}));
+    }
+    corpus.push(json!({"canvas":common::canvas(),"ids":vec![common::node_id(1);257],"revision":0,"name":"text","value":null}));
+    corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(1)],"revision":0,"name":"text","value":null}));
     for id in ids {
         for params in &corpus {
             let before = session.document().clone();
@@ -99,10 +109,23 @@ fn template(id: &str) -> (Session, Value) {
     if id == "edge.connect" {
         nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
     }
-    if id == "node.param_set" {
-        let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(3), &std::collections::BTreeMap::new()).unwrap();
-        source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
-        nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    if matches!(id, "node.param_set" | "node.params_set_bulk") {
+        let nodes = if id == "node.params_set_bulk" { vec![3, 4] } else { vec![3] };
+        for n in nodes {
+            let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(n), &std::collections::BTreeMap::new()).unwrap();
+            source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
+            nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+        }
+    }
+    if matches!(id, "node.model_preview" | "node.set_model") {
+        let seed = Session::new(document.clone()).unwrap();
+        let supplied = [
+            ("model".into(), nodecraft_types::Value::Text("openai-images.sunburst".into())),
+            ("prompt".into(), nodecraft_types::Value::Text("Public-safe corpus prompt".into())),
+        ]
+        .into();
+        let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
     }
     if matches!(id, "tag.put" | "tag.remove" | "node.tag_set") {
         let tag = nodecraft_types::TagId::from_bytes([9; 16]);
@@ -229,6 +252,15 @@ fn template(id: &str) -> (Session, Value) {
         "node.move" => movement.clone(),
         "node.title" => json!({"canvas":canvas(),"id":node_id(1),"title":"Renamed"}),
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
+        "node.params_set_bulk" => json!({"canvas":canvas(),"ids":[node_id(3),node_id(4)],"revision":0,"name":"text","value":null}),
+        "node.model_preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"}),
+        "node.set_model" => {
+            let mut request = json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"});
+            let preview = session.dispatch("node.model_preview", &request).unwrap();
+            request["expected_revision"] = preview["revision"].clone();
+            request["preview_binding"] = preview["binding"].clone();
+            request
+        }
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
         "canvas.auto_format" => json!({"mode":"grid"}),
@@ -339,6 +371,8 @@ fn typed_template_panic_hunt() {
             "/tag/title",
             "/tag/color",
             "/nodes/0",
+            "/ids/0",
+            "/ids/1",
             "/tags/0",
         ] {
             if valid.pointer(path).is_some() {
@@ -355,6 +389,9 @@ fn typed_template_panic_hunt() {
             // mutated/missing tokens and all other mutations for the adversarial cases.
             if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
                 params["accept"]["token"] = fresh["accept"]["token"].clone();
+            }
+            if id == "node.set_model" && params.get("preview_binding") == valid.get("preview_binding") {
+                params["preview_binding"] = fresh["preview_binding"].clone();
             }
             let before = session.document().clone();
             let revision = session.revision();
@@ -387,6 +424,7 @@ fn typed_template_panic_hunt() {
                             | "comment.compose"
                             | "canvas.stale"
                             | "node.describe"
+                            | "node.model_preview"
                             | "canvas.search_open"
                             | "canvas.search_query"
                             | "canvas.search_next"
@@ -451,4 +489,18 @@ fn run_start_template_reaches_the_registered_host() {
     assert_eq!(session.revision(), revision);
     assert_eq!(session.events_since(0).unwrap(), events);
     assert_eq!((session.can_undo(), session.can_redo()), history);
+}
+
+#[test]
+fn model_templates_reach_the_production_kind_and_current_preview_binding() {
+    for id in ["node.model_preview", "node.set_model"] {
+        let (mut session, params) = template(id);
+        let before = session.document().clone();
+        session.dispatch(id, &params).unwrap();
+        if id == "node.model_preview" {
+            assert_eq!(session.document(), &before);
+        } else {
+            assert_ne!(session.document(), &before);
+        }
+    }
 }

@@ -283,6 +283,7 @@ fn borrowed_text_bytes_bom_routes_and_graph_text_parity() {
         id: nodecraft_types::GenerationId::from_bytes([1; 16]),
         outputs: vec![Value::Text("x".repeat(size))],
         input_hash: None,
+        items: Vec::new(),
     };
     assert!(generation(MAX_TEXT_VALUE_BYTES).validate().is_ok());
     assert!(generation(MAX_TEXT_VALUE_BYTES + 1).validate().is_err());
@@ -544,4 +545,26 @@ fn aggregate_raw_text_budget_arithmetic_is_checked_without_large_fixtures() {
     budget.charge(12).unwrap();
     assert!(budget.charge(1).is_err());
     assert_eq!(budget.0, 0);
+}
+
+#[test]
+fn hdr394_provider_outputs_refuse_before_converting_any_paid_prefix() {
+    for bytes in [b"\x76\x2f\x31\x01".as_slice(), b"#?RGBE\n", b"#?RADIANCE\n"] {
+        for claimed in ["image/x-exr", "image/vnd.radiance", "text/plain"] {
+            let hdr: Arc<[u8]> = Arc::from(bytes);
+            let mut done =
+                Completed::new(vec![image(png()), Output::Text("paid prefix".into()), Output::Bytes { mime: claimed.into(), bytes: Arc::clone(&hdr) }]);
+            done.usage.cost = Some(nodecraft_types::Money::new(nodecraft_types::Currency::USD, 7));
+            let original = done.clone();
+            let owners = Arc::strong_count(&hdr);
+            let mut conversion = Conversion::default();
+            let err = outputs_with_limits(&routes(), &done, Limits::default(), &mut conversion).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Unsupported);
+            assert!(err.message.contains("HDR"));
+            assert_eq!(conversion, Conversion::default());
+            assert_eq!(done, original);
+            assert_eq!(Arc::strong_count(&hdr), owners);
+            assert_eq!(produced(&routes(), &done).unwrap_err().kind, ErrorKind::Unsupported);
+        }
+    }
 }

@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 nodecraft-engine = { workspace = true }
+nodecraft-catalog.workspace = true
 nodecraft-graph.workspace = true
 nodecraft-types.workspace = true
 nodecraft-nodes.workspace = true
@@ -35,6 +36,7 @@ rfd = "=0.17.2"
 libc = "0.2.190"
 
 [dev-dependencies]
+nodecraft-catalog.workspace = true
 nodecraft-format.workspace = true
 nodecraft-media = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu"] }

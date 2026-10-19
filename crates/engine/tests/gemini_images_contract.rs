@@ -79,6 +79,7 @@ fn assemble(done: &Completed, text: bool, many: bool) -> nodecraft_exec::run::Pr
                 params: Default::default(),
                 inputs: vec![GenerateInput { role: "prompt".into(), value: Value::Text("A blue circle".into()) }],
             }]),
+            fanout: None,
         }],
         edges: vec![],
     };

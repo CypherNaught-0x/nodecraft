@@ -291,6 +291,7 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
             after: vec![],
             inputs: vec![],
             jobs: Some(vec![work.clone()]),
+            fanout: None,
         }],
         edges: vec![],
     };

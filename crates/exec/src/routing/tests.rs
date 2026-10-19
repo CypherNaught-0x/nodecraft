@@ -232,7 +232,7 @@ fn a_change_behind_a_router_makes_the_consumer_stale() {
             canvas: C,
             id: id(3),
             index: 0,
-            generation: Generation { id: g, outputs: vec![Value::Text("r".into())], input_hash: Some(hash) },
+            generation: Generation { id: g, outputs: vec![Value::Text("r".into())], input_hash: Some(hash), items: Vec::new() },
         },
         Change::SetActiveGeneration { canvas: C, id: id(3), generation: Some(g) },
     ])
@@ -363,6 +363,7 @@ fn invalid_router_instances_block_consumers_and_never_produce_hashes() {
                     id: generation,
                     outputs: vec![Value::Text("old".into())],
                     input_hash: Some(nodecraft_types::Blake3::from_bytes([7; 32])),
+                    items: Vec::new(),
                 },
             },
             Change::SetActiveGeneration { canvas: C, id: id(20), generation: Some(generation) },

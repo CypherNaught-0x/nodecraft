@@ -7,6 +7,8 @@ use crate::{Canvas, Generation, Node, Position, Project};
 pub const MAX_CHANGES: usize = 10_000;
 pub const MAX_VALUE_DEPTH: usize = 32;
 pub const MAX_VALUE_ITEMS: usize = 4096;
+/// Most batches one fanned result's items combine.
+pub const MAX_ITEM_AXES: usize = 16;
 pub const MAX_NODE_BYTES: usize = 8 * 1024 * 1024;
 /// Most generations a node keeps.
 pub const MAX_HISTORY: usize = 1024;
@@ -82,6 +84,20 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
     }
     for output in &generation.outputs {
         value(output)?;
+    }
+    if generation.items.is_empty() {
+        return Ok(());
+    }
+    if generation.items.len() > MAX_VALUE_ITEMS {
+        return Err(invalid("generation exceeds item limit"));
+    }
+    for tag in &generation.items {
+        if tag.is_empty() || tag.len() > MAX_ITEM_AXES || !tag.windows(2).all(|pair| matches!(pair, [a, b] if a.batch < b.batch)) {
+            return Err(invalid("an item tag must name each batch once, in order"));
+        }
+    }
+    if generation.outputs.iter().any(|output| !matches!(output, Value::List(values) if values.len() == generation.items.len())) {
+        return Err(invalid("a fanned generation needs one value per item on every output"));
     }
     Ok(())
 }
