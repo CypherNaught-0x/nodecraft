@@ -56,7 +56,7 @@ fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, 
 
 pub(super) fn run(session: &mut Session, canvas: CanvasId, at: Position, step: f32, files: &[Incoming<'_>], ids: &[NodeId]) -> Result<Imported, Error> {
     // A pending save changes the admission identity the prepared batch is checked against.
-    session.settle_for_edit();
+    session.settle_for_edit()?;
     if ids.len() < files.len().min(MAX_FILES) {
         return Err(invalid("an id is needed for every file"));
     }

@@ -126,7 +126,7 @@ fn admitted(path: &Path, save: bool) -> Result<&str, String> {
 }
 impl NodeCraftApp {
     fn file_busy(&self, ctx: &egui::Context) -> bool {
-        self.session.file_status().saving
+        self.session.file_status().operation.is_some()
             || self.recovery.is_some()
             || self.files.menu_open
             || egui::Popup::is_any_open(ctx)

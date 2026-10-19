@@ -122,7 +122,11 @@ pub enum Effect {
     Open {
         location: nodecraft_format::StorageLocation,
         discard_dirty: bool,
+        /// Read on the host's save runner, when it has one, instead of inline.
+        background: bool,
     },
+    /// Ask the background save or open to stop (`file.cancel`); never waits for it.
+    CancelFile,
     Save {
         location: Option<nodecraft_format::StorageLocation>,
         /// Write on the host's save runner, when it has one, instead of inline.
