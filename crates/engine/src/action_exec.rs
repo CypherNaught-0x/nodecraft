@@ -253,8 +253,57 @@ fn decode_limits() -> nodecraft_media::Limits {
     }
 }
 
+/// The GPU custom shaders run on, made when the first one runs and kept (a lost device is
+/// replaced on the next run).
+static SHADER_GPU: Mutex<Option<nodecraft_gpu::shader::ShaderRunner>> = Mutex::new(None);
+
+impl LocalActions {
+    fn shader(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        let Some(Value::Text(json)) = params.get(nodecraft_nodes::shader::SPEC_PARAM) else { return Err("the shader is missing".into()) };
+        let stored: nodecraft_nodes::shader::StoredShader = serde_json::from_str(json).map_err(|_| "the shader can't be read".to_owned())?;
+        let valid = nodecraft_gpu::shader::validate(&crate::shader_cmds::spec(&stored)).map_err(|e| format!("the shader isn't valid: {e}"))?;
+        let values: Vec<f32> = stored
+            .params
+            .iter()
+            .map(|p| match params.get(&p.name) {
+                Some(Value::Number(n)) => n.get() as f32,
+                _ => p.default as f32,
+            })
+            .collect();
+        let source = self.raster(inputs.first())?;
+        let mut gpu = SHADER_GPU.lock().unwrap_or_else(PoisonError::into_inner);
+        if gpu.as_ref().is_none_or(nodecraft_gpu::shader::ShaderRunner::is_lost) {
+            *gpu = Some(nodecraft_gpu::shader::ShaderRunner::request().map_err(|_| "custom shaders need a GPU, and none is available".to_owned())?);
+        }
+        let runner = gpu.as_mut().ok_or("custom shaders need a GPU, and none is available")?;
+        let pixels = match runner.run(&valid, &values, source.width(), source.height(), source.pixels()) {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                // A runner that failed may be unusable: the next run starts on a fresh one.
+                if runner.is_lost() {
+                    *gpu = None;
+                }
+                return Err(match error {
+                    nodecraft_gpu::image::GpuImageError::Unsupported => "this GPU can't compile the shader; simplify it".to_owned(),
+                    nodecraft_gpu::image::GpuImageError::Busy => {
+                        format!("the shader took longer than {} seconds on the GPU", nodecraft_gpu::shader::TIMEOUT.as_secs())
+                    }
+                    nodecraft_gpu::image::GpuImageError::Resource => "the image is too large for the GPU".to_owned(),
+                    _ => "the GPU failed while running the shader".to_owned(),
+                });
+            }
+        };
+        let out =
+            Raster::new(source.width(), source.height(), pixels, ImageLimits::default()).map_err(|e| format!("the shader's result can't be used: {e}"))?;
+        self.stage(&out)
+    }
+}
+
 impl ActionExecutor for LocalActions {
     fn execute(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        if action == nodecraft_nodes::shader::ID {
+            return self.shader(params, inputs);
+        }
         if action.starts_with("image.") {
             return self.image(action, params, inputs);
         }
