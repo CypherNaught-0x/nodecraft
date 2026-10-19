@@ -59,6 +59,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "replicate" => Some("replicate"),
         "seedream" => Some("seedream"),
         "gemini-images" => Some("gemini"),
+        "fal" => Some("fal"),
         _ => None,
     }
 }
@@ -101,6 +102,7 @@ pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readi
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
+        "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
         "comfyui" => {
             let url = env.settings.comfyui_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
             let Some(url) = url else {

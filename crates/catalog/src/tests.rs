@@ -53,6 +53,8 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
         if model.provider == "comfyui" {
             assert_eq!(model.pricing, Pricing::Free, "{}", model.id);
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
+        } else if model.id == "fal.trellis2" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -101,6 +103,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
         vec![
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
+            ("fal.flux-schnell", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -108,6 +111,10 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
             ("seedream.4_5", true),
+            ("fal.esrgan", false),
+            ("fal.kokoro", false),
+            ("fal.trellis2", false),
+            ("fal.wan22", false),
             ("replicate.hello", false),
             ("test.video", false)
         ]
@@ -413,5 +420,24 @@ fn gemini_models_have_exact_wire_options_and_unknown_cost() {
             p.insert("image_size".into(), Value::Text("2K".into()));
             assert!(m.quote(&p).is_err());
         }
+    }
+}
+
+#[test]
+fn fal_catalog_covers_all_five_modalities_without_false_free_quotes() {
+    let c = Catalog::builtin().unwrap();
+    for (id, output, input) in [
+        ("fal.flux-schnell", Modality::Image, Modality::Text),
+        ("fal.wan22", Modality::Video, Modality::Text),
+        ("fal.kokoro", Modality::Audio, Modality::Text),
+        ("fal.trellis2", Modality::Mesh, Modality::Image),
+        ("fal.esrgan", Modality::Image, Modality::Image),
+    ] {
+        let m = c.get(id).unwrap();
+        assert_eq!(m.provider, "fal");
+        assert!(Wiring::new(output).with(input, 1).fit(m).is_ok());
+        let excess = if id == "fal.wan22" { 3 } else { 2 };
+        assert!(Wiring::new(output).with(input, excess).fit(m).is_err());
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), if id == "fal.trellis2" { Some(Money::new(Currency::USD, 250_000)) } else { None });
     }
 }
