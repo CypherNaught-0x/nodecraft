@@ -228,8 +228,9 @@ mod reserved {
 }
 
 /// Borrowed counterpart for graph-validated current models. Every current typed role
-/// is narrower than the raw read guard: reserved discussion/field/tag members and
-/// future operations do not exist in these Rust types. Keep parity tests with raw v1.
+/// may now contain v2-only discussion members. Current serialization always emits those
+/// defaulted fields, so even a legacy-shaped typed discussion requires the v2 writer.
+/// Keep parity tests with the frozen raw v1 guard.
 pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
     fn scalar(value: &nodecraft_types::Value) -> Result<(), Error> {
         use nodecraft_types::Value;
@@ -245,6 +246,9 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
         }
     }
     for canvas in project.canvases().values() {
+        if !canvas.comments().is_empty() {
+            return Err(unsupported());
+        }
         for node in canvas.nodes().values() {
             if !node.config.is_empty() || node.kind == "structure.note" {
                 return Err(unsupported());
@@ -307,9 +311,13 @@ mod tests {
             assert_eq!(project(&p).is_ok(), validate(&json).is_ok());
         }
         let fixture = crate::decode(include_bytes!("../tests/fixtures/v1/comments-v1.ncraft")).unwrap();
-        assert!(project(&fixture.project).is_ok());
+        assert!(project(&fixture.project).is_err());
+        let mut reader = zip::ZipArchive::new(std::io::Cursor::new(include_bytes!("../tests/fixtures/v1/comments-v1.ncraft"))).unwrap();
+        let mut raw = String::new();
+        std::io::Read::read_to_string(&mut reader.by_name("project.json").unwrap(), &mut raw).unwrap();
+        assert!(validate(raw.as_bytes()).is_ok(), "genuine old bytes remain valid even though current typed serialization emits v2 defaults");
         let recovered = crate::journal::recover(include_bytes!("../tests/fixtures/v1/comments-v1.ncrj")).unwrap();
-        assert!(project(&recovered.snapshot.project).is_ok());
+        assert!(project(&recovered.snapshot.project).is_err());
     }
 }
 

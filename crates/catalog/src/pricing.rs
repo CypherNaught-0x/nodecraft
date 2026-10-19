@@ -71,6 +71,8 @@ impl Unit {
 pub enum Pricing {
     /// Local or included models.
     Free,
+    /// Composite measured usage with no reliable pre-submit amount. Never a zero/free quote.
+    ByUsage { currency: Currency },
     /// One price per job.
     PerCall { price: Price },
     /// `price` per unit. The unit count is the value of parameter `count` (e.g. `num_images`,
@@ -90,6 +92,7 @@ impl Pricing {
     pub fn currency(&self) -> Option<Currency> {
         match self {
             Self::Free => None,
+            Self::ByUsage { currency } => Some(*currency),
             Self::PerCall { price } | Self::PerUnit { price, .. } => Some(price.0.currency),
         }
     }
@@ -98,11 +101,18 @@ impl Pricing {
     /// [`crate::ModelDescriptor::quote`]), rounded up, or `None` when it depends on usage the
     /// run hasn't measured yet. Free models quote zero in `fallback`.
     pub(crate) fn quote(&self, params: &ParamValues, fallback: Currency) -> Result<Option<Money>, Error> {
+        self.quote_lookup(|name| params.get(name), fallback)
+    }
+
+    /// Price already validated, effective visible values without owning a parameter map.
+    /// The caller must apply schema defaults/visibility and descriptor validation first.
+    pub fn quote_lookup<'a>(&self, get: impl Fn(&str) -> Option<&'a Value>, fallback: Currency) -> Result<Option<Money>, Error> {
         match self {
             Self::Free => Ok(Some(Money::zero(fallback))),
+            Self::ByUsage { .. } => Ok(None),
             Self::PerCall { price } => Ok(Some(price.0)),
             Self::PerUnit { unit, price, count, default_count } => {
-                let value = count.as_ref().and_then(|name| params.get(name));
+                let value = count.as_ref().and_then(|name| get(name));
                 let per = unit.per();
                 match (value, default_count) {
                     (None, Some(n)) => price.0.checked_mul_ratio(*n, per, Rounding::Up).map(Some),

@@ -20,7 +20,9 @@ every CI run, and fails on an unregistered crate.
 |---|---|---|---|
 | L0 | `types` | ids, `Modality`, `PortType`, `Value`, hashes, money, the error base (pure data, serde) | — |
 | L0 standalone | `media` | sniffing, decode/encode, thumbnails, metadata; image first, video/audio probes behind features | none allowed |
+| L0 standalone | `plugin` | the plugin package and wire contract: IDs, canonical JSON, manifest, inventory digest, signatures, frames and messages, locks, preservation ([spec](plugin-wire.md)) | none allowed |
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
+| L1 | `plugin-store` | verifying `.ncraft-plugin` data packages and the local package store: install disabled, enable all-or-nothing, update, rollback, uninstall ([decision](decisions/2026-10-19-plugin-data-package-store.md)) | plugin, types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
@@ -33,7 +35,8 @@ every CI run, and fails on an unregistered crate.
 | L5 | `agent` | in-canvas agent: LLM tool loop over engine commands | engine |
 | L5 | `automation` | control channel (JSON), MCP server, HTTP serve mode | engine |
 | L5 | `ui-egui` | egui shell: canvas widget, node cards, panels, editors, theme tokens | engine |
-| dev only | `testkit` | fixtures, mock provider, snapshot helpers | engine |
+| dev only | `testkit` | graph fixtures, mock compatibility reexport, snapshot helpers | engine |
+| dev only | `provider-testkit` | provider-only mock/type reexports for lower-layer tests | providers, types |
 | exempt | `apps/nodecraft`, `apps/nodecraft-cli`, `xtask` | binaries and tooling | anything |
 
 ```mermaid
@@ -60,7 +63,16 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
-- **`testkit` is a dev-dependency only.**
+- **Layered consumers use `testkit` and `provider-testkit` as dev-dependencies only.** Apps and
+  tooling keep their existing exemption; standalone media permits neither. The provider facade's
+  workspace dependencies are restricted to providers and types in every dependency kind,
+  including rejection of facade self-edges before generic same-package exemptions. It exposes the opt-in `providers::mock` implementation and the
+  same external provider types; lower crates use the facade only in tests. Provider unit tests
+  use their local `crate::mock` and local Provider trait to avoid duplicate-crate trait identity.
+  The higher testkit preserves `testkit::mock` by reexporting providers directly, without a
+  forbidden normal dependency on another testkit crate. Neither testkit class is in the normal
+  wasm sweep; `cargo xtask wasm` separately checks the facade and opt-in providers/testkit mock,
+  and refuses the wasm gate if either the normal sweep or that extra invocation fails.
 
 ## Core data types
 
@@ -269,6 +281,12 @@ in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging s
 
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+Its phase A, the package and wire contract, is the standalone `plugin` crate
+([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
+Phase B's verifier and local store are `plugin-store`; data packages install disabled and
+nothing in them executes. The engine's `plugins.*` commands reach the store through the host's
+`plugins.store` service; the desktop app keeps it in `<settings>/plugins/store` with the trust file
+`<settings>/plugins/trust.json`, and refuses any package ID the app itself registers.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions
@@ -292,22 +310,35 @@ rendering. Builtin sessions require no separate Registry resource; custom sessio
 once through `Session::with_registries`. The query remains read-only and its enabled check only
 checks the canvas, leaving staleness computation to dispatch.
 
+The response preserves `nodes` as the known stale set and adds `unknown_total` plus `unknown`
+(null or `{node, cause, kind, reason}`). Only active results with recorded input hashes are
+checked. Local invalid hashes do not themselves seed staleness; unknown is not proof of freshness.
+The first diagnostic follows canvas NodeId order and identifies the actual rejected target,
+source or router. It reuses the query's cached, bounded public-safe reason without another hook
+call. More unknown results are counted rather than collected into an unbounded message list.
+The existing 576-byte diagnostic reservation shares the hash query's sticky admission budget;
+global refusal returns an error without a partial report. Enabled/Preview remain cheap. The
+legacy `stale()` set API and quote callers keep their behavior; completed paid runs still retain
+results with unknown hashes when hashing fails. Control/MCP expose the command's same JSON.
+
 ## Project persistence (#54)
 
-`format::Snapshot` combines a validated graph, immutable content-addressed `AssetStore`, and a
-checkpoint epoch. `encode`/`decode` are platform-independent stored-ZIP codecs; they never extract
-paths or decode media. The version gate precedes graph deserialization. ZIP directory/local-header
+`format::Snapshot` combines a validated graph, a content-addressed `AssetStore`, and a checkpoint
+epoch. Native indexed descriptors are unverified until an immutable verified lease is acquired;
+resident small values retain their verified byte contract. `encode`/`decode` remain the bounded
+classic v1/v2/v3 stored-ZIP codecs; native typed plans support streaming v4. Neither extracts archive paths. The version gate precedes graph deserialization. ZIP directory/local-header
 validation runs before the ZIP library allocates its directory. Only `project.json` and canonical
 `assets/<lowercase-blake3>` regular entries are accepted, with matching lengths, CRCs and hashes.
 Unknown JSON fields are tolerated; optional graph collections default empty. IDs, kinds and format
 version remain required. Unsupported versions produce an update error.
 
-Initial limits are 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per asset and 48 MiB
-aggregate media. Codec bytes are currently buffered; cloned asset stores share immutable buffers.
-Saving includes only assets referenced by node parameters or generation history, including lists.
-Large-project lazy disk storage is a later optimization: do not simply increase these memory caps.
-Format v1 excludes ZIP64, compression, encryption, directory entries, archive comments and extra
-fields. These restrictions make the bounded interchange surface explicit.
+The frozen small v1 limits remain 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per
+asset and 48 MiB aggregate media. V1 excludes ZIP64, compression, encryption, directories, comments
+and extra fields. Native v4 supports stored ZIP64 with 8 GiB assets, 64 GiB aggregate assets and a
+65 GiB archive, retaining the 4 MiB manifest and 1,024 asset limits. The v4 container
+carries the current v3 graph vocabulary; historical v1/v2 retain their raw role gates. Saving includes referenced params/history assets;
+undo/redo-only assets remain privately retained. See [storage.md](storage.md) for exact capabilities,
+quotas, lifecycle, trust boundaries and the qualified macOS physical ZIP64 results.
 
 Hosts construct `Session::with_storage(snapshot, storage)`. A `ProjectStorage` instance belongs to
 one session. Native hosts provide `NativeStorage` with a private, session-unique recovery path;
@@ -318,26 +349,27 @@ keys (web). Browser hosts implement `ProjectStorage`; `MemoryStorage` supports d
 The desktop/CLI adapters will supply these services when they connect their document sessions.
 
 `file.open`, `file.save` and `file.save_as` use the same registry/dispatcher as graph commands and
-never open dialogs. Open fully validates the archive and creates its recovery checkpoint before
-publishing a replacement session document; it resets undo/redo and preserves monotonic event
+never open dialogs. Native Open admits metadata, graph structure and reference presence, privately
+copies/rechecks the archive, and creates its self-contained recovery checkpoint before publishing
+a replacement document. Individual asset content checks remain deferred until use; it resets undo/redo and preserves monotonic event
 cursors. Discarding a dirty document requires explicit `discard_dirty: true`. A successful save
 updates location and savepoint after atomic publication and breaks drag coalescing. Undo entries
 carry content state IDs, so undo/redo to the saved state clears dirty even though revision increases.
 `file_status()` plus `status_revision()` notify hosts of save/dirty/recovery changes independently
 of `DocChanged`; saving does not manufacture document edits.
 
-`ProjectStorage::prepare_open` returns `LoadedProject {bytes,access}` and retains the previous
-active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`;
-only successful publication calls the infallible `commit_open`. Native load's eager convenience
-API commits immediately; engine lifecycle code always uses the staged protocol. Writable hosts
-without destination locks retain compatibility defaults; locking/read-only adapters must implement
-and forward the complete protocol. `file.open` returns `{opened:true,read_only:bool}`.
+`ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
+active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only
+successful publication calls infallible `commit_open`. Native Session uses `ArchivePlan`,
+`CheckpointPlan` and `FramePlan` overrides end to end. Legacy `prepare_open`/byte methods retain
+their frozen small v1 behavior; defaults refuse native large/lazy plans before materialization or
+legacy writes. Locking/read-only adapters must forward the complete typed protocol. `file.open` returns `{opened:true,read_only:bool}`.
 `FileStatus.read_only` means the source cannot be overwritten: file.save is disabled/refused,
 while local edits/recovery and Save As to a different writable destination remain supported.
 Native canonical aliases cannot bypass that source restriction. A published Save As adopts its
 new destination even if subsequent recovery checkpointing fails, retaining existing save semantics.
-`save_with_access` reports the capability of a successfully published destination; its default
-delegates to `save` and returns ReadWrite for nonlocking hosts. Locking wrappers must forward it.
+`save_plan` reports the capability of a successfully published destination. The legacy
+`save_with_access` remains the small v1 fallback; locking wrappers must forward the typed methods.
 Native admission uses a short per-canonical-directory OS gate (at most two seconds of waiting,
 then Busy), shared by prepare-open and save. Existing destinations acquire their canonical project
 guard before any write. New destinations canonicalize the actual published file and acquire that
@@ -370,9 +402,12 @@ and replaces that token; stale handle completion cannot clear new dirty data or 
 Explicit flush covers its invocation boundary, or a durable replacement checkpoint, and clean close
 waits for that boundary before discard. Overflow is rejected before checkpoint/append publication.
 Newly referenced asset bytes accompany the first frame that needs them. Frames are sequence- and
-checkpoint-bound, at most 64 MiB; the journal is capped at 128 MiB and requires saving when full.
-Replay validates graph and asset references after every frame. The checkpoint performs the full
-asset walk; subsequent frames recheck only surviving nodes whose asset-bearing data changed
+checkpoint-bound. Frozen NCRJ0001 keeps 64 MiB frames and a 128 MiB journal. Native NCRJ0002
+allows 65 GiB frames, a 65 GiB tail and a 132 GiB journal, with bounded 16 MiB record JSON and an
+independent 1,024-identity/64-GiB recorded-assets ledger. Save resets that ledger; logical GC does
+not. Replay validates graph/reference semantics after every frame. V1 checkpoints perform the
+full body walk; native v2 checkpoints retain unverified indexed bodies. Subsequent frames recheck
+surviving nodes whose asset-bearing data changed
 (AddCanvas, add/set/restore node, SetParam and AddGeneration). Unchanged references remain valid
 because stored asset bytes are immutable. Config, nested Values and all generation outputs are
 included. Removing a bad reference in a later frame cannot hide it. Moves need no asset walk;
@@ -380,8 +415,8 @@ graph apply still clones/validates the final project per frame, so overall repla
 proportional to frame count times document size. Before accepting an edit, the
 session preflights canonical forward/inverse replay with max sequence digits, the Record envelope
 and every retained asset as potentially additional after a checkpoint. Full binary headers count
-toward the64MiB frame limit, so accepted undo/redo cannot become oversized after saving an empty
-or smaller document. Any physical outer framing/length/checksum damage yields the complete
+toward the applicable wire frame limit, so accepted undo/redo cannot become oversized after
+saving an empty or smaller document. Any physical outer framing/length/checksum damage yields the complete
 validated prefix, even when later frames survive. `Recovered.damage` reports the first damaged
 frame's absolute byte `offset` and typed `reason`; `truncated_tail` remains true for existing hosts.
 The decoder stops there and never applies any later frame. Invalid checkpoints, checksum-valid
@@ -405,8 +440,10 @@ and state, and disables edits until another save repairs recovery. Hosts must su
 
 ### Persistence integration boundaries and tracked storage work
 
-Save encodes once: its archive slice is reused from the new checkpoint. Open decodes once and
-reuses the validated archive bytes for checkpointing. After a save, asset GC preserves references
+Save prepares one immutable digest-bound `ArchivePlan`; its exact bytes feed the destination and
+self-contained `CheckpointPlan`. Native Open copies/reindexes before install and reuses current-family
+private bytes for checkpointing; historical graph inputs migrate before new append. Indexing, checkpoint transfer and deferred per-asset verification
+are separately measured operations; lazy Open is bounded in resident bytes, not zero-total-I/O. After a save, asset GC preserves references
 from both the live document and bounded undo/redo payloads; discarded redo assets can then be
 reclaimed. Hosts must call `Session::close_recovery` on a clean close (or explicit dirty discard)
 to flush and remove recovery; dropping a dirty session intentionally leaves recovery available.
@@ -428,13 +465,22 @@ illegal orphan From implementations. Known MIME signatures and dimensions from a
 verified against bytes. Duration/sample-rate/channel/page metadata remains advisory until the
 [media milestones](plan.md#7-roadmap) provide the corresponding bounded probes.
 
-The bounded buffered M1 codec does **not** yet satisfy [plan 4.6's large-project requirement](plan.md#46-storage)
-that assets stay on disk and load lazily. This remains tracked in [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54:
-a file-backed AssetSource, streaming archive/checkpoint paths, large video limits and ZIP64 need
-a separate format/asset-store design before increasing memory caps. The current 16 MiB/48 MiB limits
-are operational limits, not a claim of large-video support. Format v1 has no published predecessor;
-the explicit migration seam rejects older/future versions before typed graph decoding. A real
-migration and fixture must land before writing v2; no invented lossy v0 migration is applied.
+Native streaming storage and opaque verified consumption leases are implemented for #147.
+The frozen byte codec remains the explicit small-host compatibility path. Browser/memory hosts
+refuse unsupported streaming capability before reading input; no implicit whole-body fallback is
+allowed. The native macOS physical harness passed with a 4,294,967,297-byte asset and a later
+entry's actual ZIP64 offset above u32::MAX. An atomic failure after 4,294,967,296 successfully
+forwarded file-write bytes preserved the old destination/recovery. These are qualified physical
+results, not cross-platform, total-RSS or durable-device-write proof; final coherent CI remains
+required. Full results, APIs/limits and reproducible commands are in [storage.md](storage.md).
+
+Comments owns format v2 with frozen exact-v1 migration fixtures and an explicit NCRJ0001→NCRJ0002
+checkpoint transition. Unknown versions reject before typed graph decoding. The persisted Tag/Field vocabulary is introduced by the v3 compatibility bridge (#193), with
+NCRJ0003 recovery. Frozen v1/v2 paths still reject those reserved roles rather than dropping them. Native storage
+accepts all three classic families and migrates into NCRJ0004 before new appends.
+Both older journal versions retain their original embedded archive hash while replaying, then
+require an atomic v3 checkpoint before appending. The bridge adds no Tags/Fields commands or UI.
+See [local comments, replay certification and format ownership](comments.md).
 
 ### Frozen-v1 bridge on the current graph
 
@@ -459,7 +505,8 @@ record buffer (at most16 MiB) and temporary parsed JSON tree for compatibility. 
 allocation/pass, not zero-copy; the guard retains no accumulating metadata. Config media walkers
 already cover live and retained-history references for the later v2 writer, although v1 refuses
 nonempty config. Full config/scalar persistence arrives with the coordinated Comments-v2
-migration; it is not silently added under v1. Large/lazy assets remain #147.
+migration; it is not silently added under v1 or the large-asset container v2. The later graph
+format must coordinate its version allocation with this container contract.
 
 A local macOS debug-profile sample used a 262,445-byte canonical-shaped record containing a
 256-KiB text parameter: 100 full replay preflights took 1.296 s. This includes canonical budget
@@ -486,7 +533,7 @@ cheap. Opt-in `validation-metrics` exists for deterministic downstream tests, wi
 counter cost. Graph cloning/application, structural validation and byte-budget serialization still
 traverse the project per admitted edit; this is not a constant-time or linear-total edit claim.
 
-### Runtime result recording and frozen-v1 storage
+### Runtime result recording and frozen-v1 storage (historical; current writers use Comments v2)
 
 The current `exec::run::Run` returns caller-owned completed results; it does not mutate a
 Session or automatically wire desktop execution. A host can turn a result into one changeset
@@ -496,6 +543,32 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
 
+### Local comments and notes
+
+[Comments](comments.md) adds bounded flat threads and canvas/node anchors through graph changes,
+engine document commands and a scoped UI view service. Node deletion detaches discussions; compact
+restore metadata plus certified exact F/I/R staging preserves undo/redo budgets. `structure.note`
+is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
+authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
+explicit Save/Cancel, versioned migration and current format ownership are specified in that contract.
+
+
+### Comments-v2 on the current persistence host
+
+Comments advances current archive writers to version2 and recovery writers to NCRJ0002. Frozen
+v1 reads retain the landed contextual guard, including Generation.input_hash and default/null
+reserved-role refusal; original archive bytes still determine legacy frame identity. Opening or
+recovering legacy data must establish a new atomic v2 checkpoint before appending v2 edits.
+Current v2 admits config, scalar Values, stamped generations and local threads; future Tag/Field
+roles still reject. The earlier frozen-v1 runtime/storage restrictions above describe the previous
+writer and are superseded for current writes, not weakened for v1 reads.
+
+Private prepared admission, immutable referenced bytes, source identity/revision, complete-source
+changed-asset validation, ordered valid-final batches, actual canonical redo reservations, physical
+prefix damage recovery, staged Open rollback, source access/locks and sync generations remain the
+same persistence path. No second Comments save/append service exists. Save availability validates
+the current bounded manifest; incremental edits keep their existing replay/graph limits rather than
+imposing the archive's smaller manifest ceiling on every edit.
 
 ## Optional native video sidecar
 
@@ -503,3 +576,16 @@ handling; the engine must neither discard its stamp nor silently widen v1 to sav
 [media-video.md](media-video.md). It depends only on external Rust crates and configured installed
 tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
 is separate. Feature-on wasm exposes an Unsupported host setup path.
+
+## Selected-node formatting
+
+Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
+The UI supplies a revision-stamped scoped geometry capability, including history-strip body
+height at fixed reference zoom. Advisory Preview validates structure without solving or staging;
+dispatch returns one MoveNode changeset through the private persistent admission boundary.
+Grid and whole-DAG dependency modes move selected nodes only, with one undo step; see
+[the decision](decisions/2026-10-18-selected-node-auto-format-70.md) and [UI design](ui-design.md).
+
+### Colour tag mutations and filtering
+
+The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.

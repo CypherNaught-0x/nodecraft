@@ -134,6 +134,13 @@ pub trait Provider: MaybeSendSync {
     /// Stable lowercase id (`fal`, `replicate`, `comfyui`); also the scheduler lane prefix.
     fn id(&self) -> &str;
 
+    /// Whether an uncertain, no-handle submit may be retried automatically. This is a stable
+    /// policy of this provider instance, not remote deduplication or proof of nonbilling.
+    /// The compatibility default preserves legacy adapters; paid synchronous adapters can refuse.
+    fn retry_ambiguous_submit(&self) -> bool {
+        true
+    }
+
     /// Starts a job. Queue-style APIs return [`Submission::Queued`] without waiting; synchronous
     /// APIs return [`Submission::Finished`].
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>>;

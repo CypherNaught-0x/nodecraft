@@ -1,0 +1,84 @@
+{
+  "accounting": [
+    "failed"
+  ],
+  "calls": [
+    {
+      "cancel": 0,
+      "poll": 1,
+      "submit": 1,
+      "synthetic": false
+    }
+  ],
+  "cleanup": true,
+  "deliveries": [
+    {
+      "attempt": 1,
+      "disposition": "accounting_repaired_retained",
+      "epoch": 0,
+      "job": 1,
+      "outputs": [
+        {
+          "bytes": 32,
+          "type": "text"
+        }
+      ]
+    }
+  ],
+  "jobs": [
+    {
+      "accepted": true,
+      "attempts": [
+        1
+      ],
+      "epoch": 0,
+      "job": 1,
+      "notified": true,
+      "provider": true,
+      "rejected": false,
+      "terminal": "failed",
+      "transitions": [
+        {
+          "attempt": 0,
+          "kind": "queued"
+        },
+        {
+          "attempt": 1,
+          "kind": "started"
+        },
+        {
+          "attempt": 0,
+          "kind": "failed"
+        }
+      ],
+      "updates": [
+        {
+          "adapter": "mock",
+          "attempt": 1,
+          "generation": 0,
+          "instance": null,
+          "key": "nodecraft:70707070707070707070707070707070:1",
+          "kind": "submitted"
+        }
+      ]
+    }
+  ],
+  "ledger": [
+    {
+      "cost": {
+        "currency": "USD",
+        "micros": "7"
+      },
+      "instance": null,
+      "key": "nodecraft:70707070707070707070707070707070:1",
+      "model": "mock-usage",
+      "node": "02020202-0202-0202-0202-020202020202",
+      "provider": "mock",
+      "status": "actual"
+    }
+  ],
+  "peak": 1,
+  "recorded": false,
+  "results": 0,
+  "retained": 1
+}

@@ -70,7 +70,7 @@ fn physical_damage_reports_exact_prefix_offset_reason_and_never_replays_later_fr
         assert_eq!(recovered.snapshot.project.title(), "Good prefix");
         assert!(recovered.truncated_tail);
         let damage = recovered.damage.unwrap();
-        assert_eq!(damage.offset, prefix.len());
+        assert_eq!(damage.offset, prefix.len() as u64);
         assert_eq!(damage.reason, reason);
         assert!(!damage.reason.description().is_empty());
         assert_eq!(bytes, original, "pure recovery preserves original evidence");
@@ -156,7 +156,9 @@ fn invalid_asset_frame_cannot_be_hidden_by_a_later_removal_in_any_asset_bearing_
     let mut empty = empty;
     Change::AddCanvas { canvas: Canvas::new(canvas(), "Canvas") }.apply(&mut empty.project).unwrap();
     let checkpoint = journal::checkpoint(&empty).unwrap();
-    for change in [Change::AddNode { canvas: canvas(), node: incoming.clone() }, Change::RestoreNode { canvas: canvas(), node: incoming, edges: vec![] }] {
+    for change in
+        [Change::AddNode { canvas: canvas(), node: incoming.clone() }, Change::RestoreNode { canvas: canvas(), node: incoming, edges: vec![], pins: vec![] }]
+    {
         let mut bytes = checkpoint.bytes.clone();
         bytes.extend(forged(&checkpoint, serde_json::to_value(vec![change]).unwrap()));
         assert!(journal::recover(&bytes).is_err());

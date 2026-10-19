@@ -55,7 +55,7 @@ const pr = (number, login = 'other', state = 'open') => ({
   source: { issue: { number, state, pull_request: {}, user: { login } } },
 });
 
-function ctx(body, { assignees = [], labels = [], user = 'alice', extra = {} } = {}) {
+function ctx(body, { assignees = [], labels = ['difficulty:medium'], user = 'alice', extra = {} } = {}) {
   return {
     repo: { owner: 'nodecraft-owner', repo: 'nodecraft' },
     payload: {
@@ -117,7 +117,7 @@ test('claim on an issue claimed by someone else names them and when it lapses', 
 
 test('a lapsed claim is taken over', async () => {
   const { github, calls } = fake({ timeline: [labeled(ago(100 * H))] });
-  await claim.handleComment({ github, context: ctx('/claim', { assignees: ['bob'], labels: ['in progress'] }), now: NOW });
+  await claim.handleComment({ github, context: ctx('/claim', { assignees: ['bob'], labels: ['in progress', 'difficulty:medium'] }), now: NOW });
   assert.deepEqual(find(calls, 'removeAssignees')[1].assignees, ['bob']);
   assert.deepEqual(find(calls, 'addAssignees')[1].assignees, ['alice']);
 });
@@ -232,3 +232,47 @@ test('sweep is idempotent: a released issue is no longer listed', async () => {
   world.issues = [];
   assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), []);
 });
+
+
+const metadataWrites = (calls) => names(calls).filter((name) =>
+  ['createLabel', 'addLabels', 'removeLabel', 'addAssignees', 'removeAssignees'].includes(name),
+);
+
+for (const level of ['easy', 'medium', 'hard']) {
+  for (const representation of ['objects', 'strings']) {
+    test(`claim accepts ${level} difficulty as ${representation} and ignores unrelated labels`, async () => {
+      const { github, calls } = fake();
+      const labels = ['area:infra', `difficulty:${level}`, 'enhancement'];
+      const context = ctx('/claim', { labels });
+      if (representation === 'strings') context.payload.issue.labels = labels;
+      await claim.handleComment({ github, context, now: NOW });
+      assert.deepEqual(find(calls, 'addAssignees')[1].assignees, ['alice']);
+      assert.deepEqual(find(calls, 'addLabels')[1].labels, ['in progress']);
+    });
+  }
+}
+
+for (const labels of [
+  [],
+  ['area:infra'],
+  ['difficulty:'],
+  ['difficulty:unknown'],
+  ['difficulty:easy', 'difficulty:hard'],
+  ['difficulty:medium', 'difficulty:unknown'],
+]) {
+  for (const lapsed of [false, true]) {
+    test(`invalid difficulty ${JSON.stringify(labels)} preserves metadata${lapsed ? ' and lapsed owner' : ''}`, async () => {
+      const { github, calls } = fake({ labelMissing: true, timeline: [labeled(ago(100 * H))] });
+      const context = ctx('/claim', {
+        labels: lapsed ? [...labels, 'in progress'] : labels,
+        assignees: lapsed ? ['bob'] : [],
+      });
+      await claim.handleComment({ github, context, now: NOW });
+      assert.deepEqual(metadataWrites(calls), []);
+      assert.equal(find(calls, 'react')[1].content, 'eyes');
+      assert.match(find(calls, 'comment')[1].body, /exactly one difficulty label/);
+      assert.match(find(calls, 'comment')[1].body, /docs\/issue-labels\.md/);
+      assert.match(find(calls, 'comment')[1].body, /retry `\/claim`/);
+    });
+  }
+}

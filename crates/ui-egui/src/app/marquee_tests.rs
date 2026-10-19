@@ -219,3 +219,68 @@ fn capacity_overflow_still_admits_valid_dynamic_rectangles() {
     assert_eq!(cache.len(), 4095);
     assert!(cache.retained_bytes() <= 512 * 1024);
 }
+
+#[test]
+fn raw_undo_and_marquee_release_uses_current_revision_geometry() {
+    let (mut h, _, _) = fixture("params");
+    h.state_mut().view = CanvasView { pan: Vec2::new(300.0, 180.0), zoom: 1.0 };
+    let canvas = h.state().canvas;
+    let id = NodeId::from_bytes([3; 16]);
+    h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas,"id":id,"pos":{"x":0.0,"y":100.0}})).unwrap();
+    h.step();
+    let from = h.state().view.to_screen(h.state().viewport.min, Pos2::new(-10.0, 250.0));
+    h.input_mut().events.extend([
+        egui::Event::ModifiersChanged(egui::Modifiers::SHIFT),
+        egui::Event::PointerMoved(from),
+        egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT },
+    ]);
+    h.step();
+    h.input_mut().events.push(egui::Event::PointerMoved(from - Vec2::new(20.0, 0.0)));
+    h.step();
+    assert!(h.state().marquee.is_some());
+    // Pan leaves the start in world space and the candidate offscreen, as during a held gesture.
+    h.state_mut().view.pan.x = -1300.0;
+    let to = Pos2::new(50.0, 460.0);
+    h.input_mut().events.push(egui::Event::PointerMoved(to));
+    h.step();
+    assert!(h.state().selection.contains(id), "lower position must intersect the actual held box");
+    assert!(!h.state().painted.contains_key(&id));
+    assert!(h.state().marquee_geometry.len() > 0);
+    h.input_mut().events.extend([
+        egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+        egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND },
+        egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::COMMAND },
+    ]);
+    h.step();
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().pos.y, 0.0);
+    assert!(h.state().selection.is_empty(), "Undo and release must not select using the cached lower rectangle");
+    assert!(h.state().marquee.is_none());
+}
+
+#[test]
+fn raw_redo_and_release_invalidates_cached_placeholder_before_painting() {
+    let (mut h, _, tall) = fixture("params");
+    let canvas = h.state().canvas;
+    let id = NodeId::from_bytes([3; 16]);
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas":canvas,"id":id,"name":"p0","value":Value::Bool(false)})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.step();
+    let v = h.state().view;
+    let o = h.state().viewport.min;
+    let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 15.0));
+    let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 45.0));
+    hold(&mut h, from, to);
+    assert!(h.state().marquee_geometry.placeholder(id));
+    assert!(!h.state().painted.contains_key(&id));
+    assert!(h.state().selection.is_empty());
+    let modifiers = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+    h.input_mut().events.extend([
+        egui::Event::ModifiersChanged(modifiers),
+        egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers },
+        egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers },
+    ]);
+    h.step();
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("p0"), Some(&Value::Bool(false)));
+    assert!(h.state().painted.contains_key(&id), "restored valid tall card must not reuse the old placeholder verdict");
+    assert!(h.state().selection.contains(id), "selection must use the restored painted geometry");
+}

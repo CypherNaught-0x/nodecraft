@@ -1,0 +1,322 @@
+//! Input order badges (#64), driven with real pointer events.
+use super::tests::wire_drag;
+use super::*;
+use egui_kittest::{Harness, kittest::Queryable};
+
+const HUB: NodeId = NodeId::from_bytes([9; 16]);
+
+fn edge(n: u8) -> EdgeId {
+    EdgeId::from_bytes([n; 16])
+}
+
+/// Three text sources stacked on the left, feeding a router's list input in order 1, 2, 3.
+fn harness() -> Harness<'static, NodeCraftApp> {
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Order").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
+    let mut hub = kinds.get(nodecraft_nodes::router::ID).unwrap().instantiate_instance(HUB, Default::default(), &Default::default()).unwrap();
+    hub.pos = nodecraft_graph::Position { x: 700.0, y: 250.0 };
+    Change::AddNode { canvas, node: hub }.apply(&mut document).unwrap();
+    for n in 1..=3u8 {
+        let id = NodeId::from_bytes([n; 16]);
+        let mut node = kinds.get("source.text").unwrap().instantiate_instance(id, Default::default(), &Default::default()).unwrap();
+        node.pos = nodecraft_graph::Position { x: 0.0, y: f32::from(n - 1) * 300.0 };
+        Change::AddNode { canvas, node }.apply(&mut document).unwrap();
+        let wire = nodecraft_graph::Edge {
+            id: edge(n),
+            from: Endpoint { node: id, port: "out".into() },
+            to: Endpoint { node: HUB, port: "in".into() },
+            order: u32::from(n) - 1,
+        };
+        Change::Connect { canvas, edge: wire }.apply(&mut document).unwrap();
+    }
+    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1000.0, 700.0))
+        .with_max_steps(120)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::from_session(session, canvas).unwrap());
+    h.state_mut().view = CanvasView { pan: Vec2::new(80.0, 60.0), zoom: 0.6 };
+    h.run();
+    h
+}
+
+fn order(h: &Harness<'static, NodeCraftApp>) -> Vec<EdgeId> {
+    let app = h.state();
+    let mut edges: Vec<_> = app.session.document().canvases().get(&app.canvas).unwrap().edges().values().cloned().collect();
+    edges.sort_by_key(|e| e.order);
+    edges.into_iter().map(|e| e.id).collect()
+}
+
+#[test]
+fn dragging_a_badge_onto_another_moves_it_there_in_one_undo_step() {
+    let mut h = harness();
+    for n in 1..=3 {
+        assert!(h.query_by_label(&format!("Input {n} of 3 into in of Router, drag to reorder")).is_some(), "badge {n}");
+    }
+    let third = h.get_by_label("Input 3 of 3 into in of Router, drag to reorder").rect().center();
+    let first = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    wire_drag(&mut h, third, first);
+    h.run();
+    assert_eq!(order(&h), [edge(3), edge(1), edge(2)]);
+    assert!(h.query_by_label("Input 1 of 3 into in of Router, drag to reorder").is_some(), "renumbered");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(order(&h), [edge(1), edge(2), edge(3)], "one undo restores the order");
+}
+
+#[test]
+fn dropping_a_badge_back_on_its_own_place_changes_nothing() {
+    let mut h = harness();
+    let second = h.get_by_label("Input 2 of 3 into in of Router, drag to reorder").rect().center();
+    wire_drag(&mut h, second, second + Vec2::new(2.0, 2.0));
+    assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    assert!(!h.state().session.can_undo());
+    assert!(h.state().notice.is_none());
+}
+
+#[test]
+fn a_single_noodle_or_a_far_zoom_shows_no_badges() {
+    let mut h = harness();
+    h.state_mut().view.zoom = 0.3;
+    h.run();
+    assert!(h.query_by_label("Input 1 of 3 into in of Router, drag to reorder").is_none(), "too small to read");
+    h.state_mut().view.zoom = 0.6;
+    let canvas = h.state().canvas;
+    for n in [2u8, 3] {
+        h.state_mut().session.dispatch("edge.disconnect", &json!({"canvas": canvas, "id": edge(n)})).unwrap();
+    }
+    h.run();
+    assert!(h.query_by_label("Input 1 of 1 into in of Router, drag to reorder").is_none(), "one noodle has no order to show");
+}
+
+#[test]
+fn a_release_off_screen_still_ends_the_drag_and_other_buttons_pan() {
+    let mut h = harness();
+    let first = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(first);
+    h.run();
+    h.drag_at(first);
+    h.run();
+    h.hover_at(first + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    // The view moves so far that the badge's own spot is off screen, then the button is released.
+    h.state_mut().view.pan += Vec2::new(-5000.0, 0.0);
+    h.run();
+    h.drop_at(first + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_none(), "the drag ends");
+    h.state_mut().view.pan += Vec2::new(5000.0, 0.0);
+    h.run();
+    assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    // Middle/right drags starting on a badge pan, as ones on a card do.
+    for button in [egui::PointerButton::Middle, egui::PointerButton::Secondary] {
+        let badge = h.get_by_label("Input 2 of 3 into in of Router, drag to reorder").rect().center();
+        let pan = h.state().view.pan;
+        h.hover_at(badge);
+        h.event(egui::Event::PointerButton { pos: badge, button, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run();
+        h.hover_at(badge + Vec2::new(40.0, 0.0));
+        h.run();
+        h.event(egui::Event::PointerButton { pos: badge + Vec2::new(40.0, 0.0), button, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        assert!((h.state().view.pan - pan - Vec2::new(40.0, 0.0)).length() < 1.0, "{:?}", h.state().view.pan - pan);
+        assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    }
+}
+
+/// Establish ownership through the badge's real pointer response, without publishing any edit.
+fn begin_third_badge_drag(h: &mut Harness<'static, NodeCraftApp>) -> Pos2 {
+    let third = h.get_by_label("Input 3 of 3 into in of Router, drag to reorder").rect().center();
+    let first = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(third);
+    h.run();
+    h.drag_at(third);
+    h.run();
+    h.hover_at(first);
+    h.run();
+    assert!(h.state().reordering.is_some(), "real badge owns the held primary drag");
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+    first
+}
+#[test]
+fn issue333_escape_then_release_cancels_reordering_and_preserves_selection() {
+    let mut h = harness();
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(HUB);
+    let before = h.state().session.document().clone();
+    let selection = h.state().selection.clone();
+    let first = begin_third_badge_drag(&mut h);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let cancelled = h.state().reordering.is_none();
+    // Always execute the release before assertions: the old code can still publish here.
+    h.drop_at(first);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "release after Escape must not reorder");
+    assert!(cancelled, "Escape releases retained reorder ownership");
+    assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo() && !h.state().session.can_redo());
+    assert!(h.state().reordering.is_none());
+}
+#[test]
+fn issue333_quick_add_waits_for_badge_drag_and_resumes_after_release() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let first = begin_third_badge_drag(&mut h);
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "quick-add must yield to the active badge drag");
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(first);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.key_press(egui::Key::T);
+    h.run();
+    let canvas = h.state().canvas;
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), before.canvases().get(&canvas).unwrap().nodes().len() + 1);
+    assert_eq!(h.state().session.revision(), 1, "quick-add resumes after ownership ends");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn retained_input_badge_drag_blocks_layout_until_release() {
+    let mut h = harness();
+    let badge = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(badge);
+    h.run();
+    h.drag_at(badge);
+    h.run();
+    h.hover_at(badge + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(NodeId::from_bytes([2; 16]));
+    let before = h.state().session.document().clone();
+    // A fresh context has no transient egui drag: the retained input badge owns the gesture.
+    let ctx = egui::Context::default();
+    for mode in ["grid", "layered"] {
+        assert!(h.state_mut().layout_enabled(&ctx, &json!({"mode":mode})).is_err());
+        assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":mode})).is_err());
+    }
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(badge);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).unwrap();
+}
+
+#[test]
+fn retained_input_order_drag_blocks_discussion_view_commands() {
+    let mut h = harness();
+    let badge = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(badge);
+    h.run();
+    h.drag_at(badge);
+    h.run();
+    h.hover_at(badge + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    let before = h.state().session.document().clone();
+    let ctx = egui::Context::default();
+    assert!(h.state_mut().comments_enabled(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+    assert!(h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(badge);
+    h.run();
+    h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).unwrap();
+    assert!(h.state().comments.open);
+}
+
+#[test]
+fn cancellation_precedence_keeps_lower_priority_owners_and_selection() {
+    let mut h = harness();
+    let first = begin_third_badge_drag(&mut h);
+    h.state_mut().selection.only(HUB);
+    let selected = h.state().selection.clone();
+    h.state_mut().wiring = Some(Wiring {
+        from: Endpoint { node: NodeId::from_bytes([1; 16]), port: "out".into() },
+        port_type: PortType { modality: nodecraft_types::Modality::Text, many: false },
+        moving: None,
+    });
+    // Simultaneous owners are a synthetic boundary control: inspect the helper before rendering
+    // can reconcile mutually exclusive gesture state. The second Escape below is real input.
+    h.state_mut().cancel_canvas_gesture();
+    assert!(h.state().wiring.is_none());
+    assert!(h.state().reordering.is_some(), "the noodle owns the first Escape");
+    assert_eq!(h.state().selection, selected);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.drop_at(first);
+    h.run();
+    assert_eq!(h.state().selection, selected);
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn discussion_pin_drag_owns_quick_add_and_escape_before_canvas_selection() {
+    let mut h = harness();
+    let id = nodecraft_types::CommentId::from_bytes([41; 16]);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Order note","pos":{"x":350,"y":100}})).unwrap();
+    h.state_mut().selection.only(HUB);
+    h.run();
+    let pin = h.get_by_role_and_label(egui::accesskit::Role::Button, &format!("Discussion pin {id}")).rect().center();
+    h.hover_at(pin);
+    h.run();
+    h.drag_at(pin);
+    h.run();
+    h.hover_at(pin + Vec2::new(40.0, 25.0));
+    h.run();
+    assert!(h.state().comments.drag.is_some());
+    let before = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let selection = h.state().selection.clone();
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(pin + Vec2::new(40.0, 25.0));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().comments.drag.is_none());
+}
+
+/// Local public-safe visual evidence, selected explicitly with an output directory.
+#[test]
+#[ignore = "manual local screenshot capture; requires INPUT_ORDER333_RENDER_ROOT"]
+fn render_input_order333_cancellation() {
+    let root = std::path::PathBuf::from(std::env::var("INPUT_ORDER333_RENDER_ROOT").unwrap());
+    let mut h = harness();
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(HUB);
+    h.run();
+    let before = h.state().session.document().clone();
+    let selection = h.state().selection.clone();
+    let camera = h.state().view;
+    h.render().unwrap().save(root.join("initial.png")).unwrap();
+    let first = begin_third_badge_drag(&mut h);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(first);
+    h.run();
+    assert_eq!(h.state().view, camera);
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().selection, selection);
+    assert!(!h.state().session.can_undo());
+    h.render().unwrap().save(root.join("released.png")).unwrap();
+}

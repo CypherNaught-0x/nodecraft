@@ -52,7 +52,6 @@ fn an_mcp_client_session() {
     }
     let intact = ask(10, "tools/call", json!({"name":"canvas_inspect","arguments":{"canvas":canvas}}));
     assert_eq!(intact["result"]["isError"], false);
-    drop(ask);
     drop(stdin);
     assert!(child.wait().unwrap().success(), "closing stdin ends the server cleanly");
 }
@@ -105,7 +104,6 @@ fn the_bridge_serves_a_running_app_over_stdio() {
     assert_eq!(overview["result"]["structuredContent"]["canvases"][0]["id"], "02020202-0202-0202-0202-020202020202");
     let shot = ask(3, "tools/call", json!({"name": "screenshot"}));
     assert_eq!(shot["result"]["content"][0]["type"], "image");
-    drop(ask);
     drop(stdin);
     assert!(child.wait().unwrap().success());
     std::fs::remove_dir_all(&dir).unwrap();

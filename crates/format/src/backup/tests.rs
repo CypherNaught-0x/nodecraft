@@ -1,0 +1,469 @@
+use super::*;
+
+/// Cheap parameters keep the tests fast; production uses RECOMMENDED.
+const FAST: KdfParams = KdfParams { memory_kib: 19 * 1024, iterations: 1, lanes: 1 };
+
+fn entry(path: &str, bytes: &[u8]) -> BackupEntry {
+    BackupEntry { path: path.into(), size: bytes.len() as u64, blake3: hex(blake3::hash(bytes).as_bytes()) }
+}
+
+fn files() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("projects/brief.ncraft", b"project bytes".to_vec()),
+        ("media/big.bin", (0..200_000u32).map(|n| (n % 251) as u8).collect()),
+        ("media/empty.bin", Vec::new()),
+        ("settings/app.json", br#"{"theme":"dark"}"#.to_vec()),
+    ]
+}
+
+fn manifest(files: &[(&str, Vec<u8>)]) -> BackupManifest {
+    BackupManifest { label: "Weekly".into(), created_ms: 7, entries: files.iter().map(|(p, b)| entry(p, b)).collect() }
+}
+
+fn protection(passphrase: &str) -> Protection<'_> {
+    Protection::Passphrase { passphrase, kdf: FAST, salt: [3; 16] }
+}
+
+fn write(protection: Protection<'_>, files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut writer = BackupWriter::create(Vec::new(), protection, &manifest(files)).unwrap();
+    for (_, bytes) in files {
+        writer.write_entry(&mut bytes.as_slice()).unwrap();
+    }
+    writer.finish().unwrap()
+}
+
+fn read(bytes: &[u8], passphrase: Option<&str>) -> Result<(BackupManifest, Vec<Vec<u8>>), Error> {
+    let mut input = bytes;
+    let (header, header_bytes) = BackupHeader::read(&mut input)?;
+    let mut reader = BackupReader::open(input, &header, header_bytes, passphrase)?;
+    let manifest = reader.manifest().clone();
+    let mut out = Vec::new();
+    loop {
+        let mut sink = Vec::new();
+        if reader.next_entry(&mut sink)?.is_none() {
+            break;
+        }
+        out.push(sink);
+    }
+    reader.finish()?;
+    Ok((manifest, out))
+}
+
+#[test]
+fn unencrypted_and_encrypted_backups_round_trip() {
+    let files = files();
+    for (bytes, passphrase) in [(write(Protection::Unencrypted, &files), None), (write(protection("correct horse"), &files), Some("correct horse"))] {
+        let (header, _) = BackupHeader::read(&mut bytes.as_slice()).unwrap();
+        assert_eq!(header.encryption.is_some(), passphrase.is_some());
+        let (m, contents) = read(&bytes, passphrase).unwrap();
+        assert_eq!(m, manifest(&files));
+        assert_eq!(contents, files.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn encrypted_backups_hide_the_manifest_and_contents() {
+    let files = files();
+    let sealed = write(protection("pw"), &files);
+    let haystack = String::from_utf8_lossy(&sealed);
+    for needle in ["brief.ncraft", "Weekly", "project bytes", "theme"] {
+        assert!(!haystack.contains(needle), "{needle} is visible in an encrypted backup");
+    }
+    let plain = write(Protection::Unencrypted, &files);
+    assert!(String::from_utf8_lossy(&plain).contains("brief.ncraft"), "an unencrypted backup is readable, as labelled");
+}
+
+#[test]
+fn chunk_boundaries_round_trip() {
+    for size in [0, 1, BACKUP_CHUNK_BYTES - 5, BACKUP_CHUNK_BYTES - 4, BACKUP_CHUNK_BYTES, BACKUP_CHUNK_BYTES + 1, 3 * BACKUP_CHUNK_BYTES] {
+        // The length and the manifest precede the entry; varying the entry hits every boundary.
+        let files = vec![("a.bin", vec![7u8; size])];
+        let sealed = write(protection("pw"), &files);
+        assert_eq!(read(&sealed, Some("pw")).unwrap().1, vec![vec![7u8; size]], "{size}");
+    }
+}
+
+#[test]
+fn a_wrong_or_missing_passphrase_is_refused() {
+    let sealed = write(protection("right"), &files());
+    assert_eq!(read(&sealed, Some("wrong")).unwrap_err().kind, ErrorKind::Authentication);
+    assert_eq!(read(&sealed, None).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(read(&sealed, Some("")).unwrap_err().kind, ErrorKind::InvalidInput);
+    let sealed = write(protection("PASS-ONE-zq"), &files());
+    let e = read(&sealed, Some("PASS-TWO-zq")).unwrap_err();
+    assert!(!e.message.contains("PASS"), "passphrases never appear in errors");
+}
+
+#[test]
+fn any_changed_byte_is_detected() {
+    let files = vec![("a.bin", (0..150_000u32).map(|n| n as u8).collect::<Vec<u8>>()), ("b.txt", b"hello".to_vec())];
+    for (bytes, passphrase) in [(write(Protection::Unencrypted, &files), None), (write(protection("pw"), &files), Some("pw"))] {
+        let mut positions: Vec<usize> = (0..bytes.len()).step_by(997).collect();
+        positions.extend([8, 10, 11, 20, 40, bytes.len() - 1, bytes.len() - 17, bytes.len() - 33]);
+        for at in positions {
+            let mut tampered = bytes.clone();
+            tampered[at] ^= 0x40;
+            assert!(read(&tampered, passphrase).is_err(), "a change at byte {at} of {} went unnoticed", bytes.len());
+        }
+    }
+}
+
+#[test]
+fn truncation_and_trailing_data_are_detected() {
+    let files = vec![("a.bin", vec![1u8; 3 * BACKUP_CHUNK_BYTES])];
+    for (bytes, passphrase) in [(write(Protection::Unencrypted, &files), None), (write(protection("pw"), &files), Some("pw"))] {
+        for keep in [0, 5, 11, 60, bytes.len() / 2, bytes.len() - BACKUP_CHUNK_BYTES - 16, bytes.len() - 1] {
+            assert!(read(bytes.get(..keep).unwrap(), passphrase).is_err(), "truncated to {keep}");
+        }
+        let mut longer = bytes.clone();
+        longer.extend_from_slice(b"extra");
+        assert!(read(&longer, passphrase).is_err());
+    }
+    // Dropping a whole middle chunk breaks the counter.
+    let sealed = write(protection("pw"), &files);
+    let chunk = BACKUP_CHUNK_BYTES + 16;
+    let header = BackupHeader::read(&mut sealed.as_slice()).unwrap().1.len();
+    let mut spliced = sealed.get(..header + chunk).unwrap().to_vec();
+    spliced.extend_from_slice(sealed.get(header + 2 * chunk..).unwrap());
+    assert_eq!(read(&spliced, Some("pw")).unwrap_err().kind, ErrorKind::Authentication);
+}
+
+#[test]
+fn entries_that_changed_since_listing_are_refused() {
+    let files = files();
+    let m = manifest(&files);
+    for source in [&b"project bytez"[..], b"project", b"project bytes and more"] {
+        let mut writer = BackupWriter::create(Vec::new(), Protection::Unencrypted, &m).unwrap();
+        assert_eq!(writer.write_entry(&mut &source[..]).unwrap_err().kind, ErrorKind::Conflict);
+    }
+    let mut writer = BackupWriter::create(Vec::new(), Protection::Unencrypted, &m).unwrap();
+    writer.write_entry(&mut files[0].1.as_slice()).unwrap();
+    assert!(writer.finish().is_err(), "missing entries");
+}
+
+#[test]
+fn unsafe_or_malformed_manifests_are_refused() {
+    let ok = entry("a/b.txt", b"x");
+    let long = "x".repeat(256);
+    let deep = vec!["d"; 17].join("/");
+    for path in ["", "/abs", "a//b", "../up", "a/../b", "./a", "a/.", "C:\\x", "a\\b", "trailing.", " lead", "sp ace ", "nul\u{0}", "é.txt", &long, &deep] {
+        let m = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![BackupEntry { path: path.into(), ..ok.clone() }] };
+        assert!(m.check().is_err(), "{path:?}");
+    }
+    let dup = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![ok.clone(), BackupEntry { path: "A/B.TXT".into(), ..ok.clone() }] };
+    assert!(dup.check().is_err(), "case-insensitive duplicates");
+    let nested = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![entry("a", b"x"), ok.clone()] };
+    assert!(nested.check().is_err(), "a file can't also be a folder");
+    let big = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![BackupEntry { size: MAX_BACKUP_ENTRY_BYTES + 1, ..ok.clone() }] };
+    assert!(big.check().is_err());
+    let hash = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![BackupEntry { blake3: "AB".repeat(32), ..ok.clone() }] };
+    assert!(hash.check().is_err());
+    let fine = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![ok, entry("a/c d-e_f.v2.json", b"y")] };
+    assert!(fine.check().is_ok());
+}
+
+#[test]
+fn hostile_headers_are_refused_before_any_key_derivation() {
+    assert_eq!(read(b"", None).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(read(b"NOTABACKUPATALL", None).unwrap_err().kind, ErrorKind::InvalidInput);
+    let mut newer = write(Protection::Unencrypted, &files());
+    newer[8] = 2;
+    assert_eq!(read(&newer, None).unwrap_err().kind, ErrorKind::Unsupported);
+    let sealed = write(protection("pw"), &files());
+    let with_memory = |kib: u32| {
+        let mut b = sealed.clone();
+        b.get_mut(12..16).unwrap().copy_from_slice(&kib.to_le_bytes());
+        b
+    };
+    // Refused while reading the header: no gigabytes are ever allocated.
+    for kib in [0, 1024, 4 * 1024 * 1024, u32::MAX] {
+        assert_eq!(read(&with_memory(kib), Some("pw")).unwrap_err().kind, ErrorKind::InvalidInput, "{kib}");
+    }
+    let mut unknown_kdf = sealed.clone();
+    unknown_kdf[11] = 9;
+    assert_eq!(read(&unknown_kdf, Some("pw")).unwrap_err().kind, ErrorKind::Unsupported);
+    let mut unknown_flag = sealed;
+    unknown_flag[10] = 7;
+    assert_eq!(read(&unknown_flag, Some("pw")).unwrap_err().kind, ErrorKind::Unsupported);
+    let weak = Protection::Passphrase { passphrase: "pw", kdf: KdfParams { memory_kib: 8, iterations: 1, lanes: 1 }, salt: [0; 16] };
+    assert!(BackupWriter::create(Vec::new(), weak, &manifest(&files())).is_err(), "weak parameters can't be written either");
+    assert!(KdfParams::RECOMMENDED.check().is_ok());
+}
+
+#[test]
+fn a_manifest_length_beyond_the_limit_is_refused_without_allocating_it() {
+    let mut plain = BACKUP_MAGIC.to_vec();
+    plain.extend_from_slice(&BACKUP_VERSION.to_le_bytes());
+    plain.push(0);
+    plain.extend_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(read(&plain, None).unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn a_failed_entry_poisons_the_writer() {
+    let files = files();
+    for protect in [Protection::Unencrypted, protection("pw")] {
+        let mut writer = BackupWriter::create(Vec::new(), protect, &manifest(&files)).unwrap();
+        assert!(writer.write_entry(&mut &b"short"[..]).is_err());
+        for (_, bytes) in files.iter().skip(1) {
+            assert!(writer.write_entry(&mut bytes.as_slice()).is_err(), "no more writes after a failure");
+        }
+        assert!(writer.finish().is_err(), "an incomplete backup can't be finished");
+    }
+}
+
+#[test]
+fn windows_device_names_are_refused() {
+    let ok = entry("a.txt", b"x");
+    for path in ["CON", "nul", "aux.txt", "com1", "LPT9.log", "prn/x", "a/Com3.json", "nul .txt"] {
+        let m = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![BackupEntry { path: path.into(), ..ok.clone() }] };
+        assert!(m.check().is_err(), "{path}");
+    }
+    for path in ["console.txt", "com.txt", "lpt10", "auxiliary", "nullable/x"] {
+        let m = BackupManifest { label: "x".into(), created_ms: 0, entries: vec![BackupEntry { path: path.into(), ..ok.clone() }] };
+        assert!(m.check().is_ok(), "{path}");
+    }
+}
+
+#[test]
+fn a_passphrase_for_an_unencrypted_backup_is_refused() {
+    let plain = write(Protection::Unencrypted, &files());
+    assert_eq!(read(&plain, Some("pw")).unwrap_err().kind, ErrorKind::Authentication);
+    assert!(read(&plain, None).is_ok());
+}
+
+#[test]
+fn the_read_ceiling_bounds_key_derivation_cost() {
+    assert!(KdfParams { memory_kib: 256 * 1024, iterations: 6, lanes: 8 }.check().is_ok());
+    assert!(KdfParams { memory_kib: 256 * 1024 + 1, iterations: 1, lanes: 1 }.check().is_err());
+    assert!(KdfParams { memory_kib: 64 * 1024, iterations: 7, lanes: 1 }.check().is_err());
+}
+
+/// Claims more bytes than it was given room for, and is interrupted now and then.
+struct Liar<'a> {
+    data: &'a [u8],
+    calls: usize,
+}
+impl Read for Liar<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.calls += 1;
+        if self.calls.is_multiple_of(3) {
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        let n = self.data.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.data[..n]);
+        self.data = &self.data[n..];
+        Ok(if n == 0 { 0 } else { n + 10 })
+    }
+}
+
+#[test]
+fn misbehaving_readers_cannot_cause_a_panic() {
+    let files = vec![("a.bin", vec![5u8; 3 * BACKUP_CHUNK_BYTES + 7])];
+    let mut writer = BackupWriter::create(Vec::new(), Protection::Unencrypted, &manifest(&files)).unwrap();
+    // Over-reported counts are clamped to the room given and interruptions are retried, so the
+    // copy is still exact.
+    writer.write_entry(&mut Liar { data: &files[0].1, calls: 0 }).unwrap();
+    assert_eq!(read(&writer.finish().unwrap(), None).unwrap().1, vec![files[0].1.clone()]);
+    let plain = write(Protection::Unencrypted, &files);
+    let mut input = Liar { data: &plain, calls: 0 };
+    let (header, bytes) = BackupHeader::read(&mut input).unwrap();
+    let mut reader = BackupReader::open(input, &header, bytes, None).unwrap();
+    let mut out = Vec::new();
+    reader.next_entry(&mut out).unwrap();
+    assert_eq!(out, files[0].1);
+    reader.finish().unwrap();
+}
+
+// Faults recover after one refusal, so these controls prove the BackupReader's latch rather
+// than relying on a source or destination that would refuse every later operation anyway.
+struct CountedInput {
+    input: std::io::Cursor<Vec<u8>>,
+    calls: std::rc::Rc<std::cell::Cell<usize>>,
+    fail_at: Option<u64>,
+}
+
+impl Read for CountedInput {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        self.calls.set(self.calls.get() + 1);
+        if self.fail_at.is_some_and(|at| self.input.position() >= at) {
+            self.fail_at = None;
+            return Err(std::io::Error::other("one source failure"));
+        }
+        let limit = self.fail_at.map_or(out.len(), |at| usize::try_from(at - self.input.position()).unwrap().min(out.len()));
+        self.input.read(&mut out[..limit])
+    }
+}
+
+#[derive(Default)]
+struct CountedSink {
+    bytes: Vec<u8>,
+    calls: usize,
+    fail_at: Option<usize>,
+    zero_once: bool,
+}
+
+impl Write for CountedSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.calls += 1;
+        if self.fail_at.is_some_and(|at| self.bytes.len() >= at) {
+            self.fail_at = None;
+            if std::mem::take(&mut self.zero_once) {
+                return Ok(0);
+            }
+            return Err(std::io::Error::other("one destination failure"));
+        }
+        let n = self.fail_at.map_or(bytes.len(), |at| (at - self.bytes.len()).min(bytes.len()));
+        self.bytes.extend_from_slice(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn counted_reader(bytes: Vec<u8>, passphrase: Option<&str>, fail_at: Option<u64>) -> (BackupReader<CountedInput>, std::rc::Rc<std::cell::Cell<usize>>) {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut input = CountedInput { input: std::io::Cursor::new(bytes), calls: calls.clone(), fail_at };
+    let (header, encoded) = BackupHeader::read(&mut input).unwrap();
+    (BackupReader::open(input, &header, encoded, passphrase).unwrap(), calls)
+}
+
+fn assert_reader_stays_failed(mut reader: BackupReader<CountedInput>, mut sink: CountedSink, calls: std::rc::Rc<std::cell::Cell<usize>>, first: Error) {
+    let source_calls = calls.get();
+    let sink_calls = sink.calls;
+    let partial = sink.bytes.clone();
+    for _ in 0..2 {
+        assert_eq!(reader.next_entry(&mut sink).unwrap_err(), first);
+        assert_eq!(calls.get(), source_calls, "no source work after the first error");
+        assert_eq!(sink.calls, sink_calls, "no destination work after the first error");
+        assert_eq!(sink.bytes, partial, "partial output is retained for the host to discard, never resumed");
+    }
+    assert_eq!(reader.finish().unwrap_err(), first, "preserve the actionable first error, not missing-entry noise");
+    assert_eq!(calls.get(), source_calls, "finish must not resume the failed source");
+}
+
+#[test]
+fn entry_hash_failure_cannot_be_retried_into_a_complete_backup() {
+    let mut bytes = write(Protection::Unencrypted, &[("x.txt", b"x".to_vec())]);
+    let trailer_at = bytes.len() - 32;
+    bytes.truncate(trailer_at);
+    bytes.insert(trailer_at - 1, b'y');
+    let trailer = blake3::hash(&bytes);
+    bytes.extend_from_slice(trailer.as_bytes());
+    let (mut reader, calls) = counted_reader(bytes, None, None);
+    let mut sink = CountedSink::default();
+    let first = reader.next_entry(&mut sink).unwrap_err();
+    assert_eq!(first.kind, ErrorKind::Authentication);
+    assert_eq!(sink.bytes, b"y");
+    assert_reader_stays_failed(reader, sink, calls, first);
+}
+
+#[test]
+fn source_errors_and_truncation_latch_before_or_after_partial_input() {
+    let bytes = write(Protection::Unencrypted, &[("a.bin", vec![7; 8])]);
+    let body_at = bytes.len() - 32 - 8;
+    for progress in [0, 3] {
+        let (mut reader, calls) = counted_reader(bytes.clone(), None, Some((body_at + progress) as u64));
+        let mut sink = CountedSink::default();
+        let first = reader.next_entry(&mut sink).unwrap_err();
+        assert_eq!(first.kind, ErrorKind::Internal);
+        assert!(sink.bytes.is_empty(), "partial source fill is not handed to the sink");
+        assert_reader_stays_failed(reader, sink, calls, first);
+        let (mut reader, calls) = counted_reader(bytes[..body_at + progress].to_vec(), None, None);
+        let mut sink = CountedSink::default();
+        let first = reader.next_entry(&mut sink).unwrap_err();
+        assert_eq!(first.kind, ErrorKind::InvalidInput);
+        assert_reader_stays_failed(reader, sink, calls, first);
+    }
+}
+
+#[test]
+fn destination_errors_latch_with_plain_or_buffered_decrypted_input() {
+    for encrypted in [false, true] {
+        let protect = if encrypted { protection("pw") } else { Protection::Unencrypted };
+        let bytes = write(protect, &[("a.bin", vec![7; 8])]);
+        for (progress, zero_once) in [(0, false), (3, false), (3, true)] {
+            let (mut reader, calls) = counted_reader(bytes.clone(), encrypted.then_some("pw"), None);
+            let mut sink = CountedSink { fail_at: Some(progress), zero_once, ..Default::default() };
+            let first = reader.next_entry(&mut sink).unwrap_err();
+            assert_eq!(first.kind, ErrorKind::Internal);
+            assert_eq!(sink.bytes, vec![7; progress]);
+            assert_reader_stays_failed(reader, sink, calls, first);
+        }
+    }
+}
+
+#[test]
+fn later_chunk_authentication_failure_stays_failed_after_partial_output() {
+    let mut bytes = write(protection("pw"), &[("a.bin", vec![7; 2 * BACKUP_CHUNK_BYTES])]);
+    *bytes.last_mut().unwrap() ^= 1;
+    let (mut reader, calls) = counted_reader(bytes, Some("pw"), None);
+    let mut sink = CountedSink::default();
+    let first = reader.next_entry(&mut sink).unwrap_err();
+    assert_eq!(first.kind, ErrorKind::Authentication);
+    assert!(!sink.bytes.is_empty());
+    assert!(sink.bytes.len() < 2 * BACKUP_CHUNK_BYTES);
+    assert_reader_stays_failed(reader, sink, calls, first);
+}
+
+#[test]
+fn repeated_end_of_entries_is_successful_without_source_or_sink_work() {
+    for encrypted in [false, true] {
+        let protect = if encrypted { protection("pw") } else { Protection::Unencrypted };
+        let bytes = write(protect, &[("a.bin", vec![7]), ("empty.bin", Vec::new())]);
+        let (mut reader, calls) = counted_reader(bytes, encrypted.then_some("pw"), None);
+        let mut sink = CountedSink::default();
+        assert!(reader.next_entry(&mut sink).unwrap().is_some());
+        assert!(reader.next_entry(&mut sink).unwrap().is_some());
+        assert_eq!(sink.bytes, vec![7]);
+        let source_calls = calls.get();
+        let sink_calls = sink.calls;
+        for _ in 0..2 {
+            assert!(reader.next_entry(&mut sink).unwrap().is_none());
+            assert_eq!(calls.get(), source_calls);
+            assert_eq!(sink.calls, sink_calls);
+        }
+        reader.finish().unwrap();
+    }
+}
+
+#[test]
+fn the_nonce_prefix_is_derived_from_the_salt_not_stored() {
+    // The header ends with the salt: magic, version, flags, kdf id, three words, 16 salt bytes.
+    let sealed = write(protection("pw"), &files());
+    let (header, header_bytes) = BackupHeader::read(&mut sealed.as_slice()).unwrap();
+    assert_eq!(header_bytes.len(), 8 + 2 + 1 + 1 + 12 + 16);
+    assert_eq!(header_bytes.get(header_bytes.len() - 16..), Some([3u8; 16].as_slice()));
+    // Key and prefix come from one derivation: the same salt repeats both, a fresh salt changes
+    // both.
+    let (_, prefix) = FAST.key("pw", &[3; 16]).unwrap();
+    let (_, again) = FAST.key("pw", &[3; 16]).unwrap();
+    let (_, fresh) = FAST.key("pw", &[4; 16]).unwrap();
+    assert_eq!(prefix, again);
+    assert_ne!(prefix, fresh);
+    assert_eq!(header.encryption.map(|e| e.salt), Some([3; 16]));
+    // Two backups of the same contents under fresh salts share no ciphertext.
+    let other = write(Protection::Passphrase { passphrase: "pw", kdf: FAST, salt: [4; 16] }, &files());
+    let body = |b: &[u8]| b.get(header_bytes.len()..header_bytes.len() + 64).unwrap().to_vec();
+    assert_ne!(body(&sealed), body(&other));
+}
+
+#[test]
+fn the_key_and_prefix_split_matches_a_recomputed_derivation() {
+    // Not a fixed vector: Argon2id is recomputed here with a raw 51-byte output, and the prefix
+    // must be bytes 32..51 and the key bytes ..32, so a swapped or resized split can't pass the
+    // round trips unnoticed.
+    let params = argon2::Params::new(FAST.memory_kib, FAST.iterations, FAST.lanes, Some(51)).unwrap();
+    let mut raw = [0u8; 51];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into(b"pw", &[3; 16], &mut raw).unwrap();
+    let (_, prefix) = FAST.key("pw", &[3; 16]).unwrap();
+    assert_eq!(prefix.as_slice(), &raw[32..]);
+    let key = XChaCha20Poly1305::new_from_slice(&raw[..32]).unwrap();
+    let sealed = write(protection("pw"), &files());
+    let header = 8 + 2 + 1 + 1 + 12 + 16;
+    let mut first = sealed[header..header + BACKUP_CHUNK_BYTES].to_vec();
+    let tag = chacha20poly1305::Tag::try_from(&sealed[header + BACKUP_CHUNK_BYTES..header + BACKUP_CHUNK_BYTES + 16]).unwrap();
+    key.decrypt_inout_detached(&nonce(&prefix, 0, false), &sealed[..header], first.as_mut_slice().into(), &tag).unwrap();
+}

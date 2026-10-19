@@ -46,12 +46,22 @@ fn catalog() -> Catalog {
 }
 
 #[test]
-fn the_builtin_catalog_is_valid_and_free() {
+fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
     let catalog = Catalog::builtin().unwrap();
     assert!(catalog.len() >= 2);
     for model in catalog.models() {
-        assert_eq!(model.pricing, Pricing::Free, "{}", model.id);
-        assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
+        if model.provider == "comfyui" {
+            assert_eq!(model.pricing, Pricing::Free, "{}", model.id);
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
+        } else if model.id == "fal.trellis2" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.provider == "seedream" {
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
+        } else {
+            assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        }
     }
 }
 
@@ -88,12 +98,35 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     let image = Wiring::new(Modality::Image).with(Modality::Text, 1);
     let candidates = catalog.candidates(&image);
     let order: Vec<(&str, bool)> = candidates.iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
-    assert_eq!(order, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", true), ("test.video", false)]);
+    assert_eq!(
+        order,
+        vec![
+            ("comfyui.flux-dev", true),
+            ("comfyui.sdxl", true),
+            ("fal.flux-schnell", true),
+            ("gemini-images.pro", true),
+            ("gemini-images.nano-banana-2.1", true),
+            ("gemini-images.flash-lite", true),
+            ("openai-images.flare", true),
+            ("openai-images.sunburst", true),
+            ("replicate.sdxl", true),
+            ("seedream.4_5", true),
+            ("fal.esrgan", false),
+            ("fal.kokoro", false),
+            ("fal.trellis2", false),
+            ("fal.wan22", false),
+            ("replicate.hello", false),
+            ("test.video", false)
+        ]
+    );
     // Wiring an image narrows it to image-to-image models.
     let edit = Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 1);
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
     assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);
+    let seedream = catalog.get("seedream.4_5").unwrap();
+    assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 14).fit(seedream).is_ok());
+    assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 15).fit(seedream).is_err());
 }
 
 #[test]
@@ -348,4 +381,63 @@ fn quotes_and_swaps_refuse_bad_programmatic_input() {
     long.insert("é".repeat(100), Value::Bool(true));
     let migration = migrate(&long, flux).unwrap();
     assert!(migration.removed.first().is_some_and(|name| name.len() <= 128 && name.chars().all(|c| c == 'é')));
+}
+
+#[test]
+fn measured_usage_pricing_is_never_free_and_keeps_schema_admission() {
+    let pricing: Pricing = toml::from_str("type = \"by_usage\"\ncurrency = \"USD\"").unwrap();
+    assert_eq!(pricing.currency(), Some(Currency::USD));
+    for n in [1, 10] {
+        let mut params = ParamValues::new();
+        params.insert("n".into(), Value::Unsigned(Unsigned(n)));
+        for model in Catalog::builtin().unwrap().models().filter(|m| m.provider == "openai-images") {
+            assert_eq!(model.quote(&params).unwrap(), None);
+            assert_eq!(model.mode("edit").unwrap().inputs.iter().find(|r| r.role == "image").unwrap().max, 16);
+            assert!(model.mode("inpaint").unwrap().inputs.iter().any(|r| r.role == "mask"));
+            let mut bad = model.clone();
+            bad.params.params[0].name.clear();
+            assert!(bad.quote(&params).is_err(), "ByUsage must not bypass descriptor validation");
+        }
+    }
+    for bad in ["type = \"by_usage\"", "type = \"by_usage\"\ncurrency = \"usd\"", "type = \"by_usage\"\ncurrency = \"USD\"\nreason = \"free\""] {
+        assert!(toml::from_str::<Pricing>(bad).is_err());
+    }
+}
+
+#[test]
+fn gemini_models_have_exact_wire_options_and_unknown_cost() {
+    let c = Catalog::builtin().unwrap();
+    let models: Vec<_> = c.models().filter(|m| m.provider == "gemini-images").collect();
+    assert_eq!(models.len(), 3);
+    for m in models {
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), None);
+        assert_eq!(m.mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 14);
+        assert_eq!(m.params.params.len(), 2);
+        let mut p = ParamValues::new();
+        p.insert("image_size".into(), Value::Text("1024px".into()));
+        assert!(m.quote(&p).is_err());
+        if m.provider_model == "gemini-3.1-flash-lite-image" {
+            p.insert("image_size".into(), Value::Text("2K".into()));
+            assert!(m.quote(&p).is_err());
+        }
+    }
+}
+
+#[test]
+fn fal_catalog_covers_all_five_modalities_without_false_free_quotes() {
+    let c = Catalog::builtin().unwrap();
+    for (id, output, input) in [
+        ("fal.flux-schnell", Modality::Image, Modality::Text),
+        ("fal.wan22", Modality::Video, Modality::Text),
+        ("fal.kokoro", Modality::Audio, Modality::Text),
+        ("fal.trellis2", Modality::Mesh, Modality::Image),
+        ("fal.esrgan", Modality::Image, Modality::Image),
+    ] {
+        let m = c.get(id).unwrap();
+        assert_eq!(m.provider, "fal");
+        assert!(Wiring::new(output).with(input, 1).fit(m).is_ok());
+        let excess = if id == "fal.wan22" { 3 } else { 2 };
+        assert!(Wiring::new(output).with(input, excess).fit(m).is_err());
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), if id == "fal.trellis2" { Some(Money::new(Currency::USD, 250_000)) } else { None });
+    }
 }

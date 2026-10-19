@@ -1,0 +1,87 @@
+# Gemini Interactions REST contract checked 2026-10-18: https://ai.google.dev/api/interactions-api
+# Local conservative aspect subset; Lite wire 1K follows REST enum over 1024px model prose.
+# Unknown composite cost, not free. Latency is an approximate catalog hint, not the request timeout or a benchmark.
+
+[[model]]
+id = "gemini-images.nano-banana-2.1"
+provider = "gemini-images"
+provider_model = "gemini-nano-banana-2.1"
+label = "Gemini Nano Banana 2.1"
+description = "Generate images with Gemini Nano Banana 2.1. Cost depends on usage."
+latency_s = 120
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "image_size"
+label = "Image size"
+control = { type = "choice", options = [{ value = "1K", label = "1K" }, { value = "2K", label = "2K" }, { value = "4K", label = "4K" }] }
+default = { type = "text", value = "1K" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "2:3", label = "2:3" }, { value = "3:2", label = "3:2" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "gemini-images.flash-lite"
+provider = "gemini-images"
+provider_model = "gemini-3.1-flash-lite-image"
+label = "Gemini Flash Lite Image"
+description = "Generate images with Gemini Flash Lite Image. Cost depends on usage."
+latency_s = 120
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "image_size"
+label = "Image size"
+control = { type = "choice", options = [{ value = "1K", label = "1K" }] }
+default = { type = "text", value = "1K" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "2:3", label = "2:3" }, { value = "3:2", label = "3:2" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "gemini-images.pro"
+provider = "gemini-images"
+provider_model = "gemini-3-pro-image"
+label = "Gemini Pro Image"
+description = "Generate images with Gemini Pro Image. Cost depends on usage."
+latency_s = 120
+quality = 5
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "image_size"
+label = "Image size"
+control = { type = "choice", options = [{ value = "1K", label = "1K" }, { value = "2K", label = "2K" }, { value = "4K", label = "4K" }] }
+default = { type = "text", value = "1K" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "2:3", label = "2:3" }, { value = "3:2", label = "3:2" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
