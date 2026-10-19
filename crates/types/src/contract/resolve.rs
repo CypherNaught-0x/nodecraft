@@ -91,7 +91,18 @@ impl Resolution {
     /// always refuses; a missing value or failed check refuses only when `ready`, so a node can
     /// be edited through a state that a run would refuse. A run that would draw a random seed
     /// is unsupported until the drawn seed can be recorded with its generation.
-    pub fn into_resolved(mut self, ready: bool) -> Result<ResolvedParams, Error> {
+    pub fn into_resolved(self, ready: bool) -> Result<ResolvedParams, Error> {
+        self.into_resolved_where(ready, |_| true)
+    }
+
+    /// [`Resolution::into_resolved`] for a kind that submits through [`Resolution::submission`]
+    /// itself and uses the visible set only as its result's identity (generation): parameters
+    /// declared `identity: false` are left out of it, so editing them keeps results fresh.
+    pub fn into_identity(self, ready: bool) -> Result<ResolvedParams, Error> {
+        self.into_resolved_where(ready, |state| state.affects.identity)
+    }
+
+    fn into_resolved_where(mut self, ready: bool, keep: impl Fn(&ParamState) -> bool) -> Result<ResolvedParams, Error> {
         if !ready {
             self.issues.retain(|issue| !matches!(issue.code, IssueCode::Required | IssueCode::Check));
         }
@@ -101,7 +112,7 @@ impl Resolution {
         if ready && let Some(seed) = self.params.iter().find(|state| state.enabled && state.value == Effective::RandomSeed) {
             return Err(Error::new(ErrorKind::Unsupported, format!("{} draws a random seed per run, which can't be recorded yet; set a seed", seed.name)));
         }
-        let visible = self.params.iter().filter(|state| state.enabled).map(|state| state.name.clone()).collect();
+        let visible = self.params.iter().filter(|state| state.enabled && keep(state)).map(|state| state.name.clone()).collect();
         let values = self
             .params
             .into_iter()

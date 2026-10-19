@@ -113,11 +113,15 @@ default resolves the node's instance contract and keeps the result as `into_reso
 - **What is sent** is exactly `submission()`: a hidden or disabled value stays on the node for the
   editor, but no job receives it.
 - **What a result's identity hashes** is the same set, so editing a disabled value never makes a
-  result stale. Parameters that declare `identity: false` are still hashed for now, which can
-  only make a result stale too often, never too rarely.
+  result stale. For derived contracts, parameters that declare `identity: false` are still hashed
+  for now, which can only make a result stale too often, never too rarely; `generation.image`
+  uses `into_identity`, which leaves them out (it submits through `submission()` itself).
 - **What blocks.** An invalid or unknown value is refused even while editing. A missing required
-  value or a failed check blocks only a run (`ready`), so a person can edit through a state a run
-  would refuse. Each blocked node names the first issue.
+  value or a failed check blocks only a run (`ready`), so paste and migration accept a state a
+  run would refuse. The edit commands (`node.param_set`, bulk edits, model swaps) still refuse
+  any issue. Each blocked node names the first issue.
+- **Disabled values** take no part in checks, but a stored value is always type- and
+  bounds-checked, enabled or not.
 - **Random seeds.** A run whose effective seed is `random_seed` is refused as unsupported until the
   drawn seed can be recorded with its generation; a fixed seed runs.
 

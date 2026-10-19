@@ -420,3 +420,17 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn identity_leaves_out_parameters_that_do_not_affect_it() {
+    let mut contract = video();
+    for rule in contract.rules.iter_mut().filter(|rule| rule.param == "duration") {
+        rule.affects.identity = false;
+    }
+    let pinned = values(&[("seed", Value::Unsigned(Unsigned(3)))]);
+    let identity = contract.resolve(&pinned, true).unwrap().into_identity(true).unwrap();
+    assert!(!identity.visible.contains("duration"), "editing it keeps results fresh");
+    assert!(identity.visible.contains("seed"));
+    let submitted = contract.resolve(&pinned, true).unwrap().into_resolved(true).unwrap();
+    assert!(submitted.visible.contains("duration"), "it is still sent");
+}

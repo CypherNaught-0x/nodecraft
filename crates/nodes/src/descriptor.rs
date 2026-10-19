@@ -217,7 +217,7 @@ pub trait NodeKind: Send + Sync {
         }
         // The contract (#162) decides what is submitted: hidden or disabled values never are.
         // This is instance_contract on the descriptor already resolved; a kind overriding
-        // instance_contract overrides this too (generation does).
+        // instance_contract must override this too (generation does).
         let contract = self.contract(&descriptor);
         contract.validate(&descriptor)?;
         contract.resolve(&node.params, ready)?.into_resolved(ready)
