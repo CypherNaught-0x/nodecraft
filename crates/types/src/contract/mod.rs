@@ -3,6 +3,9 @@
 //! literal defaults) with the rules a schema alone cannot state. The specification is
 //! `docs/descriptor-contract.md`.
 
+mod admission;
+#[cfg(test)]
+mod admission469_tests;
 mod condition;
 mod merge;
 mod resolve;
