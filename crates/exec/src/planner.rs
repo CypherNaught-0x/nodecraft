@@ -463,7 +463,7 @@ impl<'a> Graph<'a> {
                 .into_iter()
                 .find_map(|job| match job {
                     JobSpec::Source { output, value, .. } if output == port => Some((value, list)),
-                    JobSpec::Source { .. } | JobSpec::Generate { .. } => None,
+                    JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
                 })
                 .ok_or(Reason::NoResult);
         }

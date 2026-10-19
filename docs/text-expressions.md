@@ -75,17 +75,22 @@ parameters, and names bound with `let`; `it` and `index` exist only inside `map`
 | nesting (parentheses, calls, `let`/`if`) | 32 |
 | syntax-tree depth (including operator chains like `a + b + c`) | 96 |
 | fuel per run | 10,000,000 by default, at most 50,000,000; one budget across all outputs |
-| any value produced | 4 MiB (text bytes; 8 per number or flag; lists 16 per item plus their items) |
-| list items | 16,384 |
-| all inputs together | 4 MiB; input lists nest at most 32 deep |
-| values held at once (names in scope, left operands, evaluated arguments, partial lists) | 16 MiB together |
+| each input, parameter and value produced | 4 MiB (text bytes; 8 per number or flag; lists 16 per item plus their items) |
+| list items | 16,384 in every nested input or result list |
+| value list depth | 32; root depth is 0, and any child value deeper than 32 is refused |
+| effective inputs and parameters together | 4 MiB; lists nest at most 32 deep |
+| evaluator tracked charges (base/local names, retained operands/arguments, partial lists) | 4 × value-byte limit (16 MiB by default) |
+| retained compiled outputs together | separately 4 × value-byte limit (16 MiB by default) |
 
-Every evaluation step costs at least one fuel unit; text and list work also costs one unit per
-16 bytes touched. Results that would exceed a size budget are refused before they are built
+Input/result inspection costs one fuel unit per visited value; name lookup costs one per inspected binding. Each AST result also pays one unit plus one per 16 charged bytes. Every evaluation step costs at least one fuel unit; text and list operations also charge work in proportion to their logical byte/item sizes. Results that would exceed a size budget are refused before they are built
 where the size is known in advance (`replace`, `repeat`, `join`, `range`, padding); repeating
 something empty is instant. Counts are judged in 64 bits, so native and wasm builds agree.
 Cancellation is checked every 4,096 fuel units. The limits keep the deepest allowed expression
 within a 1 MiB stack even in debug builds (a test checks this).
+
+Input admission checks every nested list and value before cloning it, including unused names and effective default/override parameters. Definitions reuse this immutable admission across outputs. A failed output returns an error rather than partial results; output values retain declaration order. Lowered limits scale both four-times allowances without changing schema 1.
+
+These are logical charges, not a process-memory ceiling. A candidate result may coexist with already retained outputs before aggregate refusal. Tracked evaluator charges exclude up to three admitted arguments during nonrecursive function application, one padding scratch and one candidate/result. A conservative phase inventory of covered value/text payloads is at most `13 × value_bytes + input_bytes`, including converted overrides, with overlapping roles deliberately overcounted. Caller-owned values/JSON, compiled AST/literals/defaults, output-name/container/sort/index metadata, String/Vec capacities, allocator backing and transient growth are separate. Those metadata counts follow the existing source, depth, list and port caps. Admission traverses sibling iterators with depth-bounded storage; it never builds a stack containing every input sibling. No allocator-byte, total heap or RSS bound is implied.
 
 Case mapping and whitespace follow the Unicode tables of the Rust release NodeCraft is built
 with, so `upper`, `lower` and `trim` can change slightly across NodeCraft versions.

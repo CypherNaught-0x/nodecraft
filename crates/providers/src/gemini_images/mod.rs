@@ -1,4 +1,6 @@
 //! Bounded, stateless Gemini Interactions images. See docs/providers.md for host limitations.
+#[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
+mod native_tests;
 mod request;
 mod response;
 #[cfg(test)]

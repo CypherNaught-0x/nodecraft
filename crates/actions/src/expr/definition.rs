@@ -113,6 +113,15 @@ fn valid_id(id: &str) -> bool {
         && id.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
 }
 
+fn param_size(kind: ParamKind, value: &serde_json::Value) -> Option<usize> {
+    match (kind, value) {
+        (ParamKind::Text, serde_json::Value::String(t)) if t.len() <= MAX_SOURCE_BYTES => Some(t.len()),
+        (ParamKind::Int, serde_json::Value::Number(n)) if n.as_i64().is_some() => Some(8),
+        (ParamKind::Bool, serde_json::Value::Bool(_)) => Some(8),
+        _ => None,
+    }
+}
+
 fn param_value(kind: ParamKind, value: &serde_json::Value) -> Option<Value> {
     match (kind, value) {
         (ParamKind::Text, serde_json::Value::String(t)) if t.len() <= MAX_SOURCE_BYTES => Some(Value::Text(t.clone())),
@@ -190,6 +199,8 @@ impl CompiledTextAction {
         limits: ExprLimits,
         cancel: &dyn Fn() -> bool,
     ) -> Result<Vec<(String, Value)>, ExprError> {
+        let limits = limits.validate()?;
+        let mut budget = super::eval::Budget::new(limits, cancel);
         if let Some(unknown) = inputs.keys().find(|k| !self.definition.inputs.iter().any(|p| &p.name == *k)) {
             // The caller's key may be anything: don't echo it.
             let _ = unknown;
@@ -198,14 +209,10 @@ impl CompiledTextAction {
         if params.keys().any(|k| !self.definition.params.iter().any(|p| &p.name == k)) {
             return Err(ExprError::new(ErrorReason::UnknownParam, 0));
         }
-        if inputs.values().any(|v| v.deeper_than(super::MAX_VALUE_DEPTH)) {
-            return Err(ExprError::new(ErrorReason::TooDeep, 0));
+        let (mut input, mut oversized) = (0usize, false);
+        for value in inputs.values() {
+            budget.input(value, &mut input, &mut oversized)?;
         }
-        let input: usize = inputs.values().fold(0usize, |n, v| n.saturating_add(v.size()));
-        if input > limits.input_bytes {
-            return Err(ExprError::new(ErrorReason::InputTooLarge, 0));
-        }
-        let mut scope: Vec<(&str, Value)> = Vec::with_capacity(self.definition.inputs.len() + self.params.len());
         for port in &self.definition.inputs {
             let value = inputs.get(&port.name).ok_or_else(|| ExprError::new(ErrorReason::MissingInput, 0).of(&port.name))?;
             let ok = match (port.kind, value) {
@@ -216,25 +223,37 @@ impl CompiledTextAction {
             if !ok {
                 return Err(ExprError::new(ErrorReason::WrongInputKind, 0).of(&port.name));
             }
-            scope.push((&port.name, value.clone()));
         }
         for (def, (name, default)) in self.definition.params.iter().zip(&self.params) {
-            let value = match params.get(name) {
-                Some(given) => param_value(def.kind, given).ok_or_else(|| ExprError::new(ErrorReason::WrongParamKind, 0).of(name))?,
-                None => default.clone(),
-            };
-            scope.push((name, value));
+            if let Some(given) = params.get(name) {
+                budget.spend(1, 0)?;
+                let size = param_size(def.kind, given).ok_or_else(|| ExprError::new(ErrorReason::WrongParamKind, 0).of(name))?;
+                budget.input_size(size, &mut input, &mut oversized)?;
+            } else {
+                budget.input(default, &mut input, &mut oversized)?;
+            }
         }
-        let names: Vec<(&str, &Value)> = scope.iter().map(|(n, v)| (*n, v)).collect();
+        budget.finish_inputs(oversized)?;
+        // Only admitted overrides become owned; inputs and defaults remain borrowed.
+        let overrides: Vec<Option<Value>> = self
+            .definition
+            .params
+            .iter()
+            .zip(&self.params)
+            .map(|(def, (name, _))| match params.get(name) {
+                Some(given) => param_value(def.kind, given).map(Some).ok_or_else(|| ExprError::new(ErrorReason::WrongParamKind, 0).of(name)),
+                None => Ok(None),
+            })
+            .collect::<Result<_, _>>()?;
+        let mut names: Vec<(&str, &Value)> = self.definition.inputs.iter().filter_map(|port| inputs.get(&port.name).map(|v| (port.name.as_str(), v))).collect();
+        for ((name, default), given) in self.params.iter().zip(&overrides) {
+            names.push((name, given.as_ref().unwrap_or(default)));
+        }
         let mut out = Vec::with_capacity(self.outputs.len());
-        let mut fuel = limits.fuel;
+        let mut output_bytes = 0usize;
+        let output_limit = limits.value_bytes.checked_mul(4).ok_or_else(|| ExprError::new(ErrorReason::InvalidLimits, 0))?;
         for (name, kind, expr) in &self.outputs {
-            // One fuel budget covers the whole run.
-            let before = fuel;
-            let mut meter = limits;
-            meter.fuel = fuel;
-            let (value, used) = expr.eval_metered(&names, meter, cancel).map_err(|e| e.of(name))?;
-            fuel = before.saturating_sub(used);
+            let value = expr.eval_admitted(&names, input, &mut budget).map_err(|e| e.of(name))?;
             let ok = match (kind, &value) {
                 (OutputKind::Text, Value::Text(_)) => true,
                 (OutputKind::TextList, Value::List(items)) => items.iter().all(|v| matches!(v, Value::Text(_))),
@@ -242,6 +261,10 @@ impl CompiledTextAction {
             };
             if !ok {
                 return Err(ExprError::new(ErrorReason::WrongOutputKind, 0).of(name));
+            }
+            output_bytes = output_bytes.checked_add(value.size()).ok_or_else(|| ExprError::new(ErrorReason::ValueTooLarge, 0).of(name))?;
+            if output_bytes > output_limit {
+                return Err(ExprError::new(ErrorReason::ValueTooLarge, 0).of(name));
             }
             out.push((name.clone(), value));
         }

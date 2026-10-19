@@ -21,7 +21,7 @@ fn manifest(files: &[(&str, Vec<u8>)]) -> BackupManifest {
 }
 
 fn protection(passphrase: &str) -> Protection<'_> {
-    Protection::Passphrase { passphrase, kdf: FAST, salt: [3; 16], nonce_prefix: [9; 19] }
+    Protection::Passphrase { passphrase, kdf: FAST, salt: [3; 16] }
 }
 
 fn write(protection: Protection<'_>, files: &[(&str, Vec<u8>)]) -> Vec<u8> {
@@ -122,8 +122,9 @@ fn truncation_and_trailing_data_are_detected() {
     // Dropping a whole middle chunk breaks the counter.
     let sealed = write(protection("pw"), &files);
     let chunk = BACKUP_CHUNK_BYTES + 16;
-    let mut spliced = sealed.get(..59 + chunk).unwrap().to_vec();
-    spliced.extend_from_slice(sealed.get(59 + 2 * chunk..).unwrap());
+    let header = BackupHeader::read(&mut sealed.as_slice()).unwrap().1.len();
+    let mut spliced = sealed.get(..header + chunk).unwrap().to_vec();
+    spliced.extend_from_slice(sealed.get(header + 2 * chunk..).unwrap());
     assert_eq!(read(&spliced, Some("pw")).unwrap_err().kind, ErrorKind::Authentication);
 }
 
@@ -184,7 +185,7 @@ fn hostile_headers_are_refused_before_any_key_derivation() {
     let mut unknown_flag = sealed;
     unknown_flag[10] = 7;
     assert_eq!(read(&unknown_flag, Some("pw")).unwrap_err().kind, ErrorKind::Unsupported);
-    let weak = Protection::Passphrase { passphrase: "pw", kdf: KdfParams { memory_kib: 8, iterations: 1, lanes: 1 }, salt: [0; 16], nonce_prefix: [0; 19] };
+    let weak = Protection::Passphrase { passphrase: "pw", kdf: KdfParams { memory_kib: 8, iterations: 1, lanes: 1 }, salt: [0; 16] };
     assert!(BackupWriter::create(Vec::new(), weak, &manifest(&files())).is_err(), "weak parameters can't be written either");
     assert!(KdfParams::RECOMMENDED.check().is_ok());
 }
@@ -272,4 +273,197 @@ fn misbehaving_readers_cannot_cause_a_panic() {
     reader.next_entry(&mut out).unwrap();
     assert_eq!(out, files[0].1);
     reader.finish().unwrap();
+}
+
+// Faults recover after one refusal, so these controls prove the BackupReader's latch rather
+// than relying on a source or destination that would refuse every later operation anyway.
+struct CountedInput {
+    input: std::io::Cursor<Vec<u8>>,
+    calls: std::rc::Rc<std::cell::Cell<usize>>,
+    fail_at: Option<u64>,
+}
+
+impl Read for CountedInput {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        self.calls.set(self.calls.get() + 1);
+        if self.fail_at.is_some_and(|at| self.input.position() >= at) {
+            self.fail_at = None;
+            return Err(std::io::Error::other("one source failure"));
+        }
+        let limit = self.fail_at.map_or(out.len(), |at| usize::try_from(at - self.input.position()).unwrap().min(out.len()));
+        self.input.read(&mut out[..limit])
+    }
+}
+
+#[derive(Default)]
+struct CountedSink {
+    bytes: Vec<u8>,
+    calls: usize,
+    fail_at: Option<usize>,
+    zero_once: bool,
+}
+
+impl Write for CountedSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.calls += 1;
+        if self.fail_at.is_some_and(|at| self.bytes.len() >= at) {
+            self.fail_at = None;
+            if std::mem::take(&mut self.zero_once) {
+                return Ok(0);
+            }
+            return Err(std::io::Error::other("one destination failure"));
+        }
+        let n = self.fail_at.map_or(bytes.len(), |at| (at - self.bytes.len()).min(bytes.len()));
+        self.bytes.extend_from_slice(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn counted_reader(bytes: Vec<u8>, passphrase: Option<&str>, fail_at: Option<u64>) -> (BackupReader<CountedInput>, std::rc::Rc<std::cell::Cell<usize>>) {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut input = CountedInput { input: std::io::Cursor::new(bytes), calls: calls.clone(), fail_at };
+    let (header, encoded) = BackupHeader::read(&mut input).unwrap();
+    (BackupReader::open(input, &header, encoded, passphrase).unwrap(), calls)
+}
+
+fn assert_reader_stays_failed(mut reader: BackupReader<CountedInput>, mut sink: CountedSink, calls: std::rc::Rc<std::cell::Cell<usize>>, first: Error) {
+    let source_calls = calls.get();
+    let sink_calls = sink.calls;
+    let partial = sink.bytes.clone();
+    for _ in 0..2 {
+        assert_eq!(reader.next_entry(&mut sink).unwrap_err(), first);
+        assert_eq!(calls.get(), source_calls, "no source work after the first error");
+        assert_eq!(sink.calls, sink_calls, "no destination work after the first error");
+        assert_eq!(sink.bytes, partial, "partial output is retained for the host to discard, never resumed");
+    }
+    assert_eq!(reader.finish().unwrap_err(), first, "preserve the actionable first error, not missing-entry noise");
+    assert_eq!(calls.get(), source_calls, "finish must not resume the failed source");
+}
+
+#[test]
+fn entry_hash_failure_cannot_be_retried_into_a_complete_backup() {
+    let mut bytes = write(Protection::Unencrypted, &[("x.txt", b"x".to_vec())]);
+    let trailer_at = bytes.len() - 32;
+    bytes.truncate(trailer_at);
+    bytes.insert(trailer_at - 1, b'y');
+    let trailer = blake3::hash(&bytes);
+    bytes.extend_from_slice(trailer.as_bytes());
+    let (mut reader, calls) = counted_reader(bytes, None, None);
+    let mut sink = CountedSink::default();
+    let first = reader.next_entry(&mut sink).unwrap_err();
+    assert_eq!(first.kind, ErrorKind::Authentication);
+    assert_eq!(sink.bytes, b"y");
+    assert_reader_stays_failed(reader, sink, calls, first);
+}
+
+#[test]
+fn source_errors_and_truncation_latch_before_or_after_partial_input() {
+    let bytes = write(Protection::Unencrypted, &[("a.bin", vec![7; 8])]);
+    let body_at = bytes.len() - 32 - 8;
+    for progress in [0, 3] {
+        let (mut reader, calls) = counted_reader(bytes.clone(), None, Some((body_at + progress) as u64));
+        let mut sink = CountedSink::default();
+        let first = reader.next_entry(&mut sink).unwrap_err();
+        assert_eq!(first.kind, ErrorKind::Internal);
+        assert!(sink.bytes.is_empty(), "partial source fill is not handed to the sink");
+        assert_reader_stays_failed(reader, sink, calls, first);
+        let (mut reader, calls) = counted_reader(bytes[..body_at + progress].to_vec(), None, None);
+        let mut sink = CountedSink::default();
+        let first = reader.next_entry(&mut sink).unwrap_err();
+        assert_eq!(first.kind, ErrorKind::InvalidInput);
+        assert_reader_stays_failed(reader, sink, calls, first);
+    }
+}
+
+#[test]
+fn destination_errors_latch_with_plain_or_buffered_decrypted_input() {
+    for encrypted in [false, true] {
+        let protect = if encrypted { protection("pw") } else { Protection::Unencrypted };
+        let bytes = write(protect, &[("a.bin", vec![7; 8])]);
+        for (progress, zero_once) in [(0, false), (3, false), (3, true)] {
+            let (mut reader, calls) = counted_reader(bytes.clone(), encrypted.then_some("pw"), None);
+            let mut sink = CountedSink { fail_at: Some(progress), zero_once, ..Default::default() };
+            let first = reader.next_entry(&mut sink).unwrap_err();
+            assert_eq!(first.kind, ErrorKind::Internal);
+            assert_eq!(sink.bytes, vec![7; progress]);
+            assert_reader_stays_failed(reader, sink, calls, first);
+        }
+    }
+}
+
+#[test]
+fn later_chunk_authentication_failure_stays_failed_after_partial_output() {
+    let mut bytes = write(protection("pw"), &[("a.bin", vec![7; 2 * BACKUP_CHUNK_BYTES])]);
+    *bytes.last_mut().unwrap() ^= 1;
+    let (mut reader, calls) = counted_reader(bytes, Some("pw"), None);
+    let mut sink = CountedSink::default();
+    let first = reader.next_entry(&mut sink).unwrap_err();
+    assert_eq!(first.kind, ErrorKind::Authentication);
+    assert!(!sink.bytes.is_empty());
+    assert!(sink.bytes.len() < 2 * BACKUP_CHUNK_BYTES);
+    assert_reader_stays_failed(reader, sink, calls, first);
+}
+
+#[test]
+fn repeated_end_of_entries_is_successful_without_source_or_sink_work() {
+    for encrypted in [false, true] {
+        let protect = if encrypted { protection("pw") } else { Protection::Unencrypted };
+        let bytes = write(protect, &[("a.bin", vec![7]), ("empty.bin", Vec::new())]);
+        let (mut reader, calls) = counted_reader(bytes, encrypted.then_some("pw"), None);
+        let mut sink = CountedSink::default();
+        assert!(reader.next_entry(&mut sink).unwrap().is_some());
+        assert!(reader.next_entry(&mut sink).unwrap().is_some());
+        assert_eq!(sink.bytes, vec![7]);
+        let source_calls = calls.get();
+        let sink_calls = sink.calls;
+        for _ in 0..2 {
+            assert!(reader.next_entry(&mut sink).unwrap().is_none());
+            assert_eq!(calls.get(), source_calls);
+            assert_eq!(sink.calls, sink_calls);
+        }
+        reader.finish().unwrap();
+    }
+}
+
+#[test]
+fn the_nonce_prefix_is_derived_from_the_salt_not_stored() {
+    // The header ends with the salt: magic, version, flags, kdf id, three words, 16 salt bytes.
+    let sealed = write(protection("pw"), &files());
+    let (header, header_bytes) = BackupHeader::read(&mut sealed.as_slice()).unwrap();
+    assert_eq!(header_bytes.len(), 8 + 2 + 1 + 1 + 12 + 16);
+    assert_eq!(header_bytes.get(header_bytes.len() - 16..), Some([3u8; 16].as_slice()));
+    // Key and prefix come from one derivation: the same salt repeats both, a fresh salt changes
+    // both.
+    let (_, prefix) = FAST.key("pw", &[3; 16]).unwrap();
+    let (_, again) = FAST.key("pw", &[3; 16]).unwrap();
+    let (_, fresh) = FAST.key("pw", &[4; 16]).unwrap();
+    assert_eq!(prefix, again);
+    assert_ne!(prefix, fresh);
+    assert_eq!(header.encryption.map(|e| e.salt), Some([3; 16]));
+    // Two backups of the same contents under fresh salts share no ciphertext.
+    let other = write(Protection::Passphrase { passphrase: "pw", kdf: FAST, salt: [4; 16] }, &files());
+    let body = |b: &[u8]| b.get(header_bytes.len()..header_bytes.len() + 64).unwrap().to_vec();
+    assert_ne!(body(&sealed), body(&other));
+}
+
+#[test]
+fn the_key_and_prefix_split_matches_a_recomputed_derivation() {
+    // Not a fixed vector: Argon2id is recomputed here with a raw 51-byte output, and the prefix
+    // must be bytes 32..51 and the key bytes ..32, so a swapped or resized split can't pass the
+    // round trips unnoticed.
+    let params = argon2::Params::new(FAST.memory_kib, FAST.iterations, FAST.lanes, Some(51)).unwrap();
+    let mut raw = [0u8; 51];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into(b"pw", &[3; 16], &mut raw).unwrap();
+    let (_, prefix) = FAST.key("pw", &[3; 16]).unwrap();
+    assert_eq!(prefix.as_slice(), &raw[32..]);
+    let key = XChaCha20Poly1305::new_from_slice(&raw[..32]).unwrap();
+    let sealed = write(protection("pw"), &files());
+    let header = 8 + 2 + 1 + 1 + 12 + 16;
+    let mut first = sealed[header..header + BACKUP_CHUNK_BYTES].to_vec();
+    let tag = chacha20poly1305::Tag::try_from(&sealed[header + BACKUP_CHUNK_BYTES..header + BACKUP_CHUNK_BYTES + 16]).unwrap();
+    key.decrypt_inout_detached(&nonce(&prefix, 0, false), &sealed[..header], first.as_mut_slice().into(), &tag).unwrap();
 }

@@ -46,13 +46,16 @@ fn catalog() -> Catalog {
 }
 
 #[test]
-fn local_builtin_models_are_free_and_paid_images_remain_unknown() {
+fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
     let catalog = Catalog::builtin().unwrap();
     assert!(catalog.len() >= 2);
     for model in catalog.models() {
         if model.provider == "comfyui" {
             assert_eq!(model.pricing, Pricing::Free, "{}", model.id);
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
+        } else if model.provider == "seedream" {
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
         } else {
             assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
@@ -104,6 +107,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai-images.flare", true),
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
+            ("seedream.4_5", true),
             ("replicate.hello", false),
             ("test.video", false)
         ]
@@ -113,6 +117,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
     assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);
+    let seedream = catalog.get("seedream.4_5").unwrap();
+    assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 14).fit(seedream).is_ok());
+    assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 15).fit(seedream).is_err());
 }
 
 #[test]

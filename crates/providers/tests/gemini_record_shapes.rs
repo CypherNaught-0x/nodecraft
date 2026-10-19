@@ -162,3 +162,10 @@ fn thought_summary_records_are_map_only_too() {
     v["steps"].as_array_mut().unwrap().insert(0, json!({"type":"thought","summary":[["text",null,null,"private",null]]}));
     assert_eq!(run(v).unwrap_err().kind, nodecraft_providers::ErrorKind::Malformed);
 }
+
+#[test]
+fn non_utf8_reply_refuses_without_a_completion() {
+    let error = run_raw(vec![0xff]).unwrap_err();
+    assert_eq!(error.kind, nodecraft_providers::ErrorKind::Malformed);
+    assert!(!error.message.contains("public-fixture-key"));
+}

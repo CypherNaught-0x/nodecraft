@@ -24,6 +24,8 @@ openai-images = ["dep:base64", "dep:blake3"]
 replicate = ["dep:base64"]
 # Stateless Gemini Interactions image generation and editing.
 gemini-images = ["dep:base64"]
+# Dated Seedream text generation and ordered multi-reference edits.
+seedream = ["dep:base64"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 

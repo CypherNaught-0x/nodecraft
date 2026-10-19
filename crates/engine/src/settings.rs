@@ -31,6 +31,31 @@ pub struct NodeCraftSettings {
     pub appearance: AppearanceSettings,
     pub canvas: CanvasSettings,
     pub keys: KeySettings,
+    pub providers: ProviderSettings,
+}
+
+/// How to reach the providers that need more than a key (#409). Keys stay in the keychain.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderSettings {
+    /// The ComfyUI server, such as `http://127.0.0.1:8188`; unset, ComfyUI models aren't set up.
+    /// A key stored for the server's account (`comfyui:<host>:<port>`) is sent as a bearer token.
+    pub comfyui_url: Option<String>,
+    /// A random value made once per install; it keeps prompt ids of different installs apart on
+    /// a shared ComfyUI server. Empty until the host first creates it.
+    pub install_salt: String,
+}
+
+impl ProviderSettings {
+    /// Creates the install salt if there isn't one yet (32 random bytes as hex). `Ok(true)` when
+    /// it was created, so the host saves the settings.
+    pub fn ensure_install_salt(&mut self) -> Result<bool, nodecraft_types::Error> {
+        if !self.install_salt.trim().is_empty() {
+            return Ok(false);
+        }
+        self.install_salt = crate::execution_identity::nonce()?.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(true)
+    }
 }
 
 impl craft_settings::Settings for NodeCraftSettings {
@@ -153,6 +178,28 @@ pub fn settings_dir() -> Option<std::path::PathBuf> {
     use craft_settings::Settings;
     let portable = craft_settings::Portable { markers: NodeCraftSettings::PORTABLE_MARKERS, dir: NodeCraftSettings::PORTABLE_DIR };
     craft_settings::paths::resolve(NodeCraftSettings::APP_ID, &portable, &Location::Auto, &craft_settings::Probe::default()).dir
+}
+
+/// Makes the install salt if `store` has none, saving it at once: ComfyUI prompt ids must stay
+/// the same across restarts, so a salt is never made unless it is saved. On a read-only store
+/// none is made (and ComfyUI reports itself not set up).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn ensure_install_salt(store: &mut SettingsStore) -> Result<(), nodecraft_types::Error> {
+    use nodecraft_types::{Error, ErrorKind};
+    if !store.get().providers.install_salt.trim().is_empty() {
+        return Ok(());
+    }
+    if store.is_read_only() {
+        return Err(Error::new(ErrorKind::Unsupported, "settings can't be saved, so no install salt was made; ComfyUI stays off"));
+    }
+    let mut providers = store.get().providers.clone();
+    providers.ensure_install_salt()?;
+    store.update(|settings| settings.providers = providers);
+    if store.flush().is_err() {
+        store.update(|settings| settings.providers.install_salt.clear());
+        return Err(Error::new(ErrorKind::Internal, "the install salt couldn't be saved; ComfyUI stays off"));
+    }
+    Ok(())
 }
 
 /// Opens the settings for `location`. Never fails; problems are in the report.
@@ -339,5 +386,33 @@ mod tests {
         write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
         let (store, _) = open_in(dir.path());
         assert_eq!(store.get().keys.accounts().len(), 1);
+    }
+
+    #[test]
+    fn the_install_salt_is_made_once_and_kept() {
+        let mut providers = ProviderSettings::default();
+        assert!(providers.ensure_install_salt().unwrap());
+        let salt = providers.install_salt.clone();
+        assert_eq!(salt.len(), 64);
+        assert!(!providers.ensure_install_salt().unwrap());
+        assert_eq!(providers.install_salt, salt);
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, _) = open_in(dir.path());
+        assert!(store.update(|s| s.providers = providers.clone()));
+        store.flush().unwrap();
+        assert_eq!(open_in(dir.path()).0.get().providers, providers);
+        let old = tempfile::tempdir().unwrap();
+        write_config(old.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
+        assert_eq!(open_in(old.path()).0.get().providers, ProviderSettings::default(), "a file without [providers] still loads");
+        // The store-level helper saves at once (no deferred write to lose in a crash).
+        let fresh = tempfile::tempdir().unwrap();
+        let (mut store, _) = open_in(fresh.path());
+        ensure_install_salt(&mut store).unwrap();
+        let salt = store.get().providers.install_salt.clone();
+        assert_eq!(salt.len(), 64);
+        let on_disk = std::fs::read_to_string(fresh.path().join("config.toml")).unwrap();
+        assert!(on_disk.contains(&salt), "saved before returning");
+        ensure_install_salt(&mut store).unwrap();
+        assert_eq!(store.get().providers.install_salt, salt);
     }
 }

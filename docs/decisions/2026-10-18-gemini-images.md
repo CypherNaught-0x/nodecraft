@@ -45,3 +45,15 @@ The pinned image 0.25.10 JPEG decoder owns an encoded-input Vec (at most 8 MiB),
 JSON scratch belongs to from_str and drops before output decoding. The 22 MiB allowance is twice the largest admitted normalized image string; raw and normalized strings are separately charged. Auxiliary 2 MiB covers bounded descriptor/key/table slots, metadata and the fixed 4 KiB writer at native 64-bit sizes. These phases fit the existing 628 MiB envelope without increasing it. Test generators destroy their temporary RGB raster before invoking production parsing; their separate fixture memory does not establish production RSS.
 
 The adapter requests image-only delivery but preserves every final text/image block actually returned. Host mixed/list conversion and durable retained-result ownership remain follow-up work; no output is dropped and no paid call is replayed to repair routing. Feature-on CI includes prior optional OpenAI/Replicate coverage together with Gemini and the separate provider-facade wasm gate. No paid live test is enabled in CI.
+
+### Current-main provider readiness
+
+The existing host factory builds `gemini-images` from the family keychain account `gemini`,
+reports missing keys before routing, and sends no request at construction. Unknown-price
+admission still requires partial-price consent plus an explicit unknown-job count; finite
+budgets refuse unknown estimates. This adds neither a paid-run host nor a media-input resolver.
+
+Loopback native transport controls pin the request path, secret header, generic User-Agent and
+redirect refusal without paid calls. A direct non-UTF8 fixture refuses before completion. The
+8 MiB encoded-output cap and exact documented pixel envelope remain unchanged; byte-cap and
+headroom policy follow-up #421 and host result retention/routing #369 remain separate.

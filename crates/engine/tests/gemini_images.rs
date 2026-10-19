@@ -69,16 +69,16 @@ fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob
     let provider = RegisteredProvider::default_instance(Arc::new(GeminiImages::new(Secret::new("fixture-key-not-real").unwrap(), http))).unwrap();
     assert_eq!(provider.target().adapter(), "gemini-images");
     assert_eq!(provider.target().instance(), None);
-    QueuedJob {
+    QueuedJob::new(
         provider,
-        job: ProviderJob {
+        ProviderJob {
             model: LITE.into(),
             params: serde_json::Map::new(),
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-image-1".into(),
         },
-        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "gemini-images.flash-lite".into(), estimate }),
-    }
+        price.map(|estimate| JobPrice::new(NodeId::from_bytes([1; 16]), "gemini-images.flash-lite".into(), estimate)),
+    )
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {
     let budget = JobBudget {
@@ -216,4 +216,119 @@ fn pure_local_refusal_has_no_execute_and_releases_estimate() {
     assert_eq!(t.requests.load(Ordering::SeqCst), 0);
     assert_eq!(b.log.lock().unwrap().entries().count(), 0);
     assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+}
+
+#[test]
+fn factory_routing_preserves_unknown_price_and_explicit_consent_before_network() {
+    use nodecraft_engine::{
+        Session,
+        commands::{Registry as Commands, Resources, Services},
+        provider_setup,
+        run_cmds::{BudgetState, PreparedRun, RunCatalog, UsageSnapshot},
+        secrets::{Account, MemoryStore, SecretStore},
+        settings::ProviderSettings,
+    };
+    use nodecraft_graph::{Canvas, Change, Port, Project};
+    use nodecraft_nodes::{Category, GenerateInput, GenerateOutput, JobSpec as Work, ModeId, NodeDescriptor, NodeKind, PlanCtx};
+    use nodecraft_types::{CanvasId, Modality, ParamControl, ParamSchema, ParamSpec, PortType, ProjectId, Value};
+    use serde_json::json;
+    struct QuoteKind(NodeDescriptor);
+    impl NodeKind for QuoteKind {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            ModeId::new("fixture").ok()
+        }
+        fn plan(&self, context: &PlanCtx<'_>) -> Result<Vec<Work>, nodecraft_types::Error> {
+            Ok(vec![Work::Generate {
+                node: context.node.id,
+                outputs: vec![GenerateOutput { port: "image".into(), modality: Modality::Image }],
+                provider: "gemini-images".into(),
+                instance: None,
+                model: LITE.into(),
+                params: Default::default(),
+                inputs: vec![GenerateInput { role: "prompt".into(), value: Value::Text("Public square".into()) }],
+            }])
+        }
+    }
+    let canvas = CanvasId::from_bytes([1; 16]);
+    let node = NodeId::from_bytes([2; 16]);
+    for capped in [false, true] {
+        let descriptor = NodeDescriptor {
+            id: "fixture.gemini".into(),
+            label: "Gemini fixture".into(),
+            category: Category::Generation,
+            inputs: vec![],
+            outputs: vec![Port { name: "image".into(), port_type: PortType { modality: Modality::Image, many: false } }],
+            params: ParamSchema {
+                params: vec![ParamSpec {
+                    name: "model".into(),
+                    label: "Model".into(),
+                    description: None,
+                    control: ParamControl::Model,
+                    required: true,
+                    default: None,
+                    visible_if: None,
+                }],
+            },
+            quick_add: None,
+        };
+        let instance = descriptor.instantiate(node, &[("model".into(), Value::Text("gemini-images.flash-lite".into()))].into()).unwrap();
+        let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        kinds.register(Box::new(QuoteKind(descriptor))).unwrap();
+        let mut project = Project::new(ProjectId::from_bytes([3; 16]), "Gemini fixture").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::AddNode { canvas, node: instance }.apply(&mut project).unwrap();
+        let mut resources = Resources::default();
+        resources.insert(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap());
+        resources.insert(BudgetState {
+            budgets: if capped { Budgets { per_call: Some(money(1_000_000)), ..Default::default() } } else { Budgets::default() },
+            spent: Default::default(),
+        });
+        resources.insert(UsageSnapshot(Arc::new(UsageLog::default())));
+        let captured: Arc<Mutex<Vec<PreparedRun>>> = Arc::default();
+        let saved = captured.clone();
+        let mut services = Services::default();
+        services
+            .register_run_host(move |prepared| {
+                saved.lock().unwrap().push(prepared);
+                Ok(json!({"accepted":true}))
+            })
+            .unwrap();
+        let mut session = Session::with_registries(project, Commands::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
+        let keys = MemoryStore::default();
+        keys.set(&Account::new("gemini").unwrap(), &Secret::new("fixture-key-not-real").unwrap()).unwrap();
+        let http = Arc::new(Transport { script: Script::Pending, requests: AtomicUsize::new(0) });
+        let settings = ProviderSettings::default();
+        let env = provider_setup::HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+        let setup = provider_setup::build(&nodecraft_catalog::Catalog::builtin().unwrap(), |adapter| provider_setup::make(adapter, &env));
+        assert_eq!(setup.readiness("gemini-images"), Some(&provider_setup::Readiness::Ready));
+        session.set_provider_routing(setup.routing([(node, "gemini-images")]).unwrap()).unwrap();
+        let request = json!({"canvas":canvas,"mode":"selected","nodes":[node]});
+        let quote = session.dispatch("run.quote", &request).unwrap();
+        assert_eq!(quote["complete"], false);
+        let mut start = request.clone();
+        start["accept"] = json!({"token":quote["token"],"amounts":{},"partial":false,"unpriced_jobs":1});
+        assert!(session.dispatch("run.start", &start).is_err());
+        start["accept"]["partial"] = json!(true);
+        start["accept"].as_object_mut().unwrap().remove("unpriced_jobs");
+        assert!(session.dispatch("run.start", &start).is_err());
+        start["accept"]["unpriced_jobs"] = json!(1);
+        if capped {
+            assert!(session.dispatch("run.start", &start).is_err());
+            assert!(captured.lock().unwrap().is_empty());
+        } else {
+            session.dispatch("run.start", &start).unwrap();
+            let prepared = captured.lock().unwrap().pop().unwrap();
+            let options = nodecraft_exec::run::RunOptions { id: [8; 16], first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
+            let (run, progress) = session.authorize_prepared_run(prepared, options).unwrap();
+            let spec = &progress.jobs[0];
+            let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
+            assert!(queued.is_authorized());
+            assert_eq!(queued.charged_price().unwrap().estimate, None);
+            assert_eq!(run.unpriced_jobs(), (1, 0));
+        }
+        assert_eq!(http.requests.load(Ordering::SeqCst), 0);
+    }
 }

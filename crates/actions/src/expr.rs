@@ -198,18 +198,19 @@ impl Expr {
     /// [`Self::eval`], also returning the fuel spent.
     fn eval_metered(&self, names: &[(&str, &Value)], limits: ExprLimits, cancel: &dyn Fn() -> bool) -> Result<(Value, u64), ExprError> {
         let limits = limits.validate()?;
-        // Values are walked recursively (size, comparison, drop), so their nesting is checked
-        // first, iteratively.
-        if names.iter().any(|(_, v)| v.deeper_than(MAX_VALUE_DEPTH)) {
-            return Err(ExprError::new(ErrorReason::TooDeep, 0));
+        let mut budget = eval::Budget::new(limits, cancel);
+        let (mut input, mut oversized) = (0usize, false);
+        for (_, value) in names {
+            budget.input(value, &mut input, &mut oversized)?;
         }
-        let input: usize = names.iter().fold(0usize, |n, (_, v)| n.saturating_add(v.size()));
-        if input > limits.input_bytes {
-            return Err(ExprError::new(ErrorReason::InputTooLarge, 0));
-        }
-        let mut machine = eval::Machine::new(limits, cancel);
-        let value = machine.run(&self.root, names)?;
-        Ok((value, machine.spent()))
+        budget.finish_inputs(oversized)?;
+        let value = self.eval_admitted(names, input, &mut budget)?;
+        Ok((value, budget.spent()))
+    }
+
+    /// Only callers which have inspected this same immutable scope may skip admission.
+    fn eval_admitted(&self, names: &[(&str, &Value)], input: usize, budget: &mut eval::Budget<'_>) -> Result<Value, ExprError> {
+        eval::Machine::new(budget, names, input)?.run(&self.root)
     }
 
     /// Names the expression reads that it doesn't bind itself, with their positions.
@@ -222,3 +223,6 @@ impl Expr {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod budget_tests;
