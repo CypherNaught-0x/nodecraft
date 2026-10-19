@@ -221,8 +221,14 @@ path are separately bounded to 64 KiB each; the native workspace's returned root
 existing lifetime owner. These are per active operation, not process-global/RSS, OS directory
 buffer, filesystem latency or allocated-block guarantees. The 4,096 payload ceiling comes from
 the existing cleanup-slot table, including failed-unlink debt; it is not the 32-backing limit.
-A failed qualified deletion aborts another constructor before it creates a new workspace.
-Successful partial deletions are retained truthfully, with the valid marker left for retry.
+Automatic constructor maintenance stops at its first classified old-candidate maintenance failure,
+reports it in `retained_failures`, and creates a separate workspace if its own admission and
+creation succeed. Successful partial deletions remain counted; available valid markers/payloads
+are retained for later explicit retry. This incomplete pass reports `RetainedFailure`, without
+claiming all entries were scanned. Public explicit sweeps, including `sweep_named_orphan`, still
+return the original actionable error. Parent admission/identity, parent scan integrity,
+cancellation, path/buffer/allocation invariants and new-root marker/lock/write/sync authority
+remain fatal. No blanket error suppression, retry loop or extra deletion authority is added.
 Admission stays held while the last marker handle closes and the marker/empty directory retire,
 including on Windows. A failure after marker unlink leaves reported unmarked residue; it is not
 silently adopted, recursively deleted or given replacement authority.

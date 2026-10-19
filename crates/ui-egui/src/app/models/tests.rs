@@ -105,7 +105,7 @@ fn opening_picker_preserves_real_unsaved_prompt_and_apply_stays_disabled() {
     h.run();
     h.event(egui::Event::Text("Recover this private draft".into()));
     h.run();
-    assert!(h.state().editors.get(&A).unwrap().has_dirty());
+    assert!(h.state().editors.get(&A).unwrap().has_uncommitted());
     let before = h.state().session.document().clone();
     h.get_by_label("Change model…").click();
     h.run();
@@ -115,7 +115,7 @@ fn opening_picker_preserves_real_unsaved_prompt_and_apply_stays_disabled() {
     assert!(apply.accesskit_node().is_disabled());
     h.get_by_label("Cancel model change").click();
     h.run();
-    assert!(h.state().editors.get(&A).unwrap().has_dirty());
+    assert!(h.state().editors.get(&A).unwrap().has_uncommitted());
     assert_eq!(h.state().session.document(), &before);
 }
 

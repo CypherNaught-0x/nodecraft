@@ -238,3 +238,99 @@ fn generation_policy_literal_displays_resolved_default() {
     assert!(h.query_all_by_value("resolved literal").next().is_some());
     assert!(h.query_by_value("fabricated literal schema").is_none());
 }
+
+#[test]
+fn generation_marquee_admission_uses_the_same_owned_conditional_states_as_the_card() {
+    let app = conditional_scene();
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+    let admitted = admission::admit(&app.session, node, None).unwrap();
+    assert!(!admitted.visible.contains("quality"));
+    assert!(admitted.visible.contains("size"));
+    assert!(!admitted.enabled.as_ref().unwrap().contains("size"));
+    let mut schemas = SchemaCache::default();
+    let rendered = cached_schema(&mut schemas, &app.session, node, 1).unwrap();
+    assert_eq!(admitted.visible, rendered.visible);
+    assert_eq!(admitted.enabled, rendered.enabled);
+}
+
+#[test]
+fn generation_marquee_geometry_rejects_same_revision_replaced_catalog_like_the_renderer() {
+    let mut app = conditional_scene();
+    let mut geometry = admission::GeometryCache::default();
+    geometry.prepare(&mut app.session, C, app.theme);
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().clone();
+    geometry.rect(&app.session, &node, app.theme.tokens());
+    assert!(!geometry.placeholder(N));
+    assert_eq!(geometry.len(), 1);
+    let revision = app.session.revision();
+    let replacement = nodecraft_engine::generation_catalog::GenerationCatalog::builtin().unwrap();
+    app.session.swap_resource(Some(replacement.run_catalog()));
+    app.session.swap_resource(Some(replacement));
+    assert_eq!(app.session.revision(), revision);
+    assert!(geometry.prepare(&mut app.session, C, app.theme));
+    assert_eq!(geometry.len(), 0);
+    geometry.rect(&app.session, &node, app.theme.tokens());
+    assert!(geometry.placeholder(N));
+    assert!(admission::admit(&app.session, &node, None).is_none());
+    let mut schemas = SchemaCache::default();
+    assert!(cached_schema(&mut schemas, &app.session, &node, 1).is_none());
+}
+
+#[test]
+fn generation_shared_admission_charges_enabled_names_within_the_existing_cache_budget() {
+    let app = conditional_scene();
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+    let admitted = admission::admit(&app.session, node, None).unwrap();
+    let names =
+        admitted.visible.iter().chain(admitted.enabled.iter().flatten()).fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
+    assert!(admitted.bytes.checked_add(names).unwrap() <= MAX_SCHEMA_CACHE_BYTES);
+    let mut cache = SchemaCache::default();
+    cached_schema(&mut cache, &app.session, node, 1).unwrap();
+    assert_eq!(cache_bytes(&cache), cache.bytes);
+    assert_eq!(cache.bytes, admitted.bytes + names);
+    assert!(cache.bytes <= MAX_SCHEMA_CACHE_BYTES);
+    assert!(std::mem::size_of::<admission::GeometryCache>() <= 128);
+}
+
+#[test]
+fn generation_catalog_replacement_updates_actual_placeholder_wheel_hover_without_revision_change() {
+    for inside in [true, false] {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(1200.0, 850.0))
+            .with_max_steps(120)
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), public_scene(false));
+        h.step();
+        let old = *h.state().painted.get(&N).unwrap();
+        let revision = h.state().session.revision();
+        let document = h.state().session.document().clone();
+        let replacement = nodecraft_engine::generation_catalog::GenerationCatalog::builtin().unwrap();
+        h.state_mut().session.swap_resource(Some(replacement.run_catalog()));
+        h.state_mut().session.swap_resource(Some(replacement));
+        h.step();
+        let node = h.state().session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+        let placeholder = card::world_rect(node, None, h.state().theme.tokens());
+        assert_eq!(h.state().painted.get(&N), Some(&placeholder));
+        assert!(old.height() > placeholder.height() + 40.0);
+        let world = if inside { placeholder.center() } else { old.max - Vec2::splat(12.0) };
+        assert_eq!(placeholder.contains(world), inside);
+        let pointer = h.state().view.to_screen(h.state().viewport.min, world);
+        assert!(h.state().viewport.contains(pointer));
+        h.hover_at(pointer);
+        h.step();
+        let pan = h.state().view.pan;
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: Vec2::new(0.0, 40.0),
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(h.state().view.pan == pan, inside, "only the currently painted placeholder owns wheel hover");
+        if !inside {
+            assert_eq!(h.state().navigation.geometry.rects.get(&N), Some(&placeholder));
+            assert!(!h.state().navigation.geometry.sizes.contains_key(&N));
+        }
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+    }
+}

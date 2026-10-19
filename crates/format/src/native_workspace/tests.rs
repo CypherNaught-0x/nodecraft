@@ -242,27 +242,6 @@ fn cancellation_and_borrowed_oversized_paths_refuse_before_namespace_mutation() 
     assert!(Admission::acquire(Path::new(&huge)).is_err());
 }
 
-#[cfg(unix)]
-#[test]
-fn qualified_unlink_failure_keeps_marker_and_refuses_another_constructor_until_repaired() {
-    use std::os::unix::fs::PermissionsExt;
-    struct Restore(PathBuf);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    let parent = tempfile::tempdir().unwrap();
-    let root = fixture(parent.path(), 1, 1);
-    let restore = Restore(root.clone());
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
-    assert!(crate::NativeAssetWorkspace::new(parent.path(), crate::disk_quota::DiskQuota::default()).is_err());
-    assert!(root.join(MARKER).is_file() && root.join("stage-0").is_file());
-    assert_eq!(std::fs::read_dir(parent.path()).unwrap().filter(|e| e.as_ref().unwrap().file_type().unwrap().is_dir()).count(), 1);
-    drop(restore);
-    assert_eq!(named(parent.path(), &root).unwrap().removed_roots, 1);
-}
-
 #[test]
 fn exact_length_but_invalid_marker_bytes_never_authorize_deletion() {
     let parent = tempfile::tempdir().unwrap();
@@ -356,6 +335,10 @@ fn windows_payload_sharing_failure_keeps_marker_until_the_foreign_handle_closes(
     let held = OpenOptions::new().read(true).share_mode(3).open(root.join("stage-0")).unwrap();
     assert!(named(parent.path(), &root).is_err());
     assert!(root.join(MARKER).exists() && root.join("stage-0").exists());
+    let workspace = test_uncontended(|| crate::NativeAssetWorkspace::new(parent.path(), crate::disk_quota::DiskQuota::default())).unwrap();
+    assert_eq!(workspace.maintenance_report().retained_failures, 1);
+    assert!(root.join(MARKER).exists() && root.join("stage-0").exists());
+    drop(workspace);
     drop(held);
     assert_eq!(named(parent.path(), &root).unwrap().removed_roots, 1);
 }
@@ -401,3 +384,5 @@ fn windows_junction_reparse_roots_are_not_followed() {
     assert_eq!(std::fs::read(target.join("sentinel")).unwrap(), b"keep reparse target");
     std::fs::remove_dir(link).unwrap();
 }
+
+mod startup445;
