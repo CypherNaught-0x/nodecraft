@@ -37,7 +37,21 @@ fn an_mcp_client_session() {
     assert_eq!(added["result"]["isError"], false, "{added}");
     let id2 = ask(5, "tools/call", json!({"name": "ids_new"}))["result"]["structuredContent"]["ids"][0].clone();
     assert_ne!(id, id2, "fresh ids");
-    drop(ask);
+    let listed = ask(6, "tools/call", json!({"name":"command_list","arguments":{}}));
+    let commands = listed["result"]["structuredContent"]["commands"].as_array().unwrap();
+    for (offset, command) in ["file.open", "file.save", "file.save_as"].into_iter().enumerate() {
+        assert!(!commands.iter().any(|item| item["id"] == command));
+        let refused = ask(
+            7 + i64::try_from(offset).unwrap(),
+            "tools/call",
+            json!({"name":"command_run","arguments":{"id":command,"params":{"location":"PRIVATE_cli_destination.ncraft"}}}),
+        );
+        assert_eq!(refused["result"]["isError"], true);
+        assert_eq!(refused["result"]["content"][0]["text"], format!("unsupported: {command} can only be run by a person in the app"));
+        assert!(!refused.to_string().contains("PRIVATE_cli_destination"));
+    }
+    let intact = ask(10, "tools/call", json!({"name":"canvas_inspect","arguments":{"canvas":canvas}}));
+    assert_eq!(intact["result"]["isError"], false);
     drop(stdin);
     assert!(child.wait().unwrap().success(), "closing stdin ends the server cleanly");
 }
@@ -90,7 +104,6 @@ fn the_bridge_serves_a_running_app_over_stdio() {
     assert_eq!(overview["result"]["structuredContent"]["canvases"][0]["id"], "02020202-0202-0202-0202-020202020202");
     let shot = ask(3, "tools/call", json!({"name": "screenshot"}));
     assert_eq!(shot["result"]["content"][0]["type"], "image");
-    drop(ask);
     drop(stdin);
     assert!(child.wait().unwrap().success());
     std::fs::remove_dir_all(&dir).unwrap();

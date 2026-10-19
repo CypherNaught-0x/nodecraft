@@ -2,13 +2,28 @@ use std::{
     collections::VecDeque,
     io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
 };
 
-use nodecraft_graph::{Change, Changeset, Project};
+use nodecraft_format::{AssetStore, ProjectStorage, Snapshot, StorageLocation};
+use nodecraft_graph::{Change, Changeset, Project, StagedChanges};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
 
-use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_json};
+use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_input_json, validate_json};
+
+/// One completed actual graph stage, with no document/error ownership.
+struct StageObservation {
+    start: u64,
+    end: u64,
+    refused: bool,
+}
+impl StageObservation {
+    fn record(self, recorder: &mut crate::perf::Recorder) {
+        let metric = if self.refused { crate::perf::Metric::GraphStageRefused } else { crate::perf::Metric::GraphStage };
+        recorder.record_between(metric, self.start, self.end);
+    }
+}
 
 /// Step ceiling, subject to the byte budget below. The UI regression proves a 200-node graph
 /// built with 599 create/edit/move steps undoes to its original document (#65).
@@ -34,6 +49,7 @@ struct MoveKey {
 struct Entry {
     inverse: Changeset,
     bytes: usize,
+    state: u64,
 }
 
 #[derive(Default)]
@@ -65,6 +81,8 @@ enum Direction {
     Edit,
     Undo,
     Redo,
+    /// A derived result (#88): replaces the top undo entry with one that also undoes it.
+    Amend,
 }
 struct Prepared {
     document: Project,
@@ -72,12 +90,37 @@ struct Prepared {
     direction: Direction,
     gesture: Option<MoveKey>,
     result: Value,
+    admission: Option<PersistentAdmission>,
+    source: SourceStamp,
+    state: u64,
+    next_execution_generation: u64,
+}
+struct SourceStamp {
+    identity: Arc<()>,
+    revision: u64,
+}
+impl SourceStamp {
+    fn matches(&self, session: &Session) -> bool {
+        self.revision == session.revision && Arc::ptr_eq(&self.identity, &session.admission_identity)
+    }
+}
+/// Only Session::prepare can construct this private document-admission capability.
+/// The owning Prepared bundle pairs it with the exact graph-staged prospective document.
+pub(crate) struct PersistentAdmission {
+    replay: nodecraft_format::journal::AdmittedReplay,
+}
+impl PersistentAdmission {
+    pub(crate) fn into_replay(self) -> nodecraft_format::journal::AdmittedReplay {
+        self.replay
+    }
 }
 
 /// Owns the document and is its only command mutation path. Read access is immutable.
 /// The panic guard stages edits before publication; native unwinding preserves the live state.
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
 pub struct Session {
+    view_identity: std::sync::Arc<()>,
+    routing: crate::provider_routing::RoutingAuthority,
     document: Project,
     registry: Registry,
     kinds: nodecraft_nodes::Registry,
@@ -88,6 +131,15 @@ pub struct Session {
     gesture: Option<MoveKey>,
     revision: u64,
     events: VecDeque<DocChanged>,
+    state: u64,
+    assets: AssetStore,
+    persistence: Option<crate::persistence::Persistence>,
+    status_revision: u64,
+    admission_identity: Arc<()>,
+    #[cfg(test)]
+    replay_limit: usize,
+    execution: crate::execution_identity::ExecutionSource,
+    perf: crate::perf::Recorder,
 }
 
 impl Session {
@@ -101,18 +153,46 @@ impl Session {
 
     pub fn with_registries(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry) -> Result<Self, Error> {
         document.validate()?;
-        Ok(Self {
+        let execution = crate::execution_identity::ExecutionSource::new()?;
+        Ok(Self::from_validated(document, registry, kinds, execution))
+    }
+    fn from_validated(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry, execution: crate::execution_identity::ExecutionSource) -> Self {
+        Self {
+            view_identity: std::sync::Arc::new(()),
             document,
             registry,
             kinds,
             resources: Resources::default(),
+            routing: Default::default(),
             services: Services::default(),
             undo: History::default(),
             redo: History::default(),
             gesture: None,
             revision: 0,
             events: VecDeque::new(),
-        })
+            state: 0,
+            assets: AssetStore::default(),
+            persistence: None,
+            status_revision: 0,
+            admission_identity: Arc::new(()),
+            #[cfg(test)]
+            replay_limit: MAX_HISTORY_BYTES,
+            execution,
+            perf: crate::perf::Recorder::default(),
+        }
+    }
+
+    /// The performance recorder (#151): off until `perf.start`; the host gives it a clock.
+    pub fn perf(&self) -> &crate::perf::Recorder {
+        &self.perf
+    }
+    pub fn perf_mut(&mut self) -> &mut crate::perf::Recorder {
+        &mut self.perf
+    }
+
+    /// Non-persistent host identity; retained tokens prevent address reuse across Session replacement.
+    pub fn view_identity(&self) -> std::sync::Arc<()> {
+        std::sync::Arc::clone(&self.view_identity)
     }
 
     pub fn document(&self) -> &Project {
@@ -124,6 +204,10 @@ impl Session {
     pub fn kinds(&self) -> &nodecraft_nodes::Registry {
         &self.kinds
     }
+    #[cfg(test)]
+    pub(crate) fn exhaust_execution_generation(&mut self) {
+        self.execution.exhaust();
+    }
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -132,6 +216,13 @@ impl Session {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.entries.is_empty()
+    }
+
+    /// Install endpoint authority atomically. Generic resources cannot change this nonce.
+    pub fn set_provider_routing(&mut self, routing: crate::provider_routing::ProviderRouting) -> Result<(), Error> {
+        let nonce = crate::execution_identity::nonce()?;
+        self.routing = crate::provider_routing::RoutingAuthority { routing, nonce: Some(nonce) };
+        Ok(())
     }
 
     /// Replace a host-owned capability without discarding other injected resources.
@@ -143,6 +234,180 @@ impl Session {
     pub fn register_host_service(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
         self.services.register(id, handler)
     }
+    /// Receives/enqueues typed work. Authorize outside dispatch before scheduling.
+    pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        self.services.register_run_host(handler)
+    }
+    pub fn authorize_prepared_run(
+        &self,
+        prepared: crate::run_cmds::PreparedRun,
+        options: nodecraft_exec::run::RunOptions,
+    ) -> Result<(crate::run_cmds::AuthorizedRun, nodecraft_exec::run::Progress), Error> {
+        guard(|| crate::run_cmds::authorize(&self.context(Phase::Dispatch), prepared, options))
+    }
+    pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
+        // All constructor failures, including entropy, precede durable checkpointing.
+        snapshot.project.validate()?;
+        let registry = Registry::builtins()?;
+        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let execution = crate::execution_identity::ExecutionSource::new()?;
+        let persistence = crate::persistence::Persistence::new(storage, &snapshot)?;
+        let mut session = Self::from_validated(snapshot.project, registry, kinds, execution);
+        session.assets = snapshot.assets;
+        session.persistence = Some(persistence);
+        Ok(session)
+    }
+    pub fn assets(&self) -> &AssetStore {
+        &self.assets
+    }
+    pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
+        let next = self.execution.next()?;
+        let hash = self.assets.insert(bytes)?;
+        self.admission_identity = Arc::new(());
+        self.execution.advance(next);
+        Ok(hash)
+    }
+    /// Drops assets nothing refers to any more (not the document, nor its undo or redo history),
+    /// as a save does: for an import whose nodes couldn't be added after all.
+    pub fn prune_assets(&mut self) -> Result<(), Error> {
+        let next = self.execution.next()?;
+        let roots = self.retained_assets()?;
+        self.assets.retain(&roots);
+        self.admission_identity = Arc::new(());
+        self.execution.advance(next);
+        Ok(())
+    }
+    pub fn file_status(&self) -> crate::file_cmds::FileStatus {
+        self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
+    }
+    pub fn status_revision(&self) -> u64 {
+        self.status_revision
+    }
+    /// Host lifecycle boundary (#408): replaces the document with work recovered from an earlier
+    /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
+    /// session's file, or untitled), history starts fresh, and the change is published like an
+    /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
+    pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        if self.can_undo() || self.can_redo() {
+            return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
+        }
+        if !self.file_status().available {
+            return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
+        }
+        snapshot.project.validate()?;
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let next = self.execution.next()?;
+        let before = self.file_status();
+        let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+        storage.adopt_recovered(&snapshot, location)?;
+        self.document = snapshot.project;
+        self.assets = snapshot.assets;
+        self.undo = History::default();
+        self.redo = History::default();
+        self.gesture = None;
+        self.state = revision;
+        self.publish(revision, "file.recover", next);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        Ok(())
+    }
+    /// Host boundary for live recompute (#88): records results derived from the document as it
+    /// is at `base` (the revision the results were computed from), importing the images they
+    /// name from `staged`. The record joins the undo step of the edit that made the results
+    /// stale, so one undo restores that edit's old values and old results together, and a
+    /// result never becomes an undo step of its own. Refused (`Conflict`, nothing changed) when
+    /// the document has moved on since `base`, or while there is something to redo.
+    pub fn record_derived(
+        &mut self,
+        canvas: CanvasId,
+        results: Vec<(NodeId, nodecraft_graph::Generation)>,
+        staged: &AssetStore,
+        base: u64,
+    ) -> Result<(), Error> {
+        self.record_derived_with(canvas, results, &[], staged, base)
+    }
+
+    /// [`Self::record_derived`], also applying cached results (`hits`, #91) in the same step.
+    pub fn record_derived_with(
+        &mut self,
+        canvas: CanvasId,
+        results: Vec<(NodeId, nodecraft_graph::Generation)>,
+        hits: &[crate::cache::Hit],
+        staged: &AssetStore,
+        base: u64,
+    ) -> Result<(), Error> {
+        if self.revision != base {
+            return Err(Error::new(ErrorKind::Conflict, "the results are out of date"));
+        }
+        if !self.redo.entries.is_empty() {
+            return Err(Error::new(ErrorKind::Conflict, "derived results wait until there is nothing to redo"));
+        }
+        let count = results.len().saturating_add(hits.len());
+        if count == 0 || count > crate::run_cmds::MAX_RESULTS {
+            return Err(invalid("record 1 to 1000 derived results"));
+        }
+        // Validate every result before touching the assets.
+        let live = self.document.canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+        let mut changes = crate::cache::changes(canvas, live, hits)?;
+        let mut seen: std::collections::BTreeSet<NodeId> = hits.iter().map(crate::cache::Hit::node).collect();
+        if seen.len() != hits.len() {
+            return Err(invalid("a node has two derived results"));
+        }
+        for (node, generation) in &results {
+            if !seen.insert(*node) {
+                return Err(invalid("a node has two derived results"));
+            }
+            let current = live.nodes().get(node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result's node is gone"))?;
+            changes.extend(nodecraft_exec::run::record_changes(canvas, current, generation.clone())?);
+        }
+        let mut needed = Vec::new();
+        for (_, generation) in &results {
+            media(&generation.outputs, &mut needed);
+        }
+        for hash in needed {
+            if self.assets.get(&hash).is_none() {
+                let bytes = staged.get(&hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result names an image that wasn't staged"))?.to_vec();
+                self.import_asset(&bytes)?;
+            }
+        }
+        let mut prepared = guard(|| self.prepare(Effect::Edit { changes: Changeset::new(changes), result: Value::Null, gesture: None }))?;
+        // One undo entry: first undo the result, then the edit below it (if any).
+        // When the combined step would exceed the history or replay budgets, the results get a
+        // step of their own instead: never evict history or make an undo unreplayable.
+        if let Some(below) = self.undo.entries.back() {
+            let mut combined = prepared.inverse.inverse.changes.clone();
+            combined.extend(below.inverse.changes.iter().cloned());
+            let inverse = Changeset::new(combined);
+            let fits = inverse.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12)).is_ok();
+            if let (true, Ok(bytes)) = (fits, history_bytes(&inverse)) {
+                let total = self.undo.bytes.saturating_sub(below.bytes).saturating_add(bytes);
+                if total <= MAX_HISTORY_BYTES {
+                    prepared.inverse = Entry { inverse, bytes, state: below.state };
+                    prepared.direction = Direction::Amend;
+                }
+            }
+        }
+        self.commit_prepared(prepared, "run.derived").map(|_| ())
+    }
+    /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
+    pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {
+        let before = self.file_status();
+        let result =
+            self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?.close(self.state, discard_dirty);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        result
+    }
+    fn retained_assets(&self) -> Result<std::collections::BTreeSet<nodecraft_types::Blake3>, Error> {
+        let mut roots = self.assets.validate_project(&self.document)?;
+        for entry in self.undo.entries.iter().chain(&self.redo.entries) {
+            roots.extend(nodecraft_format::assets_in_changes(&entry.inverse)?);
+        }
+        Ok(roots)
+    }
+
     pub fn with_resources(mut self, resources: Resources) -> Self {
         self.resources = resources;
         self
@@ -153,30 +418,60 @@ impl Session {
         self
     }
 
-    fn context(&self, phase: Phase) -> Context<'_> {
+    pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
+            routing: &self.routing,
             document: &self.document,
+            revision: self.revision,
             kinds: &self.kinds,
             can_undo: self.can_undo(),
             can_redo: self.can_redo(),
             resources: &self.resources,
             services: &self.services,
             phase,
+            file: self.file_status(),
+            execution: &self.execution,
+            perf: &self.perf,
         }
     }
 
     /// Returns an actionable reason when disabled; never mutates the session.
     pub fn enabled(&self, id: &str, params: &Value) -> Result<(), Error> {
         guard(|| {
-            validate_json(params)?;
-            (self.registry.get(id)?.enabled)(&self.context(Phase::Preview), params)
+            validate_input_json(params)?;
+            let spec = self.registry.get(id)?;
+            let context = self.context(Phase::Preview);
+            (spec.enabled)(&context, params)?;
+            // Handlers describe effects without I/O. Preview custom edits through the same
+            // admission boundary as dispatch; services and file I/O are never invoked here.
+            match (spec.run)(&context, params)? {
+                effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
+                _ => Ok(()),
+            }
         })
     }
 
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
+        let before = self.file_status();
+        // Capture commands don't time themselves.
+        let start = if id.starts_with("perf.") { None } else { self.perf.now() };
+        let result = self.dispatch_inner(id, params);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        // Only commands that ran count: a refusal is fast and would pull the latencies down.
+        if let Some(start) = start.filter(|_| result.is_ok()) {
+            self.perf.record_since(crate::perf::Metric::Dispatch, start);
+            if let Some(metric) = crate::perf::Metric::of_command(id) {
+                self.perf.record_since(metric, start);
+            }
+        }
+        result
+    }
+    fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
         let effect = guard(|| {
-            validate_json(params)?;
+            validate_input_json(params)?;
             let context = self.context(Phase::Dispatch);
             (spec.enabled)(&context, params)?;
             (spec.run)(&context, params)
@@ -186,6 +481,21 @@ impl Session {
                 validate_json(&result)?;
                 return Ok(result);
             }
+            Effect::PreparedRun { prepared } => {
+                return guard(|| {
+                    let result = self.services.invoke_run_host(*prepared)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            Effect::Perf { action } => {
+                match action {
+                    crate::perf_cmds::PerfAction::Start => self.perf.set_enabled(true),
+                    crate::perf_cmds::PerfAction::Stop => self.perf.set_enabled(false),
+                    crate::perf_cmds::PerfAction::Clear => self.perf.clear(),
+                }
+                return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
+            }
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
                 return guard(|| {
@@ -194,10 +504,54 @@ impl Session {
                     Ok(result)
                 });
             }
+            Effect::Save { location } => {
+                let next = self.execution.next()?;
+                let roots = self.retained_assets()?;
+                let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+                let ready = storage.save(&self.document, &self.assets, self.state, location)?;
+                self.assets.retain(&roots);
+                self.admission_identity = Arc::new(());
+                self.execution.advance(next);
+                self.gesture = None;
+                return Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}));
+            }
+            Effect::Open { location, discard_dirty } => {
+                if self.file_status().dirty && !discard_dirty {
+                    return Err(Error::new(ErrorKind::Conflict, "opening would discard unsaved changes"));
+                }
+                let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+                let next = self.execution.next()?;
+                let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+                let snapshot = storage.open(location, revision)?;
+                self.document = snapshot.project;
+                self.assets = snapshot.assets;
+                self.undo = History::default();
+                self.redo = History::default();
+                self.gesture = None;
+                self.state = revision;
+                self.publish(revision, spec.id, next);
+                return Ok(serde_json::json!({"opened":true,"read_only":self.file_status().read_only}));
+            }
             document_effect => document_effect,
         };
+        let mut stage = None;
+        let prepared = guard(|| self.prepare_observed(effect, Some(&mut stage)));
+        // Preserve completed staging observations even if later admission fails. A stage
+        // that unwinds cannot finish its observation and contributes no fabricated sample.
+        if let Some(stage) = stage {
+            stage.record(&mut self.perf);
+        }
+        self.commit_prepared(prepared?, spec.id)
+    }
+    fn commit_prepared(&mut self, mut prepared: Prepared, command: &'static str) -> Result<Value, Error> {
+        if !prepared.source.matches(self) {
+            return Err(Error::new(ErrorKind::Conflict, "prepared edit no longer matches the session document, assets or revision"));
+        }
         let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
-        let prepared = guard(|| self.prepare(effect))?;
+        if let Some(admission) = prepared.admission.take() {
+            let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Conflict, "prepared persistent edit requires its original storage"))?;
+            storage.append(admission)?;
+        }
         // No handler or fallible graph operation runs after this point.
         match prepared.direction {
             Direction::Edit => {
@@ -217,44 +571,126 @@ impl Session {
                 self.undo.push(prepared.inverse);
                 self.gesture = None;
             }
+            // The edit below keeps its gesture: a drag that a result joined stays one step.
+            Direction::Amend => {
+                self.undo.pop();
+                self.undo.push(prepared.inverse);
+            }
         }
         self.document = prepared.document;
+        self.state = prepared.state;
+        self.publish(revision, command, prepared.next_execution_generation);
+        Ok(prepared.result)
+    }
+    fn publish(&mut self, revision: u64, command: &'static str, next_execution_generation: u64) {
         self.revision = revision;
-        self.events.push_back(DocChanged { revision, command: spec.id });
+        self.execution.advance(next_execution_generation);
+        self.admission_identity = Arc::new(());
+        self.events.push_back(DocChanged { revision, command });
         if self.events.len() > MAX_EVENTS {
             self.events.pop_front();
         }
-        Ok(prepared.result)
+    }
+
+    fn stage(&self, changes: &Changeset, observation: &mut Option<&mut Option<StageObservation>>) -> Result<StagedChanges, Error> {
+        let start = observation.as_ref().and_then(|_| self.perf.now());
+        let result = changes.stage_certified(&self.document);
+        let end = observation.as_ref().and_then(|_| self.perf.now());
+        if let (Some(slot), Some(start), Some(end)) = (observation.as_deref_mut(), start, end) {
+            *slot = Some(StageObservation { start, end, refused: result.is_err() });
+        }
+        result
+    }
+    fn replay_limit(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.replay_limit
+        }
+        #[cfg(not(test))]
+        {
+            MAX_HISTORY_BYTES
+        }
+    }
+    fn validate_actual_redo(&self, redo: Option<&Changeset>) -> Result<(), Error> {
+        if let Some(redo) = redo {
+            redo.validate_replay_budget(self.replay_limit().saturating_sub(12))?;
+            history_bytes(redo)?;
+            if self.persistence.is_some() {
+                nodecraft_format::journal::validate_replay(redo, &self.assets)?;
+            }
+        }
+        Ok(())
     }
 
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
-        let (document, inverse, direction, gesture, result) = match effect {
+        self.prepare_observed(effect, None)
+    }
+    fn prepare_observed(&self, effect: Effect, mut observation: Option<&mut Option<StageObservation>>) -> Result<Prepared, Error> {
+        let next_execution_generation = self.execution.next()?;
+        self.context(Phase::Dispatch).editable()?;
+        let (document, inverse, forward, state, direction, gesture, result) = match effect {
             Effect::Edit { changes, result, gesture } => {
                 validate_json(&result)?;
                 if changes.changes.is_empty() {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let (document, inverse) = changes.stage(&self.document)?;
+                let staged = self.stage(&changes, &mut observation)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 // Graph canonical sizing includes the operation array. History stores the full
                 // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
                 changes.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12))?;
-                (document, inverse, Direction::Edit, gesture, result)
+                (
+                    document,
+                    inverse,
+                    changes,
+                    self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?,
+                    Direction::Edit,
+                    gesture,
+                    result,
+                )
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
-                (document, inverse, Direction::Undo, None, Value::Null)
+                let staged = self.stage(&entry.inverse, &mut observation)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
+                (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
-                (document, inverse, Direction::Redo, None, Value::Null)
+                let staged = self.stage(&entry.inverse, &mut observation)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
+                (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
-            Effect::None { .. } | Effect::Service { .. } => return Err(invalid("non-document effects must bypass history staging")),
+            Effect::None { .. } | Effect::PreparedRun { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {
+                return Err(invalid("non-document effects must bypass history staging"));
+            }
         };
         let bytes = history_bytes(&inverse)?;
-        Ok(Prepared { document, inverse: Entry { inverse, bytes }, direction, gesture, result })
+        let admission = if self.persistence.is_some() {
+            // The checkpoint admitted the v1 root. Complete immutable forward/inverse
+            // payload guards preserve that representation without another project walk.
+            let replay = nodecraft_format::journal::AdmittedReplay::new(forward, &self.assets)?;
+            nodecraft_format::journal::validate_replay(&inverse, &self.assets)?;
+            replay.validate_changed_assets(&document, &self.assets)?;
+            Some(PersistentAdmission { replay })
+        } else {
+            None
+        };
+        Ok(Prepared {
+            document,
+            inverse: Entry { inverse, bytes, state: self.state },
+            direction,
+            gesture,
+            result,
+            admission,
+            source: SourceStamp { identity: Arc::clone(&self.admission_identity), revision: self.revision },
+            next_execution_generation,
+            state,
+        })
     }
 
     /// Each frontend/subscriber owns a cursor. On `Conflict`, reread `document()` and reset
@@ -286,9 +722,20 @@ fn move_key(changes: &Changeset, gesture: Option<String>) -> Result<Option<MoveK
     }
 }
 
-fn guard<T>(operation: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+pub(crate) fn guard<T>(operation: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     catch_unwind(AssertUnwindSafe(operation))
         .map_err(|_| Error::new(ErrorKind::Internal, "command failed unexpectedly; document and undo history were preserved"))?
+}
+
+/// The asset hashes `values` name (lists included), in order.
+fn media(values: &[nodecraft_types::Value], out: &mut Vec<nodecraft_types::Blake3>) {
+    for value in values {
+        match value {
+            nodecraft_types::Value::Media(asset) => out.push(asset.hash),
+            nodecraft_types::Value::List(items) => media(items, out),
+            _ => {}
+        }
+    }
 }
 
 fn history_bytes(changes: &Changeset) -> Result<usize, Error> {
@@ -316,6 +763,86 @@ mod tests {
     use nodecraft_graph::{Canvas, Generation, Node};
     use nodecraft_types::{GenerationId, ProjectId};
     use serde_json::json;
+
+    #[test]
+    fn actual_pin_redo_over_history_limit_preserves_session_and_journal() {
+        use nodecraft_format::{MemoryStorage, ProjectStorage, StorageLocation};
+        use nodecraft_graph::{Comment, Position};
+        use nodecraft_types::CommentId;
+        use std::{cell::RefCell, rc::Rc};
+        #[derive(Clone, Default)]
+        struct Shared(Rc<RefCell<MemoryStorage>>);
+        impl ProjectStorage for Shared {
+            fn load(&mut self, p: &StorageLocation) -> Result<Vec<u8>, Error> {
+                self.0.borrow_mut().load(p)
+            }
+            fn save(&mut self, p: &StorageLocation, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().save(p, b)
+            }
+            fn checkpoint(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().checkpoint(b)
+            }
+            fn append(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().append(b)
+            }
+        }
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let id = CommentId::from_bytes([3; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Budget").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::PutComment { canvas, comment: Comment::new(id, "Root", Position::default()) }.apply(&mut project).unwrap();
+        let node = Node::new(NodeId::from_bytes([2; 16]), "source.text");
+        let forward =
+            Changeset::new(vec![Change::SetCommentPin { canvas, id, node: Some(node.id), pos: Position { x: 1.0, y: 2.0 } }, Change::AddNode { canvas, node }]);
+        let staged = forward.stage_certified(&project).unwrap();
+        let redo = staged.actual_redo.unwrap();
+        let cap = history_bytes(&redo).unwrap() - 1;
+        forward.validate_replay_budget(cap - 12).unwrap();
+        assert!(history_bytes(&staged.inverse).unwrap() <= cap);
+        let storage = Shared::default();
+        let mut session =
+            Session::with_storage(Snapshot { project: project.clone(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+        session
+            .registry
+            .register(crate::commands::CommandSpec {
+                id: "test.pin_budget",
+                label: "Pin budget",
+                shortcut: None,
+                alternate_shortcuts: &[],
+                input_schema: || json!({}),
+                params_doc: "{}",
+                enabled: |_, _| Ok(()),
+                run: |c, _| Ok(Effect::Edit { changes: c.resources.require::<Changeset>()?.clone(), result: Value::Null, gesture: None }),
+            })
+            .unwrap();
+        session.resources.insert(forward);
+        let ticks = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let clock = ticks.clone();
+        session.perf_mut().set_clock(Some(Box::new(move || {
+            let next = clock.get() + 10;
+            clock.set(next);
+            next
+        })));
+        session.perf_mut().set_enabled(true);
+        session.replay_limit = cap;
+        let journal = storage.0.borrow().recovery.clone();
+        assert!(session.dispatch("test.pin_budget", &json!({})).is_err());
+        assert_eq!(session.document(), &project);
+        assert_eq!(session.revision(), 0);
+        assert!(!session.can_undo() && !session.can_redo());
+        assert!(session.events.is_empty());
+        assert_eq!(storage.0.borrow().recovery, journal);
+        // Certification completed; the subsequent actual-redo admission refusal is outside
+        // its timing boundary and must not turn that completed work into a refused stage.
+        let report = session.perf().report();
+        let samples = |metric| report.metrics.iter().find(|row| row.metric == metric).unwrap().samples;
+        assert_eq!(samples(crate::perf::Metric::GraphStage), 1);
+        assert_eq!(samples(crate::perf::Metric::GraphStageRefused), 0);
+        assert_eq!(samples(crate::perf::Metric::Dispatch), 0);
+        session.replay_limit = cap + 1;
+        session.dispatch("test.pin_budget", &json!({})).unwrap();
+        assert_eq!(session.revision(), 1);
+    }
 
     #[test]
     fn non_document_effect_works_at_exhausted_document_revision() {
@@ -351,7 +878,7 @@ mod tests {
         let canvas = CanvasId::from_bytes([1; 16]);
         let node = Node::new(NodeId::from_bytes([2; 16]), "test.text");
         let changes = Changeset::new(vec![Change::AddNode { canvas, node: node.clone() }]);
-        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![] }]);
+        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![], pins: vec![] }]);
         let full = history_bytes(&restore).unwrap();
         assert!(changes.validate_replay_budget(full - 12).is_ok());
         assert!(changes.validate_replay_budget(full - 13).is_err());
@@ -402,4 +929,225 @@ mod tests {
             .unwrap();
         assert!(removal.inverse.bytes < 513 * 1024);
     }
+    #[test]
+    fn generation_transactions_recover_identically_through_undo_redo_and_atomic_failures() {
+        use nodecraft_format::{MemoryStorage, StorageLocation, journal};
+        use std::{cell::RefCell, rc::Rc};
+        #[derive(Clone)]
+        struct Shared(Rc<RefCell<MemoryStorage>>);
+        impl ProjectStorage for Shared {
+            fn load(&mut self, l: &StorageLocation) -> Result<Vec<u8>, Error> {
+                self.0.borrow_mut().load(l)
+            }
+            fn save(&mut self, l: &StorageLocation, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().save(l, b)
+            }
+            fn checkpoint(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().checkpoint(b)
+            }
+            fn append(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().append(b)
+            }
+        }
+        fn enabled(_: &Context<'_>, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn edit(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+            Ok(Effect::Edit { changes: crate::commands::params(value)?, result: Value::Null, gesture: None })
+        }
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let id = NodeId::from_bytes([2; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([3; 16]), "Generations").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        let mut node = Node::new(id, "test.text");
+        for n in [5, 7] {
+            node.history.push(Generation {
+                id: GenerationId::from_bytes([n; 16]),
+                outputs: vec![nodecraft_types::Value::Text(format!("output{n}"))],
+                input_hash: None,
+            });
+        }
+        node.active = Some(GenerationId::from_bytes([5; 16]));
+        Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+        let shared = Shared(Rc::new(RefCell::new(MemoryStorage::default())));
+        let mut session = Session::with_storage(Snapshot { project: project.clone(), assets: Default::default(), epoch: 0 }, Box::new(shared.clone())).unwrap();
+        session
+            .registry
+            .register(crate::commands::CommandSpec {
+                id: "test.generations",
+                label: "Generation edits",
+                shortcut: None,
+                alternate_shortcuts: &[],
+                input_schema: || json!({}),
+                params_doc: "Changeset",
+                enabled,
+                run: edit,
+            })
+            .unwrap();
+        let hash = session.import_asset(b"generation asset").unwrap();
+        let generation = Generation {
+            input_hash: None,
+            id: GenerationId::from_bytes([6; 16]),
+            outputs: vec![nodecraft_types::Value::List(vec![nodecraft_types::Value::Media(nodecraft_types::AssetRef {
+                hash,
+                mime: "text/plain".parse().unwrap(),
+                meta: Default::default(),
+            })])],
+        };
+        let changes = Changeset::new(vec![
+            Change::AddGeneration { canvas, id, index: 1, generation },
+            Change::SetActiveGeneration { canvas, id, generation: Some(GenerationId::from_bytes([6; 16])) },
+            Change::RemoveGeneration { canvas, id, generation: GenerationId::from_bytes([5; 16]) },
+        ]);
+        session.dispatch("test.generations", &serde_json::to_value(changes).unwrap()).unwrap();
+        let edited = session.document().clone();
+        for command in ["edit.undo", "edit.redo"] {
+            let recovered = journal::recover(&shared.0.borrow().recovery).unwrap();
+            assert_eq!(&recovered.snapshot.project, session.document());
+            assert_eq!(recovered.snapshot.assets.get(&hash), Some(b"generation asset".as_slice()));
+            session.dispatch(command, &Value::Null).unwrap();
+            if command == "edit.undo" {
+                assert_eq!(session.document(), &project);
+            } else {
+                assert_eq!(session.document(), &edited);
+            }
+        }
+        assert_eq!(journal::recover(&shared.0.borrow().recovery).unwrap().snapshot.project, edited);
+        let bytes = shared.0.borrow().recovery.clone();
+        let events = session.events_since(0).unwrap();
+        let revision = session.revision();
+        let changes = Changeset::new(vec![
+            Change::SetProjectTitle { title: "Never published".into() },
+            Change::RemoveGeneration { canvas, id, generation: GenerationId::from_bytes([6; 16]) },
+        ]);
+        assert!(session.dispatch("test.generations", &serde_json::to_value(changes).unwrap()).is_err());
+        assert_eq!(session.document(), &edited);
+        assert_eq!(session.revision(), revision);
+        assert_eq!(session.events_since(0).unwrap(), events);
+        assert_eq!(shared.0.borrow().recovery, bytes);
+        assert!(!session.file_status().recovery_required);
+    }
+    #[test]
+    fn incremental_large_graph_delete_reserves_replay_after_empty_checkpoint() {
+        use nodecraft_format::{MemoryStorage, StorageLocation, journal};
+        use nodecraft_graph::Comment;
+        use nodecraft_types::{AssetRef, CommentId, MediaMeta};
+        use std::{cell::RefCell, rc::Rc};
+        #[derive(Clone)]
+        struct Shared(Rc<RefCell<MemoryStorage>>);
+        impl ProjectStorage for Shared {
+            fn load(&mut self, l: &StorageLocation) -> Result<Vec<u8>, Error> {
+                self.0.borrow_mut().load(l)
+            }
+            fn save(&mut self, l: &StorageLocation, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().save(l, b)
+            }
+            fn checkpoint(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().checkpoint(b)
+            }
+            fn append(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().append(b)
+            }
+        }
+        fn enabled(_: &Context<'_>, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn edit(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+            let canvas = CanvasId::from_bytes([1; 16]);
+            let change = match value["op"].as_str().unwrap() {
+                "comment" => Change::PutComment {
+                    canvas,
+                    comment: Comment {
+                        id: CommentId::from_bytes([value["n"].as_u64().unwrap() as u8; 16]),
+                        text: "x".repeat(usize::try_from(value["len"].as_u64().unwrap()).unwrap()),
+                        pos: Default::default(),
+                        node: None,
+                        replies: vec![],
+                        resolved: false,
+                    },
+                },
+                "node" => {
+                    let mut node = Node::new(NodeId::from_bytes([value["n"].as_u64().unwrap() as u8; 16]), "test.media");
+                    node.params.insert(
+                        "asset".into(),
+                        nodecraft_types::Value::Media(AssetRef {
+                            hash: serde_json::from_value(value["hash"].clone()).unwrap(),
+                            mime: "text/plain".parse().unwrap(),
+                            meta: MediaMeta::default(),
+                        }),
+                    );
+                    Change::AddNode { canvas, node }
+                }
+                "delete" => Change::RemoveCanvas { id: canvas },
+                _ => panic!("unexpected fixture operation"),
+            };
+            Ok(Effect::Edit { changes: Changeset::new(vec![change]), result: Value::Null, gesture: None })
+        }
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Large boundary").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Large") }.apply(&mut project).unwrap();
+        let storage = Shared(Rc::new(RefCell::new(MemoryStorage::default())));
+        let mut session = Session::with_storage(Snapshot { project, assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+        session
+            .registry
+            .register(crate::commands::CommandSpec {
+                id: "test.large",
+                label: "Boundary edits",
+                shortcut: None,
+                alternate_shortcuts: &[],
+                input_schema: || json!({}),
+                params_doc: "fixture",
+                enabled,
+                run: edit,
+            })
+            .unwrap();
+        for n in 0..3_u8 {
+            let hash = session.import_asset(&vec![b'a' + n; nodecraft_format::MAX_ASSET_BYTES]).unwrap();
+            session.dispatch("test.large", &json!({"op":"node","n":10+n,"hash":hash})).unwrap();
+        }
+        for n in 0..16_u8 {
+            session.dispatch("test.large", &json!({"op":"comment","n":50+n,"len":if n==15 {0} else {1024*1024}})).unwrap();
+        }
+        let delete = Changeset::new(vec![Change::RemoveCanvas { id: canvas }]);
+        let base_size = {
+            let (_, inverse) = delete.stage(session.document()).unwrap();
+            history_bytes(&inverse).unwrap()
+        };
+        let last_len = MAX_HISTORY_BYTES.checked_sub(64).unwrap().checked_sub(base_size).unwrap();
+        assert!(last_len < 1024 * 1024);
+        session.dispatch("test.large", &json!({"op":"comment","n":65,"len":last_len})).unwrap();
+        let revision = session.revision();
+        let events = session.events_since(0).unwrap();
+        let recovery_len = storage.0.borrow().recovery.len();
+        let undo = session.undo.entries.len();
+        // The changeset fits engine history, but max-sequence Record+48MiB assets+headers do not.
+        assert!(session.dispatch("test.large", &json!({"op":"delete"})).is_err());
+        assert_eq!(session.revision(), revision);
+        assert_eq!(session.events_since(0).unwrap(), events);
+        assert_eq!(storage.0.borrow().recovery.len(), recovery_len);
+        assert_eq!(session.undo.entries.len(), undo);
+        assert!(!session.file_status().recovery_required);
+        // Move safely below both record and binary-frame limits, then exercise the actual future
+        // checkpoint shape that omits every retained asset and must re-add them during undo.
+        session.dispatch("test.large", &json!({"op":"comment","n":65,"len":last_len-4096})).unwrap();
+        session.dispatch("test.large", &json!({"op":"delete"})).unwrap();
+        assert!(session.document().canvases().is_empty());
+        session.dispatch("file.save_as", &json!({"location":"empty.ncraft"})).unwrap();
+        assert_eq!(session.assets().byte_len(), nodecraft_format::MAX_TOTAL_ASSET_BYTES);
+        session.dispatch("edit.undo", &Value::Null).unwrap();
+        assert_eq!(session.document().canvases().get(&canvas).unwrap().nodes().len(), 3);
+        let recovered = journal::recover(&storage.0.borrow().recovery).unwrap();
+        assert_eq!(&recovered.snapshot.project, session.document());
+        assert_eq!(recovered.snapshot.assets.byte_len(), nodecraft_format::MAX_TOTAL_ASSET_BYTES);
+        session.dispatch("edit.redo", &Value::Null).unwrap();
+        assert!(session.document().canvases().is_empty());
+    }
 }
+
+#[cfg(test)]
+#[path = "persistence_tests.rs"]
+mod persistence_tests;
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod admission_tests;

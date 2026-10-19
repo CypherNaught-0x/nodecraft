@@ -223,3 +223,5 @@ fn a_graph_built_like_a_user_would_undoes_to_empty() {
     assert_eq!(steps, 599);
     assert_eq!(h.state().session.document(), &original);
 }
+
+mod capture371;

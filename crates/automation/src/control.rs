@@ -20,7 +20,7 @@
 //! Connection threads only parse and authenticate; every request is answered on the UI thread,
 //! which owns the session ([`Call`], [`answer`]). A screenshot is answered a frame later.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
@@ -32,6 +32,9 @@ use nodecraft_types::{Error, ErrorKind};
 use serde_json::{Map, Value, json};
 
 use crate::mcp::{self, Line, MAX_MESSAGE_BYTES};
+
+/// Trusted parent-process transport; TCP always uses token-authenticated connections.
+pub mod stdio;
 
 /// The protocol version `hello` reports.
 pub const PROTOCOL: u32 = 1;
@@ -200,14 +203,20 @@ impl Call {
 /// Answers every request except [`Request::Screenshot`] (which needs the window: the host takes
 /// one and calls [`screenshot_answer`]). `None` for a screenshot.
 pub fn answer(session: &mut Session, request: &Request) -> Option<Result<Value, Error>> {
+    answer_with(session, request)
+}
+
+/// Live hosts may supply scoped view dispatch; classification and reply envelopes remain the
+/// same as headless control and MCP. Screenshots still belong to the window's capture path.
+pub fn answer_with<H: crate::commands::CommandHost + ?Sized>(host: &mut H, request: &Request) -> Option<Result<Value, Error>> {
     Some(match request {
-        Request::ListCommands(args) => mcp::command_list(session, args),
-        Request::RunCommand(args) => mcp::command_run(session, args.clone()),
-        Request::Inspect(args) => mcp::canvas_inspect(session, args),
-        Request::State => mcp::canvas_inspect(session, &Map::new()).map(|mut overview| {
+        Request::ListCommands(args) => mcp::command_list(host, args),
+        Request::RunCommand(args) => mcp::command_run(host, args.clone()),
+        Request::Inspect(args) => mcp::canvas_inspect(host.session(), args),
+        Request::State => mcp::canvas_inspect(host.session(), &Map::new()).map(|mut overview| {
             if let Some(o) = overview.as_object_mut() {
-                o.insert("can_undo".into(), json!(session.can_undo()));
-                o.insert("can_redo".into(), json!(session.can_redo()));
+                o.insert("can_undo".into(), json!(host.session().can_undo()));
+                o.insert("can_redo".into(), json!(host.session().can_redo()));
             }
             overview
         }),
@@ -260,13 +269,13 @@ fn error_value(id: Value, e: &Error) -> Value {
 
 /// One connection's protocol state: unauthenticated until a correct `hello`.
 pub struct Connection {
-    token: Token,
+    token: Option<Token>,
     authed: bool,
 }
 
 impl Connection {
     pub fn new(token: Token) -> Self {
-        Self { token, authed: false }
+        Self { token: Some(token), authed: false }
     }
 
     pub fn is_authed(&self) -> bool {
@@ -292,7 +301,7 @@ impl Connection {
         };
         if !self.authed {
             let presented = params.get("token").and_then(Value::as_str).unwrap_or_default();
-            if method == "hello" && self.token.matches(presented) {
+            if method == "hello" && self.token.as_ref().is_some_and(|token| token.matches(presented)) {
                 self.authed = true;
                 return Step::Reply(json!({"id": id, "result": {"app": "nodecraft", "version": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL}}));
             }
@@ -344,6 +353,7 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
     let addr = socket.local_addr().map_err(|e| Error::new(ErrorKind::Unsupported, e.to_string()))?;
     let (to_ui, calls) = sync_channel::<Call>(QUEUE);
     let open = Arc::new(AtomicUsize::new(0));
+    let refusing = Arc::new(AtomicUsize::new(0));
     std::thread::Builder::new()
         .name("nodecraft-control".into())
         .spawn(move || {
@@ -351,8 +361,20 @@ pub fn listen_with(token: Token, wake: Arc<dyn Fn() + Send + Sync>, timeouts: Ti
                 let Ok(stream) = stream else { continue };
                 if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     open.fetch_sub(1, Ordering::SeqCst);
-                    let mut stream = stream;
-                    let _ = writeln!(stream, "{}", error_reply(Value::Null, "busy", "too many control connections"));
+                    // Off the accept thread, so silent refused clients can't delay real ones; a few at
+                    // once at most, beyond that the refusal is just closed.
+                    if refusing.fetch_add(1, Ordering::SeqCst) < MAX_REFUSALS {
+                        let held = Arc::clone(&refusing);
+                        let spawned = std::thread::Builder::new().name("nodecraft-control-busy".into()).spawn(move || {
+                            refuse_busy(stream);
+                            held.fetch_sub(1, Ordering::SeqCst);
+                        });
+                        if spawned.is_err() {
+                            refusing.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    } else {
+                        refusing.fetch_sub(1, Ordering::SeqCst);
+                    }
                     continue;
                 }
                 let (token, to_ui, wake, slot) = (token.clone(), to_ui.clone(), Arc::clone(&wake), Arc::clone(&open));
@@ -399,6 +421,20 @@ fn read_hello(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>, deadline: In
             return Ok(Line::Read);
         }
     }
+}
+
+/// Refusals answered at once (each waits up to 200 ms for the client's hello).
+const MAX_REFUSALS: usize = 4;
+
+/// Turns a connection away as busy. The client's `hello` is drained briefly after the reply, so
+/// closing doesn't reset the connection and lose the reply (a reset is what an unread `hello`
+/// causes on macOS and Windows). Bounded: a short timeout and one small read.
+fn refuse_busy(mut stream: TcpStream) {
+    let _ = writeln!(stream, "{}", error_reply(Value::Null, "busy", "too many control connections"));
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+    let mut sink = [0u8; 4096];
+    let _ = std::io::Read::read(&mut stream, &mut sink);
 }
 
 fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, wake: &(dyn Fn() + Send + Sync), timeouts: Timeouts) {
@@ -496,6 +532,7 @@ pub struct Client {
     /// How to connect again.
     origin: Origin,
     last_used: Instant,
+    reconnect_after: Duration,
 }
 
 #[derive(Clone)]
@@ -505,7 +542,11 @@ enum Origin {
 }
 
 /// Reconnect before a call once the app may have closed the connection as idle.
-const RECONNECT_AFTER: Duration = Duration::from_secs(540);
+pub const RECONNECT_AFTER: Duration = Duration::from_secs(540);
+/// Handshakes tried while the app is still freeing the old connection's slot.
+pub const RECONNECT_ATTEMPTS: u32 = 6;
+/// How long the app may take to answer `hello`.
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Longest reply the client reads: a screenshot in base64 plus room.
 const MAX_REPLY_BYTES: usize = MAX_SCREENSHOT_BYTES / 3 * 4 + 1024 * 1024;
@@ -514,50 +555,147 @@ fn network(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Network, message)
 }
 
+// Kept private: token-file admission is shared by initial connection and reconnect.
+const MAX_TOKEN_FILE_BYTES: usize = 4096;
+fn token_read_error(path: &std::path::Path, error: std::io::Error) -> Error {
+    Error::new(ErrorKind::NotFound, format!("no control token at {} ({error}); start the app with `nodecraft --control`", path.display()))
+}
+fn read_token_file_with<T>(reader: impl Read, path: &std::path::Path, connect: impl FnOnce(SocketAddr, &str) -> Result<T, Error>) -> Result<T, Error> {
+    // A byte beyond the cap detects oversize even when file metadata is stale or absent.
+    let mut bytes = Vec::with_capacity(MAX_TOKEN_FILE_BYTES + 1);
+    reader.take((MAX_TOKEN_FILE_BYTES + 1) as u64).read_to_end(&mut bytes).map_err(|error| token_read_error(path, error))?;
+    if bytes.len() > MAX_TOKEN_FILE_BYTES {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("control token file is larger than {MAX_TOKEN_FILE_BYTES} bytes")));
+    }
+    let invalid = || Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display()));
+    let file: TokenFile = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    // Shape only: preserve hex case and the server's existing exact authentication comparison.
+    if file.token.len() != 64 || !file.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)
+}
+
+#[cfg(test)]
+mod token_file_tests;
+
+fn admission_deadline() -> Instant {
+    Instant::now().checked_add(ADMISSION_TIMEOUT).unwrap_or_else(Instant::now)
+}
+
+fn admission_left(deadline: Instant) -> std::io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() { Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "control admission deadline expired")) } else { Ok(left) }
+}
+
+fn write_admission(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(admission_left(deadline)?))?;
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "control hello couldn't be written")),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    admission_left(deadline).map(|_| ())
+}
+
 impl Client {
     /// Connects to the app named by the token file at `path` and says hello.
+    /// Files are capped at 4 KiB and their 64-hex token is checked before connecting.
+    /// Network admission has one five-second deadline; synchronous file I/O cannot be interrupted.
     pub fn from_token_file(path: &std::path::Path) -> Result<Self, Error> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| Error::new(ErrorKind::NotFound, format!("no control token at {} ({e}); start the app with `nodecraft --control`", path.display())))?;
-        let file: TokenFile =
-            serde_json::from_str(&text).map_err(|_| Error::new(ErrorKind::InvalidInput, format!("{} isn't a control token file", path.display())))?;
-        let mut client = Self::connect(SocketAddr::from(([127, 0, 0, 1], file.port)), &file.token)?;
+        Self::from_token_file_until(path, admission_deadline())
+    }
+
+    fn from_token_file_until(path: &std::path::Path, deadline: Instant) -> Result<Self, Error> {
+        admission_left(deadline).map_err(|e| network(e.to_string()))?;
+        let file = std::fs::File::open(path).map_err(|e| token_read_error(path, e))?;
+        let mut client = read_token_file_with(file, path, |addr, token| Self::connect_until(addr, token, deadline))?;
         client.origin = Origin::File(path.to_path_buf());
         Ok(client)
     }
 
-    /// Connects to `addr` and says hello with `token`.
+    /// Connects to `addr` and authenticates within one five-second network deadline.
     pub fn connect(addr: SocketAddr, token: &str) -> Result<Self, Error> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        Self::connect_until(addr, token, admission_deadline())
+    }
+
+    fn connect_until(addr: SocketAddr, token: &str, deadline: Instant) -> Result<Self, Error> {
+        let stream = TcpStream::connect_timeout(&addr, admission_left(deadline).map_err(|e| network(e.to_string()))?)
             .map_err(|e| network(format!("can't reach the app on {addr} ({e}); is it still running with --control?")))?;
         // The app answers every request within its answer timeout, so this only fires if it
         // hangs. A long reply is read in pieces, each with this timeout.
         let wait = ANSWER_TIMEOUT.saturating_add(Duration::from_secs(5));
-        stream.set_read_timeout(Some(wait)).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
+        // The handshake gets a short reply timeout of its own; requests get the long one.
+        stream.set_write_timeout(Some(WRITE_TIMEOUT)).map_err(|e| network(e.to_string()))?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| network(e.to_string()))?);
-        let mut client = Self { reader, writer: stream, next: 1, broken: false, origin: Origin::Addr(addr, token.to_owned()), last_used: Instant::now() };
+        let mut client = Self {
+            reader,
+            writer: stream,
+            next: 1,
+            broken: false,
+            origin: Origin::Addr(addr, token.to_owned()),
+            last_used: Instant::now(),
+            reconnect_after: RECONNECT_AFTER,
+        };
         let mut hello = Map::new();
         hello.insert("token".into(), json!(token));
-        let reply = client.exchange("hello", hello)?;
+        let reply = client.exchange_until("hello", hello, Some(deadline))?;
         if reply.get("protocol").and_then(Value::as_u64) != Some(u64::from(PROTOCOL)) {
             return Err(Error::new(ErrorKind::Unsupported, "the app speaks a different control protocol; use a matching nodecraft-cli"));
         }
+        admission_left(deadline).map_err(|e| network(e.to_string()))?;
+        client.writer.set_read_timeout(Some(wait)).and_then(|()| client.writer.set_write_timeout(Some(WRITE_TIMEOUT))).map_err(|e| network(e.to_string()))?;
         Ok(client)
     }
 
+    /// How long the connection may sit unused before the next call replaces it (default
+    /// [`RECONNECT_AFTER`], under the app's idle timeout). Hosts with a shorter idle timeout, and
+    /// tests, lower it; `Duration::ZERO` reconnects before every call.
+    pub fn set_reconnect_after(&mut self, after: Duration) {
+        self.reconnect_after = after;
+    }
+
+    /// Replaces the connection before sending the requested operation. Connect, hello and all
+    /// six admission attempts/backoff share one five-second network deadline. Token-file I/O
+    /// is synchronous and cannot be interrupted; elapsed time is checked before network work.
     fn reconnect(&mut self) -> Result<(), Error> {
-        let fresh = match self.origin.clone() {
-            Origin::File(path) => Self::from_token_file(&path)?,
-            Origin::Addr(addr, token) => Self::connect(addr, &token)?,
+        self.reconnect_until(admission_deadline())
+    }
+
+    fn reconnect_until(&mut self, deadline: Instant) -> Result<(), Error> {
+        let _ = self.writer.shutdown(std::net::Shutdown::Both);
+        // Until a replacement works, the next call tries again.
+        self.broken = true;
+        let mut wait = Duration::from_millis(25);
+        let mut attempt = 0;
+        let fresh = loop {
+            admission_left(deadline).map_err(|e| network(e.to_string()))?;
+            attempt += 1;
+            let tried = match self.origin.clone() {
+                Origin::File(path) => Self::from_token_file_until(&path, deadline),
+                Origin::Addr(addr, token) => Self::connect_until(addr, &token, deadline),
+            };
+            match tried {
+                Err(e) if matches!(e.kind, ErrorKind::Busy | ErrorKind::Network) && attempt < RECONNECT_ATTEMPTS => {
+                    std::thread::sleep(wait.min(admission_left(deadline).map_err(|e| network(e.to_string()))?));
+                    wait = wait.saturating_mul(2);
+                }
+                other => break other?,
+            }
         };
+        let after = self.reconnect_after;
         *self = fresh;
+        self.reconnect_after = after;
         Ok(())
     }
 
     /// Sends one request and returns its result, or the app's error. A connection the app may
     /// have closed as idle, or one lost on an earlier call, is replaced first.
     pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
-        if self.broken || self.last_used.elapsed() >= RECONNECT_AFTER {
+        if self.broken || self.last_used.elapsed() >= self.reconnect_after {
             self.reconnect().map_err(|e| Error::new(e.kind, format!("lost the connection to the app and couldn't reconnect: {}", e.message)))?;
         }
         self.last_used = Instant::now();
@@ -566,16 +704,26 @@ impl Client {
 
     /// One request and its reply on the current connection.
     fn exchange(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
+        self.exchange_until(method, params, None)
+    }
+
+    fn exchange_until(&mut self, method: &str, params: Map<String, Value>, deadline: Option<Instant>) -> Result<Value, Error> {
         let id = self.next;
         self.next = self.next.saturating_add(1);
         let message = json!({"id": id, "method": method, "params": params});
-        let sent = writeln!(self.writer, "{message}").and_then(|()| self.writer.flush());
+        let sent = match deadline {
+            Some(deadline) => write_admission(&mut self.writer, format!("{message}\n").as_bytes(), deadline),
+            None => writeln!(self.writer, "{message}").and_then(|()| self.writer.flush()),
+        };
         if let Err(e) = sent {
             self.broken = true;
             return Err(network(format!("the app closed the control channel ({e}); the next call reconnects")));
         }
         let mut line = Vec::new();
-        let read = mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES);
+        let read = match deadline {
+            Some(deadline) => read_hello(&mut self.reader, &mut line, deadline),
+            None => mcp::read_line_capped(&mut self.reader, &mut line, MAX_REPLY_BYTES),
+        };
         let reply = match read {
             Ok(Line::Read) => serde_json::from_slice::<Value>(&line).map_err(|_| network("the app sent a malformed reply")),
             Ok(Line::TooLong) => Err(network("the app's reply was too large")),

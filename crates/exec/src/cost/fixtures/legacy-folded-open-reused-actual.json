@@ -1,0 +1,52 @@
+{
+  "entries": [
+    {
+      "at_ms": 0,
+      "session": "a",
+      "node": "02020202-0202-0202-0202-020202020202",
+      "provider": "t",
+      "model": "m",
+      "cost": {
+        "currency": "USD",
+        "micros": "5"
+      },
+      "idempotency_key": "old",
+      "status": "estimate"
+    },
+    {
+      "at_ms": 0,
+      "session": "a",
+      "node": "02020202-0202-0202-0202-020202020202",
+      "provider": "t",
+      "model": "m",
+      "cost": {
+        "currency": "USD",
+        "micros": "5"
+      },
+      "idempotency_key": "new-actual",
+      "status": "actual"
+    }
+  ],
+  "project": {
+    "USD": {
+      "currency": "USD",
+      "micros": "10"
+    }
+  },
+  "sessions": {
+    "": {
+      "USD": {
+        "currency": "USD",
+        "micros": "5"
+      }
+    },
+    "a": {
+      "USD": {
+        "currency": "USD",
+        "micros": "5"
+      }
+    }
+  },
+  "retired": [],
+  "pending": []
+}

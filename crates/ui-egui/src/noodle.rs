@@ -44,7 +44,8 @@ pub fn bezier(from: Pos2, to: Pos2) -> [Pos2; 4] {
     [from, from + Vec2::new(pull, 0.0), to - Vec2::new(pull, 0.0), to]
 }
 
-fn point(curve: &[Pos2; 4], t: f32) -> Pos2 {
+/// The point a fraction `t` (0 to 1) along the curve.
+pub fn point(curve: &[Pos2; 4], t: f32) -> Pos2 {
     let [a, b, c, d] = *curve;
     let u = 1.0 - t;
     let v = a.to_vec2() * (u * u * u) + b.to_vec2() * (3.0 * u * u * t) + c.to_vec2() * (3.0 * u * t * t) + d.to_vec2() * (t * t * t);

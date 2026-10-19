@@ -7,7 +7,7 @@
 //! scheduler or driver (lanes, retries, cancellation): their own tests do.
 
 use nodecraft_engine::generate;
-use nodecraft_exec::planner::{Planned, RunMode, plan};
+use nodecraft_exec::planner::{Planned, RunMode};
 use nodecraft_exec::run::{Progress, Run, RunLimits, RunOptions, record_changes};
 use nodecraft_exec::scheduler::{self, RetryPolicy};
 use nodecraft_graph::{Changeset, Project};
@@ -78,7 +78,13 @@ pub fn run(
     }
     let title = |id: NodeId| live.nodes().get(&id).map_or_else(|| id.to_string(), |n| n.title.clone());
     let stale = nodecraft_exec::staleness::stale(live, kinds)?;
-    let plan = match plan(live, kinds, mode, requested, &stale)? {
+    let mut targets = nodecraft_types::TargetSelection::empty();
+    for node in live.nodes().keys() {
+        for provider in providers {
+            targets.insert(*node, &nodecraft_types::ProviderTarget::default_instance(provider.id())?)?;
+        }
+    }
+    let plan = match nodecraft_exec::planner::plan_with_targets(live, kinds, mode, requested, &stale, &targets)? {
         Planned::Ready(plan) => plan,
         Planned::Blocked(blockers) => {
             let reasons: Vec<String> = blockers.iter().map(|b| b.message(live)).collect();
@@ -86,7 +92,13 @@ pub fn run(
         }
     };
     let options = RunOptions { id: RUN_ID, first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER };
-    let (mut run, first) = Run::start(&plan, canvas, live, kinds, options)?;
+    nodecraft_exec::admission::measure::canvas(live)?;
+    let catalog = crate::catalog::mock_catalog()?;
+    let (admitted, quote) = nodecraft_exec::admission::admit_run_with_targets(plan, canvas, live.clone(), kinds, &catalog, Default::default(), &targets)?;
+    if !nodecraft_exec::cost::check(&quote, &Default::default(), &Default::default())?.allowed() {
+        return Err(fail("golden admission is blocked"));
+    }
+    let (mut run, first) = Run::start_admitted(admitted, kinds, options)?;
     let clock = InstantClock::default();
     let (mut finished, mut failed) = (BTreeMap::new(), BTreeMap::new());
     let mut requests: BTreeMap<NodeId, Vec<Json>> = BTreeMap::new();
@@ -101,6 +113,7 @@ pub fn run(
         let spec = run.work(job.id).cloned().ok_or_else(|| Error::new(ErrorKind::Internal, "a scheduled job has no work"))?;
         let progress = match &spec {
             JobSpec::Source { output, value, .. } => run.job_done(kinds, job.id, vec![(output.clone(), value.clone())]),
+            JobSpec::Action { .. } => run.job_failed(job.id, "the golden runner has no action executor"),
             JobSpec::Generate { node, outputs, .. } => {
                 let attempt = generate::provider_job(&spec, &job.idempotency_key).and_then(|(provider, request)| {
                     let inputs: Vec<Json> = request

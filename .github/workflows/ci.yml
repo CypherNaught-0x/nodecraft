@@ -88,13 +88,19 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         if: hashFiles('Cargo.toml') != ''
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images -- -D warnings
       - name: tests
         if: hashFiles('Cargo.toml') != ''
-        run: cargo nextest run --workspace --profile ci
+        run: cargo nextest run --workspace --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images --profile ci
+      - name: Native video protocol (no external tools required)
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test -p nodecraft-media --features video && cargo clippy -p nodecraft-media --features video --all-targets -- -D warnings
+      - name: Video wasm API
+        if: hashFiles('Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
+        run: cargo check -p nodecraft-media --features video --target wasm32-unknown-unknown
       - name: doctests
         if: hashFiles('Cargo.toml') != ''
-        run: cargo test --doc --workspace
+        run: cargo test --doc --workspace --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images
       - name: layers and wasm
         if: hashFiles('xtask/Cargo.toml') != '' && matrix.os == 'ubuntu-24.04'
         run: cargo xtask layers && cargo xtask wasm

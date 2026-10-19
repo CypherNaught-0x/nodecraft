@@ -10,66 +10,85 @@
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: M0 skeleton" src="https://img.shields.io/badge/status-M0%20skeleton-d69e2e?style=flat-square">
+  <img alt="Status: M1 finishing, M3 wiring" src="https://img.shields.io/badge/status-M1%20finishing%20%C2%B7%20M3%20wiring-d69e2e?style=flat-square">
 </p>
 
 ---
 
 > [!NOTE]
-> NodeCraft is at milestone M0: the workspace, CI and release pipeline exist, and the app opens
-> an empty themed canvas. The full plan lives in [`docs/plan.md`](docs/plan.md), the status in
-> [`ROADMAP.md`](ROADMAP.md).
+> NodeCraft is being built in the open, three days in. The canvas, the document model, undo,
+> automation surfaces and the whole generation engine are in the tree; the step in progress is
+> wiring that engine to the app, so **the app does not generate or save files yet**.
+> [`ROADMAP.md`](ROADMAP.md) says exactly what works, what does not, and what is next.
 
-## What it will be
+## What it does today
 
-- **Infinite canvas.** Nodes for text, image, video, audio, 3D and PDFs, joined by noodles.
-  Combine sources, branch three ways from any result, and keep the whole creative path visible
-  from left to right.
-- **Any model, one node per modality.** The model is a parameter: search for compatible models,
-  swap without rewiring, auto-select, or run several models side by side. Each run shows its cost
-  before it starts.
-- **ComfyUI first-class.** Import any ComfyUI workflow as a node with typed ports, follow live
-  progress, and switch Image/Video nodes between cloud models and local ComfyUI without
-  rewiring. It covers image, video, audio and 3D workflows, locally or on Comfy Cloud.
-- **Providers:** fal.ai and Replicate; OpenAI Images; Google Imagen, Gemini image, Veo and TTS;
-  ElevenLabs; ByteDance Seedream and Seedance; Kling; Tripo AI and Meshy for 3D; and any
-  OpenAI-compatible, Anthropic or LiteLLM endpoint. More are tracked as `future` issues.
-- **Explicit, cost-aware runs.** Runs go in dependency order, with variations, per-node
-  generation history, stale badges when an upstream result changes, a queue, and budgets.
-- **Deterministic actions.** Colour grading, blur, crop, aspect ratio, split into grid, and video
-  and text operations recompute live. Custom actions are written for you as GPU shaders with
-  generated sliders.
-- **Editors inside nodes.** A Layer Editor for compositing with type and shapes, a Timeline for
-  video, Mask/Inpaint, and a 3D viewer that captures photos, turntables and multi-view sheets.
-- **Reuse.** Batch and Router nodes, Elements (consistent subjects), and the Technique Builder,
-  which turns a workflow into one node, an app-mode form, a CLI command and an MCP tool.
-- **Agent-ready.** An in-canvas agent builds and runs workflows through the same commands as the
-  UI. A CLI, a control channel and an MCP server drive everything headless.
-- **Yours.** Local `.ncraft` project files with content-addressed assets. Works offline, with
-  your own keys kept in the OS keychain.
+`cargo run -p nodecraft` opens a real editing canvas:
+
+- **Edit**: pan/zoom dot-grid canvas, node cards generated from each node's parameter schema,
+  noodles you can draw, rewire and delete, selection by click/Shift/marquee plus
+  upstream/downstream/by-kind, a minimap with zoom-to-fit and zoom-to-selection, incremental search,
+  a searchable quick-add palette with per-key shortcuts, "Turn into" when you drop a noodle on
+  empty canvas, drag-to-reorder input order badges, copy/cut/paste/duplicate through the OS
+  clipboard, OS file drop that creates source nodes, pinned discussions and Notes, grid/dependency
+  formatting, and named colour tags with a bounded highlight filter.
+- **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
+  command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
+- **Keep your keys yours**: an API keys panel over the OS keychain.
+- **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
+  you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
+  dispatching the same 66 commands the UI uses.
+
+## What it will do
+
+The engine behind generation is already built and tested — plan → quote → budget → schedule →
+execute → record → history, with cost shown before a run and budgets held while jobs run. The work
+now is connecting it to the window. The target:
+
+- **Any model, one node per modality.** The model is a parameter: search compatible models, swap
+  without rewiring, or run several side by side. Each run shows its cost before it starts.
+- **ComfyUI first-class.** Import any workflow as a node with typed ports, follow live progress,
+  and switch a node between cloud models and local ComfyUI without rewiring.
+- **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images,
+  Replicate and Seedream are written; fal.ai, Google Imagen/Gemini image/Veo/TTS, ElevenLabs,
+  Seedance, Kling, Tripo and Meshy are tracked as issues.
+- **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text and
+  video operations — recompute live, with custom actions authored as GPU shaders.
+- **Editors inside nodes**: a Layer Editor, a Timeline, Mask/Inpaint, and a 3D viewer that captures
+  photos, turntables and multi-view sheets.
+- **Reuse**: Batch and Router nodes, Elements, and a Technique Builder that turns a workflow into
+  one node, an app-mode form, a CLI command and an MCP tool.
+- **Agent-ready**: an in-canvas agent builds and runs workflows with the same commands as the UI.
+- **Yours**: local `.ncraft` projects with content-addressed assets, working offline with your own
+  keys.
 
 ## Under the hood
 
-- Rust 2024 workspace of layered crates (`types` → `graph` → `nodes`/`catalog`/`actions` →
-  `exec`/`providers`/`gpu`/`format` → `engine` → `ui-egui`/`agent`/`automation`). The layering
-  is enforced by `cargo xtask layers`.
-- egui/eframe on wgpu for the desktop app. The core crates also build for WebAssembly, ready
-  for a browser version.
-- Every action is a command, and every edit is an invertible changeset. Undo, autosave,
-  automation and future live collaboration all use that one path.
-- Built never to crash: no `unsafe`, and no `unwrap`/`panic` outside tests. Every command is
-  fuzz-tested with hostile parameters.
+- A Rust 2024 workspace of 17 layered crates and 2 apps (`types` → `graph` →
+  `nodes`/`catalog`/`actions` → `exec`/`providers`/`gpu`/`format` → `engine` →
+  `ui-egui`/`agent`/`automation`), with the layering enforced by `cargo xtask layers`.
+- egui/eframe on wgpu. Every library crate also builds for `wasm32-unknown-unknown`, checked by
+  `cargo xtask wasm`, ready for a browser version.
+- Every action is a command with typed JSON params, and every edit is an invertible changeset —
+  undo, autosave, automation and future live collaboration all use that one path.
+- Built never to crash: no `unsafe`, no `unwrap`/`panic` outside tests, hostile input bounded at
+  every boundary, and `panic_hunt` fuzzing each command with adversarial parameters.
+- 1,200+ tests and rising, including property tests for changesets and the planner, golden
+  graphs against a mock provider, fixture contract tests for providers, and `egui_kittest` tests
+  that push real pointer and key events through the canvas.
 - Shares UI, settings, atomic-save, quit and PDF libraries with the other Craft apps through
   [craft-libs](https://github.com/storytold/craft-libs).
+- A dated decision record per choice in [`docs/decisions/`](docs/decisions/) explains the
+  trade-offs a later contributor might otherwise undo (`cargo xtask decisions` prints the count).
 
-See [`docs/plan.md`](docs/plan.md) for the feature catalogue, architecture, repository
-conventions and roadmap.
+See [`docs/plan.md`](docs/plan.md) for the feature catalogue, architecture and roadmap, and
+[`docs/architecture.md`](docs/architecture.md) for the crate map.
 
 ## Build from source
 
 ```sh
 cargo run -p nodecraft          # the desktop app
-cargo xtask ci                  # fmt, clippy, tests, layering and wasm checks
+cargo xtask ci                  # fmt, clippy, tests, layers, decisions, wasm
 ```
 
 [`docs/development.md`](docs/development.md) has the details; [`AGENTS.md`](AGENTS.md) is the
@@ -77,11 +96,14 @@ orientation for contributors and coding agents.
 
 ## Downloads
 
-Releases are published on [GitHub Releases](../../releases). Each release includes desktop
-installers for macOS, Windows and Linux; `nodecraft-cli`, with the integrated MCP server
-(`nodecraft-cli mcp`); and, later, a WebAssembly build that runs in the browser. Nothing has
-been released yet. The macOS and Windows builds aren't code-signed yet, so the first launch
-shows a warning; [`docs/install.md`](docs/install.md) shows how to open them.
+Two pre-releases exist. [`v0.2.0-rc.1`](../../releases/tag/v0.2.0-rc.1) is the current build:
+installers for macOS, Windows and Linux of that pre-release snapshot. Build `main` for the latest
+canvas features; generation and saving from the app are still being wired. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
+M0-era build that proved the release pipeline. Signed installers arrive with the first real
+release ([#100](../../issues/100)); macOS and Windows builds are unsigned for now, so the first
+launch shows a warning — [`docs/install.md`](docs/install.md) shows how to open them anyway.
+Release builds ship `nodecraft-cli` with the integrated MCP server, bundled in the Linux and
+Windows packages and also as a separate macOS download.
 
 ## Contributing
 
@@ -91,14 +113,16 @@ and checklists for adding commands, node kinds and providers.
 
 ## Status and roadmap
 
-| Milestone | Focus |
-|---|---|
-| M0 | Workspace skeleton, lints, CI, empty canvas |
-| M1–M2 | Canvas core, organisation tools |
-| M3 | Generation engine, providers, history, cost |
-| M4–M5 | Actions, Batch, Techniques, CLI |
-| M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF |
-| M9–M10 | Agent, MCP, browser build, collaboration |
+| Milestone | Focus | Where it stands |
+|---|---|---|
+| M0 | Workspace skeleton, lints, CI, empty canvas | done |
+| M1–M2 | Canvas core, organisation tools | canvas nearly done; save/open and fields UI to wire |
+| M3 | Generation engine, providers, history, cost | engine built and tested, app not wired yet |
+| M4–M5 | Actions, Batch, Techniques, CLI | actions built as a library; M5 not started |
+| M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | not started |
+| M9–M10 | Agent, MCP, browser build, collaboration | MCP and control channel work; no agent yet |
+
+Full detail, including what does not work yet: [`ROADMAP.md`](ROADMAP.md).
 
 ## License
 

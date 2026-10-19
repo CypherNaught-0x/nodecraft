@@ -116,7 +116,9 @@ fn text_edit_commits_without_moving_card_and_can_be_undone() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
     h.run();
     assert_eq!(h.state().view.pan, pan);
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // The Comments toolbar now occupies the top-left; this must remain bare canvas.
+    let blank = h.state().viewport.min + Vec2::new(30.0, 120.0);
+    click(&mut h, blank);
     assert_eq!(node(h.state()).params.get("text"), Some(&Value::Text("Moonlit mountains".into())));
     assert_eq!(node(h.state()).pos, before.pos);
     assert_eq!(card::title(node(h.state()), None), "Moonlit mountains");
@@ -227,7 +229,9 @@ fn typed_controls_preserve_full_width_values_and_invalid_drafts() {
     assert_eq!(node(h.state()).params.get("count"), Some(&Value::Integer(Integer(i64::MIN))));
     assert_eq!(node(h.state()).params.get("seed"), Some(&Value::Unsigned(Unsigned(u64::MAX))));
     enter_text(&mut h, "count", "invalid");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // The Comments toolbar now occupies the top-left; this must remain bare canvas.
+    let blank = h.state().viewport.min + Vec2::new(30.0, 120.0);
+    click(&mut h, blank);
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     assert_eq!(h.get_by_role_and_label(Role::TextInput, "count").value().as_deref(), Some("invalid"));
@@ -254,9 +258,13 @@ fn conditional_controls_and_choice_labels_follow_schema() {
     assert!(h.query_by_role_and_label(Role::TextInput, "detail").is_some());
     h.get_by_role_and_label(Role::ComboBox, "quality").click();
     h.run();
+    let view = h.state().view;
+    let selection = h.state().selection.clone();
     h.get_by_label("High").click();
     h.run();
     assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().view, view);
+    assert_eq!(h.state().selection, selection);
 }
 #[test]
 fn slider_previews_then_commits_one_undo_step() {
@@ -523,7 +531,8 @@ fn nondefault_canvas_settings_apply_to_graph_backed_shell() {
     h.state_mut().theme = ThemeKind::Light;
     h.state_mut().canvas_prefs = settings.canvas.clone();
     assert_eq!(h.state().theme, ThemeKind::Light);
-    h.hover_at(Pos2::new(50.0, 50.0));
+    // Scroll over bare canvas, below the Comments toolbar.
+    h.hover_at(h.state().viewport.min + Vec2::new(30.0, 120.0));
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: Vec2::new(0.0, 60.0),
@@ -718,7 +727,11 @@ fn title_at_four_times_zoom_remains_when_body_is_below_viewport() {
 }
 
 /// Text A → relay B → relay C, and a lone Text D, at 30% zoom so cards have no body controls.
-fn chain_harness() -> Harness<'static, NodeCraftApp> {
+pub(super) fn chain_harness() -> Harness<'static, NodeCraftApp> {
+    chain_harness_with(|descriptor| Box::new(TestKind(descriptor)))
+}
+/// The chain fixture, with its test kinds wrapped by `kind`.
+pub(super) fn chain_harness_with(kind: fn(NodeDescriptor) -> Box<dyn NodeKind>) -> Harness<'static, NodeCraftApp> {
     let text = PortType { modality: nodecraft_types::Modality::Text, many: false };
     let port = |name: &str| nodecraft_graph::Port { name: name.into(), port_type: text };
     let relay = NodeDescriptor {
@@ -740,8 +753,8 @@ fn chain_harness() -> Harness<'static, NodeCraftApp> {
         quick_add: None,
     };
     let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
-    kinds.register(Box::new(TestKind(relay))).unwrap();
-    kinds.register(Box::new(TestKind(collect))).unwrap();
+    kinds.register(kind(relay)).unwrap();
+    kinds.register(kind(collect)).unwrap();
     let canvas = CanvasId::from_bytes([1; 16]);
     let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Chain").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
@@ -769,7 +782,7 @@ fn chain_harness() -> Harness<'static, NodeCraftApp> {
     h.run();
     h
 }
-fn chain_id(n: u8) -> NodeId {
+pub(super) fn chain_id(n: u8) -> NodeId {
     NodeId::from_bytes([n; 16])
 }
 fn ids(ns: &[u8]) -> BTreeSet<NodeId> {
@@ -1030,13 +1043,13 @@ fn box_select_uses_painted_geometry_not_the_evictable_schema_cache() {
 }
 
 /// Screen position of node `n`'s single input or output port.
-fn port_point(h: &Harness<'static, NodeCraftApp>, n: u8, side: noodle::Side) -> Pos2 {
+pub(super) fn port_point(h: &Harness<'static, NodeCraftApp>, n: u8, side: noodle::Side) -> Pos2 {
     let app = h.state();
     let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
     let rect = card_geometry(&app.painted, app.session.kinds(), node, app.theme.tokens());
     app.view.to_screen(app.viewport.min, noodle::anchor(rect, side, 0, 1))
 }
-fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
+pub(super) fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
     h.hover_at(from);
     h.run();
     h.drag_at(from);
@@ -1049,7 +1062,7 @@ fn wire_drag(h: &mut Harness<'static, NodeCraftApp>, from: Pos2, to: Pos2) {
     h.run();
 }
 /// Edges as (from node, to node) pairs.
-fn links(h: &Harness<'static, NodeCraftApp>) -> BTreeSet<(NodeId, NodeId)> {
+pub(super) fn links(h: &Harness<'static, NodeCraftApp>) -> BTreeSet<(NodeId, NodeId)> {
     let app = h.state();
     app.session.document().canvases().get(&app.canvas).unwrap().edges().values().map(|e| (e.from.node, e.to.node)).collect()
 }
@@ -1089,7 +1102,8 @@ fn invalid_drops_leave_the_document_alone_and_explain_why() {
         assert_eq!(h.state().session.document(), &before, "{a}->{b}");
         assert_eq!(h.state().notice.as_deref(), Some(message));
     }
-    // Dropping on empty canvas, or Escape mid-drag, does nothing.
+    // Dropping on empty canvas only opens "Turn into" (a new drag closes it), and Escape
+    // mid-drag does nothing.
     let from = port_point(&h, 1, noodle::Side::Output);
     wire_drag(&mut h, from, Pos2::new(900.0, 600.0));
     let to = port_point(&h, 3, noodle::Side::Input);
@@ -1989,6 +2003,10 @@ fn changing_height_harness(tall: bool) -> Harness<'static, NodeCraftApp> {
 }
 
 fn first_frame_hover(was_tall: bool) {
+    first_frame_hover_captured(was_tall, None);
+}
+
+fn first_frame_hover_captured(was_tall: bool, capture: Option<&std::path::Path>) {
     let mut h = changing_height_harness(was_tall);
     h.run();
     let canvas = h.state().canvas;
@@ -2016,6 +2034,9 @@ fn first_frame_hover(was_tall: bool) {
     });
     h.step(); // Deliberately the first frame: running to quiescence hides stale hover ownership.
     assert_eq!(h.state().view.pan != pan, was_tall, "shrunk card permits canvas pan; grown card owns scroll");
+    if let Some(root) = capture {
+        h.render().unwrap().save(root.join(if was_tall { "after-shrink.png" } else { "after-growth.png" })).unwrap();
+    }
     assert_eq!(h.state().session.document(), &document);
     assert_eq!(h.state().session.revision(), revision);
     assert_eq!(h.state().session.can_undo(), undo);
@@ -2076,4 +2097,602 @@ fn last_shared_descriptor_removal_and_replacement_release_accounting() {
     cache.remove(&id);
     assert_eq!(cache_bytes(&cache), 0);
     assert!(cache.shared.is_empty());
+}
+
+#[test]
+fn an_open_palette_keeps_search_shortcut_ownership_after_tab() {
+    let mut h = harness();
+    double_click(&mut h, Pos2::new(560.0, 650.0));
+    h.run();
+    assert!(h.state().palette.is_some());
+    h.key_press(egui::Key::Tab);
+    h.run();
+    assert!(!canvas::text_input_focused(&h.ctx), "fixture must focus a palette row rather than its query");
+    let document = h.state().session.document().clone();
+    let view = h.state().view;
+    let selection = h.state().selection.clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(!h.state().search.open, "search must not steal the open palette's input");
+    assert!(h.state().palette.is_some());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().view, view);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().palette.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open, "normal search resumes after the palette closes");
+}
+
+#[test]
+fn clipboard_paste_belongs_to_search_input_then_returns_to_canvas_after_close() {
+    let mut h = harness();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open);
+    h.get_by_role_and_label(Role::TextInput, "Search canvas").click();
+    h.run();
+    assert!(canvas::text_input_focused(&h.ctx));
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    let selection = h.state().selection.clone();
+    let view = h.state().view;
+    h.event(egui::Event::Paste("clipboard query sentinel".into()));
+    h.run();
+    assert_eq!(h.state().search.draft, "clipboard query sentinel");
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().selection, selection);
+    assert_eq!(h.state().view, view);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().search.open);
+    h.hover_at(Pos2::new(800.0, 650.0));
+    h.event(egui::Event::Paste("canvas payload after search".into()));
+    h.run();
+    let texts = nodes_of(&h, "source.text");
+    assert_eq!(texts.len(), 2);
+    assert!(texts.iter().any(|node| node.params.get("text") == Some(&Value::Text("canvas payload after search".into()))));
+    assert_eq!(h.state().session.revision(), revision + 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &document);
+}
+
+#[test]
+fn minimap_drag_owns_quick_add_keys_until_pointer_release() {
+    let mut h = harness();
+    let canvas = h.state().canvas;
+    let id = node(h.state()).id;
+    for title in ["Before minimap", "Redo entry"] {
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id,"title":title})).unwrap();
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().selection.only(id);
+    h.run();
+    assert!(h.state().session.can_undo() && h.state().session.can_redo());
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let selection = h.state().selection.clone();
+    let count = document.canvases().get(&canvas).unwrap().nodes().len();
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    let from = map.center() + Vec2::new(20.0, 0.0);
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(h.state().navigation.drag.is_some() && h.state().navigation.pointer_owned);
+    assert!(h.state().drag.is_none() && h.state().marquee.is_none() && h.state().wiring.is_none());
+    for key in [egui::Key::T, egui::Key::I] {
+        h.event(egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), count, "held minimap owns quick-add");
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().session.events_since(0).unwrap(), events);
+        assert_eq!(h.state().selection, selection);
+        assert!(h.state().session.can_undo() && h.state().session.can_redo());
+        assert!(h.state().navigation.drag.is_some() && h.state().navigation.pointer_owned);
+        h.event(egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+    // The guard must not disable the minimap's own pan intents or its frozen mapping.
+    let mapping = h.state().navigation.drag.unwrap();
+    let view = h.state().view;
+    let to = map.right_bottom() + Vec2::new(40.0, 30.0);
+    h.hover_at(to);
+    h.run();
+    assert_ne!(h.state().view, view);
+    let center = h.state().view.visible_world(h.state().viewport).center();
+    let expected = mapping.world(to);
+    assert!((f64::from(center.x) - expected.0).abs() < 0.01 && (f64::from(center.y) - expected.1).abs() < 0.01);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(h.state().navigation.drag.is_none() && !h.state().navigation.pointer_owned);
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().session.can_undo() && h.state().session.can_redo());
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), count + 1);
+    assert_eq!(h.state().selection.nodes().len(), 1);
+    assert!(!h.state().selection.contains(id));
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document, "post-release quick-add is one undo step");
+}
+
+// One raw frame is essential: Harness::event may otherwise deliver queued input separately.
+fn minimap_clipboard_action(kind: usize) -> egui::Event {
+    match kind {
+        0 => egui::Event::Paste("Minimap clipboard sentinel".into()),
+        1 => egui::Event::Cut,
+        2 => egui::Event::Copy,
+        3 => egui::Event::Key { key: egui::Key::D, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND },
+        _ => egui::Event::Key { key: egui::Key::T, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+    }
+}
+fn minimap_raw_frame(h: &mut Harness<'static, NodeCraftApp>, events: Vec<egui::Event>) {
+    h.input_mut().events.extend(events);
+    h.step();
+}
+fn minimap_assert_unchanged(h: &Harness<'static, NodeCraftApp>, doc: &nodecraft_graph::Project, selection: &Selection) {
+    assert_eq!(h.state().session.document(), doc);
+    assert_eq!(h.state().session.revision(), 0);
+    assert_eq!(&h.state().selection, selection);
+    assert!(!h.state().session.can_undo());
+    assert!(!h.state().session.can_redo());
+    assert!(h.state().session.events_since(0).unwrap().is_empty());
+    assert!(copied(h).is_none());
+}
+#[test]
+fn held_minimap_blocks_clipboard_outside_map_then_release_restores_actions() {
+    for kind in 0..5 {
+        let mut h = harness();
+        let id = node(h.state()).id;
+        h.state_mut().selection.only(id);
+        let doc = h.state().session.document().clone();
+        let selected = h.state().selection.clone();
+        let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+        minimap_raw_frame(
+            &mut h,
+            vec![
+                egui::Event::PointerMoved(map.center()),
+                egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            ],
+        );
+        assert!(h.state().navigation.pointer_owned);
+        let outside = Pos2::new(80.0, 120.0);
+        minimap_raw_frame(&mut h, vec![egui::Event::PointerMoved(outside), minimap_clipboard_action(kind)]);
+        minimap_assert_unchanged(&h, &doc, &selected);
+        if kind >= 3 {
+            assert!(h.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))), "blocked key unconsumed");
+        }
+        minimap_raw_frame(
+            &mut h,
+            vec![egui::Event::PointerButton { pos: outside, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }],
+        );
+        assert!(!h.state().navigation.pointer_owned);
+        if let egui::Event::Key { key, physical_key, modifiers, .. } = minimap_clipboard_action(kind) {
+            minimap_raw_frame(&mut h, vec![egui::Event::Key { key, physical_key, pressed: false, repeat: false, modifiers }]);
+        }
+        minimap_raw_frame(&mut h, vec![minimap_clipboard_action(kind)]);
+        if kind == 2 {
+            assert!(copied(&h).is_some());
+            assert_eq!(h.state().session.document(), &doc);
+        } else {
+            assert_eq!(h.state().session.revision(), 1, "released action {kind}");
+            assert!(h.state().session.can_undo());
+            h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+            assert_eq!(h.state().session.document(), &doc);
+        }
+    }
+}
+#[test]
+fn same_frame_minimap_press_owns_clipboard_and_quick_add_in_both_event_orders() {
+    for kind in 0..5 {
+        for reverse in [false, true] {
+            let mut h = harness();
+            let id = node(h.state()).id;
+            h.state_mut().selection.only(id);
+            let doc = h.state().session.document().clone();
+            let selected = h.state().selection.clone();
+            let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+            let press = egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE };
+            let mut events = vec![press, minimap_clipboard_action(kind)];
+            if reverse {
+                events.reverse();
+            }
+            events.insert(0, egui::Event::PointerMoved(map.center()));
+            minimap_raw_frame(&mut h, events);
+            assert!(h.state().navigation.pointer_owned);
+            minimap_assert_unchanged(&h, &doc, &selected);
+            if kind >= 3 {
+                assert!(h.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))), "blocked key unconsumed");
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_canvas_press_still_allows_same_frame_paste_and_quick_add() {
+    for kind in [0, 3, 4] {
+        let mut h = harness();
+        let id = node(h.state()).id;
+        h.state_mut().selection.only(id);
+        let at = Pos2::new(80.0, 120.0);
+        minimap_raw_frame(
+            &mut h,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                minimap_clipboard_action(kind),
+            ],
+        );
+        assert_eq!(h.state().session.revision(), 1, "ordinary canvas action {kind}");
+        assert!(!h.state().navigation.pointer_owned);
+    }
+}
+
+#[test]
+fn minimap_press_origin_owns_cross_boundary_frame_in_both_action_orders() {
+    for inside in [true, false] {
+        for kind in 0..5 {
+            for action_first in [true, false] {
+                let mut h = harness();
+                let id = node(h.state()).id;
+                h.state_mut().selection.only(id);
+                let doc = h.state().session.document().clone();
+                let selected = h.state().selection.clone();
+                let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+                let outside = Pos2::new(80.0, 120.0);
+                let (from, to) = if inside { (map.center(), outside) } else { (outside, map.center()) };
+                let mut events = vec![
+                    egui::Event::PointerMoved(from),
+                    egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                    egui::Event::PointerMoved(to),
+                ];
+                if action_first {
+                    events.insert(0, minimap_clipboard_action(kind));
+                } else {
+                    events.push(minimap_clipboard_action(kind));
+                }
+                minimap_raw_frame(&mut h, events);
+                assert_eq!(h.ctx.input(|i| i.pointer.press_origin().is_some_and(|p| map.contains(p))), inside);
+                assert_eq!(h.state().navigation.pointer_owned, inside, "origin ownership inside={inside},kind={kind},first={action_first}");
+                if inside {
+                    minimap_assert_unchanged(&h, &doc, &selected);
+                    if kind >= 3 {
+                        assert!(h.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))));
+                    }
+                } else if kind == 2 {
+                    assert!(copied(&h).is_some());
+                } else {
+                    assert_eq!(h.state().session.revision(), 1);
+                }
+            }
+        }
+    }
+}
+#[test]
+fn minimap_press_admission_is_stable_across_later_visibility_shortcut() {
+    for visible in [true, false] {
+        let mut h = harness();
+        h.state_mut().navigation.visible = visible;
+        h.run();
+        let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+        minimap_raw_frame(
+            &mut h,
+            vec![
+                egui::Event::PointerMoved(map.center()),
+                egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                egui::Event::Key { key: egui::Key::M, physical_key: Some(egui::Key::M), pressed: true, repeat: false, modifiers: egui::Modifiers::SHIFT },
+                egui::Event::Paste("visibility toggle payload".into()),
+            ],
+        );
+        assert_eq!(h.state().navigation.visible, !visible);
+        assert!(!h.state().navigation.pointer_owned, "hidden initial press cannot be acquired after showing map");
+        assert_eq!(h.state().session.revision(), u64::from(!visible));
+    }
+}
+#[test]
+fn minimap_first_primary_press_wins_multiple_presses_in_one_frame() {
+    for first_inside in [false, true] {
+        let mut h = harness();
+        let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+        let outside = Pos2::new(80.0, 120.0);
+        let (first, second) = if first_inside { (map.center(), outside) } else { (outside, map.center()) };
+        minimap_raw_frame(
+            &mut h,
+            vec![
+                egui::Event::PointerMoved(first),
+                egui::Event::PointerButton { pos: first, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                egui::Event::PointerButton { pos: first, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+                egui::Event::PointerMoved(second),
+                egui::Event::PointerButton { pos: second, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                egui::Event::Paste("multiple presses".into()),
+            ],
+        );
+        assert_eq!(h.state().navigation.pointer_owned, first_inside);
+        assert_eq!(h.state().session.revision(), u64::from(!first_inside));
+    }
+}
+#[test]
+fn minimap_admission_after_delete_blocks_paste_but_preserves_delete_history() {
+    let mut h = harness();
+    let id = node(h.state()).id;
+    h.state_mut().selection.only(id);
+    let doc = h.state().session.document().clone();
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    minimap_raw_frame(
+        &mut h,
+        vec![
+            egui::Event::PointerMoved(map.center()),
+            egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            egui::Event::Paste("after delete".into()),
+        ],
+    );
+    assert!(h.state().navigation.pointer_owned);
+    assert_eq!(counts(&h).0, 0);
+    assert_eq!(h.state().session.revision(), 1);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &doc);
+}
+
+#[test]
+fn a_real_choice_popup_over_the_tag_panel_keeps_its_parameter_intent() {
+    let mut h = schema_harness(vec![spec(
+        "quality",
+        ParamControl::Choice { options: vec![Choice { value: "low".into(), label: "Low".into() }, Choice { value: "high".into(), label: "High".into() }] },
+        Value::Text("low".into()),
+    )]);
+    h.get_by_role_and_label(Role::ComboBox, "quality").click();
+    h.run();
+    let high = h.get_by_label("High").rect().center();
+    h.state_mut().view.pan += Pos2::new(150.0, 180.0) - high;
+    h.state_mut().tag_filter.open = true;
+    h.run();
+    let high = h.get_by_label("High").rect().center();
+    assert!(h.state().tag_rect().contains(high));
+    h.get_by_label("High").click();
+    h.run();
+    assert_eq!(node(h.state()).params.get("quality"), Some(&Value::Text("high".into())));
+    assert_eq!(h.state().session.revision(), 1);
+    assert!(!h.state().tag_filter.active());
+}
+
+#[test]
+fn tag_decoration_clip_contains_visible_negative_world_cards_at_pan_and_zoom() {
+    let viewport = Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(1200.0, 800.0));
+    for zoom in [0.15, 1.0, 2.0] {
+        let view = CanvasView { zoom, pan: Vec2::new(600.0, 400.0) };
+        let clip = tag_world_clip(&view, viewport, viewport);
+        let negative = Rect::from_min_size(Pos2::new(-200.0, -100.0), Vec2::new(100.0, 50.0));
+        assert!(view.rect_to_screen(viewport.min, negative).intersects(viewport));
+        assert!(clip.intersects(negative));
+        assert!(clip.contains(Pos2::new(-194.0, -94.0)));
+    }
+}
+
+#[test]
+fn emitted_tag_marker_and_outline_use_world_clip_then_respect_tighter_screen_parent() {
+    let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).with_max_steps(160).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            ui.set_clip_rect(ui.max_rect().shrink(40.0));
+            app.show(ui);
+        },
+        NodeCraftApp::headless().unwrap(),
+    );
+    let id = NodeId::from_bytes([3; 16]);
+    h.state_mut().selection.only(id);
+    h.state_mut().apply_tag_action(super::tags::TagAction::Palette(5)).unwrap();
+    h.run();
+    let c = h.state().canvas;
+    let tag = h.state().session.document().canvases().get(&c).unwrap().nodes().get(&id).unwrap().tag.unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[tag],"untagged":false})).unwrap();
+    for zoom in [0.15, 1.0, 2.0] {
+        h.state_mut().view.zoom = zoom;
+        h.run();
+        let app = h.state();
+        let t = app.theme.tokens();
+        let world = app.painted[&id];
+        assert!(world.min.x < 0.0 && world.min.y < 0.0);
+        let marker = Rect::from_min_size(world.min + Vec2::splat(t.navigation_gap), Vec2::new(t.tag_marker_width, t.tag_row_height.min(world.height())));
+        let expected = app.view.rect_to_screen(app.viewport.min, marker);
+        let outline = app.view.rect_to_screen(app.viewport.min, world.expand(t.tag_marker_width));
+        let parent = app.viewport.shrink(40.0);
+        let marker_shape = h
+            .output()
+            .shapes
+            .iter()
+            .find(|shape| matches!(&shape.shape,egui::epaint::Shape::Rect(r) if r.fill==t.tag_color(Some("blue"))))
+            .expect("actual painted marker");
+        let egui::epaint::Shape::Rect(painted) = &marker_shape.shape else {
+            panic!("rectangle marker");
+        };
+        assert!((painted.rect.min - expected.min).length() < 0.1);
+        assert!((painted.rect.max - expected.max).length() < 0.1);
+        assert!(marker_shape.clip_rect.contains(expected.center()));
+        assert!((marker_shape.clip_rect.min - parent.min).length() < 0.1);
+        assert!((marker_shape.clip_rect.max - parent.max).length() < 0.1);
+        assert!(!marker_shape.clip_rect.contains(app.viewport.min));
+        assert!(h.output().shapes.iter().any(|shape|matches!(&shape.shape,egui::epaint::Shape::Rect(r) if r.stroke.color==t.accent&&(r.rect.min-outline.min).length()<0.1&&(r.rect.max-outline.max).length()<0.1)&& (shape.clip_rect.min-parent.min).length()<0.1));
+    }
+}
+
+#[test]
+fn minimap_does_not_take_held_or_cancelled_discussion_pin_clipboard_and_quick_add() {
+    for cancel in [false, true] {
+        for kind in 0..5 {
+            let mut h = harness();
+            let canvas = h.state().canvas;
+            let comment = nodecraft_types::CommentId::from_bytes([91; 16]);
+            h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":comment,"text":"Public pin ownership","pos":{"x":0,"y":0}})).unwrap();
+            h.run();
+            let from = h.get_by_role_and_label(Role::Button, &format!("Discussion pin {comment}")).rect().center();
+            minimap_raw_frame(
+                &mut h,
+                vec![
+                    egui::Event::PointerMoved(from),
+                    egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+            minimap_raw_frame(&mut h, vec![egui::Event::PointerMoved(from + Vec2::new(35.0, 15.0))]);
+            assert!(h.state().comments.drag.is_some(), "a real pin gesture owns the pointer");
+            if cancel {
+                let node = node(h.state()).id;
+                h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":node,"title":"Changed while holding pin"})).unwrap();
+                h.step();
+                assert!(h.state().comments.drag.is_none());
+                assert!(h.state().comments.gesture_cancelled);
+            }
+            let document = h.state().session.document().clone();
+            let revision = h.state().session.revision();
+            let events = h.state().session.events_since(0).unwrap();
+            let selection = h.state().selection.clone();
+            let history = (h.state().session.can_undo(), h.state().session.can_redo());
+            let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+            minimap_raw_frame(&mut h, vec![egui::Event::PointerMoved(map.center()), minimap_clipboard_action(kind)]);
+            assert!(!h.state().navigation.pointer_owned && h.state().navigation.drag.is_none());
+            let ctx = h.ctx.clone();
+            assert!(!h.state_mut().minimap_input_owned(&ctx), "comment ownership must refuse navigation admission");
+            assert_eq!(h.state().session.document(), &document);
+            assert_eq!(h.state().session.revision(), revision);
+            assert_eq!(h.state().session.events_since(0).unwrap(), events);
+            assert_eq!(h.state().selection, selection);
+            assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+            assert!(copied(&h).is_none());
+            if kind >= 3 {
+                assert!(h.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))));
+            }
+            // Cancel an active pin before release so this control commits no comment movement.
+            if !cancel {
+                minimap_raw_frame(
+                    &mut h,
+                    vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+                );
+            }
+            minimap_raw_frame(
+                &mut h,
+                vec![egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }],
+            );
+            assert!(h.state().comments.drag.is_none() && !h.state().comments.gesture_cancelled);
+            minimap_raw_frame(
+                &mut h,
+                vec![
+                    egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                    egui::Event::Paste("A fresh map press still owns paste".into()),
+                ],
+            );
+            assert!(h.state().navigation.pointer_owned, "a fresh press after pin release admits the minimap");
+            assert_eq!(h.state().session.document(), &document);
+        }
+    }
+}
+
+#[test]
+fn minimap_refused_marquee_press_stays_refused_after_escape_until_release() {
+    let mut h = harness();
+    let selected = h.state().selection.clone();
+    h.state_mut().marquee = Some(Marquee { start: Pos2::ZERO, base: selected.clone(), cancelled: false });
+    let document = h.state().session.document().clone();
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    minimap_raw_frame(
+        &mut h,
+        vec![
+            egui::Event::PointerMoved(map.center()),
+            egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            egui::Event::Paste("Cancelled marquee payload".into()),
+        ],
+    );
+    assert!(h.state().marquee.as_ref().is_some_and(|m| m.cancelled));
+    assert!(!h.state().navigation.pointer_owned);
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().selection, selected);
+    minimap_raw_frame(&mut h, vec![egui::Event::PointerMoved(map.center() + Vec2::new(5.0, 0.0))]);
+    assert!(!h.state().navigation.pointer_owned);
+    minimap_raw_frame(
+        &mut h,
+        vec![egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }],
+    );
+    assert!(h.state().marquee.is_none());
+    minimap_raw_frame(
+        &mut h,
+        vec![egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }],
+    );
+    assert!(h.state().navigation.pointer_owned);
+}
+
+#[test]
+#[ignore = "manual public-scene capture; requires NODECRAFT_291_SCREENSHOT"]
+fn minimap291_visual_current() {
+    let blocked = true;
+    let mut h = Harness::builder().with_step_dt(1.0 / 60.0).with_size(Vec2::new(1000.0, 700.0)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            ui.heading("NodeCraft public minimap clipboard fixture");
+            let count = app.session.document().canvases().get(&app.canvas).unwrap().nodes().len();
+            ui.label(format!("Document nodes: {count}"));
+            app.show(ui);
+        },
+        NodeCraftApp::headless().unwrap(),
+    );
+    let selected = node(h.state()).id;
+    h.state_mut().selection.only(selected);
+    let original = h.state().session.document().clone();
+    let camera = h.state().view;
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    h.input_mut().events.extend([
+        egui::Event::PointerMoved(map.center()),
+        egui::Event::PointerButton { pos: map.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+    ]);
+    h.step();
+    assert!(h.state().navigation.pointer_owned);
+    let outside = Pos2::new(220.0, 150.0);
+    assert!(!map.contains(outside));
+    h.input_mut().events.extend([egui::Event::PointerMoved(outside), egui::Event::Paste("Minimap paste public proof".into())]);
+    h.step();
+    assert!(h.state().navigation.pointer_owned);
+    let expected = if blocked { 1 } else { 2 };
+    assert_eq!(counts(&h).0, expected);
+    assert_eq!(h.state().session.revision(), u64::from(!blocked));
+    if blocked {
+        assert_eq!(h.state().session.document(), &original);
+    }
+    // Capture the actual outcome after releasing, with identical original view for readability.
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: outside,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    h.state_mut().view = camera;
+    h.run();
+    assert_eq!(counts(&h).0, expected);
+    h.render().unwrap().save(std::env::var("NODECRAFT_291_SCREENSHOT").unwrap()).unwrap();
+    println!("Rendered actual held-map Paste outcome: blocked={blocked}, nodes={expected}, revision={}", h.state().session.revision());
+}
+
+#[test]
+#[ignore = "manual public-scene capture; requires NODECRAFT_PERF281_RENDER_ROOT"]
+fn perf281_visual_current() {
+    let root = std::path::PathBuf::from(std::env::var("NODECRAFT_PERF281_RENDER_ROOT").unwrap());
+    first_frame_hover_captured(false, Some(&root));
+    first_frame_hover_captured(true, Some(&root));
 }

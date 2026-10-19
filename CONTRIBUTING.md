@@ -15,8 +15,13 @@ Several people (and their coding agents) work on NodeCraft at once. Claims keep 
 building the same thing.
 
 1. Work is tracked in GitHub issues, labelled by area (`area:canvas`, `area:graph`, `area:exec`,
-   `area:providers`, `area:media`, `area:ui`, `area:agent`, `area:infra`). If you want to build
-   something bigger than a bug fix and it has no issue yet, open one first.
+   `area:providers`, `area:media`, `area:ui`, `area:agent`, `area:infra`) and by exactly one
+   `difficulty:easy` / `difficulty:medium` / `difficulty:hard`. Difficulty says what signing up
+   costs, not how urgently a change is wanted — that is the milestone and `future`. If you want to
+   build something bigger than a bug fix and it has no issue yet, open one first and give it both
+   labels. The levels and how to rate them are in
+   [`docs/issue-labels.md`](docs/issue-labels.md); re-rate an issue when the shape of its work
+   changes.
 2. **Comment `/claim` on the issue.** The bot assigns you, adds the `in progress` label and
    replies with your deadline. If someone else holds the issue, it tells you who and when their
    claim lapses.
@@ -93,6 +98,16 @@ The bot lives in [`scripts/claim/claim.js`](scripts/claim/claim.js) and runs fro
   `craft-settings`, `craft-atomic`, `craft-quit`, `craft-pdf`), pinned by an immutable git
   `rev` in the workspace `Cargo.toml`. Fix shared code upstream there, then bump the pin, rather
   than forking it here.
+
+## Decision records
+
+Before changing an established choice, read the dated records in [`docs/decisions/`](docs/decisions/).
+When a new choice will guide later contributors, add one new
+`docs/decisions/YYYY-MM-DD-short-descriptive-slug.md` file, starting with
+`## YYYY-MM-DD · Title (#issue)`. Use a unique topic slug and links relative to the new file.
+See [`docs/decisions.md`](docs/decisions.md) for the format and historical records. Do not append
+to that index or edit a shared list when adding a decision; each independent decision adds only
+its own file.
 
 ## Style
 

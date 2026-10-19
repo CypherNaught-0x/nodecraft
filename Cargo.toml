@@ -3,16 +3,19 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0-rc.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 repository = "https://github.com/CypherNaught-0x/nodecraft"
 
 [workspace.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # internal (layers: docs/architecture.md, enforced by `cargo xtask layers`)
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }
+nodecraft-plugin = { path = "crates/plugin" }
+nodecraft-plugin-store = { path = "crates/plugin-store" }
 nodecraft-comfy = { path = "crates/comfy" }
 nodecraft-graph = { path = "crates/graph" }
 nodecraft-nodes = { path = "crates/nodes" }
@@ -27,6 +30,7 @@ nodecraft-agent = { path = "crates/agent" }
 nodecraft-automation = { path = "crates/automation" }
 nodecraft-ui-egui = { path = "crates/ui-egui" }
 nodecraft-testkit = { path = "crates/testkit" }
+nodecraft-provider-testkit = { path = "crates/provider-testkit" }
 
 # craft-libs, pinned by immutable rev (bump deliberately, one PR per bump)
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["serde"] }
@@ -57,6 +61,14 @@ mime = "0.3"
 proptest = "1"
 regex-syntax = "0.8"
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode", "perf"] }
+
+zip = { version = "9.0.4", default-features = false }
+# Backup encryption (#182): RustCrypto, MIT/Apache-2.0, pure Rust (also wasm).
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# Plugin package signatures (#171): Ed25519, BSD-3-Clause, pure Rust (also wasm); verify only.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

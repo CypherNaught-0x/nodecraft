@@ -12,3 +12,12 @@ workspace = true
 
 [dependencies]
 nodecraft-actions = { workspace = true }
+# Validates custom shaders (#90) before any GPU sees them; the same version wgpu builds on.
+naga = { version = "=30.0.1", default-features = false, features = ["wgsl-in"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12", "webgpu"] }
+
+futures = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+serde_json = { workspace = true }

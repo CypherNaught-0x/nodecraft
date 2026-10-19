@@ -36,6 +36,8 @@ impl Resources {
     }
 }
 
+type RunHandler = Box<dyn FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error>>;
+
 type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
 
 /// Host services run only after a handler returns a Service effect. The session guards and
@@ -44,16 +46,33 @@ type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
 /// idempotency and reconciliation. Only document/history preservation is the session's guarantee.
 #[derive(Default)]
 pub struct Services {
+    run_host: Option<RunHandler>,
     handlers: BTreeMap<&'static str, ServiceHandler>,
 }
 impl Services {
     pub fn register(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        if id == crate::run_cmds::RUN_SERVICE {
+            return Err(invalid("use the typed run host registration"));
+        }
         validate_id(id)?;
         if self.handlers.contains_key(id) {
             return Err(Error::new(ErrorKind::Conflict, "host service is already registered"));
         }
         self.handlers.insert(id, Box::new(handler));
         Ok(())
+    }
+    pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        if self.run_host.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "run host already registered"));
+        }
+        self.run_host = Some(Box::new(handler));
+        Ok(())
+    }
+    pub fn contains_run_host(&self) -> bool {
+        self.run_host.is_some()
+    }
+    pub(crate) fn invoke_run_host(&mut self, prepared: crate::run_cmds::PreparedRun) -> Result<Value, Error> {
+        self.run_host.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "run host is unavailable"))?(prepared)
     }
     pub fn contains(&self, id: &str) -> bool {
         self.handlers.contains_key(id)
@@ -66,33 +85,68 @@ impl Services {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
+    /// Describe prospective effects for availability without I/O. Read-only queries may
+    /// skip computing their result after validating parameters and required capabilities.
     Preview,
     Dispatch,
 }
 
 pub struct Context<'a> {
+    pub(crate) routing: &'a crate::provider_routing::RoutingAuthority,
+    pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
+    /// The document's revision: bumped by every edit, undo and redo.
+    pub revision: u64,
     pub kinds: &'a nodecraft_nodes::Registry,
     pub can_undo: bool,
     pub can_redo: bool,
     pub resources: &'a Resources,
     pub services: &'a Services,
     pub phase: Phase,
+    pub file: crate::file_cmds::FileStatus,
+    /// The session's performance recorder, for `perf.report`.
+    pub perf: &'a crate::perf::Recorder,
 }
 impl Context<'_> {
-    /// Builtins preview the full graph for `enabled()`. Dispatch still invokes every enabled
-    /// hook, but stages graph validation once after the handler returns its changeset.
-    pub fn preview_changes(&self, changes: &Changeset) -> Result<(), Error> {
-        if self.phase == Phase::Preview { changes.validate(self.document) } else { Ok(()) }
+    /// Session::enabled/dispatch graph-stage every returned document effect once,
+    /// including custom handlers. Handler callbacks only check editability/parameters.
+    pub fn editable(&self) -> Result<(), Error> {
+        if self.file.recovery_required { Err(Error::new(ErrorKind::Conflict, "recovery journal needs a checkpoint; save before editing")) } else { Ok(()) }
+    }
+    pub fn preview_changes(&self, _changes: &Changeset) -> Result<(), Error> {
+        self.editable()
     }
 }
 
 pub enum Effect {
-    Service { capability: &'static str, request: Value },
-    None { result: Value },
-    Edit { changes: Changeset, result: Value, gesture: Option<String> },
+    Open {
+        location: nodecraft_format::StorageLocation,
+        discard_dirty: bool,
+    },
+    Save {
+        location: Option<nodecraft_format::StorageLocation>,
+    },
+    PreparedRun {
+        prepared: Box<crate::run_cmds::PreparedRun>,
+    },
+    Service {
+        capability: &'static str,
+        request: Value,
+    },
+    None {
+        result: Value,
+    },
+    Edit {
+        changes: Changeset,
+        result: Value,
+        gesture: Option<String>,
+    },
     Undo,
     Redo,
+    /// Start, stop or clear the session's performance recorder (`perf_cmds`).
+    Perf {
+        action: crate::perf_cmds::PerfAction,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +180,21 @@ impl Registry {
             .chain(crate::navigation_cmds::specs())
             .chain(crate::create_cmds::specs())
             .chain(crate::clipboard_cmds::specs())
+            .chain(crate::search_cmds::specs())
+            .chain(crate::file_cmds::specs())
+            .chain(crate::layout_cmds::specs())
+            .chain(crate::comment_cmds::specs())
+            .chain(crate::run_cmds::specs())
+            .chain(crate::perf_cmds::specs())
+            .chain(crate::cache_cmds::specs())
+            .chain(crate::shader_cmds::specs())
+            .chain(crate::plugin_cmds::specs())
+            .chain(crate::ownership_cmds::specs())
+            .chain(crate::order_cmds::specs())
+            .chain(crate::history_cmds::specs())
+            .chain(crate::turn_into_cmds::specs())
+            .chain(crate::tag_cmds::specs())
+            .chain(crate::tag_filter_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -181,11 +250,18 @@ impl<'a> JsonItems<'a> {
 }
 
 /// Also protects callers that construct JSON values programmatically instead of using a
-/// text decoder. The iterator stack is bounded by nesting depth, not array width. Public so a
-/// frontend can check parameters it will send later (e.g. a copy that must paste back).
+/// text decoder. The iterator stack is bounded by nesting depth, not array width.
 pub fn validate_json(root: &Value) -> Result<(), Error> {
+    validate_json_limit(root, 1024 * 1024)
+}
+
+/// Input content retains its per-field limits; this small allowance holds IDs and field names.
+pub(crate) fn validate_input_json(root: &Value) -> Result<(), Error> {
+    validate_json_limit(root, 1024 * 1024 + 1024)
+}
+
+fn validate_json_limit(root: &Value, max_bytes: usize) -> Result<(), Error> {
     const MAX_ITEMS: usize = 16_384;
-    const MAX_BYTES: usize = 1024 * 1024;
     let mut stack = vec![JsonItems::Root(Some(root).into_iter())];
     let mut items = 0_usize;
     let mut bytes = 0_usize;
@@ -217,7 +293,7 @@ pub fn validate_json(root: &Value) -> Result<(), Error> {
             }
             _ => {}
         }
-        if bytes > MAX_BYTES {
+        if bytes > max_bytes {
             return Err(invalid("command JSON exceeds text limit"));
         }
     }
@@ -225,7 +301,7 @@ pub fn validate_json(root: &Value) -> Result<(), Error> {
 }
 
 pub(crate) fn params<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    validate_json(value)?;
+    validate_input_json(value)?;
     serde_path_to_error::deserialize(value).map_err(|error| {
         // Never echo raw serde diagnostics, enum variants or caller-controlled map keys.
         let diagnostic = error.inner().to_string();
@@ -288,5 +364,25 @@ fn safe_field(field: &str) -> bool {
             | "gesture"
             | "type"
             | "value"
+            | "location"
+            | "discard_dirty"
     )
+}
+
+#[cfg(test)]
+mod plugin_ids {
+    use nodecraft_plugin::id::{LocalId, PackageId, RegisteredId};
+
+    /// The plugin contract's registered IDs are command IDs as they are, longest included
+    /// (#171): nothing is rewritten to fit.
+    #[test]
+    fn registered_plugin_ids_are_valid_command_ids() {
+        let longest = RegisteredId::new(
+            &PackageId::parse(&format!("{}.{}.{}.{}", "a".repeat(24), "b".repeat(24), "c".repeat(24), "d".repeat(5))).unwrap(),
+            &LocalId::parse(&format!("{}.{}", "e".repeat(15), "f".repeat(15))).unwrap(),
+        );
+        for id in [longest, RegisteredId::new(&PackageId::parse("io.example.textpack").unwrap(), &LocalId::parse("normalize").unwrap())] {
+            super::validate_id(id.as_str()).unwrap();
+        }
+    }
 }
