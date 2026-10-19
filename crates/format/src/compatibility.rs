@@ -63,8 +63,8 @@ fn node(item: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn generation(item: &Value) -> Result<(), Error> {
-    // Item tags (#92) are as unknown to version 1 as input hashes.
-    if item.get("input_hash").is_some() || item.get("items").is_some() {
+    // Item tags (#92) and job settings (#162) are as unknown to version 1 as input hashes.
+    if item.get("input_hash").is_some() || item.get("items").is_some() || item.get("settings").is_some() {
         return Err(unsupported());
     }
     if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
@@ -254,7 +254,7 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
             if !node.config.is_empty() || node.kind == "structure.note" {
                 return Err(unsupported());
             }
-            if node.history.iter().any(|generation| generation.input_hash.is_some() || !generation.items.is_empty()) {
+            if node.history.iter().any(|generation| generation.input_hash.is_some() || !generation.items.is_empty() || !generation.settings.is_empty()) {
                 return Err(unsupported());
             }
             for value in node.params.values().chain(node.history.iter().flat_map(|generation| &generation.outputs)) {
@@ -286,6 +286,7 @@ mod tests {
             outputs: vec![],
             input_hash: Some(nodecraft_types::Blake3::from_bytes([6; 32])),
             items: Vec::new(),
+            settings: Vec::new(),
         });
         nodes.push(hashed);
         // Fanned results (#92) carry item tags version 1 can't read.
@@ -296,12 +297,25 @@ mod tests {
             outputs: vec![Wire::List(vec![Wire::Text("a".into())])],
             input_hash: None,
             items: vec![vec![key]],
+            settings: Vec::new(),
         });
         let mut v1 = Project::new(ProjectId::from_bytes([4; 16]), "Items").unwrap();
         Change::AddCanvas { canvas: Canvas::new(c, "C") }.apply(&mut v1).unwrap();
         Change::AddNode { canvas: c, node: itemed.clone() }.apply(&mut v1).unwrap();
         assert!(project(&v1).is_err(), "never written as version 1");
         nodes.push(itemed);
+        // So do recorded job settings (#162).
+        let mut set = nodes[0].clone();
+        let mut job = Generation::new(GenerationId::from_bytes([5; 16]), vec![]);
+        job.settings.push(nodecraft_graph::JobSettings {
+            provider: "mock".into(),
+            instance: None,
+            model: "mock-model".into(),
+            params: Default::default(),
+            item: None,
+        });
+        set.history.push(job);
+        nodes.push(set);
         for value in [
             serde_json::json!({"type":"bool","value":true}),
             serde_json::json!({"type":"number","value":1.5}),
@@ -315,7 +329,13 @@ mod tests {
             params.params.insert("nested".into(), value.clone());
             nodes.push(params);
             let mut output = nodes[0].clone();
-            output.history.push(Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None, items: Vec::new() });
+            output.history.push(Generation {
+                id: GenerationId::from_bytes([3; 16]),
+                outputs: vec![value],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+            });
             nodes.push(output);
         }
         for node in nodes {

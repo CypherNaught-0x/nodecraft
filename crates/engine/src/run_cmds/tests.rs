@@ -531,7 +531,7 @@ fn launch_authority_rejects_copied_projects_and_equal_revision_inputs_before_ser
         }
         if variant == 3 {
             let mut n = doc.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
-            let generation = Generation { id: GenerationId::from_bytes([71; 16]), outputs: vec![], input_hash: None, items: Vec::new() };
+            let generation = Generation { id: GenerationId::from_bytes([71; 16]), outputs: vec![], input_hash: None, items: Vec::new(), settings: Vec::new() };
             n.active = Some(generation.id);
             n.history.push(generation);
             Change::SetNode { canvas: C, node: n }.apply(&mut doc).unwrap();

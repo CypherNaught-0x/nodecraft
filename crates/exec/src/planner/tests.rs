@@ -78,7 +78,7 @@ fn of_kind(n: u8, kind: &str, result: Option<Value>) -> Node {
     let mut node = kinds().get(kind).unwrap().descriptor().instantiate(id(n), &BTreeMap::new()).unwrap();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![result], input_hash: None, items: Vec::new() });
+        node.history.push(Generation { id: generation, outputs: vec![result], input_hash: None, items: Vec::new(), settings: Vec::new() });
         node.active = Some(generation);
     }
     node
@@ -116,7 +116,7 @@ fn relay(n: u8, result: Option<&str>) -> Node {
     node.title = "Relay".into();
     if let Some(result) = result {
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())], input_hash: None, items: Vec::new() });
+        node.history.push(Generation { id: generation, outputs: vec![Value::Text(result.into())], input_hash: None, items: Vec::new(), settings: Vec::new() });
         node.active = Some(generation);
     }
     node
@@ -569,7 +569,7 @@ fn an_unusable_active_result_is_rerun_not_waited_on() {
     // schedules 2 again instead of blocking 3 on a result it can't use.
     let mut stale_layout = relay(2, None);
     let generation = GenerationId::from_bytes([2; 16]);
-    stale_layout.history.push(Generation { id: generation, outputs: vec![], input_hash: None, items: Vec::new() });
+    stale_layout.history.push(Generation { id: generation, outputs: vec![], input_hash: None, items: Vec::new(), settings: Vec::new() });
     stale_layout.active = Some(generation);
     let p = project(vec![text(1, "a"), stale_layout, relay(3, None)], &[(1, 2), (2, 3)]);
     let canvas = p.canvases().get(&C).unwrap();
@@ -742,7 +742,13 @@ fn an_existing_fanned_result_fans_its_consumers_out() {
     let canvas = p.canvases().get(&C).unwrap();
     let mut node = canvas.nodes().get(&id(2)).unwrap().clone();
     let generation = GenerationId::from_bytes([2; 16]);
-    node.history.push(Generation { id: generation, outputs: vec![Value::List(texts(&["A", "B"]))], input_hash: None, items: items.clone() });
+    node.history.push(Generation {
+        id: generation,
+        outputs: vec![Value::List(texts(&["A", "B"]))],
+        input_hash: None,
+        items: items.clone(),
+        settings: Vec::new(),
+    });
     node.active = Some(generation);
     let p = wired(vec![batch(1, "a\nb", "cross"), node, single(3)], &[(1, "item", 2, "in"), (2, "out", 3, "in")]);
     let plan = ready(plan_of(&p, &[3]));

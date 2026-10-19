@@ -151,6 +151,18 @@
                   "type": "text",
                   "value": "mock-text: an owl / at dusk #0a9c4410"
                 }
+              ],
+              "settings": [
+                {
+                  "model": "mock-text",
+                  "params": {
+                    "style": {
+                      "type": "text",
+                      "value": ""
+                    }
+                  },
+                  "provider": "mock"
+                }
               ]
             }
           ],

@@ -15,6 +15,7 @@ fn generation(n: u8) -> Generation {
         outputs: vec![nodecraft_types::Value::Text(format!("output {n}"))],
         input_hash: None,
         items: Vec::new(),
+        settings: Vec::new(),
     }
 }
 fn enabled(_: &Context<'_>, _: &Value) -> Result<(), Error> {

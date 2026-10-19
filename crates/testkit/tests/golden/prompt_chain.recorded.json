@@ -72,6 +72,18 @@
                   "type": "text",
                   "value": "mock-text: a fox in the snow #8486ca86"
                 }
+              ],
+              "settings": [
+                {
+                  "model": "mock-text",
+                  "params": {
+                    "style": {
+                      "type": "text",
+                      "value": "ink"
+                    }
+                  },
+                  "provider": "mock"
+                }
               ]
             }
           ],
@@ -127,6 +139,18 @@
                     "meta": {},
                     "mime": "image/png"
                   }
+                }
+              ],
+              "settings": [
+                {
+                  "model": "mock-image",
+                  "params": {
+                    "style": {
+                      "type": "text",
+                      "value": ""
+                    }
+                  },
+                  "provider": "mock"
                 }
               ]
             }

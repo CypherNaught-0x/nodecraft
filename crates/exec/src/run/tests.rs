@@ -954,6 +954,7 @@ fn a_batch_runs_each_item_through_a_chain_and_records_its_items() {
     // A list input collects every item into one run.
     assert!(result(4).items.is_empty());
     assert_eq!(output(&finished, 4), "(FOX+OWL)");
+    assert!(finished.iter().all(|r| r.generation.settings.is_empty()), "only provider jobs record settings");
 
     for result in &finished {
         let node = p.canvases().get(&C).unwrap().nodes().get(&result.node).unwrap().clone();
@@ -978,4 +979,22 @@ fn a_failed_item_fails_its_step_rather_than_dropping_a_row() {
     assert!(finished.is_empty(), "{finished:?}");
     assert!(failed.iter().any(|f| f.node == id(2)));
     assert!(run.is_finished());
+}
+
+#[test]
+fn settings_too_large_to_keep_are_dropped_but_a_result_too_large_still_fails() {
+    let job = |n: usize| nodecraft_graph::JobSettings {
+        provider: "mock".into(),
+        instance: None,
+        model: "remote".into(),
+        params: [("prompt".into(), Value::Text(format!("{n}{}", "x".repeat(1_000_000))))].into(),
+        item: None,
+    };
+    let small = Generation { settings: vec![job(0)], ..Generation::new(GenerationId::from_bytes([1; 16]), vec![Value::Text("made".into())]) };
+    assert_eq!(super::recordable(small.clone()).unwrap(), small);
+    let large = Generation { settings: (0..9).map(job).collect(), ..small.clone() };
+    let kept = super::recordable(large).unwrap();
+    assert!(kept.settings.is_empty() && kept.outputs == small.outputs, "the result is kept without its settings");
+    let outputs = (0..9).map(|_| Value::Text("x".repeat(1_000_000))).collect();
+    assert!(super::recordable(Generation { outputs, ..small }).is_err());
 }

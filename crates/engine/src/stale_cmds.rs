@@ -205,6 +205,7 @@ mod tests {
                 outputs: vec![nodecraft_types::Value::Text("result".into())],
                 input_hash: Some(hash),
                 items: Vec::new(),
+                settings: Vec::new(),
             },
         }
         .apply(&mut project)
@@ -274,7 +275,7 @@ mod tests {
                 canvas,
                 id: node,
                 index: 0,
-                generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new() },
+                generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new(), settings: Vec::new() },
             },
             Change::SetActiveGeneration { canvas, id: node, generation: Some(generation) },
         ])

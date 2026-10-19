@@ -9,6 +9,8 @@ pub const MAX_VALUE_DEPTH: usize = 32;
 pub const MAX_VALUE_ITEMS: usize = 4096;
 /// Most batches one fanned result's items combine.
 pub const MAX_ITEM_AXES: usize = 16;
+/// Parameters one recorded job may carry: the parameter schema's own limit.
+const MAX_JOB_PARAMS: usize = 256;
 pub const MAX_NODE_BYTES: usize = 8 * 1024 * 1024;
 /// Most generations a node keeps.
 pub const MAX_HISTORY: usize = 1024;
@@ -85,6 +87,7 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
     for output in &generation.outputs {
         value(output)?;
     }
+    settings(generation)?;
     if generation.items.is_empty() {
         return Ok(());
     }
@@ -98,6 +101,29 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
     }
     if generation.outputs.iter().any(|output| !matches!(output, Value::List(values) if values.len() == generation.items.len())) {
         return Err(invalid("a fanned generation needs one value per item on every output"));
+    }
+    Ok(())
+}
+
+fn settings(generation: &Generation) -> Result<(), Error> {
+    if generation.settings.len() > MAX_VALUE_ITEMS {
+        return Err(invalid("generation exceeds job settings limit"));
+    }
+    for job in &generation.settings {
+        text(&job.provider, 256)?;
+        text(&job.model, 4096)?;
+        if job.provider.is_empty() || job.model.is_empty() || job.params.len() > MAX_JOB_PARAMS {
+            return Err(invalid("job settings need a provider, a model and a bounded parameter set"));
+        }
+        for (name, param) in &job.params {
+            text(name, 256)?;
+            value(param)?;
+        }
+        if let Some(item) = job.item
+            && usize::try_from(item).map_or(true, |item| item >= generation.items.len())
+        {
+            return Err(invalid("job settings name an item the result doesn't have"));
+        }
     }
     Ok(())
 }

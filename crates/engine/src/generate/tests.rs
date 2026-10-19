@@ -284,6 +284,7 @@ fn borrowed_text_bytes_bom_routes_and_graph_text_parity() {
         outputs: vec![Value::Text("x".repeat(size))],
         input_hash: None,
         items: Vec::new(),
+        settings: Vec::new(),
     };
     assert!(generation(MAX_TEXT_VALUE_BYTES).validate().is_ok());
     assert!(generation(MAX_TEXT_VALUE_BYTES + 1).validate().is_err());
