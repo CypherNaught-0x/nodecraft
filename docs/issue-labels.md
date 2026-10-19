@@ -4,6 +4,11 @@ Every issue carries an `area:*` label, a milestone where one applies, and **exac
 `difficulty:*` label. This page is the rubric for that last one: triage a new issue with it, and
 re-rate an existing one when the shape of the work changes.
 
+New issue templates start with `difficulty:medium`; maintainers should re-rate them using this
+rubric. Before assigning a new or lapsed claim, the bot requires exactly one recognized difficulty
+label (`easy`, `medium` or `hard`) and otherwise asks for triage without changing ownership or
+labels. Existing claimants can still acknowledge their claim or `/unclaim` while metadata is fixed.
+
 ## The three levels
 
 | Label | What it means |
