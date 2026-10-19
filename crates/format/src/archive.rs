@@ -10,7 +10,16 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+/// Current graph writer/schema declaration, not the greatest supported container version.
+/// Wire 4 is permanently reserved for streaming graph-v3 content. The next graph schema
+/// must skip to 5 and supply a frozen-v3 reader/migration before changing this declaration.
 pub(crate) const VERSION: u32 = 3;
+pub(crate) const GRAPH_V3: u32 = 3;
+pub(crate) const STREAMING_V4: u32 = 4;
+
+pub(crate) fn is_classic_wire(version: u32) -> bool {
+    matches!(version, 1 | 2 | GRAPH_V3)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -126,7 +135,7 @@ pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
 /// consumption; legacy-v1 content validation retains its published eager admission semantics.
 pub fn decode_indexed(index: &crate::zip_index::ArchiveIndex, context: crate::AssetContext) -> Result<Snapshot, Error> {
     let snapshot = decode_indexed_presence(index, context)?;
-    if index.version() < 4 {
+    if is_classic_wire(index.version()) {
         for hash in snapshot.assets.hashes() {
             snapshot.assets.verified_content(hash, &crate::asset_source::TransferCancel::default(), &crate::asset_source::StreamMetrics::default())?;
         }
@@ -265,7 +274,7 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
             }
             let json = bytes.get(data_start..data_end).ok_or_else(|| invalid("invalid manifest extent"))?;
             let version: Version = serde_json::from_slice(json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
-            if !matches!(version.version, 1 | 2 | VERSION) {
+            if !is_classic_wire(version.version) {
                 return Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; use a compatible NodeCraft build"));
             }
         }
@@ -286,18 +295,45 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
     Ok(count)
 }
 
-/// V1 roots acquire only defaulted canvas-anchor/thread fields. Gate its exact old model
-/// before typed parsing, so a legacy header cannot disguise v2-only fields or variants.
+/// Route wire families before typed parsing. Legacy roots retain their frozen role guards;
+/// both classic 3 and reserved streaming 4 carry graph-v3, never a mutable "latest" schema.
 fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
-    if from == 1 {
-        crate::legacy::validate(json)?;
-        Ok(json)
-    } else if from == 2 {
-        crate::v2::validate(json)?;
-        Ok(json)
-    } else if from == VERSION || from == 4 {
-        Ok(json)
-    } else {
-        Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))
+    match from {
+        1 => {
+            crate::legacy::validate(json)?;
+            Ok(json)
+        }
+        2 => {
+            crate::v2::validate(json)?;
+            Ok(json)
+        }
+        GRAPH_V3 | STREAMING_V4 => admit_graph_v3(json, VERSION),
+        _ => Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter")),
+    }
+}
+
+/// Current typed Project parsing is the v3 reader only while the schema declaration is 3.
+/// This is a future migration stop, not a claim that current serde freezes all future fields.
+fn admit_graph_v3(json: &[u8], reader_schema: u32) -> Result<&[u8], Error> {
+    if reader_schema != GRAPH_V3 {
+        return Err(Error::new(ErrorKind::Unsupported, "graph-v3 migration is required before reading wire families 3 or 4 with this schema"));
+    }
+    Ok(json)
+}
+
+#[cfg(test)]
+mod wire_family_tests {
+    use super::*;
+
+    #[test]
+    fn v3_reader_gate_fails_closed_before_typed_parsing_after_a_schema_change() {
+        let malformed = b"not a typed project";
+        assert_eq!(admit_graph_v3(malformed, 3).unwrap(), malformed);
+        for schema in [4, 5] {
+            assert_eq!(admit_graph_v3(malformed, schema).unwrap_err().kind, ErrorKind::Unsupported);
+        }
+        assert!(is_classic_wire(3));
+        assert!(!is_classic_wire(4));
+        assert!(!is_classic_wire(5));
     }
 }
