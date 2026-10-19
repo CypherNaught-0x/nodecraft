@@ -5,6 +5,7 @@
 
 mod decisions;
 mod layers;
+mod perf;
 mod version;
 mod workspace;
 
@@ -15,6 +16,7 @@ const USAGE: &str = "\
 usage: cargo xtask <command>
 
 commands:
+  perf            bounded release collect/compare tooling (cargo xtask perf help)
   layers          enforce the crate dependency layering (docs/architecture.md)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
   catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
@@ -37,6 +39,15 @@ fn main() -> ExitCode {
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
+        Some("perf") => {
+            return match root().and_then(|root| perf::run(&root, &rest)) {
+                Ok(code) => ExitCode::from(code),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(3)
+                }
+            };
+        }
         Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "version")) => root().and_then(|root| {
             eprintln!("xtask workspace: {}", root.display());
             match command {

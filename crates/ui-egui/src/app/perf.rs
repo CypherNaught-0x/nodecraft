@@ -112,6 +112,9 @@ struct Stats {
     mean: Duration,
     p95: Duration,
     max: Duration,
+    raw_ns: Vec<u64>,
+    workloads: Vec<serde_json::Value>,
+    report: Option<serde_json::Value>,
 }
 
 impl std::fmt::Display for Stats {
@@ -125,6 +128,7 @@ impl std::fmt::Display for Stats {
 /// document. The pointer moves over the canvas every frame, as it does in use.
 fn frames(h: &mut Harness<'static, NodeCraftApp>, count: usize, mut before: impl FnMut(&mut Harness<'static, NodeCraftApp>, usize)) -> Stats {
     let mut times = Vec::with_capacity(count);
+    let mut workloads = Vec::new();
     for frame in 0..count {
         before(h, frame);
         let wobble = (frame % 40) as f32;
@@ -137,11 +141,17 @@ fn frames(h: &mut Harness<'static, NodeCraftApp>, count: usize, mut before: impl
         let meshes = h.ctx.tessellate(shapes, ppp);
         times.push(start.elapsed());
         std::hint::black_box(meshes);
+        if h.state().session.perf().enabled() {
+            // Observation/export is untimed. The timed UI pass includes collection itself.
+            workloads.push(serde_json::to_value(h.state().session.perf().report().workload).unwrap());
+        }
     }
+    let raw_ns = times.iter().map(|d| u64::try_from(d.as_nanos()).unwrap()).collect();
     times.sort();
     let mean = times.iter().sum::<Duration>() / u32::try_from(count).unwrap();
     let p95 = times.get(count * 95 / 100).copied().unwrap_or_default();
-    Stats { mean, p95, max: times.last().copied().unwrap_or_default() }
+    let report = h.state().session.perf().enabled().then(|| serde_json::to_value(h.state().session.perf().report()).unwrap());
+    Stats { mean, p95, max: times.last().copied().unwrap_or_default(), raw_ns, workloads, report }
 }
 
 fn settle(h: &mut Harness<'static, NodeCraftApp>, zoom: f32) {
@@ -226,3 +236,5 @@ fn a_graph_built_like_a_user_would_undoes_to_empty() {
 
 mod capture371;
 mod save;
+
+mod regression152;

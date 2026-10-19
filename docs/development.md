@@ -71,6 +71,10 @@ open pull requests pick it up, then add the two contexts. The four there now kee
 
 ## Benchmarks
 
+For the bounded release collect/compare matrix, baseline policy, CI artifacts and precise timing
+boundaries, see [performance regression measurements](performance.md). `cargo xtask perf help`
+prints the tooling entry points. The older manual workloads below remain available.
+
 - `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`: canvas frame time over
   200- and 1,000-node graphs (see `docs/ui-design.md`, "Level of detail and performance").
 
