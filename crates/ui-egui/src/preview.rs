@@ -41,42 +41,47 @@ type Key = (Blake3, u32);
 
 enum Entry {
     Pending,
-    Ready { texture: TextureHandle, size: [u32; 2], bytes: usize, used: u64 },
+    Ready { texture: TextureHandle, size: [u32; 2], source_size: [u32; 2], bytes: usize, used: u64 },
     Failed(&'static str),
 }
 
 /// What a card can show for its image right now.
 pub enum Preview {
-    Ready { texture: egui::TextureId, size: [u32; 2] },
+    Ready { texture: egui::TextureId, size: [u32; 2], source_size: [u32; 2] },
     Pending,
     Unavailable(&'static str),
 }
 
+/// Thumbnail pixels and the decoded source's upright dimensions have distinct purposes.
+struct DecodedPreview {
+    image: ColorImage,
+    source_size: [u32; 2],
+}
+
 /// A thumbnail decoded from `bytes` at most `edge` pixels on its longer side. A panic inside the
 /// image decoder is caught and reported as a failure, so one bad file can't stop previews.
-fn decode(bytes: &[u8], edge: u32) -> Result<ColorImage, &'static str> {
+fn decode(bytes: &[u8], edge: u32) -> Result<DecodedPreview, &'static str> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_unguarded(bytes, edge))).unwrap_or(Err("Can't preview this image"))
 }
 
-fn decode_unguarded(bytes: &[u8], edge: u32) -> Result<ColorImage, &'static str> {
-    let (_, image) = decode_image(bytes, &limits()).map_err(|_| "Can't preview this image")?;
+fn decode_unguarded(bytes: &[u8], edge: u32) -> Result<DecodedPreview, &'static str> {
+    let (meta, image) = decode_image(bytes, &limits()).map_err(|_| "Can't preview this image")?;
     let thumb = thumbnail(&image, edge).map_err(|_| "Can't preview this image")?;
     let size =
         [usize::try_from(thumb.width()).map_err(|_| "Can't preview this image")?, usize::try_from(thumb.height()).map_err(|_| "Can't preview this image")?];
-    Ok(ColorImage::from_rgba_unmultiplied(size, thumb.rgba()))
+    Ok(DecodedPreview { image: ColorImage::from_rgba_unmultiplied(size, thumb.rgba()), source_size: [meta.width, meta.height] })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod worker {
-    use super::{Key, decode};
-    use egui::ColorImage;
+    use super::{DecodedPreview, Key, decode};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
     };
 
-    pub(super) type Done = (Key, Result<ColorImage, &'static str>);
+    pub(super) type Done = (Key, Result<DecodedPreview, &'static str>);
     /// A decode to do: what for, the encoded bytes and the edge length.
     type Job = (Key, Arc<[u8]>, u32);
 
@@ -197,14 +202,14 @@ impl Previews {
         self.worker_failed = self.restarts > MAX_RESTARTS;
     }
 
-    fn finish(&mut self, ctx: &egui::Context, key: Key, result: Result<ColorImage, &'static str>) {
+    fn finish(&mut self, ctx: &egui::Context, key: Key, result: Result<DecodedPreview, &'static str>) {
         let entry = match result {
-            Ok(image) => {
+            Ok(DecodedPreview { image, source_size }) => {
                 let size = [u32::try_from(image.size[0]).unwrap_or(u32::MAX), u32::try_from(image.size[1]).unwrap_or(u32::MAX)];
                 let bytes = image.size[0].saturating_mul(image.size[1]).saturating_mul(4);
                 let texture = ctx.load_texture(format!("preview-{:?}-{}", key.0, key.1), image, TextureOptions::LINEAR);
                 self.bytes = self.bytes.saturating_add(bytes);
-                Entry::Ready { texture, size, bytes, used: self.clock }
+                Entry::Ready { texture, size, source_size, bytes, used: self.clock }
             }
             Err(why) => Entry::Failed(why),
         };
@@ -242,9 +247,9 @@ impl Previews {
         let mut show = None;
         let mut missing = false;
         match self.entries.get_mut(&wanted) {
-            Some(Entry::Ready { texture, size, used, .. }) => {
+            Some(Entry::Ready { texture, size, source_size, used, .. }) => {
                 *used = clock;
-                return Preview::Ready { texture: texture.id(), size: *size };
+                return Preview::Ready { texture: texture.id(), size: *size, source_size: *source_size };
             }
             Some(Entry::Failed(why)) => return Preview::Unavailable(why),
             Some(Entry::Pending) => {}
@@ -252,9 +257,9 @@ impl Previews {
         }
         // While a sharper one decodes, any other size of the same image will do.
         for bucket in BUCKETS.into_iter().rev() {
-            if let Some(Entry::Ready { texture, size, used, .. }) = self.entries.get_mut(&(hash, bucket)) {
+            if let Some(Entry::Ready { texture, size, source_size, used, .. }) = self.entries.get_mut(&(hash, bucket)) {
                 *used = clock;
-                show = Some(Preview::Ready { texture: texture.id(), size: *size });
+                show = Some(Preview::Ready { texture: texture.id(), size: *size, source_size: *source_size });
                 break;
             }
         }
