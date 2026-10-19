@@ -27,7 +27,8 @@ fn action_cards_show_their_generated_controls() {
     let mut h = Harness::builder().with_size(egui::Vec2::new(1400.0, 900.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), with_actions());
     let ctx = h.ctx.clone();
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
-    h.run();
+    // Inspect the next rendered frame; this test does not wait for asynchronous live results.
+    h.step();
     for label in ["Blur", "Color grade", "Split text"] {
         assert!(h.query_by_label_contains(label).is_some(), "{label}");
     }
