@@ -83,7 +83,7 @@ impl NodeContract {
         };
         let mut text = values.values().fold(0usize, |n, v| n.saturating_add(bytes(v)));
         for group in self.parameter_groups() {
-            for spec in &group.schema.params {
+            for spec in group.schema.params.iter().filter(|spec| !values.contains_key(&spec.name)) {
                 text = text.saturating_add(spec.default.as_ref().map_or(0, bytes));
             }
         }

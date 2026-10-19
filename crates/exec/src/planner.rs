@@ -734,4 +734,6 @@ fn known_inputs(inputs: &[PlannedInput]) -> Option<Vec<InputValue>> {
 }
 
 #[cfg(test)]
+mod contract_tests;
+#[cfg(test)]
 mod tests;

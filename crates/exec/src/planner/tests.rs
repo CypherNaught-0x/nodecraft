@@ -730,7 +730,7 @@ fn batch_plans_that_cant_run_say_why() {
     assert!(message.contains("more than"), "{message}");
 
     let message = blocked(plan_of(&wired(vec![batch(1, "a", "bogus"), single(2)], &[(1, "item", 2, "in")]), &[2]));
-    assert!(message.contains("parameter"), "{message}");
+    assert!(message.contains("Pairing"), "{message}");
 }
 
 #[test]
