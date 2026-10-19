@@ -13,6 +13,9 @@ workspace = true
 [dependencies]
 nodecraft-exec = { workspace = true }
 nodecraft-catalog = { workspace = true }
+# Plugin data packages (#172): the store behind the plugin.* commands.
+nodecraft-plugin = { workspace = true }
+nodecraft-plugin-store = { workspace = true }
 nodecraft-nodes = { workspace = true }
 # Adapters the catalog names (#409); the host builds them in `provider_setup`.
 nodecraft-providers = { workspace = true, features = ["openai-images", "replicate", "seedream"] }
@@ -43,8 +46,6 @@ tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
 zip = { workspace = true }
-# Registered plugin IDs must stay valid command IDs (#171).
-nodecraft-plugin = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.

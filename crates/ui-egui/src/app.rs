@@ -402,6 +402,13 @@ impl NodeCraftApp {
                 None
             }
         };
+        // Plugin data packages (#172) live in the settings folder; without one the plugin.*
+        // commands are unsupported, and a store that can't open is logged, not fatal.
+        if let Some(dir) = store.dir().map(|d| d.join("plugins"))
+            && let Err(error) = Self::register_plugins(&mut services, dir)
+        {
+            log::warn!("plugin packages unavailable: {}", error.message);
+        }
         // Storage that can't start (another window holds the journal, or the project won't
         // open) still opens the window, without project files, and says why.
         let mut problem = None;
@@ -451,6 +458,17 @@ impl NodeCraftApp {
 
     pub fn headless() -> Result<Self, Error> {
         Self::with_services(nodecraft_engine::commands::Services::default())
+    }
+
+    /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
+    /// package may take an ID the app registers; no host implementation is bindable yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn register_plugins(services: &mut nodecraft_engine::commands::Services, dir: std::path::PathBuf) -> Result<(), Error> {
+        use nodecraft_engine::plugin_cmds::{PluginHost, register_plugin_service};
+        let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
+        taken.extend(nodecraft_nodes::Registry::builtins()?.descriptors().map(|d| d.id.clone()));
+        let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?)?;
+        register_plugin_service(services, store, PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() })
     }
 
     /// The headless app with these host services on its session (the keychain, for one).
