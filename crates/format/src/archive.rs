@@ -29,6 +29,9 @@ struct Manifest {
 }
 
 pub fn encode(snapshot: &Snapshot) -> Result<Vec<u8>, Error> {
+    if !snapshot.assets.is_resident_small() {
+        return Err(Error::new(ErrorKind::Unsupported, "legacy byte encoder requires small resident assets; use a streaming archive plan"));
+    }
     let referenced = snapshot.assets.validate_project(&snapshot.project)?;
     let json = manifest_json(&snapshot.project, snapshot.epoch)?;
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -119,6 +122,26 @@ pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
     Ok((Snapshot { project: manifest.project, assets, epoch: manifest.epoch }, version.version))
 }
 
+/// Structurally decode a bounded index. Version4 assets remain explicitly unverified until
+/// consumption; legacy-v1 content validation retains its published eager admission semantics.
+pub fn decode_indexed(index: &crate::zip_index::ArchiveIndex, context: crate::AssetContext) -> Result<Snapshot, Error> {
+    let snapshot = decode_indexed_presence(index, context)?;
+    if index.version() < 4 {
+        for hash in snapshot.assets.hashes() {
+            snapshot.assets.verified_content(hash, &crate::asset_source::TransferCancel::default(), &crate::asset_source::StreamMetrics::default())?;
+        }
+        snapshot.assets.validate_project(&snapshot.project)?;
+    }
+    Ok(snapshot)
+}
+pub(crate) fn decode_indexed_presence(index: &crate::zip_index::ArchiveIndex, context: crate::AssetContext) -> Result<Snapshot, Error> {
+    migrate(index.version(), index.manifest())?;
+    let manifest: Manifest = serde_json::from_slice(index.manifest()).map_err(|_| invalid("invalid project graph or manifest"))?;
+    let assets = AssetStore::from_index(index, context).map_err(|error| nodecraft_types::Error::new(nodecraft_types::ErrorKind::Conflict, error.message))?;
+    assets.validate_project_presence(&manifest.project)?;
+    Ok(Snapshot { project: manifest.project, assets, epoch: manifest.epoch })
+}
+
 pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>, Error> {
     struct Bounded {
         bytes: Vec<u8>,
@@ -129,6 +152,7 @@ pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>
             if self.bytes.len().saturating_add(bytes.len()) > self.cap {
                 return Err(std::io::Error::other("JSON limit exceeded"));
             }
+            self.bytes.try_reserve(bytes.len()).map_err(|_| std::io::Error::other("cannot allocate bounded JSON"))?;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
@@ -271,7 +295,7 @@ fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
     } else if from == 2 {
         crate::v2::validate(json)?;
         Ok(json)
-    } else if from == VERSION {
+    } else if from == VERSION || from == 4 {
         Ok(json)
     } else {
         Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))

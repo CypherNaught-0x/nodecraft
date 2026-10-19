@@ -46,7 +46,7 @@ pub mod tag_cmds;
 pub mod tag_filter_cmds;
 pub mod turn_into_cmds;
 
-pub use session::{DocChanged, Session};
+pub use session::{DocChanged, PreparedImports, Session};
 
 pub mod provider_routing;
 pub mod provider_setup;

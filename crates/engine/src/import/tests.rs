@@ -1,6 +1,7 @@
 use super::*;
-use nodecraft_graph::{Canvas, Change, Project};
-use nodecraft_types::ProjectId;
+use nodecraft_graph::{Canvas, Change, Node, Project};
+use nodecraft_types::{ProjectId, Value};
+use serde_json::json;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 
