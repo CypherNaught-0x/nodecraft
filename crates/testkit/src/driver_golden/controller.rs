@@ -44,6 +44,8 @@ pub struct DriverRequest {
     pub mode: &'static str,
     pub amounts: BTreeMap<String, u64>,
     pub partial: bool,
+    /// The accepted count of unknown-price jobs (#366); `None` sends none.
+    pub unpriced_jobs: Option<u64>,
     pub options: RunOptions,
 }
 impl DriverRequest {
@@ -54,6 +56,8 @@ impl DriverRequest {
             mode: "with_upstream",
             amounts: BTreeMap::new(),
             partial: true,
+            // Fixtures consent explicitly to a small count of unknown-price jobs.
+            unpriced_jobs: Some(16),
             options: RunOptions {
                 id: [0x70; 16],
                 first_job: 1,
@@ -657,7 +661,10 @@ impl Controller {
         let mut request = json!({"canvas":self.request.canvas,"mode":self.request.mode,"nodes":self.request.nodes});
         let quoted = self.out.session.dispatch("run.quote", &request).map_err(|_| "quote")?;
         let token = quoted.get("token").and_then(|v| v.as_str()).filter(|s| s.len() <= 1024).ok_or("quote_token")?;
-        request.as_object_mut().ok_or("request")?.insert("accept".into(), json!({"token":token,"amounts":self.request.amounts,"partial":self.request.partial}));
+        request.as_object_mut().ok_or("request")?.insert(
+            "accept".into(),
+            json!({"token":token,"amounts":self.request.amounts,"partial":self.request.partial,"unpriced_jobs":self.request.unpriced_jobs}),
+        );
         self.out.session.dispatch("run.start", &request).map_err(|_| "start")?;
         let p = lock(&prepared).take().ok_or("prepared")?;
         if p.quote().steps.len() > 64 {
