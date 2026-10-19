@@ -160,6 +160,8 @@ fn prepare(session: &Session, unique: &[Encoded]) -> Result<PreparedImports, Err
     Ok(batch)
 }
 pub(super) fn run(session: &mut Session, split: &Split<'_>) -> Result<Vec<NodeId>, Error> {
+    // A pending save changes the admission identity the prepared batch is checked against.
+    session.settle_for_edit();
     let tiles = split.rows.checked_mul(split.columns).filter(|n| (1..=MAX_TILES).contains(n));
     let Some(tiles) = tiles.filter(|_| (1..=MAX_SIDE).contains(&split.rows) && (1..=MAX_SIDE).contains(&split.columns)) else {
         return Err(invalid(format!("split into 1 to {MAX_SIDE} rows and columns, at most {MAX_TILES} tiles")));

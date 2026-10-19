@@ -68,7 +68,17 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
     let started = Instant::now();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     h.step();
+    // The frame only snapshots the document; the file work finishes on its own thread (#461).
     let save = started.elapsed();
+    let mut frames = 0;
+    while h.state().session.file_status().saving {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        h.step();
+        frames += 1;
+        assert!(frames <= 10_000, "the background save never finishes");
+    }
+    let written = started.elapsed();
+    assert!(h.state().notice.is_none(), "the save went through: {:?}", h.state().notice);
     assert!(!h.state().session.file_status().dirty, "Cmd+S saves to the same file");
     let saved = h.state().session.document().clone();
 
@@ -93,5 +103,8 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
     let reopened = storage_harness(storage_app(&scratch.0, "recovery-reopen", Some(file.clone())));
     let open = started.elapsed();
     assert_eq!(reopened.state().session.document(), &saved, "the file holds the whole graph");
-    eprintln!("200 nodes, 180 wires: .ncraft {} bytes; save as {save_as:?}, Cmd+S frame {save:?}, open {open:?}", std::fs::metadata(&file).unwrap().len());
+    eprintln!(
+        "200 nodes, 180 wires: .ncraft {} bytes; save as {save_as:?}, Cmd+S frame {save:?} (written after {written:?}), open {open:?}",
+        std::fs::metadata(&file).unwrap().len()
+    );
 }
