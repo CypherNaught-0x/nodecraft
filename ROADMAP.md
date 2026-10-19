@@ -38,7 +38,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   clipboard, OS file drop as source nodes, split-grid image previews (#337), per-node generation
   history strip, local pinned
   discussions with Note nodes (#68), grid/dependency formatting of selected nodes (#70), named
-  colour tags with a bounded highlight filter (#67), an API keys panel backed by the OS keychain.
+  colour tags with a bounded highlight filter (#67), shared parameter editing with explicit Mixed
+  values and atomic undo across compatible selected nodes (#71), and an API keys panel backed by
+  the OS keychain. Shared model changes show per-target migration results before applying (#157).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -92,7 +94,7 @@ The open pull requests say what is in flight; the near-term order that makes the
 4. **Action nodes** — expose the CPU/GPU operations as node kinds (#410) with live recompute
    (#88, #90).
 5. **Organise** — fields UI (#66). Tags (#67), comments/Notes (#68), selected-node auto-format
-   (#70) and the v3 tags/fields persistence bridge (#193) have shipped.
+   (#70), the bulk parameter panel (#71), and the v3 tags/fields persistence bridge (#193) have shipped.
 6. **Then M5**: batch, Technique Builder, app mode, library, and the CLI `run`/`quote`/`inspect`
    that turn a canvas into a reusable command, and the first signed release (#100).
 
@@ -132,3 +134,8 @@ The open pull requests say what is in flight; the near-term order that makes the
 - **2026-10-18** — colour tagging and its bounded highlight filter shipped (#67), backed by
   the v3 tags/fields persistence bridge (#193). Bulk assignments undo atomically, and legacy
   archives/recovery migrate before new appends. The command registry now has 66 entries.
+
+- **2026-10-19** — the bulk parameter panel shipped (#71): compatible parameter intersections,
+  explicit Mixed values, conditional resets and one atomic undo step. Shared model changes reuse
+  the migration preview (#157), including dropped settings and unavailable-model repair. File
+  operations preserve pending bulk drafts and own input through their completion frame.
