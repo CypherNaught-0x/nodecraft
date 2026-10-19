@@ -27,7 +27,7 @@ pub const MAX_KEYS: usize = 256;
 /// Longest provenance note.
 pub const MAX_PROVENANCE: usize = 256;
 
-const LIMITS: Limits = Limits { bytes: 128 * 1024, depth: 4, string_bytes: 1024, entries: MAX_KEYS + 1, floats: false };
+const LIMITS: Limits = Limits { bytes: 128 * 1024, depth: 4, string_bytes: 1024, entries: MAX_KEYS + 1, raw_numbers: false };
 
 /// The bytes a package signature signs.
 pub fn signed_message(digest: &PackageDigest) -> Vec<u8> {
@@ -134,14 +134,19 @@ pub enum Provenance {
     UnknownKey { key_id: Token },
 }
 
-/// Checks `signature` (if any) for the package with `digest` against `trust`. A signature for
-/// another digest, by a revoked key, or that doesn't verify is an error, never a weaker status.
-pub fn verify(digest: &PackageDigest, signature: Option<&PackageSignature>, trust: &TrustStore) -> Result<Provenance> {
+/// Checks `signature` (if any) for the package with `digest` against `trust`. `publisher` is
+/// the manifest's `publisher_key_id`: when the manifest names one, only that key may have signed.
+/// A signature for another digest or by another key, by a revoked key, or that doesn't verify is
+/// an error, never a weaker status.
+pub fn verify(digest: &PackageDigest, signature: Option<&PackageSignature>, trust: &TrustStore, publisher: Option<&Token>) -> Result<Provenance> {
     let Some(signature) = signature else {
         return Ok(Provenance::Unsigned);
     };
     if signature.package_digest != *digest {
         return err(Code::BadDigest, "the signature is for another package digest");
+    }
+    if publisher.is_some_and(|p| *p != signature.key_id) {
+        return err(Code::BadSignature, "signed by a key other than the manifest's publisher");
     }
     let Some(key) = trust.keys.get(&signature.key_id) else {
         return Ok(Provenance::UnknownKey { key_id: signature.key_id.clone() });

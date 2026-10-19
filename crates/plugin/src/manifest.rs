@@ -22,7 +22,7 @@ pub const MAX_NAMES: usize = 32;
 pub const MAX_LICENSE: usize = 128;
 
 /// The JSON profile manifests are read under.
-pub const MANIFEST_LIMITS: Limits = Limits { bytes: MAX_MANIFEST_BYTES, depth: 32, string_bytes: 4096, entries: 1024, floats: false };
+pub const MANIFEST_LIMITS: Limits = Limits { bytes: MAX_MANIFEST_BYTES, depth: 32, string_bytes: 4096, entries: 1024, raw_numbers: false };
 
 /// A package version: `MAJOR.MINOR.PATCH`, each a decimal without leading zeros. Pre-release
 /// and build suffixes aren't part of protocol 1; the digest, not the version, identifies what
@@ -261,6 +261,13 @@ impl Manifest {
             }
         }
         f.finish()?;
+        if runtime != Runtime::Data
+            && let Some(i) = registrations.iter().position(|r| r.binding.is_some())
+        {
+            return Err(
+                WireError::new(Code::Incompatible, "only a data package binds descriptors to host implementations").at(&format!("/registrations/{i}/binding"))
+            );
+        }
         if runtime == Runtime::Data && !capabilities.required.is_empty() {
             return Err(WireError::new(Code::Incompatible, "a data package runs nothing, so it can't require capabilities").at("/capabilities/required"));
         }
@@ -322,6 +329,15 @@ fn dependency(value: Json, at: &str) -> Result<Dependency> {
     Ok(Dependency { package_id, version, digest })
 }
 
+/// A capability or feature name: dot-separated parts of `[a-z][a-z0-9_]*`, at most 64 bytes.
+pub(crate) fn is_feature_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .split('.')
+            .all(|p| p.bytes().next().is_some_and(|b| b.is_ascii_lowercase()) && p.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'))
+}
+
 fn names(value: Json, at: &str) -> Result<Vec<String>> {
     let items = json::array(value, MAX_NAMES, at)?;
     let mut names = Vec::with_capacity(items.len());
@@ -329,12 +345,7 @@ fn names(value: Json, at: &str) -> Result<Vec<String>> {
     for (i, item) in items.into_iter().enumerate() {
         let at = format!("{at}/{i}");
         let name = json::string(item, &at)?;
-        let shape = !name.is_empty()
-            && name.len() <= 64
-            && name.split('.').all(|p| {
-                p.bytes().next().is_some_and(|b| b.is_ascii_lowercase()) && p.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-            });
-        if !shape {
+        if !is_feature_name(&name) {
             return Err(WireError::new(Code::BadId, "a capability or feature name is dotted lowercase, at most 64 bytes").at(&at));
         }
         if !seen.insert(name.clone()) {

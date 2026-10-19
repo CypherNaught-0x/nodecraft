@@ -1,0 +1,1 @@
+{"keys":[{"algorithm":"ed25519","key_id":"k","provenance":"test","public_key":"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a","status":"trusted"},{"algorithm":"ed25519","key_id":"k2","provenance":"test","public_key":"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a","status":"trusted"}],"trust_version":1}

@@ -2,19 +2,21 @@
 //!
 //! Reading enforces the contract's JSON profile before anything is interpreted: UTF-8 only, no
 //! byte-order mark, nesting at most [`Limits::depth`], every string, array and object within its
-//! limits, object keys unique, numbers integers within ±(2^53−1) (floats only where a caller
-//! asks for them, as in opaque plugin data). Recursion is bounded by the depth limit.
+//! limits, object keys unique, numbers integers within ±(2^53−1) (any number, kept as written, only where a
+//! caller asks for it, as in opaque plugin data). Recursion is bounded by the depth limit.
 //!
 //! Canonical form ([`canonical`]): object keys sorted by their UTF-8 bytes, no insignificant
 //! whitespace, integers in shortest decimal, strings with only `"` `\` and U+0000–U+001F escaped
 //! (`\b \f \n \r \t` short forms, otherwise `\u00xx` in lowercase hex) and every other code point
-//! written as UTF-8, unnormalised. Floats have no canonical form in protocol 1.
+//! written as UTF-8, unnormalised. Other numbers have no canonical form in protocol 1.
 use crate::error::{Code, Result, WireError, err};
 use std::collections::BTreeMap;
 
 /// Largest integer magnitude a JSON number may carry (2^53−1, exact in every JSON reader). Wider
 /// values travel as canonical decimal strings.
 pub const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+/// Longest number literal kept as written.
+pub const MAX_RAW_NUMBER: usize = 256;
 
 /// A parsed JSON value. Objects keep keys in canonical (byte) order.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,8 +24,9 @@ pub enum Json {
     Null,
     Bool(bool),
     Int(i64),
-    /// A finite float, as written; only when [`Limits::floats`] allows it.
-    Float(String),
+    /// A number outside the integer profile (a fraction, an exponent, `-0`, or beyond
+    /// ±(2^53−1)), as written; only when [`Limits::raw_numbers`] allows it.
+    Number(String),
     Str(String),
     Array(Vec<Json>),
     Object(BTreeMap<String, Json>),
@@ -34,7 +37,7 @@ impl Json {
         match self {
             Json::Null => "null",
             Json::Bool(_) => "boolean",
-            Json::Int(_) | Json::Float(_) => "number",
+            Json::Int(_) | Json::Number(_) => "number",
             Json::Str(_) => "string",
             Json::Array(_) => "array",
             Json::Object(_) => "object",
@@ -53,13 +56,14 @@ pub struct Limits {
     pub string_bytes: usize,
     /// Entries in each array or object.
     pub entries: usize,
-    /// Whether numbers may have a fraction or exponent.
-    pub floats: bool,
+    /// Whether any valid JSON number is accepted, kept as written (opaque plugin data);
+    /// otherwise only integers within ±(2^53−1).
+    pub raw_numbers: bool,
 }
 
 impl Limits {
     /// The protocol's defaults: 1 MiB, depth 32, 64 KiB strings, 4,096 entries, no floats.
-    pub const WIRE: Limits = Limits { bytes: crate::MAX_FRAME_BYTES, depth: 32, string_bytes: 64 * 1024, entries: 4096, floats: false };
+    pub const WIRE: Limits = Limits { bytes: crate::MAX_FRAME_BYTES, depth: 32, string_bytes: 64 * 1024, entries: 4096, raw_numbers: false };
 }
 
 /// Parses `bytes` as one JSON value under `limits`.
@@ -304,21 +308,18 @@ impl Reader<'_> {
         }
         let text = self.text.get(start..end).unwrap_or("");
         self.pos = end;
-        if float {
-            if !self.limits.floats {
-                return Err(WireError::new(Code::BadNumber, "numbers here are integers; floats aren't allowed").at(&format!("@{start}")));
+        let integer = if float || text == "-0" { None } else { text.parse::<i64>().ok().filter(|n| (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(n)) };
+        match integer {
+            Some(n) => Ok(Json::Int(n)),
+            None if self.limits.raw_numbers => {
+                if text.len() > MAX_RAW_NUMBER {
+                    return Err(WireError::new(Code::TooLarge, "a number is longer than 256 characters").at(&format!("@{start}")));
+                }
+                Ok(Json::Number(text.to_owned()))
             }
-            if text.len() > 64 || !text.parse::<f64>().is_ok_and(f64::is_finite) {
-                return Err(WireError::new(Code::BadNumber, "a float is out of range").at(&format!("@{start}")));
-            }
-            return Ok(Json::Float(text.to_owned()));
-        }
-        if text == "-0" {
-            return Err(WireError::new(Code::BadNumber, "-0 isn't a canonical integer").at(&format!("@{start}")));
-        }
-        match text.parse::<i64>() {
-            Ok(n) if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&n) => Ok(Json::Int(n)),
-            _ => Err(WireError::new(Code::BadNumber, "an integer is beyond ±(2^53−1); use a decimal string").at(&format!("@{start}"))),
+            None if float => Err(WireError::new(Code::BadNumber, "numbers here are integers; floats aren't allowed").at(&format!("@{start}"))),
+            None if text == "-0" => Err(WireError::new(Code::BadNumber, "-0 isn't a canonical integer").at(&format!("@{start}"))),
+            None => Err(WireError::new(Code::BadNumber, "an integer is beyond ±(2^53−1); use a decimal string").at(&format!("@{start}"))),
         }
     }
 }
@@ -335,7 +336,7 @@ fn write(value: &Json, out: &mut String) -> Result<()> {
         Json::Null => out.push_str("null"),
         Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Json::Int(n) => out.push_str(&n.to_string()),
-        Json::Float(_) => return err(Code::NotCanonical, "floats have no canonical form in protocol 1"),
+        Json::Number(_) => return err(Code::NotCanonical, "only integers within ±(2^53−1) have a canonical form in protocol 1"),
         Json::Str(s) => write_str(s, out),
         Json::Array(items) => {
             out.push('[');

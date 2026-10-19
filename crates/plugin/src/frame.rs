@@ -41,42 +41,57 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Splits a byte stream into frame payloads.
+/// Most bytes a decoder holds that haven't been taken as frames: two whole frames, so a read
+/// that completes one frame and starts the next is always accepted.
+pub const MAX_BUFFERED: usize = 2 * (MAX_FRAME_BYTES + 4);
+
+/// Splits a byte stream into frame payloads. Taking frames is linear in the bytes read: taken
+/// bytes are skipped, and the buffer is compacted only once they are at least half of it.
 #[derive(Debug, Default)]
 pub struct FrameDecoder {
     buffer: Vec<u8>,
+    /// Where the next frame starts in `buffer`.
+    start: usize,
     poisoned: bool,
 }
 
 impl FrameDecoder {
-    /// Adds bytes read from the stream. Never buffers more than one frame's worth beyond what
-    /// has been taken.
+    /// Adds bytes read from the stream. Take frames as they complete: more than
+    /// [`MAX_BUFFERED`] untaken bytes is an error.
     pub fn push(&mut self, bytes: &[u8]) -> Result<()> {
         if self.poisoned {
             return err(Code::Syntax, "the stream had a bad frame; nothing after it is read");
         }
-        if self.buffer.len().saturating_add(bytes.len()) > MAX_FRAME_BYTES + 4 {
-            // The caller must take frames as they complete.
-            self.poisoned = true;
-            return err(Code::TooLarge, "more than one frame is waiting; take frames before pushing more");
+        let pending = self.buffer.len().saturating_sub(self.start);
+        if pending.saturating_add(bytes.len()) > MAX_BUFFERED {
+            return self.poison(Code::TooLarge, "more than two frames are waiting; take frames before pushing more");
+        }
+        if self.start > 0 && self.start >= self.buffer.len() / 2 {
+            self.buffer.drain(..self.start);
+            self.start = 0;
         }
         self.buffer.extend_from_slice(bytes);
         self.check_length()
+    }
+
+    fn poison(&mut self, code: Code, detail: &'static str) -> Result<()> {
+        self.poisoned = true;
+        self.buffer = Vec::new();
+        self.start = 0;
+        err(code, detail)
     }
 
     fn check_length(&mut self) -> Result<()> {
         if let Some(len) = self.declared()
             && (len == 0 || len > MAX_FRAME_BYTES)
         {
-            self.poisoned = true;
-            self.buffer.clear();
-            return err(Code::TooLarge, "a frame declares an empty or over-1-MiB payload");
+            return self.poison(Code::TooLarge, "a frame declares an empty or over-1-MiB payload");
         }
         Ok(())
     }
 
     fn declared(&self) -> Option<usize> {
-        let head: [u8; 4] = self.buffer.get(..4)?.try_into().ok()?;
+        let head: [u8; 4] = self.buffer.get(self.start..self.start.checked_add(4)?)?.try_into().ok()?;
         usize::try_from(u32::from_be_bytes(head)).ok()
     }
 
@@ -88,11 +103,16 @@ impl FrameDecoder {
         let Some(len) = self.declared() else {
             return Ok(None);
         };
-        let Some(payload) = self.buffer.get(4..4 + len) else {
+        let body = self.start + 4;
+        let Some(payload) = self.buffer.get(body..body + len) else {
             return Ok(None);
         };
         let payload = payload.to_vec();
-        self.buffer.drain(..4 + len);
+        self.start = body + len;
+        if self.start == self.buffer.len() {
+            self.buffer.clear();
+            self.start = 0;
+        }
         self.check_length()?;
         Ok(Some(payload))
     }
@@ -193,7 +213,12 @@ impl Message {
 
     /// Decodes one frame's payload.
     pub fn decode(payload: &[u8]) -> Result<Self> {
-        let mut f = Fields::new(json::parse(payload, Limits::WIRE)?, "")?;
+        let value = json::parse(payload, Limits::WIRE)?;
+        // One message has one encoding, so a signature, log or hash over frames is unambiguous.
+        if json::canonical(&value)?.as_bytes() != payload {
+            return err(Code::NotCanonical, "a frame's payload must be canonical JSON");
+        }
+        let mut f = Fields::new(value, "")?;
         if f.u32("protocol")? != PROTOCOL {
             return Err(WireError::new(Code::BadVersion, "this host speaks protocol 1").at("/protocol"));
         }
@@ -209,14 +234,15 @@ impl Message {
                 let protocol_minor = f.u32("protocol_minor")?;
                 let features = features(&mut f)?;
                 let items = f.array("registrations", crate::manifest::MAX_REGISTRATIONS)?;
-                let registrations = items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let at = format!("/registrations/{i}");
-                        located(RegisteredId::parse(&json::string(v, &at)?), &at)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let mut registrations = Vec::with_capacity(items.len());
+                for (i, v) in items.into_iter().enumerate() {
+                    let at = format!("/registrations/{i}");
+                    let id = located(RegisteredId::parse(&json::string(v, &at)?), &at)?;
+                    if registrations.contains(&id) {
+                        return Err(WireError::new(Code::Collision, "an ID is listed twice").at(&at));
+                    }
+                    registrations.push(id);
+                }
                 Message::Initialized { protocol_minor, features, registrations }
             }
             "invoke" => {
@@ -292,18 +318,16 @@ impl Message {
                     .into_iter()
                     .find(|c| c.as_str() == code_text)
                     .ok_or_else(|| WireError::new(Code::WrongType, "an unknown guest error code").at("/code"))?;
-                let field_ids = match f.optional("field_ids") {
-                    Some(v) => json::array(v, MAX_PARAMS, "/field_ids")?
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, v)| {
-                            let at = format!("/field_ids/{i}");
-                            let id = json::string(v, &at)?;
-                            located(RegisteredId::parse(&id), &at).map(|_| id)
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                    None => Vec::new(),
-                };
+                let mut field_ids: Vec<String> = Vec::new();
+                for (i, v) in f.array("field_ids", MAX_PARAMS)?.into_iter().enumerate() {
+                    let at = format!("/field_ids/{i}");
+                    let id = json::string(v, &at)?;
+                    located(RegisteredId::parse(&id), &at)?;
+                    if field_ids.contains(&id) {
+                        return Err(WireError::new(Code::Collision, "an ID is listed twice").at(&at));
+                    }
+                    field_ids.push(id);
+                }
                 let message = text(f.string("message")?, MAX_ERROR_MESSAGE, "/message")?;
                 Message::Error { job_id, code, field_ids, message }
             }
@@ -437,8 +461,7 @@ fn features(f: &mut Fields) -> Result<Vec<String>> {
     for (i, item) in items.into_iter().enumerate() {
         let at = format!("/features/{i}");
         let name = json::string(item, &at)?;
-        let shape = !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.');
-        if !shape || out.contains(&name) {
+        if !crate::manifest::is_feature_name(&name) || out.contains(&name) {
             return Err(WireError::new(Code::BadId, "a feature name is dotted lowercase, listed once").at(&at));
         }
         out.push(name);

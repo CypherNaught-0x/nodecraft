@@ -39,7 +39,7 @@ fn depth_entries_and_sizes_are_bounded() {
     // Far deeper than the stack could take, refused at the limit.
     let hostile = "[".repeat(1_000_000);
     assert_eq!(code(&hostile), Code::TooDeep);
-    let small = Limits { bytes: 16, depth: 4, string_bytes: 4, entries: 2, floats: false };
+    let small = Limits { bytes: 16, depth: 4, string_bytes: 4, entries: 2, raw_numbers: false };
     assert_eq!(parse(b"[1,2,3]", small).unwrap_err().code, Code::TooLarge);
     assert_eq!(parse(br#""abcde""#, small).unwrap_err().code, Code::TooLarge);
     assert_eq!(parse(&[b' '; 17], small).unwrap_err().code, Code::TooLarge);
@@ -52,7 +52,7 @@ fn canonical_form_is_fixed() {
     // Keys sort by UTF-8 bytes, not by UTF-16 units or locale.
     let value = wire(r#"{"é":1,"z":2,"😀":3,"ｚ":4}"#).unwrap();
     assert_eq!(canonical(&value).unwrap(), r#"{"z":2,"é":1,"ｚ":4,"😀":3}"#);
-    let floats = parse(b"[1.5]", Limits { floats: true, ..Limits::WIRE }).unwrap();
+    let floats = parse(b"[1.5]", Limits { raw_numbers: true, ..Limits::WIRE }).unwrap();
     assert_eq!(canonical(&floats).unwrap_err().code, Code::NotCanonical);
 }
 
@@ -88,7 +88,7 @@ proptest! {
     #[test]
     fn any_bytes_are_an_error_or_a_value_never_a_panic(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
         let _ = parse(&bytes, Limits::WIRE);
-        let _ = parse(&bytes, Limits { floats: true, ..Limits::WIRE });
+        let _ = parse(&bytes, Limits { raw_numbers: true, ..Limits::WIRE });
     }
 
     #[test]

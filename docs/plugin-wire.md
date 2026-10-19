@@ -6,8 +6,8 @@ plugin package and the host exchange, frozen by fixtures. It is implemented by t
 I/O, no installation, no runtime, no guest execution. Another implementation conforms when it
 gives the same answers on [the fixtures](../crates/plugin/fixtures/README.md).
 
-Every rejection carries a stable error code (below) and a location; input values never appear in
-an error. Every limit is a hard ceiling checked before anything sized by input is allocated.
+Every rejection carries a stable error code (below) and a location (a field, an index or a
+package file name); field values, keys and text never appear in an error. Every limit is a hard ceiling checked before anything sized by input is allocated.
 
 ## JSON profile
 
@@ -21,9 +21,9 @@ All contract JSON is read under one profile, so two readers can never disagree a
   the full `u64` range (revisions, epochs, byte counts) are **canonical decimal strings**: `"0"`
   or digits without a leading zero, at most 2^64−1.
 - Strings: escaped control characters only, no lone surrogates (`bad_string`).
-- Floats appear only in opaque plugin data (see Preservation); they have no canonical form in
-  protocol 1, so parameter values that need fractions use the descriptor contract's (#162)
-  string forms.
+- Other numbers (fractions, exponents, `-0`, wider integers) appear only in opaque plugin data
+  (see Preservation), kept as written; they have no canonical form in protocol 1, so parameter
+  values that need fractions use the descriptor contract's (#162) string forms.
 
 **Canonical JSON**: keys sorted by their UTF-8 bytes; no insignificant whitespace; integers in
 shortest decimal; in strings only `"`, `\` and U+0000–U+001F are escaped (`\b \f \n \r \t`,
@@ -66,14 +66,18 @@ A package holds `manifest.json`, its descriptors, data or module, its license fi
 | `dependencies` | ≤ 16 `{package_id, version, digest}` exact locks; not itself, not twice |
 | `capabilities` | `{required, optional}`: `asset.read`, `asset.write`, `network`, `filesystem`, `process`, `gpu`, `secret`; an unknown required one is `unsupported_feature`, an unknown optional one is kept and ignored; a data package requires none (`incompatible`) |
 | `features` | optional `{required, optional}` protocol features, dotted lowercase |
-| `registrations` | ≤ 256 `{id, kind, descriptor, binding?}`; kinds `action`, `node_kind`, `provider`, `catalog`, `technique`; `binding` is the host implementation a data package configures |
+| `registrations` | ≤ 256 `{id, kind, descriptor, binding?}`; kinds `action`, `node_kind`, `provider`, `catalog`, `technique`; `binding` is the host implementation a data package configures (data packages only, else `incompatible`) |
 
-**Inventory** lists every file except `inventory.json` and `signature.json` (listing either is
-`bad_path`), always including `manifest.json`, in path order, each once (`not_canonical`):
+Every file the manifest names (its module and descriptors) must be listed in the inventory, so
+all of it is under the digest.
+
+**Inventory** lists every file except `inventory.json` and `signature.json` (naming either, in
+any letter case, anywhere a path is expected is `bad_path`), always including `manifest.json`,
+in byte order of the paths, each once (`not_canonical`):
 `{"files":[{"blake3":<64 hex>,"bytes":<decimal>,"path":<path>}],"inventory_version":1}`. At most
 1,024 files and 128 MiB together. Paths are ASCII `[A-Za-z0-9._-]` segments joined by `/`, ≤ 128
 bytes and 8 segments; no empty, `.` or `..` segment, none ending in `.`, no Windows device name
-(`con`, `nul`, `com1`, …), and no two paths equal after ASCII case folding (`collision`). A file
+(`con`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`, …), and no two paths equal after ASCII case folding (`collision`). A file
 present but unlisted, or listed but missing, fails the listing check.
 
 **Package digest**: BLAKE3 of `nodecraft-plugin-v1\0` followed by the canonical inventory JSON;
@@ -82,7 +86,7 @@ in any file changes it; the digest, not the version, identifies what runs.
 
 **Signature** (`signature.json`): `{"algorithm":"ed25519","key_id","package_digest","signature":<128 hex>,"signature_version":1}`.
 Ed25519 (RFC 8032), verified strictly, over `nodecraft-plugin-signature-v1\0` followed by the 32
-digest bytes. **Trust file**: `{"keys":[{"algorithm":"ed25519","key_id","provenance","public_key":<64 hex>,"status":"trusted"|"revoked"}],"trust_version":1}`,
+digest bytes. When the manifest names a `publisher_key_id`, only that key may have signed. **Trust file**: `{"keys":[{"algorithm":"ed25519","key_id","provenance","public_key":<64 hex>,"status":"trusted"|"revoked"}],"trust_version":1}`,
 at most 256 keys, IDs and public keys unique, provenance one line of ≤ 256 bytes. Outcomes:
 unsigned; verified by a trusted key; signed by an unknown key; or an error for a revoked key,
 a bad signature (`bad_signature`) or a signature for another digest (`bad_digest`). A digest
@@ -92,8 +96,10 @@ can't silently trust it again.
 
 ## Frames and messages
 
-A frame is a 4-byte big-endian length and that many bytes of canonical JSON, 1 to 1 MiB. The
-length is checked at the header; a bad one poisons the stream. Every message has `"protocol":1`
+A frame is a 4-byte big-endian length and that many bytes of canonical JSON, 1 to 1 MiB; a
+payload in any other form is `not_canonical`, so every message has exactly one encoding. The
+length is checked at the header; a bad one poisons the stream. A reader takes frames as they
+complete and holds at most two frames' worth of untaken bytes. Every message has `"protocol":1`
 and a `type`:
 
 | Type | Direction | Fields |
@@ -104,18 +110,22 @@ and a `type`:
 | `accept` | guest → host | `job_id` |
 | `progress` | guest → host | `job_id`, `value` 0–1000, optional `note` (≤ 1 KiB) |
 | `result` | guest → host | `job_id`, `grant_epoch`, `outputs` (≤ 64), `proposed_effect` `{"kind":"attach_output","target_node":<token>}` |
-| `error` | guest → host | `job_id`, `code` (`InvalidInput`, `UnsupportedCapability`, `ResourceLimit`, `Cancelled`, `Conflict`, `Internal`), optional `field_ids`, `message` (≤ 4 KiB, no control characters but newline and tab) |
+| `error` | guest → host | `job_id`, `code` (`InvalidInput`, `UnsupportedCapability`, `ResourceLimit`, `Cancelled`, `Conflict`, `Internal`), `field_ids` (registered IDs, each once; may be empty), `message` (≤ 4 KiB, no control characters but newline and tab) |
 | `cancel` | host → guest | `job_id` |
 | `cancel_ack` | guest → host | `job_id` |
 
-Byte counts in streams are claims to check against the stream, never sizes to allocate. Handles
-are listed once per message. No message carries a path, URL, secret or engine object, and a guest
+Byte counts in streams are claims to check against the stream, never sizes to allocate. Handles,
+registrations and field IDs are listed once per message; feature names are dot-separated parts
+of `[a-z][a-z0-9_]*`, as in manifests. No message carries a path, URL, secret or engine object, and a guest
 proposes only `attach_output` to a host-bound token; the host builds any document change.
 
 **Job order** (checked for every guest message): `invoke` → `accept` → `progress`* (never going
 back) → exactly one `result` (for the invoking grant epoch) or `error`; an `error` may also refuse
 before `accept`. A host `cancel` is terminal at once: anything the guest sends for that job is
-discarded, and `cancel_ack` closes it. Anything else is `sequence`.
+discarded, and `cancel_ack` closes it. Anything else is `sequence`. A result with more outputs or
+bytes than the invocation's `output_budget` is `too_large`. Cancelled jobs don't count against
+the 64 running jobs; the host forgets one when it resets the sandbox after the grace period, and
+at most 64 cancelled jobs wait for an acknowledgement.
 
 ## Negotiation and locks
 
@@ -136,8 +146,9 @@ A project opened without a plugin keeps everything about its nodes:
   registered IDs it uses (all in that package), never grants, paths or credentials;
 - **descriptor snapshots**: canonical descriptor bytes (≤ 64 KiB) named by their BLAKE3, shared by
   every node that uses them;
-- **opaque config** per node (≤ 64 KiB): checked to be bounded JSON with unique keys, floats
-  allowed, then kept byte for byte. In the project envelope it is a JSON *string* holding the
+- **opaque config** per node (≤ 64 KiB): checked to be bounded JSON with unique keys (any valid
+  number literal up to 256 characters, including `-0`, `1e400` and wide integers), then kept
+  byte for byte. In the project envelope it is a JSON *string* holding the
   original text, `{"payload":"…","version":N}`, so the envelope can be re-serialised (the format
   crate re-emits projects with serde) without touching the payload's key order, spacing or number
   spellings.

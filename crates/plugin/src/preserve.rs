@@ -23,7 +23,7 @@ pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
 pub const MAX_PROJECT_PLUGIN_BYTES: usize = 8 * 1024 * 1024;
 
-const OPAQUE: Limits = Limits { bytes: MAX_CONFIG_BYTES, depth: 32, string_bytes: MAX_CONFIG_BYTES, entries: 4096, floats: true };
+const OPAQUE: Limits = Limits { bytes: MAX_CONFIG_BYTES, depth: 32, string_bytes: MAX_CONFIG_BYTES, entries: 4096, raw_numbers: true };
 
 /// A project's lock on one package.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,8 +38,8 @@ pub struct Requirement {
 
 impl Requirement {
     pub fn for_package(manifest: &Manifest, digest: PackageDigest, used: BTreeSet<RegisteredId>) -> Result<Self> {
-        if let Some(stray) = used.iter().find(|id| !id.is_in(&manifest.package_id)) {
-            return Err(WireError::new(Code::BadId, "a used ID isn't in this package").at(stray.as_str()));
+        if used.iter().any(|id| !id.is_in(&manifest.package_id)) {
+            return Err(WireError::new(Code::BadId, "a used ID isn't in this package").at("/used"));
         }
         Ok(Self {
             package_id: manifest.package_id.clone(),
@@ -101,7 +101,7 @@ pub struct DescriptorSnapshot {
 impl DescriptorSnapshot {
     /// Snapshots descriptor bytes (any JSON within the limits; stored canonical).
     pub fn of(bytes: &[u8]) -> Result<Self> {
-        let limits = Limits { bytes: MAX_SNAPSHOT_BYTES, depth: 32, string_bytes: 4096, entries: 1024, floats: false };
+        let limits = Limits { bytes: MAX_SNAPSHOT_BYTES, depth: 32, string_bytes: 4096, entries: 1024, raw_numbers: false };
         let canonical = json::canonical(&json::parse(bytes, limits)?)?;
         if canonical.len() > MAX_SNAPSHOT_BYTES {
             return err(Code::TooLarge, "a descriptor snapshot is larger than 64 KiB");

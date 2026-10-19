@@ -2,7 +2,7 @@
 //! what projects keep about plugins. Every decoder is also fuzzed here.
 use nodecraft_plugin::frame::{FrameDecoder, GuestErrorCode, Message, Stream};
 use nodecraft_plugin::id::{LocalId, PackageId, Token};
-use nodecraft_plugin::job::{JobTracker, Verdict};
+use nodecraft_plugin::job::{JobTracker, MAX_JOBS, OutputBudget, Verdict};
 use nodecraft_plugin::lock::{Installed, resolve};
 use nodecraft_plugin::manifest::{ContractVersion, Dependency, Features, ProtocolRange, Version};
 use nodecraft_plugin::negotiate::{HostVersions, negotiate};
@@ -54,6 +54,19 @@ fn locks_are_exact_acyclic_shallow_and_data_only() {
     let a = cycle[0].clone();
     lock(&mut cycle[1], &a, 0);
     assert_eq!(resolve(&cycle[0], &installed(&cycle)).unwrap_err().code, Code::DependencyCycle);
+    // Two locks on one package must agree, whichever is resolved first.
+    let shared = manifest("io.example.shared");
+    for order in [[0usize, 1], [1, 0]] {
+        let mut set = vec![manifest("io.example.root"), manifest("io.example.a"), manifest("io.example.b"), shared.clone()];
+        lock(&mut set[1], &shared, 3);
+        lock(&mut set[2], &shared, 3);
+        set[2].dependencies[0].version = Version { major: 8, minor: 0, patch: 0 };
+        let (a, b) = (set[1].clone(), set[2].clone());
+        for i in order {
+            lock(&mut set[0], if i == 0 { &a } else { &b }, i as u8 + 1);
+        }
+        assert_eq!(resolve(&set[0], &installed(&set)).unwrap_err().code, Code::DependencyMissing, "{order:?}");
+    }
     // Executable packages can't be depended on.
     let mut exec = vec![manifest("io.example.app"), manifest("io.example.lib")];
     exec[1].runtime = nodecraft_plugin::manifest::Runtime::RustWasm { module: nodecraft_plugin::inventory::InventoryPath::parse("g.wasm").unwrap() };
@@ -103,6 +116,8 @@ fn registration_is_all_or_nothing() {
     assert!(register::host_id_allowed("node.add"));
 }
 
+const BUDGET: OutputBudget = OutputBudget { items: 1, bytes: 100 };
+
 fn t(s: &str) -> Token {
     Token::parse(s).unwrap()
 }
@@ -114,8 +129,8 @@ fn jobs_follow_their_order_and_cancellation_wins() {
     let result = |epoch| Message::Result { job_id: t("job-1"), grant_epoch: epoch, outputs: vec![], attach_to: t("node") };
     let mut jobs = JobTracker::default();
     assert_eq!(jobs.observe(&Message::Accept { job_id: job.clone() }).unwrap_err().code, Code::Sequence, "not invoked");
-    jobs.invoked(job.clone(), 3).unwrap();
-    assert_eq!(jobs.invoked(job.clone(), 3).unwrap_err().code, Code::Sequence, "IDs aren't reused while open");
+    jobs.invoked(job.clone(), 3, BUDGET).unwrap();
+    assert_eq!(jobs.invoked(job.clone(), 3, BUDGET).unwrap_err().code, Code::Sequence, "IDs aren't reused while open");
     assert_eq!(jobs.observe(&progress(10)).unwrap_err().code, Code::Sequence, "progress before accept");
     assert_eq!(jobs.observe(&Message::Accept { job_id: job.clone() }).unwrap(), Verdict::Apply);
     assert_eq!(jobs.observe(&Message::Accept { job_id: job.clone() }).unwrap_err().code, Code::Sequence);
@@ -126,12 +141,12 @@ fn jobs_follow_their_order_and_cancellation_wins() {
     assert_eq!(jobs.observe(&result(3)).unwrap_err().code, Code::Sequence, "exactly one terminal");
     assert_eq!(jobs.open(), 0);
     // A result for another grant epoch is refused (and closes the job).
-    jobs.invoked(job.clone(), 4).unwrap();
+    jobs.invoked(job.clone(), 4, BUDGET).unwrap();
     jobs.observe(&Message::Accept { job_id: job.clone() }).unwrap();
     assert_eq!(jobs.observe(&result(3)).unwrap_err().code, Code::Sequence);
     assert_eq!(jobs.open(), 0);
     // After cancel, everything is discarded; the ack closes it.
-    jobs.invoked(job.clone(), 5).unwrap();
+    jobs.invoked(job.clone(), 5, BUDGET).unwrap();
     jobs.observe(&Message::Accept { job_id: job.clone() }).unwrap();
     jobs.cancelled(&job).unwrap();
     assert_eq!(jobs.observe(&progress(900)).unwrap(), Verdict::Discard);
@@ -139,15 +154,36 @@ fn jobs_follow_their_order_and_cancellation_wins() {
     assert_eq!(jobs.observe(&Message::CancelAck { job_id: job.clone() }).unwrap(), Verdict::Discard);
     assert_eq!(jobs.open(), 0);
     // A guest may refuse before accepting.
-    jobs.invoked(job.clone(), 6).unwrap();
+    jobs.invoked(job.clone(), 6, BUDGET).unwrap();
     let refuse = Message::Error { job_id: job.clone(), code: GuestErrorCode::InvalidInput, field_ids: vec![], message: "no".into() };
     assert_eq!(jobs.observe(&refuse).unwrap(), Verdict::Apply);
-    let _ = Stream { role: t("text"), handle: t("h"), bytes: 0 };
+    // A result beyond the invocation's output budget is refused.
+    let out = |handle: &str, bytes| Stream { role: t("text"), handle: t(handle), bytes };
+    for outputs in [vec![out("a", 1), out("b", 1)], vec![out("a", 101)], vec![out("a", u64::MAX)]] {
+        jobs.invoked(job.clone(), 7, BUDGET).unwrap();
+        jobs.observe(&Message::Accept { job_id: job.clone() }).unwrap();
+        let big = Message::Result { job_id: job.clone(), grant_epoch: 7, outputs, attach_to: t("node") };
+        assert_eq!(jobs.observe(&big).unwrap_err().code, Code::TooLarge);
+    }
+    // Cancelled jobs whose acknowledgement never comes don't block new work.
+    let mut jobs = JobTracker::default();
+    for i in 0..(3 * MAX_JOBS) {
+        let id = t(&format!("job-{i}"));
+        jobs.invoked(id.clone(), 1, BUDGET).unwrap();
+        jobs.cancelled(&id).unwrap();
+    }
+    assert_eq!(jobs.open(), 0);
+    for i in 0..MAX_JOBS {
+        jobs.invoked(t(&format!("new-{i}")), 1, BUDGET).unwrap();
+    }
+    assert_eq!(jobs.invoked(t("one-too-many"), 1, BUDGET).unwrap_err().code, Code::TooLarge);
+    jobs.reset();
+    assert_eq!(jobs.open(), 0);
 }
 
 #[test]
 fn projects_keep_plugin_data_byte_for_byte() {
-    let payload = b"{ \"zeta\" : 1.50, \"alpha\":[1e3, \"\\u00e9\"] }";
+    let payload = b"{ \"zeta\" : 1.50, \"alpha\":[1e3, \"\\u00e9\", -0, 18446744073709551615, 1e400] }";
     let config = OpaqueConfig::new(2, payload).unwrap();
     // Through an envelope that is parsed and re-emitted canonically, as a project save does.
     let envelope = json::canonical(&config.to_envelope()).unwrap();

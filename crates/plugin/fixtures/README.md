@@ -7,6 +7,12 @@ Original, public-safe fixtures for the [plugin package and wire contract](../../
 - `manifest/invalid/<code>--<what>.json`: manifests that fail with error `<code>`.
 - `frame/valid/*.json`: message payloads that decode and re-encode to the same bytes.
 - `frame/invalid/<code>--<what>.json`: payloads that fail with `<code>`.
+- `json/canonical/<what>.json` → `<what>.canonical`: JSON and its canonical form.
+- `json/invalid/<code>--<what>.json`: JSON the profile refuses.
+- `inventory/invalid/`, `signature/invalid/`, `trust/invalid/`: `<code>--<what>.json` files those
+  decoders refuse.
+- `stream/valid/<n>--<what>.bin`: byte streams holding `n` frames; `stream/invalid/<code>--<what>.bin`
+  streams the frame reader refuses.
 - `package/textpack/`: a complete package (its `guest.wasm` is only a module header).
   `package/expected.json` records its digest; `package/trust.json` trusts the key that signed it.
 

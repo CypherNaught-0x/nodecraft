@@ -39,14 +39,16 @@ fn visit(
         if path.contains(&dep.package_id) {
             return err(Code::DependencyCycle, "dependencies form a cycle");
         }
-        if done.contains(&dep.package_id) {
-            continue;
-        }
         let Some(found) = installed.get(&dep.package_id) else {
             return err(Code::DependencyMissing, "a locked dependency isn't installed");
         };
+        // Every lock is checked, also on a package already resolved through another path: two
+        // locks naming different versions of one package can't both be met, whatever the order.
         if found.manifest.version != dep.version || found.digest != dep.digest {
             return err(Code::DependencyMissing, "the installed dependency isn't the locked version and digest");
+        }
+        if done.contains(&dep.package_id) {
+            continue;
         }
         if found.manifest.runtime != Runtime::Data {
             return err(Code::DependencyRejected, "dependencies are data packages only");

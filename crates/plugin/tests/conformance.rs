@@ -115,21 +115,32 @@ fn the_sample_package_has_its_recorded_digest_and_verifies() {
     let sig = PackageSignature::decode(&p.signature).unwrap();
     assert_eq!(Some(&sig.key_id), manifest.publisher_key_id.as_ref());
     let digest = listed.digest();
-    assert_eq!(signature::verify(&digest, Some(&sig), &trust()).unwrap(), Provenance::Verified { key_id: sig.key_id.clone() });
-    assert_eq!(signature::verify(&digest, None, &trust()).unwrap(), Provenance::Unsigned);
-    assert!(matches!(signature::verify(&digest, Some(&sig), &TrustStore::default()).unwrap(), Provenance::UnknownKey { .. }));
+    assert_eq!(
+        signature::verify(&digest, Some(&sig), &trust(), manifest.publisher_key_id.as_ref()).unwrap(),
+        Provenance::Verified { key_id: sig.key_id.clone() }
+    );
+    assert_eq!(signature::verify(&digest, None, &trust(), manifest.publisher_key_id.as_ref()).unwrap(), Provenance::Unsigned);
+    assert!(matches!(signature::verify(&digest, Some(&sig), &TrustStore::default(), None).unwrap(), Provenance::UnknownKey { .. }));
     // Revoked, tampered, or for another package: refused, never downgraded.
     let mut revoked = trust();
     revoked.keys.values_mut().for_each(|k| k.status = KeyStatus::Revoked);
-    assert_eq!(signature::verify(&digest, Some(&sig), &revoked).unwrap_err().code, Code::BadSignature);
+    assert_eq!(signature::verify(&digest, Some(&sig), &revoked, None).unwrap_err().code, Code::BadSignature);
     let mut tampered = sig.clone();
     tampered.signature[0] ^= 1;
-    assert_eq!(signature::verify(&digest, Some(&tampered), &trust()).unwrap_err().code, Code::BadSignature);
+    assert_eq!(signature::verify(&digest, Some(&tampered), &trust(), None).unwrap_err().code, Code::BadSignature);
     let other = PackageDigest([7; 32]);
     let mut moved = sig.clone();
     moved.package_digest = other;
-    assert_eq!(signature::verify(&other, Some(&moved), &trust()).unwrap_err().code, Code::BadSignature);
-    assert_eq!(signature::verify(&other, Some(&sig), &trust()).unwrap_err().code, Code::BadDigest);
+    assert_eq!(signature::verify(&other, Some(&moved), &trust(), None).unwrap_err().code, Code::BadSignature);
+    assert_eq!(signature::verify(&other, Some(&sig), &trust(), None).unwrap_err().code, Code::BadDigest);
+    // Signed by a trusted key, but not the publisher the manifest names.
+    let someone_else = nodecraft_plugin::id::Token::parse("another-publisher").unwrap();
+    assert_eq!(signature::verify(&digest, Some(&sig), &trust(), Some(&someone_else)).unwrap_err().code, Code::BadSignature);
+    // Every file the manifest names is listed, so all of it is under the digest.
+    listed.check_manifest(&manifest).unwrap();
+    let mut stray = manifest.clone();
+    stray.registrations[0].descriptor = nodecraft_plugin::inventory::InventoryPath::parse("descriptors/other.json").unwrap();
+    assert_eq!(listed.check_manifest(&stray).unwrap_err().code, Code::BadPath);
 }
 
 #[test]
@@ -189,10 +200,11 @@ fn frames_check_lengths_before_buffering() {
     assert!(decoder.next_frame().is_err());
     let mut decoder = FrameDecoder::default();
     assert_eq!(decoder.push(&[0, 0, 0, 0]).unwrap_err().code, Code::TooLarge);
-    // A frame held back while more arrives can't grow the buffer past one frame.
+    // Frames left untaken while more arrives can't grow the buffer past two frames.
     let mut decoder = FrameDecoder::default();
     decoder.push(&(frame::MAX_FRAME_BYTES as u32).to_be_bytes()).unwrap();
     decoder.push(&vec![b' '; frame::MAX_FRAME_BYTES]).unwrap();
+    decoder.push(&vec![b' '; frame::MAX_FRAME_BYTES + 4]).unwrap();
     assert_eq!(decoder.push(b"x").unwrap_err().code, Code::TooLarge);
 }
 
@@ -236,4 +248,102 @@ fn regenerate_package_fixture() {
     )
     .unwrap();
     std::fs::write(root.join("expected.json"), format!(r#"{{"digest":"{digest}"}}"#)).unwrap();
+}
+
+#[test]
+fn a_read_that_completes_one_frame_and_starts_the_next_is_accepted() {
+    // The decoder splits frames; it doesn't read payloads, so plain bytes will do.
+    let raw = |len: usize| {
+        let mut f = (len as u32).to_be_bytes().to_vec();
+        f.resize(4 + len, b'x');
+        f
+    };
+    let mut stream = Vec::new();
+    for _ in 0..3 {
+        stream.extend_from_slice(&raw(frame::MAX_FRAME_BYTES));
+    }
+    stream.extend_from_slice(&raw(1));
+    let mut decoder = FrameDecoder::default();
+    let mut frames = 0;
+    // Each read holds the end of one full-size frame and the start of the next.
+    for chunk in stream.chunks(frame::MAX_FRAME_BYTES + 11) {
+        decoder.push(chunk).unwrap();
+        while decoder.next_frame().unwrap().is_some() {
+            frames += 1;
+        }
+    }
+    assert_eq!(frames, 4);
+}
+
+#[test]
+fn many_small_frames_are_taken_in_linear_time() {
+    let one = frame::encode(&Message::Accept { job_id: nodecraft_plugin::id::Token::parse("j").unwrap() }).unwrap();
+    let stream: Vec<u8> = one.iter().copied().cycle().take(frame::MAX_FRAME_BYTES / one.len() * one.len()).collect();
+    let started = std::time::Instant::now();
+    let mut decoder = FrameDecoder::default();
+    decoder.push(&stream).unwrap();
+    let mut frames = 0;
+    while decoder.next_frame().unwrap().is_some() {
+        frames += 1;
+    }
+    assert_eq!(frames, stream.len() / one.len());
+    // Quadratic draining took seconds here; linear takes milliseconds, even unoptimised.
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+}
+
+#[test]
+fn json_profile() {
+    for (name, bytes) in files("json/canonical") {
+        let Some(stem) = name.strip_suffix(".json") else { continue };
+        let expected = std::fs::read(fixtures().join("json/canonical").join(format!("{stem}.canonical"))).unwrap();
+        let value = json::parse(&bytes, json::Limits::WIRE).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(json::canonical(&value).unwrap().as_bytes(), expected.as_slice(), "{name}");
+    }
+    for (name, bytes) in files("json/invalid") {
+        let error = json::parse(&bytes, json::Limits::WIRE).err().unwrap_or_else(|| panic!("{name} parsed"));
+        assert_eq!(error.code, expected(&name), "{name}: {error}");
+    }
+}
+
+#[test]
+fn inventories_signatures_and_trust_files() {
+    for (name, bytes) in files("inventory/invalid") {
+        let error = Inventory::decode(&bytes).err().unwrap_or_else(|| panic!("{name} decoded"));
+        assert_eq!(error.code, expected(&name), "{name}: {error}");
+    }
+    for (name, bytes) in files("signature/invalid") {
+        let error = PackageSignature::decode(&bytes).err().unwrap_or_else(|| panic!("{name} decoded"));
+        assert_eq!(error.code, expected(&name), "{name}: {error}");
+    }
+    for (name, bytes) in files("trust/invalid") {
+        let error = TrustStore::decode(&bytes).err().unwrap_or_else(|| panic!("{name} decoded"));
+        assert_eq!(error.code, expected(&name), "{name}: {error}");
+    }
+}
+
+/// Feeds a whole stream; the frames it held, or the first error.
+fn split(bytes: &[u8]) -> Result<Vec<Vec<u8>>, nodecraft_plugin::WireError> {
+    let mut decoder = FrameDecoder::default();
+    decoder.push(bytes)?;
+    let mut frames = Vec::new();
+    while let Some(payload) = decoder.next_frame()? {
+        frames.push(payload);
+    }
+    Ok(frames)
+}
+
+#[test]
+fn streams() {
+    for (name, bytes) in files("stream/valid") {
+        let count: usize = name.split("--").next().unwrap().parse().unwrap();
+        let frames = split(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(frames.len(), count, "{name}");
+        for payload in frames {
+            Message::decode(&payload).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+    }
+    for (name, bytes) in files("stream/invalid") {
+        let error = split(&bytes).err().unwrap_or_else(|| panic!("{name} split"));
+        assert_eq!(error.code, expected(&name), "{name}: {error}");
+    }
 }

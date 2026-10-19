@@ -28,9 +28,9 @@ pub const MANIFEST_PATH: &str = "manifest.json";
 /// Files a package has but the inventory never lists.
 pub const UNLISTED: [&str; 2] = ["inventory.json", "signature.json"];
 
-const DEVICES: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
-    "lpt8", "lpt9",
+const DEVICES: [&str; 24] = [
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5",
+    "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// A portable relative path inside a package.
@@ -51,6 +51,11 @@ impl InventoryPath {
             if DEVICES.contains(&stem.as_str()) {
                 return err(Code::BadPath, "a path segment names a Windows device");
             }
+        }
+        // The inventory and signature are never package content, in any spelling: a path can't
+        // point a manifest or a listing at a file the digest doesn't cover.
+        if UNLISTED.iter().any(|name| text.eq_ignore_ascii_case(name)) {
+            return err(Code::BadPath, "inventory.json and signature.json aren't package content");
         }
         Ok(Self(text.to_owned()))
     }
@@ -96,8 +101,8 @@ impl Inventory {
         let mut files = BTreeMap::new();
         let mut folded = BTreeSet::new();
         let mut total: u64 = 0;
-        for entry in entries {
-            let at = format!("/files/{}", entry.path);
+        for (i, entry) in entries.into_iter().enumerate() {
+            let at = format!("/files/{i}");
             if UNLISTED.contains(&entry.path.as_str()) {
                 return Err(WireError::new(Code::BadPath, "inventory.json and signature.json are never listed").at(&at));
             }
@@ -119,7 +124,7 @@ impl Inventory {
     /// Decodes `inventory.json`. Entries must already be in path order; bytes needn't be
     /// canonical (the digest is taken over [`Inventory::canonical_json`]).
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let limits = Limits { bytes: 512 * 1024, depth: 4, string_bytes: 256, entries: MAX_FILES + 1, floats: false };
+        let limits = Limits { bytes: 512 * 1024, depth: 4, string_bytes: 256, entries: MAX_FILES + 1, raw_numbers: false };
         let mut f = Fields::new(json::parse(bytes, limits)?, "")?;
         if f.u32("inventory_version")? != INVENTORY_VERSION {
             return Err(WireError::new(Code::BadVersion, "this host reads inventory version 1").at("/inventory_version"));
@@ -191,6 +196,22 @@ impl Inventory {
             Some(missing) => Err(WireError::new(Code::MissingField, "a listed file is missing from the package").at(&format!("/files/{missing}"))),
             None => Ok(()),
         }
+    }
+
+    /// Checks that every file `manifest` names (its module and descriptors) is listed, so all of
+    /// them are covered by the digest.
+    pub fn check_manifest(&self, manifest: &crate::manifest::Manifest) -> Result<()> {
+        if let crate::manifest::Runtime::RustWasm { module } = &manifest.runtime
+            && !self.files.contains_key(module)
+        {
+            return Err(WireError::new(Code::BadPath, "the manifest names a file the inventory doesn't list").at("/runtime/module"));
+        }
+        for (i, r) in manifest.registrations.iter().enumerate() {
+            if !self.files.contains_key(&r.descriptor) {
+                return Err(WireError::new(Code::BadPath, "the manifest names a file the inventory doesn't list").at(&format!("/registrations/{i}/descriptor")));
+            }
+        }
+        Ok(())
     }
 
     /// Checks a file read from the package against its entry: listed, same length, same hash.
