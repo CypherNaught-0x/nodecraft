@@ -344,13 +344,20 @@ impl Session {
         }
         let mut prepared = guard(|| self.prepare(Effect::Edit { changes: Changeset::new(changes), result: Value::Null, gesture: None }))?;
         // One undo entry: first undo the result, then the edit below it (if any).
+        // When the combined step would exceed the history or replay budgets, the results get a
+        // step of their own instead: never evict history or make an undo unreplayable.
         if let Some(below) = self.undo.entries.back() {
             let mut combined = prepared.inverse.inverse.changes.clone();
             combined.extend(below.inverse.changes.iter().cloned());
             let inverse = Changeset::new(combined);
-            let bytes = history_bytes(&inverse)?;
-            prepared.inverse = Entry { inverse, bytes, state: below.state };
-            prepared.direction = Direction::Amend;
+            let fits = inverse.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12)).is_ok();
+            if let (true, Ok(bytes)) = (fits, history_bytes(&inverse)) {
+                let total = self.undo.bytes.saturating_sub(below.bytes).saturating_add(bytes);
+                if total <= MAX_HISTORY_BYTES {
+                    prepared.inverse = Entry { inverse, bytes, state: below.state };
+                    prepared.direction = Direction::Amend;
+                }
+            }
         }
         self.commit_prepared(prepared, "run.derived").map(|_| ())
     }
@@ -529,10 +536,10 @@ impl Session {
                 self.undo.push(prepared.inverse);
                 self.gesture = None;
             }
+            // The edit below keeps its gesture: a drag that a result joined stays one step.
             Direction::Amend => {
                 self.undo.pop();
                 self.undo.push(prepared.inverse);
-                self.gesture = None;
             }
         }
         self.document = prepared.document;

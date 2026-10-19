@@ -7,13 +7,19 @@
 - **One undo step.** `Session::record_derived` records the results as part of the undo entry of
   the edit that made them stale: the combined inverse first removes the results, then reverts the
   edit. One undo restores the old value *and* its old result, so undo never leaves a node stale
-  and live recompute never fights it. Without an edit below (a fresh document), the results get
-  their own entry.
+  and live recompute never fights it. The results join whatever step is on top at the revision
+  they were computed from (usually the edit that caused them; a drag that started meanwhile keeps
+  its gesture, so it stays one step). Without an edit below (a freshly opened project), or when
+  the combined step would exceed the history or replay budgets, the results get their own step.
+  Results change the document, so a project is dirty after a recompute lands, including one that
+  was just opened with action nodes that had no result.
+- **Fresh ids per round.** Each round's run id is random, like any run's, so a reopened project
+  (whose revisions count from zero again) never makes generation ids its history already holds.
 - **Never out of date.** Results carry the revision they were computed from and are dropped if the
   document moved on, or while there is something to redo; the next round starts from the current
   document. At most one recompute runs at a time, so a dragging slider is followed as fast as the
   work allows without queueing.
 - **Failures don't loop.** A node whose action failed is reported once (a notice) and not retried
-  until the document changes.
+  until its own inputs or settings change (its input hash), whatever else is edited.
 - **Not yet:** reduced-resolution previews while a slider drags (every round is full
   resolution), and the browser build (no worker threads; live recompute is native-only).

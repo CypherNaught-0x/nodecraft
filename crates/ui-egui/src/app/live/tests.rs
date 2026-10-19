@@ -49,8 +49,7 @@ fn an_edit_recomputes_its_action_and_one_undo_takes_both_back() {
     settle(&mut h, |app| output(app).is_some());
     let first = output(h.state()).unwrap();
     assert!(first.contains("sea") && !first.contains("forest"), "{first}");
-    let steps = h.state().session.can_undo();
-    assert!(steps);
+    assert!(h.state().session.can_undo());
     // Change what to replace with: the result follows, without an extra undo step.
     let canvas = h.state().canvas;
     h.state_mut()
@@ -85,7 +84,7 @@ fn a_failing_action_is_reported_once_and_not_retried_until_an_edit() {
         )
         .unwrap();
     let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
-    settle(&mut h, |app| app.live.failed.contains(&split));
+    settle(&mut h, |app| app.live.failed.contains_key(&split));
     assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("separator")));
     let revision = h.state().session.revision();
     for _ in 0..20 {

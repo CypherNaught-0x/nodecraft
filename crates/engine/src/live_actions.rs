@@ -22,6 +22,9 @@ pub struct LiveJob {
     pub canvas: CanvasId,
     /// The revision it was planned from; results for another revision are dropped.
     pub base: u64,
+    /// Random per round, like any run's: generation ids derive from it, so a reopened project
+    /// (whose revisions count from zero again) never makes ids its history already holds.
+    id: [u8; 16],
     plan: RunPlan,
     live: Canvas,
     assets: AssetStore,
@@ -32,16 +35,28 @@ pub struct LiveOutcome {
     pub canvas: CanvasId,
     pub base: u64,
     pub results: Vec<(NodeId, Generation)>,
-    pub failed: Vec<(NodeId, String)>,
+    /// Failed nodes, why, and the input hash they failed with (to not retry until it changes).
+    pub failed: Vec<(NodeId, String, Option<nodecraft_types::Blake3>)>,
     staged: AssetStore,
 }
 
 /// The live work `session`'s current document needs on `canvas`: its stale action nodes, if
-/// they can run now with local work only. `skip` names nodes to leave alone (ones that just
-/// failed at this revision).
-pub fn pending(session: &Session, canvas: CanvasId, skip: &BTreeSet<NodeId>) -> Result<Option<LiveJob>, Error> {
+/// they can run now with local work only. `failed` names nodes that failed and the input hash
+/// they failed with: they wait until their inputs or settings change. Nothing is planned while
+/// there is something to redo (the results would be refused) or the project is read-only.
+pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, nodecraft_types::Blake3>) -> Result<Option<LiveJob>, Error> {
+    if session.can_redo() || session.file_status().read_only {
+        return Ok(None);
+    }
     let kinds = session.kinds();
     let live = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    let is_action = |kind: &str| kinds.get(kind).is_ok_and(|k| k.descriptor().category == Category::Action);
+    // Cheap first: most canvases have no action node, and checking staleness walks them all.
+    if !live.nodes().values().any(|n| is_action(&n.kind)) {
+        return Ok(None);
+    }
+    let skip: BTreeSet<NodeId> =
+        failed.iter().filter(|(id, hash)| nodecraft_exec::staleness::input_hash(live, kinds, **id).is_ok_and(|now| now == **hash)).map(|(id, _)| *id).collect();
     let stale = nodecraft_exec::staleness::stale(live, kinds)?;
     let category = |id: &NodeId| live.nodes().get(id).and_then(|n| kinds.get(&n.kind).ok()).map(|k| k.descriptor().category);
     // Stale action nodes, and ones with no result yet.
@@ -71,7 +86,9 @@ pub fn pending(session: &Session, canvas: CanvasId, skip: &BTreeSet<NodeId>) -> 
     if !local_only(&plan, live, kinds) {
         return Ok(None);
     }
-    Ok(Some(LiveJob { canvas, base: session.revision(), plan, live: live.clone(), assets: session.assets().clone() }))
+    let mut id = [0u8; 16];
+    id.copy_from_slice(crate::execution_identity::nonce()?.get(..16).unwrap_or(&[0; 16]));
+    Ok(Some(LiveJob { canvas, base: session.revision(), id, plan, live: live.clone(), assets: session.assets().clone() }))
 }
 
 /// Whether every step is a source, an action or structure: nothing that calls a model.
@@ -85,14 +102,17 @@ fn local_only(plan: &RunPlan, live: &Canvas, kinds: &Registry) -> bool {
 
 /// Runs `job` (any thread): sources emit their values, actions run on [`LocalActions`].
 pub fn compute(job: LiveJob, kinds: &Registry) -> Result<LiveOutcome, Error> {
-    let mut id = [0u8; 16];
-    id[..8].copy_from_slice(&job.base.to_le_bytes());
-    let options = RunOptions { id, first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
+    // The worker's kinds must be the planner's: a kind it doesn't know can't run here.
+    if let Some(step) = job.plan.steps.iter().find(|step| kinds.get(&step.kind).is_err()) {
+        return Err(Error::new(ErrorKind::Unsupported, format!("live recompute doesn't know the {} node kind", step.kind)));
+    }
+    let options = RunOptions { id: job.id, first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
     let (mut run, first) = Run::start(&job.plan, job.canvas, &job.live, kinds, options)?;
     let actions = LocalActions::new(job.assets);
     let mut queue: VecDeque<_> = first.jobs.into_iter().collect();
     let mut finished: BTreeMap<NodeId, Generation> = first.finished.into_iter().map(|r| (r.node, r.generation)).collect();
     let mut failed: Vec<(NodeId, String)> = first.failed.into_iter().map(|f| (f.node, f.reason)).collect();
+    let hash = |id: &NodeId| nodecraft_exec::staleness::input_hash(&job.live, kinds, *id).ok();
     while let Some(scheduled) = queue.pop_front() {
         let progress = match run.work(scheduled.id).cloned() {
             Some(JobSpec::Source { output, value, .. }) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
@@ -112,6 +132,7 @@ pub fn compute(job: LiveJob, kinds: &Registry) -> Result<LiveOutcome, Error> {
     let actions_only =
         |id: &NodeId| job.live.nodes().get(id).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category == Category::Action);
     let results = finished.into_iter().filter(|(id, _)| actions_only(id)).collect();
+    let failed = failed.into_iter().map(|(id, reason)| (id, reason, hash(&id))).collect();
     Ok(LiveOutcome { canvas: job.canvas, base: job.base, results, failed, staged: actions.take_staged() })
 }
 

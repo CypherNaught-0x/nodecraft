@@ -1,6 +1,7 @@
 use super::*;
 use nodecraft_types::{AssetRef, MediaMeta, Value};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 const CANVAS: CanvasId = CanvasId::from_bytes([1; 16]);
 const SOURCE: NodeId = NodeId::from_bytes([10; 16]);
@@ -34,7 +35,7 @@ fn connect(s: &mut Session) {
 
 /// Plans, runs and records whatever is pending; whether something was recorded.
 fn settle(s: &mut Session) -> bool {
-    let Some(job) = pending(s, CANVAS, &BTreeSet::new()).unwrap() else { return false };
+    let Some(job) = pending(s, CANVAS, &BTreeMap::new()).unwrap() else { return false };
     let kinds = Registry::builtins().unwrap();
     let outcome = compute(job, &kinds).unwrap();
     assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
@@ -62,7 +63,7 @@ fn an_unconnected_action_waits_and_a_connected_one_settles_into_the_edit() {
     assert!(settle(&mut s));
     let first = result(&s).expect("the blur has a result");
     assert!(s.assets().get(&first).is_some(), "its image is in the project");
-    assert!(pending(&s, CANVAS, &BTreeSet::new()).unwrap().is_none(), "settled: nothing stale");
+    assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none(), "settled: nothing stale");
     // One undo removes the connection and its result together.
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert!(result(&s).is_none());
@@ -85,7 +86,7 @@ fn a_parameter_change_recomputes_and_undo_restores_value_and_result_together() {
     assert_ne!(first, second);
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!((sigma(&s), result(&s)), (before, Some(first)), "old value, old result");
-    assert!(pending(&s, CANVAS, &BTreeSet::new()).unwrap().is_none(), "and nothing to recompute");
+    assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none(), "and nothing to recompute");
     // Results wait while there is something to redo; redo brings the newer result back.
     s.dispatch("edit.redo", &json!({})).unwrap();
     assert_eq!(result(&s), Some(second));
@@ -95,7 +96,7 @@ fn a_parameter_change_recomputes_and_undo_restores_value_and_result_together() {
 fn results_for_an_older_revision_are_dropped() {
     let mut s = session();
     connect(&mut s);
-    let job = pending(&s, CANVAS, &BTreeSet::new()).unwrap().unwrap();
+    let job = pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap();
     let outcome = compute(job, &Registry::builtins().unwrap()).unwrap();
     s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": BLUR, "name": "sigma", "value": Value::Number(nodecraft_types::Number::new(3.0).unwrap())}))
         .unwrap();
@@ -126,4 +127,80 @@ fn a_text_chain_settles_in_one_round() {
     let joined = s.document().canvases().get(&CANVAS).unwrap().nodes().get(&join).unwrap();
     let active = joined.history.iter().find(|g| Some(g.id) == joined.active).unwrap();
     assert_eq!(active.outputs, vec![Value::Text("a+b+c".into())]);
+}
+
+#[test]
+fn a_reopened_project_records_new_results_at_revisions_it_used_before() {
+    // The first session settles a result at some revision.
+    let mut s = session();
+    connect(&mut s);
+    settle(&mut s);
+    let first = result(&s).unwrap();
+    // A second session opens that document: its revisions count from zero again.
+    let mut again = Session::new(s.document().clone()).unwrap();
+    let source = match s.document().canvases().get(&CANVAS).unwrap().nodes().get(&SOURCE).unwrap().params.get("asset") {
+        Some(Value::Media(asset)) => asset.hash,
+        _ => panic!(),
+    };
+    for hash in [source, first] {
+        again.import_asset(s.assets().get(&hash).unwrap()).unwrap();
+    }
+    // One edit that records nothing, so the next rounds' bases include the first session's.
+    again.dispatch("node.move", &json!({"canvas": CANVAS, "id": SOURCE, "pos": {"x": 5, "y": 5}})).unwrap();
+    for name in ["sigma"] {
+        for v in [3.0, 4.0, 5.0] {
+            again
+                .dispatch(
+                    "node.param_set",
+                    &json!({"canvas": CANVAS, "id": BLUR, "name": name, "value": Value::Number(nodecraft_types::Number::new(v).unwrap())}),
+                )
+                .unwrap();
+            assert!(settle(&mut again), "recorded at revision {}", again.revision());
+        }
+    }
+}
+
+#[test]
+fn a_failed_node_waits_for_its_inputs_to_change() {
+    let mut s = session();
+    let split = NodeId::from_bytes([40; 16]);
+    let text = NodeId::from_bytes([41; 16]);
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": text, "kind": "source.text", "pos": {"x": 0, "y": 600}})).unwrap();
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": split, "kind": "text.split", "pos": {"x": 300, "y": 600}})).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": split, "name": "separator", "value": Value::Text(String::new())})).unwrap();
+    let edge = nodecraft_types::EdgeId::from_bytes([42; 16]);
+    s.dispatch(
+        "edge.connect",
+        &json!({"canvas": CANVAS, "edge": {"id": edge, "from": {"node": text, "port": "out"}, "to": {"node": split, "port": "text"}, "order": 0}}),
+    )
+    .unwrap();
+    let kinds = Registry::builtins().unwrap();
+    let outcome = compute(pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap(), &kinds).unwrap();
+    let failed: BTreeMap<_, _> = outcome.failed.iter().filter_map(|(id, _, hash)| hash.map(|h| (*id, h))).collect();
+    assert!(failed.contains_key(&split));
+    // An unrelated edit: still skipped.
+    s.dispatch("node.move", &json!({"canvas": CANVAS, "id": SOURCE, "pos": {"x": 50, "y": 50}})).unwrap();
+    assert!(pending(&s, CANVAS, &failed).unwrap().is_none());
+    // Its own setting changes: tried again.
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": split, "name": "separator", "value": Value::Text(",".into())})).unwrap();
+    assert!(pending(&s, CANVAS, &failed).unwrap().is_some());
+}
+
+#[test]
+fn a_result_joining_a_drag_keeps_it_one_step() {
+    let mut s = session();
+    connect(&mut s);
+    settle(&mut s);
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": BLUR, "name": "sigma", "value": Value::Number(nodecraft_types::Number::new(9.0).unwrap())}))
+        .unwrap();
+    let pos = |s: &Session| s.document().canvases().get(&CANVAS).unwrap().nodes().get(&BLUR).unwrap().pos;
+    let start = pos(&s);
+    // A drag starts before the recompute lands; the result joins the drag's step.
+    s.dispatch("node.move", &json!({"canvas": CANVAS, "id": BLUR, "pos": {"x": 500, "y": 10}, "gesture": "drag-1"})).unwrap();
+    assert!(settle(&mut s));
+    s.dispatch("node.move", &json!({"canvas": CANVAS, "id": BLUR, "pos": {"x": 600, "y": 20}, "gesture": "drag-1"})).unwrap();
+    // One undo takes the whole drag back.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(pos(&s), start);
+    assert_eq!(sigma(&s), Value::Number(nodecraft_types::Number::new(9.0).unwrap()), "the parameter edit is the next step");
 }

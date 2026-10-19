@@ -6,7 +6,7 @@
 use super::NodeCraftApp;
 use nodecraft_engine::live_actions::{self, LiveOutcome};
 use nodecraft_types::{CanvasId, Error, NodeId};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
@@ -15,9 +15,9 @@ pub(super) struct Live {
     running: Option<Receiver<Result<LiveOutcome, Error>>>,
     /// The canvas and revision last looked at.
     checked: Option<(CanvasId, u64)>,
-    /// Nodes that failed at `failed_at`: not retried until the document changes.
-    failed: BTreeSet<NodeId>,
-    failed_at: u64,
+    /// Nodes that failed, with the input hash they failed with: not retried (or reported
+    /// again) until their inputs or settings change.
+    failed: BTreeMap<NodeId, nodecraft_types::Blake3>,
     kinds: Option<Arc<nodecraft_nodes::Registry>>,
 }
 
@@ -29,7 +29,7 @@ impl NodeCraftApp {
             match receiver.try_recv() {
                 Ok(Ok(outcome)) => {
                     self.live.running = None;
-                    self.live_failures(&outcome.failed, outcome.base);
+                    self.live_failures(&outcome.failed);
                     if let Err(error) = live_actions::apply(&mut self.session, outcome) {
                         log::warn!("live result not recorded: {}", error.message);
                     }
@@ -37,12 +37,9 @@ impl NodeCraftApp {
                 Ok(Err(error)) => {
                     self.live.running = None;
                     log::warn!("live recompute failed: {}", error.message);
-                    self.live.failed_at = self.session.revision();
                 }
-                Err(TryRecvError::Empty) => {
-                    ctx.request_repaint();
-                    return;
-                }
+                // The worker asks for a repaint when it is done.
+                Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => self.live.running = None,
             }
         }
@@ -51,9 +48,6 @@ impl NodeCraftApp {
             return;
         }
         self.live.checked = Some(now);
-        if self.live.failed_at != now.1 {
-            self.live.failed.clear();
-        }
         let job = match live_actions::pending(&self.session, self.canvas, &self.live.failed) {
             Ok(Some(job)) => job,
             Ok(None) => return,
@@ -73,30 +67,23 @@ impl NodeCraftApp {
             },
         };
         let (send, receive) = channel();
+        let repaint = ctx.clone();
         let started = std::thread::Builder::new().name("nodecraft-live".into()).spawn(move || {
             let _ = send.send(live_actions::compute(job, &kinds));
+            repaint.request_repaint();
         });
         match started {
-            Ok(_) => {
-                self.live.running = Some(receive);
-                ctx.request_repaint();
-            }
+            Ok(_) => self.live.running = Some(receive),
             Err(_) => log::warn!("live recompute: no worker thread"),
         }
     }
 
-    /// Remembers what failed at `base` (shown once as a notice) so it isn't retried until the
-    /// document changes.
-    fn live_failures(&mut self, failed: &[(NodeId, String)], base: u64) {
-        if failed.is_empty() {
-            return;
-        }
-        if self.live.failed_at != base {
-            self.live.failed.clear();
-            self.live.failed_at = base;
-        }
-        for (node, reason) in failed {
-            if self.live.failed.insert(*node) {
+    /// Remembers what failed, shown once as a notice, so it isn't retried until its inputs or
+    /// settings change.
+    fn live_failures(&mut self, failed: &[(NodeId, String, Option<nodecraft_types::Blake3>)]) {
+        for (node, reason, hash) in failed {
+            let Some(hash) = hash else { continue };
+            if self.live.failed.insert(*node, *hash) != Some(*hash) {
                 self.notice = Some(reason.clone());
             }
         }
