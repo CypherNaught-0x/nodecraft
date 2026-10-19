@@ -543,6 +543,12 @@ fn control(
 }
 
 impl EditorState {
+    pub(crate) fn has_uncommitted(&self) -> bool {
+        self.title.as_ref().is_some_and(|draft| draft.text != draft.original)
+            || self.text.values().any(|draft| draft.text != draft.original)
+            || !self.sliders.is_empty()
+    }
+
     fn hide_fields(&mut self, visible: Option<&BTreeSet<String>>) {
         if self.text.iter().any(|(name, draft)| !visible.is_some_and(|fields| fields.contains(name)) && draft.text != draft.original) {
             self.hidden_dirty = true;

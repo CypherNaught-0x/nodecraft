@@ -215,25 +215,6 @@ impl NodeCraftApp {
         }
     }
 
-    /// What ⌘S, ⇧⌘S or ⌘O did, as a notice (`None` when a save went through). Choosing a file
-    /// needs the file dialogs (#407); until then a project gets its file from the command line
-    /// or `file.save_as`.
-    pub(super) fn file_shortcut(&mut self, save: bool, save_as: bool) -> Option<String> {
-        let status = self.session.file_status();
-        if !status.available {
-            return Some("Saving isn't available in this window.".into());
-        }
-        if save && !save_as && status.location.is_some() {
-            // The file work runs on its own thread; `poll_save` reports how it went.
-            return self.session.dispatch("file.save", &json!({"background": true})).err().map(|error| error.message);
-        }
-        Some(if save || save_as {
-            "This project has no file yet. Start NodeCraft with a project path to save to it.".into()
-        } else {
-            "To open a project, start NodeCraft with its path.".into()
-        })
-    }
-
     /// The window title: the project's file name (or "Untitled"), a dot while unsaved.
     pub(super) fn window_title(&self) -> String {
         let status = self.session.file_status();
@@ -250,8 +231,7 @@ impl NodeCraftApp {
     /// one is writing the frames keep coming so its end is seen promptly.
     pub(super) fn poll_save(&mut self, ctx: &egui::Context) {
         match self.session.poll_save() {
-            Some(Err(error)) => self.notice = Some(error.message),
-            Some(Ok(_)) => {}
+            Some(result) => self.file_save_completed(ctx, result),
             None if self.session.file_status().saving => ctx.request_repaint_after(std::time::Duration::from_millis(16)),
             None => {}
         }
