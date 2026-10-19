@@ -11,6 +11,7 @@ pub mod image;
 pub mod note;
 mod registry;
 pub mod router;
+pub mod shader;
 mod source;
 pub mod text;
 pub mod video;

@@ -6,3 +6,5 @@
 
 /// Bounded image compute backend.
 pub mod image;
+/// Custom WGSL shader actions (#90).
+pub mod shader;
