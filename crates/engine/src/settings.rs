@@ -31,6 +31,31 @@ pub struct NodeCraftSettings {
     pub appearance: AppearanceSettings,
     pub canvas: CanvasSettings,
     pub keys: KeySettings,
+    pub providers: ProviderSettings,
+}
+
+/// How to reach the providers that need more than a key (#409). Keys stay in the keychain.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderSettings {
+    /// The ComfyUI server, such as `http://127.0.0.1:8188`; unset, ComfyUI models aren't set up.
+    /// A key stored for the server's account (`comfyui:<host>:<port>`) is sent as a bearer token.
+    pub comfyui_url: Option<String>,
+    /// A random value made once per install; it keeps prompt ids of different installs apart on
+    /// a shared ComfyUI server. Empty until the host first creates it.
+    pub install_salt: String,
+}
+
+impl ProviderSettings {
+    /// Creates the install salt if there isn't one yet (32 random bytes as hex). `Ok(true)` when
+    /// it was created, so the host saves the settings.
+    pub fn ensure_install_salt(&mut self) -> Result<bool, nodecraft_types::Error> {
+        if !self.install_salt.trim().is_empty() {
+            return Ok(false);
+        }
+        self.install_salt = crate::execution_identity::nonce()?.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(true)
+    }
 }
 
 impl craft_settings::Settings for NodeCraftSettings {
@@ -339,5 +364,23 @@ mod tests {
         write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
         let (store, _) = open_in(dir.path());
         assert_eq!(store.get().keys.accounts().len(), 1);
+    }
+
+    #[test]
+    fn the_install_salt_is_made_once_and_kept() {
+        let mut providers = ProviderSettings::default();
+        assert!(providers.ensure_install_salt().unwrap());
+        let salt = providers.install_salt.clone();
+        assert_eq!(salt.len(), 64);
+        assert!(!providers.ensure_install_salt().unwrap());
+        assert_eq!(providers.install_salt, salt);
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, _) = open_in(dir.path());
+        assert!(store.update(|s| s.providers = providers.clone()));
+        store.flush().unwrap();
+        assert_eq!(open_in(dir.path()).0.get().providers, providers);
+        let old = tempfile::tempdir().unwrap();
+        write_config(old.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
+        assert_eq!(open_in(old.path()).0.get().providers, ProviderSettings::default(), "a file without [providers] still loads");
     }
 }
