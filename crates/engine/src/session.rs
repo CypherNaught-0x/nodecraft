@@ -68,6 +68,8 @@ enum Direction {
     Edit,
     Undo,
     Redo,
+    /// A derived result (#88): replaces the top undo entry with one that also undoes it.
+    Amend,
 }
 struct Prepared {
     document: Project,
@@ -297,6 +299,61 @@ impl Session {
         }
         Ok(())
     }
+    /// Host boundary for live recompute (#88): records results derived from the document as it
+    /// is at `base` (the revision the results were computed from), importing the images they
+    /// name from `staged`. The record joins the undo step of the edit that made the results
+    /// stale, so one undo restores that edit's old values and old results together, and a
+    /// result never becomes an undo step of its own. Refused (`Conflict`, nothing changed) when
+    /// the document has moved on since `base`, or while there is something to redo.
+    pub fn record_derived(
+        &mut self,
+        canvas: CanvasId,
+        results: Vec<(NodeId, nodecraft_graph::Generation)>,
+        staged: &AssetStore,
+        base: u64,
+    ) -> Result<(), Error> {
+        if self.revision != base {
+            return Err(Error::new(ErrorKind::Conflict, "the results are out of date"));
+        }
+        if !self.redo.entries.is_empty() {
+            return Err(Error::new(ErrorKind::Conflict, "derived results wait until there is nothing to redo"));
+        }
+        if results.is_empty() || results.len() > crate::run_cmds::MAX_RESULTS {
+            return Err(invalid("record 1 to 1000 derived results"));
+        }
+        // Validate every result before touching the assets.
+        let live = self.document.canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+        let mut changes = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for (node, generation) in &results {
+            if !seen.insert(*node) {
+                return Err(invalid("a node has two derived results"));
+            }
+            let current = live.nodes().get(node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result's node is gone"))?;
+            changes.extend(nodecraft_exec::run::record_changes(canvas, current, generation.clone())?);
+        }
+        let mut needed = Vec::new();
+        for (_, generation) in &results {
+            media(&generation.outputs, &mut needed);
+        }
+        for hash in needed {
+            if self.assets.get(&hash).is_none() {
+                let bytes = staged.get(&hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result names an image that wasn't staged"))?.to_vec();
+                self.import_asset(&bytes)?;
+            }
+        }
+        let mut prepared = guard(|| self.prepare(Effect::Edit { changes: Changeset::new(changes), result: Value::Null, gesture: None }))?;
+        // One undo entry: first undo the result, then the edit below it (if any).
+        if let Some(below) = self.undo.entries.back() {
+            let mut combined = prepared.inverse.inverse.changes.clone();
+            combined.extend(below.inverse.changes.iter().cloned());
+            let inverse = Changeset::new(combined);
+            let bytes = history_bytes(&inverse)?;
+            prepared.inverse = Entry { inverse, bytes, state: below.state };
+            prepared.direction = Direction::Amend;
+        }
+        self.commit_prepared(prepared, "run.derived").map(|_| ())
+    }
     /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
     pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {
         let before = self.file_status();
@@ -472,6 +529,11 @@ impl Session {
                 self.undo.push(prepared.inverse);
                 self.gesture = None;
             }
+            Direction::Amend => {
+                self.undo.pop();
+                self.undo.push(prepared.inverse);
+                self.gesture = None;
+            }
         }
         self.document = prepared.document;
         self.state = prepared.state;
@@ -609,6 +671,17 @@ fn move_key(changes: &Changeset, gesture: Option<String>) -> Result<Option<MoveK
 pub(crate) fn guard<T>(operation: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     catch_unwind(AssertUnwindSafe(operation))
         .map_err(|_| Error::new(ErrorKind::Internal, "command failed unexpectedly; document and undo history were preserved"))?
+}
+
+/// The asset hashes `values` name (lists included), in order.
+fn media(values: &[nodecraft_types::Value], out: &mut Vec<nodecraft_types::Blake3>) {
+    for value in values {
+        match value {
+            nodecraft_types::Value::Media(asset) => out.push(asset.hash),
+            nodecraft_types::Value::List(items) => media(items, out),
+            _ => {}
+        }
+    }
 }
 
 fn history_bytes(changes: &Changeset) -> Result<usize, Error> {
