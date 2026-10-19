@@ -285,14 +285,44 @@ fn index(kind: Modality) -> usize {
 struct Routes<'a>([Option<&'a str>; 6]);
 impl<'a> Routes<'a> {
     fn port(&self, kind: Modality) -> Result<&'a str, Error> {
-        self.0.get(index(kind)).copied().flatten().ok_or_else(|| invalid("the model returned a modality this node has no output for"))
+        let label = match kind {
+            Modality::Text => "text",
+            Modality::Image => "image",
+            Modality::Video => "video",
+            Modality::Audio => "audio",
+            Modality::Mesh => "mesh",
+            Modality::Document => "document",
+        };
+        self.0.get(index(kind)).copied().flatten().ok_or_else(|| invalid(&format!("the model returned {label} output but this node has no output port for it")))
     }
 }
 enum BorrowedOutput<'a> {
     Text { port: &'a str, text: &'a str },
     Media { port: &'a str, mime: &'static str, bytes: &'a Arc<[u8]> },
 }
-fn classify<'a>(item: &'a Output, routes: &Routes<'a>) -> Result<BorrowedOutput<'a>, Error> {
+#[derive(Default, Debug)]
+struct ScanWork {
+    #[cfg(test)]
+    utf8_calls: usize,
+    #[cfg(test)]
+    utf8_bytes: usize,
+}
+
+impl ScanWork {
+    // Test-only observer of actual UTF-8 scan attempts; production admission uses its own Budget.
+    fn utf8_scan(&mut self, _bytes: usize) {
+        #[cfg(test)]
+        {
+            self.utf8_calls += 1;
+            self.utf8_bytes += _bytes;
+        }
+    }
+}
+fn raw_text_budget(text: usize, occurrences: usize) -> Result<Budget, Error> {
+    let bytes = occurrences.checked_mul(3).and_then(|n| n.checked_add(text)).ok_or_else(|| invalid("provider raw text work limit overflowed"))?;
+    Ok(Budget(bytes))
+}
+fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text: &mut Budget, work: &mut ScanWork) -> Result<BorrowedOutput<'a>, Error> {
     match item {
         Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
         Output::Bytes { mime: claimed, bytes } => {
@@ -304,6 +334,14 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>) -> Result<BorrowedOutput<
                 if sniffed.mime != "text/plain" {
                     return Err(unsupported("the provider returned UTF-16 text, which isn't supported"));
                 }
+                // One standard UTF-8 BOM can precede an exact-limit payload. This raw-work
+                // cap also applies to non-BOM/multiple-BOM data, before any full UTF-8 scan.
+                let raw_limit = limits.text.checked_add(3).ok_or_else(|| invalid("provider raw text limit overflowed"))?;
+                if bytes.len() > raw_limit {
+                    return Err(invalid("the provider returned raw text over the text work limit"));
+                }
+                raw_text.charge(bytes.len()).map_err(|_| invalid("the provider's aggregate raw text exceeds the text work limit"))?;
+                work.utf8_scan(bytes.len());
                 let text = std::str::from_utf8(bytes).map_err(|_| invalid("the provider returned text that isn't UTF-8"))?;
                 Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text: text.trim_start_matches('\u{feff}') })
             } else {
@@ -313,11 +351,15 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>) -> Result<BorrowedOutput<
         Output::Url { .. } => Err(unsupported("download URL outputs before mapping them")),
     }
 }
+// Fixed cross-target logical charges, not allocator/RSS measurements.
+const OUTPUT_PROOF_RECORD_BYTES: usize = 64;
+const OUTPUT_PROOF_ROOT_BYTES: usize = 32;
+const _: [(); 1] = [(); (std::mem::size_of::<BorrowedOutput<'static>>() <= OUTPUT_PROOF_RECORD_BYTES) as usize];
+const _: [(); 1] = [(); (std::mem::size_of::<Vec<BorrowedOutput<'static>>>() <= OUTPUT_PROOF_ROOT_BYTES) as usize];
 struct AdmittedOutputs<'a> {
-    done: &'a Completed,
-    routes: Routes<'a>,
+    items: Vec<BorrowedOutput<'a>>,
 }
-fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits: Limits) -> Result<AdmittedOutputs<'a>, Error> {
+fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits: Limits, work: &mut ScanWork) -> Result<AdmittedOutputs<'a>, Error> {
     if done.outputs.is_empty() {
         return Err(invalid("the provider returned no output"));
     }
@@ -356,10 +398,25 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
             Output::Url { .. } => return Err(unsupported("download URL outputs before mapping them")),
         }
     }
+    // Count actual occurrences, including aliases; the configured maximum is only a ceiling.
+    // Direct strings/media do not need UTF-8 validation, but contribute at most three bytes
+    // of bounded BOM allowance without an extra classification pass.
+    let mut raw_text = raw_text_budget(limits.text, done.outputs.len())?;
+    let proof_bytes = done
+        .outputs
+        .len()
+        .checked_mul(OUTPUT_PROOF_RECORD_BYTES)
+        .and_then(|n| n.checked_add(OUTPUT_PROOF_ROOT_BYTES))
+        .ok_or_else(|| invalid("provider proof byte count overflowed"))?;
+    budget.charge(proof_bytes)?;
+    let mut items = Vec::new();
+    items.try_reserve_exact(done.outputs.len()).map_err(|_| Error::new(ErrorKind::Busy, "provider output admission scratch couldn't be allocated"))?;
     let mut text_bytes = 0usize;
-    // All late semantic errors are found before allocating converted records, hashing or cloning.
+    // Bounded borrowed scratch is allowed here; no converted records, hashing or cloning
+    // precedes complete semantic admission. Keep the validated &str instead of rescanning it.
     for item in &done.outputs {
-        match classify(item, &routes)? {
+        let classified = classify(item, &routes, limits, &mut raw_text, work)?;
+        match &classified {
             BorrowedOutput::Text { port, text } => {
                 text_bytes = text_bytes.checked_add(text.len()).ok_or_else(|| invalid("provider text byte count overflowed"))?;
                 if text_bytes > limits.text {
@@ -374,16 +431,24 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
                 budget.string(mime)?;
             }
         }
+        items.push(classified);
     }
-    Ok(AdmittedOutputs { done, routes })
+    Ok(AdmittedOutputs { items })
 }
 fn outputs_with_limits(outputs: &[GenerateOutput], done: &Completed, limits: Limits, conversion: &mut Conversion) -> Result<Produced, Error> {
-    let proof = admit_outputs(outputs, done, limits)?;
+    outputs_with_work(outputs, done, limits, conversion, &mut ScanWork::default())
+}
+fn outputs_with_work(
+    outputs: &[GenerateOutput],
+    done: &Completed,
+    limits: Limits,
+    conversion: &mut Conversion,
+    work: &mut ScanWork,
+) -> Result<Produced, Error> {
+    let proof = admit_outputs(outputs, done, limits, work)?;
     let mut produced = Produced::default();
-    for item in &proof.done.outputs {
-        // Immutable caller-owned slices cannot change after admission; sniff only a bounded prefix
-        // again rather than retaining a proportional array of per-output planning records.
-        let (port, value) = match classify(item, &proof.routes)? {
+    for item in proof.items {
+        let (port, value) = match item {
             BorrowedOutput::Text { port, text } => (conversion.string(port), Value::Text(conversion.string(text))),
             BorrowedOutput::Media { port, mime, bytes } => {
                 #[cfg(test)]

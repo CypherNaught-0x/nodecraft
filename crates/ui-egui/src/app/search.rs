@@ -14,7 +14,7 @@ impl NodeCraftApp {
     pub(super) fn search_input_id(&self) -> egui::Id {
         egui::Id::new("canvas_search_query").with(self.canvas)
     }
-    fn search_rect(&self) -> Rect {
+    pub(super) fn search_rect(&self) -> Rect {
         let t = self.theme.tokens();
         let width = if self.search.open { t.search_width } else { t.search_button_width }.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
         let height = if self.search.open { t.search_height } else { t.navigation_toolbar_height };
@@ -29,11 +29,14 @@ impl NodeCraftApp {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
             blocked: self.palette.is_some()
+                || self.turn_into.is_some()
                 || egui::Popup::is_any_open(ctx)
                 || (focused && !own_focus)
                 || (self.text_focused && !own_focus && !self.search_focused)
                 || self.drag.is_some()
                 || self.marquee.is_some()
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
                 || ctx.dragged_id().is_some()
                 || self.navigation.pointer_owned,
             open: self.search.open,
@@ -77,11 +80,19 @@ impl NodeCraftApp {
                 self.search.close();
                 ctx.memory_mut(|m| m.surrender_focus(self.search_input_id()));
             }
-            Some("query") => self
-                .search
-                .set_query(intent.get("query").and_then(Json::as_str).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "search query is unavailable"))?)?,
-            Some("next") => self.search.advance(Direction::Next),
-            Some("previous") => self.search.advance(Direction::Previous),
+            Some("query") => {
+                self.tag_filter.cancel_navigation();
+                self.search
+                    .set_query(intent.get("query").and_then(Json::as_str).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "search query is unavailable"))?)?;
+            }
+            Some("next") => {
+                self.tag_filter.cancel_navigation();
+                self.search.advance(Direction::Next);
+            }
+            Some("previous") => {
+                self.tag_filter.cancel_navigation();
+                self.search.advance(Direction::Previous);
+            }
             _ => return Err(Error::new(ErrorKind::InvalidInput, "unknown search intent")),
         }
         self.apply_search_frame(ctx);
@@ -100,21 +111,55 @@ impl NodeCraftApp {
         let Some(id) = self.search.frame_request.take() else {
             return;
         };
+        self.frame_canvas_node(ctx, id, "Search result");
+    }
+    pub(super) fn frame_canvas_node(&mut self, ctx: &egui::Context, id: NodeId, source: &str) {
         self.selection.only(id);
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let Some(body) = self.navigation.geometry.rects.get(&id).copied() else {
-            self.notice = Some("Search result selected; its instance geometry is unavailable.".into());
+            self.notice = Some(format!("{source} selected; its instance geometry is unavailable."));
             ctx.request_repaint();
             return;
         };
         let t = self.theme.tokens();
-        let mut usable = self.navigation.usable(self.viewport, t);
-        if self.search.open {
-            usable.min.y = self.search_rect().bottom() + t.navigation_gap;
-        }
-        let mut next = self.view;
         let bounds = crate::navigation::decorated(body, t);
         let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
+        let mut regions = vec![self.navigation.usable(self.viewport, t)];
+        // At most three overlays and four cuts each: bounded64 candidate rectangles.
+        // Keep side space when a tall discussion panel leaves no full-width bottom strip.
+        for obstacle in
+            [self.search.open.then(|| self.search_rect()), self.tag_filter.open.then(|| self.tag_rect()), self.comments.open.then(|| self.discussion_rect())]
+                .into_iter()
+                .flatten()
+        {
+            let obstacle = obstacle.expand(t.navigation_gap);
+            let mut next_regions = Vec::new();
+            for region in regions {
+                if !region.intersects(obstacle) {
+                    next_regions.push(region);
+                    continue;
+                }
+                for candidate in [
+                    Rect::from_min_max(region.min, Pos2::new(region.max.x, region.max.y.min(obstacle.top()))),
+                    Rect::from_min_max(Pos2::new(region.min.x, region.min.y.max(obstacle.bottom())), region.max),
+                    Rect::from_min_max(region.min, Pos2::new(region.max.x.min(obstacle.left()), region.max.y)),
+                    Rect::from_min_max(Pos2::new(region.min.x.max(obstacle.right()), region.min.y), region.max),
+                ] {
+                    if candidate.is_positive() && canvas::valid_rect(candidate) {
+                        next_regions.push(candidate);
+                    }
+                }
+            }
+            regions = next_regions;
+        }
+        let score =
+            |region: Rect| ((region.width() - 2.0 * padding) / bounds.width().max(1.0)).min((region.height() - 2.0 * padding) / bounds.height().max(1.0));
+        let Some(usable) = regions.into_iter().filter(|region| score(*region) > 0.0).max_by(|a, b| score(*a).total_cmp(&score(*b))) else {
+            self.notice = Some(format!("{source} selected; the canvas is too small to frame it."));
+            ctx.request_repaint();
+            return;
+        };
+        let mut next = self.view;
         if let Some(result) = next.fit(usable, bounds, padding) {
             // CanvasView::fit uses its viewport's top-left as origin; the real canvas origin
             // stays unchanged when reserving a top strip for the search overlay.
@@ -138,10 +183,10 @@ impl NodeCraftApp {
             }
             if next.pan.is_finite() {
                 self.view = next;
-                self.notice = result.clamped.then(|| "Search result centered at minimum zoom; complete containment is unavailable.".into());
+                self.notice = result.clamped.then(|| format!("{source} centered at minimum zoom; complete containment is unavailable."));
             }
         } else {
-            self.notice = Some("Search result selected; the canvas is too small to frame it.".into());
+            self.notice = Some(format!("{source} selected; the canvas is too small to frame it."));
         }
         ctx.request_repaint();
     }
@@ -273,7 +318,8 @@ impl NodeCraftApp {
         if self.search.open && (was_scanning || self.search.scanning) {
             ctx.request_repaint();
         }
-        let gesture = self.drag.is_some() || self.marquee.is_some() || ctx.dragged_id().is_some();
+        let gesture =
+            self.drag.is_some() || self.marquee.is_some() || self.comments.drag.is_some() || self.comments.gesture_cancelled || ctx.dragged_id().is_some();
         !gesture && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| rect.contains(p)))
     }
 }
@@ -385,12 +431,13 @@ mod tests {
     #[test]
     fn popup_and_existing_box_gesture_exclude_search_opening() {
         let mut h = harness();
-        let from = Pos2::new(40.0, 40.0);
+        // Begin on bare canvas below the new Comments toolbar.
+        let from = h.state().viewport.min + Vec2::new(30.0, 120.0);
         h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
         h.hover_at(from);
         h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
         h.run();
-        h.hover_at(Pos2::new(100.0, 100.0));
+        h.hover_at(from + Vec2::new(60.0, 60.0));
         h.run();
         assert!(h.state().marquee.is_some());
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
@@ -398,7 +445,7 @@ mod tests {
         assert!(!h.state().search.open);
         assert!(h.state().marquee.is_some());
         h.event(egui::Event::PointerButton {
-            pos: Pos2::new(100.0, 100.0),
+            pos: from + Vec2::new(60.0, 60.0),
             button: egui::PointerButton::Primary,
             pressed: false,
             modifiers: egui::Modifiers::NONE,
@@ -521,8 +568,9 @@ mod tests {
         let actual = h.state().navigation.geometry.rects[&node.id];
         assert!(actual.height() > card::world_rect(&node, Some(&short), h.state().theme.tokens()).height());
         let screen = h.state().view.rect_to_screen(h.state().viewport.min, crate::navigation::decorated(actual, h.state().theme.tokens()));
-        assert!(screen.top() > h.state().search_rect().bottom());
-        assert!(screen.bottom() < h.state().navigation.usable(h.state().viewport, h.state().theme.tokens()).bottom());
+        assert!(h.state().viewport.contains_rect(screen), "complete dynamic card {screen:?}");
+        assert!(!screen.intersects(h.state().search_rect()), "card {screen:?}, search {:?}", h.state().search_rect());
+        assert!(h.state().navigation.usable(h.state().viewport, h.state().theme.tokens()).contains_rect(screen));
         let ctx = h.ctx.clone();
         h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query":"unknown model tail"})).unwrap();
         h.run();

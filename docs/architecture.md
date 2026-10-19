@@ -20,7 +20,9 @@ every CI run, and fails on an unregistered crate.
 |---|---|---|---|
 | L0 | `types` | ids, `Modality`, `PortType`, `Value`, hashes, money, the error base (pure data, serde) | — |
 | L0 standalone | `media` | sniffing, decode/encode, thumbnails, metadata; image first, video/audio probes behind features | none allowed |
+| L0 standalone | `plugin` | the plugin package and wire contract: IDs, canonical JSON, manifest, inventory digest, signatures, frames and messages, locks, preservation ([spec](plugin-wire.md)) | none allowed |
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
+| L1 | `plugin-store` | verifying `.ncraft-plugin` data packages and the local package store: install disabled, enable all-or-nothing, update, rollback, uninstall ([decision](decisions/2026-10-19-plugin-data-package-store.md)) | plugin, types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
@@ -33,7 +35,8 @@ every CI run, and fails on an unregistered crate.
 | L5 | `agent` | in-canvas agent: LLM tool loop over engine commands | engine |
 | L5 | `automation` | control channel (JSON), MCP server, HTTP serve mode | engine |
 | L5 | `ui-egui` | egui shell: canvas widget, node cards, panels, editors, theme tokens | engine |
-| dev only | `testkit` | fixtures, mock provider, snapshot helpers | engine |
+| dev only | `testkit` | graph fixtures, mock compatibility reexport, snapshot helpers | engine |
+| dev only | `provider-testkit` | provider-only mock/type reexports for lower-layer tests | providers, types |
 | exempt | `apps/nodecraft`, `apps/nodecraft-cli`, `xtask` | binaries and tooling | anything |
 
 ```mermaid
@@ -60,7 +63,16 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
-- **`testkit` is a dev-dependency only.**
+- **Layered consumers use `testkit` and `provider-testkit` as dev-dependencies only.** Apps and
+  tooling keep their existing exemption; standalone media permits neither. The provider facade's
+  workspace dependencies are restricted to providers and types in every dependency kind,
+  including rejection of facade self-edges before generic same-package exemptions. It exposes the opt-in `providers::mock` implementation and the
+  same external provider types; lower crates use the facade only in tests. Provider unit tests
+  use their local `crate::mock` and local Provider trait to avoid duplicate-crate trait identity.
+  The higher testkit preserves `testkit::mock` by reexporting providers directly, without a
+  forbidden normal dependency on another testkit crate. Neither testkit class is in the normal
+  wasm sweep; `cargo xtask wasm` separately checks the facade and opt-in providers/testkit mock,
+  and refuses the wasm gate if either the normal sweep or that extra invocation fails.
 
 ## Core data types
 
@@ -269,6 +281,12 @@ in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging s
 
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+Its phase A, the package and wire contract, is the standalone `plugin` crate
+([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
+Phase B's verifier and local store are `plugin-store`; data packages install disabled and
+nothing in them executes. The engine's `plugins.*` commands reach the store through the host's
+`plugins.store` service; the desktop app keeps it in `<settings>/plugins/store` with the trust file
+`<settings>/plugins/trust.json`, and refuses any package ID the app itself registers.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions
@@ -292,6 +310,17 @@ rendering. Builtin sessions require no separate Registry resource; custom sessio
 once through `Session::with_registries`. The query remains read-only and its enabled check only
 checks the canvas, leaving staleness computation to dispatch.
 
+The response preserves `nodes` as the known stale set and adds `unknown_total` plus `unknown`
+(null or `{node, cause, kind, reason}`). Only active results with recorded input hashes are
+checked. Local invalid hashes do not themselves seed staleness; unknown is not proof of freshness.
+The first diagnostic follows canvas NodeId order and identifies the actual rejected target,
+source or router. It reuses the query's cached, bounded public-safe reason without another hook
+call. More unknown results are counted rather than collected into an unbounded message list.
+The existing 576-byte diagnostic reservation shares the hash query's sticky admission budget;
+global refusal returns an error without a partial report. Enabled/Preview remain cheap. The
+legacy `stale()` set API and quote callers keep their behavior; completed paid runs still retain
+results with unknown hashes when hashing fails. Control/MCP expose the command's same JSON.
+
 ## Project persistence (#54)
 
 `format::Snapshot` combines a validated graph, immutable content-addressed `AssetStore`, and a
@@ -306,7 +335,7 @@ Initial limits are 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per 
 aggregate media. Codec bytes are currently buffered; cloned asset stores share immutable buffers.
 Saving includes only assets referenced by node parameters or generation history, including lists.
 Large-project lazy disk storage is a later optimization: do not simply increase these memory caps.
-Format v1 excludes ZIP64, compression, encryption, directory entries, archive comments and extra
+Formats v1/v2/v3 exclude ZIP64, compression, encryption, directory entries, archive comments and extra
 fields. These restrictions make the bounded interchange surface explicit.
 
 Hosts construct `Session::with_storage(snapshot, storage)`. A `ProjectStorage` instance belongs to
@@ -406,7 +435,8 @@ and state, and disables edits until another save repairs recovery. Hosts must su
 ### Persistence integration boundaries and tracked storage work
 
 Save encodes once: its archive slice is reused from the new checkpoint. Open decodes once and
-reuses the validated archive bytes for checkpointing. After a save, asset GC preserves references
+reuses validated v3 archive bytes for checkpointing; v1 and v2 are explicitly converted to a v3 checkpoint
+before adoption. After a save, asset GC preserves references
 from both the live document and bounded undo/redo payloads; discarded redo assets can then be
 reclaimed. Hosts must call `Session::close_recovery` on a clean close (or explicit dirty discard)
 to flush and remove recovery; dropping a dirty session intentionally leaves recovery available.
@@ -432,9 +462,12 @@ The bounded buffered M1 codec does **not** yet satisfy [plan 4.6's large-project
 that assets stay on disk and load lazily. This remains tracked in [lazy asset storage #147](https://github.com/CypherNaught-0x/nodecraft/issues/147), dependent on #54:
 a file-backed AssetSource, streaming archive/checkpoint paths, large video limits and ZIP64 need
 a separate format/asset-store design before increasing memory caps. The current 16 MiB/48 MiB limits
-are operational limits, not a claim of large-video support. Format v1 has no published predecessor;
-the explicit migration seam rejects older/future versions before typed graph decoding. A real
-migration and fixture must land before writing v2; no invented lossy v0 migration is applied.
+are operational limits, not a claim of large-video support. Comments owns format v2 with frozen exact-v1 migration fixtures and an explicit NCRJ0001→NCRJ0002
+checkpoint transition. Unknown versions reject before typed graph decoding. The persisted Tag/Field vocabulary is introduced by the v3 compatibility bridge (#193), with
+NCRJ0003 recovery. Frozen v1/v2 paths still reject those reserved roles rather than dropping them.
+Both older journal versions retain their original embedded archive hash while replaying, then
+require an atomic v3 checkpoint before appending. The bridge adds no Tags/Fields commands or UI.
+See [local comments, replay certification and format ownership](comments.md).
 
 ### Frozen-v1 bridge on the current graph
 
@@ -486,7 +519,7 @@ cheap. Opt-in `validation-metrics` exists for deterministic downstream tests, wi
 counter cost. Graph cloning/application, structural validation and byte-budget serialization still
 traverse the project per admitted edit; this is not a constant-time or linear-total edit claim.
 
-### Runtime result recording and frozen-v1 storage
+### Runtime result recording and frozen-v1 storage (historical; current writers use Comments v2)
 
 The current `exec::run::Run` returns caller-owned completed results; it does not mutate a
 Session or automatically wire desktop execution. A host can turn a result into one changeset
@@ -495,3 +528,50 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 `Generation.input_hash` with an actionable Unsupported error before journal append or document,
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
+
+### Local comments and notes
+
+[Comments](comments.md) adds bounded flat threads and canvas/node anchors through graph changes,
+engine document commands and a scoped UI view service. Node deletion detaches discussions; compact
+restore metadata plus certified exact F/I/R staging preserves undo/redo budgets. `structure.note`
+is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
+authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
+explicit Save/Cancel, versioned migration and current format ownership are specified in that contract.
+
+
+### Comments-v2 on the current persistence host
+
+Comments advances current archive writers to version2 and recovery writers to NCRJ0002. Frozen
+v1 reads retain the landed contextual guard, including Generation.input_hash and default/null
+reserved-role refusal; original archive bytes still determine legacy frame identity. Opening or
+recovering legacy data must establish a new atomic v2 checkpoint before appending v2 edits.
+Current v2 admits config, scalar Values, stamped generations and local threads; future Tag/Field
+roles still reject. The earlier frozen-v1 runtime/storage restrictions above describe the previous
+writer and are superseded for current writes, not weakened for v1 reads.
+
+Private prepared admission, immutable referenced bytes, source identity/revision, complete-source
+changed-asset validation, ordered valid-final batches, actual canonical redo reservations, physical
+prefix damage recovery, staged Open rollback, source access/locks and sync generations remain the
+same persistence path. No second Comments save/append service exists. Save availability validates
+the current bounded manifest; incremental edits keep their existing replay/graph limits rather than
+imposing the archive's smaller manifest ceiling on every edit.
+
+## Optional native video sidecar
+
+`media/video` provides the standalone bounded native FFmpeg service described in
+[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
+tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
+is separate. Feature-on wasm exposes an Unsupported host setup path.
+
+## Selected-node formatting
+
+Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
+The UI supplies a revision-stamped scoped geometry capability, including history-strip body
+height at fixed reference zoom. Advisory Preview validates structure without solving or staging;
+dispatch returns one MoveNode changeset through the private persistent admission boundary.
+Grid and whole-DAG dependency modes move selected nodes only, with one undo step; see
+[the decision](decisions/2026-10-18-selected-node-auto-format-70.md) and [UI design](ui-design.md).
+
+### Colour tag mutations and filtering
+
+The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.

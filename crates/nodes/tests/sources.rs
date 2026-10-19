@@ -36,7 +36,7 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
     let mut actual = Vec::new();
     for node in nodes.values() {
         let kind = registry.get(&node.kind).unwrap();
-        actual.extend(kind.plan(&PlanCtx { node, inputs: &[] }).unwrap());
+        actual.extend(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node, inputs: &[] }).unwrap());
     }
     assert_eq!(actual, expected);
     assert_eq!(serde_json::from_str::<Vec<JobSpec>>(&serde_json::to_string(&actual).unwrap()).unwrap(), expected);
@@ -49,9 +49,8 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
 #[test]
 fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
     let registry = Registry::builtins().unwrap();
-    // The four sources and the router.
-    assert_eq!(registry.descriptors().count(), 5);
-    assert_eq!(registry.compatible(&[]).count(), 5);
+    assert_eq!(registry.descriptors().filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 4);
+    assert_eq!(registry.compatible(&[]).filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 4);
     for (id, modality, key) in [
         ("source.text", Modality::Text, "T"),
         ("source.image", Modality::Image, "I"),
@@ -69,11 +68,18 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
         for input in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document] {
             let port = PortType { modality: input, many: false };
             assert!(kind.mode(&[port]).is_none());
-            // Only the router takes a wire of any modality (it is created with the wire's).
-            assert_eq!(registry.compatible(&[port]).map(|d| d.id.as_str()).collect::<Vec<_>>(), vec![nodecraft_nodes::router::ID]);
+            // The router takes a wire of any modality (it is created with the wire's); action
+            // kinds (#410) take their own modality.
+            let compatible: Vec<&str> = registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| *id != nodecraft_nodes::router::ID).collect();
+            assert!(registry.compatible(&[port]).any(|d| d.id == nodecraft_nodes::router::ID));
+            for id in compatible {
+                let action = registry.get(id).unwrap().descriptor();
+                assert_eq!(action.category, nodecraft_nodes::Category::Action, "{id}");
+                assert_eq!(action.inputs.first().map(|p| p.port_type.modality), Some(input), "{id}");
+            }
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
             let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()) }];
-            assert!(kind.plan(&PlanCtx { node: &node, inputs: &inputs }).is_err());
+            assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
         }
     }
 }
@@ -84,12 +90,22 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
     for descriptor in registry.descriptors() {
         let kind = registry.get(&descriptor.id).unwrap();
         let node = descriptor.instantiate(NodeId::from_bytes([1; 16]), &ParamValues::new()).unwrap();
-        let result = kind.plan(&PlanCtx { node: &node, inputs: &[] });
-        if descriptor.id == "source.text" {
-            assert_eq!(result.unwrap(), vec![JobSpec::Source { node: node.id, output: "out".into(), value: Value::Text(String::new()) }]);
-        } else {
-            assert!(node.params.is_empty());
-            assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
+        let result = kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] });
+        match descriptor.id.as_str() {
+            "source.text" => assert_eq!(result.unwrap(), vec![JobSpec::Source { node: node.id, output: "out".into(), value: Value::Text(String::new()) }]),
+            "structure.note" => {
+                assert_eq!(node.params, ParamValues::from([("text".into(), Value::Text(String::new()))]));
+                assert!(node.inputs.is_empty() && node.outputs.is_empty());
+                assert!(result.unwrap().is_empty());
+            }
+            "structure.router" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
+            "source.image" | "source.video" | "source.audio" => {
+                assert!(node.params.is_empty());
+                assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
+            }
+            // Action kinds (#410) need a connected input before they can be planned.
+            id if descriptor.category == nodecraft_nodes::Category::Action => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "{id}"),
+            id => panic!("add an explicit default-planning contract for builtin {id}"),
         }
     }
 }
@@ -109,7 +125,7 @@ fn tampered_ports_kinds_and_parameters_cannot_be_planned() {
     let mut oversized = valid;
     oversized.params.insert("text".into(), Value::Text("x".repeat(1024 * 1024 + 1)));
     for node in [wrong_kind, wrong_port, unknown_param, wrong_type, oversized] {
-        let error = kind.plan(&PlanCtx { node: &node, inputs: &[] }).unwrap_err();
+        let error = kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] }).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert!(!error.message.contains("never echo"));
     }
@@ -131,6 +147,7 @@ impl NodeKind for Fake {
 #[test]
 fn registry_rejects_duplicates_conflicting_shortcuts_and_bad_descriptors() {
     let mut registry = Registry::builtins().unwrap();
+    let builtin_count = registry.descriptors().count();
     assert_eq!(registry.register(Box::new(nodecraft_nodes::text::kind())).unwrap_err().kind, ErrorKind::Conflict);
     let mut descriptor = nodecraft_nodes::text::kind().descriptor().clone();
     descriptor.id = "other.kind".into();
@@ -140,7 +157,7 @@ fn registry_rejects_duplicates_conflicting_shortcuts_and_bad_descriptors() {
     descriptor.outputs.push(descriptor.outputs.first().unwrap().clone());
     assert_eq!(registry.register(Box::new(Fake(descriptor))).unwrap_err().kind, ErrorKind::InvalidInput);
     assert!(registry.get("unknown").is_err());
-    assert_eq!(registry.descriptors().count(), 5);
+    assert_eq!(registry.descriptors().count(), builtin_count);
 }
 
 #[test]

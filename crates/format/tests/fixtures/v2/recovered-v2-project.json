@@ -1,0 +1,122 @@
+{
+  "id": "09090909-0909-0909-0909-090909090909",
+  "title": "Public v2 discussion fixture",
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "id": "01010101-0101-0101-0101-010101010101",
+      "title": "Review notes",
+      "nodes": {
+        "02020202-0202-0202-0202-020202020202": {
+          "id": "02020202-0202-0202-0202-020202020202",
+          "kind": "structure.note",
+          "title": "Review note",
+          "pos": {
+            "x": 40.0,
+            "y": 80.0
+          },
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "Keep dawn lighting consistent. This annotation produces no jobs."
+            }
+          },
+          "config": {
+            "fixture.v1.enabled": {
+              "type": "bool",
+              "value": true
+            },
+            "fixture.v1.number": {
+              "type": "number",
+              "value": 0.1
+            },
+            "fixture.v1.seed": {
+              "type": "unsigned",
+              "value": "18446744073709551615"
+            },
+            "fixture.v1.signed": {
+              "type": "integer",
+              "value": "-9223372036854775808"
+            }
+          },
+          "inputs": [],
+          "outputs": [],
+          "history": [],
+          "active": null,
+          "tag": "08080808-0808-0808-0808-080808080808",
+          "field": "07070707-0707-0707-0707-070707070707"
+        },
+        "03030303-0303-0303-0303-030303030303": {
+          "id": "03030303-0303-0303-0303-030303030303",
+          "kind": "source.text",
+          "title": "",
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "A public dawn study"
+            }
+          },
+          "config": {
+            "fixture.v1.media": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "media",
+                  "value": {
+                    "hash": "9429703d901fde32c9335eb3691eb0de51971c2aeaff4cdfc9efd84e57a2e2f0",
+                    "mime": "text/plain",
+                    "meta": {}
+                  }
+                }
+              ]
+            }
+          },
+          "inputs": [],
+          "outputs": [],
+          "history": [],
+          "active": null,
+          "tag": null,
+          "field": null
+        }
+      },
+      "edges": {},
+      "fields": {
+        "07070707-0707-0707-0707-070707070707": {
+          "id": "07070707-0707-0707-0707-070707070707",
+          "title": "Legacy v2 field"
+        }
+      },
+      "comments": {
+        "04040404-0404-0404-0404-040404040404": {
+          "id": "04040404-0404-0404-0404-040404040404",
+          "text": "Review this variation",
+          "pos": {
+            "x": 340.0,
+            "y": 24.0
+          },
+          "node": "02020202-0202-0202-0202-020202020202",
+          "replies": [
+            {
+              "id": "05050505-0505-0505-0505-050505050505",
+              "text": "Keep the muted palette and soft shadows"
+            },
+            {
+              "id": "06060606-0606-0606-0606-060606060606",
+              "text": "Reviewed locally"
+            }
+          ],
+          "resolved": true
+        }
+      },
+      "tags": {
+        "08080808-0808-0808-0808-080808080808": {
+          "id": "08080808-0808-0808-0808-080808080808",
+          "title": "Legacy v2 tag"
+        }
+      }
+    }
+  }
+}

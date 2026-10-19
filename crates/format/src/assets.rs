@@ -140,6 +140,9 @@ impl AssetStore {
                 | Change::SetCanvasTitle { .. }
                 | Change::RemoveNode { .. }
                 | Change::MoveNode { .. }
+                | Change::MoveNodes { .. }
+                | Change::SetNodeTags { .. }
+                | Change::SetNodeFields { .. }
                 | Change::SetNodeTitle { .. }
                 | Change::RemoveGeneration { .. }
                 | Change::SetActiveGeneration { .. }
@@ -151,7 +154,13 @@ impl AssetStore {
                 | Change::PutTag { .. }
                 | Change::RemoveTag { .. }
                 | Change::PutComment { .. }
-                | Change::RemoveComment { .. } => {}
+                | Change::RemoveComment { .. }
+                | Change::SetCommentText { .. }
+                | Change::SetCommentPin { .. }
+                | Change::SetCommentResolved { .. }
+                | Change::InsertCommentReply { .. }
+                | Change::RemoveCommentReply { .. }
+                | Change::SetCommentReplyText { .. } => {}
             }
         }
         for (id, nodes) in touched {
