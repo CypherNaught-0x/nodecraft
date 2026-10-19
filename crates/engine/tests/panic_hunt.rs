@@ -291,6 +291,7 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
+        "file.cancel" => json!({}),
         // The plugins service isn't registered here either.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),

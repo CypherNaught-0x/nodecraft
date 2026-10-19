@@ -15,6 +15,55 @@ pub struct FileStatus {
     pub read_only: bool,
     /// A background save is still writing (#461); `dirty` stays set until it has published.
     pub saving: bool,
+    /// The background save or open still running, if any (#367). Its phase moves while the
+    /// host isn't looking: read it each frame rather than waiting for a status change.
+    pub operation: Option<FileOperation>,
+}
+
+/// A background file operation's progress, as `file.status`-style readers see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileOperation {
+    pub kind: FileOperationKind,
+    pub phase: FilePhase,
+    /// `file.cancel` asked it to stop. It may still finish: a cancel that arrives after the
+    /// destination was published can't undo it, and the outcome says which happened.
+    pub cancel_requested: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileOperationKind {
+    Save,
+    Open,
+}
+/// Where a background file operation is. Phases only move forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilePhase {
+    /// Snapshotting the document and sealing its assets into the archive plan (save).
+    Preparing,
+    /// Reading and verifying the project file into a private copy (open).
+    Reading,
+    /// Writing the destination; nothing is replaced until it is complete (save).
+    Writing,
+    /// Writing the recovery checkpoint. A save's file is already published by now, and an
+    /// open's replacement checkpoint is what makes it final, so neither can still be cancelled.
+    Checkpointing,
+}
+impl FilePhase {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Reading => "reading",
+            Self::Writing => "writing",
+            Self::Checkpointing => "checkpointing",
+        }
+    }
+}
+impl FileOperationKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Save => "save",
+            Self::Open => "open",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -23,6 +72,8 @@ struct Open {
     location: String,
     #[serde(default)]
     discard_dirty: bool,
+    #[serde(default)]
+    background: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,8 +98,18 @@ fn open(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.file.dirty && !p.discard_dirty {
         return Err(Error::new(ErrorKind::Conflict, "save your changes or explicitly set discard_dirty before opening another project"));
     }
-    Ok(Effect::Open { location: StorageLocation::from_command(p.location)?, discard_dirty: p.discard_dirty })
+    Ok(Effect::Open { location: StorageLocation::from_command(p.location)?, discard_dirty: p.discard_dirty, background: p.background })
 }
+fn cancel(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    if !value.is_null() {
+        params::<Empty>(value)?;
+    }
+    available(c)?;
+    Ok(Effect::CancelFile)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
 fn save(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let background = if value.is_null() { false } else { params::<Save>(value)?.background };
     available(c)?;
@@ -70,6 +131,9 @@ fn save_as(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 fn enabled_open(c: &Context<'_>, v: &Value) -> Result<(), Error> {
     open(c, v).map(|_| ())
 }
+fn enabled_cancel(c: &Context<'_>, v: &Value) -> Result<(), Error> {
+    cancel(c, v).map(|_| ())
+}
 fn enabled_save(c: &Context<'_>, v: &Value) -> Result<(), Error> {
     save(c, v).map(|_| ())
 }
@@ -85,9 +149,19 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: open_schema,
             label: "Open project",
             shortcut: Some("Command+O"),
-            params_doc: "{location: string, discard_dirty?: bool}; UTF8 filesystem path on native, storage key on web. Returns {opened: true, read_only: bool}. Never opens a dialog.",
+            params_doc: "{location: string, discard_dirty?: bool, background?: bool}; UTF8 filesystem path on native, storage key on web. Returns {opened: true, read_only: bool}. Never opens a dialog. With background, a host that reads off its UI thread returns {opened: false, opening: true} at once; until it finishes, reads still run and edits are refused as busy.",
             enabled: enabled_open,
             run: open,
+        },
+        CommandSpec {
+            id: "file.cancel",
+            alternate_shortcuts: &[],
+            input_schema: cancel_schema,
+            label: "Cancel saving or opening",
+            shortcut: None,
+            params_doc: "{}; asks the background save or open to stop. Returns {cancelling: bool}, false when none is running. The operation's outcome says whether it stopped in time: a stopped save leaves the file unchanged, a stopped open keeps the current project.",
+            enabled: enabled_cancel,
+            run: cancel,
         },
         CommandSpec {
             id: "file.save",
@@ -117,7 +191,11 @@ fn location_schema() -> Value {
 }
 fn open_schema() -> Value {
     serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["location"],"properties":{
-    "location":location_schema(),"discard_dirty":{"type":"boolean","default":false}},"additionalProperties":false})
+    "location":location_schema(),"discard_dirty":{"type":"boolean","default":false},"background":background_schema()},"additionalProperties":false})
+}
+fn cancel_schema() -> Value {
+    serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema", "anyOf":[{"type":"null"},
+        {"type":"object","properties":{},"additionalProperties":false}]})
 }
 fn background_schema() -> Value {
     serde_json::json!({"type":"boolean","default":false})
