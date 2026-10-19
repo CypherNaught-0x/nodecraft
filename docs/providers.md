@@ -30,10 +30,13 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
-| `comfyui` | `comfyui:<host>:<port>` (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
+| `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
-Keys are read when the adapters are built, which can show a keychain prompt, so hosts build them
-off the UI thread.
+Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
+adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing
+from the adapters already built. ComfyUI's token is optional: a keychain that can't be opened or
+was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
+with read-only settings none is made and ComfyUI stays off.
 
 ## Chat conversations and tools
 

@@ -384,14 +384,9 @@ impl NodeCraftApp {
         mut store: nodecraft_engine::settings::SettingsStore,
         storage: Option<storage::StorageSetup>,
     ) -> Result<Self, Error> {
-        // Made once per install, before any provider is built (ComfyUI prompt ids, #409).
-        let mut providers = store.get().providers.clone();
-        match providers.ensure_install_salt() {
-            Ok(true) => {
-                store.update(|settings| settings.providers = providers);
-            }
-            Ok(false) => {}
-            Err(error) => log::warn!("the install salt couldn't be made: {}", error.message),
+        // Made once per install and saved at once, before any provider is built (#409).
+        if let Err(error) = nodecraft_engine::settings::ensure_install_salt(&mut store) {
+            log::warn!("{}", error.message);
         }
         let settings = store.get().clone();
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
