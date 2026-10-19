@@ -153,9 +153,19 @@ fn comparison_provenance_is_public_escaped_bounded_and_dirty_qualified() {
     b["source"]["fingerprint"] = json!("f".repeat(40));
     b["source"]["dirty"] = json!(true);
     let (_, md) = compare(&a, &b).unwrap();
-    assert!(md.contains(&format!("Baseline: revision {}", "b".repeat(40))));
-    assert!(md.contains(&format!("Current: revision {}; source fingerprint {}", "e".repeat(40), "f".repeat(40))));
-    assert!(md.contains(&format!("definitions {}", "a".repeat(40))));
+    // Every side states its complete identity: a baseline line without its fingerprint is not enough.
+    assert!(md.contains(&format!(
+        "Baseline: revision {}; source fingerprint {}; definitions {}; dirty false.\n\n",
+        "b".repeat(40),
+        "c".repeat(40),
+        "a".repeat(40)
+    )));
+    assert!(md.contains(&format!(
+        "Current: revision {}; source fingerprint {}; definitions {}; dirty true.\n\n",
+        "e".repeat(40),
+        "f".repeat(40),
+        "a".repeat(40)
+    )));
     assert!(md.contains("Shared machine class: fixture-cpu"));
     assert!(md.contains("Dirty source warning"));
     assert!(md.contains("&lt;script&gt;&#91;cpu&#93;&#40;https&#58;&#47;&#47;invalid&#41; &#96;code&#96; &#124; &amp; &#42;em&#42; &#35; heading"));
@@ -164,9 +174,34 @@ fn comparison_provenance_is_public_escaped_bounded_and_dirty_qualified() {
     assert!(!md.contains("flags_fingerprint"));
     assert!(!md.contains("/private/not-rendered"));
     assert!(!md.contains("https://"));
+    // The warning is keyed on either side, not only on the current measurement.
+    let mut dirty_base = fixture();
+    dirty_base["source"]["dirty"] = json!(true);
+    assert!(compare(&dirty_base, &fixture()).unwrap().1.contains("Dirty source warning"));
     assert!(!compare(&fixture(), &fixture()).unwrap().1.contains("Dirty source warning"));
+    // A separator that is not a control scalar still must not split a summary line.
+    a["environment"]["cpu_model"] = json!("line\u{2028}break\u{2029}end");
+    let (_, separators) = compare(&a, &a).unwrap();
+    assert!(!separators.contains('\u{2028}') && !separators.contains('\u{2029}'));
+    assert!(separators.contains("line break end"));
+    // The bound is bytes, not characters: 2048 two-byte scalars fit, 2049 do not.
+    a["environment"]["cpu_model"] = json!("é".repeat(2048));
+    assert!(compare(&a, &a).is_ok());
+    a["environment"]["cpu_model"] = json!("é".repeat(2049));
+    assert!(compare(&a, &a).is_err());
+    // The header stays bounded by its own escape limit, whatever the table below it grows into.
     a["environment"]["cpu_model"] = json!("<".repeat(4096));
-    assert!(compare(&a, &a).unwrap().1.len() < 100_000);
+    let (_, md) = compare(&a, &a).unwrap();
+    assert!(md.contains("\n| Workload |"));
+    assert!(md.split("\n| Workload |").next().unwrap().len() < 30_000);
     a["environment"]["cpu_model"] = json!("<".repeat(4097));
     assert!(compare(&a, &a).is_err());
+}
+
+#[test]
+fn an_unavailable_cpu_model_never_compares_even_against_an_identical_environment() {
+    let mut same = fixture();
+    same["environment"]["cpu_model"] = json!("unavailable");
+    assert!(validate(&same).is_ok());
+    assert_eq!(compare(&same, &same).unwrap_err(), "incomparable: CPU model unavailable");
 }

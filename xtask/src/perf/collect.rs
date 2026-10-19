@@ -22,6 +22,18 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
 fn source_input_error() -> String {
     "source input missing or unreadable; stage intentional deletions or restore readable inputs".into()
 }
+/// Like [`output`], except that a non-zero exit is the actionable source-input case: a vanished or
+/// replaced path makes `git hash-object` fail, while a missing tool or oversized stdout is not that.
+fn hash_output(mut cmd: Command) -> Result<String, String> {
+    let o = cmd.output().map_err(|_| "cannot execute metadata tool")?;
+    if o.stdout.len() > 4 * 1024 * 1024 {
+        return Err("metadata command exceeded bounds".into());
+    }
+    if !o.status.success() {
+        return Err(source_input_error());
+    }
+    String::from_utf8(o.stdout).map_err(|_| "metadata is not UTF-8".into())
+}
 fn hash(root: &Path, paths: &[String]) -> Result<String, String> {
     let mut content = String::new();
     for chunk in paths.chunks(16) {
@@ -34,7 +46,7 @@ fn hash(root: &Path, paths: &[String]) -> Result<String, String> {
         }
         let mut c = Command::new("git");
         c.current_dir(root).args(["hash-object", "--"]).args(chunk);
-        let hashes = output(c).map_err(|_| source_input_error())?;
+        let hashes = hash_output(c)?;
         let ids: Vec<_> = hashes.lines().collect();
         if ids.len() != chunk.len() {
             return Err("source hash count mismatch".into());
@@ -366,8 +378,25 @@ mod tests {
         fs::remove_file(root.join("private-name.txt")).unwrap();
         assert!(git(root, &["ls-files", "-co", "--exclude-standard", "-z"]).unwrap().contains("private-name.txt"));
         assert_eq!(hash(root, &paths).unwrap_err(), source_input_error());
+        // A replaced path must refuse too: opening a directory can succeed even though it is not a source file.
+        fs::create_dir(root.join("private-name.txt")).unwrap();
+        assert_eq!(hash(root, &paths).unwrap_err(), source_input_error());
+        fs::remove_dir(root.join("private-name.txt")).unwrap();
+        fs::write(root.join("private-name.txt"), "fixture").unwrap();
+        assert!(hash(root, &paths).is_ok());
+        fs::remove_file(root.join("private-name.txt")).unwrap();
         git(root, &["rm", "--cached", "--quiet", "--", "private-name.txt"]).unwrap();
         assert!(git(root, &["ls-files", "-co", "--exclude-standard", "-z"]).unwrap().is_empty());
         assert!(hash(root, &[]).is_ok());
+    }
+
+    #[test]
+    fn a_missing_hash_object_exit_is_the_source_diagnostic_but_a_missing_tool_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "--quiet"]).unwrap();
+        let mut absent = Command::new("git");
+        absent.current_dir(dir.path()).args(["hash-object", "--", "absent-source-file.txt"]);
+        assert_eq!(hash_output(absent).unwrap_err(), source_input_error());
+        assert_eq!(hash_output(Command::new("nodecraft-perf-no-such-tool-478")).unwrap_err(), "cannot execute metadata tool");
     }
 }

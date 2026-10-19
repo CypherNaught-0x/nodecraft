@@ -40,10 +40,10 @@ transparent instrumentation wrappers and their other inputs remain trusted and m
 See [Cargo's configuration precedence](https://doc.rust-lang.org/cargo/reference/config.html).
 
 The output directory must be new; within the checkout it must be Git-ignored. Nothing uploads
-from the local command. A previous baseline is never overwritten automatically. Missing/unreadable
-source inputs refuse collection; stage an intentional deletion or restore a readable input rather than omitting it from
-the fingerprint. Config-defined compiler/wrapper overrides have a category-specific refusal; their
-private values and paths are not included in the error.
+from the local command. A previous baseline is never overwritten automatically. Missing or
+unreadable source inputs refuse collection; stage an intentional deletion or restore a readable
+input rather than omitting it from the fingerprint. Config-defined compiler and wrapper overrides
+have a category-specific refusal; their private values and paths are not included in the error.
 
 The tool resolves the invoking workspace, fingerprints its tracked and unignored source bytes
 and executable modes, and records full revision/dirty state. It cleans only workspace **release**
@@ -137,7 +137,8 @@ estimate. Whole-script budgets can therefore be broad even on a quiet host.
 Initial shared-machine measurements exposed range/median ratios up to 135.46 in dispatch,
 29.54 in memory storage and 8.75 in native storage. Using the whole range as an allowance would
 hide meaningful regressions; it was rejected. That historical version 1 report remains diagnostic
-only because its external Cargo configuration was not captured. A corrected version 2 collection supplies the initial comparable per-workload
+only because its external Cargo configuration was not captured. A corrected version 2 collection
+supplies the initial comparable per-workload
 baseline; no approved blocking budgets or measured cross-revision performance win is implied.
 Repeat controlled runs when establishing a stable-machine policy, document why its budgets are
 useful, and version policy changes deliberately. Never calibrate against a known degraded
@@ -148,10 +149,13 @@ regression signal; **3** malformed, incomplete, incomparable or failed execution
 without a requested baseline says **not compared**, not a regression pass. Comparator tests prove
 an unchanged pair, median-preserving tail slowdown, zero baseline, missing/duplicate records,
 under-sampled tails, unavailable metrics, incompatible environments and hostile JSON admission.
+A collection that cannot read a CPU model records `unavailable` and is never compared at all, even
+against an identical baseline; that refusal is separate from environment equality.
 The readable comparison identifies both source revisions/fingerprints, definition fingerprints and
 dirty flags, plus the shared public machine/CPU class. A dirty-source warning requires using the
 recorded fingerprint rather than treating HEAD as the complete measured tree. Only these existing
-public envelope fields are rendered; private build configuration is never included.
+public envelope fields are rendered; free-form text is escaped and its length bound is measured in
+bytes, not characters. Private build configuration is never included.
 Input is capped at 8 MiB with depth/string/token preflight before owned JSON parsing; records and
 ordered samples are separately bounded. These are tooling limits, not process-RSS guarantees.
 

@@ -334,7 +334,8 @@ fn markdown_text(value: &str) -> String {
             '_' => escaped.push_str("&#95;"),
             '#' => escaped.push_str("&#35;"),
             '~' => escaped.push_str("&#126;"),
-            c if c.is_control() => escaped.push(' '),
+            // Line and paragraph separators are not control scalars but still break a summary line.
+            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') => escaped.push(' '),
             c => escaped.push(c),
         }
     }
@@ -355,6 +356,7 @@ fn comparison_header(base: &Value, current: &Value) -> Result<String, String> {
         ));
     }
     let environment = base.get("environment").ok_or_else(err)?;
+    // `machine` is already allowlisted by validate; escaping it anyway keeps this call safe if that rule widens.
     header.push_str(&format!(
         "Shared machine class: {}; CPU model: {}.\n\n",
         markdown_text(text(environment, "machine")?),
