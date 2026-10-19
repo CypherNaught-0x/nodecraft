@@ -76,18 +76,31 @@ fn gated(advance: u64) -> (TestService, Arc<GateBackend>, Receiver<()>, Release)
     let service = Service::spawn(backend.clone(), clock).unwrap();
     (TestService { service }, backend, ready, Release(permit))
 }
-fn start(service: &Service, files: &[egui::DroppedFileHandle]) -> Ticket {
+/// Retry a first admission, counting ONE admission: `Service::start` reads every handle it
+/// admits before the mailbox handoff, so a `Busy` there costs a whole pass a retry would count
+/// twice (#474). `restart` runs before every attempt; `still_busy` keeps a busy service a bug.
+fn admit<T>(mut attempt: impl FnMut() -> Result<T, Failure>, restart: impl Fn(), still_busy: impl Fn() -> bool) -> T {
     let end = Instant::now() + Duration::from_secs(10);
     loop {
-        match service.start(files) {
-            Ok(ticket) => return ticket,
-            Err(Failure::Busy) if !service.0.busy.load(Ordering::Acquire) && Instant::now() < end => {
-                // try_lock may meet the fixed worker's short mailbox handoff.
+        restart();
+        match attempt() {
+            Ok(admitted) => return admitted,
+            Err(Failure::Busy) if !still_busy() && Instant::now() < end => {
+                // The worker holds the mailbox at its own startup and at the tail of a finished
+                // job, both after this attempt had already read every admitted path.
                 std::thread::sleep(Duration::from_millis(1));
             }
             Err(e) => panic!("initial fixture admission: {e:?}"),
         }
     }
+}
+/// A first admission with nothing to count. A fixture that counts what admission reads, counts
+/// the attempts too, so it takes `start_counting` instead.
+fn start(service: &Service, files: &[egui::DroppedFileHandle]) -> Ticket {
+    start_counting(service, files, || {})
+}
+fn start_counting(service: &Service, files: &[egui::DroppedFileHandle], restart: impl Fn()) -> Ticket {
+    admit(|| service.start(files), restart, || service.0.busy.load(Ordering::Acquire))
 }
 fn wait(ticket: &mut Ticket) -> Poll {
     let end = Instant::now() + Duration::from_secs(10);
@@ -343,9 +356,12 @@ fn intake_reads_only_first_thirty_two_paths_without_retaining_original_handles()
     owners.store(0, Ordering::SeqCst);
     let backend = Arc::new(Generate { len: 1, opens: AtomicUsize::new(0), calls: Arc::default() });
     let worker = TestService { service: Service::spawn(backend, Arc::new(Monotonic)).unwrap() };
-    let mut ticket = start(&worker.service, &files);
-    assert_eq!(calls.load(Ordering::SeqCst), 32);
-    assert_eq!(owners.load(Ordering::SeqCst), 2);
+    // #474: a retried admission reads every admitted handle again, so `calls` is restarted per
+    // attempt. `owners` is never restarted: it is a maximum a retry cannot inflate, and it is
+    // the one assertion that proves the service kept no original handle of its own.
+    let mut ticket = start_counting(&worker.service, &files, || calls.store(0, Ordering::SeqCst));
+    assert_eq!(calls.load(Ordering::SeqCst), 32, "one path per admitted file");
+    assert_eq!(owners.load(Ordering::SeqCst), 2, "the caller's vec plus this call, never the service");
     let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
     assert_eq!(batch.files.len(), 32);
     assert_eq!(batch.skipped.count, 968);
@@ -1041,4 +1057,25 @@ fn model_picker_yields_to_drop_control_through_release_but_not_ordinary_pending_
         drop(release);
         idle(&worker.service);
     }
+}
+
+#[test]
+fn fixture_retry_counts_the_successful_admission_only() {
+    // The counting contract of the intake fixture, pinned without the race: one `Busy` costs a
+    // whole pass over the admitted handles, because `Service::start` reads them before it hands
+    // the job over (#474). It says nothing about whether the product can return `Busy` - only
+    // the retry and the counters are under test here.
+    let calls = AtomicUsize::new(0);
+    let mut attempts = 0;
+    let admitted = admit(
+        || {
+            attempts += 1;
+            calls.fetch_add(1, Ordering::SeqCst);
+            if attempts < 3 { Err(Failure::Busy) } else { Ok(attempts) }
+        },
+        || calls.store(0, Ordering::SeqCst),
+        || false,
+    );
+    assert_eq!(admitted, 3, "Busy retried until it admitted");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "counters describe the successful attempt only");
 }
