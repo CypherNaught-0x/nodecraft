@@ -229,3 +229,20 @@ bytes, above u32::MAX. Small calibration does not establish those results. The a
 run does not replace final CI or later source-composition checks; future runs still need their
 own resource review. See [storage.md](storage.md) for measured values and platform/RSS/device-write
 limitations.
+
+
+## Desktop project files
+
+Use **File** for Open, Save, Save As and recent projects, or Cmd/Ctrl+O, Cmd/Ctrl+S and
+Cmd/Ctrl+Shift+S. The same three actions are in the quick-add palette. An untitled or read-only
+project uses Save As. Cancelling a picker changes nothing. Opening over unsaved work asks whether
+to Save, Discard or Cancel; a failed or cancelled Save keeps the current project open. Finish or
+discard uncommitted card-field drafts before file actions.
+
+Recent projects are kept in local settings (16 entries); missing files report an error and can be
+removed individually or cleared. File picks and recents still pass native storage admission; there
+is no small-file buffering path in the UI. Programmatic file commands always require locations
+and never open dialogs. The browser preview does not yet provide project storage or file pickers.
+
+Kittests inject picker futures and exercise actual native temporary-file persistence. They verify
+UI routing and lifecycle/refusal behavior; they do not prove OS dialog operation on every platform.

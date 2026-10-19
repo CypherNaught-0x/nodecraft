@@ -277,6 +277,8 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
 
 mod comments;
 mod drop;
+#[cfg(not(target_arch = "wasm32"))]
+mod file_dialogs;
 mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
@@ -314,6 +316,8 @@ pub struct NodeCraftApp {
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
+    #[cfg(not(target_arch = "wasm32"))]
+    files: file_dialogs::FileDialogs,
     pub viewport: Rect,
     pub notice: Option<String>,
     stale_snapshot: Option<stale::StaleSnapshot>,
@@ -482,6 +486,10 @@ impl NodeCraftApp {
         };
         self.canvas_prefs = settings.canvas.clone();
         self.key_accounts = settings.keys.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
+        }
         theme::apply(ctx, self.theme);
     }
 
@@ -510,7 +518,7 @@ impl NodeCraftApp {
 
     /// The browser build has no project files yet (#99).
     #[cfg(target_arch = "wasm32")]
-    fn file_shortcut(&mut self, _save: bool, _save_as: bool) -> Option<String> {
+    fn file_shortcut(&mut self, _ctx: &egui::Context, _save: bool, _save_as: bool) -> Option<String> {
         Some("Saving isn't available in the browser yet.".into())
     }
 
@@ -593,6 +601,8 @@ impl NodeCraftApp {
             navigation_mailbox,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            files: Default::default(),
             viewport: Rect::NOTHING,
             notice: None,
             stale_snapshot: None,
@@ -649,6 +659,9 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             next.store = self.store.take();
+            // An OS picker is not cancelled by dropping its future. Keep its occupied
+            // slot and original Session stamp until completion, plus bounded recents.
+            next.files = std::mem::take(&mut self.files);
         }
         *self = next;
         Ok(())
@@ -676,6 +689,10 @@ impl NodeCraftApp {
                 self.live_recompute(ui.ctx());
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let file_owns_input = self.file_dialog_frame(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        let file_owns_input = false;
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
@@ -684,6 +701,14 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
+        #[cfg(not(target_arch = "wasm32"))]
+        let file_menu_owns_input = self.file_menu(ui, t);
+        #[cfg(target_arch = "wasm32")]
+        let file_menu_owns_input = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        if file_menu_owns_input {
+            self.clear_file_input(ui.ctx());
+        }
         if !self.centred {
             let home = self.home();
             self.view.reset(viewport, home);
@@ -714,8 +739,12 @@ impl NodeCraftApp {
             let (save_as, save, open) =
                 ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
             if save || save_as || open {
-                self.notice = self.file_shortcut(save, save_as);
+                self.notice = self.file_shortcut(ui.ctx(), save, save_as);
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.files.owns_input() {
+            self.clear_file_input(ui.ctx());
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
@@ -876,9 +905,18 @@ impl NodeCraftApp {
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
         let layout_blocks = self.layout_overlay(ui);
-        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks || drop_blocks;
+        #[cfg(not(target_arch = "wasm32"))]
+        let file_owns_input = file_owns_input || self.files.owns_input();
+        let overlay_blocks = self.navigation_overlay(ui, minimap_press)
+            || search_blocks
+            || layout_blocks
+            || comments_blocks
+            || tag_blocks
+            || file_owns_input
+            || file_menu_owns_input
+            || drop_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
-        let canvas_blocks = overlay_blocks || popup_owned;
+        let canvas_blocks = overlay_blocks || popup_owned || file_owns_input || file_menu_owns_input;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !canvas_blocks
@@ -964,8 +1002,17 @@ impl NodeCraftApp {
                 let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
                 let editor = self.editors.entry(node.id).or_default();
-                if let Some(result) = card::show(
-                    ui,
+                // Cards use their parent's max_rect origin as the canvas origin. A layout
+                // scope would advance that origin between cards; an independent disabled
+                // child keeps the original viewport and leaves ordinary rendering untouched.
+                let mut disabled_ui =
+                    (file_owns_input || file_menu_owns_input).then(|| ui.new_child(egui::UiBuilder::new().max_rect(ui.max_rect()).disabled()));
+                let card_ui = match &mut disabled_ui {
+                    Some(child) => child,
+                    None => &mut *ui,
+                };
+                let result = card::show(
+                    card_ui,
                     &self.view,
                     node,
                     card::CardView {
@@ -981,7 +1028,8 @@ impl NodeCraftApp {
                     editor,
                     self.selection.contains(node.id),
                     t,
-                ) {
+                );
+                if let Some(result) = result {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
                     let tag_painter = egui::Painter::new(ui.ctx().clone(), r.layer_id, tag_world_clip(&self.view, viewport, ui.clip_rect()));
@@ -1129,7 +1177,9 @@ impl NodeCraftApp {
                             .intents
                             .into_iter()
                             .filter(|intent| {
-                                (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                                !file_owns_input
+                                    && !file_menu_owns_input
+                                    && (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
                                     && (!canvas_blocks || !matches!(intent, Intent::Move(_)))
                             })
                             .map(|intent| (node.id, intent)),
@@ -1139,7 +1189,7 @@ impl NodeCraftApp {
             // Noodles follow this frame's painted cards (drag previews, resolved heights). They are
             // painted on the canvas layer, which stays under the card layers.
             let curves = curves(canvas, &self.painted, kinds, t);
-            if !overlay_blocks && background.clicked() {
+            if !overlay_blocks && !file_owns_input && !file_menu_owns_input && background.clicked() {
                 let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
                     let world = self.view.to_world(viewport.min, p);
                     let reach = NOODLE_HIT / self.view.zoom;
@@ -1153,7 +1203,9 @@ impl NodeCraftApp {
                 }
             }
             // Double-click empty canvas (not a noodle) for the quick-add palette.
-            if background.double_clicked()
+            if !file_owns_input
+                && !file_menu_owns_input
+                && background.double_clicked()
                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
             {
                 let world = self.view.to_world(viewport.min, p);
@@ -1358,7 +1410,16 @@ impl NodeCraftApp {
                     }
                     Err(error) => self.notice = Some(error.message),
                 },
-                palette::Outcome::Chosen(palette::Target::Command(id)) => self.dispatch_palette_command(id),
+                palette::Outcome::Chosen(palette::Target::Command(id)) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                        self.begin_file(id, ui.ctx());
+                    } else {
+                        self.dispatch_palette_command(id);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    self.dispatch_palette_command(id);
+                }
             }
         }
         if let Some(mut open) = self.turn_into.take() {
@@ -1376,6 +1437,8 @@ impl NodeCraftApp {
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
         self.keys_button(ui, viewport);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
@@ -1594,10 +1657,18 @@ impl NodeCraftApp {
             .map(|d| palette::Entry { target: palette::Target::Kind(d.id.clone()), label: d.label.clone(), shortcut: d.quick_add.clone() })
             .collect();
         kinds.sort_by(|a, b| a.label.cmp(&b.label));
-        let commands =
-            self.session.registry().specs().filter(|spec| self.session.enabled(spec.id, &self.palette_command_params(spec.id)).is_ok()).map(|spec| {
-                palette::Entry { target: palette::Target::Command(spec.id), label: spec.label.to_owned(), shortcut: spec.shortcut.map(str::to_owned) }
-            });
+        let commands = self
+            .session
+            .registry()
+            .specs()
+            .filter(|spec| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
+                    return self.session.file_status().available;
+                }
+                self.session.enabled(spec.id, &self.palette_command_params(spec.id)).is_ok()
+            })
+            .map(|spec| palette::Entry { target: palette::Target::Command(spec.id), label: spec.label.to_owned(), shortcut: spec.shortcut.map(str::to_owned) });
         kinds.into_iter().chain(commands).collect()
     }
 
