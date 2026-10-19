@@ -173,6 +173,9 @@ mod tests {
     fn builtins_offer_the_router_for_every_noodle() {
         let kinds = Registry::builtins().unwrap();
         let offered = entries(&kinds, PortType { modality: nodecraft_types::Modality::Image, many: false });
-        assert_eq!(offered, [Entry { kind: nodecraft_nodes::router::ID.into(), label: "Router".into(), key: Some('r') }]);
+        assert!(offered.contains(&Entry { kind: nodecraft_nodes::router::ID.into(), label: "Router".into(), key: Some('r') }));
+        // And the image actions (#410), by name.
+        assert!(offered.iter().any(|e| e.kind == "image.blur" && e.label == "Blur"));
+        assert!(!offered.iter().any(|e| e.kind.starts_with("text.")));
     }
 }

@@ -790,6 +790,11 @@ impl Controller {
             let run = self.run.as_ref().ok_or("run")?;
             let work = run.work(spec.id).ok_or("work")?;
             match work {
+                // The golden harness has no action executor: actions are local, like sources.
+                JobSpec::Action { .. } => {
+                    self.sources.register(spec.id, work.clone());
+                    lock(&self.shared).source_jobs.insert(spec.id);
+                }
                 JobSpec::Source { value, .. } => {
                     let charge = bounds::value(value, 0)?.owned.checked_mul(self.fanout).ok_or("source_ownership")?;
                     Ownership::charge(&mut self.out.ownership.run, charge, 16 * MIB)?;
@@ -931,7 +936,7 @@ impl Controller {
                     .as_ref()
                     .and_then(|r| r.work(job))
                     .map(|w| match w {
-                        JobSpec::Source { .. } => Ok(nodecraft_exec::run::LOCAL_LANE.to_owned()),
+                        JobSpec::Source { .. } | JobSpec::Action { .. } => Ok(nodecraft_exec::run::LOCAL_LANE.to_owned()),
                         JobSpec::Generate { .. } => self
                             .run
                             .as_ref()

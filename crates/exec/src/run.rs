@@ -667,7 +667,7 @@ impl Run {
 /// The lane a job runs on: local work shares one lane.
 fn lane(work: &JobSpec) -> Result<Lane, Error> {
     match work {
-        JobSpec::Source { .. } => Ok(Lane::new(LOCAL_LANE)),
+        JobSpec::Source { .. } | JobSpec::Action { .. } => Ok(Lane::new(LOCAL_LANE)),
         // Every provider identity uses the canonical namespace, including defaults.
         JobSpec::Generate { provider, instance, .. } => Ok(Lane::new(nodecraft_types::ProviderTarget::new(provider, *instance)?.lane_name()?)),
     }
@@ -681,17 +681,31 @@ pub fn take_outputs(outputs: &Outputs, job: JobId) -> Vec<(String, Value)> {
     outputs.lock().unwrap_or_else(PoisonError::into_inner).remove(&job).unwrap_or_default()
 }
 
-/// Runs jobs that need no provider: a [`JobSpec::Source`] emits its value. The host registers
-/// each job's work before scheduling it and reads the outputs back with [`take_outputs`].
+/// Runs local actions (#410) for [`SourceRunner`]: the host implements it with access to the
+/// project's assets. An error is a message for the person; it never panics.
+pub trait ActionExecutor: crate::driver::MaybeSendSync {
+    fn execute(&self, action: &str, params: &nodecraft_types::ParamValues, inputs: &[Value]) -> Result<Value, String>;
+}
+
+/// Runs jobs that need no provider: a [`JobSpec::Source`] emits its value, and a
+/// [`JobSpec::Action`] runs on the host's [`ActionExecutor`]. The host registers each job's work
+/// before scheduling it and reads the outputs back with [`take_outputs`].
 #[derive(Default, Clone)]
 pub struct SourceRunner {
     work: Arc<Mutex<BTreeMap<JobId, JobSpec>>>,
     pub outputs: Outputs,
+    actions: Option<Arc<dyn ActionExecutor>>,
 }
 
 impl SourceRunner {
     pub fn register(&self, job: JobId, work: JobSpec) {
         self.work.lock().unwrap_or_else(PoisonError::into_inner).insert(job, work);
+    }
+
+    /// Runs action jobs on `actions`; without one they fail with a clear message.
+    pub fn with_actions(mut self, actions: Arc<dyn ActionExecutor>) -> Self {
+        self.actions = Some(actions);
+        self
     }
 }
 
@@ -699,6 +713,7 @@ impl crate::driver::JobRunner for SourceRunner {
     fn run(&self, start: Start, cancel: crate::driver::CancelToken) -> crate::driver::TaskFuture<Outcome> {
         let work = self.work.lock().unwrap_or_else(PoisonError::into_inner).remove(&start.job);
         let outputs = Arc::clone(&self.outputs);
+        let actions = self.actions.clone();
         Box::pin(async move {
             if cancel.is_cancelled() {
                 return Outcome::Cancelled;
@@ -709,6 +724,14 @@ impl crate::driver::JobRunner for SourceRunner {
                     Outcome::Done
                 }
                 Some(JobSpec::Generate { .. }) => Outcome::Failed { error: format!("{} needs a provider runner", start.job), transient: false },
+                Some(JobSpec::Action { action, params, inputs, output, .. }) => match actions.as_ref().map(|a| a.execute(&action, &params, &inputs)) {
+                    Some(Ok(value)) => {
+                        outputs.lock().unwrap_or_else(PoisonError::into_inner).insert(start.job, vec![(output, value)]);
+                        Outcome::Done
+                    }
+                    Some(Err(error)) => Outcome::Failed { error, transient: false },
+                    None => Outcome::Failed { error: "this host can't run actions".into(), transient: false },
+                },
                 None => Outcome::Failed { error: format!("{} has no work registered", start.job), transient: false },
             }
         })

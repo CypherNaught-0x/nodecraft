@@ -1774,6 +1774,8 @@ impl eframe::App for NodeCraftApp {
 }
 
 #[cfg(test)]
+mod action_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod order_tests;
