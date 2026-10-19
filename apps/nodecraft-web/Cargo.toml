@@ -1,0 +1,21 @@
+[package]
+name = "nodecraft-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft in the browser: the egui shell on eframe's WebRunner (wasm preview)"
+publish = false
+
+[lints]
+workspace = true
+
+# Everything is browser-only: on other targets the binary only says how to build it
+# (packaging/web/package.sh), so a native `cargo build --workspace` stays cheap.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+nodecraft-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["wgpu", "accesskit", "web_screen_reader"] }
+log = { workspace = true }
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Window"] }

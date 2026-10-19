@@ -163,8 +163,13 @@ fn cmd_wasm(root: &Path) -> Result<(), String> {
         "nodecraft-providers/testkit",
     ]);
     run(mocks, "cargo check --target wasm32-unknown-unknown -p nodecraft-provider-testkit -p nodecraft-providers --features nodecraft-providers/testkit")?;
+    // The browser app is an app, not a layered crate, but wasm is the only target it has (#99).
+    let mut web = cargo(root);
+    web.args(["check", "--target", "wasm32-unknown-unknown", "-p", "nodecraft-web"]);
+    run(web, "cargo check --target wasm32-unknown-unknown -p nodecraft-web")?;
     println!("\nwasm32-unknown-unknown check: ok for {}", set.join(", "));
     println!("wasm32-unknown-unknown opt-in check: ok for nodecraft-provider-testkit and nodecraft-providers/testkit");
+    println!("wasm32-unknown-unknown app check: ok for nodecraft-web");
     Ok(())
 }
 

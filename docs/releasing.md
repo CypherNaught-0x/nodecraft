@@ -41,9 +41,9 @@ it, and every release's notes link there. When signing lands (#100), drop the wa
 | Windows x64, arm64 | `packaging/windows/package.ps1 -Arch <arch>` | `.msi`, `-portable.zip` (both binaries) |
 | Linux x86_64, aarch64 | `packaging/linux/package.sh` | `.AppImage` (+ `.zsync`), `.deb`, `.rpm`, `.tar.gz` |
 | Linux Flatpak | `packaging/linux/flatpak-bundle.sh` (repackages the tarball) | `.flatpak` |
+| Web (preview) | `packaging/web/package.sh` | `nodecraft-web-<v>.zip` (a static site) |
 
-Not built yet: the web bundle (add a `web` job with the web app, #99). Not targets: Windows x86,
-Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps).
+Not targets: Windows x86, Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps).
 
 ## Local packaging
 
@@ -51,6 +51,8 @@ Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps
 packaging/macos/package.sh --arch aarch64     # ad-hoc signed DMG + CLI zip in dist/release/
 packaging/linux/package.sh --formats tar      # on Linux; deb/rpm need nfpm
 pwsh packaging/windows/package.ps1 -Arch x64  # on Windows; needs WiX v5
+packaging/web/package.sh                      # static site zip; needs trunk, wasm-bindgen-cli
+packaging/web/package.sh --serve              # dev build, rebuilt on change, http://127.0.0.1:8080
 packaging/icons.sh                            # after editing assets/app-icon/nodecraft.svg
 ```
 
