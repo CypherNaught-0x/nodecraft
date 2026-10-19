@@ -239,3 +239,17 @@ These are tracked on #162 and on the issues that need them:
 
 Each of these is added as a minor version where it is optional, or a major version where it
 changes meaning.
+
+## Migration and override admission
+
+Before migration reports or layered overrides copy supplied values, they admit the complete
+borrowed input: at most256 distinct parameter names, names of at most128 bytes, aggregate name
+bytes and aggregate text/MIME bytes each at most1 MiB, and at most4096 Value items with list depth
+at most32. Item, text and name accounting spans all layers, including values later overwritten.
+The bounded traversal reserves its pending frontier before extending it. Unknown names retain
+their original spelling and need not satisfy known-schema identifier grammar; bounded unknown
+migration values still receive their normal dropped-value report. Oversized input returns a
+bounded InvalidInput error before any output copies, rather than producing a partial report.
+Ordered numeric conditions compare signed and unsigned integers exactly against their finite
+numeric threshold, including full-width values beyond floating-point integer precision. Seed
+controls retain their existing equality/presence semantics.
