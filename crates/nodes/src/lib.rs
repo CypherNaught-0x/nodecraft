@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod audio;
+mod contract;
 mod descriptor;
 pub mod image;
 pub mod note;
@@ -16,6 +17,7 @@ mod source;
 pub mod text;
 pub mod video;
 
+pub use contract::{InputContract, ModeContract, NodeContract, OutputContract, PortCount};
 pub use descriptor::{Category, GenerateInput, GenerateOutput, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
 pub use nodecraft_types::{Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, VisibleIf};
 pub use registry::Registry;

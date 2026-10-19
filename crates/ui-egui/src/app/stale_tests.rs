@@ -230,6 +230,14 @@ fn same_frame_palette_undo_and_real_drop_do_not_paint_previous_summary() {
     h.run();
     h.input_mut().dropped_files.push(Arc::new(Dropped(path.clone())));
     h.step();
+    // Native acquisition is asynchronous (#335): the import lands in a later frame.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().drop_pending() {
+        assert!(!visible(&h), "old text must never be submitted while the drop is read");
+        assert!(std::time::Instant::now() < end, "bounded asynchronous drop completion");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        h.step();
+    }
     let _ = std::fs::remove_file(path);
     assert!(h.state().session.revision() > revision);
     assert!(!visible(&h), "old text must never be submitted in the import frame");

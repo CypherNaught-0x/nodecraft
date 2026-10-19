@@ -27,6 +27,10 @@ craft-quit = { workspace = true }
 log = { workspace = true }
 getrandom.workspace = true
 
+# Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
 [dev-dependencies]
 nodecraft-format.workspace = true
 nodecraft-media = { workspace = true }

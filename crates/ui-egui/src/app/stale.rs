@@ -192,7 +192,8 @@ impl NodeCraftApp {
             .any(|editor| editor.hidden_dirty)
             .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
         let notice = self.notice.as_deref().or(hidden);
-        if notice.is_some() || self.stale_snapshot.is_some() {
+        // A pending drop shows its own progress in this corner.
+        if (notice.is_some() || self.stale_snapshot.is_some()) && !self.drop_pending() {
             let mut dismiss_check = false;
             let notice_id = ui.id().with("notice");
             let previous_size = egui::AreaState::load(ui.ctx(), notice_id).map(|state| state.rect().size());
