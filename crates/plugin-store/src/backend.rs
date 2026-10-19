@@ -1,6 +1,8 @@
 //! Store backends: in memory (tests, and the browser build, where packages last for the session),
 //! and a folder on disk (native).
 use crate::store::StoreBackend;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::store::StoreLock;
 use nodecraft_plugin::PackageDigest;
 use nodecraft_types::{Error, ErrorKind};
 use std::collections::BTreeMap;
@@ -70,8 +72,12 @@ mod native {
     impl FolderBackend {
         pub fn new(root: PathBuf) -> Result<Self, Error> {
             std::fs::create_dir_all(root.join("objects")).map_err(io("the plugin store folder can't be created"))?;
+            Ok(Self { root })
+        }
+
+        fn sweep_temporary_indexes(&self) {
             // Index writes a crash interrupted.
-            if let Ok(entries) = std::fs::read_dir(&root) {
+            if let Ok(entries) = std::fs::read_dir(&self.root) {
                 for entry in entries.flatten().take(1024) {
                     let settled = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= SETTLED);
                     if settled && entry.file_name().to_str().is_some_and(|n| n.starts_with("index.json.") && n.ends_with(".new")) {
@@ -79,7 +85,6 @@ mod native {
                     }
                 }
             }
-            Ok(Self { root })
         }
 
         fn object(&self, digest: &PackageDigest) -> PathBuf {
@@ -128,6 +133,23 @@ mod native {
     }
 
     impl StoreBackend for FolderBackend {
+        fn transaction(&self) -> Result<Box<dyn StoreLock>, Error> {
+            // Never unlink or replace this inode. Separate opens also exclude other threads
+            // in this process; a process-global gate would unnecessarily block other stores.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(self.root.join(".lock"))
+                .map_err(io("the plugin store lock can't be opened"))?;
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => return Err(Error::new(ErrorKind::Busy, "the plugin store is busy in another request; try again")),
+                Err(_) => return Err(Error::new(ErrorKind::Unsupported, "the plugin store filesystem doesn't support transaction locking")),
+            }
+            Ok(Box::new(file))
+        }
         fn read_index(&self) -> Result<Option<Vec<u8>>, Error> {
             Self::read(&self.root.join("index.json"))
         }
@@ -147,6 +169,9 @@ mod native {
             }
         }
         fn list_objects(&self) -> Result<Vec<PackageDigest>, Error> {
+            // Store::open calls this only after decoding the current index, under its guard.
+            // A refused stale mutation acquires the guard but performs no maintenance sweep.
+            self.sweep_temporary_indexes();
             let entries = std::fs::read_dir(self.root.join("objects")).map_err(io("the plugin store can't be read"))?;
             let mut digests = Vec::new();
             for entry in entries.flatten().take(4 * crate::store::MAX_OBJECTS) {

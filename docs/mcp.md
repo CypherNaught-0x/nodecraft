@@ -75,7 +75,9 @@ through the engine and native app. `run.record` writes results the host ran, and
 own provider records (#325); agents can still review those charges with `usage.ownership`. The
 `plugins.*` changes (import, update, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
-see what is installed with `plugins.list` (#172). A new
+see what is installed with `plugins.list` (#172). Worker-backed hosts return an opaque pending
+ID; agents may read its retained envelope with `plugins.result` and acknowledge a terminal result
+with `plugins.forget`. These two commands do not acquire files or mutate packages. A new
 command stays hidden until it is added to one of the
 lists, and a test fails until then. `canvas.auto_format` is temporarily human-only: it consumes
 the live selection and trusted card geometry, which MCP and the control bridge cannot supply yet.
