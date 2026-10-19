@@ -2,7 +2,7 @@
 //! whether it applies, and every problem found, reported together rather than first-only.
 
 use super::{Affects, Contract, DefaultPolicy, HiddenPolicy, condition::Env};
-use crate::{Error, ErrorKind, ParamValues, ResolvedParams, Value, schema::invalid};
+use crate::{Error, ErrorKind, ParamControl, ParamValues, ResolvedParams, Unsigned, Value, schema::invalid};
 use serde::{Deserialize, Serialize};
 
 /// A parameter's effective value and where it came from.
@@ -90,26 +90,30 @@ impl Resolution {
     /// [`ResolvedParams::into_visible_values`] is [`Resolution::submission`]. A value problem
     /// always refuses; a missing value or failed check refuses only when `ready`, so a node can
     /// be edited through a state that a run would refuse. A run that would draw a random seed
-    /// is unsupported until the drawn seed can be recorded with its generation.
+    /// is unsupported here: only a catalog-admitted generation draws and records one.
     pub fn into_resolved(self, ready: bool) -> Result<ResolvedParams, Error> {
-        self.into_resolved_where(ready, |_| true)
+        self.into_resolved_where(ready, false, |_| true)
     }
 
     /// [`Resolution::into_resolved`] for a kind that submits through [`Resolution::submission`]
     /// itself and uses the visible set only as its result's identity (generation): parameters
-    /// declared `identity: false` are left out of it, so editing them keeps results fresh.
+    /// declared `identity: false` are left out of it, so editing them keeps results fresh. A
+    /// random seed is allowed: the run draws it after admission ([`Contract::random_seeds`]).
     pub fn into_identity(self, ready: bool) -> Result<ResolvedParams, Error> {
-        self.into_resolved_where(ready, |state| state.affects.identity)
+        self.into_resolved_where(ready, true, |state| state.affects.identity)
     }
 
-    fn into_resolved_where(mut self, ready: bool, keep: impl Fn(&ParamState) -> bool) -> Result<ResolvedParams, Error> {
+    fn into_resolved_where(mut self, ready: bool, seeds: bool, keep: impl Fn(&ParamState) -> bool) -> Result<ResolvedParams, Error> {
         if !ready {
             self.issues.retain(|issue| !matches!(issue.code, IssueCode::Required | IssueCode::Check));
         }
         if let Some(issue) = self.issues.first() {
             return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
         }
-        if ready && let Some(seed) = self.params.iter().find(|state| state.enabled && state.value == Effective::RandomSeed) {
+        if ready
+            && !seeds
+            && let Some(seed) = self.params.iter().find(|state| state.enabled && state.value == Effective::RandomSeed)
+        {
             return Err(Error::new(ErrorKind::Unsupported, format!("{} draws a random seed per run, which can't be recorded yet; set a seed", seed.name)));
         }
         let visible = self.params.iter().filter(|state| state.enabled && keep(state)).map(|state| state.name.clone()).collect();
@@ -144,6 +148,20 @@ impl Resolution {
 }
 
 impl Contract {
+    /// The seeds a run draws for this resolution (#162): each enabled seed parameter whose
+    /// effective setting is [`Effective::RandomSeed`], with its upper bound, in schema order.
+    pub fn random_seeds(&self, resolution: &Resolution) -> Vec<(String, Option<Unsigned>)> {
+        resolution
+            .params
+            .iter()
+            .filter(|state| state.enabled && state.value == Effective::RandomSeed)
+            .filter_map(|state| match self.schema.params.iter().find(|spec| spec.name == state.name).map(|spec| &spec.control) {
+                Some(ParamControl::Seed { max }) => Some((state.name.clone(), *max)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Resolve model settings in a whole node map without copying a filtered input map.
     /// Foreign keys remain caller-owned and are ignored, while all known values and shared
     /// aggregate input limits are still checked before effective values are copied.

@@ -52,7 +52,8 @@ impl Default for RunLimits {
 /// How a run is identified and paced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunOptions {
-    /// Identifies the run (random per run): it goes into idempotency keys and generation ids.
+    /// Identifies the run (random per run): it goes into idempotency keys, generation ids and
+    /// drawn random seeds, so a reused id repeats its seeds.
     pub id: [u8; 16],
     /// The first scheduler job id to use; the host keeps ids unique in its scheduler.
     pub first_job: u64,
@@ -180,15 +181,29 @@ const NODE_SLACK: usize = 64 * 1024;
 /// The changes that record `generation` on `node` and make it active: one undo step. Give it the
 /// live node right before applying them. To make room, the oldest inactive generations are
 /// dropped: below [`MAX_HISTORY`] entries, and until the node fits its size limit. `Err` when the
-/// result can't be recorded even then. A result that fits only without its settings is
-/// recorded without them, rather than losing a paid result.
+/// result can't be recorded even then. A result that fits only with less of its settings is
+/// recorded with less of them ([`shed`]), rather than losing a paid result.
 pub fn record_changes(canvas: CanvasId, node: &Node, mut generation: Generation) -> Result<Vec<Change>, Error> {
-    match fit(canvas, node, generation.clone()) {
-        Err(_) if !generation.settings.is_empty() => {
-            generation.settings.clear();
-            fit(canvas, node, generation)
+    loop {
+        match fit(canvas, node, generation.clone()) {
+            Err(_) if shed(&mut generation) => {}
+            fitted => return fitted,
         }
-        fitted => fitted,
+    }
+}
+
+/// Drops part of a result's settings so it can fit (#162): first its jobs' inputs, which can
+/// be large and are often wired from elsewhere, so the parameters, drawn seeds among them,
+/// survive; then the settings altogether. False once there is nothing left to drop.
+fn shed(generation: &mut Generation) -> bool {
+    if generation.settings.iter().any(|job| !job.inputs.is_empty()) {
+        generation.settings.iter_mut().for_each(|job| job.inputs.clear());
+        true
+    } else if !generation.settings.is_empty() {
+        generation.settings.clear();
+        true
+    } else {
+        false
     }
 }
 
@@ -439,8 +454,13 @@ impl Run {
             if let Some((witness, _)) = &self.admission {
                 crate::generation_contract::validate_targets(instance, &jobs, &witness.targets).map_err(|reason| reason.message().to_owned())?;
             }
-            if !eager && let Some((witness, usage)) = &mut self.admission {
-                witness.normalize(node, &mut jobs, usage).map_err(|e| e.message)?;
+            if let Some((witness, usage)) = &mut self.admission {
+                if !eager {
+                    witness.normalize(node, &mut jobs, usage).map_err(|e| e.message)?;
+                }
+                for (n, job) in jobs.iter_mut().enumerate() {
+                    seed::draw(witness, usage, &self.id, node, n, job).map_err(|e| e.message)?;
+                }
             }
             Ok(jobs)
         });
@@ -748,9 +768,7 @@ impl Run {
 /// A result as it can be recorded. Settings too large to keep alongside it are dropped, like
 /// an over-budget input hash, rather than failing a paid result.
 fn recordable(mut generation: Generation) -> Result<Generation, String> {
-    if !generation.settings.is_empty() && generation.validate().is_err() {
-        generation.settings.clear();
-    }
+    while generation.validate().is_err() && shed(&mut generation) {}
     generation.validate().map_err(|e| format!("its result can't be recorded: {}", e.message))?;
     Ok(generation)
 }
@@ -847,6 +865,7 @@ impl crate::driver::JobRunner for SourceRunner {
     }
 }
 
+mod seed;
 #[cfg(test)]
 mod tests;
 

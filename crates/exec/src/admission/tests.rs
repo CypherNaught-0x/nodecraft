@@ -508,3 +508,57 @@ fn eager_and_deferred_late_wrong_target_emit_no_accepted_prefix() {
     assert!(run.is_finished());
     assert_eq!(CANONICAL_COPIES.with(|n| n.get()), 0);
 }
+
+/// A semantic model whose one setting is a seed drawn per run (#162).
+fn seeded() -> Catalog {
+    let schema = ParamSchema {
+        params: vec![ParamSpec {
+            name: "seed".into(),
+            label: "Seed".into(),
+            description: None,
+            control: ParamControl::Seed { max: Some(Unsigned(999)) },
+            required: false,
+            default: None,
+            visible_if: None,
+        }],
+    };
+    let mut contract = nodecraft_types::Contract::from_schema("selected", nodecraft_types::ParamOwner::Model, schema.clone());
+    contract
+        .rules
+        .push(nodecraft_types::ParamRule { default: Some(nodecraft_types::DefaultPolicy::RandomSeed), ..nodecraft_types::ParamRule::implied("seed") });
+    let mut catalog = catalog(2).models().next().unwrap().clone();
+    catalog.params = schema;
+    catalog.parameter_contract = Some(contract);
+    catalog.pricing = Pricing::PerUnit { unit: Unit::Image, price: Price(Money::new(Currency::USD, 10)), count: None, default_count: Some(1) };
+    Catalog::from_models(vec![catalog]).unwrap()
+}
+#[test]
+fn a_random_seed_is_drawn_per_run_within_its_bound_and_recorded() {
+    let drawn = |jobs: Option<Vec<JobSpec>>, run: u8| {
+        let (canvas, kinds) = fixture();
+        let (admitted, _) = admit_run(plan(jobs), C, canvas, &kinds, &seeded(), Default::default()).unwrap();
+        let (mut run, progress) = Run::start_admitted(admitted, &kinds, RunOptions { id: [run; 16], ..options() }).unwrap();
+        let JobSpec::Generate { params, .. } = run.work(progress.jobs[0].id).unwrap().clone() else { panic!() };
+        let done = run.job_done(&kinds, progress.jobs[0].id, vec![("out".into(), Value::Text("made".into()))]);
+        assert_eq!(done.finished[0].generation.settings[0].params, params, "the result records the seed it was sent");
+        let Some(Value::Unsigned(seed)) = params.get("seed") else { panic!("no seed drawn: {params:?}") };
+        assert!(seed.0 <= 999);
+        *seed
+    };
+    let eager = |run| drawn(Some(vec![job(id(1), ParamValues::new())]), run);
+    let lazy = |run| drawn(None, run);
+    assert_eq!(eager(3), eager(3), "a run's draw is fixed, so a retry sends the same seed");
+    assert_eq!(eager(3), lazy(3), "planned now or at admission, the same job draws the same seed");
+    assert_ne!(eager(3), eager(4), "another run draws afresh");
+}
+#[test]
+fn each_job_of_a_step_draws_its_own_seed() {
+    let (canvas, kinds) = fixture();
+    let jobs = vec![job(id(1), ParamValues::new()), job(id(1), ParamValues::new())];
+    let (admitted, _) = admit_run(plan(Some(jobs)), C, canvas, &kinds, &seeded(), Default::default()).unwrap();
+    let (run, progress) = Run::start_admitted(admitted, &kinds, options()).unwrap();
+    let sent: Vec<_> = progress.jobs.iter().map(|j| run.work(j.id).unwrap().clone()).collect();
+    let seeds: Vec<_> =
+        sent.iter().map(|work| if let JobSpec::Generate { params, .. } = work { params.get("seed").cloned().unwrap() } else { panic!() }).collect();
+    assert_ne!(seeds[0], seeds[1]);
+}
