@@ -122,6 +122,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "file.open",
     "file.save",
     "file.save_as",
+    "file.cancel",
     "run.record",
     "usage.reconcile_ownership",
     "canvas.auto_format",

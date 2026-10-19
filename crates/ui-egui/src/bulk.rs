@@ -312,8 +312,12 @@ impl Panel {
         let blocked = shown.is_some_and(|response| ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| response.response.rect.contains(pos)));
         (blocked, request)
     }
+    pub(crate) fn has_uncommitted(&self) -> bool {
+        self.editor.has_uncommitted()
+    }
     pub(crate) fn targets_dirty(&self, canvas: CanvasId, ids: &[NodeId]) -> bool {
-        self.snapshot.as_ref().is_some_and(|snapshot| snapshot.canvas == canvas && ids.iter().any(|id| snapshot.ids.contains(id))) && self.editor.has_dirty()
+        self.snapshot.as_ref().is_some_and(|snapshot| snapshot.canvas == canvas && ids.iter().any(|id| snapshot.ids.contains(id)))
+            && self.editor.has_uncommitted()
     }
     pub fn finish_frame(&mut self, ctx: &egui::Context) {
         if let Some(id) = self.editor.take_focus_request() {

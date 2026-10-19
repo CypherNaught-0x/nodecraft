@@ -131,6 +131,10 @@ fn wasm_set(root: &Path) -> Result<Vec<String>, String> {
 }
 
 fn cmd_wasm(root: &Path) -> Result<(), String> {
+    // Keep engine's transitive browser types valid without UI feature unification.
+    let mut isolated = cargo(root);
+    isolated.args(["check", "-p", "nodecraft-automation", "--lib", "--target", "wasm32-unknown-unknown"]);
+    run(isolated, "isolated automation/engine wasm check (without UI)")?;
     let set = wasm_set(root)?;
     let mut c = cargo(root);
     c.args([

@@ -456,6 +456,50 @@ fn default_native_save_open_preserves_known_and_unknown_model_data_and_custom_re
     assert!(reopened.kinds().get(KIND).unwrap().validate_instance(&known, true).is_ok());
     assert!(reopened.kinds().get(KIND).unwrap().validate_instance(&unknown, true).is_err());
     assert_eq!(unknown.params.get("future_setting"), Some(&Value::Text("preserve me".into())));
+    drop(reopened); // Release its native project lock before the independent background-open controls.
+    // Background installation must retain the installed kind/resource authority, not
+    // silently construct a fresh default catalog when the opened document arrives.
+    struct HeldOpen(std::sync::Mutex<Option<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for HeldOpen {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            assert!(self.0.lock().unwrap().replace(job).is_none());
+            Ok(())
+        }
+    }
+    for stale in [false, true] {
+        let mut opened = Session::with_sendable_storage(
+            nodecraft_format::Snapshot { project: empty.clone(), assets: Default::default(), epoch: 0 },
+            Box::new(nodecraft_format::NativeStorage::new(dir.path().join(if stale { "r4" } else { "r3" })).unwrap()),
+        )
+        .unwrap();
+        let installed = opened.kinds().get(KIND).unwrap().definition_snapshot();
+        assert!(installed.is_some());
+        if stale {
+            let replacement = GenerationCatalog::builtin().unwrap();
+            opened.swap_resource(Some(replacement.run_catalog()));
+            opened.swap_resource(Some(replacement));
+        }
+        let gate = Arc::new(HeldOpen(std::sync::Mutex::new(None)));
+        opened.set_save_runner(gate.clone());
+        assert_eq!(opened.dispatch("file.open", &json!({"location":path.to_str().unwrap(),"discard_dirty":true,"background":true})).unwrap()["opening"], true);
+        assert_eq!(opened.document(), &empty);
+        assert!(opened.poll_file().is_none());
+        let refused = dir.path().join(if stale { "busy-stale.ncraft" } else { "busy-current.ncraft" });
+        assert_eq!(opened.dispatch("file.save_as", &json!({"location":refused.to_str().unwrap()})).unwrap_err().kind, nodecraft_types::ErrorKind::Busy);
+        assert!(!refused.exists(), "a refused save must not create its destination");
+        gate.0.lock().unwrap().take().unwrap().run();
+        assert_eq!(opened.document(), &empty, "I/O completion does not itself publish into Session");
+        assert_eq!(opened.poll_file().unwrap().unwrap()["opened"], true);
+        assert!(opened.poll_file().is_none());
+        assert_eq!(opened.document(), &project);
+        assert!(!opened.can_undo() && !opened.can_redo());
+        assert_eq!(opened.kinds().get(KIND).unwrap().definition_snapshot(), installed);
+        let current = opened.generation_catalog().unwrap();
+        assert_eq!(current.validate_instance_binding(opened.kinds().get(KIND).unwrap(), &known).is_err(), stale);
+        assert!(opened.kinds().get(KIND).unwrap().validate_instance(&unknown, true).is_err());
+        let retained = opened.document().canvases().get(&C).unwrap().nodes().get(&unknown.id).unwrap();
+        assert_eq!(retained.params.get("future_setting"), Some(&Value::Text("preserve me".into())));
+    }
     let custom = Session::with_registries(empty, Registry::builtins().unwrap(), nodecraft_nodes::Registry::default()).unwrap();
     assert!(custom.kinds().get(KIND).is_err());
 }

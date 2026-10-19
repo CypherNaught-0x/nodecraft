@@ -168,6 +168,8 @@ fn add_signed(base: u64, n: i64) -> Option<u64> {
     if n < 0 { base.checked_sub(n.unsigned_abs()) } else { base.checked_add(n as u64) }
 }
 
+const CANCELLED: &str = "asset transfer was cancelled before publication";
+
 #[derive(Clone, Default)]
 pub struct TransferCancel(Arc<AtomicBool>);
 impl TransferCancel {
@@ -175,7 +177,12 @@ impl TransferCancel {
         self.0.store(true, Ordering::Release);
     }
     pub fn check(&self) -> Result<(), Error> {
-        if self.0.load(Ordering::Acquire) { Err(Error::new(ErrorKind::Conflict, "asset transfer was cancelled before publication")) } else { Ok(()) }
+        if self.0.load(Ordering::Acquire) { Err(Error::new(ErrorKind::Conflict, CANCELLED)) } else { Ok(()) }
+    }
+    /// Whether `error` is the one [`Self::check`] returns, as opposed to a real failure that
+    /// happened to arrive after a cancel was asked for.
+    pub fn is_cancellation(error: &Error) -> bool {
+        error.kind == ErrorKind::Conflict && error.message == CANCELLED
     }
 }
 

@@ -56,6 +56,10 @@ impl NodeCraftApp {
         {
             return Err(Error::new(ErrorKind::Conflict, "finish the current canvas interaction before choosing a model"));
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.files.blocks_model_picker() || self.session.file_status().operation.is_some() || self.recovery.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "finish the current file operation before choosing a model"));
+        }
         let snapshot = self.session.generation_catalog()?.clone();
         let live = self.session.document().canvases().get(&canvas).ok_or_else(|| invalid("model canvas is unavailable"))?;
         // Captures own port/count slots only, borrowing payload-free Port metadata. Admit the
@@ -103,7 +107,7 @@ impl NodeCraftApp {
     }
 
     fn model_targets_dirty(&self, ids: &[NodeId]) -> bool {
-        self.bulk.targets_dirty(self.canvas, ids) || ids.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_dirty))
+        self.bulk.targets_dirty(self.canvas, ids) || ids.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted))
     }
 
     /// Called before all canvas shortcut/gesture owners. A closing/Apply pass remains owned.
