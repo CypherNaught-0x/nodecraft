@@ -39,6 +39,7 @@ pub enum SweepStatus {
     Complete,
     ScanWindowExhausted,
     CleanupBudgetExhausted,
+    /// A candidate was retained; automatic construction stops its maintenance pass here.
     RetainedFailure,
 }
 impl SweepReport {
@@ -107,6 +108,10 @@ fn open_file(path: &Path, create: bool, exclusive: bool) -> Result<File, Error> 
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+    }
+    #[cfg(test)]
+    if exclusive {
+        test_faults::check(test_faults::Point::NewMarker, path).map_err(|_| error("cannot open private workspace lock"))?;
     }
     options.open(path).map_err(|_| error("cannot open private workspace lock"))
 }
@@ -259,7 +264,7 @@ pub(crate) struct Created {
 }
 pub(crate) fn create(parent: &Path, mut next: impl FnMut() -> Result<u64, Error>) -> Result<Created, Error> {
     let admission = Admission::acquire(parent)?;
-    let report = scan(&admission, &TransferCancel::default())?;
+    let report = scan_with_policy(&admission, &TransferCancel::default(), MaintenancePolicy::Constructor)?;
     for _ in 0..8 {
         let name = format!("{PREFIX}{}-{}", std::process::id(), next()?);
         let mut root = path_buffer(&admission.parent, MAX_ROOT_NAME + 29)?;
@@ -351,14 +356,31 @@ pub fn sweep_named_orphan(parent: &Path, basename: &str, cancel: &TransferCancel
     candidate(&admission, basename, cancel, &mut report)?;
     Ok(report)
 }
-fn scan(admission: &Admission, cancel: &TransferCancel) -> Result<SweepReport, Error> {
-    let entries = std::fs::read_dir(&admission.parent).map_err(|_| error("cannot scan workspace parent"))?;
-    scan_entries(admission, cancel, entries.map(|entry| entry.map(|entry| entry.file_name())))
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MaintenancePolicy {
+    Explicit,
+    Constructor,
 }
+fn scan(admission: &Admission, cancel: &TransferCancel) -> Result<SweepReport, Error> {
+    scan_with_policy(admission, cancel, MaintenancePolicy::Explicit)
+}
+fn scan_with_policy(admission: &Admission, cancel: &TransferCancel, policy: MaintenancePolicy) -> Result<SweepReport, Error> {
+    let entries = std::fs::read_dir(&admission.parent).map_err(|_| error("cannot scan workspace parent"))?;
+    scan_entries_with_policy(admission, cancel, entries.map(|entry| entry.map(|entry| entry.file_name())), policy)
+}
+#[cfg(test)]
 fn scan_entries(
     admission: &Admission,
     cancel: &TransferCancel,
+    entries: impl Iterator<Item = std::io::Result<std::ffi::OsString>>,
+) -> Result<SweepReport, Error> {
+    scan_entries_with_policy(admission, cancel, entries, MaintenancePolicy::Explicit)
+}
+fn scan_entries_with_policy(
+    admission: &Admission,
+    cancel: &TransferCancel,
     mut entries: impl Iterator<Item = std::io::Result<std::ffi::OsString>>,
+    policy: MaintenancePolicy,
 ) -> Result<SweepReport, Error> {
     let mut report = SweepReport::default();
     for _ in 0..MAX_PARENT {
@@ -370,16 +392,49 @@ fn scan_entries(
             report.unknown_or_legacy = report.unknown_or_legacy.saturating_add(1);
             continue;
         };
-        candidate(admission, name, cancel, &mut report)?;
+        let retained_before = report.retained_failures;
+        match candidate_inner(admission, name, cancel, &mut report) {
+            Ok(()) => {}
+            Err(CandidateFailure::Retained(_)) if policy == MaintenancePolicy::Constructor => {
+                report.retained_failures = report.retained_failures.saturating_add(1);
+                return Ok(report);
+            }
+            Err(failure) => return Err(failure.into_error()),
+        }
+        if policy == MaintenancePolicy::Constructor && report.retained_failures > retained_before {
+            return Ok(report);
+        }
         if report.cleanup_budget_exhausted {
             return Ok(report);
         }
     }
-    // Deliberately no4097th read: exactly filling the window cannot prove exhaustion.
+    // Deliberately no 4097th read: exactly filling the window cannot prove exhaustion.
     report.scan_window_exhausted = true;
     Ok(report)
 }
+// Strict is the default: cancellation and ownership/buffer invariants must not become
+// incidental cleanup. Only explicit old-candidate I/O/retirement boundaries are retained.
+#[derive(Debug)]
+enum CandidateFailure {
+    Strict(Error),
+    Retained(Error),
+}
+impl From<Error> for CandidateFailure {
+    fn from(error: Error) -> Self {
+        Self::Strict(error)
+    }
+}
+impl CandidateFailure {
+    fn into_error(self) -> Error {
+        match self {
+            Self::Strict(error) | Self::Retained(error) => error,
+        }
+    }
+}
 fn candidate(admission: &Admission, name: &str, cancel: &TransferCancel, report: &mut SweepReport) -> Result<(), Error> {
+    candidate_inner(admission, name, cancel, report).map_err(CandidateFailure::into_error)
+}
+fn candidate_inner(admission: &Admission, name: &str, cancel: &TransferCancel, report: &mut SweepReport) -> Result<(), CandidateFailure> {
     cancel.check()?;
     // One reusable candidate-path buffer, not one full path per inventory record.
     let mut path = path_buffer(&admission.parent, MAX_ROOT_NAME + 29)?;
@@ -432,7 +487,7 @@ fn candidate(admission: &Admission, name: &str, cancel: &TransferCancel, report:
             return Ok(());
         }
     }
-    if !matches_path(&marker, &path) || !marker_valid(&marker, name)? {
+    if !matches_path(&marker, &path) || !marker_valid(&marker, name).map_err(CandidateFailure::Retained)? {
         report.unknown_or_legacy = report.unknown_or_legacy.saturating_add(1);
         return Ok(());
     }
@@ -447,7 +502,7 @@ fn candidate(admission: &Admission, name: &str, cancel: &TransferCancel, report:
         return Ok(());
     };
     path.push(MARKER);
-    if !matches_path(&marker, &path) || !marker_valid(&marker, name)? {
+    if !matches_path(&marker, &path) || !marker_valid(&marker, name).map_err(CandidateFailure::Retained)? {
         report.unknown_or_legacy = report.unknown_or_legacy.saturating_add(1);
         return Ok(());
     }
@@ -459,10 +514,12 @@ fn candidate(admission: &Admission, name: &str, cancel: &TransferCancel, report:
             return Ok(());
         }
         path.push(record.name()?.text()?);
+        #[cfg(test)]
+        test_faults::before_payload(&path);
         if !std::fs::symlink_metadata(&path).is_ok_and(|m| ordinary(&m, false)) {
-            return Err(error("workspace payload changed; maintenance retained its marker"));
+            return Err(CandidateFailure::Retained(error("workspace payload changed; maintenance retained its marker")));
         }
-        std::fs::remove_file(&path).map_err(|_| error("workspace cleanup failed; check permissions and retry maintenance"))?;
+        unlink_payload(&path).map_err(|_| CandidateFailure::Retained(error("workspace cleanup failed; check permissions and retry maintenance")))?;
         report.removed_files += 1;
         path.pop();
         #[cfg(test)]
@@ -471,42 +528,60 @@ fn candidate(admission: &Admission, name: &str, cancel: &TransferCancel, report:
         }
     }
     path.push(MARKER);
-    if !matches_path(&marker, &path) || !marker_valid(&marker, name)? {
-        return Err(error("workspace marker changed during maintenance"));
+    if !matches_path(&marker, &path) || !marker_valid(&marker, name).map_err(CandidateFailure::Retained)? {
+        return Err(CandidateFailure::Retained(error("workspace marker changed during maintenance")));
     }
     drop(marker); // Parent admission remains held across the Windows close/unlink gap.
     path.pop();
     #[cfg(test)]
     pause("after-marker-close", &admission.parent, Some(&path));
     path.push(MARKER);
-    std::fs::remove_file(&path).map_err(|_| error("cannot retire workspace marker; retry maintenance"))?;
+    unlink_marker(&path).map_err(|_| CandidateFailure::Retained(error("cannot retire workspace marker; retry maintenance")))?;
     path.pop();
     #[cfg(test)]
     pause("after-marker-unlink", &admission.parent, Some(&path));
-    std::fs::remove_dir(&path).map_err(|_| error("workspace directory remains after marker retirement; inspect it manually"))?;
+    retire_directory(&path).map_err(|_| CandidateFailure::Retained(error("workspace directory remains after marker retirement; inspect it manually")))?;
     report.removed_roots += 1;
     Ok(())
 }
-fn inventory(root: &Path, cancel: &TransferCancel) -> Result<Option<Vec<Record>>, Error> {
+// Narrow operation boundaries let isolated tests inject transient OS refusals without
+// process-global environment or machine-permission assumptions.
+fn unlink_payload(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    test_faults::check(test_faults::Point::PayloadUnlink, path)?;
+    std::fs::remove_file(path)
+}
+fn unlink_marker(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    test_faults::check(test_faults::Point::MarkerUnlink, path)?;
+    std::fs::remove_file(path)
+}
+fn retire_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    test_faults::check(test_faults::Point::DirectoryRetire, path)?;
+    std::fs::remove_dir(path)
+}
+
+fn inventory(root: &Path, cancel: &TransferCancel) -> Result<Option<Vec<Record>>, CandidateFailure> {
     inventory_with_capacity(root, cancel, MAX_PAYLOADS)
 }
-fn inventory_with_capacity(root: &Path, cancel: &TransferCancel, requested: usize) -> Result<Option<Vec<Record>>, Error> {
+fn inventory_with_capacity(root: &Path, cancel: &TransferCancel, requested: usize) -> Result<Option<Vec<Record>>, CandidateFailure> {
     // Production requests exactly MAX_PAYLOADS. A private capacity control can request the
     // first rejected backing size, never an unbounded allocation.
     if requested > MAX_INVENTORY_BYTES / std::mem::size_of::<Record>() + 1 {
-        return Err(error("invalid workspace inventory reservation"));
+        return Err(error("invalid workspace inventory reservation").into());
     }
     let mut records = Vec::new();
     records.try_reserve_exact(requested).map_err(|_| error("cannot allocate bounded workspace inventory"))?;
     if records.capacity().checked_mul(std::mem::size_of::<Record>()).is_none_or(|n| n > MAX_INVENTORY_BYTES) {
-        return Err(error("workspace inventory backing exceeds limit"));
+        return Err(error("workspace inventory backing exceeds limit").into());
     }
     let mut marker_seen = false;
-    let mut entries = std::fs::read_dir(root).map_err(|_| error("cannot preflight workspace inventory"))?;
+    let mut entries = std::fs::read_dir(root).map_err(|_| CandidateFailure::Retained(error("cannot preflight workspace inventory")))?;
     for _ in 0..MAX_PAYLOADS + 2 {
         cancel.check()?;
         let Some(entry) = entries.next() else { return Ok(marker_seen.then_some(records)) };
-        let entry = entry.map_err(|_| error("cannot inspect workspace inventory entry"))?;
+        let entry = entry.map_err(|_| CandidateFailure::Retained(error("cannot inspect workspace inventory entry")))?;
         if !entry.file_type().is_ok_and(|kind| kind.is_file() && !kind.is_symlink()) || !entry.metadata().is_ok_and(|m| ordinary(&m, false)) {
             return Ok(None);
         }
@@ -527,6 +602,8 @@ fn inventory_with_capacity(root: &Path, cancel: &TransferCancel, requested: usiz
     Ok(None)
 }
 
+#[cfg(test)]
+mod test_faults;
 #[cfg(test)]
 mod tests;
 
