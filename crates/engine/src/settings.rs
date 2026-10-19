@@ -15,6 +15,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod projects;
+pub use projects::ProjectSettings;
+
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
 #[cfg(not(target_arch = "wasm32"))]
 pub use craft_settings::{Location, OpenOptions};
@@ -32,6 +35,7 @@ pub struct NodeCraftSettings {
     pub canvas: CanvasSettings,
     pub keys: KeySettings,
     pub providers: ProviderSettings,
+    pub projects: ProjectSettings,
 }
 
 /// How to reach the providers that need more than a key (#409). Keys stay in the keychain.

@@ -18,7 +18,12 @@ impl NodeCraftApp {
         let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
         let fit_available = canvas::valid_rect(viewport) && viewport.width() > 2.0 * padding && viewport.height() > 2.0 * padding;
         let viewport_available = canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0;
-        let blocked = egui::Popup::is_any_open(ctx)
+        #[cfg(not(target_arch = "wasm32"))]
+        let file_owned = self.files.owns_navigation(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let file_owned = false;
+        let blocked = file_owned
+            || egui::Popup::is_any_open(ctx)
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.wiring.is_some()
@@ -127,6 +132,7 @@ impl NodeCraftApp {
         // Decide ownership/availability before consuming any key. An editor, popup,
         // unavailable fit or active canvas gesture must retain the original event.
         let [all_context, selected_context, toggle_context, pan_context] = self.navigation_contexts(ui.ctx());
+        let reset_blocked = toggle_context.blocked;
         let all = self.navigation_enabled_with_context(all_context, "canvas.fit_all", &json!({})).is_ok();
         let selected = self.navigation_enabled_with_context(selected_context, "canvas.fit_selection", &json!({})).is_ok();
         let toggle = self.navigation_enabled_with_context(toggle_context, "canvas.minimap_toggle", &json!({})).is_ok();
@@ -181,6 +187,10 @@ impl NodeCraftApp {
             },
         );
         for (id, params) in actions {
+            // Reset is a view-only action rather than an engine command; share admission.
+            if id == "reset" && reset_blocked {
+                continue;
+            }
             if id == "reset" {
                 let home = self.home();
                 self.view.reset(self.viewport, home);
