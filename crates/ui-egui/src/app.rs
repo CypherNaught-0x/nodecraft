@@ -335,7 +335,7 @@ pub struct NodeCraftApp {
     live: live::Live,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
-    recovered: Option<recovery::RecoveryOffer>,
+    recovered: Option<recovery::RecoveredWork>,
     /// This session's recovery journal, beside which the open project file is recorded.
     #[cfg(not(target_arch = "wasm32"))]
     recovery_journal: Option<std::path::PathBuf>,
@@ -662,6 +662,10 @@ impl NodeCraftApp {
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         #[cfg(not(target_arch = "wasm32"))]
+        let recovery_owns_input = self.recovery.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let recovery_owns_input = false;
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);
@@ -864,7 +868,7 @@ impl NodeCraftApp {
         let layout_blocks = self.layout_overlay(ui);
         let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
-        let canvas_blocks = overlay_blocks || popup_owned;
+        let canvas_blocks = overlay_blocks || popup_owned || recovery_owns_input;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !canvas_blocks

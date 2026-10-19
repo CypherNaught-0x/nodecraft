@@ -1,7 +1,7 @@
 //! Offering unsaved work back after an unclean exit (#408). At startup a journal holding work
 //! is kept aside (`storage`); here it is replayed and the person decides: **Recover** adopts the
 //! replayed project at the file its session had open (checkpointed at once, unsaved), **Start
-//! from last save** drops it and opens that file as last saved. Nothing is lost silently: the
+//! from last save** opens that file as last saved, then drops only the selected copy. Nothing is lost silently: the
 //! kept copy stays on disk until the recovered work is saved (so quitting first, or crashing
 //! again, offers it again next time), a damaged journal offers what could be replayed and says
 //! so, and one that can't be read is left where it is, with its name.
@@ -17,10 +17,8 @@ pub struct Found {
     pub title: String,
     /// Edits replayed after its checkpoint.
     pub changes: u64,
-    /// Replay stopped at damage: what came after it is lost.
+    /// Replay stopped before an incomplete or damaged record.
     pub damaged: bool,
-    /// The last write was cut off (the usual crash): that one change is lost.
-    pub torn: bool,
 }
 
 /// The question put to the person at startup.
@@ -31,8 +29,8 @@ pub struct RecoveryOffer {
     pub location: Option<PathBuf>,
     /// What it held, or why it can't be replayed.
     pub found: Result<Found, String>,
-    /// Older kept copies; the offered one holds their work too, so they go with it.
-    pub older: Vec<PathBuf>,
+    /// The live document over which this question was attached.
+    offered_over: Option<nodecraft_engine::session::DocumentLineage>,
 }
 
 impl RecoveryOffer {
@@ -41,32 +39,30 @@ impl RecoveryOffer {
         let found = storage::replay_kept(&kept).map_err(|error| error.message).map(|recovered| Found {
             title: recovered.snapshot.project.title().to_owned(),
             changes: recovered.applied,
-            damaged: recovered.damage.is_some(),
-            torn: recovered.truncated_tail,
+            damaged: recovered.damage.is_some() || recovered.truncated_tail,
             snapshot: recovered.snapshot,
         });
-        Self { location: storage::recorded_location(&kept), kept, found, older: Vec::new() }
+        Self { location: storage::recorded_location(&kept), kept, found, offered_over: None }
     }
 
     /// The question to ask at startup, if any: about `kept` (the journal this launch kept
-    /// aside), or else the newest earlier copy that still replays (work recovered and never
+    /// aside), or else an earlier copy that still replays (work recovered and never
     /// saved). Copies that can't be replayed were shown once and are left for the person.
     pub fn at_startup(recovery: &Path, kept: Option<PathBuf>) -> Option<Self> {
         let mut copies = storage::kept_journals(recovery);
-        let mut offer = match kept {
+        let offer = match kept {
             Some(kept) => {
                 copies.retain(|copy| *copy != kept);
                 Self::read(kept)
             }
             None => loop {
-                let newest = copies.pop()?;
-                let offer = Self::read(newest);
+                let candidate = copies.pop()?;
+                let offer = Self::read(candidate);
                 if offer.found.is_ok() {
                     break offer;
                 }
             },
         };
-        offer.older = copies;
         Some(offer)
     }
 
@@ -74,25 +70,25 @@ impl RecoveryOffer {
         self.kept.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())
     }
 
-    /// Removes this copy and the older ones that replay (theirs is the same work, or less).
-    fn remove(&self) {
-        let replays = |path: &Path| storage::replay_kept(path).is_ok();
-        let older = self.older.iter().filter(|path| replays(path));
-        for path in std::iter::once(&self.kept).chain(older) {
-            remove_copy(path);
+    /// Resolve only the copy explicitly offered. Other snapshots are not proven ancestors.
+    fn remove_selected(&self) -> std::io::Result<()> {
+        match std::fs::remove_file(&self.kept) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
         }
+        if let Err(error) = std::fs::remove_file(storage::location_file(&self.kept))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("recovery: a removed copy's location record couldn't be removed: {error}");
+        }
+        Ok(())
     }
 }
 
-/// Removes a kept journal and the record of its project file.
-fn remove_copy(path: &Path) {
-    for file in [path.to_path_buf(), storage::location_file(path)] {
-        if let Err(error) = std::fs::remove_file(&file)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            log::warn!("recovery: a kept journal couldn't be removed: {error}");
-        }
-    }
+/// A recovered copy is released only by an actual save of this adopted document.
+pub(super) struct RecoveredWork {
+    offer: RecoveryOffer,
+    lineage: nodecraft_engine::session::DocumentLineage,
 }
 
 /// The person's choice.
@@ -119,6 +115,9 @@ impl NodeCraftApp {
     pub(super) fn attach_recovery(&mut self, journal: PathBuf, kept: Option<PathBuf>) {
         if self.session.file_status().available {
             self.recovery = RecoveryOffer::at_startup(&journal, kept);
+            if let Some(offer) = &mut self.recovery {
+                offer.offered_over = Some(self.session.document_lineage());
+            }
             self.recovery_journal = Some(journal);
         }
     }
@@ -144,9 +143,7 @@ impl NodeCraftApp {
                     };
                     ui.label(format!("NodeCraft didn't close cleanly last time. {what}"));
                     if found.damaged {
-                        ui.label(egui::RichText::new("Part of the record was damaged: changes after that point can't be recovered.").color(t.danger));
-                    } else if found.torn {
-                        ui.label(egui::RichText::new("The very last change was cut off as NodeCraft closed and can't be recovered.").color(t.text_muted));
+                        ui.label(egui::RichText::new("Recovery stopped at an incomplete or damaged record. Only complete changes before that point are included.").color(t.danger));
                     }
                     let explain = match &file {
                         Some(file) => format!("Recover opens that work unsaved, as {file}. Start from last save opens {file} as last saved and discards it."),
@@ -179,7 +176,8 @@ impl NodeCraftApp {
         });
         if let Some(choice) = choice {
             self.decide_recovery(choice);
-        } else {
+        }
+        {
             // Keys, text, scrolling and drops this frame were the modal's; none may edit the
             // document behind it (a paste would land, unseen, in the work about to be replaced).
             ctx.input_mut(|i| {
@@ -188,6 +186,7 @@ impl NodeCraftApp {
                 i.raw.dropped_files.clear();
                 i.keys_down.clear();
                 i.modifiers = egui::Modifiers::NONE;
+                i.smooth_scroll_delta = egui::Vec2::ZERO;
             });
         }
     }
@@ -197,6 +196,14 @@ impl NodeCraftApp {
             return;
         };
         let name = offer.kept_name();
+        let replaced_unsaved =
+            offer.offered_over.as_ref().is_some_and(|lineage| !self.session.is_current_document(lineage)) && self.session.file_status().dirty;
+        if matches!(choice, Choice::Recover | Choice::StartFromLastSave) && (self.session.can_undo() || self.session.can_redo() || replaced_unsaved) {
+            self.notice =
+                Some(format!("The current project has unsaved work. The recovery copy was kept as {name}; save the current work before recovering it."));
+            return;
+        }
+
         match (choice, &offer.found) {
             (Choice::Recover, Ok(found)) => match self.session.recover(found.snapshot.clone(), offer.location.clone().map(StorageLocation::Path)) {
                 Ok(()) => {
@@ -209,7 +216,7 @@ impl NodeCraftApp {
                         format!("Recovered {title} as an untitled project. Until it's saved, a copy stays in the recovery folder.")
                     });
                     // Kept until the recovered work is saved (`track_recovery`).
-                    self.recovered = Some(offer);
+                    self.recovered = Some(RecoveredWork { offer, lineage: self.session.document_lineage() });
                 }
                 Err(error) => {
                     log::error!("recovery: {name} couldn't be recovered: {}", error.message);
@@ -217,26 +224,20 @@ impl NodeCraftApp {
                 }
             },
             (Choice::StartFromLastSave, _) => {
-                log::info!("recovery: discarded {name}");
-                offer.remove();
-                let current = match self.session.file_status().location {
-                    Some(StorageLocation::Path(path)) => Some(path),
-                    _ => None,
-                };
-                self.notice = Some(match (&offer.location, current) {
-                    // The last save isn't open yet (nothing was named at startup): open it.
-                    (Some(file), None) => {
-                        match file.to_str().map(|location| self.session.dispatch("file.open", &json!({"location": location, "discard_dirty": true}))) {
-                            Some(Ok(_)) => {
-                                self.after_document_replaced();
-                                "Started from the last save; the unsaved changes were discarded.".to_owned()
-                            }
-                            Some(Err(error)) => format!("The unsaved changes were discarded, but the last save couldn't be opened: {}", error.message),
-                            None => "The unsaved changes were discarded, but the last save's path isn't valid UTF-8.".to_owned(),
-                        }
+                if let Some(file) = &offer.location {
+                    let opened = file.to_str().ok_or_else(|| "the path isn't valid UTF-8".to_owned()).and_then(|location| {
+                        self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":true})).map(|_| ()).map_err(|error| error.message)
+                    });
+                    if let Err(error) = opened {
+                        self.notice = Some(format!("The last save couldn't be opened ({error}). Unsaved work was kept as {name} in the recovery folder."));
+                        return;
                     }
-                    (Some(_), Some(_)) => "Started from the last save; the unsaved changes were discarded.".to_owned(),
-                    (None, _) => "The unsaved work was discarded.".to_owned(),
+                    self.after_document_replaced();
+                }
+                self.notice = Some(match offer.remove_selected() {
+                    Ok(()) if offer.location.is_some() => "Started from the last save; the selected unsaved recovery copy was discarded.".to_owned(),
+                    Ok(()) => "The selected unsaved recovery copy was discarded.".to_owned(),
+                    Err(error) => format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."),
                 });
             }
             (Choice::Recover | Choice::Keep, _) => {
@@ -262,12 +263,19 @@ impl NodeCraftApp {
             }
             self.recorded_location = Some(location);
         }
-        if status.location.is_some()
-            && !status.dirty
+        let Some(recovered) = &self.recovered else {
+            return;
+        };
+        if !self.session.is_current_document(&recovered.lineage) {
+            // A replacement is not a save of the work promised protection by this copy.
+            self.recovered = None;
+        } else if self.session.has_saved_document(&recovered.lineage)
             && let Some(recovered) = self.recovered.take()
+            && let Err(error) = recovered.offer.remove_selected()
         {
-            log::info!("recovery: recovered work saved; removing {}", recovered.kept_name());
-            recovered.remove();
+            let name = recovered.offer.kept_name();
+            log::warn!("recovery: saved work's safety copy couldn't be removed: {error}");
+            self.notice = Some(format!("The work was saved, but its recovery copy remains as {name}."));
         }
     }
 

@@ -355,3 +355,59 @@ fn persistent_layout_preserves_admission_replay_savepoint_and_failure_atomicity(
         assert_eq!(replay(&storage).snapshot.project, *session.document());
     }
 }
+
+#[test]
+fn recovery_lineage_tracks_actual_saves_and_successful_replacements() {
+    let (mut s, storage) = setup();
+    let original = s.document_lineage();
+    let snapshot = Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+    s.recover(snapshot.clone(), None).unwrap();
+    let token = s.document_lineage();
+    assert!(!s.is_current_document(&original));
+    assert!(!s.has_saved_document(&token));
+    s.dispatch("node.move", &movement(1)).unwrap();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().save = true;
+    assert!(s.dispatch("file.save_as", &json!({"location":"failed.ncraft"})).is_err());
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().save = false;
+    storage.0.borrow_mut().checkpoint = true;
+    let result = s.dispatch("file.save_as", &json!({"location":"published.ncraft"})).unwrap();
+    assert_eq!(result["recovery_ready"], false);
+    assert!(s.has_saved_document(&token));
+    assert_eq!(saved(&storage, "published.ncraft").project, *s.document());
+    storage.0.borrow_mut().checkpoint = false;
+    s.dispatch("file.open", &json!({"location":"published.ncraft","discard_dirty":true})).unwrap();
+    assert!(!s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    let opened = s.document_lineage();
+    assert!(!s.has_saved_document(&opened));
+    s.dispatch("file.save_as", &json!({"location":"renamed.ncraft"})).unwrap();
+    assert!(s.has_saved_document(&opened));
+    let (other, _) = setup();
+    assert!(!other.is_current_document(&opened));
+}
+#[test]
+fn failed_open_and_recover_do_not_rotate_or_fabricate_a_save_witness() {
+    let (mut s, storage) = setup();
+    let snapshot = Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+    s.recover(snapshot.clone(), None).unwrap();
+    let token = s.document_lineage();
+    assert!(s.dispatch("file.open", &json!({"location":"missing.ncraft","discard_dirty":true})).is_err());
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().checkpoint = true;
+    assert!(s.recover(snapshot.clone(), None).is_err());
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().checkpoint = false;
+    s.dispatch("file.save_as", &json!({"location":"saved.ncraft"})).unwrap();
+    assert!(s.has_saved_document(&token));
+    s.recover(snapshot, None).unwrap();
+    assert!(!s.is_current_document(&token));
+    assert!(!s.has_saved_document(&s.document_lineage()));
+}

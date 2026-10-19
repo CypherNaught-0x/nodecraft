@@ -194,3 +194,17 @@ bytes, above u32::MAX. Small calibration does not establish those results. The a
 run does not replace final CI or later source-composition checks; future runs still need their
 own resource review. See [storage.md](storage.md) for measured values and platform/RSS/device-write
 limitations.
+
+### Recovery safety checks
+
+Desktop recovery retains every unselected copy, including divergent snapshots with the same
+project id and path. A recovered copy is retired only after an actual save of its still-current
+document lineage. Opening another file does not count as saving it. If the recorded last save
+cannot be opened, the selected copy remains and the notice names it. At 99 occupied canonical
+slots startup refuses before replacing the live journal; do not remove unknown copies automatically.
+
+The recovery kittests cover real native journals, streamed assets above the classic byte cap,
+programmatic Open/Recover between frames, failed publication, and modal navigation ownership.
+The ignored `render_recovery_safety450_evidence` test records public-safe warning and failed-open
+frames when `NODECRAFT_REVIEW_EVIDENCE` names an output folder and
+`NODECRAFT_450_EXPECT_RETAINED=1`. Captures are local evidence and must not be committed.
