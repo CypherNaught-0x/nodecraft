@@ -46,7 +46,7 @@ fn first_clock_panic_does_not_prevent_exactly_one_edit_and_undo() {
 #[test]
 fn post_commit_clock_panic_preserves_success_result_and_undo() {
     let mut s = session();
-    let calls = install(&mut s, 2);
+    let calls = install(&mut s, 4);
     let result = catch_unwind(AssertUnwindSafe(|| edit(&mut s)));
     println!("post-clock result_ok={} revision={} calls={}", result.is_ok(), s.revision(), calls.get());
     assert!(result.is_ok(), "committed edit must return its actual success");
@@ -55,7 +55,7 @@ fn post_commit_clock_panic_preserves_success_result_and_undo() {
     assert_eq!(s.document().canvases()[&C].nodes().len(), 1);
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert!(s.document().canvases()[&C].nodes().is_empty());
-    assert_eq!(calls.get(), 2);
+    assert_eq!(calls.get(), 4);
 }
 
 #[test]
@@ -73,10 +73,10 @@ fn failed_clock_preserves_command_refusal_and_replacement_restores_real_measurem
     assert!(!s.perf().report().clock);
     let ordinary = install(&mut s, usize::MAX);
     assert_eq!(edit(&mut s), json!({"id":N}));
-    assert_eq!(ordinary.get(), 2);
+    assert_eq!(ordinary.get(), 4);
     let report = s.perf().report();
     let dispatch = report.metrics.iter().find(|m| m.metric == nodecraft_engine::perf::Metric::Dispatch).unwrap();
-    assert_eq!((dispatch.samples, dispatch.p50, dispatch.supported), (1, Some(10), true));
+    assert_eq!((dispatch.samples, dispatch.p50, dispatch.supported), (1, Some(30), true));
 }
 
 #[derive(Clone, Default)]
@@ -101,7 +101,7 @@ fn post_commit_clock_failure_keeps_durable_edit_and_undo_in_same_recovery_owner(
     let original = session().document().clone();
     let snapshot = nodecraft_format::Snapshot { project: original.clone(), assets: Default::default(), epoch: 0 };
     let mut s = Session::with_storage(snapshot, Box::new(storage.clone())).unwrap();
-    let calls = install(&mut s, 2);
+    let calls = install(&mut s, 4);
     assert_eq!(edit(&mut s), json!({"id":N}));
     let recovered = nodecraft_format::journal::recover(&storage.0.borrow().recovery).unwrap();
     assert_eq!(recovered.applied, 1);
@@ -111,7 +111,7 @@ fn post_commit_clock_failure_keeps_durable_edit_and_undo_in_same_recovery_owner(
     assert_eq!(recovered.applied, 2);
     assert_eq!(recovered.snapshot.project, original);
     assert_eq!(s.document(), &original);
-    assert_eq!(calls.get(), 2);
+    assert_eq!(calls.get(), 4);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn cleanup_panic_payload_cannot_hide_committed_edit_or_retry_clock() {
     let mut s = session();
     s.perf_mut().set_clock(Some(Box::new(move || {
         clock_calls.set(clock_calls.get() + 1);
-        if clock_calls.get() == 2 {
+        if clock_calls.get() == 4 {
             std::panic::panic_any(Primary { drops: primary_count.clone(), secondary: secondary_count.clone() });
         }
         10
@@ -157,5 +157,5 @@ fn cleanup_panic_payload_cannot_hide_committed_edit_or_retry_clock() {
     assert!(!s.perf().has_clock());
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert!(s.document().canvases()[&C].nodes().is_empty());
-    assert_eq!(calls.get(), 2);
+    assert_eq!(calls.get(), 4);
 }
