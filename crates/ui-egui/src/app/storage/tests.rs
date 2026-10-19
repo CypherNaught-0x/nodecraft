@@ -67,6 +67,15 @@ fn a_project_path_at_startup_is_opened_and_cmd_s_saves_it() {
     add_text(h.state_mut(), 61);
     assert!(h.state().session.file_status().dirty);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.step();
+    // The file is written on the save thread; the frame keeps polling until it lands.
+    for _ in 0..10_000 {
+        if !h.state().session.file_status().saving {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        h.step();
+    }
     h.run();
     assert!(!h.state().session.file_status().dirty, "⌘S saved: {:?}", h.state().notice);
     assert_eq!(h.state().window_title(), "start.ncraft — NodeCraft");

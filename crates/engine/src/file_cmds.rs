@@ -13,6 +13,8 @@ pub struct FileStatus {
     pub recovery_required: bool,
     /// The source destination cannot be overwritten; local edits and Save As remain available.
     pub read_only: bool,
+    /// A background save is still writing (#461); `dirty` stays set until it has published.
+    pub saving: bool,
 }
 
 #[derive(Deserialize)]
@@ -26,10 +28,15 @@ struct Open {
 #[serde(deny_unknown_fields)]
 struct SaveAs {
     location: String,
+    #[serde(default)]
+    background: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Empty {}
+struct Save {
+    #[serde(default)]
+    background: bool,
+}
 
 fn available(c: &Context<'_>) -> Result<(), Error> {
     if c.file.available { Ok(()) } else { Err(Error::new(ErrorKind::Unsupported, "project storage is not configured for this session")) }
@@ -43,9 +50,7 @@ fn open(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Open { location: StorageLocation::from_command(p.location)?, discard_dirty: p.discard_dirty })
 }
 fn save(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
-    if !value.is_null() {
-        let _: Empty = params(value)?;
-    }
+    let background = if value.is_null() { false } else { params::<Save>(value)?.background };
     available(c)?;
     if c.file.read_only {
         return Err(Error::new(ErrorKind::Conflict, "source is read-only; use Save As to a writable destination"));
@@ -54,13 +59,13 @@ fn save(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         return Err(Error::new(ErrorKind::Conflict, "untitled project needs file.save_as with an explicit location"));
     }
     nodecraft_format::validate_current_project(c.document)?;
-    Ok(Effect::Save { location: None })
+    Ok(Effect::Save { location: None, background })
 }
 fn save_as(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: SaveAs = params(value)?;
     available(c)?;
     nodecraft_format::validate_current_project(c.document)?;
-    Ok(Effect::Save { location: Some(StorageLocation::from_command(p.location)?) })
+    Ok(Effect::Save { location: Some(StorageLocation::from_command(p.location)?), background: p.background })
 }
 fn enabled_open(c: &Context<'_>, v: &Value) -> Result<(), Error> {
     open(c, v).map(|_| ())
@@ -90,7 +95,7 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: save_schema,
             label: "Save project",
             shortcut: Some("Command+S"),
-            params_doc: "{}; save to the current location. Returns {saved: true, recovery_ready: bool, read_only: bool}.",
+            params_doc: "{background?: bool}; save to the current location. Returns {saved: true, recovery_ready: bool, read_only: bool}. With background, a host that writes off its UI thread returns {saved: false, saving: true} at once and finishes the save before any later edit.",
             enabled: enabled_save,
             run: save,
         },
@@ -100,7 +105,7 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: save_as_schema,
             label: "Save project as",
             shortcut: Some("Command+Shift+S"),
-            params_doc: "{location: string}; UTF8 filesystem path on native, storage key on web. Returns {saved: true, recovery_ready: bool, read_only: bool}.",
+            params_doc: "{location: string, background?: bool}; UTF8 filesystem path on native, storage key on web. Returns {saved: true, recovery_ready: bool, read_only: bool}; background as for file.save.",
             enabled: enabled_save_as,
             run: save_as,
         },
@@ -114,10 +119,14 @@ fn open_schema() -> Value {
     serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["location"],"properties":{
     "location":location_schema(),"discard_dirty":{"type":"boolean","default":false}},"additionalProperties":false})
 }
+fn background_schema() -> Value {
+    serde_json::json!({"type":"boolean","default":false})
+}
 fn save_schema() -> Value {
-    crate::command_schemas::empty_schema()
+    serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema", "anyOf":[{"type":"null"},
+        {"type":"object","properties":{"background":background_schema()},"additionalProperties":false}]})
 }
 fn save_as_schema() -> Value {
     serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["location"],"properties":{
-    "location":location_schema()},"additionalProperties":false})
+    "location":location_schema(),"background":background_schema()},"additionalProperties":false})
 }

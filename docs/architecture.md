@@ -378,6 +378,11 @@ updates location and savepoint after atomic publication and breaks drag coalesci
 carry content state IDs, so undo/redo to the saved state clears dirty even though revision increases.
 `file_status()` plus `status_revision()` notify hosts of save/dirty/recovery changes independently
 of `DocChanged`; saving does not manufacture document edits.
+A host that installs a `SaveRunner` (the native app) can pass `background: true` to `file.save`/
+`file.save_as`: the snapshot is taken on the calling thread, the file work runs as a `SaveJob` on
+the host's thread, and the result is `{saved:false,saving:true}` until `Session::poll_save`
+reports the outcome. Every later change waits for the pending save first; reads do not
+(`docs/decisions/2026-10-19-background-saves.md`).
 
 `ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
 active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only
