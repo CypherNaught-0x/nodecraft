@@ -108,7 +108,7 @@ Windows packages and also as a separate macOS download.
 ## Contributing
 
 Pick an issue and comment `/claim`. A bot assigns it to you, and you open a draft PR within
-72 hours. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the claim rules, the non-negotiable code rules
+24 hours. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the claim rules, the non-negotiable code rules
 and checklists for adding commands, node kinds and providers.
 
 ## Status and roadmap
