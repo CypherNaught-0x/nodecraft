@@ -124,7 +124,14 @@ impl OpenedFile for std::fs::File {
 }
 impl Acquirer for Filesystem {
     fn open(&self, path: &Path) -> io::Result<Box<dyn OpenedFile>> {
-        Ok(Box::new(std::fs::File::open(path)?))
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        // A FIFO swapped in for the file would block a plain open until a writer appears. With
+        // O_NONBLOCK the open returns at once and the regular-file check rejects it; reads of a
+        // regular file ignore the flag. Other Unix special files can still block (decision record).
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+        Ok(Box::new(options.open(path)?))
     }
 }
 struct Lease(Arc<AtomicBool>);

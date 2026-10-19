@@ -29,7 +29,8 @@ drive pointer and key events through the real canvas and check the resulting vie
 
 Native file-drop tests live under `app::drop` in `ui-egui`. They use isolated instances of the
 same fixed-worker machinery with bounded backend gates, fake monotonic clocks and real temporary
-files; they do not open a hanging FIFO. Run `cargo test -p nodecraft-ui-egui --lib app::drop`.
+files. On Unix one test drops a real FIFO with no writer, which the non-blocking open refuses
+at once; none waits on a hanging one. Run `cargo test -p nodecraft-ui-egui --lib app::drop`.
 The ordinary UI tests include persistent Session Open/Save, cancellation, stale delivery, pointer
 ownership, captured placement and one-step undo. Acquisition tests cap reported read work and
 owned buffer capacity; those counters are not total process RSS or physical device I/O. Windows

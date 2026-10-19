@@ -124,3 +124,19 @@ fn a_drop_reads_at_most_its_total_and_its_file_count() {
     assert_eq!(nodes(&h).len(), before + MAX_FILES);
     assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("at most 32 files")), "{:?}", h.state().notice);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_dropped_fifo_is_refused_without_blocking_the_worker() {
+    let (mut h, _worker) = drop_harness();
+    let scratch = Scratch::new("fifo");
+    let fifo = scratch.0.join("pipe.txt");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    // No writer ever opens it: a blocking open would hold the worker until the deadline.
+    drop_at(&mut h, Pos2::new(600.0, 300.0), std::slice::from_ref(&fifo));
+    assert_eq!(h.state().notice.as_deref().map(|n| n.ends_with("only files can be added, not folders or devices.")), Some(true), "{:?}", h.state().notice);
+    let before = nodes(&h).len();
+    let text = scratch.write("after.txt", b"still reading");
+    drop_at(&mut h, Pos2::new(600.0, 300.0), &[text]);
+    assert_eq!(nodes(&h).len(), before + 1, "the worker is free again: {:?}", h.state().notice);
+}

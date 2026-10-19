@@ -2,7 +2,9 @@
 
 Read dropped native paths on one process-wide worker, never on a canvas frame. Validate metadata
 on the actual opened File, then read and close that same handle. A symlink to a regular file is
-accepted; this is not a no-follow or filesystem snapshot guarantee. Safe portable std cannot
+accepted; this is not a no-follow or filesystem snapshot guarantee. On Unix the open passes
+O_NONBLOCK (via `libc`), so a FIFO opens at once and the regular-file check refuses it; other
+special files and slow filesystems can still block the worker. Safe portable std cannot
 interrupt a blocked open, metadata, read or close. One occupied lease spans bounded preparation,
 queued/running I/O, result ownership and synchronous engine delivery. Cancel, timeout and app loss
 abandon delivery without waiting, but do not release a blocked worker's lease or spawn a
