@@ -125,7 +125,7 @@ fn invalid_asset_frame_cannot_be_hidden_by_a_later_removal_in_any_asset_bearing_
         Value::List(vec![Value::Media(AssetRef { hash: Blake3::from_bytes([9; 32]), mime: "text/plain".parse().unwrap(), meta: MediaMeta::default() })]);
     let mut incoming = Node::new(node(), "source.text");
     incoming.params.insert("asset".into(), missing.clone());
-    let generation = Generation { id: GenerationId::from_bytes([5; 16]), outputs: vec![missing.clone()], input_hash: None };
+    let generation = Generation { id: GenerationId::from_bytes([5; 16]), outputs: vec![missing.clone()], input_hash: None, items: Vec::new() };
     let mut added_canvas = Canvas::new(CanvasId::from_bytes([6; 16]), "Incoming");
     let mut temporary = Project::new(ProjectId::from_bytes([7; 16]), "Temporary").unwrap();
     Change::AddCanvas { canvas: added_canvas.clone() }.apply(&mut temporary).unwrap();

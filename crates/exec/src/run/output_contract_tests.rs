@@ -84,7 +84,7 @@ fn fixture_owner(jobs: Vec<Vec<GenerateOutput>>, dynamic: bool, owner: Option<No
     (project, kinds)
 }
 fn step(node: NodeId, kind: &str, jobs: Option<Vec<JobSpec>>) -> Step {
-    Step { node, kind: kind.into(), mode: ModeId::new("generate").unwrap(), after: vec![], inputs: vec![], jobs }
+    Step { node, kind: kind.into(), mode: ModeId::new("generate").unwrap(), after: vec![], inputs: vec![], jobs, fanout: None }
 }
 fn options() -> RunOptions {
     RunOptions { id: [7; 16], first_job: 40, limits: RunLimits::default(), retry: RetryPolicy::NEVER }

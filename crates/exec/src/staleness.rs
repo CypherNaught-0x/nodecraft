@@ -328,6 +328,8 @@ pub struct InputHasher {
     recipes: BTreeMap<NodeId, Recipe>,
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
     outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
+    /// Batch hashes (#92): `None` while one is being hashed, so a cycle of batches ends.
+    batches: BTreeMap<NodeId, Option<Result<Blake3, InvalidHash>>>,
     meter: Meter,
     diagnostic_credit: Option<DiagnosticCredit>,
     #[cfg(test)]
@@ -370,6 +372,7 @@ impl InputHasher {
             invalid,
             recipes: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            batches: BTreeMap::new(),
             meter,
             diagnostic_credit,
             #[cfg(test)]
@@ -624,6 +627,32 @@ impl InputHasher {
                 self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
                 w.text(&from_port);
                 match canvas.nodes().get(&from) {
+                    // A batch (#92) never runs: it contributes its items' recipe, which is its
+                    // own settings and whatever feeds it.
+                    Some(upstream) if upstream.kind == nodecraft_nodes::batch::ID => match self.batches.get(&from) {
+                        Some(Some(Ok(digest))) => {
+                            w.text("batch");
+                            w.digest(digest.as_bytes());
+                        }
+                        Some(Some(Err(invalid))) => return Ok(HashResult::Invalid(*invalid)),
+                        // Batches feeding each other in a loop: there's nothing to hash.
+                        Some(None) => w.text("cycle"),
+                        None => {
+                            self.batches.insert(from, None);
+                            let result = match self.hash_detailed(canvas, kinds, from, produced)? {
+                                HashResult::Ready(digest) => Ok(digest),
+                                HashResult::Invalid(invalid) => Err(invalid),
+                            };
+                            self.batches.insert(from, Some(result));
+                            match result {
+                                Ok(digest) => {
+                                    w.text("batch");
+                                    w.digest(digest.as_bytes());
+                                }
+                                Err(invalid) => return Ok(HashResult::Invalid(invalid)),
+                            }
+                        }
+                    },
                     // A source contributes its recipe: what it emits.
                     Some(upstream) if is_source(kinds, upstream) => match self.recipe(kinds, upstream)? {
                         Some(recipe) => {

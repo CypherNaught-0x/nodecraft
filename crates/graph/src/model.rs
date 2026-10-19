@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use nodecraft_types::{Blake3, CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, NodeId, PortType, ProjectId, TagId, Value};
+use nodecraft_types::{Blake3, CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, ItemId, NodeId, PortType, ProjectId, TagId, Value};
 use serde::{Deserialize, Serialize};
 
 /// World coordinates, independent of the UI toolkit. Validation rejects non-finite values.
@@ -42,14 +42,29 @@ pub struct Generation {
     /// results recorded before hashing, which are never reported stale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_hash: Option<Blake3>,
+    /// A result fanned out by batches (#92): one tag per item, and every output is a list with
+    /// one value per item, in this order. Empty for an ordinary result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemTag>,
 }
 
 impl Generation {
     /// A result with no recorded input hash.
     pub fn new(id: GenerationId, outputs: Vec<Value>) -> Self {
-        Self { id, outputs, input_hash: None }
+        Self { id, outputs, input_hash: None, items: Vec::new() }
     }
 }
+
+/// One batch item a fanned result was made from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ItemKey {
+    pub batch: NodeId,
+    pub item: ItemId,
+}
+
+/// Which items of which batches one value of a fanned result comes from: one key per batch,
+/// ordered by batch id.
+pub type ItemTag = Vec<ItemKey>;
 
 /// A detached node is editable data. Once stored, document edits go through changesets.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

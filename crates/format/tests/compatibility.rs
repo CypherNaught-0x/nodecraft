@@ -76,7 +76,7 @@ fn current_writers_admit_new_values_while_v1_envelopes_refuse_every_replay_role(
         assert_eq!(validate_v1_project(&snapshot.project).unwrap_err().kind, ErrorKind::Unsupported);
         assert_eq!(decode(&encode(&snapshot).unwrap()).unwrap(), snapshot);
         assert!(journal::checkpoint(&snapshot).is_ok());
-        let generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![value.clone()], input_hash: None };
+        let generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![value.clone()], input_hash: None, items: Vec::new() };
         let mut canvas_data = Canvas::new(canvas(), "Canvas");
         let mut p = Project::new(ProjectId::from_bytes([1; 16]), "P").unwrap();
         Change::AddCanvas { canvas: canvas_data.clone() }.apply(&mut p).unwrap();
@@ -237,7 +237,7 @@ fn config_node_frames_and_future_generation_hashes_never_acquire_v1_meaning() {
 
 #[test]
 fn typed_generation_hashes_require_v2_but_absent_hash_stays_genuine_v1() {
-    let mut generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![Value::Text("legacy".into())], input_hash: None };
+    let mut generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![Value::Text("legacy".into())], input_hash: None, items: Vec::new() };
     assert!(serde_json::to_value(&generation).unwrap().get("input_hash").is_none());
     let mut n = node();
     n.history.push(generation.clone());

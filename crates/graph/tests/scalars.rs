@@ -33,7 +33,7 @@ fn scalar_parameters_and_generation_outputs_survive_serialized_apply_undo_redo()
         canvas,
         id,
         index: 0,
-        generation: Generation { id: generation, outputs: vec![Value::List(scalars())], input_hash: None },
+        generation: Generation { id: generation, outputs: vec![Value::List(scalars())], input_hash: None, items: Vec::new() },
     });
     edits.push(Change::SetActiveGeneration { canvas, id, generation: Some(generation) });
     let forward = Changeset::new(edits);

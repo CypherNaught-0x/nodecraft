@@ -284,6 +284,7 @@ mod tests {
             id: GenerationId::from_bytes([5; 16]),
             outputs: vec![],
             input_hash: Some(nodecraft_types::Blake3::from_bytes([6; 32])),
+            items: Vec::new(),
         });
         nodes.push(hashed);
         for value in [
@@ -299,7 +300,7 @@ mod tests {
             params.params.insert("nested".into(), value.clone());
             nodes.push(params);
             let mut output = nodes[0].clone();
-            output.history.push(Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None });
+            output.history.push(Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None, items: Vec::new() });
             nodes.push(output);
         }
         for node in nodes {

@@ -354,7 +354,12 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             node: step.node,
             models,
             per_job,
-            jobs: step.jobs.as_ref().map_or(1, |j| u64::try_from(j.len()).unwrap_or(u64::MAX)),
+            // A fanned step (#92) planned later runs at least one job per item.
+            jobs: match (&step.jobs, &step.fanout) {
+                (Some(jobs), _) => u64::try_from(jobs.len()).unwrap_or(u64::MAX),
+                (None, Some(fanout)) => u64::try_from(fanout.items.len().max(1)).unwrap_or(u64::MAX),
+                (None, None) => 1,
+            },
             jobs_known: step.jobs.is_some(),
         };
         if let Ok(Some(m)) = item.total() {

@@ -3,7 +3,7 @@
 //! and `node.create_connected` is the command it (or an agent) runs.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Node, Port, Position};
-use nodecraft_nodes::{Category, NodeDescriptor, Registry, router};
+use nodecraft_nodes::{Category, NodeDescriptor, Registry, batch, router};
 use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId, ParamValues, PortType, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -18,10 +18,14 @@ pub fn compatible(output: PortType, input: PortType) -> bool {
     output.modality == input.modality && (!output.many || input.many)
 }
 
-/// The config a new node of `kind` gets when it is created to take `output`: a router carries
-/// the noodle's modality; every other kind starts from its defaults.
+/// The config a new node of `kind` gets when it is created to take `output`: a router or a
+/// batch carries the noodle's modality; every other kind starts from its defaults.
 fn config_for(kind: &str, output: PortType) -> BTreeMap<String, Value> {
-    if kind == router::ID { router::config(output.modality) } else { BTreeMap::new() }
+    match kind {
+        router::ID => router::config(output.modality),
+        batch::ID => batch::config(output.modality),
+        _ => BTreeMap::new(),
+    }
 }
 
 /// A new node of `kind` set up to take `output`, and the input it takes it on.
@@ -102,7 +106,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: create_connected_schema,
-        params_doc: "{canvas, id: new NodeId, kind, pos: {x, y}, from: {node, port}, edge: new EdgeId} -> {id, input}; adds a node of `kind` and connects the output `from` to its first input that accepts it, as one undo step. A router takes the output's modality. The caller supplies the new ids.",
+        params_doc: "{canvas, id: new NodeId, kind, pos: {x, y}, from: {node, port}, edge: new EdgeId} -> {id, input}; adds a node of `kind` and connects the output `from` to its first input that accepts it, as one undo step. A router or batch takes the output's modality. The caller supplies the new ids.",
         enabled: enabled_create_connected,
         run: create_connected,
     }]

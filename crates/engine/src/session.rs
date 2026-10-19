@@ -1157,11 +1157,17 @@ mod tests {
                 id: GenerationId::from_bytes([n; 16]),
                 outputs: vec![nodecraft_types::Value::Text("x".repeat(512 * 1024))],
                 input_hash: None,
+                items: Vec::new(),
             });
         }
         Change::AddNode { canvas, node }.apply(&mut document).unwrap();
         let session = Session::new(document).unwrap();
-        let generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![nodecraft_types::Value::Text("new".into())], input_hash: None };
+        let generation = Generation {
+            id: GenerationId::from_bytes([9; 16]),
+            outputs: vec![nodecraft_types::Value::Text("new".into())],
+            input_hash: None,
+            items: Vec::new(),
+        };
         let changes = Changeset::new(vec![Change::AddGeneration { canvas, id, index: 3, generation }]);
         let prepared = session.prepare(Effect::Edit { changes, result: json!(null), gesture: None }).unwrap();
         assert!(prepared.inverse.bytes < 512);
@@ -1214,6 +1220,7 @@ mod tests {
                 id: GenerationId::from_bytes([n; 16]),
                 outputs: vec![nodecraft_types::Value::Text(format!("output{n}"))],
                 input_hash: None,
+                items: Vec::new(),
             });
         }
         node.active = Some(GenerationId::from_bytes([5; 16]));
@@ -1236,6 +1243,7 @@ mod tests {
         let hash = session.import_asset(b"generation asset").unwrap();
         let generation = Generation {
             input_hash: None,
+            items: Vec::new(),
             id: GenerationId::from_bytes([6; 16]),
             outputs: vec![nodecraft_types::Value::List(vec![nodecraft_types::Value::Media(nodecraft_types::AssetRef {
                 hash,

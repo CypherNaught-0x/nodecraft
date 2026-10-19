@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod audio;
+pub mod batch;
 mod contract;
 mod descriptor;
 pub mod generation;

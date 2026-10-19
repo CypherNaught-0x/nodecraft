@@ -101,7 +101,7 @@ fn v2_additions() -> Vec<Change> {
             canvas: canvas(),
             id: node().id,
             index: 0,
-            generation: Generation { id: GenerationId::from_bytes([8; 16]), outputs: vec![value], input_hash: None },
+            generation: Generation { id: GenerationId::from_bytes([8; 16]), outputs: vec![value], input_hash: None, items: Vec::new() },
         });
     }
     result.push(Change::AddGeneration {
@@ -112,6 +112,7 @@ fn v2_additions() -> Vec<Change> {
             id: GenerationId::from_bytes([9; 16]),
             outputs: vec![Wire::Text("legacy".into())],
             input_hash: Some(nodecraft_types::Blake3::from_bytes([7; 32])),
+            items: Vec::new(),
         },
     });
     let mut n = node();

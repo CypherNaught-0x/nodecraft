@@ -31,7 +31,7 @@ macro_rules! ids {
     )+ };
 }
 
-ids!(ProjectId, CanvasId, NodeId, EdgeId, FieldId, CommentId, TagId, ElementId, GenerationId, TechniqueId, ProviderInstanceId);
+ids!(ProjectId, CanvasId, NodeId, EdgeId, FieldId, CommentId, TagId, ElementId, GenerationId, TechniqueId, ProviderInstanceId, ItemId);
 
 #[cfg(test)]
 mod tests {
