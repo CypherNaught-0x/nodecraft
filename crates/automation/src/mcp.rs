@@ -94,6 +94,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "usage.ownership",
     "run.reuse",
     "node.cache_set",
+    "node.shader_set",
     "plugins.list",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not

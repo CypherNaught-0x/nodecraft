@@ -296,6 +296,7 @@ fn template(id: &str) -> (Session, Value) {
         "plugins.enable" | "plugins.disable" | "plugins.uninstall" => json!({"package_id":"io.example.palette"}),
         "plugins.rollback" => json!({"package_id":"io.example.palette","digest":format!("blake3:{}", "0".repeat(64))}),
         "run.reuse" => json!({"canvas":canvas()}),
+        "node.shader_set" => json!({"canvas":canvas(),"id":node_id(1),"source":"fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }"}),
         "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
         _ => panic!("missing valid template for {id}"),
     };
