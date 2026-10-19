@@ -1,6 +1,6 @@
-use crate::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
+use crate::{Category, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
 use nodecraft_graph::Port;
-use nodecraft_types::{Modality, ParamControl, ParamSchema, ParamSpec, PortType, Value};
+use nodecraft_types::{Affects, Modality, ParamControl, ParamRule, ParamSchema, ParamSpec, PortType, Value};
 
 /// A configured source kind. Its descriptor is immutable after construction.
 pub struct SourceKind {
@@ -45,6 +45,21 @@ impl NodeKind for SourceKind {
     }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
         inputs.is_empty().then(ModeId::source)
+    }
+    /// A source has no inputs and one mode; its value is the result, so it shapes the output.
+    fn contract(&self, descriptor: &NodeDescriptor) -> NodeContract {
+        let mut contract = NodeContract::derive(descriptor);
+        for output in &mut contract.outputs {
+            output.role = "value".into();
+        }
+        contract.modes = vec![ModeContract { mode: ModeId::source(), inputs: Vec::new() }];
+        contract.params.rules = descriptor
+            .params
+            .params
+            .iter()
+            .map(|spec| ParamRule { affects: Affects { shape: true, ..Affects::default() }, ..ParamRule::implied(&spec.name) })
+            .collect();
+        contract
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, nodecraft_types::Error> {
         if !ctx.inputs.is_empty() {
