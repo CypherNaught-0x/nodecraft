@@ -662,6 +662,7 @@ impl NodeCraftApp {
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            self.poll_save(ui.ctx());
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);
             self.track_recovery();
