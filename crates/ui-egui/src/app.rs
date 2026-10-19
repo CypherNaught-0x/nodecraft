@@ -698,6 +698,7 @@ impl NodeCraftApp {
         let tag_blocks = self.tag_overlay(ui);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
+        let mut minimap_press = None;
         // Save and open (#406) work from a text field too (no field uses them); not while the palette
         // or "Turn into" is open. Without a file yet, saving needs a location: say how to give one.
         if self.palette.is_none() && self.turn_into.is_none() {
@@ -741,6 +742,12 @@ impl NodeCraftApp {
             if delete && !self.text_focused {
                 self.dispatch_delete();
             }
+            // Undo/delete above may change pan availability. Freeze admission now:
+            // later navigation shortcuts must not acquire a press after clipboard acted.
+            // A refused press stays refused if Escape cancels its gesture later this frame;
+            // only a fresh press may start minimap input after that cancellation.
+            let minimap_owned = self.minimap_input_owned(ui.ctx());
+            minimap_press = Some(minimap_owned);
             // Clipboard: the platform turns ⌘C/⌘X/⌘V into events; ⌘D duplicates in place.
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
@@ -748,11 +755,16 @@ impl NodeCraftApp {
             let busy = self.drag.is_some()
                 || self.marquee.is_some()
                 || self.wiring.is_some()
+                || minimap_owned
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || egui::Popup::is_any_open(ui.ctx())
                 || self.keys.open;
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
+                // Yield before consuming shortcuts or cloning any pasted payload.
+                if busy {
+                    return (false, false, None, false);
+                }
                 let duplicate = i.consume_key(egui::Modifiers::COMMAND, egui::Key::D);
                 let (mut copy, mut cut, mut pasted) = (false, false, None);
                 for event in &i.events {
@@ -765,7 +777,7 @@ impl NodeCraftApp {
                         _ => {}
                     }
                 }
-                if busy { (false, false, None, false) } else { (copy, cut, pasted, duplicate) }
+                (copy, cut, pasted, duplicate)
             });
             let pointer_world = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).map(|p| self.view.to_world(viewport.min, p));
             if (copy || cut || duplicate)
@@ -816,8 +828,7 @@ impl NodeCraftApp {
                 || self.reordering.is_some()
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
-                || self.navigation.drag.is_some()
-                || self.navigation.pointer_owned
+                || minimap_owned
                 || egui::Popup::is_any_open(ui.ctx());
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
@@ -848,7 +859,7 @@ impl NodeCraftApp {
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
         let layout_blocks = self.layout_overlay(ui);
-        let overlay_blocks = self.navigation_overlay(ui) || search_blocks || layout_blocks || comments_blocks || tag_blocks;
+        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
         let canvas_blocks = overlay_blocks || popup_owned;
         let shift = ui.input(|i| i.modifiers.shift);
