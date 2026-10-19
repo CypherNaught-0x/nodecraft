@@ -5,6 +5,14 @@ use nodecraft_types::{Currency, Money};
 
 use nodecraft_testkit::golden::{InstantClock as Instant, NeverCancelled as Never};
 
+#[test]
+fn legacy_mock_path_is_the_provider_crates_same_type() {
+    let moved: nodecraft_providers::mock::MockProvider = MockProvider::standard();
+    let legacy: MockProvider = moved;
+    let provider: &dyn Provider = &legacy;
+    assert_eq!(provider.id(), "mock");
+}
+
 fn job(model: &str, prompt: &str, key: &str) -> ProviderJob {
     let mut params = serde_json::Map::new();
     params.insert("style".into(), serde_json::json!("ink"));

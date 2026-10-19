@@ -1,7 +1,7 @@
 //! Recovery files contain a complete checkpoint followed by checksummed, sequential changesets.
 //! Physical frame damage stops at the validated prefix; later frames are never replayed.
 //! Checksum-valid semantic/compatibility violations remain hard errors.
-use crate::{AssetStore, MAX_ARCHIVE_BYTES, MAX_ASSET_BYTES, MAX_ASSETS, Snapshot, decode, encode, hash, invalid};
+use crate::{AssetStore, MAX_ARCHIVE_BYTES, MAX_ASSET_BYTES, MAX_ASSETS, Snapshot, encode, hash, invalid};
 use nodecraft_graph::Changeset;
 use nodecraft_types::{Blake3, Error};
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 pub const MAX_JOURNAL_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHANGES_BYTES: usize = 16 * 1024 * 1024;
-const MAGIC: &[u8; 8] = b"NCRJ0001";
+const MAGIC: &[u8; 8] = b"NCRJ0003";
+const V2_MAGIC: &[u8; 8] = b"NCRJ0002";
+const LEGACY_MAGIC: &[u8; 8] = b"NCRJ0001";
 
 pub struct Checkpoint {
     pub bytes: Vec<u8>,
@@ -25,7 +27,13 @@ pub fn checkpoint(snapshot: &Snapshot) -> Result<Checkpoint, Error> {
 
 /// Decode once and reuse the validated archive bytes as the recovery checkpoint.
 pub fn checkpoint_from_archive(archive: Vec<u8>) -> Result<(Snapshot, Checkpoint), Error> {
-    let snapshot = decode(&archive)?;
+    let (snapshot, version) = crate::archive::decode_versioned(&archive)?;
+    // Never append v3 operations beneath a legacy header/identity. The caller atomically
+    // checkpoints this converted snapshot before adopting it or publishing any new edit.
+    if version < crate::archive::VERSION {
+        let checkpoint = checkpoint(&snapshot)?;
+        return Ok((snapshot, checkpoint));
+    }
     let assets = snapshot.assets.iter().map(|(hash, _)| *hash).collect();
     Ok((snapshot, from_validated_archive(archive, assets)?))
 }
@@ -72,10 +80,7 @@ fn replay_references(changes: &Changeset, assets: &AssetStore, record_cap: usize
     #[cfg(any(test, feature = "validation-metrics"))]
     crate::validation_metrics::record(|metrics| metrics.replay_preflights = metrics.replay_preflights.saturating_add(1));
     changes.validate_payload()?;
-    // Admit every raw role before interpreting referenced assets. A persistent v1
-    // root plus these complete payload guards preserves representation inductively.
     let json = crate::archive::bounded_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes }, record_cap)?;
-    crate::compatibility::validate(&json)?;
     let referenced = crate::assets_in_changes(changes)?;
     let mut binary = 56_usize; // outer length/hash40 + payload JSON length/asset count16
     for hash in &referenced {
@@ -136,9 +141,9 @@ fn frame_admitted(identity: Blake3, sequence: u64, changes: &Changeset, assets: 
         return Err(invalid("recovery asset count exceeds limit"));
     }
     let record = RecordRef { checkpoint: identity, sequence, changes };
+    // Both public frame() and the private admitted capability already checked these immutable
+    // graph payloads with the longest sequence; identity/sequence cannot substitute them.
     let json = crate::archive::bounded_json(&record, MAX_CHANGES_BYTES)?;
-    // Admission already checked the immutable changes using the longest sequence.
-    // Identity/sequence only replace fixed typed record fields, never graph roles.
     let mut payload = Vec::new();
     payload.extend_from_slice(&(json.len() as u64).to_le_bytes());
     payload.extend_from_slice(&json);
@@ -165,6 +170,8 @@ pub struct Recovered {
     /// Physical frame damage stopped replay. Retained for existing hosts; `damage` gives detail.
     /// The caller must preserve the original bytes and checkpoint before continuing.
     pub truncated_tail: bool,
+    /// The host must atomically checkpoint the migrated snapshot before appending any v3 edit.
+    pub legacy: bool,
     pub damage: Option<RecoveryDamage>,
 }
 
@@ -197,14 +204,28 @@ impl RecoveryDamageReason {
 }
 
 pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
-    if bytes.len() > MAX_JOURNAL_BYTES || bytes.get(..8) != Some(MAGIC.as_slice()) {
-        return Err(invalid("invalid recovery file or size limit exceeded"));
+    let header_version = match bytes.get(..8) {
+        Some(magic) if magic == LEGACY_MAGIC => 1,
+        Some(magic) if magic == V2_MAGIC => 2,
+        Some(magic) if magic == MAGIC => 3,
+        Some(magic) if magic.starts_with(b"NCRJ") => {
+            return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Unsupported, "unsupported recovery checkpoint version"));
+        }
+        _ => return Err(invalid("invalid recovery file")),
+    };
+    let legacy = header_version < crate::archive::VERSION;
+    if bytes.len() > MAX_JOURNAL_BYTES {
+        return Err(invalid("recovery size limit exceeded"));
     }
     let mut input = bytes.get(8..).ok_or_else(|| invalid("truncated recovery file"))?;
     let len = length(&mut input, MAX_ARCHIVE_BYTES)?;
     let archive = take(&mut input, len)?;
     let identity = hash(archive);
-    let mut snapshot = decode(archive)?;
+    // Frame identities bind the original archive bytes, never a migrated re-encoding.
+    let (mut snapshot, version) = crate::archive::decode_versioned(archive)?;
+    if version != header_version {
+        return Err(invalid("recovery header and archive version disagree"));
+    }
     let mut applied = 0_u64;
     let mut damage = None;
     while !input.is_empty() {
@@ -240,7 +261,11 @@ pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
         let mut frame = payload;
         let json_len = length(&mut frame, MAX_CHANGES_BYTES)?;
         let json = take(&mut frame, json_len)?;
-        crate::compatibility::validate(json)?;
+        if version == 1 {
+            crate::legacy::validate(json)?;
+        } else if version == 2 {
+            crate::v2::validate(json)?;
+        }
         let record: Record = serde_json::from_slice(json).map_err(|_| invalid("invalid recovery changeset"))?;
         let sequence = applied.checked_add(1).ok_or_else(|| invalid("recovery sequence overflow"))?;
         if record.checkpoint != identity || record.sequence != sequence {
@@ -268,7 +293,7 @@ pub fn recover(bytes: &[u8]) -> Result<Recovered, Error> {
         snapshot.assets.validate_changed_assets(&snapshot.project, &record.changes)?;
         applied = sequence;
     }
-    Ok(Recovered { snapshot, applied, truncated_tail: damage.is_some(), damage })
+    Ok(Recovered { snapshot, applied, truncated_tail: damage.is_some(), damage, legacy })
 }
 
 fn take<'a>(bytes: &mut &'a [u8], len: usize) -> Result<&'a [u8], Error> {
@@ -310,13 +335,13 @@ mod tests {
         assert_eq!(added, additional);
         assert!(frame(identity, 17, &changes, &assets, &additional).is_err(), "arbitrary callers must still validate their actual store");
         assert!(AdmittedReplay::new(changes, &assets).is_err());
-        let unsupported = Changeset::new(vec![Change::SetParam {
+        let v2_scalar = Changeset::new(vec![Change::SetParam {
             canvas: CanvasId::from_bytes([1; 16]),
             id: NodeId::from_bytes([2; 16]),
             name: "future".into(),
             value: Some(Value::Bool(true)),
         }]);
-        assert_eq!(frame(identity, 17, &unsupported, &assets, &Default::default()).unwrap_err().kind, nodecraft_types::ErrorKind::Unsupported);
+        assert!(frame(identity, 17, &v2_scalar, &assets, &Default::default()).is_ok());
     }
     fn replay_measurement(nodes: u128, frames: u64) {
         use nodecraft_graph::{Canvas, Position, Project};
@@ -370,6 +395,33 @@ mod tests {
     }
 
     #[test]
+    fn actual_future_pin_redo_is_charged_at_journal_record_and_frame_boundaries() {
+        use nodecraft_graph::{Canvas, Comment, Position, Project};
+        use nodecraft_types::{CommentId, ProjectId};
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let root = CommentId::from_bytes([3; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Journal budget").unwrap();
+        nodecraft_graph::Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        nodecraft_graph::Change::PutComment { canvas, comment: Comment::new(root, "Root", Position::default()) }.apply(&mut project).unwrap();
+        let node = Node::new(NodeId::from_bytes([2; 16]), "source.text");
+        let forward = Changeset::new(vec![
+            nodecraft_graph::Change::SetCommentPin { canvas, id: root, node: Some(node.id), pos: Position { x: 1.0, y: 2.0 } },
+            nodecraft_graph::Change::AddNode { canvas, node },
+        ]);
+        let staged = forward.stage_certified(&project).unwrap();
+        let redo = staged.actual_redo.unwrap();
+        let assets = AssetStore::default();
+        let record =
+            crate::archive::bounded_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes: &redo }, 4096).unwrap().len();
+        let frame = record + 56;
+        validate_replay_with_limits(&forward, &assets, record - 1, frame - 1).unwrap();
+        validate_replay_with_limits(&staged.inverse, &assets, record - 1, frame - 1).unwrap();
+        assert!(validate_replay_with_limits(&redo, &assets, record - 1, frame).is_err());
+        assert!(validate_replay_with_limits(&redo, &assets, record, frame - 1).is_err());
+        assert!(validate_replay_with_limits(&redo, &assets, record, frame).is_ok());
+    }
+
+    #[test]
     fn replay_budget_reserves_max_sequence_canonical_redo_and_all_binary_headers() {
         let mut assets = AssetStore::default();
         let hash = assets.insert(&vec![b'x'; 1024]).unwrap();
@@ -377,7 +429,7 @@ mod tests {
         let mut node = Node::new(NodeId::from_bytes([2; 16]), "test.text");
         node.params.insert("asset".into(), Value::Media(AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: MediaMeta::default() }));
         let add = Changeset::new(vec![Change::AddNode { canvas, node: node.clone() }]);
-        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![] }]);
+        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![], pins: vec![] }]);
         let json = crate::archive::bounded_json(&RecordRef { checkpoint: Blake3::from_bytes([0; 32]), sequence: u64::MAX, changes: &restore }, 4096).unwrap();
         let exact = json.len() + 56 + 40 + 1024;
         assert!(validate_replay_with_limits(&add, &assets, json.len(), exact).is_ok());

@@ -275,8 +275,21 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
     card::world_rect(node, resolved.as_deref(), t)
 }
 
+mod comments;
+mod drop;
+mod layout;
+#[cfg(not(target_arch = "wasm32"))]
+mod live;
+mod metrics;
 mod navigation;
+mod order;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery;
 mod search;
+mod split;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod storage;
+mod tags;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -287,8 +300,16 @@ pub struct NodeCraftApp {
     pub canvas_prefs: CanvasSettings,
     pub navigation: Navigation,
     pub search: crate::search::Search,
+    pub tag_filter: crate::tags::TagFilter,
+    tag_focus_ids: Vec<egui::Id>,
+    tag_focused: bool,
+    tag_session_identity: Option<Arc<()>>,
+    tag_focus_pending: bool,
+    tag_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     search_focused: bool,
     search_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
+    pub comments: crate::comments::Discussions,
+    comments_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
@@ -301,11 +322,41 @@ pub struct NodeCraftApp {
     /// from here, not the evictable schema cache, so it matches what is on screen.
     painted: BTreeMap<NodeId, Rect>,
     wiring: Option<Wiring>,
+    /// The input order badge being dragged: its list input and edge.
+    reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
+    /// The startup question about an earlier session's unsaved work (#408).
+    #[cfg(not(target_arch = "wasm32"))]
+    recovery: Option<recovery::RecoveryOffer>,
+    /// Live recompute of action nodes (#88).
+    #[cfg(not(target_arch = "wasm32"))]
+    live: live::Live,
+    /// Recovered work's kept journal, removed once that work is saved (#408).
+    #[cfg(not(target_arch = "wasm32"))]
+    recovered: Option<recovery::RecoveryOffer>,
+    /// This session's recovery journal, beside which the open project file is recorded.
+    #[cfg(not(target_arch = "wasm32"))]
+    recovery_journal: Option<std::path::PathBuf>,
+    /// The project file last recorded there (`None` until the first record).
+    #[cfg(not(target_arch = "wasm32"))]
+    recorded_location: Option<Option<std::path::PathBuf>>,
+    /// The window title last sent, so it is only sent when it changes.
+    title: String,
+    /// Image previews on cards (#386).
+    previews: crate::preview::Previews,
+    /// When the last timed frame started, for the frame interval (#151).
+    last_frame: Option<u64>,
+    /// The rows × columns last chosen for "Split into grid".
+    split_size: (u32, u32),
+    /// The split being picked: seen in this frame's open menu, shown on the card next frame.
+    split_seen: Option<(NodeId, u32, u32)>,
+    split_shown: Option<(NodeId, u32, u32)>,
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
+    /// Exact previous text owner survives Escape and disabled-toolbar interaction.
+    last_text_focus: Option<egui::Id>,
     schemas: SchemaCache,
     cache_clock: u64,
     next_gesture: u64,
@@ -327,6 +378,21 @@ impl NodeCraftApp {
     /// The app with settings from `store`, which it saves while running and flushes on exit.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_settings(ctx: &egui::Context, store: nodecraft_engine::settings::SettingsStore) -> Result<Self, Error> {
+        Self::with_settings_and_storage(ctx, store, None)
+    }
+
+    /// [`Self::with_settings`], with project files when `storage` is given (#406): save and open
+    /// work, edits are journalled for recovery, and `storage.open` is opened at startup.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_settings_and_storage(
+        ctx: &egui::Context,
+        mut store: nodecraft_engine::settings::SettingsStore,
+        storage: Option<storage::StorageSetup>,
+    ) -> Result<Self, Error> {
+        // Made once per install and saved at once, before any provider is built (#409).
+        if let Err(error) = nodecraft_engine::settings::ensure_install_salt(&mut store) {
+            log::warn!("{}", error.message);
+        }
         let settings = store.get().clone();
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
@@ -341,7 +407,43 @@ impl NodeCraftApp {
                 None
             }
         };
-        let mut app = Self::with_services(services)?;
+        // Plugin data packages (#172) live in the settings folder; without one the plugin.*
+        // commands are unsupported, and a store that can't open is logged, not fatal.
+        let mut plugin_problem = None;
+        if let Some(dir) = store.dir().map(|d| d.join("plugins"))
+            && let Err(error) = Self::register_plugins(&mut services, dir)
+        {
+            log::warn!("plugin packages unavailable: {}", error.message);
+            plugin_problem = Some(format!("Plugin packages are unavailable: {}", error.message));
+        }
+        // Storage that can't start (another window holds the journal, or the project won't
+        // open) still opens the window, without project files, and says why.
+        let mut problem = None;
+        let journal = storage.as_ref().map(|setup| setup.recovery.clone());
+        let stored = storage.and_then(|setup| match Self::storage_session(setup) {
+            Ok(stored) => Some(stored),
+            Err(error) => {
+                log::error!("project storage unavailable: {}", error.message);
+                problem = Some(format!("Project files are unavailable: {}", error.message));
+                None
+            }
+        });
+        let mut kept = None;
+        let mut app = match stored {
+            Some((session, canvas, unrecovered, open_error)) => {
+                kept = unrecovered;
+                if let Some(error) = open_error {
+                    problem = Some(format!("That project couldn't be opened: {}", error.message));
+                }
+                Self::from_session(session.with_services(services), canvas)?
+            }
+            None => Self::with_services(services)?,
+        };
+        app.notice = problem.or(plugin_problem);
+        // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
+        if let Some(journal) = journal {
+            app.attach_recovery(journal, kept);
+        }
         app.key_results = results;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -365,9 +467,33 @@ impl NodeCraftApp {
         Self::with_services(nodecraft_engine::commands::Services::default())
     }
 
+    /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
+    /// package may take an ID the app registers; no host implementation is bindable yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn register_plugins(services: &mut nodecraft_engine::commands::Services, dir: std::path::PathBuf) -> Result<(), Error> {
+        use nodecraft_engine::plugin_cmds::{PluginHost, register_plugin_service};
+        let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
+        taken.extend(nodecraft_nodes::Registry::builtins()?.descriptors().map(|d| d.id.clone()));
+        let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?)?;
+        register_plugin_service(services, store, PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() })
+    }
+
     /// The headless app with these host services on its session (the keychain, for one).
     pub fn with_services(services: nodecraft_engine::commands::Services) -> Result<Self, Error> {
         let kinds = nodecraft_nodes::Registry::builtins()?;
+        let (document, canvas) = Self::starter_document(&kinds)?;
+        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
+        Self::from_session(session, canvas)
+    }
+
+    /// The browser build has no project files yet (#99).
+    #[cfg(target_arch = "wasm32")]
+    fn file_shortcut(&mut self, _save: bool, _save_as: bool) -> Option<String> {
+        Some("Saving isn't available in the browser yet.".into())
+    }
+
+    /// The project a new window starts with: one canvas holding a sample Text node.
+    fn starter_document(kinds: &nodecraft_nodes::Registry) -> Result<(Project, CanvasId), Error> {
         let canvas = CanvasId::from_bytes([1; 16]);
         let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Untitled")?;
         Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document)?;
@@ -376,13 +502,13 @@ impl NodeCraftApp {
         let mut node = kinds.get("source.text")?.descriptor().instantiate(NodeId::from_bytes([3; 16]), &values)?;
         node.pos = nodecraft_graph::Position { x: -160.0, y: -110.0 };
         Change::AddNode { canvas, node }.apply(&mut document)?;
-        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
-        Self::from_session(session, canvas)
+        Ok((document, canvas))
     }
     pub fn from_session(mut session: Session, canvas: CanvasId) -> Result<Self, Error> {
         if !session.document().canvases().contains_key(&canvas) {
             return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
         }
+        metrics::install_clock(&mut session);
         let navigation_mailbox = Rc::new(RefCell::new(None));
         let mailbox = Rc::clone(&navigation_mailbox);
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, move |request| {
@@ -403,6 +529,26 @@ impl NodeCraftApp {
             *slot = Some(request.clone());
             Ok(json!({"accepted":true}))
         })?;
+        let comments_mailbox = Rc::new(RefCell::new(None));
+        let mailbox = Rc::clone(&comments_mailbox);
+        session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, move |request| {
+            let mut slot = mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "discussions host is busy"))?;
+            if slot.is_some() {
+                return Err(Error::new(ErrorKind::Conflict, "discussion request is already pending"));
+            }
+            *slot = Some(request.clone());
+            Ok(json!({"accepted":true}))
+        })?;
+        let tag_mailbox = Rc::new(RefCell::new(None));
+        let mailbox = Rc::clone(&tag_mailbox);
+        session.register_host_service(nodecraft_engine::tag_filter_cmds::SERVICE, move |request| {
+            let mut slot = mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "tag host is busy"))?;
+            if slot.is_some() {
+                return Err(Error::new(ErrorKind::Conflict, "tag request is already pending"));
+            }
+            *slot = Some(request.clone());
+            Ok(serde_json::json!({"accepted":true}))
+        })?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -412,8 +558,16 @@ impl NodeCraftApp {
             canvas_prefs: CanvasSettings::default(),
             navigation: Navigation::default(),
             search: crate::search::Search::default(),
+            tag_filter: crate::tags::TagFilter::default(),
+            tag_focus_ids: Vec::new(),
+            tag_focused: false,
+            tag_session_identity: None,
+            tag_focus_pending: false,
+            tag_mailbox,
             search_focused: false,
             search_mailbox,
+            comments: crate::comments::Discussions::default(),
+            comments_mailbox,
             navigation_mailbox,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
@@ -424,9 +578,27 @@ impl NodeCraftApp {
             marquee: None,
             painted: BTreeMap::new(),
             wiring: None,
+            reordering: None,
             palette: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovery: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            live: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            recovered: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovery_journal: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            recorded_location: None,
+            title: String::new(),
+            previews: crate::preview::Previews::default(),
+            last_frame: None,
+            split_size: (2, 2),
+            split_seen: None,
+            split_shown: None,
             turn_into: None,
             text_focused: false,
+            last_text_focus: None,
             schemas: SchemaCache::default(),
             cache_clock: 0,
             next_gesture: 0,
@@ -437,11 +609,50 @@ impl NodeCraftApp {
             key_results: None,
         })
     }
+    /// Replace a document session together with scoped view services and all view caches.
+    /// Assigning the public session field directly is not a supported live-host replacement path.
+    pub fn replace_session(&mut self, session: Session, canvas: CanvasId) -> Result<(), Error> {
+        let mut next = Self::from_session(session, canvas)?;
+        next.theme = self.theme;
+        next.canvas_prefs = self.canvas_prefs.clone();
+        // Retain bounded dirty/orphan discussion drafts with their original Session token.
+        // New host services and view caches belong to the replacement Session.
+        let mut discussions = std::mem::take(&mut self.comments);
+        discussions.reset_session_view();
+        next.comments = discussions;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            next.store = self.store.take();
+        }
+        *self = next;
+        Ok(())
+    }
     pub fn home(&mut self) -> Pos2 {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         self.navigation.geometry.rects.values().copied().reduce(|a, b| a.union(b)).map_or(Pos2::ZERO, |r| r.center())
     }
+    /// One frame of the canvas, timed for performance capture when it's running (#151).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        let started = self.frame_started();
+        self.show_frame(ui);
+        self.frame_finished(started);
+    }
+
+    fn show_frame(&mut self, ui: &mut egui::Ui) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let t = *self.theme.tokens();
+            self.recovery_dialog(ui.ctx(), &t);
+            self.track_recovery();
+            // Not while the startup question is open: its answer may replace the document.
+            if self.recovery.is_none() {
+                self.live_recompute(ui.ctx());
+            }
+        }
+        // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
+        self.split_shown = self.split_seen.take();
+        self.previews.poll(ui.ctx());
+        let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -451,9 +662,33 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
+        let comments_blocks = self.comments_overlay(ui);
+        // A context menu is not permission to commit a dirty editor draft.
+        if self.text_focused
+            && !egui::Popup::is_any_open(ui.ctx())
+            && let Some(owner) = self.last_text_focus
+            && ui.ctx().memory(|m| m.focused()).is_none_or(|id| id == owner)
+            && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary) || i.pointer.button_released(egui::PointerButton::Secondary))
+            && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+            && ui.ctx().layer_id_at(pointer) == Some(ui.layer_id())
+            && self.painted.values().any(|r| self.view.rect_to_screen(viewport.min, *r).contains(pointer))
+        {
+            ui.ctx().memory_mut(|m| m.request_focus(owner));
+            ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
+        }
+        let tag_blocks = self.tag_overlay(ui);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
+        // Save and open (#406) work from a text field too (no field uses them); not while the palette
+        // or "Turn into" is open. Without a file yet, saving needs a location: say how to give one.
+        if self.palette.is_none() && self.turn_into.is_none() {
+            let (save_as, save, open) =
+                ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
+            if save || save_as || open {
+                self.notice = self.file_shortcut(save, save_as);
+            }
+        }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
@@ -490,14 +725,22 @@ impl NodeCraftApp {
             }
             // Undo/delete above may change pan availability. Freeze admission now:
             // later navigation shortcuts must not acquire a press after clipboard acted.
+            // A refused press stays refused if Escape cancels its gesture later this frame;
+            // only a fresh press may start minimap input after that cancellation.
             let minimap_owned = self.minimap_input_owned(ui.ctx());
             minimap_press = Some(minimap_owned);
             // Clipboard: the platform turns ⌘C/⌘X/⌘V into events; ⌘D duplicates in place.
             // Not mid-gesture or in a menu: a cut mid-drag would delete the card being dragged.
             // Nor while the API keys panel is open: text pasted for a key before its field has
             // focus must never become a node in the (autosaved) project.
-            let busy =
-                self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || minimap_owned || egui::Popup::is_any_open(ui.ctx()) || self.keys.open;
+            let busy = self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || minimap_owned
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
+                || egui::Popup::is_any_open(ui.ctx())
+                || self.keys.open;
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {
@@ -560,7 +803,13 @@ impl NodeCraftApp {
             }
             // Quick-add: a kind's `quick_add` key creates it under the pointer. Only a fresh press
             // (not key repeat) with exactly the bound modifiers, and not mid-gesture or in a menu.
-            let busy = self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || minimap_owned || egui::Popup::is_any_open(ui.ctx());
+            let busy = self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
+                || minimap_owned
+                || egui::Popup::is_any_open(ui.ctx());
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
                     self.session.kinds().descriptors().filter_map(|d| quick_add_key(d.quick_add.as_deref()?).map(|(m, k)| (m, k, d.id.clone()))).collect();
@@ -596,10 +845,13 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks;
+        let layout_blocks = self.layout_overlay(ui);
+        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks;
+        // Any popup owns canvas gestures, but its own card controls must still deliver edits.
+        let canvas_blocks = overlay_blocks || popup_owned;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
-        if !overlay_blocks
+        if !canvas_blocks
             && background.drag_started_by(egui::PointerButton::Primary)
             && shift
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
@@ -616,7 +868,7 @@ impl NodeCraftApp {
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
-        if !overlay_blocks {
+        if !canvas_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
         }
         // The palette and "Turn into" create at the world point they opened on; once the view
@@ -631,7 +883,27 @@ impl NodeCraftApp {
         let mut intents = Vec::new();
         let mut pan = Vec2::ZERO;
         let mut query = None;
+        let mut split_request = None;
         let mut wire_command = None;
+        let mut layout_mode = None;
+        // The owning context menu may invoke layout; unrelated popups have no such route.
+        let layout_context_ready = self.layout_base_available(ui.ctx());
+        let mut comment_target = None;
+        let mut split_after = None;
+        let mut tag_action = None;
+        let tag_menu_allowed = !self.text_focused
+            && !canvas::text_input_focused(ui.ctx())
+            && self.drag.is_none()
+            && self.marquee.is_none()
+            && self.comments.drag.is_none()
+            && !self.comments.gesture_cancelled
+            && !self.navigation.pointer_owned
+            && self.navigation.drag.is_none()
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+            && self.reordering.is_none()
+            && self.wiring.is_none()
+            && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
@@ -645,13 +917,20 @@ impl NodeCraftApp {
             {
                 // Cull conservatively before resolving potentially large instance schemas.
                 let position = self.drag.as_ref().filter(|drag| drag.id == node.id).map_or(node.pos, |drag| drag.pos);
-                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height));
+                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height + t.card_preview_height));
                 if !self.view.rect_to_screen(viewport.min, bounds).expand(card::cull_margin(t, self.view.zoom)).intersects(viewport) {
                     if let Some(editor) = self.editors.get_mut(&node.id) {
                         editor.mark_hidden();
                     }
                     continue;
                 }
+                // Only cards on screen at a readable zoom ask for their image (#386).
+                let image = nodecraft_engine::split::image_of(node).filter(|_| self.view.zoom >= card::BODY_MIN_ZOOM).map(|asset| {
+                    let hash = asset.hash;
+                    let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
+                    let assets = self.session.assets();
+                    self.previews.request(ui.ctx(), hash, edge, || assets.get(&hash).map(<[u8]>::to_vec))
+                });
                 let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
                 let editor = self.editors.entry(node.id).or_default();
@@ -663,6 +942,11 @@ impl NodeCraftApp {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
+                        image,
+                        grid: self.split_shown.filter(|(id, ..)| *id == node.id).map(|(_, rows, columns)| {
+                            let full = nodecraft_engine::split::image_of(node).and_then(|asset| Some([asset.meta.width?, asset.meta.height?]));
+                            (rows, columns, full)
+                        }),
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -670,13 +954,32 @@ impl NodeCraftApp {
                 ) {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
-                    if !overlay_blocks && r.clicked() {
+                    let tag_painter = egui::Painter::new(ui.ctx().clone(), r.layer_id, tag_world_clip(&self.view, viewport, ui.clip_rect()));
+                    if let Some(tag) = node.tag.and_then(|id| canvas.tags().get(&id)) {
+                        let marker = Rect::from_min_size(
+                            r.rect.min + Vec2::splat(t.navigation_gap),
+                            Vec2::new(t.tag_marker_width, t.tag_row_height.min(r.rect.height())),
+                        );
+                        tag_painter.rect_filled(marker, t.tag_marker_width, t.tag_color(tag.color.as_deref()));
+                        ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover())
+                            .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
+                    }
+                    if self.tag_filter.active() {
+                        let matches = self.tag_filter.matches(node.id);
+                        tag_painter.rect_stroke(
+                            r.rect.expand(t.tag_marker_width),
+                            t.card_radius,
+                            egui::Stroke::new(if matches { t.handle_stroke * 2.0 } else { t.handle_stroke }, if matches { t.accent } else { t.panel_stroke }),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+                    if !canvas_blocks && r.clicked() {
                         if shift {
                             self.selection.toggle(node.id);
                         } else {
                             self.selection.only(node.id);
                         }
-                    } else if !overlay_blocks
+                    } else if !canvas_blocks
                         && (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
                         && !self.selection.contains(node.id)
                     {
@@ -687,8 +990,36 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     }
-                    if !overlay_blocks || egui::Popup::is_any_open(ui.ctx()) {
+                    if (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
+                        && (!self.text_focused && !canvas::text_input_focused(ui.ctx()) || egui::Popup::is_any_open(ui.ctx()))
+                    {
                         r.context_menu(|ui| {
+                            let owner = egui::Popup::context_menu(&r).get_id();
+                            let owned = egui::Popup::is_id_open(ui.ctx(), owner);
+                            ui.label("Format selection");
+                            ui.add_enabled_ui(layout_context_ready && owned, |ui| {
+                                if ui.button("Grid").clicked() {
+                                    layout_mode = Some(("grid", owner));
+                                    ui.close();
+                                }
+                                if ui.button("Dependency order").clicked() {
+                                    layout_mode = Some(("layered", owner));
+                                    ui.close();
+                                }
+                            });
+                            ui.separator();
+                            if ui
+                                .add_enabled(owned && !self.text_focused && !canvas::text_input_focused(ui.ctx()), egui::Button::new("Comment on this node"))
+                                .clicked()
+                            {
+                                comment_target = Some((node.id, owner));
+                                ui.close();
+                            }
+                            ui.add_enabled_ui(tag_menu_allowed, |ui| {
+                                if let Some(action) = tags::tag_menu(ui, canvas, &self.selection, t, &self.tag_filter.presentation) {
+                                    tag_action = Some(action);
+                                }
+                            });
                             if ui.button("Select upstream").clicked() {
                                 query = Some(SelectQuery::Upstream);
                             }
@@ -699,9 +1030,34 @@ impl NodeCraftApp {
                             if ui.button(format!("Select all {label} nodes")).clicked() {
                                 query = Some(SelectQuery::Kind(node.kind.clone()));
                             }
+                            if nodecraft_engine::split::image_of(node).is_some() {
+                                ui.menu_button("Split into grid", |ui| {
+                                    let (rows, columns) = &mut self.split_size;
+                                    let side = 1..=nodecraft_engine::split::MAX_SIDE;
+                                    ui.add(egui::DragValue::new(rows).range(side.clone()).prefix("Rows: "));
+                                    ui.add(egui::DragValue::new(columns).range(side).prefix("Columns: "));
+                                    // The card draws these lines over its image while the menu is open.
+                                    self.split_seen = Some((node.id, *rows, *columns));
+                                    if self.split_shown != self.split_seen {
+                                        ui.ctx().request_repaint();
+                                    }
+                                    let tiles = rows.saturating_mul(*columns);
+                                    let fits = tiles <= nodecraft_engine::split::MAX_TILES;
+                                    let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));
+                                    let button = if fits {
+                                        button
+                                    } else {
+                                        button.on_disabled_hover_text(format!("At most {} tiles", nodecraft_engine::split::MAX_TILES))
+                                    };
+                                    if button.clicked() {
+                                        split_request = Some((node.id, *rows, *columns));
+                                        ui.close();
+                                    }
+                                });
+                            }
                         });
                     }
-                    if !overlay_blocks && r.drag_started_by(egui::PointerButton::Primary) {
+                    if !canvas_blocks && r.drag_started_by(egui::PointerButton::Primary) {
                         if let Some(serial) = self.next_gesture.checked_add(1) {
                             self.next_gesture = serial;
                             self.drag = Some(Drag { id: node.id, gesture: format!("canvas-drag-{serial}"), pos: node.pos });
@@ -710,7 +1066,7 @@ impl NodeCraftApp {
                             self.drag = None;
                         }
                     }
-                    if !overlay_blocks && (r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary)) {
+                    if !canvas_blocks && (r.dragged_by(egui::PointerButton::Middle) || r.dragged_by(egui::PointerButton::Secondary)) {
                         pan += r.drag_delta() * self.view.zoom;
                     }
                     for (side, port, r) in &result.ports {
@@ -742,7 +1098,10 @@ impl NodeCraftApp {
                         result
                             .intents
                             .into_iter()
-                            .filter(|intent| !overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                            .filter(|intent| {
+                                (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                                    && (!canvas_blocks || !matches!(intent, Intent::Move(_)))
+                            })
                             .map(|intent| (node.id, intent)),
                     );
                 }
@@ -804,6 +1163,15 @@ impl NodeCraftApp {
                     egui::Stroke::new(width, t.wire(*modality)),
                 ));
             }
+            // Badges show where their numbers can be read; dragging one reorders the input.
+            if !overlay_blocks && self.view.zoom >= card::BODY_MIN_ZOOM {
+                let badges = order::Badges { canvas_id: self.canvas, view: &self.view, reordering: &mut self.reordering };
+                let (command, badge_pan) = badges.show(ui, canvas, kinds, &curves, viewport, t);
+                wire_command = command;
+                pan += badge_pan;
+            } else {
+                self.reordering = None;
+            }
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
@@ -823,6 +1191,7 @@ impl NodeCraftApp {
                 Some(SelectQuery::Kind(kind)) => self.selection.replace(selection::of_kind(canvas, &kind)),
                 None => {}
             }
+            split_after = split_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -847,6 +1216,12 @@ impl NodeCraftApp {
         } else {
             self.selection.clear();
         }
+        if let Some(action) = tag_action {
+            if let Err(error) = self.apply_tag_action(action) {
+                self.notice = Some(error.message);
+            }
+            ui.ctx().request_repaint();
+        }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if self.selection != selected_before {
             ui.ctx().request_repaint();
@@ -854,11 +1229,20 @@ impl NodeCraftApp {
         if !ui.input(|i| i.pointer.primary_down()) {
             self.wiring = None;
         }
+        if let Some((node, rows, columns)) = split_after {
+            self.split_grid(node, rows, columns, t);
+        }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
                 Ok(_) => self.notice = None,
                 Err(error) => self.notice = Some(error.message),
             }
+        }
+        if let Some((mode, owner)) = layout_mode {
+            self.apply_layout_menu(ui.ctx(), mode, owner);
+        }
+        if let Some((node, owner)) = comment_target {
+            self.compose_on_node(ui.ctx(), node, Some(owner));
         }
         for (id, intent) in intents {
             let (command, params, editing) = match intent {
@@ -926,6 +1310,7 @@ impl NodeCraftApp {
                     });
                 });
         }
+        self.drop_files(ui, viewport, t);
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
             match open.show(ui.ctx(), &entries, t) {
@@ -933,6 +1318,11 @@ impl NodeCraftApp {
                 palette::Outcome::Closed => {}
                 palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
                 palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
+                    // The report is for reading elsewhere: put it on the clipboard.
+                    Ok(report) if id == "perf.report" => {
+                        ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
+                        self.notice = Some("Performance report copied to the clipboard.".into());
+                    }
                     Ok(_) => self.notice = None,
                     Err(error) => self.notice = Some(error.message),
                 },
@@ -946,11 +1336,14 @@ impl NodeCraftApp {
             }
         }
         self.navigation.finish_frame(ui.ctx());
+        self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
         self.text_focused = canvas::text_input_focused(ui.ctx());
+        self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
         self.keys_button(ui, viewport);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
+        ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
     }
 
     /// Top-right button that opens the API keys panel.
@@ -1291,6 +1684,11 @@ impl NodeCraftApp {
         }
     }
 }
+/// A transformed card painter needs its clip in the same world coordinates as its shapes.
+fn tag_world_clip(view: &CanvasView, viewport: Rect, parent_clip: Rect) -> Rect {
+    let screen = viewport.intersect(parent_clip);
+    Rect::from_min_max(view.to_world(viewport.min, screen.min), view.to_world(viewport.min, screen.max))
+}
 fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
     consume_shortcut_with_policy(input, shortcut, false)
 }
@@ -1312,6 +1710,9 @@ fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, na
             "2" => key = Some(egui::Key::Num2),
             "M" => key = Some(egui::Key::M),
             "F" => key = Some(egui::Key::F),
+            "S" => key = Some(egui::Key::S),
+            "O" => key = Some(egui::Key::O),
+            "C" => key = Some(egui::Key::C),
             "Enter" => key = Some(egui::Key::Enter),
             "Escape" => key = Some(egui::Key::Escape),
             _ => return false,
@@ -1335,6 +1736,14 @@ fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, na
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let title = self.window_title();
+            if title != self.title {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+                self.title = title;
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(results) = &self.key_results {
             self.keys.tick(ctx.input(|i| i.time));
@@ -1370,6 +1779,8 @@ impl eframe::App for NodeCraftApp {
     }
     fn on_exit(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
+        self.close_storage();
+        #[cfg(not(target_arch = "wasm32"))]
         // A read-only store (newer schema, unwritable folder) was reported at startup.
         if let Some(store) = &mut self.store
             && !store.is_read_only()
@@ -1385,9 +1796,17 @@ impl eframe::App for NodeCraftApp {
 }
 
 #[cfg(test)]
+mod action_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
+mod order_tests;
+#[cfg(test)]
 mod perf;
+#[cfg(test)]
+mod preview_tests;
+#[cfg(test)]
+mod split_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

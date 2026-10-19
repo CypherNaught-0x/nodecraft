@@ -336,7 +336,7 @@ mod reqwest_impl {
             if !request.body.is_empty() {
                 builder = builder.body(request.body.clone());
             }
-            let request = builder.build().map_err(|e| network(&e))?;
+            let request = builder.build().map_err(|_| ProviderError::new(ErrorKind::UnsupportedInput, "HTTP request could not be constructed"))?;
             // Delivery becomes possible when execute is INVOKED, before its future is polled.
             if let Some(context) = context {
                 context.unknown();

@@ -133,12 +133,34 @@ fn wasm_set(root: &Path) -> Result<Vec<String>, String> {
 fn cmd_wasm(root: &Path) -> Result<(), String> {
     let set = wasm_set(root)?;
     let mut c = cargo(root);
-    c.args(["check", "--target", "wasm32-unknown-unknown", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate"]);
+    c.args([
+        "check",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--features",
+        "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/gemini-images,nodecraft-providers/fal",
+    ]);
     for pkg in &set {
         c.args(["-p", pkg]);
     }
     run(c, &format!("cargo check --target wasm32-unknown-unknown ({} crates)", set.len()))?;
+    // Test tooling is intentionally outside the layered library set. Exercise the facade
+    // and opt-in implementation explicitly without changing shipping feature defaults.
+    let mut mocks = cargo(root);
+    mocks.args([
+        "check",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "nodecraft-provider-testkit",
+        "-p",
+        "nodecraft-providers",
+        "--features",
+        "nodecraft-providers/testkit",
+    ]);
+    run(mocks, "cargo check --target wasm32-unknown-unknown -p nodecraft-provider-testkit -p nodecraft-providers --features nodecraft-providers/testkit")?;
     println!("\nwasm32-unknown-unknown check: ok for {}", set.join(", "));
+    println!("wasm32-unknown-unknown opt-in check: ok for nodecraft-provider-testkit and nodecraft-providers/testkit");
     Ok(())
 }
 
@@ -169,13 +191,21 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
                 "--workspace",
                 "--all-targets",
                 "--features",
-                "nodecraft-providers/openai-images,nodecraft-providers/replicate",
+                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/gemini-images,nodecraft-providers/fal",
                 "--",
                 "-D",
                 "warnings",
             ]),
         ),
-        ("test", cargo_step(&["test", "--workspace", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate"])),
+        (
+            "test",
+            cargo_step(&[
+                "test",
+                "--workspace",
+                "--features",
+                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/gemini-images,nodecraft-providers/fal",
+            ]),
+        ),
         ("layers", Box::new(|| cmd_layers(root).and_then(|()| decisions::check(root)))),
         ("wasm", Box::new(|| cmd_wasm(root))),
     ];

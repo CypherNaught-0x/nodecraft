@@ -2,6 +2,9 @@ use super::*;
 use crate::{CancelSignal, Clock, ErrorKind, JobHandle, JobProgress, Provider, ProviderJob, RunLimits, Submission};
 use futures::executor::block_on;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+mod native_build_tests;
 fn error() -> ProviderError {
     ProviderError::new(ErrorKind::Network, "same diagnostic")
 }
@@ -173,7 +176,8 @@ async fn native_build_is_positive_but_any_execute_attempt_is_unknown() {
     let c = SubmitContext::new();
     c.arm();
     let failure = c.send(&http, HttpRequest::get("http://127.0.0.1:1").header("invalid\nheader", "public")).await.unwrap_err();
-    assert_eq!(failure.kind, ErrorKind::Network);
+    assert_eq!(failure.kind, ErrorKind::UnsupportedInput);
+    assert!(!failure.is_transient());
     assert!(c.finish_error().is_some());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -289,7 +293,8 @@ async fn actual_llm_provider_local_build_and_post_response_errors_use_evidence()
     request.inputs = vec![crate::JobInput::Text { role: "user".into(), text: "public".into() }];
     let p = LlmClient::new(endpoint("http://127.0.0.1:1".into(), Some(ApiKey::new("public\ninvalid"))), Arc::new(crate::ReqwestHttp::new().unwrap()));
     let f = crate::run_to_completion(&p, &request, &Never, &Instant, RunLimits::default(), |_| {}).await.unwrap_err();
-    assert_eq!(f.error.kind, ErrorKind::Network);
+    assert_eq!(f.error.kind, ErrorKind::UnsupportedInput);
+    assert!(!f.error.is_transient());
     assert!(!f.uncertain);
     for (status, body, kind) in [("200 OK", b"invalid JSON".as_slice(), ErrorKind::Malformed), ("401 Unauthorized", b"{}".as_slice(), ErrorKind::Auth)] {
         let (url, seen, task) = served(vec![reply(status, "", body)]);

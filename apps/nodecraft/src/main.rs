@@ -14,10 +14,15 @@ mod control;
 const APP_ID: &str = "io.github.cyphernaught0x.nodecraft";
 
 fn main() -> ExitCode {
-    // Desktop launchers can pass non-UTF-8 file names. Ignore unhandled arguments; future file
-    // opening must retain OS paths rather than requiring UTF-8 before creating the window.
-    // `--control`: accept local automation clients (see `control.rs`).
+    // `--control`: accept local automation clients (see `control.rs`). The first other argument
+    // that isn't a flag is a project to open (#406); OS paths are kept as they are.
     let control = std::env::args_os().skip(1).any(|a| a == "--control");
+    // Relative paths are made absolute here, while the working directory is the launcher's.
+    let project = std::env::args_os()
+        .skip(1)
+        .find(|a| !a.to_string_lossy().starts_with('-'))
+        .map(std::path::PathBuf::from)
+        .map(|path| if path.is_absolute() { path } else { std::env::current_dir().map(|dir| dir.join(&path)).unwrap_or(path) });
     if std::env::args_os().skip(1).any(|a| a == "--version" || a == "-V") {
         println!("nodecraft {}", nodecraft_engine::build_info::long_version());
         return ExitCode::SUCCESS;
@@ -46,7 +51,20 @@ fn main() -> ExitCode {
                 log::warn!("{problem}");
             }
             let dir = store.dir().map(std::path::Path::to_path_buf);
-            let app = nodecraft_ui_egui::NodeCraftApp::with_settings(&cc.egui_ctx, store)?;
+            // Project files and crash recovery: the journal lives in the settings folder. Without
+            // one (an in-memory settings store), the window still opens, without saving.
+            let storage = dir
+                .as_ref()
+                .map(|dir| nodecraft_ui_egui::app::storage::StorageSetup { recovery: dir.join("recovery").join("session.journal"), open: project.clone() });
+            if storage.is_none() {
+                log::warn!("no settings folder: project files are unavailable in this window");
+            }
+            let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings_and_storage(&cc.egui_ctx, store, storage)?;
+            // Performance reports name what draws the frames (#151).
+            if let Some(render) = cc.wgpu_render_state.as_ref() {
+                let info = render.adapter.get_info();
+                app.set_renderer(format!("{} ({:?})", info.name, info.backend));
+            }
             if control {
                 // Without the channel the app still opens; the log says why.
                 return match control::Controlled::start(app, &cc.egui_ctx, dir) {

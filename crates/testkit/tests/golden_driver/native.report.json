@@ -1,0 +1,36 @@
+{
+  "ambiguous": {
+    "attempts": 2,
+    "charges": [
+      {
+        "micros": 100000,
+        "status": "unresolved"
+      }
+    ],
+    "deliveries": 0,
+    "held": 0,
+    "retrying": 1,
+    "terminal": "failed"
+  },
+  "fresh": {
+    "attempts": 1,
+    "charges": [],
+    "deliveries": 0,
+    "held": 0,
+    "retrying": 0,
+    "terminal": "failed"
+  },
+  "positive": {
+    "attempts": 1,
+    "charges": [
+      {
+        "micros": 100000,
+        "status": "actual"
+      }
+    ],
+    "deliveries": 1,
+    "held": 0,
+    "retrying": 0,
+    "terminal": "done"
+  }
+}

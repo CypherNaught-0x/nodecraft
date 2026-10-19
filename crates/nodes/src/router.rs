@@ -100,6 +100,6 @@ mod tests {
         assert!(kind.resolve_instance(&bad).is_err());
         bad.config.insert(MODALITY.into(), Value::Bool(true));
         assert!(kind.resolve_instance(&bad).is_err());
-        assert!(kind.plan(&PlanCtx { node: &text, inputs: &[] }).is_err());
+        assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &text, inputs: &[] }).is_err());
     }
 }

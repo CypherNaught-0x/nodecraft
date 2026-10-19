@@ -19,6 +19,8 @@ pub struct Geometry {
     key: Option<(ProjectId, CanvasId, u64, ThemeKind)>,
     session_identity: Option<Arc<SessionIdentity>>,
     pub rects: BTreeMap<NodeId, Rect>,
+    /// Checked instance sizes for layout (two scalars), excluding navigation placeholders.
+    pub sizes: BTreeMap<NodeId, Vec2>,
     /// Checked instance labels: at most256bytes per actual node; no descriptor bodies retained.
     pub labels: BTreeMap<NodeId, String>,
     pub error: bool,
@@ -36,6 +38,7 @@ impl Geometry {
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
+            self.sizes.clear();
             self.labels.clear();
             self.key = None;
             self.error = true;
@@ -48,12 +51,16 @@ impl Geometry {
         self.key = Some(key);
         self.session_identity = Some(identity);
         self.rects.clear();
+        self.sizes.clear();
         self.labels.clear();
         self.error = false;
         let mut validated = ValidatedDescriptors::default();
         for node in scene.nodes().values() {
             match instance_info(session, node, theme.tokens(), &mut validated) {
-                Ok((rect, label)) => {
+                Ok((rect, size, label)) => {
+                    if let Some(size) = size {
+                        self.sizes.insert(node.id, size);
+                    }
                     self.rects.insert(node.id, rect);
                     self.labels.insert(node.id, label);
                 }
@@ -93,13 +100,13 @@ fn instance_info<'a>(
     node: &nodecraft_graph::Node,
     t: &Tokens,
     validated: &mut ValidatedDescriptors<'a>,
-) -> Result<(Rect, String), Error> {
+) -> Result<(Rect, Option<Vec2>, String), Error> {
     node.validate_payload()?;
     // Match painting's bounded placeholder on every schema-resolution/admission failure.
     let placeholder = || {
         let rect = card::world_rect(node, None, t);
         if valid_rect(rect) {
-            Ok((rect, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() }))
+            Ok((rect, None, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() }))
         } else {
             Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable"))
         }
@@ -162,11 +169,11 @@ fn instance_info<'a>(
     if !valid_rect(rect) {
         return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
     }
-    Ok((rect, if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
+    Ok((rect, Some(card::world_size(node, Some(&descriptor), t)), if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
 }
 #[cfg(test)]
 fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<Rect, Error> {
-    instance_info(session, node, t, validated).map(|(rect, _)| rect)
+    instance_info(session, node, t, validated).map(|(rect, _, _)| rect)
 }
 /// Includes the painted title/unsaved label, body and handles at ordinary zoom. Additional
 /// screen padding in fit accounts for minimum screen-sized text/handles at low zoom.
