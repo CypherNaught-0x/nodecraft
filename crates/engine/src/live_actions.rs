@@ -25,7 +25,9 @@ pub struct LiveJob {
     /// Random per round, like any run's: generation ids derive from it, so a reopened project
     /// (whose revisions count from zero again) never makes ids its history already holds.
     id: [u8; 16],
-    plan: RunPlan,
+    plan: Option<RunPlan>,
+    /// Cached results to apply instead of computing (#91): a round either reuses or computes.
+    hits: Vec<crate::cache::Hit>,
     live: Canvas,
     assets: AssetStore,
 }
@@ -37,6 +39,7 @@ pub struct LiveOutcome {
     pub results: Vec<(NodeId, Generation)>,
     /// Failed nodes, why, and the input hash they failed with (to not retry until it changes).
     pub failed: Vec<(NodeId, String, Option<nodecraft_types::Blake3>)>,
+    hits: Vec<crate::cache::Hit>,
     staged: AssetStore,
 }
 
@@ -69,6 +72,12 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     if wanted.is_empty() {
         return Ok(None);
     }
+    // Results already made for these exact inputs are reused first (free); what they feed is
+    // planned in the next round, from the document with them in place.
+    let hits = crate::cache::hits(session.document(), canvas, kinds, wanted.iter().copied(), crate::cache::fresh_id)?;
+    if !hits.is_empty() {
+        return Ok(Some(LiveJob { canvas, base: session.revision(), id: [0; 16], plan: None, hits, live: live.clone(), assets: AssetStore::default() }));
+    }
     // Plan each wanted node on its own terms: one that can't run yet (nothing connected, or a
     // model upstream with no result) mustn't hold the others back.
     let mut runnable = BTreeSet::new();
@@ -82,13 +91,15 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     if runnable.is_empty() {
         return Ok(None);
     }
+    // One round records at most one step's worth; the rest follow in the next round.
+    let runnable: BTreeSet<NodeId> = runnable.into_iter().take(crate::run_cmds::MAX_RESULTS).collect();
     let Planned::Ready(plan) = plan(live, kinds, &RunMode::WithUpstream, &runnable, &stale)? else { return Ok(None) };
     if !local_only(&plan, live, kinds) {
         return Ok(None);
     }
     let mut id = [0u8; 16];
     id.copy_from_slice(crate::execution_identity::nonce()?.get(..16).unwrap_or(&[0; 16]));
-    Ok(Some(LiveJob { canvas, base: session.revision(), id, plan, live: live.clone(), assets: session.assets().clone() }))
+    Ok(Some(LiveJob { canvas, base: session.revision(), id, plan: Some(plan), hits: Vec::new(), live: live.clone(), assets: session.assets().clone() }))
 }
 
 /// Whether every step is a source, an action or structure: nothing that calls a model.
@@ -102,12 +113,15 @@ fn local_only(plan: &RunPlan, live: &Canvas, kinds: &Registry) -> bool {
 
 /// Runs `job` (any thread): sources emit their values, actions run on [`LocalActions`].
 pub fn compute(job: LiveJob, kinds: &Registry) -> Result<LiveOutcome, Error> {
+    let Some(plan) = &job.plan else {
+        return Ok(LiveOutcome { canvas: job.canvas, base: job.base, results: Vec::new(), failed: Vec::new(), hits: job.hits, staged: AssetStore::default() });
+    };
     // The worker's kinds must be the planner's: a kind it doesn't know can't run here.
-    if let Some(step) = job.plan.steps.iter().find(|step| kinds.get(&step.kind).is_err()) {
+    if let Some(step) = plan.steps.iter().find(|step| kinds.get(&step.kind).is_err()) {
         return Err(Error::new(ErrorKind::Unsupported, format!("live recompute doesn't know the {} node kind", step.kind)));
     }
     let options = RunOptions { id: job.id, first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
-    let (mut run, first) = Run::start(&job.plan, job.canvas, &job.live, kinds, options)?;
+    let (mut run, first) = Run::start(plan, job.canvas, &job.live, kinds, options)?;
     let actions = LocalActions::new(job.assets);
     let mut queue: VecDeque<_> = first.jobs.into_iter().collect();
     let mut finished: BTreeMap<NodeId, Generation> = first.finished.into_iter().map(|r| (r.node, r.generation)).collect();
@@ -133,16 +147,16 @@ pub fn compute(job: LiveJob, kinds: &Registry) -> Result<LiveOutcome, Error> {
         |id: &NodeId| job.live.nodes().get(id).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category == Category::Action);
     let results = finished.into_iter().filter(|(id, _)| actions_only(id)).collect();
     let failed = failed.into_iter().map(|(id, reason)| (id, reason, hash(&id))).collect();
-    Ok(LiveOutcome { canvas: job.canvas, base: job.base, results, failed, staged: actions.take_staged() })
+    Ok(LiveOutcome { canvas: job.canvas, base: job.base, results, failed, hits: Vec::new(), staged: actions.take_staged() })
 }
 
 /// Records `outcome` if the document is still the one it was computed from. `Ok(false)` when
 /// it is out of date (another recompute follows) or produced nothing.
 pub fn apply(session: &mut Session, outcome: LiveOutcome) -> Result<bool, Error> {
-    if outcome.results.is_empty() || session.revision() != outcome.base {
+    if (outcome.results.is_empty() && outcome.hits.is_empty()) || session.revision() != outcome.base {
         return Ok(false);
     }
-    match session.record_derived(outcome.canvas, outcome.results, &outcome.staged, outcome.base) {
+    match session.record_derived_with(outcome.canvas, outcome.results, &outcome.hits, &outcome.staged, outcome.base) {
         Ok(()) => Ok(true),
         Err(error) if error.kind == ErrorKind::Conflict => Ok(false),
         Err(error) => Err(error),
