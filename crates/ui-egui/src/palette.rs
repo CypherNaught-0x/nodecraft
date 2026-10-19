@@ -11,7 +11,7 @@ pub const MAX_ROWS: usize = 12;
 pub enum Target {
     /// A node kind id, created with `node.create`.
     Kind(String),
-    /// A command id, dispatched with `{}`.
+    /// A command id; the app supplies supported active-canvas context or `{}`.
     Command(&'static str),
 }
 

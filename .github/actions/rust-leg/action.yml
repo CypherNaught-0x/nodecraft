@@ -1,0 +1,116 @@
+name: rust leg
+description: >-
+  One platform's run of the Rust gates. Shared by the three named legs in ci.yml, which are three
+  plain jobs rather than one matrix on purpose: a matrix job skipped before it expands publishes its
+  unexpanded name, and the three literal `rust (<os>)` names are required status checks. See
+  docs/decisions/2026-10-18-rust-ci-skips-prose-only-changes.md.
+
+inputs:
+  platform:
+    description: linux, windows or macos, for the steps only one platform needs.
+    required: true
+  nextest-target:
+    description: The nextest release archive target for this platform.
+    required: true
+  nextest-sha256:
+    description: The SHA-256 of that archive, verified before it is extracted.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # There is no checkout step in here, and there cannot be one that works: a local action is read
+    # out of the job's workspace, so the CALLER has to run actions/checkout before GitHub can even
+    # find this file. Each leg in ci.yml does that as its own first step. (An earlier revision
+    # checked out in here too, which failed the job before any step ran: "Can't find 'action.yml'
+    # … Did you forget to run actions/checkout before running your local action?".)
+
+    # Only two things vary per leg: which runner, and which nextest archive. Computed once so the
+    # steps below read as conditions rather than as a platform name interpolated into a shell command,
+    # which would be an injection pattern in a file every pull request can edit.
+    #
+    # There is deliberately no "does the workspace exist yet" guard around the build steps. The legs
+    # inherited a `hashFiles('Cargo.toml') != ''` guard from when the workspace was still a plan
+    # (milestone M0), and that guard was a hole: delete Cargo.toml and every step skips, so all three
+    # required checks go green having built nothing. The workspace exists now, so a missing manifest is
+    # a failure to report, not a reason to pass.
+    - name: Which steps this platform runs
+      id: plat
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+      run: printf 'once=%s\n' "$([ "$PLATFORM" = linux ] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+
+    - name: Linux system dependencies (egui/winit)
+      if: steps.plat.outputs.once == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+    - name: toolchain
+      shell: bash
+      run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup target add wasm32-unknown-unknown
+
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+    - name: Install pinned nextest (verify before extracting)
+      shell: pwsh
+      env:
+        NEXTEST_VERSION: 0.9.148
+        NEXTEST_TARGET: ${{ inputs.nextest-target }}
+        NEXTEST_SHA256: ${{ inputs.nextest-sha256 }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $archive = Join-Path $env:RUNNER_TEMP 'nextest.tar.gz'
+        $bin = Join-Path $env:RUNNER_TEMP 'nextest-bin'
+        $name = "cargo-nextest-$env:NEXTEST_VERSION-$env:NEXTEST_TARGET.tar.gz"
+        $url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$env:NEXTEST_VERSION/$name"
+        Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+        $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+        if ($actual -cne $env:NEXTEST_SHA256) { throw "nextest checksum mismatch: expected $env:NEXTEST_SHA256, got $actual" }
+        New-Item -ItemType Directory -Force -Path $bin | Out-Null
+        tar -xzf $archive -C $bin
+        if ($LASTEXITCODE -ne 0) { throw 'nextest archive extraction failed' }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    # fmt, the wasm targets and the architectural gates run once, on Linux, as they did in the matrix.
+    # Each platform leg keeps clippy, the test suite and the doctests.
+    - name: fmt
+      if: steps.plat.outputs.once == 'true'
+      shell: bash
+      run: cargo fmt --all --check
+
+    # The provider features below came with these three steps from the legs in ci.yml. They stay on
+    # every platform, as they were there: clippy and the suite ran on all three, so a provider that
+    # only compiles on Linux is still a broken provider.
+    - name: clippy
+      shell: bash
+      run: cargo clippy --workspace --all-targets --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images -- -D warnings
+
+    - name: tests
+      shell: bash
+      run: cargo nextest run --workspace --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images --profile ci
+
+    - name: Native video protocol (no external tools required)
+      shell: bash
+      run: cargo test -p nodecraft-media --features video && cargo clippy -p nodecraft-media --features video --all-targets -- -D warnings
+
+    - name: Video wasm API
+      if: steps.plat.outputs.once == 'true'
+      shell: bash
+      run: cargo check -p nodecraft-media --features video --target wasm32-unknown-unknown
+
+    - name: doctests
+      shell: bash
+      run: cargo test --doc --workspace --features nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/gemini-images
+
+    # `cargo xtask layers` does not validate decision records on its own: only `cargo xtask ci` wires
+    # decisions into it (xtask/src/main.rs). So the validator is named here. It runs on Linux only,
+    # where it belongs, and the docs gate runs the same command for a prose-only pull request — which
+    # is the case where these legs skip. Together the two cover every pull request.
+    - name: layers, decisions and wasm
+      if: steps.plat.outputs.once == 'true'
+      shell: bash
+      run: cargo xtask layers && cargo run -p xtask -- decisions && cargo xtask wasm

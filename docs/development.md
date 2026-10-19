@@ -27,12 +27,47 @@ node --test scripts/claim/*.test.js  # the claim bot
 UI behaviour is tested headless with `egui_kittest` (see `crates/ui-egui/src/app.rs`): the tests
 drive pointer and key events through the real canvas and check the resulting view and card state.
 
+Native file-drop tests live under `app::drop` in `ui-egui`. They use isolated instances of the
+same fixed-worker machinery with bounded backend gates, fake monotonic clocks and real temporary
+files. On Unix one test drops a real FIFO with no writer, which the non-blocking open refuses
+at once; none waits on a hanging one. Run `cargo test -p nodecraft-ui-egui --lib app::drop`.
+The ordinary UI tests include persistent Session Open/Save, cancellation, stale delivery, pointer
+ownership, captured placement and one-step undo. Acquisition tests cap reported read work and
+owned buffer capacity; those counters are not total process RSS or physical device I/O. Windows
+and other platforms still need their native CI; local macOS results do not prove them.
+
 GitHub CI runs `cargo nextest run --workspace --profile ci` and then `cargo test --doc --workspace`
 on Linux, Windows and macOS. The workflow pins nextest and verifies each release archive against
 a checked-in SHA-256 before extracting it. When updating nextest, update the version and all three
 checksums together from the `.sha256` files published beside the archives on the
 [official nextest release](https://github.com/nextest-rs/nextest/releases). `cargo xtask ci` continues to use `cargo test`
 so local checks do not require nextest.
+
+A pull request that changes nothing but documentation and repository tooling skips those three legs:
+a `rust scope` job classifies the change set and the three `rust (<os>)` legs run on its answer.
+`scripts/ci/rust-scope.sh` holds the whitelist and is deliberately the short list — anything unknown
+builds — because a change to a file the build reads (a manifest, `clippy.toml`, `.gitattributes`,
+anything in `assets/`) can break tests while touching no code. Only a pull request based on `main` may
+skip, the classifier CI runs is the copy committed on the base revision, that copy runs before CI runs
+anything the pull request wrote and in a scrubbed environment, and a change anywhere in `scripts/ci/`,
+`.github/workflows/` or `.github/actions/` forces a full build — together, the four things that stop a
+pull request rewriting the whitelist to excuse itself. The legs are three named jobs rather than one
+matrix, because a conditional that stops a matrix from expanding publishes an unexpanded job name and
+the required checks then never report; they share `.github/actions/rust-leg/action.yml`. The
+classifier's own tests, `scripts/ci/rust-scope.test.sh`, run in the scope job *after* the decision is
+recorded, and they assert that ordering along with the rest of the wiring. Skipped change sets get a
+`docs gate` job instead: `git diff --check` over the same merge base, plus `cargo xtask decisions` —
+which the Linux leg also runs, since `cargo xtask layers` does not include it on its own. Pushes to
+`main` and manual runs always build everything, and `claim bot tests` is unconditional and fails if its
+test files disappear. The reasons, including why this is a job and not `paths-ignore`, are in
+[the decision record](decisions/2026-10-18-rust-ci-skips-prose-only-changes.md).
+
+**Until `rust scope` and `docs gate` are added to the branch ruleset's required status checks, a
+docs-only pull request can merge with nothing required having checked its contents.** [#425](https://github.com/CypherNaught-0x/NodeCraft/issues/425)
+tracks that edit, and it has to happen **after** this workflow reaches `main`: ruleset strict mode
+means a required context that a branch's workflow never publishes leaves that pull request Pending
+forever, so adding the contexts first would freeze every open pull request. Land the workflow, let the
+open pull requests pick it up, then add the two contexts. The four there now keep their exact names.
 
 ## Benchmarks
 
@@ -115,7 +150,7 @@ rather than reusing an old recorder-only nanosecond estimate.
 | Command | Does |
 |---|---|
 | `cargo xtask layers` | print the crate → layer table and fail on layering violations |
-| `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate |
+| `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate and the `nodecraft-web` app |
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
 | `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
@@ -154,3 +189,43 @@ Native `nodecraft-exec` tests use the pinned `allocation-counter` dev-dependency
 allocation-free metadata finalization. Its allocator applies to the entire exec test binary, including
 unrelated tests, so coordinate any additional test allocator instrumentation. Production and wasm
 allocators are unchanged.
+
+### Checking stale canvas results
+
+Double-click empty canvas space, search for **List stale results**, and choose it to run the
+existing `canvas.stale` command for that canvas. The bottom-left notice shows the last explicit
+check, its stale-result count and the number of checked results whose inputs could not be hashed.
+A diagnostic distinguishes the checked result from its failing input node. Only results with
+recorded hashes are hash-checked; downstream staleness can propagate, and unrecorded results are
+not verified fresh. Changing the document, canvas or session clears the display. View changes
+and Save can retain the historical check; rerun it after changing external configuration.
+
+## Physical storage validation
+
+Ordinary tests run only small same-path calibration:
+
+```sh
+cargo test -p nodecraft-engine --test physical_zip64147 physical_zip64_session_small_calibration -- --nocapture
+cargo test -p nodecraft-format --lib physical_zip64_atomic_small_calibration -- --nocapture
+```
+
+The two ignored large tests each physically write/verify `u32::MAX + 2` asset bytes, without a
+sparse file, reflink or giant buffer. They are manual resource-intensive proof, not ordinary CI.
+Before running, review the exact frozen harness and simultaneous extent/reader/debt inventory,
+obtain separate resource approval, refresh free space on the selected volume, and run these
+commands sequentially in a dedicated existing parent directory. Each owned fixture is removed
+before its test returns. The engine test must finish and clean up before the atomic test starts.
+
+```sh
+NODECRAFT_PHYSICAL147=1 NODECRAFT_PHYSICAL147_ROOT=/chosen/existing/parent CARGO_INCREMENTAL=0 cargo test -p nodecraft-engine --test physical_zip64147 physical_zip64_session_large -- --ignored --exact --nocapture
+NODECRAFT_PHYSICAL147=1 NODECRAFT_PHYSICAL147_ROOT=/chosen/existing/parent CARGO_INCREMENTAL=0 cargo test -p nodecraft-format --lib storage::native::physical147::physical_zip64_atomic_large -- --ignored --exact --nocapture
+```
+
+Retain full logs, exact source/toolchain/binary provenance, successful write counters and per-phase
+extent inventories. Source reads, logical reservations and allocated filesystem blocks are
+separate measures. On 2026-10-18 both large commands passed sequentially on native macOS with
+4,294,967,297-byte assets; the atomic fault followed 4,294,967,296 successfully forwarded file-write
+bytes, above u32::MAX. Small calibration does not establish those results. The accepted physical
+run does not replace final CI or later source-composition checks; future runs still need their
+own resource review. See [storage.md](storage.md) for measured values and platform/RSS/device-write
+limitations.

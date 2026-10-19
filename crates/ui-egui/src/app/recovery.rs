@@ -7,7 +7,7 @@
 //! so, and one that can't be read is left where it is, with its name.
 use super::{NodeCraftApp, storage};
 use crate::theme::Tokens;
-use nodecraft_format::{Snapshot, StorageLocation, journal};
+use nodecraft_format::{Snapshot, StorageLocation};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -38,16 +38,13 @@ pub struct RecoveryOffer {
 impl RecoveryOffer {
     /// Reads and replays the kept journal at `kept`.
     pub fn read(kept: PathBuf) -> Self {
-        let found = std::fs::read(&kept)
-            .map_err(|_| "it can't be read".to_owned())
-            .and_then(|bytes| journal::recover(&bytes).map_err(|error| error.message))
-            .map(|recovered| Found {
-                title: recovered.snapshot.project.title().to_owned(),
-                changes: recovered.applied,
-                damaged: recovered.damage.is_some(),
-                torn: recovered.truncated_tail,
-                snapshot: recovered.snapshot,
-            });
+        let found = storage::replay_kept(&kept).map_err(|error| error.message).map(|recovered| Found {
+            title: recovered.snapshot.project.title().to_owned(),
+            changes: recovered.applied,
+            damaged: recovered.damage.is_some(),
+            torn: recovered.truncated_tail,
+            snapshot: recovered.snapshot,
+        });
         Self { location: storage::recorded_location(&kept), kept, found, older: Vec::new() }
     }
 
@@ -79,7 +76,7 @@ impl RecoveryOffer {
 
     /// Removes this copy and the older ones that replay (theirs is the same work, or less).
     fn remove(&self) {
-        let replays = |path: &Path| std::fs::read(path).ok().is_some_and(|bytes| journal::recover(&bytes).is_ok());
+        let replays = |path: &Path| storage::replay_kept(path).is_ok();
         let older = self.older.iter().filter(|path| replays(path));
         for path in std::iter::once(&self.kept).chain(older) {
             remove_copy(path);

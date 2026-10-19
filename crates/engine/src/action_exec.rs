@@ -193,10 +193,18 @@ impl LocalActions {
     fn raster(&self, value: Option<&Value>) -> Result<Raster, String> {
         let Some(Value::Media(source)) = value else { return Err("connect an image first".into()) };
         let staged = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash).map(<[u8]>::to_vec);
-        let bytes = match &staged {
-            Some(bytes) => bytes.as_slice(),
-            None => self.assets.get(&source.hash).ok_or("the input image isn't in this project")?,
+        // This executes on the action worker. The same bounded image capability as card
+        // previews pins native sources and authenticates encoded bytes before decoding.
+        let native = if staged.is_none() && self.assets.get(&source.hash).is_none() {
+            let input = self.assets.preview_read(source).map_err(|error| match error {
+                nodecraft_format::PreviewReadError::Missing => "the input image isn't in this project",
+                _ => "the input image can't be read",
+            })?;
+            Some(input.read_verified(&Default::default(), &Default::default()).map_err(|_| "the input image can't be read")?)
+        } else {
+            None
         };
+        let bytes = staged.as_deref().or(native.as_deref()).or_else(|| self.assets.get(&source.hash)).ok_or("the input image isn't in this project")?;
         let actions = ImageLimits::default();
         let limits = decode_limits();
         let meta = nodecraft_media::probe_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;

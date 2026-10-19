@@ -16,6 +16,8 @@ pub const ID: &str = "image.shader";
 pub const CONFIG: &str = "nodecraft.shader";
 /// The parameter the planned job carries the shader in (not a control).
 pub const SPEC_PARAM: &str = "nodecraft.shader";
+/// Largest encoded shader configuration, shared by its writer and reader.
+pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
 /// A declared parameter, as stored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -49,15 +51,22 @@ impl Default for StoredShader {
 pub fn stored(node: &Node) -> Result<StoredShader, Error> {
     match node.config.get(CONFIG) {
         None => Ok(StoredShader::default()),
-        Some(Value::Text(json)) if json.len() <= 64 * 1024 => serde_json::from_str(json).map_err(|_| invalid("the node's shader can't be read")),
+        Some(Value::Text(json)) if json.len() <= MAX_CONFIG_BYTES => serde_json::from_str(json).map_err(|_| invalid("the node's shader can't be read")),
         Some(_) => Err(invalid("the node's shader can't be read")),
     }
 }
 
 /// The config value storing `shader`.
 pub fn config_value(shader: &StoredShader) -> Result<Value, Error> {
-    serde_json::to_string(shader).map(Value::Text).map_err(|_| invalid("the shader can't be stored"))
+    let json = serde_json::to_string(shader).map_err(|_| invalid("the shader can't be stored"))?;
+    if json.len() > MAX_CONFIG_BYTES {
+        return Err(invalid("the encoded shader exceeds 64 KiB; shorten its source or parameter labels"));
+    }
+    Ok(Value::Text(json))
 }
+
+#[cfg(test)]
+mod tests;
 
 fn descriptor(params: Vec<ParamSpec>) -> NodeDescriptor {
     NodeDescriptor {

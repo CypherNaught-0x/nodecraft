@@ -1,5 +1,8 @@
 //! Image metadata and decoding behind size caps.
 
+mod reader;
+pub use reader::{MAX_IMAGE_PROBE_BYTES, probe_image_reader};
+
 use std::io::Cursor;
 
 use image::metadata::Orientation;

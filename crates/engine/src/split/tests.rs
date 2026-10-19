@@ -1,7 +1,10 @@
 use super::*;
 use crate::import::{Incoming, import_files};
-use nodecraft_graph::{Canvas, Change, Project};
+use nodecraft_format::MAX_ASSET_BYTES;
+use nodecraft_graph::{Canvas, Change, Position, Project};
+use nodecraft_media::{Limits, decode_image, encode_png};
 use nodecraft_types::ProjectId;
+use serde_json::json;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 const SOURCE: NodeId = NodeId::from_bytes([1; 16]);

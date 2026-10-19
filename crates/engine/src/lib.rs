@@ -13,6 +13,7 @@ mod command_schemas;
 pub mod commands;
 pub mod comment_cmds;
 pub mod create_cmds;
+pub mod describe_cmds;
 pub mod edge_cmds;
 mod execution_identity;
 pub mod file_cmds;
@@ -46,7 +47,7 @@ pub mod tag_cmds;
 pub mod tag_filter_cmds;
 pub mod turn_into_cmds;
 
-pub use session::{DocChanged, Session};
+pub use session::{DocChanged, PreparedImports, Session};
 
 pub mod provider_routing;
 pub mod provider_setup;

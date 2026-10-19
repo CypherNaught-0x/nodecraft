@@ -29,6 +29,7 @@ impl Registry {
     pub fn register(&mut self, kind: Box<dyn NodeKind>) -> Result<(), Error> {
         let descriptor = kind.descriptor();
         descriptor.validate()?;
+        kind.contract(descriptor).validate(descriptor)?;
         if self.kinds.contains_key(&descriptor.id) {
             return Err(Error::new(ErrorKind::Conflict, "node kind is already registered"));
         }
@@ -43,6 +44,14 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> Result<&dyn NodeKind, Error> {
         self.kinds.get(id).map(Box::as_ref).ok_or_else(|| Error::new(ErrorKind::NotFound, "unknown node kind"))
+    }
+
+    /// The checked static contract of a registered kind.
+    pub fn contract(&self, id: &str) -> Result<crate::NodeContract, Error> {
+        let kind = self.get(id)?;
+        let contract = kind.contract(kind.descriptor());
+        contract.validate(kind.descriptor())?;
+        Ok(contract)
     }
 
     pub fn descriptors(&self) -> impl Iterator<Item = &NodeDescriptor> {

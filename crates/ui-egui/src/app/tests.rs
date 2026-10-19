@@ -1967,6 +1967,9 @@ fn changing_height_harness(tall: bool) -> Harness<'static, NodeCraftApp> {
             &self.0
         }
         fn instance<'a>(&'a self, node: &Node) -> Result<std::borrow::Cow<'a, NodeDescriptor>, Error> {
+            if node.title == "Unavailable instance" {
+                return Err(Error::new(nodecraft_types::ErrorKind::InvalidInput, "fixture instance is unavailable"));
+            }
             Ok(std::borrow::Cow::Borrowed(if node.title == "Tall" { &self.1 } else { &self.0 }))
         }
         fn mode(&self, _: &[PortType]) -> Option<ModeId> {
@@ -2050,6 +2053,41 @@ fn first_frame_hover_after_growth() {
 #[test]
 fn first_frame_hover_after_shrink() {
     first_frame_hover(true);
+}
+
+#[test]
+fn unavailable_instance_placeholder_owns_wheel_hover_but_not_surrounding_canvas() {
+    for inside in [true, false] {
+        let mut h = changing_height_harness(true);
+        h.run();
+        let canvas = h.state().canvas;
+        let id = NodeId::from_bytes([3; 16]);
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id,"title":"Unavailable instance"})).unwrap();
+        h.run();
+        let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap();
+        assert!(h.state().session.kinds().get(&node.kind).unwrap().resolve_instance(node).is_err());
+        let placeholder = card::world_rect(node, None, h.state().theme.tokens());
+        assert_eq!(h.state().painted.get(&id), Some(&placeholder));
+        assert_eq!(h.state().navigation.geometry.rects.get(&id), Some(&placeholder));
+        assert!(!h.state().navigation.geometry.sizes.contains_key(&id), "placeholder is not valid layout geometry");
+        let point = if inside { placeholder.center() } else { placeholder.max + Vec2::splat(40.0) };
+        let pointer = h.state().view.to_screen(h.state().viewport.min, point);
+        h.hover_at(pointer);
+        h.step();
+        let pan = h.state().view.pan;
+        let before = h.state().session.document().clone();
+        let revision = h.state().session.revision();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: Vec2::new(0.0, 40.0),
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(h.state().view.pan == pan, inside, "painted placeholder owns wheel; surrounding canvas permits pan");
+        assert_eq!(h.state().session.document(), &before);
+        assert_eq!(h.state().session.revision(), revision);
+    }
 }
 
 #[test]

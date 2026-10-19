@@ -282,3 +282,25 @@ fn an_overlay_plans_with_both_of_its_inputs_in_port_order() {
     assert!(kind.plan(&PlanCtx { node: &node, inputs: &[input("image", 1)], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).is_err(), "both are needed");
     assert!(kind.mode(&[t, t]).is_some() && kind.mode(&[t]).is_some() && kind.mode(&[t, t, t]).is_none());
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_imported_image_runs_local_actions_without_resident_materialization() {
+    use nodecraft_format::{
+        NativeStorage, ProjectStorage,
+        asset_source::{AssetRange, MemorySource},
+    };
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let storage = NativeStorage::new(dir.path().join("recovery")).unwrap();
+    let mut assets = AssetStore::with_context(storage.asset_context().unwrap());
+    let bytes = png(40, 20);
+    let range = AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes.as_slice()))), 0, bytes.len() as u64).unwrap();
+    let hash = assets.import_stream(&range, &Default::default(), &Default::default()).unwrap();
+    assert!(assets.get(&hash).is_none());
+    let actions = LocalActions::new(assets);
+    let kinds = Registry::builtins().unwrap();
+    let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let Value::Media(result) = actions.execute("image.resize", &defaults(&kinds, "image.resize"), &[image]).unwrap() else { panic!() };
+    assert_eq!((result.meta.width, result.meta.height), (Some(20), Some(10)));
+}

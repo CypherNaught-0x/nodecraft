@@ -114,3 +114,37 @@ fn kept_values_move_into_the_new_range_and_damaged_config_is_an_error_not_a_pani
     );
     assert!(kind.resolve_instance(&inverted).is_err(), "min above max");
 }
+
+#[test]
+fn escaped_shader_over_reader_limit_preserves_document_and_history() {
+    let mut s = session();
+    let initial = s.document().clone();
+    s.dispatch(
+        "node.shader_set",
+        &json!({"canvas": CANVAS, "id": SHADER, "source": POSTERIZE,
+            "params": [{"name": "levels", "label": "Levels", "min": 2.0, "max": 16.0, "default": 4.0}]}),
+    )
+    .unwrap();
+    let before = s.document().clone();
+    let revision = s.revision();
+    let status = s.file_status();
+    let history = (s.can_undo(), s.can_redo());
+    let effect = "fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }";
+    let source = "\t".repeat(nodecraft_gpu::shader::MAX_SOURCE - effect.len()) + effect;
+    let params: Vec<_> = (0..16).map(|i| json!({"name": format!("p{i}"), "label": "P", "min": 0.0, "max": 1.0, "default": 0.0})).collect();
+    let result = s.dispatch("node.shader_set", &json!({"canvas": CANVAS, "id": SHADER, "source": source, "params": params}));
+    assert!(result.is_err(), "an encoded shader above its reader limit must be refused, got {result:?}");
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, nodecraft_types::ErrorKind::InvalidInput);
+    assert!(error.message.contains("64 KiB"), "{}", error.message);
+    assert_eq!(s.document(), &before);
+    assert_eq!(s.revision(), revision);
+    assert_eq!(s.file_status(), status);
+    assert_eq!((s.can_undo(), s.can_redo()), history);
+    assert!(s.events_since(revision).unwrap().is_empty());
+    assert_eq!(sliders(&s), ["levels"], "the previous shader stays readable");
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &initial, "refusal added no undo entry");
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before, "the previous successful edit remains redoable");
+}

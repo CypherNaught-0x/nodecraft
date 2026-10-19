@@ -289,6 +289,7 @@ mod order;
 mod recovery;
 mod search;
 mod split;
+mod stale;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 mod tags;
@@ -317,6 +318,9 @@ pub struct NodeCraftApp {
     store: Option<nodecraft_engine::settings::SettingsStore>,
     pub viewport: Rect,
     pub notice: Option<String>,
+    stale_snapshot: Option<stale::StaleSnapshot>,
+    #[cfg(not(target_arch = "wasm32"))]
+    drop_acquisition: drop::Acquisition,
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
@@ -593,6 +597,9 @@ impl NodeCraftApp {
             store: None,
             viewport: Rect::NOTHING,
             notice: None,
+            stale_snapshot: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            drop_acquisition: drop::Acquisition::new(),
             editors: BTreeMap::new(),
             drag: None,
             marquee: None,
@@ -698,6 +705,7 @@ impl NodeCraftApp {
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
         }
         let tag_blocks = self.tag_overlay(ui);
+        let drop_blocks = self.poll_drop(ui, t);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
@@ -712,16 +720,23 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
-            let command = ui.input_mut(|input| {
-                self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
-                    spec.shortcut
-                        .into_iter()
-                        .chain(spec.alternate_shortcuts.iter().copied())
-                        .any(|shortcut| consume_shortcut(input, shortcut))
-                        .then_some(spec.id)
+        if !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+            // Held minimap input owns mutation keys through release. Fresh presses still
+            // use the post-undo/delete admission below, since those edits can change availability.
+            let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
+            let command = if minimap_held {
+                None
+            } else {
+                ui.input_mut(|input| {
+                    self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
+                        spec.shortcut
+                            .into_iter()
+                            .chain(spec.alternate_shortcuts.iter().copied())
+                            .any(|shortcut| consume_shortcut(input, shortcut))
+                            .then_some(spec.id)
+                    })
                 })
-            });
+            };
             if let Some(command) = command {
                 if let Err(error) = self.session.dispatch(command, &json!({})) {
                     self.notice = Some(error.message);
@@ -734,7 +749,7 @@ impl NodeCraftApp {
                 (
                     i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
                     i.key_pressed(egui::Key::Escape),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+                    !minimap_held && (i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)),
                 )
             });
             if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
@@ -761,7 +776,8 @@ impl NodeCraftApp {
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || egui::Popup::is_any_open(ui.ctx())
-                || self.keys.open;
+                || self.keys.open
+                || self.drop_pointer_owned();
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {
@@ -861,7 +877,7 @@ impl NodeCraftApp {
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
         let layout_blocks = self.layout_overlay(ui);
-        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks;
+        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks || drop_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
         let canvas_blocks = overlay_blocks || popup_owned;
         let shift = ui.input(|i| i.modifiers.shift);
@@ -941,7 +957,7 @@ impl NodeCraftApp {
                     let hash = asset.hash;
                     let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
                     let assets = self.session.assets();
-                    self.previews.request(ui.ctx(), hash, edge, || assets.get(&hash).map(<[u8]>::to_vec))
+                    self.previews.request_asset(ui.ctx(), hash, edge, || assets.preview_read(asset))
                 });
                 let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
@@ -1325,24 +1341,6 @@ impl NodeCraftApp {
             self.marquee = None;
         }
         self.view.pan_by(pan);
-        let hidden_draft_notice = self
-            .editors
-            .values()
-            .any(|editor| editor.hidden_dirty)
-            .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
-        if let Some(notice) = self.notice.as_deref().or(hidden_draft_notice) {
-            egui::Area::new(ui.id().with("notice"))
-                .order(egui::Order::Foreground)
-                .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
-                        ui.label(notice);
-                        if hidden_draft_notice.is_some() && ui.button("Discard drafts").clicked() {
-                            self.editors.clear();
-                        }
-                    });
-                });
-        }
         self.drop_files(ui, viewport, t);
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
@@ -1350,15 +1348,15 @@ impl NodeCraftApp {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
                 palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
-                palette::Outcome::Chosen(palette::Target::Command(id)) => match self.session.dispatch(id, &json!({})) {
+                palette::Outcome::Chosen(palette::Target::Command("perf.report")) => match self.session.dispatch("perf.report", &json!({})) {
                     // The report is for reading elsewhere: put it on the clipboard.
-                    Ok(report) if id == "perf.report" => {
+                    Ok(report) => {
                         ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
                         self.notice = Some("Performance report copied to the clipboard.".into());
                     }
-                    Ok(_) => self.notice = None,
                     Err(error) => self.notice = Some(error.message),
                 },
+                palette::Outcome::Chosen(palette::Target::Command(id)) => self.dispatch_palette_command(id),
             }
         }
         if let Some(mut open) = self.turn_into.take() {
@@ -1368,6 +1366,8 @@ impl NodeCraftApp {
                 turn_into::Outcome::Chosen(kind) => self.create_connected(&kind, &open),
             }
         }
+        // All document-changing frame effects precede the last-check stamp test and paint.
+        self.show_notices(ui, viewport, t);
         self.navigation.finish_frame(ui.ctx());
         self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
@@ -1583,7 +1583,7 @@ impl NodeCraftApp {
     }
 
     /// What the palette offers: every node kind, then every command that runs without
-    /// parameters right now.
+    /// parameters right now, plus the active canvas staleness query.
     fn palette_entries(&self) -> Vec<palette::Entry> {
         let mut kinds: Vec<palette::Entry> = self
             .session
@@ -1592,11 +1592,10 @@ impl NodeCraftApp {
             .map(|d| palette::Entry { target: palette::Target::Kind(d.id.clone()), label: d.label.clone(), shortcut: d.quick_add.clone() })
             .collect();
         kinds.sort_by(|a, b| a.label.cmp(&b.label));
-        let commands = self.session.registry().specs().filter(|spec| self.session.enabled(spec.id, &json!({})).is_ok()).map(|spec| palette::Entry {
-            target: palette::Target::Command(spec.id),
-            label: spec.label.to_owned(),
-            shortcut: spec.shortcut.map(str::to_owned),
-        });
+        let commands =
+            self.session.registry().specs().filter(|spec| self.session.enabled(spec.id, &self.palette_command_params(spec.id)).is_ok()).map(|spec| {
+                palette::Entry { target: palette::Target::Command(spec.id), label: spec.label.to_owned(), shortcut: spec.shortcut.map(str::to_owned) }
+            });
         kinds.into_iter().chain(commands).collect()
     }
 
@@ -1844,3 +1843,8 @@ mod split_tests;
 mod tests;
 #[cfg(test)]
 mod turn_into_tests;
+
+#[cfg(test)]
+mod held_minimap_tests;
+#[cfg(test)]
+mod stale_tests;

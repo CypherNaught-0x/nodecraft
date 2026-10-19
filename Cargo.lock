@@ -2944,10 +2944,12 @@ dependencies = [
  "chacha20poly1305",
  "craft-atomic",
  "craft-settings",
+ "crc32fast",
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-types",
  "proptest",
+ "same-file",
  "serde",
  "serde_json",
  "tempfile",
@@ -3083,6 +3085,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "getrandom 0.3.4",
+ "libc",
  "log",
  "nodecraft-engine",
  "nodecraft-format",
@@ -3093,6 +3096,17 @@ dependencies = [
  "nodecraft-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nodecraft-web"
+version = "0.2.0-rc.1"
+dependencies = [
+ "eframe",
+ "log",
+ "nodecraft-ui-egui",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
