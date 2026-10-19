@@ -14,7 +14,8 @@ workspace = true
 nodecraft-exec = { workspace = true }
 nodecraft-catalog = { workspace = true }
 nodecraft-nodes = { workspace = true }
-nodecraft-providers = { workspace = true }
+# Adapters the catalog names (#409); the host builds them in `provider_setup`.
+nodecraft-providers = { workspace = true, features = ["openai-images", "replicate", "seedream"] }
 nodecraft-gpu = { workspace = true }
 nodecraft-format = { workspace = true }
 craft-settings = { workspace = true }

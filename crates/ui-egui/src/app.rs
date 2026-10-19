@@ -381,9 +381,13 @@ impl NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_settings_and_storage(
         ctx: &egui::Context,
-        store: nodecraft_engine::settings::SettingsStore,
+        mut store: nodecraft_engine::settings::SettingsStore,
         storage: Option<storage::StorageSetup>,
     ) -> Result<Self, Error> {
+        // Made once per install and saved at once, before any provider is built (#409).
+        if let Err(error) = nodecraft_engine::settings::ensure_install_salt(&mut store) {
+            log::warn!("{}", error.message);
+        }
         let settings = store.get().clone();
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).

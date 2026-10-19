@@ -18,6 +18,26 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 
+## Setting up catalog providers
+
+The engine builds an adapter for every provider the model catalog names
+(`engine::provider_setup`, #409). Each paid adapter reads its key from the keychain account below;
+ComfyUI reads its server from `config.toml`. An adapter that can't be built is reported with what
+to do, and a node routed to it is refused before planning, so no request is sent.
+
+| Catalog provider | Keychain account | Also needs |
+|---|---|---|
+| `openai-images` | `openai` | — |
+| `replicate` | `replicate` | — |
+| `seedream` | `seedream` | — |
+| `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
+
+Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
+adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing
+from the adapters already built. ComfyUI's token is optional: a keychain that can't be opened or
+was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
+with read-only settings none is made and ComfyUI stays off.
+
 ## Chat conversations and tools
 
 `llm::ChatRequest` is a whole conversation: user messages (text, images, tool results) and
