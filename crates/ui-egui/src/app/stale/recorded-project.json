@@ -1,0 +1,56 @@
+{
+  "id": "04040404-0404-0404-0404-040404040404",
+  "title": "Public staleness example",
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "id": "01010101-0101-0101-0101-010101010101",
+      "title": "Canvas",
+      "nodes": {
+        "02020202-0202-0202-0202-020202020202": {
+          "id": "02020202-0202-0202-0202-020202020202",
+          "kind": "source.text",
+          "title": "",
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "params": {
+            "text": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "modality": "text",
+                "many": false
+              }
+            }
+          ],
+          "history": [
+            {
+              "id": "03030303-0303-0303-0303-030303030303",
+              "outputs": [
+                {
+                  "type": "text",
+                  "value": "Public result"
+                }
+              ],
+              "input_hash": "dfaa1e3f8ee6a5bfbddfa971f5e71a89fa47fe85f9514cf3cf57863352f9a25c"
+            }
+          ],
+          "active": "03030303-0303-0303-0303-030303030303",
+          "tag": null,
+          "field": null
+        }
+      },
+      "edges": {},
+      "fields": {},
+      "comments": {},
+      "tags": {}
+    }
+  }
+}
