@@ -92,6 +92,9 @@ impl ModeId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    pub(crate) fn annotation() -> Self {
+        Self("annotation".into())
+    }
     pub(crate) fn source() -> Self {
         Self("source".into())
     }
@@ -150,6 +153,16 @@ pub enum JobSpec {
         /// The model's parameters, as the node resolved them.
         params: ParamValues,
         inputs: Vec<GenerateInput>,
+    },
+    /// A deterministic local action (#410): `action` names the operation (`image.blur`,
+    /// `text.split`), `params` are the node's visible values, `inputs` the values connected to
+    /// its input port, in order; the result goes to `output`. No provider, no cost.
+    Action {
+        node: NodeId,
+        action: String,
+        params: ParamValues,
+        inputs: Vec<Value>,
+        output: String,
     },
 }
 

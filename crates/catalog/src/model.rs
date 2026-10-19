@@ -158,6 +158,18 @@ impl ModelDescriptor {
         self.pricing.quote(&visible, self.pricing.currency().unwrap_or(Currency::USD))
     }
 
+    /// [`Self::quote`] for a node's whole parameter map, borrowing it: parameters this model's
+    /// schema doesn't know are skipped, known ones are checked against their controls in place
+    /// (so an invalid or oversized value is refused before anything is copied), and defaults
+    /// fill the rest. Nothing is cloned. A map over the schema's parameter-count limit is
+    /// refused outright, as for every other resolution.
+    pub fn quote_selected(&self, params: &ParamValues) -> Result<Option<Money>, Error> {
+        self.validate()?;
+        let resolved = self.params.resolve_view(params, false, true)?;
+        let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
+        self.pricing.quote_lookup(get, self.pricing.currency().unwrap_or(Currency::USD))
+    }
+
     pub fn mode(&self, id: &str) -> Option<&ModeSpec> {
         self.modes.iter().find(|mode| mode.id == id)
     }

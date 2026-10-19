@@ -155,6 +155,13 @@ pub(crate) fn job(job: &JobSpec, canonical: Option<&nodecraft_types::BorrowedRes
     let mut n = size_of::<JobSpec>();
     match job {
         JobSpec::Source { output, value, .. } => n = add(n, add(output.len(), values(value)?)?)?,
+        JobSpec::Action { action, params: p, inputs, output, .. } => {
+            n = add(n, add(action.len(), output.len())?)?;
+            n = add(n, params(p)?)?;
+            for value in inputs {
+                n = add(n, values(value)?)?;
+            }
+        }
         JobSpec::Generate { provider, model, params: p, inputs, outputs, .. } => {
             n = add(n, add(provider.len(), model.len())?)?;
             n = add(

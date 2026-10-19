@@ -182,11 +182,18 @@ impl Registry {
             .chain(crate::clipboard_cmds::specs())
             .chain(crate::search_cmds::specs())
             .chain(crate::file_cmds::specs())
+            .chain(crate::layout_cmds::specs())
+            .chain(crate::comment_cmds::specs())
             .chain(crate::run_cmds::specs())
             .chain(crate::perf_cmds::specs())
+            .chain(crate::cache_cmds::specs())
+            .chain(crate::plugin_cmds::specs())
+            .chain(crate::ownership_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::turn_into_cmds::specs())
+            .chain(crate::tag_cmds::specs())
+            .chain(crate::tag_filter_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -242,11 +249,18 @@ impl<'a> JsonItems<'a> {
 }
 
 /// Also protects callers that construct JSON values programmatically instead of using a
-/// text decoder. The iterator stack is bounded by nesting depth, not array width. Public so a
-/// frontend can check parameters it will send later (e.g. a copy that must paste back).
+/// text decoder. The iterator stack is bounded by nesting depth, not array width.
 pub fn validate_json(root: &Value) -> Result<(), Error> {
+    validate_json_limit(root, 1024 * 1024)
+}
+
+/// Input content retains its per-field limits; this small allowance holds IDs and field names.
+pub(crate) fn validate_input_json(root: &Value) -> Result<(), Error> {
+    validate_json_limit(root, 1024 * 1024 + 1024)
+}
+
+fn validate_json_limit(root: &Value, max_bytes: usize) -> Result<(), Error> {
     const MAX_ITEMS: usize = 16_384;
-    const MAX_BYTES: usize = 1024 * 1024;
     let mut stack = vec![JsonItems::Root(Some(root).into_iter())];
     let mut items = 0_usize;
     let mut bytes = 0_usize;
@@ -278,7 +292,7 @@ pub fn validate_json(root: &Value) -> Result<(), Error> {
             }
             _ => {}
         }
-        if bytes > MAX_BYTES {
+        if bytes > max_bytes {
             return Err(invalid("command JSON exceeds text limit"));
         }
     }
@@ -286,7 +300,7 @@ pub fn validate_json(root: &Value) -> Result<(), Error> {
 }
 
 pub(crate) fn params<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    validate_json(value)?;
+    validate_input_json(value)?;
     serde_path_to_error::deserialize(value).map_err(|error| {
         // Never echo raw serde diagnostics, enum variants or caller-controlled map keys.
         let diagnostic = error.inner().to_string();
@@ -352,4 +366,22 @@ fn safe_field(field: &str) -> bool {
             | "location"
             | "discard_dirty"
     )
+}
+
+#[cfg(test)]
+mod plugin_ids {
+    use nodecraft_plugin::id::{LocalId, PackageId, RegisteredId};
+
+    /// The plugin contract's registered IDs are command IDs as they are, longest included
+    /// (#171): nothing is rewritten to fit.
+    #[test]
+    fn registered_plugin_ids_are_valid_command_ids() {
+        let longest = RegisteredId::new(
+            &PackageId::parse(&format!("{}.{}.{}.{}", "a".repeat(24), "b".repeat(24), "c".repeat(24), "d".repeat(5))).unwrap(),
+            &LocalId::parse(&format!("{}.{}", "e".repeat(15), "f".repeat(15))).unwrap(),
+        );
+        for id in [longest, RegisteredId::new(&PackageId::parse("io.example.textpack").unwrap(), &LocalId::parse("normalize").unwrap())] {
+            super::validate_id(id.as_str()).unwrap();
+        }
+    }
 }

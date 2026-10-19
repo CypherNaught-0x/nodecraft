@@ -151,7 +151,7 @@ fn idle_shared_key_survives_register_forget_and_requeue_until_last_reference() {
         shared.fail_poll.store(true, Ordering::SeqCst);
         runner.register(JobId(1), queued(shared.clone(), "key"));
         runner.register(JobId(2), queued(shared.clone(), "key"));
-        runner.restore_handle("shared", "key".into(), handle("accepted"));
+        runner.restore_handle("shared", "key".into(), handle("accepted")).unwrap();
         let replacement = Arc::new(Controlled::new(if change_provider { "other" } else { "shared" }, true));
         runner.register(JobId(1), queued(replacement, "new"));
         assert!(has(&runner, "shared", "key"), "JobId2 still needs this global handle");
@@ -171,8 +171,8 @@ fn running_shared_key_retains_handle_until_old_run_drops() {
     let shared = Arc::new(Controlled::new("shared", false));
     runner.register(JobId(1), queued(shared.clone(), "key"));
     runner.register(JobId(2), queued(shared.clone(), "key"));
-    runner.restore_handle("shared", "key".into(), handle("accepted"));
-    runner.restore_handle("unregistered", "saved".into(), handle("unrelated"));
+    runner.restore_handle("shared", "key".into(), handle("accepted")).unwrap();
+    runner.restore_handle("unregistered", "saved".into(), handle("unrelated")).unwrap();
     let mut running = runner.run(starting(2, "key"), CancelToken::default());
     pending(&mut running);
     runner.register(JobId(1), queued(shared.clone(), "new1"));
@@ -189,7 +189,7 @@ fn completing_one_job_preserves_another_jobs_same_key_resume() {
     let provider = Arc::new(ResumesWith(usd(10)));
     runner.register(JobId(1), queued(provider.clone(), "shared"));
     runner.register(JobId(2), queued(provider, "shared"));
-    runner.restore_handle("resumes", "shared".into(), handle("accepted"));
+    runner.restore_handle("resumes", "shared".into(), handle("accepted")).unwrap();
     assert_eq!(block_on(runner.run(starting(1, "shared"), CancelToken::default())), Outcome::Done);
     assert!(has(&runner, "resumes", "shared"));
     // ResumesWith refuses submit, so this proves the second registration can still resume.

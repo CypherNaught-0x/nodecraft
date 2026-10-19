@@ -951,6 +951,7 @@ fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is()
 mod strict257;
 
 mod legacy255;
+mod reconcile325;
 
 #[test]
 fn csv_row_admission_never_writes_rejected_rows_and_preserves_writer_errors() {
