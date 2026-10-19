@@ -245,6 +245,11 @@ fn the_new_kinds_do_what_they_say() {
     three.insert("count".into(), Value::Unsigned(nodecraft_types::Unsigned(3)));
     let Value::List(copies) = actions.execute("image.duplicate", &three, &[media(base)]).unwrap() else { panic!() };
     assert_eq!(copies.len(), 3);
+    assert!(copies.windows(2).all(|w| w[0] == w[1]), "one image, referred to three times");
+    let mut many = defaults(&kinds, "image.duplicate");
+    many.insert("count".into(), Value::Unsigned(nodecraft_types::Unsigned(64)));
+    let Value::List(all) = actions.execute("image.duplicate", &many, &[media(base)]).unwrap() else { panic!() };
+    assert_eq!(all.len(), 64);
     let Value::Media(square) = actions.execute("image.aspect", &defaults(&kinds, "image.aspect"), &[media(base)]).unwrap() else { panic!() };
     assert_eq!(square.meta.width, square.meta.height, "square by default");
     let mut template = defaults(&kinds, "text.template");
@@ -253,6 +258,8 @@ fn the_new_kinds_do_what_they_say() {
         actions.execute("text.template", &template, &[Value::List(vec![Value::Text("a".into()), Value::Text("b".into())])]).unwrap(),
         Value::Text("b then a".into())
     );
+    template.insert("template".into(), Value::Text("{{3}}".into()));
+    assert!(actions.execute("text.template", &template, &[Value::Text("only one".into())]).is_err(), "a field nothing fills");
     // Overlay without its second image says so.
     assert!(actions.execute("image.overlay", &defaults(&kinds, "image.overlay"), &[media(base)]).is_err());
 }

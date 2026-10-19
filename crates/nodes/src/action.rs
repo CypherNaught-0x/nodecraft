@@ -294,7 +294,7 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
             vec![ParamSpec {
                 name: "template".into(),
                 label: "Template".into(),
-                description: Some("{{1}}, {{2}}, … insert the connected texts in order.".into()),
+                description: Some("{{1}}, {{2}}, … insert the connected texts in the order they are connected; a list (such as Split text's parts) counts one field per item.".into()),
                 control: ParamControl::Text { multiline: true, max_bytes: 64 * 1024 },
                 required: false,
                 default: Some(Value::Text("{{1}}".into())),

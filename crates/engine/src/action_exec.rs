@@ -229,7 +229,14 @@ impl LocalActions {
             .map_err(|e| format!("{action} failed: {e}"))?;
         match result {
             ImageResult::Image(out) => self.stage(&out),
-            ImageResult::Images(all) => all.iter().map(|out| self.stage(out)).collect::<Result<Vec<_>, _>>().map(Value::List),
+            // Duplicate's copies are the same image: encode once, refer to it as often as asked.
+            ImageResult::Images(all) => match all.first() {
+                Some(first) if all.iter().all(|r| r.width() == first.width() && r.height() == first.height() && r.pixels() == first.pixels()) => {
+                    let one = self.stage(first)?;
+                    Ok(Value::List(vec![one; all.len()]))
+                }
+                _ => all.iter().map(|out| self.stage(out)).collect::<Result<Vec<_>, _>>().map(Value::List),
+            },
         }
     }
 }
