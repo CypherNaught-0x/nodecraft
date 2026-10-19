@@ -1,9 +1,13 @@
 //! Running action jobs (#410): the host's [`ActionExecutor`] for the run executor. Each action
 //! kind's visible parameters map onto the request of the matching operation in
 //! `nodecraft-actions`; inputs come from the project's assets and text values. New images are
-//! encoded as PNG and staged here; the host imports the staged assets
-//! ([`LocalActions::take_staged`]) before recording the run, so a result never names an asset
-//! the project doesn't hold. Nothing here touches the document.
+//! encoded as PNG and staged here; a later action in the same run reads them from here (chains),
+//! and the host imports the staged assets ([`LocalActions::take_staged`]) before recording the
+//! run, so a result never names an asset the project doesn't hold. A failed or cancelled run's
+//! staged images are dropped with it. Nothing here touches the document.
+//!
+//! Image work is CPU work: the host runs action jobs off the UI thread (a worker runtime), and
+//! the GPU path (#89) is a later step.
 use nodecraft_actions::image::{CpuExecutor, ImageLimits, ImageRequest, ImageResult, Raster};
 use nodecraft_actions::text::{self, ConcatOptions, MatchMode, ReplaceOptions, SplitMode, TextRequest, TextResult};
 use nodecraft_exec::run::ActionExecutor;
@@ -60,7 +64,8 @@ fn flag(params: &ParamValues, name: &str) -> Result<bool, String> {
 
 /// `#rrggbb` or `#rrggbbaa` as the actions' colour.
 fn color(text: &str) -> Result<Json, String> {
-    let hex = text.strip_prefix('#').filter(|h| matches!(h.len(), 6 | 8)).ok_or("a colour is #rrggbb or #rrggbbaa")?;
+    let hex =
+        text.strip_prefix('#').filter(|h| matches!(h.len(), 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit())).ok_or("a colour is #rrggbb or #rrggbbaa")?;
     let byte = |i: usize| hex.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()).ok_or("a colour is #rrggbb or #rrggbbaa");
     let alpha = if hex.len() == 8 { byte(6)? } else { 255 };
     Ok(json!({"r": byte(0)?, "g": byte(2)?, "b": byte(4)?, "a": alpha}))
@@ -80,7 +85,9 @@ fn image_request(action: &str, p: &ParamValues) -> Result<ImageRequest, String> 
             json!({"options": {"angle": number(p, "angle")?, "expand": flag(p, "expand")?, "background": {"r": 0, "g": 0, "b": 0, "a": 0}, "resampling": word(p, "resampling")?}})
         }
         "image.crop" => {
-            json!({"options": {"kind": "normalized", "x": number(p, "x")?, "y": number(p, "y")?, "width": number(p, "width")?, "height": number(p, "height")?}})
+            // The crop stays inside the image: moving its corner shrinks what's left of it.
+            let (x, y) = (number(p, "x")?.clamp(0.0, 0.99), number(p, "y")?.clamp(0.0, 0.99));
+            json!({"options": {"kind": "normalized", "x": x, "y": y, "width": number(p, "width")?.min(1.0 - x), "height": number(p, "height")?.min(1.0 - y)}})
         }
         "image.resize" => json!({"options": {"size": {"kind": "scale", "factor": number(p, "factor")?}, "resampling": word(p, "resampling")?}}),
         _ => return Err(format!("{action} isn't an image action this host runs")),
@@ -93,13 +100,20 @@ fn image_request(action: &str, p: &ParamValues) -> Result<ImageRequest, String> 
     serde_json::from_value(Json::Object(body)).map_err(|_| "the action's settings are out of range".to_owned())
 }
 
-/// Every text value in `inputs`, lists flattened, in order.
+/// Every text value in `inputs`, one list level flattened (what a list port carries), in order.
 fn texts(inputs: &[Value]) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for value in inputs {
         match value {
             Value::Text(t) => out.push(t.clone()),
-            Value::List(items) => out.extend(texts(items)?),
+            Value::List(items) => {
+                for item in items {
+                    match item {
+                        Value::Text(t) => out.push(t.clone()),
+                        _ => return Err("a text action takes text".into()),
+                    }
+                }
+            }
             _ => return Err("a text action takes text".into()),
         }
     }
@@ -112,7 +126,10 @@ fn text_request(action: &str, p: &ParamValues, inputs: &[Value]) -> Result<TextR
     Ok(match action {
         "text.split" => {
             let mode = match word(p, "mode")? {
-                "separator" => SplitMode::Separator(word(p, "separator")?.to_owned()),
+                "separator" => match word(p, "separator")? {
+                    "" => return Err("enter a separator to split by".into()),
+                    separator => SplitMode::Separator(separator.to_owned()),
+                },
                 "regex" => SplitMode::Regex(word(p, "pattern")?.to_owned()),
                 "lines" => SplitMode::Lines(usize::try_from(whole(p, "lines")?).map_err(|_| "too many lines per part")?),
                 "chars" => SplitMode::Chars(usize::try_from(whole(p, "chars")?).map_err(|_| "too many characters per part")?),
@@ -151,17 +168,37 @@ impl LocalActions {
     fn image(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
         let request = image_request(action, params)?;
         let Some(Value::Media(source)) = inputs.first() else { return Err("connect an image first".into()) };
-        let bytes = self.assets.get(&source.hash).ok_or("the input image isn't in this project")?;
-        let limits = nodecraft_media::Limits::default();
-        let (_, decoded) = nodecraft_media::decode_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
-        let rgba = decoded.to_rgba8();
+        // The project's images, or one an earlier action in this run made (chains).
+        let staged = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash).map(<[u8]>::to_vec);
+        let bytes = match &staged {
+            Some(bytes) => bytes.as_slice(),
+            None => self.assets.get(&source.hash).ok_or("the input image isn't in this project")?,
+        };
         let actions = ImageLimits::default();
-        let raster = Raster::copy_from(rgba.width(), rgba.height(), rgba.as_raw(), actions).map_err(|e| format!("the image can't be processed: {e:?}"))?;
+        // Bounded before decoding: the pixel count the actions accept, at four bytes each, plus
+        // the decoder's own working copy.
+        let rgba_bytes = actions.pixels.saturating_mul(4);
+        let limits = nodecraft_media::Limits {
+            max_width: actions.edge,
+            max_height: actions.edge,
+            max_alloc: rgba_bytes.saturating_mul(2),
+            ..nodecraft_media::Limits::default()
+        };
+        let meta = nodecraft_media::probe_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
+        if u64::from(meta.width).saturating_mul(u64::from(meta.height)) > actions.pixels {
+            return Err(format!("the input image is larger than {} megapixels", actions.pixels / 1_000_000));
+        }
+        let (_, decoded) = nodecraft_media::decode_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
+        let rgba = decoded.into_rgba8();
+        let raster = Raster::new(rgba.width(), rgba.height(), rgba.into_raw(), actions).map_err(|e| format!("the image can't be processed: {e}"))?;
         let result = request
             .execute(nodecraft_actions::image::ImageInputs::single(&raster), &mut CpuExecutor::serial(), actions)
-            .map_err(|e| format!("{action} failed: {e:?}"))?;
+            .map_err(|e| format!("{action} failed: {e}"))?;
         let ImageResult::Image(out) = result else { return Err(format!("{action} made more than one image")) };
         let png = nodecraft_media::encode_png(out.width(), out.height(), out.pixels(), &limits).map_err(|e| format!("the result can't be encoded: {e}"))?;
+        if png.len() > nodecraft_format::MAX_ASSET_BYTES {
+            return Err(format!("the result is larger than {} MiB; make it smaller first (Resize)", nodecraft_format::MAX_ASSET_BYTES / (1024 * 1024)));
+        }
         let hash = self.staged.lock().unwrap_or_else(PoisonError::into_inner).insert(&png).map_err(|e| e.message)?;
         let mime = "image/png".parse().map_err(|_| "image/png isn't a media type".to_owned())?;
         Ok(Value::Media(AssetRef { hash, mime, meta: MediaMeta { width: Some(out.width()), height: Some(out.height()), ..MediaMeta::default() } }))

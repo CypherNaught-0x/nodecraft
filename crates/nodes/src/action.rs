@@ -98,6 +98,8 @@ fn when(mut spec: ParamSpec, parameter: &str, equals: &str) -> ParamSpec {
 }
 
 const RESAMPLING: &[(&str, &str)] = &[("bilinear", "Smooth"), ("nearest", "Nearest"), ("area", "Area")];
+/// Rotation resamples point by point: area averaging doesn't apply.
+const ROTATE_RESAMPLING: &[(&str, &str)] = &[("bilinear", "Smooth"), ("nearest", "Nearest")];
 
 fn image(id: &str, label: &str, params: Vec<ParamSpec>) -> ActionKind {
     kind(id, label, vec![port("image", Modality::Image, false)], vec![port("out", Modality::Image, false)], params)
@@ -168,20 +170,20 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
             vec![
                 slider("angle", "Angle", -360.0, 360.0, 1.0, 90.0)?,
                 toggle("expand", "Fit the whole image", true),
-                choice("resampling", "Resampling", RESAMPLING, "bilinear"),
+                choice("resampling", "Resampling", ROTATE_RESAMPLING, "bilinear"),
             ],
         ),
         image(
             "image.crop",
             "Crop",
             vec![
-                slider("x", "Left", 0.0, 1.0, 0.01, 0.0)?,
-                slider("y", "Top", 0.0, 1.0, 0.01, 0.0)?,
-                slider("width", "Width", 0.0, 1.0, 0.01, 1.0)?,
-                slider("height", "Height", 0.0, 1.0, 0.01, 1.0)?,
+                slider("x", "Left", 0.0, 0.99, 0.01, 0.0)?,
+                slider("y", "Top", 0.0, 0.99, 0.01, 0.0)?,
+                slider("width", "Width", 0.01, 1.0, 0.01, 1.0)?,
+                slider("height", "Height", 0.01, 1.0, 0.01, 1.0)?,
             ],
         ),
-        image("image.resize", "Resize", vec![slider("factor", "Scale", 0.01, 8.0, 0.01, 0.5)?, choice("resampling", "Resampling", RESAMPLING, "bilinear")]),
+        image("image.resize", "Resize", vec![slider("factor", "Scale", 0.02, 8.0, 0.01, 0.5)?, choice("resampling", "Resampling", RESAMPLING, "bilinear")]),
         kind(
             "text.split",
             "Split text",

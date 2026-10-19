@@ -11,7 +11,13 @@
 - **New images are staged, not stored.** An image action encodes its result as PNG into a staging
   store and returns its asset reference; the host imports the staged assets
   (`LocalActions::take_staged`) before `run.record`, so a recorded result never names an asset the
-  project doesn't hold. Inputs are read from a clone of the session's store (shared buffers).
+  project doesn't hold. Inputs are read from a clone of the session's store (shared buffers) or,
+  for a chain in one run, from the staged images of earlier actions. Images are probed before
+  decoding and refused past the actions' 16.7 MP; a PNG result over the 16 MiB asset cap is an
+  error that suggests resizing first.
+- **CPU now, off the UI thread.** Action work is CPU work run inside the job future, so hosts
+  drive action runs on a worker runtime (as the run host does for providers). The GPU path (#89)
+  and making `run.record` itself refuse unknown media hashes are later steps.
 - **Schemas are the first cut**, mapped by hand onto each operation's options (Blur is Gaussian
   only; Crop is normalized; Resize scales). The #162 parameter contract will refine them; the
   remaining operations (key, replace colour, aspect, overlay, duplicate, template) follow.

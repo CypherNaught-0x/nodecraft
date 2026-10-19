@@ -168,3 +168,64 @@ fn every_action_kind_round_trips_its_parameters_through_undo() {
         }
     }
 }
+
+#[test]
+fn actions_chain_within_a_run() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let hash = assets.insert(&png(40, 20)).unwrap();
+    let actions = LocalActions::new(assets);
+    let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let cropped = actions.execute("image.crop", &defaults(&kinds, "image.crop"), &[image]).unwrap();
+    // The crop exists only in staging; the resize reads it from there.
+    let Value::Media(out) = actions.execute("image.resize", &defaults(&kinds, "image.resize"), &[cropped]).unwrap() else { panic!() };
+    assert_eq!((out.meta.width, out.meta.height), (Some(20), Some(10)));
+}
+
+#[test]
+fn a_huge_image_is_refused_before_it_is_decoded() {
+    let kinds = Registry::builtins().unwrap();
+    // 4,097 × 4,096 transparent pixels compress to a small file but exceed the actions' 16.7 MP.
+    let pixels = vec![0u8; 4097 * 4096 * 4];
+    let big = nodecraft_media::encode_png(4097, 4096, &pixels, &nodecraft_media::Limits::default()).unwrap();
+    assert!(big.len() < nodecraft_format::MAX_ASSET_BYTES);
+    let mut assets = AssetStore::default();
+    let hash = assets.insert(&big).unwrap();
+    let actions = LocalActions::new(assets);
+    let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    assert!(actions.execute("image.blur", &defaults(&kinds, "image.blur"), &[image]).unwrap_err().contains("megapixels"));
+}
+
+#[test]
+fn every_choice_and_slider_end_runs() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let hash = assets.insert(&png(12, 9)).unwrap();
+    let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && d.id.starts_with("image.")) {
+        for spec in &descriptor.params.params {
+            let values: Vec<Value> = match &spec.control {
+                nodecraft_types::ParamControl::Slider { min: Some(min), max: Some(max), .. } => vec![Value::Number(*min), Value::Number(*max)],
+                nodecraft_types::ParamControl::Choice { options } => options.iter().map(|o| Value::Text(o.value.clone())).collect(),
+                nodecraft_types::ParamControl::Toggle => vec![Value::Bool(true), Value::Bool(false)],
+                _ => continue,
+            };
+            for value in values {
+                let mut params = defaults(&kinds, &descriptor.id);
+                params.insert(spec.name.clone(), value.clone());
+                actions
+                    .execute(&descriptor.id, &params, std::slice::from_ref(&image))
+                    .unwrap_or_else(|e| panic!("{} {}={value:?}: {e}", descriptor.id, spec.name));
+            }
+        }
+    }
+    // Crop corners anywhere in range stay inside the image.
+    let mut corner = defaults(&kinds, "image.crop");
+    corner.insert("x".into(), Value::Number(nodecraft_types::Number::new(0.9).unwrap()));
+    corner.insert("y".into(), Value::Number(nodecraft_types::Number::new(0.5).unwrap()));
+    actions.execute("image.crop", &corner, &[image]).unwrap();
+    let mut split = defaults(&kinds, "text.split");
+    split.insert("separator".into(), Value::Text(String::new()));
+    assert!(actions.execute("text.split", &split, &[Value::Text("a".into())]).unwrap_err().contains("separator"));
+}
