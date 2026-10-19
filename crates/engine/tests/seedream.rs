@@ -63,16 +63,16 @@ fn money(n: u64) -> Money {
     Money::new(Currency::USD, n)
 }
 fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob {
-    QueuedJob {
-        provider: RegisteredProvider::default_instance(Arc::new(Seedream::new(Secret::new("fixture-key-not-real").unwrap(), http))).unwrap(),
-        job: ProviderJob {
+    QueuedJob::new(
+        RegisteredProvider::default_instance(Arc::new(Seedream::new(Secret::new("fixture-key-not-real").unwrap(), http))).unwrap(),
+        ProviderJob {
             model: MODEL.into(),
             params: serde_json::Map::new(),
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-image-1".into(),
         },
-        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "seedream.4_5".into(), estimate }),
-    }
+        price.map(|estimate| JobPrice::new(NodeId::from_bytes([1; 16]), "seedream.4_5".into(), estimate)),
+    )
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {
     let budget = JobBudget {

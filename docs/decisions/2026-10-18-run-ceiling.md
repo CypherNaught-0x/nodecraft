@@ -41,8 +41,9 @@
   the ceiling, never refused, and never refunded: failing to record its charge in the usage log
   is not evidence that nothing was delivered. The usage log is shared across runs, so a key it
   already holds (an open, settled or retired charge from an earlier run) still counts in the run
-  that adopts it, at the row's amount (or as an unknown-price admission), once per run by
-  provider and key (past the record bound, re-adopting a key may count it again: the safe
+  that adopts it, once per run by provider and key: the row's amount is debited (an open estimate
+  or unresolved charge is retained exposure, not a known bill), and a job the authorized run
+  classifies as unknown-price also uses one of the accepted count, independently of that money (past the record bound, re-adopting a key may count it again: the safe
   direction). New work on such a key is admitted only within this run's room. A debit taken on
   this path is never credited back, even if the row is later released.
 - **Saturation.** If a currency's reserved total overflows (adopted work at extreme catalog

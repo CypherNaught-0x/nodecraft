@@ -441,15 +441,27 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
 }
 
 /// Accounts work whose key the usage log already holds (from this run or an earlier one) in this
-/// run's ceiling: at `exposure` when it has a price, as one unknown-price admission when not.
-/// Adopted work is accounted past the ceiling; new work is refused past it.
+/// run's ceiling. Money and the unknown-price count are independent: any retained `exposure` (the
+/// row's amount, which for an open estimate or unresolved charge is not a known bill) is debited,
+/// and a job the authorized run classifies as unknown-price also uses one of the accepted count.
+/// Adopted work is accounted past both; new work is refused past either, and a refusal undoes
+/// the debit this call took.
 fn account_in_run(price: &JobPrice, provider: &nodecraft_types::ProviderTarget, key: &str, exposure: Option<Money>, resumed: bool) -> Result<(), String> {
     let Some(ceiling) = &price.ceiling else { return Ok(()) };
-    match exposure {
-        Some(money) => ceiling.debit(provider, key, money, resumed).map(|_| ()),
-        None => ceiling.admit_unpriced(provider, key, resumed),
+    let refusal = |e: String| format!("{REFUSAL_PREFIX}{e}");
+    let debited = match exposure {
+        Some(money) => ceiling.debit(provider, key, money, resumed).map_err(refusal)?,
+        None => false,
+    };
+    if price.estimate.is_none()
+        && let Err(e) = ceiling.admit_unpriced(provider, key, resumed)
+    {
+        if debited && !resumed {
+            ceiling.credit(provider, key);
+        }
+        return Err(refusal(e));
     }
-    .map_err(|e| format!("{REFUSAL_PREFIX}{e}"))
+    Ok(())
 }
 
 /// Nothing was recorded for this key, so the debit just taken for it is undone.
@@ -1422,6 +1434,7 @@ mod tests {
         let adopted = reserve(&budget, &attempt("old"), &price(Some(80), &run_b), true, 1).unwrap().unwrap();
         assert!(!adopted.debited, "never credited from the adoption path");
         assert_eq!(run_b.status(nodecraft_types::Currency::USD), (100, 80));
+        assert_eq!(run_b.unpriced_status(), (0, 0), "priced work never touches the count");
         assert!(reserve(&budget, &attempt("fresh"), &price(Some(80), &run_b), false, 1).unwrap_err().contains("accepted"));
         // Re-adopting the same submission in run B accounts nothing more.
         reserve(&budget, &attempt("old"), &price(Some(80), &run_b), true, 1).unwrap();
@@ -1434,9 +1447,55 @@ mod tests {
         let run_d = usd_ceiling(100, 1);
         reserve(&budget, &attempt("old"), &price(None, &run_d), true, 1).unwrap();
         assert_eq!(run_d.status(nodecraft_types::Currency::USD), (100, 80), "the row's own amount is accounted");
+        assert_eq!(run_d.unpriced_status(), (1, 1), "and the authorized unknown-price job is counted");
         // New work on a key another run holds is admitted only within this run's room.
         let run_e = usd_ceiling(50, 0);
         assert!(reserve(&budget, &attempt("old"), &price(Some(80), &run_e), false, 1).is_err());
+    }
+
+    #[test]
+    fn adopting_an_estimated_or_unresolved_row_uses_the_unknown_price_count() {
+        // An earlier priced run left an open estimate (or an unresolved charge) of USD 80 for
+        // "old". A new run whose authorized step is unknown-price, accepting one such job,
+        // adopts that submission: it keeps the money and uses the count, so a fresh-key
+        // unknown-price job is refused before the provider.
+        for unresolved in [false, true] {
+            let (runner, budget) = budgeted(None);
+            let target = crate::provider_routing::RegisteredProvider::default_instance(Arc::new(Flaky {
+                submits: AtomicU64::new(0),
+                polls: AtomicU64::new(0),
+                fail_polls: 0,
+            }))
+            .unwrap()
+            .target()
+            .clone();
+            let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+            let earlier = JobPrice::new(NodeId::from_bytes([5; 16]), "test.img".into(), Some(usd(80)));
+            reserve(&budget, &attempt("old"), &earlier, false, 1).unwrap().unwrap();
+            if unresolved {
+                budget.log.lock().unwrap().settle_target(&target, "old", usd(80), Charge::Unresolved).unwrap();
+            }
+            let ceiling = crate::run_ceiling::RunCeiling::new(std::collections::BTreeMap::new(), 1);
+            let unknown = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.usage".into(), estimate: None, ceiling: Some(ceiling.clone()) };
+            // (a) The adoption uses the count and (c) keeps the row's money.
+            reserve(&budget, &attempt("old"), &unknown, true, 1).unwrap();
+            assert_eq!(ceiling.unpriced_status(), (1, 1), "unresolved: {unresolved}");
+            assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (0, 80));
+            // (b) Adopting the same submission again uses nothing more.
+            reserve(&budget, &attempt("old"), &unknown, true, 1).unwrap();
+            assert_eq!(ceiling.unpriced_status(), (1, 1));
+            assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (0, 80));
+            // (d) A fresh-key unknown-price job of the run is refused by the runner before the
+            // provider.
+            let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
+            let mut queued = priced(provider.clone(), None);
+            queued.bound = Some(Some(unknown.clone()));
+            runner.register(JobId(9), queued);
+            let refused = block_on(runner.run(job(9), CancelToken::default()));
+            assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("used up")), "{refused:?}");
+            assert_eq!(provider.submits.load(Ordering::SeqCst), 0);
+            assert_eq!(ceiling.unpriced_status(), (1, 1));
+        }
     }
 
     #[test]

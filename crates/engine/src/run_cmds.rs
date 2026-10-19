@@ -778,7 +778,8 @@ impl AuthorizedRun {
         let nodecraft_nodes::JobSpec::Generate { node, .. } = work else { return Err(invalid("job is not generated work")) };
         let step = self.quote.steps.iter().find(|step| step.node == *node).ok_or_else(|| invalid("job has no admitted price"))?;
         let price = match &step.per_job {
-            Ok(None) => None, // Explicitly free catalog selections, not absent host metadata.
+            Ok(None) => None, // Explicitly free catalog selections, not absent host metadata: free work is
+            // neither debited nor counted (it isn't unknown-price).
             amount => {
                 let length = step
                     .models
