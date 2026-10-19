@@ -125,7 +125,7 @@ on, never a panic.
 
 ```text
 crates/
-  types media                 L0  pure data types; standalone media codecs (no workspace deps)
+  types media plugin          L0  pure data types; standalone media codecs and plugin contract (no workspace deps)
   comfy graph                 L1  ComfyUI client; document model + changesets
   nodes catalog actions       L2  node kinds; model catalog; deterministic actions
   exec providers gpu format   L3  run engine; provider adapters; wgpu; .ncraft files
@@ -139,7 +139,7 @@ xtask/                        cargo xtask layers | wasm | ci | version
 packaging/                    per-OS release packaging (docs/releasing.md)
 ```
 
-A crate may depend only on strictly lower layers; `media` depends on no workspace crate;
+A crate may depend only on strictly lower layers; `media` and `plugin` depend on no workspace crate;
 `testkit` is a dev-dependency only.
 
 ## Quality gates

@@ -14,6 +14,7 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # internal (layers: docs/architecture.md, enforced by `cargo xtask layers`)
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }
+nodecraft-plugin = { path = "crates/plugin" }
 nodecraft-comfy = { path = "crates/comfy" }
 nodecraft-graph = { path = "crates/graph" }
 nodecraft-nodes = { path = "crates/nodes" }
@@ -65,6 +66,8 @@ zip = { version = "9.0.4", default-features = false }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# Plugin package signatures (#171): Ed25519, BSD-3-Clause, pure Rust (also wasm); verify only.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

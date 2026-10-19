@@ -365,3 +365,21 @@ fn safe_field(field: &str) -> bool {
             | "discard_dirty"
     )
 }
+
+#[cfg(test)]
+mod plugin_ids {
+    use nodecraft_plugin::id::{LocalId, PackageId, RegisteredId};
+
+    /// The plugin contract's registered IDs are command IDs as they are, longest included
+    /// (#171): nothing is rewritten to fit.
+    #[test]
+    fn registered_plugin_ids_are_valid_command_ids() {
+        let longest = RegisteredId::new(
+            &PackageId::parse(&format!("{}.{}.{}.{}", "a".repeat(24), "b".repeat(24), "c".repeat(24), "d".repeat(5))).unwrap(),
+            &LocalId::parse(&format!("{}.{}", "e".repeat(15), "f".repeat(15))).unwrap(),
+        );
+        for id in [longest, RegisteredId::new(&PackageId::parse("io.example.textpack").unwrap(), &LocalId::parse("normalize").unwrap())] {
+            super::validate_id(id.as_str()).unwrap();
+        }
+    }
+}

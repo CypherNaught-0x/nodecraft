@@ -1,0 +1,20 @@
+[package]
+name = "nodecraft-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: plugin package and wire contract (identities, canonical JSON, digests, signatures, frames; standalone)"
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# Signs the fixture package when it is regenerated (the key is never stored).
+ed25519-dalek = { workspace = true }

@@ -35,6 +35,7 @@ impl Class {
 pub const TABLE: &[(&str, Class)] = &[
     ("types", Class::Layer(0)),
     ("media", Class::Standalone),
+    ("plugin", Class::Standalone),
     ("comfy", Class::Layer(1)),
     ("graph", Class::Layer(1)),
     ("nodes", Class::Layer(2)),

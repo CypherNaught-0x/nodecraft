@@ -20,6 +20,7 @@ every CI run, and fails on an unregistered crate.
 |---|---|---|---|
 | L0 | `types` | ids, `Modality`, `PortType`, `Value`, hashes, money, the error base (pure data, serde) | — |
 | L0 standalone | `media` | sniffing, decode/encode, thumbnails, metadata; image first, video/audio probes behind features | none allowed |
+| L0 standalone | `plugin` | the plugin package and wire contract: IDs, canonical JSON, manifest, inventory digest, signatures, frames and messages, locks, preservation ([spec](plugin-wire.md)) | none allowed |
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
@@ -279,6 +280,8 @@ in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging s
 
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+Its phase A, the package and wire contract, is the standalone `plugin` crate
+([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions
