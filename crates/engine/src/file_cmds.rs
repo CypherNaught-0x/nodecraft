@@ -43,8 +43,8 @@ pub enum FilePhase {
     Reading,
     /// Writing the destination; nothing is replaced until it is complete (save).
     Writing,
-    /// Writing the recovery checkpoint. A save's file is already published by now, and an
-    /// open's replacement checkpoint is what makes it final, so neither can still be cancelled.
+    /// Writing the recovery checkpoint. A save's file is already published by now, so it can no
+    /// longer be cancelled. An open still can, until its replacement checkpoint is published.
     Checkpointing,
 }
 impl FilePhase {

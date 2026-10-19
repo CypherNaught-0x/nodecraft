@@ -221,6 +221,34 @@ fn a_failed_background_open_keeps_the_current_project_and_its_journal() {
 }
 
 #[test]
+fn a_cancel_after_an_open_already_failed_keeps_the_real_error() {
+    let gate = Arc::new(Gate::default());
+    let (mut session, _) = setup(gate.clone());
+    session.dispatch("file.open", &json!({"location": "/projects/missing.ncraft", "discard_dirty": true, "background": true})).unwrap();
+    gate.release();
+    // The job has failed but the session hasn't collected it yet.
+    assert_eq!(session.dispatch("file.cancel", &json!({})).unwrap(), json!({"cancelling": true}));
+    let error = session.poll_file().unwrap().unwrap_err();
+    assert!(!error.message.contains("cancelled"), "the cause is not hidden: {}", error.message);
+    assert_eq!(x(&session), 20.0);
+}
+
+#[test]
+fn enabled_agrees_with_dispatch_during_an_open() {
+    let gate = Arc::new(Gate::default());
+    let (mut session, _) = setup(gate.clone());
+    background_open(&mut session);
+    for (id, params) in [("node.move", movement(30)), ("edit.undo", json!({})), ("file.save", json!({}))] {
+        assert_eq!(session.enabled(id, &params).unwrap_err().kind, ErrorKind::Busy, "{id}");
+    }
+    assert!(session.enabled("perf.report", &json!({})).is_ok());
+    assert!(session.enabled("file.cancel", &json!({})).is_ok());
+    gate.release();
+    session.poll_file().unwrap().unwrap();
+    assert!(session.enabled("node.move", &movement(30)).is_ok());
+}
+
+#[test]
 fn an_open_the_runner_refuses_runs_inline_and_one_it_drops_reports_the_loss() {
     let (mut session, _) = setup(Arc::new(Refuses));
     assert_eq!(background_open(&mut session), json!({"opened": true, "read_only": false}));

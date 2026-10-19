@@ -407,14 +407,15 @@ impl Persistence {
         self.store = Store::Sendable(done.storage);
         Some(self.finish(done.outcome, &pending.control))
     }
-    /// Publishes a finished operation. One that failed after `file.cancel` reports the
-    /// cancellation: either way nothing was published, so what was there before still is.
+    /// Publishes a finished operation. One stopped by `file.cancel` reports the cancellation:
+    /// nothing was published, so what was there before still is. Any other failure keeps its
+    /// own error, even when a cancel was asked for after it.
     fn finish(&mut self, outcome: Outcome, control: &Control) -> Result<Settled, Error> {
-        let cancelled = control.cancelled();
+        let cancelled = |error: &Error| control.cancelled() && TransferCancel::is_cancellation(error);
         match outcome {
             Outcome::Saved { location, epoch, state, result } => match result {
                 Ok(published) => Ok(Settled::Saved(self.publish(location, epoch, state, published))),
-                Err(_) if cancelled => Err(Error::new(ErrorKind::Conflict, "the save was cancelled; the file is unchanged")),
+                Err(error) if cancelled(&error) => Err(Error::new(ErrorKind::Conflict, "the save was cancelled; the file is unchanged")),
                 Err(error) => Err(error),
             },
             Outcome::Opened { location, state, result } => match result {
@@ -426,7 +427,7 @@ impl Persistence {
                         self.recovery_required = true;
                         return Err(failure.error);
                     }
-                    if cancelled {
+                    if cancelled(&failure.error) {
                         return Err(Error::new(ErrorKind::Conflict, "opening was cancelled; the current project is unchanged"));
                     }
                     Err(failure.error)

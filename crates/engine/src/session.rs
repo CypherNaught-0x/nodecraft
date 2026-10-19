@@ -326,6 +326,8 @@ impl Session {
         self.latest_file(true)
     }
     fn latest_file(&mut self, wait: bool) -> Option<Result<Value, Error>> {
+        // An open settling now supersedes an earlier save's stashed outcome: the open needed
+        // `discard_dirty` to start, so that save's result no longer describes the project.
         let settled = self.settled.take();
         self.settle_file(wait).or(settled)
     }
@@ -595,6 +597,9 @@ impl Session {
             // Handlers describe effects without I/O. Preview custom edits through the same
             // admission boundary as dispatch; services and file I/O are never invoked here.
             match (spec.run)(&context, params)? {
+                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::CancelFile => Ok(()),
+                // Dispatch refuses everything else until the open settles.
+                _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
                 _ => Ok(()),
             }
