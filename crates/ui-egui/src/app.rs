@@ -39,8 +39,10 @@ struct CachedSchema {
 }
 
 /// Resolved instance schemas of the cards on screen, with the byte total kept up to date on every
-/// insert and remove (shared descriptors counted once), so a cache miss costs O(log n) rather
-/// than a scan of every entry. Edits invalidate entries by document revision.
+/// insert and remove (shared descriptors counted once). Tree updates are O(log n); byte charges
+/// visit visibility names, schema resolution depends on descriptor size, and each eviction scans
+/// entries for the oldest.
+/// Edits invalidate entries by document revision.
 #[derive(Default)]
 struct SchemaCache {
     entries: BTreeMap<NodeId, CachedSchema>,
@@ -934,12 +936,9 @@ impl NodeCraftApp {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
         let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
-            self.session.document().canvases().get(&self.canvas).is_some_and(|c| {
-                c.nodes().values().any(|node| {
-                    let rect = card::world_rect(node, self.schemas.get(&node.id).map(|cached| cached.descriptor.as_ref()), t);
-                    self.view.rect_to_screen(viewport.min, rect).contains(pointer)
-                })
-            })
+            // navigation_overlay refreshed actual-instance geometry for this revision above.
+            // The visible-card schema cache is refreshed later and may still describe an old size.
+            self.navigation.geometry.rects.values().any(|rect| self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
