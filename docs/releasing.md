@@ -43,8 +43,7 @@ it, and every release's notes link there. When signing lands (#100), drop the wa
 | Linux Flatpak | `packaging/linux/flatpak-bundle.sh` (repackages the tarball) | `.flatpak` |
 | Web (preview) | `packaging/web/package.sh` | `nodecraft-web-<v>.zip` (a static site) |
 
-Not targets: Windows x86,
-Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps).
+Not targets: Windows x86, Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps).
 
 ## Local packaging
 
@@ -53,7 +52,7 @@ packaging/macos/package.sh --arch aarch64     # ad-hoc signed DMG + CLI zip in d
 packaging/linux/package.sh --formats tar      # on Linux; deb/rpm need nfpm
 pwsh packaging/windows/package.ps1 -Arch x64  # on Windows; needs WiX v5
 packaging/web/package.sh                      # static site zip; needs trunk, wasm-bindgen-cli
-packaging/web/package.sh --serve              # the same build on http://127.0.0.1:8080
+packaging/web/package.sh --serve              # dev build, rebuilt on change, http://127.0.0.1:8080
 packaging/icons.sh                            # after editing assets/app-icon/nodecraft.svg
 ```
 
