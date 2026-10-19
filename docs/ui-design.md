@@ -167,7 +167,9 @@ Fit reserves space above the overlay and clamps zoom to 10%–400%. When widely 
 all fit at 10%, it centers them at minimum zoom and reports that limitation.
 
 Minimap gestures own the pointer through release even outside the map, with a frozen transform
-so the target cannot chase the changing viewport. Clipboard copy/cut/paste/duplicate and quick-add
+(so the target cannot chase the changing viewport), and suppress Delete, Backspace, Undo and Redo
+until the release frame has finished. A fresh press still admits ordinary undo/deletion before
+deciding minimap ownership. Clipboard copy/cut/paste/duplicate and quick-add
 yield from the initial map press through release, including keys in the same input frame and a
 pointer outside the map. Rejected shortcuts remain unconsumed. The initial primary-press position
 decides ownership even when later motion crosses the map boundary in that frame. If a frame batches
