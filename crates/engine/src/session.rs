@@ -312,19 +312,35 @@ impl Session {
         staged: &AssetStore,
         base: u64,
     ) -> Result<(), Error> {
+        self.record_derived_with(canvas, results, &[], staged, base)
+    }
+
+    /// [`Self::record_derived`], also applying cached results (`hits`, #91) in the same step.
+    pub fn record_derived_with(
+        &mut self,
+        canvas: CanvasId,
+        results: Vec<(NodeId, nodecraft_graph::Generation)>,
+        hits: &[crate::cache::Hit],
+        staged: &AssetStore,
+        base: u64,
+    ) -> Result<(), Error> {
         if self.revision != base {
             return Err(Error::new(ErrorKind::Conflict, "the results are out of date"));
         }
         if !self.redo.entries.is_empty() {
             return Err(Error::new(ErrorKind::Conflict, "derived results wait until there is nothing to redo"));
         }
-        if results.is_empty() || results.len() > crate::run_cmds::MAX_RESULTS {
+        let count = results.len().saturating_add(hits.len());
+        if count == 0 || count > crate::run_cmds::MAX_RESULTS {
             return Err(invalid("record 1 to 1000 derived results"));
         }
         // Validate every result before touching the assets.
         let live = self.document.canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-        let mut changes = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
+        let mut changes = crate::cache::changes(canvas, live, hits)?;
+        let mut seen: std::collections::BTreeSet<NodeId> = hits.iter().map(crate::cache::Hit::node).collect();
+        if seen.len() != hits.len() {
+            return Err(invalid("a node has two derived results"));
+        }
         for (node, generation) in &results {
             if !seen.insert(*node) {
                 return Err(invalid("a node has two derived results"));

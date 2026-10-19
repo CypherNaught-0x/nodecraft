@@ -36,6 +36,9 @@ use std::{
     fmt::Write as _,
 };
 
+/// The node `config` key holding whether it reuses identical results (#91): a boolean.
+pub const CACHE_CONFIG: &str = "cache";
+
 /// Domain tag mixed into every hash. Bump it when what is hashed changes; results stamped under
 /// an older tag are then reported stale (see the module docs).
 pub const DOMAIN: &[u8] = b"nodecraft.input-hash.v2";
@@ -329,7 +332,15 @@ impl InputHasher {
         charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
         w.text(&node.kind);
-        w.params(&node.config)?;
+        // Whether a node reuses cached results (#91) doesn't change what it makes: leave the
+        // switch out, so turning it on or off never makes a result stale.
+        if node.config.contains_key(CACHE_CONFIG) {
+            let mut config = node.config.clone();
+            config.remove(CACHE_CONFIG);
+            w.params(&config)?;
+        } else {
+            w.params(&node.config)?;
+        }
         let recipe = match kinds.get(&node.kind) {
             Err(_) => {
                 w.params(&node.params)?;

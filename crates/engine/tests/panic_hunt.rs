@@ -295,6 +295,8 @@ fn template(id: &str) -> (Session, Value) {
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
         "plugins.enable" | "plugins.disable" | "plugins.uninstall" => json!({"package_id":"io.example.palette"}),
         "plugins.rollback" => json!({"package_id":"io.example.palette","digest":format!("blake3:{}", "0".repeat(64))}),
+        "run.reuse" => json!({"canvas":canvas()}),
+        "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
@@ -395,11 +397,18 @@ fn typed_template_panic_hunt() {
                             | "perf.report"
                             | "usage.ownership"
                             | "usage.reconcile_ownership"
+                            // The fixture has no results to reuse: nothing changes.
+                            | "run.reuse"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
                         assert_eq!(session.events_since(0).unwrap(), events);
                         assert_eq!((session.can_undo(), session.can_redo()), history);
+                        continue;
+                    }
+                    // A command that found nothing to change (asking for the value it has) edits nothing.
+                    if session.revision() == revision {
+                        assert_eq!(session.document(), &before, "{id}");
                         continue;
                     }
                     let after = session.document().clone();
