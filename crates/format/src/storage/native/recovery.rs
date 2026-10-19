@@ -108,7 +108,6 @@ fn parse_payload(
     json.try_reserve_exact(n).map_err(|_| FrameFailure::Operational(io_error("cannot allocate bounded recovery changeset")))?;
     json.resize(n, 0);
     payload.read_exact(&mut json)?;
-    crate::compatibility::validate(&json).map_err(FrameFailure::Semantic)?;
     let record: Record = serde_json::from_slice(&json).map_err(|_| semantic("invalid recovery changeset"))?;
     if record.checkpoint != identity || record.sequence != sequence {
         return Err(semantic("stale or out-of-order recovery changeset"));
@@ -193,7 +192,7 @@ pub(super) fn recover(
     if !read_exact(file, &mut magic, cancel, metrics)? {
         return Err(invalid("truncated recovery checkpoint"));
     }
-    if &magic == b"NCRJ0001" {
+    if matches!(&magic, b"NCRJ0001" | b"NCRJ0002" | b"NCRJ0003") {
         if length > MAX_JOURNAL_BYTES as u64 {
             return Err(invalid("legacy recovery exceeds size limit"));
         }
@@ -201,7 +200,10 @@ pub(super) fn recover(
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(length as usize).map_err(|_| io_error("cannot allocate bounded legacy recovery"))?;
         file.take(MAX_JOURNAL_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| io_error("cannot read legacy recovery"))?;
-        return Ok(NativeRecovered { recovered: crate::journal::recover(&bytes)?, wire: durability::Wire::Legacy });
+        let mut recovered = crate::journal::recover(&bytes)?;
+        // All classic envelopes must be checkpointed into NCRJ0004 before native append.
+        recovered.legacy = true;
+        return Ok(NativeRecovered { recovered, wire: durability::Wire::Legacy });
     }
     if &magic != b"NCRJ0004" {
         return Err(Error::new(ErrorKind::Unsupported, "unsupported recovery checkpoint version; use a compatible NodeCraft build"));
@@ -231,7 +233,7 @@ pub(super) fn recover(
         return Err(invalid("recovery checkpoint metadata changed during private transfer"));
     }
     let mut snapshot = crate::archive::decode_indexed_presence(&retained, context)?;
-    if retained.version() == 1 {
+    if retained.version() < 4 {
         snapshot.assets.verify_all_content_in_stage(&stage, cancel, metrics)?;
         snapshot.assets.verify_project_in_stage(&stage, &snapshot.project, cancel, metrics)?;
     }
@@ -322,7 +324,7 @@ pub(super) fn recover(
     }
     workspace.cleanup()?;
     Ok(NativeRecovered {
-        recovered: Recovered { snapshot, applied, truncated_tail: stopped.is_some(), damage: stopped },
+        recovered: Recovered { snapshot, applied, truncated_tail: stopped.is_some(), damage: stopped, legacy: false },
         wire: durability::Wire::Streaming { identity, checkpoint_bytes, recorded: Arc::new(recorded) },
     })
 }

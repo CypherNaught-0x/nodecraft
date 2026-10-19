@@ -83,20 +83,17 @@ fn money(n: u64) -> Money {
     Money::new(Currency::USD, n)
 }
 fn registration(http: Arc<Transport>, price: Option<Option<Money>>) -> QueuedJob {
-    QueuedJob {
-        provider: nodecraft_engine::provider_routing::RegisteredProvider::default_instance(Arc::new(Replicate::new(
-            Secret::new("fixture-key-not-real").unwrap(),
-            http,
-        )))
-        .unwrap(),
-        job: ProviderJob {
+    QueuedJob::new(
+        nodecraft_engine::provider_routing::RegisteredProvider::default_instance(Arc::new(Replicate::new(Secret::new("fixture-key-not-real").unwrap(), http)))
+            .unwrap(),
+        ProviderJob {
             model: HELLO.into(),
             params: serde_json::Map::new(),
             inputs: vec![JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
             idempotency_key: "fixture-prediction-1".into(),
         },
-        price: price.map(|estimate| JobPrice { node: NodeId::from_bytes([1; 16]), model: "replicate.hello".into(), estimate }),
-    }
+        price.map(|estimate| JobPrice::new(NodeId::from_bytes([1; 16]), "replicate.hello".into(), estimate)),
+    )
 }
 fn runner(budgets: Budgets) -> (Arc<ProviderRunner>, JobBudget, Arc<AtomicUsize>) {
     runner_limits(budgets, RunLimits::default())

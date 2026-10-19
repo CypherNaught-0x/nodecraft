@@ -30,3 +30,18 @@ pub fn project() -> Project {
     Change::Connect { canvas: canvas(), edge: edge() }.apply(&mut project).unwrap();
     project
 }
+
+#[allow(dead_code)]
+pub fn layout_context(session: &nodecraft_engine::Session) -> nodecraft_engine::layout_cmds::LayoutContext {
+    use nodecraft_graph::layout::Extent;
+    let selection = vec![node_id(1), node_id(2)];
+    nodecraft_engine::layout_cmds::LayoutContext {
+        project: session.document().id(),
+        canvas: canvas(),
+        revision: session.revision(),
+        extents: selection.iter().map(|id| Extent { id: *id, width: 320.0, height: 220.0, left: 0.0, top: 22.5, right: 10.0, bottom: 10.0 }).collect(),
+        selection,
+        gap: 64.0,
+        blocked: false,
+    }
+}

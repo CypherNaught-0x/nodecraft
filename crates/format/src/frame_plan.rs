@@ -171,7 +171,6 @@ pub(crate) fn prepare(
         changes: &'a Changeset,
     }
     let json = crate::archive::bounded_json(&Record { checkpoint: identity, sequence, changes }, 16 * 1024 * 1024)?;
-    crate::compatibility::validate(&json)?;
     let bytes = lengths.values().try_fold(56u64.checked_add(json.len() as u64).ok_or_else(|| invalid("frame extent overflow"))?, |n, bytes| {
         n.checked_add(40).and_then(|n| n.checked_add(*bytes)).filter(|n| *n <= MAX_STREAM_FRAME_BYTES).ok_or_else(|| invalid("frame exceeds 65 GiB limit"))
     })?;

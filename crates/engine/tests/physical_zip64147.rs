@@ -253,8 +253,8 @@ fn phase(name: &str, root: &Path, host: &TypedOnly, metrics: &StreamMetrics, sta
 fn zip_checks(path: &Path, large: Blake3, tiny: Blake3, bytes: u64, heavy: bool, metrics: &StreamMetrics) -> u32 {
     let input = file_range(path);
     let index = ArchiveIndex::read(&input, &TransferCancel::default(), metrics).unwrap();
-    // Small calibration fits frozen wire1; the real >4GiB proof must remain wire2.
-    assert_eq!(index.version(), if heavy { 4 } else { 1 });
+    // Small calibration uses current graph3; the real >4GiB proof uses streaming4.
+    assert_eq!(index.version(), if heavy { 4 } else { 3 });
     let large_entry = index.entries().iter().find(|e| e.name == EntryName::Asset(large)).unwrap();
     let tiny_entry = index.entries().iter().find(|e| e.name == EntryName::Asset(tiny)).unwrap();
     assert_eq!(large_entry.data.byte_len(), bytes);

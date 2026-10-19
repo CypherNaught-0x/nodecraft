@@ -23,17 +23,21 @@ mod native_atomic;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_cleanup;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod native_workspace;
+#[cfg(not(target_arch = "wasm32"))]
 mod reader_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_assets::NativeAssetWorkspace;
+mod legacy;
 pub mod storage;
 #[cfg(any(test, feature = "validation-metrics"))]
 mod validation_metrics;
 pub mod zip_index;
 #[cfg(any(test, feature = "validation-metrics"))]
 pub use validation_metrics::{ValidationMetrics, take_validation_metrics};
+mod v2;
 
-pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, decode_indexed, encode, validate_v1_project};
+pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, decode_indexed, encode, validate_current_project, validate_v1_project};
 pub use archive_plan::{ArchivePlan, StorageCapability};
 pub use asset_context::AssetContext;
 pub use asset_store::{AssetDescriptor, VerifiedAsset, VerifiedReader};

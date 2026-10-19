@@ -41,7 +41,7 @@ fn range(bytes: Vec<u8>) -> AssetRange {
     AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes))), 0, len).unwrap()
 }
 #[test]
-fn native_small_plan_is_v1_exact_reusable_and_pins_content_through_gc() {
+fn native_small_plan_is_current_graph_exact_reusable_and_pins_content_through_gc() {
     let (_dir, workspace, mut store) = setup();
     let baseline = workspace.quota().usage().unwrap();
     let mut hashes = Vec::new();
@@ -61,7 +61,7 @@ fn native_small_plan_is_v1_exact_reusable_and_pins_content_through_gc() {
     assert_eq!(first.len() as u64, plan.byte_len());
     assert_eq!(*blake3::hash(&first).as_bytes(), *plan.digest().hash.as_bytes());
     let index = ArchiveIndex::read(&range(first.clone()), &TransferCancel::default(), &metrics).unwrap();
-    assert_eq!(index.version(), 1);
+    assert_eq!(index.version(), 3);
     let resident = nodecraft_format::decode(&first).unwrap();
     assert_eq!(resident.project, snapshot.project);
     assert_eq!(resident.epoch, snapshot.epoch);
@@ -88,7 +88,7 @@ fn native_small_plan_is_v1_exact_reusable_and_pins_content_through_gc() {
     assert_eq!(workspace.quota().usage().unwrap(), baseline);
 }
 #[test]
-fn small_plan_preserves_frozen_v1_and_browser_capability_refuses_lazy_before_reads() {
+fn small_plan_preserves_current_graph_and_browser_capability_refuses_lazy_before_reads() {
     let mut store = AssetStore::default();
     let h = store.insert(b"small").unwrap();
     let snapshot = Snapshot { project: project(&[h]), assets: store, epoch: 1 };

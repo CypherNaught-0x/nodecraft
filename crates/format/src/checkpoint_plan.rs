@@ -63,7 +63,7 @@ impl CheckpointPlan {
             let size = bytes.len().checked_add(16).ok_or_else(|| invalid("legacy checkpoint extent overflow"))?;
             let mut small = Vec::new();
             small.try_reserve_exact(size).map_err(|_| invalid("cannot allocate bounded legacy checkpoint"))?;
-            small.extend_from_slice(b"NCRJ0001");
+            small.extend_from_slice(b"NCRJ0003");
             small.extend_from_slice(&length);
             small.extend_from_slice(bytes);
             identity = digest;

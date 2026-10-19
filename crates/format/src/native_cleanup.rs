@@ -6,8 +6,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-const MAX_SLOTS: usize = 4096;
-const MAX_PATH_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_SLOTS: usize = 4096;
+pub(crate) const MAX_PATH_BYTES: usize = 64 * 1024;
 pub(crate) trait RemoveOwned: Send + Sync {
     fn remove(&self, path: &Path) -> std::io::Result<()>;
 }

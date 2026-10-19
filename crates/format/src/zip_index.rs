@@ -190,7 +190,7 @@ impl ArchiveIndex {
         }
         let version: Version = serde_json::from_slice(&manifest).map_err(|_| invalid("invalid project manifest or missing format version"))?;
         match version.version {
-            1 => {
+            1..=3 => {
                 if uses_zip64
                     || source.byte_len() > crate::MAX_ARCHIVE_BYTES as u64
                     || total > crate::MAX_TOTAL_ASSET_BYTES as u64

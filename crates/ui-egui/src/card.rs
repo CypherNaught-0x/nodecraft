@@ -85,14 +85,19 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
     clipped
 }
 
-pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+/// Position-independent logical metrics, including the node's history strip.
+/// Never recover these by subtracting large coordinates.
+pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Vec2 {
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
     // The history strip sits under the parameters and is never squeezed out by them; an image
     // preview sits above them.
     let preview = if nodecraft_engine::split::image_of(node).is_some() { t.card_preview_height } else { 0.0 };
     let height = params + preview + history::rows(node) as f32 * t.control_row_height;
-    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, height))
+    Vec2::new(t.card_width, height)
+}
+pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), world_size(node, descriptor, t))
 }
 
 pub struct CardView<'a> {
@@ -101,10 +106,22 @@ pub struct CardView<'a> {
     pub preview_pos: Option<Position>,
     /// The node's image, when it has one (#386).
     pub image: Option<crate::preview::Preview>,
+    /// Rows and columns to draw over the image while a split is being picked (#337), with the
+    /// image's full size when known (so lines fall where the split will cut).
+    pub grid: Option<(u32, u32, Option<[u32; 2]>)>,
 }
 
+/// Positive distances outside the body, including the clipped title/UNSAVED notice and
+/// minimum screen-sized output handle. Called only with a validated canvas zoom.
+pub fn outer_insets(t: &Tokens, zoom: f32, output: bool) -> (f32, f32, f32, f32) {
+    let top = t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap;
+    let handle = if output { t.handle_radius.max(t.handle_min_screen_radius / zoom) + t.handle_stroke / (2.0 * zoom) } else { 0.0 };
+    // The handle is centered on the right edge. Conservatively include its vertical extent.
+    (0.0, top.max(handle), handle, handle)
+}
 pub fn cull_margin(t: &Tokens, zoom: f32) -> f32 {
-    ((t.label_size * zoom).max(t.title_min_screen_px) + (t.label_gap + t.control_gap) * zoom).max((t.handle_radius * zoom).max(t.handle_min_screen_radius))
+    let (_, top, right, bottom) = outer_insets(t, zoom, true);
+    top.max(right).max(bottom) * zoom
 }
 
 pub fn show(
@@ -116,7 +133,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, preview_pos, image } = card;
+    let CardView { descriptor, visible, preview_pos, image, grid } = card;
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -133,7 +150,7 @@ pub fn show(
     let transform = egui::emath::TSTransform::new(origin.to_vec2() + view.pan, view.zoom);
     parent.ctx().set_transform_layer(layer, transform);
     let label_rect = Rect::from_min_size(
-        rect.left_top() - Vec2::new(0.0, t.label_size.max(t.title_min_screen_px / view.zoom) + t.label_gap + t.control_gap),
+        rect.left_top() - Vec2::new(0.0, outer_insets(t, view.zoom, false).1),
         Vec2::new(rect.width(), t.label_size.max(t.title_min_screen_px / view.zoom) + t.control_gap),
     );
     let mut ui = parent.new_child(egui::UiBuilder::new().id_salt(("node", node.id)).layer_id(layer).max_rect(rect.union(label_rect)));
@@ -239,7 +256,7 @@ pub fn show(
         if let Some(image) = image {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
-            show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, t);
+            show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, grid, t);
         }
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
@@ -301,7 +318,7 @@ pub fn show(
 }
 
 /// An image preview fitted in `area`, keeping its aspect; or a placeholder saying why not.
-fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, t: &Tokens) {
+fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, grid: Option<(u32, u32, Option<[u32; 2]>)>, t: &Tokens) {
     use crate::preview::Preview;
     let response = ui.interact(area, ui.id().with("image"), Sense::hover());
     let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
@@ -311,7 +328,13 @@ fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, t:
             let scale = (area.width() / w).min(area.height() / h);
             let fitted = Rect::from_center_size(area.center(), Vec2::new(w * scale, h * scale));
             painter.image(*texture, fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Image {}×{}", size[0], size[1])));
+            if let Some((rows, columns, full)) = grid {
+                draw_grid(&painter, fitted, rows, columns, full.unwrap_or(*size), t);
+                let label = format!("Image {}×{}, split preview {rows} rows by {columns} columns", size[0], size[1]);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label.clone()));
+            } else {
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Image {}×{}", size[0], size[1])));
+            }
         }
         Preview::Pending | Preview::Unavailable(_) => {
             painter.rect_filled(area, t.card_radius, t.canvas_bg);
@@ -323,6 +346,29 @@ fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, t:
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, text));
         }
     }
+}
+
+/// Where the split's cuts fall on `fitted`, the image drawn on screen: the same edges
+/// `split_grid` cuts at, scaled from the image's `full` size.
+pub fn grid_lines(fitted: Rect, rows: u32, columns: u32, full: [u32; 2]) -> (Vec<f32>, Vec<f32>) {
+    let at = |length: u32, count: u32, index: u32, start: f32, span: f32| {
+        start + span * nodecraft_engine::split::edge(length, count, index) as f32 / length.max(1) as f32
+    };
+    let xs = (1..columns).map(|i| at(full[0], columns, i, fitted.left(), fitted.width())).collect();
+    let ys = (1..rows).map(|i| at(full[1], rows, i, fitted.top(), fitted.height())).collect();
+    (xs, ys)
+}
+
+fn draw_grid(painter: &egui::Painter, fitted: Rect, rows: u32, columns: u32, full: [u32; 2], t: &Tokens) {
+    let (xs, ys) = grid_lines(fitted, rows, columns, full);
+    let stroke = Stroke::new(t.port_stroke, t.accent);
+    for x in xs {
+        painter.line_segment([Pos2::new(x, fitted.top()), Pos2::new(x, fitted.bottom())], stroke);
+    }
+    for y in ys {
+        painter.line_segment([Pos2::new(fitted.left(), y), Pos2::new(fitted.right(), y)], stroke);
+    }
+    painter.rect_stroke(fitted, 0.0, stroke, StrokeKind::Inside);
 }
 
 fn control(
@@ -541,6 +587,19 @@ impl EditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_lines_fall_where_the_split_cuts() {
+        let fitted = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(100.0, 70.0));
+        // A 10×7 image split 2 rows × 3 columns cuts at x = 3, 6 and y = 3 (as split_grid does).
+        let (xs, ys) = grid_lines(fitted, 2, 3, [10, 7]);
+        assert_eq!(xs, [40.0, 70.0]);
+        assert_eq!(ys, [50.0]);
+        let (none_x, none_y) = grid_lines(fitted, 1, 1, [10, 7]);
+        assert!(none_x.is_empty() && none_y.is_empty(), "1×1 has no cuts");
+        let (zero_x, _) = grid_lines(fitted, 1, 2, [0, 0]);
+        assert!(zero_x.iter().all(|x| x.is_finite()), "a zero-size image never divides by zero");
+    }
     #[test]
     fn text_sizes_are_whole_points_and_vanish_when_tiny() {
         assert_eq!(text_px(13.0, 1.07), Some(14.0));
@@ -554,5 +613,21 @@ mod tests {
         assert_eq!(title(&node, None), format!("{}…", "é".repeat(64)));
         node.title = "My title".into();
         assert_eq!(title(&node, None), "My title");
+    }
+}
+
+#[cfg(test)]
+mod layout_metrics_tests {
+    use super::*;
+    #[test]
+    fn minimum_zoom_outer_metrics_cover_painted_handle_stroke_and_clipped_notice() {
+        let t = &crate::theme::DARK;
+        let zoom = crate::canvas::MIN_ZOOM;
+        let (_, top, right, bottom) = outer_insets(t, zoom, true);
+        let painted = t.handle_radius.max(t.handle_min_screen_radius / zoom) + t.handle_stroke / (2.0 * zoom);
+        assert_eq!(right, painted);
+        assert_eq!(bottom, painted);
+        assert!(top >= t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap);
+        assert!(cull_margin(t, zoom) >= painted * zoom);
     }
 }

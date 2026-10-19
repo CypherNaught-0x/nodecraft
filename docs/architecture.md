@@ -20,7 +20,9 @@ every CI run, and fails on an unregistered crate.
 |---|---|---|---|
 | L0 | `types` | ids, `Modality`, `PortType`, `Value`, hashes, money, the error base (pure data, serde) | — |
 | L0 standalone | `media` | sniffing, decode/encode, thumbnails, metadata; image first, video/audio probes behind features | none allowed |
+| L0 standalone | `plugin` | the plugin package and wire contract: IDs, canonical JSON, manifest, inventory digest, signatures, frames and messages, locks, preservation ([spec](plugin-wire.md)) | none allowed |
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
+| L1 | `plugin-store` | verifying `.ncraft-plugin` data packages and the local package store: install disabled, enable all-or-nothing, update, rollback, uninstall ([decision](decisions/2026-10-19-plugin-data-package-store.md)) | plugin, types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
@@ -279,6 +281,12 @@ in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging s
 
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
 feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+Its phase A, the package and wire contract, is the standalone `plugin` crate
+([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
+Phase B's verifier and local store are `plugin-store`; data packages install disabled and
+nothing in them executes. The engine's `plugins.*` commands reach the store through the host's
+`plugins.store` service; the desktop app keeps it in `<settings>/plugins/store` with the trust file
+`<settings>/plugins/trust.json`, and refuses any package ID the app itself registers.
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions
@@ -318,7 +326,7 @@ results with unknown hashes when hashing fails. Control/MCP expose the command's
 `format::Snapshot` combines a validated graph, a content-addressed `AssetStore`, and a checkpoint
 epoch. Native indexed descriptors are unverified until an immutable verified lease is acquired;
 resident small values retain their verified byte contract. `encode`/`decode` remain the bounded
-v1 stored-ZIP codecs; native typed plans support streaming v2. Neither extracts archive paths. The version gate precedes graph deserialization. ZIP directory/local-header
+classic v1/v2/v3 stored-ZIP codecs; native typed plans support streaming v4. Neither extracts archive paths. The version gate precedes graph deserialization. ZIP directory/local-header
 validation runs before the ZIP library allocates its directory. Only `project.json` and canonical
 `assets/<lowercase-blake3>` regular entries are accepted, with matching lengths, CRCs and hashes.
 Unknown JSON fields are tolerated; optional graph collections default empty. IDs, kinds and format
@@ -326,9 +334,9 @@ version remain required. Unsupported versions produce an update error.
 
 The frozen small v1 limits remain 64 MiB per archive, 4 MiB manifest, 1,024 assets, 16 MiB per
 asset and 48 MiB aggregate media. V1 excludes ZIP64, compression, encryption, directories, comments
-and extra fields. Native v2 supports stored ZIP64 with 8 GiB assets, 64 GiB aggregate assets and a
-65 GiB archive, retaining the 4 MiB manifest and 1,024 asset limits. The version is a container
-change, not permission for newer graph roles. Saving includes referenced params/history assets;
+and extra fields. Native v4 supports stored ZIP64 with 8 GiB assets, 64 GiB aggregate assets and a
+65 GiB archive, retaining the 4 MiB manifest and 1,024 asset limits. The v4 container
+carries the current v3 graph vocabulary; historical v1/v2 retain their raw role gates. Saving includes referenced params/history assets;
 undo/redo-only assets remain privately retained. See [storage.md](storage.md) for exact capabilities,
 quotas, lifecycle, trust boundaries and the qualified macOS physical ZIP64 results.
 
@@ -433,8 +441,8 @@ and state, and disables edits until another save repairs recovery. Hosts must su
 ### Persistence integration boundaries and tracked storage work
 
 Save prepares one immutable digest-bound `ArchivePlan`; its exact bytes feed the destination and
-self-contained `CheckpointPlan`. Native Open copies/reindexes before install and reuses those
-private bytes for checkpointing. Indexing, checkpoint transfer and deferred per-asset verification
+self-contained `CheckpointPlan`. Native Open copies/reindexes before install and reuses current-family
+private bytes for checkpointing; historical graph inputs migrate before new append. Indexing, checkpoint transfer and deferred per-asset verification
 are separately measured operations; lazy Open is bounded in resident bytes, not zero-total-I/O. After a save, asset GC preserves references
 from both the live document and bounded undo/redo payloads; discarded redo assets can then be
 reclaimed. Hosts must call `Session::close_recovery` on a clean close (or explicit dirty discard)
@@ -465,6 +473,14 @@ entry's actual ZIP64 offset above u32::MAX. An atomic failure after 4,294,967,29
 forwarded file-write bytes preserved the old destination/recovery. These are qualified physical
 results, not cross-platform, total-RSS or durable-device-write proof; final coherent CI remains
 required. Full results, APIs/limits and reproducible commands are in [storage.md](storage.md).
+
+Comments owns format v2 with frozen exact-v1 migration fixtures and an explicit NCRJ0001→NCRJ0002
+checkpoint transition. Unknown versions reject before typed graph decoding. The persisted Tag/Field vocabulary is introduced by the v3 compatibility bridge (#193), with
+NCRJ0003 recovery. Frozen v1/v2 paths still reject those reserved roles rather than dropping them. Native storage
+accepts all three classic families and migrates into NCRJ0004 before new appends.
+Both older journal versions retain their original embedded archive hash while replaying, then
+require an atomic v3 checkpoint before appending. The bridge adds no Tags/Fields commands or UI.
+See [local comments, replay certification and format ownership](comments.md).
 
 ### Frozen-v1 bridge on the current graph
 
@@ -517,7 +533,7 @@ cheap. Opt-in `validation-metrics` exists for deterministic downstream tests, wi
 counter cost. Graph cloning/application, structural validation and byte-budget serialization still
 traverse the project per admitted edit; this is not a constant-time or linear-total edit claim.
 
-### Runtime result recording and frozen-v1 storage
+### Runtime result recording and frozen-v1 storage (historical; current writers use Comments v2)
 
 The current `exec::run::Run` returns caller-owned completed results; it does not mutate a
 Session or automatically wire desktop execution. A host can turn a result into one changeset
@@ -527,6 +543,32 @@ Memory-only sessions accept stamped results and retain undo/redo. Frozen-v1 stor
 history and identity publication. The caller retains the completed result for explicit later
 handling; the engine must neither discard its stamp nor silently widen v1 to save it.
 
+### Local comments and notes
+
+[Comments](comments.md) adds bounded flat threads and canvas/node anchors through graph changes,
+engine document commands and a scoped UI view service. Node deletion detaches discussions; compact
+restore metadata plus certified exact F/I/R staging preserves undo/redo budgets. `structure.note`
+is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
+authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
+explicit Save/Cancel, versioned migration and current format ownership are specified in that contract.
+
+
+### Comments-v2 on the current persistence host
+
+Comments advances current archive writers to version2 and recovery writers to NCRJ0002. Frozen
+v1 reads retain the landed contextual guard, including Generation.input_hash and default/null
+reserved-role refusal; original archive bytes still determine legacy frame identity. Opening or
+recovering legacy data must establish a new atomic v2 checkpoint before appending v2 edits.
+Current v2 admits config, scalar Values, stamped generations and local threads; future Tag/Field
+roles still reject. The earlier frozen-v1 runtime/storage restrictions above describe the previous
+writer and are superseded for current writes, not weakened for v1 reads.
+
+Private prepared admission, immutable referenced bytes, source identity/revision, complete-source
+changed-asset validation, ordered valid-final batches, actual canonical redo reservations, physical
+prefix damage recovery, staged Open rollback, source access/locks and sync generations remain the
+same persistence path. No second Comments save/append service exists. Save availability validates
+the current bounded manifest; incremental edits keep their existing replay/graph limits rather than
+imposing the archive's smaller manifest ceiling on every edit.
 
 ## Optional native video sidecar
 
@@ -534,3 +576,16 @@ handling; the engine must neither discard its stamp nor silently widen v1 to sav
 [media-video.md](media-video.md). It depends only on external Rust crates and configured installed
 tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
 is separate. Feature-on wasm exposes an Unsupported host setup path.
+
+## Selected-node formatting
+
+Selected-node formatting lives in graph's pure `layout` module and engine's `layout_cmds`.
+The UI supplies a revision-stamped scoped geometry capability, including history-strip body
+height at fixed reference zoom. Advisory Preview validates structure without solving or staging;
+dispatch returns one MoveNode changeset through the private persistent admission boundary.
+Grid and whole-DAG dependency modes move selected nodes only, with one undo step; see
+[the decision](decisions/2026-10-18-selected-node-auto-format-70.md) and [UI design](ui-design.md).
+
+### Colour tag mutations and filtering
+
+The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.

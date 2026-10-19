@@ -1,8 +1,8 @@
 # Project and asset storage
 
 Native storage uses bounded streaming transfers and private disk-backed assets. This changes the
-container and storage capabilities; it does not enable newer graph fields in the frozen-v1 graph
-payload. The strict graph-role compatibility gate still applies before publication.
+container and storage capabilities while preserving the current Comments-v2 and Tags-v3 graph
+vocabulary. Historical v1/v2 inputs retain their contextual graph-role gates before typed decoding.
 
 ## Capabilities and versions
 
@@ -14,17 +14,18 @@ The exact same prepared archive bytes feed Save and its recovery checkpoint. A p
 with a failed checkpoint still reports `saved: true`, adopts its savepoint, and requires another
 successful checkpoint before editing.
 
-Native output selects numeric wire v1 when the actual stored-ZIP layout fits every frozen
-small limit and uses no ZIP64 field or footer; otherwise it selects numeric v4. This does not
-change native capability: both outputs stay sealed StreamingV2 plans, and byte-only defaults
-still refuse them before I/O. Native checkpoints retain the 80-byte NCRJ0004 envelope even
-when the embedded archive is v1. Wire versions 2 and 3 belong to the Comments/Tags graph families and are refused here.
-The unmerged streaming-v2 prototype is not a supported on-disk format.
+Native output selects current graph version v3 when the actual stored-ZIP layout fits every
+small limit and uses no ZIP64 field or footer; otherwise it selects streaming container v4,
+carrying the same current graph vocabulary. Both outputs stay sealed StreamingV2 plans;
+byte-only defaults refuse them before I/O. Native checkpoints use the 80-byte NCRJ0004 envelope
+with either embedded archive. Historical graph versions 1, 2 and 3 remain readable, including
+Comments and Tags. The unmerged streaming-v2 prototype is not a supported on-disk format.
 
-Small/default hosts keep frozen v1 and NCRJ0001. V1 is buffered: 16 MiB per asset, 48 MiB total,
-64 MiB archive, 4 MiB manifest, 1,024 assets; frames are 64 MiB, journal 128 MiB. Compatibility
-defaults reject large/lazy plans before reads or byte-method writes. Wasm builds retain this
-fallible capability boundary; a browser streaming host is not supplied here.
+Small/default hosts emit current graph v3 and NCRJ0003 while retaining frozen v1/v2 read paths.
+The buffered limits remain 16 MiB per asset, 48 MiB total, 64 MiB archive, 4 MiB manifest and
+1,024 assets; frames are 64 MiB, journal 128 MiB. Compatibility defaults reject large/lazy plans
+before reads or byte-method writes. Wasm retains this fallible capability boundary; a browser
+streaming host is not supplied here.
 
 Native container v4 admits canonical stored ZIP64: 8 GiB per asset, 64 GiB total retained logical
 assets, 65 GiB archive, 4 MiB manifest and 1,024 assets. Directory metadata is at most 512 KiB and
@@ -32,9 +33,10 @@ assets, 65 GiB archive, 4 MiB manifest and 1,024 assets. Directory metadata is a
 symlinks, split archives, duplicate/overlapping/hidden extents and arbitrary names are rejected.
 Only `project.json` and `assets/<lowercase BLAKE3>` regular entries are accepted. Local/directory
 metadata, ZIP64 sentinels/extras/footer and CRC declarations must agree. V1 does not accept ZIP64.
-Version admission precedes typed graph decoding; v1 graph compatibility remains checked under
-v4. Graph schema versions 2/3 are reserved for #194/#199; a later integration must
-explicitly combine their graph gates with this streaming container.
+Version admission precedes typed graph decoding. V1 and v2 apply their landed contextual
+role gates; v3 and streaming v4 admit the current graph model. Classic NCRJ0001/2/3 recovery
+replays against the original embedded archive hash. Native hosts checkpoint the recovered
+project into NCRJ0004 before publishing new edits; a classic envelope is never parsed as v4.
 
 The historical physical runs below used the unmerged prototype v2 headers. They establish
 streaming mechanics and byte counts, not a fresh physical run of the v4 allocation.
@@ -191,6 +193,61 @@ reopen reclaims its real owner; a distinct live context refuses rather than stea
 clean close/discard removes owned recovery only after synchronization. Atomic publication uses
 same-directory stages; success means published, not immunity from hardware failure. Cleanup,
 retired worker handles and failed removal remain charged until safely released.
+
+## Private workspace crash maintenance
+
+New native workspaces use `nodecraft-assets-v1-<pid>-<counter>` beneath the selected recovery
+parent. The PID is naming only. A versioned, root-matched `workspace.v1.lock` is held by the
+same workspace Arc as private source backings, ranges, readers and captures. File/cleanup permits
+close before the final guard; dropping a storage host cannot authorize deletion of a retained
+reader. Every constructor, including standalone `NativeAssetWorkspace::new`, coordinates through
+a fresh exclusive lock on the permanent `.nodecraft-assets-v1.lock` parent file. Its bytes are
+irrelevant and it is never truncated, renamed or removed. Same-parent admission is nonblocking;
+different parents may proceed independently. No process-global registry or waiting loop is used.
+
+Startup maintenance visits at most4,096 parent entries, tries at most64 qualified inventories
+(including inventories later refused), and unlinks at most256 generated payloads. Each orphan
+requires an ordinary private directory, a separately opened exclusive marker lock and exact
+bounded marker bytes. Windows marker bytes are read only AFTER locking; pre-lock checks use
+metadata/type/reparse/path diagnostics and expected length. Symlinks and all Windows reparse
+points are excluded. A complete flat preflight admits at most4,096 `stage-N`, `archive-N` or
+`capture-N` files plus the marker; unknown names, nested/nonregular entries, malformed IDs or
+overflow refuse the WHOLE candidate before any payload deletion. Files are reinspected before
+unlink. No payload bytes or hashes are read for maintenance, and no recursive removal is used.
+
+Inventory entries contain only a fixed kind and canonical u64, without individual heap paths.
+Actual admitted Vec backing is at most512KiB. The canonical parent and one reusable working
+path are separately bounded to64KiB each; the native workspace's returned root remains its
+existing lifetime owner. These are per active operation, not process-global/RSS, OS directory
+buffer, filesystem latency or allocated-block guarantees. The4,096 payload ceiling comes from
+the existing cleanup-slot table, including failed-unlink debt; it is not the32-backing limit.
+A failed qualified deletion aborts another constructor before it creates a new workspace.
+Successful partial deletions are retained truthfully, with the valid marker left for retry.
+Admission stays held while the last marker handle closes and the marker/empty directory retire,
+including on Windows. A failure after marker unlink leaves reported unmarked residue; it is not
+silently adopted, recursively deleted or given replacement authority.
+
+`NativeAssetWorkspace::maintenance_report` and `NativeStorage::workspace_maintenance_report`
+expose bounded counts and scan/budget/failure flags, without paths or payload data. `Complete`
+means the bounded pass/target finished, not that live or unqualified entries were removed. Exactly
+filling the scan window conservatively reports incomplete without an extra directory read.
+Directory order is unspecified: a stable4,096-entry prefix can hide later roots forever.
+`native_workspace::sweep_named_orphan(parent, basename, cancel)` is the bounded single-root
+fallback, repeating the same authority/preflight checks without scanning the parent. It removes
+at most256 payloads per call (up to16 batches for a4,096-file root when IO succeeds). Basenames
+cannot be paths. This library slice supplies no UI/CLI maintenance command or automatic retry
+worker; host notification/routing is separate work.
+
+Only the new protocol is automatically reclaimable. Legacy `nodecraft-assets-<pid>-<counter>`,
+partial/unknown markers and unknown files remain untouched. Preupgrade residues need explicit
+human inspection/removal with all old instances closed; no PID/age/size heuristic is authority.
+Recovery journals/locks, original archives, Save destinations and external atomic stages are
+outside the sweep namespace. NCRJ0004 retains complete checkpoint/frame bodies; tiny real crash
+fixtures verify recovery after private orphan files are removed. Tests never sweep preexisting
+user directories. The cooperative private-namespace contract excludes hostile same-user gate/
+path replacement; metadata and same-file equality are mismatch diagnostics, not a universal
+no-follow identity proof. Cancellation occurs between bounded units, not inside blocked OS IO.
+These new tests do not repeat the historical large physical or hardware-power-loss evidence.
 
 ## Evidence and physical ZIP64 harness
 

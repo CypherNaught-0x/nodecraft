@@ -47,7 +47,7 @@ impl ArchivePlan {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            crate::validate_v1_project(&snapshot.project)?;
+            crate::validate_current_project(&snapshot.project)?;
             let referenced = snapshot.assets.verify_project_streams(&snapshot.project, cancel, metrics)?;
             snapshot.assets.compact_before_output(cancel, metrics)?;
             let assets = lengths(&snapshot.assets, &referenced)?;
@@ -64,17 +64,17 @@ impl ArchivePlan {
             }
             // Storage capability and wire compatibility are independent: keep the native
             // sealed plan even when its exact stored-ZIP bytes fit the frozen reader.
-            let candidate =
-                crate::archive::bounded_json(&Manifest { version: 1, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
-            crate::compatibility::validate(&candidate)?;
+            let candidate = crate::archive::bounded_json(
+                &Manifest { version: crate::archive::VERSION, epoch: snapshot.epoch, project: &snapshot.project },
+                crate::MAX_MANIFEST_BYTES,
+            )?;
             let candidate_layout = layout(candidate.len() as u64, assets.values().copied())?;
             let (version, json, layout) = if small_wire_eligible(&candidate_layout, assets.values().copied())? {
-                (1, candidate, candidate_layout)
+                (crate::archive::VERSION, candidate, candidate_layout)
             } else {
                 drop(candidate);
                 let json =
                     crate::archive::bounded_json(&Manifest { version: 4, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
-                crate::compatibility::validate(&json)?;
                 let layout = layout(json.len() as u64, assets.values().copied())?;
                 (4, json, layout)
             };
@@ -127,11 +127,16 @@ impl ArchivePlan {
             Err(unsupported())
         }
     }
-    pub(crate) fn from_small_open(bytes: Vec<u8>) -> Result<(Snapshot, Self), Error> {
+    pub(crate) fn from_small_open(mut bytes: Vec<u8>) -> Result<(Snapshot, Self), Error> {
         if bytes.len() > crate::MAX_ARCHIVE_BYTES {
             return Err(invalid("project exceeds legacy archive limit"));
         }
-        let snapshot = crate::decode(&bytes)?;
+        let (snapshot, version) = crate::archive::decode_versioned(&bytes)?;
+        // Small hosts publish NCRJ0003. Migrate the archive before selecting that
+        // envelope rather than placing old graph bytes under a newer magic.
+        if version < crate::archive::VERSION {
+            bytes = crate::encode(&snapshot)?;
+        }
         let hashes = snapshot.assets.hashes().copied().collect();
         let assets = lengths(&snapshot.assets, &hashes)?;
         let digest = StreamDigest { hash: crate::hash(&bytes), crc32: crc32fast::hash(&bytes), bytes: bytes.len() as u64 };

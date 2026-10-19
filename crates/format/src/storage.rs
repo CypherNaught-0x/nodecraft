@@ -186,6 +186,10 @@ pub(crate) mod native {
         context: AssetContext,
     }
     impl NativeStorage {
+        /// Bounded startup maintenance only; a scan-window limit does not mean the parent is clean.
+        pub fn workspace_maintenance_report(&self) -> Option<crate::native_workspace::SweepReport> {
+            self.context.0.workspace.as_ref().map(crate::NativeAssetWorkspace::maintenance_report)
+        }
         pub fn new(recovery: PathBuf) -> Result<Self, Error> {
             Self::with_interval(recovery, GROUP_SYNC_INTERVAL)
         }
@@ -269,7 +273,11 @@ pub(crate) mod native {
                 let workspace = self.context.0.workspace.as_ref().ok_or_else(|| io_error("native asset workspace is unavailable"))?;
                 let (sealed, index) = workspace.freeze_archive(file, cancel, metrics)?;
                 let snapshot = crate::decode_indexed(&index, self.context.clone())?;
-                let archive = ArchivePlan::from_native_open(sealed, &snapshot)?;
+                let archive = if index.version() < crate::archive::VERSION {
+                    ArchivePlan::prepare(&snapshot, self.capability(), cancel, metrics)?
+                } else {
+                    ArchivePlan::from_native_open(sealed, &snapshot)?
+                };
                 let checkpoint = CheckpointPlan::new(archive)?;
                 Ok(PreparedSnapshot { snapshot, checkpoint, access })
             })();

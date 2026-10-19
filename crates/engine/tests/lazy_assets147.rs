@@ -839,3 +839,23 @@ fn native_small_save_opens_in_distinct_memory_session_and_keeps_asset_history() 
     assert_eq!(other.assets().get(&hash).unwrap(), b"portable small payload");
     assert_eq!(native.0.borrow().native.recover().unwrap().snapshot.project, *session.document());
 }
+
+#[test]
+fn desktop_recovery_adopts_classic_comments_into_native_context_before_next_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal_path = dir.path().join("old-recovery");
+    std::fs::write(&journal_path, include_bytes!("../../format/tests/fixtures/v2/comments-v2.ncrj")).unwrap();
+    let previous = NativeStorage::new(journal_path).unwrap();
+    let recovered = previous.recover().unwrap();
+    assert_eq!(recovered.applied, 3);
+    let host = host(dir.path());
+    let mut session = Session::with_storage(snapshot(AssetStore::default()), Box::new(host.clone())).unwrap();
+    session.recover(recovered.snapshot, None).unwrap();
+    assert!(session.document().canvases().values().any(|canvas| !canvas.comments().is_empty()));
+    session.dispatch("node.move", &movement(80)).unwrap();
+    host.0.borrow_mut().native.flush().unwrap();
+    let replayed = host.0.borrow().native.recover().unwrap();
+    assert!(!replayed.legacy);
+    assert_eq!(replayed.applied, 1);
+    assert_eq!(replayed.snapshot.project, *session.document());
+}

@@ -24,6 +24,8 @@ fn read_error() -> Error {
 }
 
 /// Only one explicitly requested image, never a store-wide or implicit small-read fallback.
+// The 256 MiB private buffer is a per-reader bound: aggregate RSS assumes one decoder
+// worker; introducing concurrent readers requires a shared concurrency/memory budget.
 fn materialize(mut reader: impl Read, length: u64, cap: u64) -> Result<Vec<u8>, Error> {
     if length > cap {
         return Err(invalid("the image exceeds the split decoder input limit (256 MiB)"));

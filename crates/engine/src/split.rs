@@ -40,7 +40,7 @@ pub fn image_of(node: &Node) -> Option<&AssetRef> {
 
 /// Where tile `index` of `count` starts along a side `length` long: edges are spread evenly, so
 /// tiles differ by at most one pixel and the last ends exactly at `length`.
-fn edge(length: u32, count: u32, index: u32) -> u32 {
+pub fn edge(length: u32, count: u32, index: u32) -> u32 {
     let at = u64::from(length).saturating_mul(u64::from(index)) / u64::from(count.max(1));
     u32::try_from(at).unwrap_or(length)
 }

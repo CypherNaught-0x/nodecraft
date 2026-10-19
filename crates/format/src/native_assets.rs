@@ -21,6 +21,8 @@ fn next_id() -> Result<u64, Error> {
 }
 struct Workspace {
     root: PathBuf,
+    lifetime: crate::native_workspace::LifetimeLock,
+    maintenance: crate::native_workspace::SweepReport,
     quota: DiskQuota,
     cleanup: Arc<CleanupTable>,
     journal: Mutex<Option<Arc<crate::storage::native::durability::SharedJournal>>>,
@@ -37,7 +39,7 @@ struct Workspace {
 }
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.root);
+        self.lifetime.retire_empty(&self.root);
     }
 }
 /// Owns a private directory and its exact disk reservations. Does not own source/user paths.
@@ -51,41 +53,29 @@ impl NativeAssetWorkspace {
         let cleanup = CleanupTable::with_remover(&quota, Arc::new(RemoveFault(remove_fault.clone())))?;
         #[cfg(not(test))]
         let cleanup = CleanupTable::new(&quota)?;
-        for _ in 0..8 {
-            let root = parent.join(format!("nodecraft-assets-{}-{}", std::process::id(), next_id()?));
-            #[cfg(unix)]
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(not(unix))]
-            let builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            match builder.create(&root) {
-                Ok(()) => {
-                    return Ok(Self(Arc::new(Workspace {
-                        root,
-                        quota,
-                        cleanup,
-                        journal: Mutex::new(None),
-                        #[cfg(test)]
-                        write_fault: Mutex::new(None),
-                        #[cfg(test)]
-                        remove_fault,
-                        #[cfg(test)]
-                        capture_sync_fault: std::sync::atomic::AtomicBool::new(false),
-                        #[cfg(test)]
-                        atomic_fault: Mutex::new(None),
-                        #[cfg(test)]
-                        atomic_written: AtomicU64::new(0),
-                    })));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(_) => return Err(error("cannot create private asset workspace; check permissions and free space")),
-            }
-        }
-        Err(error("cannot create an exclusive private asset workspace"))
+        let created = crate::native_workspace::create(parent, next_id)?;
+        Ok(Self(Arc::new(Workspace {
+            root: created.root,
+            lifetime: created.lock,
+            maintenance: created.report,
+            quota,
+            cleanup,
+            journal: Mutex::new(None),
+            #[cfg(test)]
+            write_fault: Mutex::new(None),
+            #[cfg(test)]
+            remove_fault,
+            #[cfg(test)]
+            capture_sync_fault: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            atomic_fault: Mutex::new(None),
+            #[cfg(test)]
+            atomic_written: AtomicU64::new(0),
+        })))
+    }
+    /// Startup maintenance is bounded; this report never implies all parent entries were scanned.
+    pub fn maintenance_report(&self) -> crate::native_workspace::SweepReport {
+        self.0.maintenance
     }
     pub fn quota(&self) -> &DiskQuota {
         &self.0.quota
@@ -438,8 +428,9 @@ impl NativeAssetWorkspace {
     }
 }
 pub(crate) struct AssetCapture {
-    workspace: NativeAssetWorkspace,
+    // Declaration-order destruction must close payload/permit BEFORE the final lifetime Arc.
     pending: Pending,
+    workspace: NativeAssetWorkspace,
     verified: DiskReservation,
     reserved: u64,
     written: u64,
@@ -917,3 +908,7 @@ mod tests {
         assert_eq!(quota.usage().unwrap(), baseline);
     }
 }
+
+#[cfg(test)]
+#[path = "native_workspace/orphan_tests.rs"]
+mod orphan_regressions;

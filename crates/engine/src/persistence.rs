@@ -191,6 +191,21 @@ impl Persistence {
         self.epoch = snapshot.epoch;
         Ok(snapshot)
     }
+    /// Adopts `snapshot` (work recovered from an earlier session's journal) as the session's new
+    /// checkpoint, at `location` (the file the earlier session had, if any) and unsaved.
+    pub fn adopt_recovered(&mut self, snapshot: &Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        let cancel = TransferCancel::default();
+        let archive = ArchivePlan::prepare(snapshot, self.capability, &cancel, &self.metrics)?;
+        let checkpoint = CheckpointPlan::new(archive)?;
+        let adopted = CheckpointState::prepare(&checkpoint)?;
+        guard(|| self.storage.checkpoint_plan(&checkpoint, &cancel, &self.metrics))?;
+        self.adopt(adopted);
+        self.location = location;
+        self.read_only = false;
+        self.saved_state = None;
+        self.epoch = snapshot.epoch;
+        Ok(())
+    }
     pub fn close(&mut self, state: u64, discard_dirty: bool) -> Result<(), Error> {
         if self.saved_state != Some(state) && !discard_dirty {
             return Err(Error::new(ErrorKind::Conflict, "save changes or explicitly discard them before closing recovery"));

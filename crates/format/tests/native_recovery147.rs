@@ -325,7 +325,7 @@ fn real_recorded_cap_survives_gc_and_failed_save_then_checkpoint_resets_for_hist
         .unwrap();
     storage.append_plan(&addition, &cancel, &metrics).unwrap();
     drop(addition);
-    let restore = Changeset::new(vec![Change::RestoreNode { canvas: canvas(), node: source(0, hashes[0]), edges: vec![] }]);
+    let restore = Changeset::new(vec![Change::RestoreNode { canvas: canvas(), node: source(0, hashes[0]), edges: vec![], pins: vec![] }]);
     let (restoration, next) =
         AdmittedReplay::new(restore, &history).unwrap().into_plan(checkpoint.identity(), 2, &next, storage.capability(), &cancel, &metrics).unwrap();
     assert_eq!(next.len(), 2);
