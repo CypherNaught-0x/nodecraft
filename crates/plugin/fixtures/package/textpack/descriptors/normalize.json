@@ -1,0 +1,1 @@
+{"deterministic":true,"descriptor_version":1,"id":"plugin.io.example.textpack.normalize","inputs":[{"max":1,"min":1,"role":"text","type":"text"}],"outputs":[{"max":1,"min":1,"role":"text","type":"text"}],"parameters":[{"default":"nfc","id":"plugin.io.example.textpack.form","type":"choice","values":[{"id":"nfc","label":"NFC"}]}]}
