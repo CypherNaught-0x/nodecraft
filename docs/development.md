@@ -155,6 +155,16 @@ allocation-free metadata finalization. Its allocator applies to the entire exec 
 unrelated tests, so coordinate any additional test allocator instrumentation. Production and wasm
 allocators are unchanged.
 
+### Checking stale canvas results
+
+Double-click empty canvas space, search for **List stale results**, and choose it to run the
+existing `canvas.stale` command for that canvas. The bottom-left notice shows the last explicit
+check, its stale-result count and the number of checked results whose inputs could not be hashed.
+A diagnostic distinguishes the checked result from its failing input node. Only results with
+recorded hashes are hash-checked; downstream staleness can propagate, and unrecorded results are
+not verified fresh. Changing the document, canvas or session clears the display. View changes
+and Save can retain the historical check; rerun it after changing external configuration.
+
 ## Physical storage validation
 
 Ordinary tests run only small same-path calibration:
