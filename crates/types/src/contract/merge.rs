@@ -78,9 +78,7 @@ impl Contract {
     pub fn migrate(&self, target: &Self, values: &ParamValues) -> Result<Migration, Error> {
         self.validate()?;
         target.validate()?;
-        if values.len() > crate::schema::MAX_PARAMS {
-            return Err(invalid("parameter values exceed count limit"));
-        }
+        super::admission::values(std::iter::once(values))?;
         let mut migration = Migration::default();
         for (name, value) in values {
             let reason = match self.compatible(name, target) {
@@ -141,6 +139,7 @@ pub fn overlay(layers: &[&ParamValues]) -> Result<ParamValues, Error> {
     if layers.len() > MAX_LAYERS {
         return Err(invalid("too many override layers"));
     }
+    super::admission::values(layers.iter().copied())?;
     let mut merged = ParamValues::new();
     for layer in layers {
         if layer.len() > crate::schema::MAX_PARAMS {
