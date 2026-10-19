@@ -34,6 +34,32 @@ checksums together from the `.sha256` files published beside the archives on the
 [official nextest release](https://github.com/nextest-rs/nextest/releases). `cargo xtask ci` continues to use `cargo test`
 so local checks do not require nextest.
 
+A pull request that changes nothing but documentation and repository tooling skips those three legs:
+a `rust scope` job classifies the change set and the three `rust (<os>)` legs run on its answer.
+`scripts/ci/rust-scope.sh` holds the whitelist and is deliberately the short list — anything unknown
+builds — because a change to a file the build reads (a manifest, `clippy.toml`, `.gitattributes`,
+anything in `assets/`) can break tests while touching no code. Only a pull request based on `main` may
+skip, the classifier CI runs is the copy committed on the base revision, that copy runs before CI runs
+anything the pull request wrote and in a scrubbed environment, and a change anywhere in `scripts/ci/`,
+`.github/workflows/` or `.github/actions/` forces a full build — together, the four things that stop a
+pull request rewriting the whitelist to excuse itself. The legs are three named jobs rather than one
+matrix, because a conditional that stops a matrix from expanding publishes an unexpanded job name and
+the required checks then never report; they share `.github/actions/rust-leg/action.yml`. The
+classifier's own tests, `scripts/ci/rust-scope.test.sh`, run in the scope job *after* the decision is
+recorded, and they assert that ordering along with the rest of the wiring. Skipped change sets get a
+`docs gate` job instead: `git diff --check` over the same merge base, plus `cargo xtask decisions` —
+which the Linux leg also runs, since `cargo xtask layers` does not include it on its own. Pushes to
+`main` and manual runs always build everything, and `claim bot tests` is unconditional and fails if its
+test files disappear. The reasons, including why this is a job and not `paths-ignore`, are in
+[the decision record](decisions/2026-10-18-rust-ci-skips-prose-only-changes.md).
+
+**Until `rust scope` and `docs gate` are added to the branch ruleset's required status checks, a
+docs-only pull request can merge with nothing required having checked its contents.** [#425](https://github.com/CypherNaught-0x/NodeCraft/issues/425)
+tracks that edit, and it has to happen **after** this workflow reaches `main`: ruleset strict mode
+means a required context that a branch's workflow never publishes leaves that pull request Pending
+forever, so adding the contexts first would freeze every open pull request. Land the workflow, let the
+open pull requests pick it up, then add the two contexts. The four there now keep their exact names.
+
 ## Benchmarks
 
 - `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`: canvas frame time over

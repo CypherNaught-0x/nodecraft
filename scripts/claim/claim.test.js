@@ -89,7 +89,7 @@ test('claim on a free issue assigns, labels, reacts and replies', async () => {
   assert.deepEqual(find(calls, 'addLabels')[1].labels, ['in progress']);
   assert.equal(find(calls, 'createLabel')[1].color, 'fbca04');
   assert.equal(find(calls, 'react')[1].content, '+1');
-  assert.match(find(calls, 'comment')[1].body, /^Claimed by @alice\. .*draft PR referencing #7 within 72 h/);
+  assert.match(find(calls, 'comment')[1].body, /^Claimed by @alice\. .*draft PR referencing #7 within 24 h/);
 });
 
 test('claim still labels and replies when assignment is refused', async () => {
@@ -111,7 +111,7 @@ test('claim on an issue claimed by someone else names them and when it lapses', 
   assert.equal(find(calls, 'react')[1].content, 'eyes');
   const body = find(calls, 'comment')[1].body;
   assert.match(body, /@bob/);
-  assert.match(body, /2026-10-19 02:00 UTC/); // 10 h ago + 72 h
+  assert.match(body, /2026-10-17 02:00 UTC/); // 10 h ago + 24 h
   assert.equal(find(calls, 'addAssignees'), undefined);
 });
 
@@ -189,7 +189,7 @@ const issue = (number, assignees = ['bob']) => ({
 });
 const repo = { owner: 'nodecraft-owner', repo: 'nodecraft' };
 
-test('sweep releases a claim older than 72 h with no PR', async () => {
+test('sweep releases a claim older than 24 h with no PR', async () => {
   const { github, calls } = fake({ issues: [issue(7)], timeline: [labeled(ago(80 * H))] });
   assert.deepEqual(await claim.sweep({ github, context: { repo }, now: NOW }), [7]);
   assert.ok(find(calls, 'removeLabel'));
@@ -202,6 +202,14 @@ test('sweep keeps a young claim and a claim with a fresh PR, using the latest la
   assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), []);
   w = fake({ issues: [issue(7)], timeline: [labeled(ago(500 * H)), pr(9)], pushed: ago(3 * 24 * H) });
   assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), []);
+});
+
+test('the draft-PR window is exactly 24 h: 23 h is kept, 25 h is released', async () => {
+  let w = fake({ issues: [issue(7)], timeline: [labeled(ago(23 * H))] });
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), []);
+  w = fake({ issues: [issue(7)], timeline: [labeled(ago(25 * H))] });
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), [7]);
+  assert.match(find(w.calls, 'comment')[1].body, /No draft PR showed up within 24 h/);
 });
 
 test('sweep releases a claim whose PR has been idle for 14 days', async () => {
