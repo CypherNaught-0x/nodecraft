@@ -1,0 +1,69 @@
+{
+  "accounting": [],
+  "calls": [
+    {
+      "cancel": 1,
+      "poll": 0,
+      "submit": 1,
+      "synthetic": false
+    }
+  ],
+  "cleanup": true,
+  "deliveries": [],
+  "jobs": [
+    {
+      "accepted": true,
+      "attempts": [
+        1
+      ],
+      "epoch": 0,
+      "job": 1,
+      "notified": true,
+      "provider": true,
+      "rejected": false,
+      "terminal": "cancelled",
+      "transitions": [
+        {
+          "attempt": 0,
+          "kind": "queued"
+        },
+        {
+          "attempt": 1,
+          "kind": "started"
+        },
+        {
+          "attempt": 0,
+          "kind": "cancelled"
+        }
+      ],
+      "updates": [
+        {
+          "adapter": "mock",
+          "attempt": 1,
+          "generation": 0,
+          "instance": null,
+          "key": "nodecraft:70707070707070707070707070707070:1",
+          "kind": "submitted"
+        }
+      ]
+    }
+  ],
+  "ledger": [
+    {
+      "cost": {
+        "currency": "USD",
+        "micros": "20"
+      },
+      "instance": null,
+      "key": "nodecraft:70707070707070707070707070707070:1",
+      "model": "mock-counted",
+      "node": "02020202-0202-0202-0202-020202020202",
+      "provider": "mock",
+      "status": "unresolved"
+    }
+  ],
+  "peak": 1,
+  "recorded": false,
+  "results": 0,
+  "retained": 0
+}

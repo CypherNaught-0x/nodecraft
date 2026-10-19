@@ -5,20 +5,49 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 mod archive;
+mod archive_plan;
+mod asset_context;
+pub mod asset_source;
+mod asset_store;
 mod assets;
+pub mod backup;
+mod checkpoint_plan;
 mod compatibility;
+pub mod disk_quota;
+mod frame_plan;
 pub mod journal;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_assets;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_atomic;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_cleanup;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_workspace;
+#[cfg(not(target_arch = "wasm32"))]
+mod reader_import;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_assets::NativeAssetWorkspace;
+mod legacy;
 pub mod storage;
 #[cfg(any(test, feature = "validation-metrics"))]
 mod validation_metrics;
+pub mod zip_index;
 #[cfg(any(test, feature = "validation-metrics"))]
 pub use validation_metrics::{ValidationMetrics, take_validation_metrics};
+mod v2;
 
-pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, encode, validate_v1_project};
+pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, decode_indexed, encode, validate_current_project, validate_v1_project};
+pub use archive_plan::{ArchivePlan, StorageCapability};
+pub use asset_context::AssetContext;
+pub use asset_store::{AssetDescriptor, VerifiedAsset, VerifiedReader};
+pub use asset_store::{PreviewAssetRead, PreviewReadError};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes};
+pub use checkpoint_plan::CheckpointPlan;
+pub use frame_plan::{FramePlan, MAX_STREAM_JOURNAL_BYTES, MAX_STREAM_TAIL_BYTES, RecordedAssets};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::NativeStorage;
-pub use storage::{LoadedProject, MemoryStorage, ProjectAccess, ProjectStorage, StorageLocation};
+pub use storage::{LoadedProject, MemoryStorage, PreparedSnapshot, ProjectAccess, ProjectStorage, StorageLocation};
 
 fn invalid(message: &'static str) -> nodecraft_types::Error {
     nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, message)

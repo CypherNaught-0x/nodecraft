@@ -32,7 +32,7 @@ impl Plan {
     }
 }
 fn size(v: f64) -> Result<u32, E> {
-    if !v.is_finite() || v < 1. || v > 16384. { Err(E::Dimensions) } else { Ok(v as u32) }
+    if !v.is_finite() || !(1. ..=16384.).contains(&v) { Err(E::Dimensions) } else { Ok(v as u32) }
 }
 fn ratio(r: Ratio, w: u32, h: u32) -> (u64, u64) {
     match r {

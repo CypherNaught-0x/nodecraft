@@ -138,6 +138,16 @@ same notice offers a way to discard. These drafts are not silently committed dur
 New sizing tokens cover preview length, editor rows, title minimum size and handle hit/stroke
 sizes. The selected card is painted last. The home bounds are computed only for startup/reset.
 
+## Discussion markers
+
+Discussion bubbles stay 30 screen points at every zoom, with a 6-point tail, 3-point active ring
+inset, 6-point corner radius and 12-point gap from node decorations. Open bubbles use primary text
+as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
+checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
+uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
+Initial node offsets include the bubble's ring and gap outside the actual card bounds. A selected
+marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed.
+
 ## Minimap and fit navigation
 
 The bottom-right minimap shows actual instance card bodies, highlights selected nodes, and outlines
@@ -158,8 +168,15 @@ Fit reserves space above the overlay and clamps zoom to 10%–400%. When widely 
 all fit at 10%, it centers them at minimum zoom and reports that limitation.
 
 Minimap gestures own the pointer through release even outside the map, with a frozen transform
-so the target cannot chase the changing viewport. Map input cannot start a canvas gesture beneath
-it, interrupt a card/box/pan gesture, or act through a popup or active text editor.
+so the target cannot chase the changing viewport. Clipboard copy/cut/paste/duplicate and quick-add
+yield from the initial map press through release, including keys in the same input frame and a
+pointer outside the map. Rejected shortcuts remain unconsumed. The initial primary-press position
+decides ownership even when later motion crosses the map boundary in that frame. If a frame batches
+several primary presses, its first press decides; a later visibility shortcut cannot retrospectively
+acquire that press. Map input cannot start a canvas gesture beneath it, interrupt a card, box, pan
+or discussion-pin gesture, or act through a popup or active text editor. A cancelled discussion-pin
+gesture keeps ownership until release. Admission refused before a same-frame cancellation stays
+refused until a fresh press.
 
 The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
 commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
@@ -218,6 +235,37 @@ scans progress on rendered frames, and queued framing waits for completion and i
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
 events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+
+### Format selection
+
+The selection toolbar and selected-card context menu offer **Grid** and **Dependency order**.
+Both dispatch `canvas.auto_format` and move selected nodes in one undo step; unselected nodes
+and edges stay fixed. Fit selected remains a separate view command. No layout shortcut is
+reserved. Finish an editor or gesture before opening Format; dirty hidden drafts remain drafts.
+
+Actual resolved instance sizes include the clipped title/UNSAVED line and output handle stroke
+at reference zoom 1.0. Unavailable instances retain navigation placeholders, but lack the checked
+logical sizes required for layout; formatting rejects the whole selection atomically.
+Persistent positions are independent of camera zoom. Auto-format uses `layout_gap` (64 world points) and `layout_button_width` (150
+screen points). Outer cell origins and spans deliberately align to an **8-world-point lattice**;
+this is the layout policy for stable repeated formatting, not coordinate clamping. Positive
+left/top insets are added to each cell origin to position the body. Body positions outside the
+canvas coordinate domain reject the entire action. Grid defaults to ceil(sqrt(selection count));
+programmatic callers can supply columns. Dependency order ranks the whole DAG, including paths
+through unselected nodes, then places selected ranks in left-to-right columns. It does not move
+unselected obstacles or promise optimal edge crossings. Reapplication with unchanged selection,
+logical extents and topology is a no-op, including after camera zoom changes and at large legal coordinates.
+Grid ordering groups connected positive vertical-overlap intervals, then orders each group by
+left edge and stable node ID. A tall card can bridge an overlap chain; touching boundaries start
+a separate row. The output lattice does not define input row membership.
+Enabled checks perform bounded structural admission without arranging, ranking the DAG or cloning
+the project. A final output-coordinate or transaction error can still reject dispatch atomically.
+Unavailable toolbar primary clicks are consumed by a one-pass, exact-focus and topmost-layer
+capability before widgets render; keyboard, scroll, other buttons and popup owners remain active.
+
+### Colour tags
+
+Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
 
 ## Clipboard admission and placement
 

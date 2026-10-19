@@ -71,6 +71,21 @@ pub struct RunPlan {
     pub edges: Vec<(NodeId, NodeId)>,
 }
 
+/// Static target-selection failures; never contains provider or native hook text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetReason {
+    MissingSelection,
+    Mismatch,
+}
+impl TargetReason {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::MissingSelection => "no provider endpoint is selected for this node",
+            Self::Mismatch => "generated work does not match the selected provider endpoint",
+        }
+    }
+}
+
 /// Why a node can't run yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -82,6 +97,8 @@ pub enum Reason {
     UnsupportedInputs,
     /// The kind rejected the node (e.g. a required parameter is empty).
     Invalid(String),
+    /// Checked endpoint selection failed.
+    ProviderTarget(TargetReason),
 }
 
 /// A node that blocks the run, with the input and upstream node to highlight where they apply.
@@ -106,6 +123,7 @@ impl Blocker {
             (Reason::UnknownKind, _, Some(up)) if up != self.node => format!("Can't run {node}: the node kind of {} isn't available.", name(up)),
             (Reason::UnknownKind, ..) => format!("Can't run {node}: its node kind isn't available."),
             (Reason::UnsupportedInputs, ..) => format!("Can't run {node}: it doesn't accept this combination of inputs."),
+            (Reason::ProviderTarget(reason), ..) => format!("Can't run {node}: {}.", reason.message()),
             (Reason::Invalid(message), _, Some(up)) if up != self.node => format!("Can't run {node}: {} has a problem: {message}", name(up)),
             (Reason::Invalid(message), ..) => format!("Can't run {node}: {message}"),
         }
@@ -141,7 +159,19 @@ pub const MAX_BLOCKERS: usize = 256;
 /// Kinds' [`NodeKind::mode`](nodecraft_nodes::NodeKind::mode) is asked with the node's own
 /// connected input port types, in `node.inputs` order (list ports with `many: true`).
 pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTreeSet<NodeId>, stale: &BTreeSet<NodeId>) -> Result<Planned, Error> {
-    let graph = Graph::new(canvas, kinds)?;
+    plan_with_targets(canvas, kinds, mode, requested, stale, &nodecraft_types::EMPTY_TARGET_SELECTION)
+}
+
+/// Plan with the immutable endpoint view supplied before any kind hook.
+pub fn plan_with_targets(
+    canvas: &Canvas,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<Planned, Error> {
+    let graph = Graph::new(canvas, kinds, targets)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id)) {
@@ -201,20 +231,21 @@ type Cache = BTreeMap<(NodeId, String), Result<(Value, bool, usize), Reason>>;
 struct Graph<'a> {
     canvas: &'a Canvas,
     kinds: &'a Registry,
+    targets: &'a nodecraft_types::TargetSelection,
     /// Inputs of each node: (port, upstream node, upstream port, order).
     into: BTreeMap<NodeId, Vec<(&'a str, NodeId, &'a str, u32)>>,
     routing: crate::routing::Incoming<'a>,
 }
 
 impl<'a> Graph<'a> {
-    fn new(canvas: &'a Canvas, kinds: &'a Registry) -> Result<Self, Error> {
+    fn new(canvas: &'a Canvas, kinds: &'a Registry, targets: &'a nodecraft_types::TargetSelection) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
         let mut routing = crate::routing::incoming(canvas, kinds)?;
         let into = std::mem::take(&mut routing.feeds)
             .into_iter()
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
-        Ok(Self { canvas, kinds, into, routing })
+        Ok(Self { canvas, kinds, targets, into, routing })
     }
 
     fn upstream(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
@@ -404,7 +435,15 @@ impl<'a> Graph<'a> {
             return Err(blockers);
         };
         let jobs = match known_inputs(&inputs) {
-            Some(values) => Some(kind.plan(&PlanCtx { node, inputs: &values }).map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?),
+            Some(values) => {
+                let jobs = kind
+                    .plan(&PlanCtx { targets: self.targets, node, inputs: &values })
+                    .map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?;
+                crate::generation_contract::validate_targets(node, &jobs, self.targets)
+                    .map_err(|reason| vec![blocker(None, None, Reason::ProviderTarget(reason))])?;
+                crate::generation_contract::validate_outputs(node, &jobs).map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
+                Some(jobs)
+            }
             None => None,
         };
         Ok(Step { node: id, kind: node.kind.clone(), mode, after: after.into_iter().collect(), inputs, jobs })
@@ -419,12 +458,12 @@ impl<'a> Graph<'a> {
         if let Ok(kind) = self.kinds.get(&node.kind)
             && kind.descriptor().category == Category::Source
         {
-            let jobs = kind.plan(&PlanCtx { node, inputs: &[] }).map_err(|error| Reason::Invalid(error.message))?;
+            let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| Reason::Invalid(error.message))?;
             return jobs
                 .into_iter()
                 .find_map(|job| match job {
                     JobSpec::Source { output, value, .. } if output == port => Some((value, list)),
-                    JobSpec::Source { .. } | JobSpec::Generate { .. } => None,
+                    JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
                 })
                 .ok_or(Reason::NoResult);
         }

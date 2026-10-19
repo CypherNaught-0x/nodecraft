@@ -162,8 +162,8 @@ fn cut_append_failure_retains_document_history_and_reports_recovery_status() {
     assert_eq!(s.status_revision(), status + 1);
 }
 #[test]
-fn cut_rejects_future_persistent_representation_before_append() {
-    fn unsupported(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
+fn cut_accepts_current_graph_v3_scalar_in_the_captured_paste() {
+    fn current_scalar(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
         let mut effect = paste(c, v)?;
         if let Effect::Edit { changes, .. } = &mut effect
             && let Some(Change::AddNode { node, .. }) = changes.changes.first_mut()
@@ -178,12 +178,57 @@ fn cut_rejects_future_persistent_representation_before_append() {
         Box::new(Storage { inner: Rc::clone(&inner), fail: Rc::new(Cell::new(false)) }),
     )
     .unwrap();
-    s.registry = registry(unsupported);
+    s.registry = registry(current_scalar);
     let before = s.document().clone();
     let recovery = inner.borrow().recovery.clone();
-    assert_eq!(s.dispatch_clipboard_cut(&json!({}), &json!({})).unwrap_err().kind, ErrorKind::Unsupported);
-    assert_eq!(s.document(), &before);
-    assert_eq!(inner.borrow().recovery, recovery);
-    assert_eq!(s.revision(), 0);
+    // Bool was a future v1 representation in the historical test. Current graph v3
+    // supports it: the hypothetical paste is admitted, but only delete is published.
+    s.dispatch_clipboard_cut(&json!({}), &json!({})).unwrap();
+    assert_eq!(s.revision(), 1);
+    assert!(s.document().canvases().get(&C).unwrap().nodes().is_empty());
+    assert_ne!(inner.borrow().recovery, recovery);
+    assert_eq!(nodecraft_format::journal::recover(&inner.borrow().recovery).unwrap().snapshot.project, *s.document());
     assert!(!s.file_status().recovery_required);
+    assert_ne!(s.document(), &before);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+
+#[test]
+fn cut_reports_actual_stages_and_only_successful_dispatch_without_disabled_clock_calls() {
+    use crate::perf::Metric;
+    for capture in [false, true] {
+        for refuse in [false, true] {
+            let mut s = Session::new(project()).unwrap();
+            let calls = Rc::new(Cell::new(0u64));
+            let clock = calls.clone();
+            s.perf_mut().set_clock(Some(Box::new(move || {
+                let n = clock.get() + 1;
+                clock.set(n);
+                n * 10
+            })));
+            s.perf_mut().set_enabled(capture);
+            let (delete, mut paste) = params();
+            if refuse {
+                paste["canvas"] = json!(CanvasId::from_bytes([99; 16]));
+            }
+            let before = s.document().clone();
+            let result = s.dispatch_clipboard_cut(&delete, &paste);
+            assert_eq!(result.is_err(), refuse);
+            let report = s.perf().report();
+            let samples = |metric| report.metrics.iter().find(|row| row.metric == metric).unwrap().samples;
+            assert_eq!(samples(Metric::GraphStage), if capture { if refuse { 1 } else { 2 } } else { 0 });
+            assert_eq!(samples(Metric::GraphStageRefused), usize::from(capture && refuse));
+            assert_eq!(samples(Metric::Dispatch), usize::from(capture && !refuse));
+            if !capture {
+                assert_eq!(calls.get(), 0);
+            }
+            if refuse {
+                assert_eq!(s.document(), &before);
+                assert!(s.events_since(0).unwrap().is_empty());
+                assert!(!s.can_undo() && !s.can_redo());
+            }
+        }
+    }
 }

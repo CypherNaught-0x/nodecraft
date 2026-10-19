@@ -15,7 +15,15 @@ fn spec(inputs: Vec<GenerateInput>) -> JobSpec {
     ]
     .into_iter()
     .collect();
-    JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: routes(), provider: "mock".into(), model: "mock-image".into(), params, inputs }
+    JobSpec::Generate {
+        instance: None,
+        node: NodeId::from_bytes([1; 16]),
+        outputs: routes(),
+        provider: "mock".into(),
+        model: "mock-image".into(),
+        params,
+        inputs,
+    }
 }
 
 #[test]
@@ -88,7 +96,15 @@ fn standalone_empty_containers_count_toward_admission() {
 }
 
 fn bare(inputs: Vec<GenerateInput>) -> JobSpec {
-    JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: vec![], provider: "p".into(), model: "m".into(), params: Default::default(), inputs }
+    JobSpec::Generate {
+        instance: None,
+        node: NodeId::from_bytes([1; 16]),
+        outputs: vec![],
+        provider: "p".into(),
+        model: "m".into(),
+        params: Default::default(),
+        inputs,
+    }
 }
 fn param(value: Value) -> JobSpec {
     let mut job = bare(vec![]);
@@ -192,14 +208,14 @@ fn request_metadata_and_late_unsupported_values_never_copy_prefixes() {
 fn text_output_exact_budget_and_aggregate_limits_are_pre_copy() {
     let route = [GenerateOutput { port: "t".into(), modality: Modality::Text }];
     let done = Completed::new(vec![Output::Text("ab".into())]);
-    // Route104 + record128 + port40 + text46 =318 representation bytes.
+    // Route104 + record128 + proof64+32 + port40 + text46 =414 logical bytes.
     let mut conversion = Conversion::default();
-    let got = outputs_with_limits(&route, &done, Limits { outputs: 318, text: 2, raw_outputs: 2, ..Limits::default() }, &mut conversion).unwrap();
+    let got = outputs_with_limits(&route, &done, Limits { outputs: 414, text: 2, raw_outputs: 2, ..Limits::default() }, &mut conversion).unwrap();
     assert_eq!(got.outputs, vec![("t".into(), Value::Text("ab".into()))]);
     assert_eq!(conversion.output_records, 1);
     assert_eq!(conversion.strings, 2);
     assert_eq!(conversion.text_bytes, 3);
-    for limits in [Limits { outputs: 317, ..Limits::default() }, Limits { text: 1, ..Limits::default() }, Limits { raw_outputs: 1, ..Limits::default() }] {
+    for limits in [Limits { outputs: 413, ..Limits::default() }, Limits { text: 1, ..Limits::default() }, Limits { raw_outputs: 1, ..Limits::default() }] {
         let mut conversion = Conversion::default();
         assert!(outputs_with_limits(&route, &done, limits, &mut conversion).is_err());
         assert_eq!(conversion, Conversion::default());
@@ -280,4 +296,252 @@ fn checked_arithmetic_rejects_overflow_without_large_allocations() {
     let mut budget = Budget(5);
     assert!(budget.string("é").is_err());
     assert_eq!(budget.0, 5);
+}
+
+#[test]
+fn byte_text_over_raw_work_cap_refuses_before_full_utf8() {
+    let done = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(&b"abcdefghijkl"[..]) }]);
+    let mut work = ScanWork::default();
+    let mut conversion = Conversion::default();
+    assert!(outputs_with_work(&routes(), &done, Limits { text: 8, ..Limits::default() }, &mut conversion, &mut work).is_err());
+    assert_eq!(work.utf8_calls, 0);
+    assert_eq!(work.utf8_bytes, 0);
+    assert_eq!(conversion, Conversion::default());
+}
+
+#[test]
+fn admitted_byte_text_validates_utf8_exactly_once() {
+    let done = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(&b"hello"[..]) }]);
+    let mut work = ScanWork::default();
+    let mut conversion = Conversion::default();
+    let got = outputs_with_work(&routes(), &done, Limits::default(), &mut conversion, &mut work).unwrap();
+    assert_eq!(work.utf8_calls, 1);
+    assert_eq!(work.utf8_bytes, 5);
+    assert!(conversion.strings > 0 && conversion.text_bytes > 0 && conversion.output_records > 0);
+    assert_eq!(got.outputs, vec![("caption".into(), Value::Text("hello".into()))]);
+}
+
+fn probe_byte_text(bytes: Vec<u8>, mime: &str, limit: usize) -> (Result<Produced, Error>, ScanWork, Conversion) {
+    let done = Completed::new(vec![Output::Bytes { mime: mime.into(), bytes: Arc::from(bytes) }]);
+    let mut work = ScanWork::default();
+    let mut conversion = Conversion::default();
+    let result = outputs_with_work(&routes(), &done, Limits { text: limit, ..Limits::default() }, &mut conversion, &mut work);
+    (result, work, conversion)
+}
+
+#[test]
+fn raw_text_work_bound_bom_and_utf8_priority_matrix() {
+    for (len, ok, scans) in [(8, true, 1), (9, false, 1), (11, false, 1), (12, false, 0)] {
+        let (result, work, conversion) = probe_byte_text(vec![b'x'; len], "text/plain", 8);
+        assert_eq!(result.is_ok(), ok, "length {len}");
+        assert_eq!(work.utf8_calls, scans, "length {len}");
+        assert_eq!(work.utf8_bytes, len * scans);
+        if !ok {
+            assert_eq!(conversion, Conversion::default());
+        }
+    }
+    let (result, work, _) = probe_byte_text([b"\xef\xbb\xbf".as_slice(), b"12345678"].concat(), "text/plain", 8);
+    assert_eq!(result.unwrap().outputs[0].1, Value::Text("12345678".into()));
+    assert_eq!((work.utf8_calls, work.utf8_bytes), (1, 11));
+    let boms = b"\xef\xbb\xbf".repeat(3);
+    let (result, work, _) = probe_byte_text(boms.clone(), "text/plain", 6);
+    assert_eq!(result.unwrap().outputs[0].1, Value::Text(String::new()));
+    assert_eq!(work.utf8_calls, 1);
+    let (result, work, conversion) = probe_byte_text([boms, b"x".to_vec()].concat(), "text/plain", 6);
+    assert!(result.unwrap_err().message.contains("raw text"));
+    assert_eq!(work.utf8_calls, 0);
+    assert_eq!(conversion, Conversion::default());
+    let (result, work, _) = probe_byte_text("éééé".as_bytes().to_vec(), "text/plain", 8);
+    assert_eq!(result.unwrap().outputs[0].1, Value::Text("éééé".into()));
+    assert_eq!(work.utf8_bytes, 8);
+    for (mime, kind, message) in [("image/private-marker", ErrorKind::InvalidInput, "claimed non-text"), ("text/plain", ErrorKind::Unsupported, "UTF-16")] {
+        let (result, work, conversion) = probe_byte_text([b"\xff\xfe".as_slice(), &[0; 20]].concat(), mime, 1);
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, kind);
+        assert!(error.message.contains(message));
+        assert!(!error.message.contains("private-marker"));
+        assert_eq!(work.utf8_calls, 0);
+        assert_eq!(conversion, Conversion::default());
+    }
+    let (result, work, _) = probe_byte_text(b"valid".to_vec(), "text/plain", usize::MAX);
+    assert!(result.unwrap_err().message.contains("overflow"));
+    assert_eq!(work.utf8_calls, 0);
+}
+
+#[test]
+fn late_invalid_utf8_keeps_caller_result_and_never_converts_prefix() {
+    let bytes: Arc<[u8]> = Arc::from([vec![b'a'; 1024], vec![0xc3]].concat());
+    let done = Completed::new(vec![image(png()), Output::Text("valid prefix".into()), Output::Bytes { mime: "text/plain".into(), bytes: Arc::clone(&bytes) }]);
+    let mut work = ScanWork::default();
+    let mut conversion = Conversion::default();
+    let error = outputs_with_work(&routes(), &done, Limits { text: 2048, ..Limits::default() }, &mut conversion, &mut work).unwrap_err();
+    assert!(error.message.contains("isn't UTF-8"));
+    assert_eq!((work.utf8_calls, work.utf8_bytes), (1, 1025));
+    assert_eq!(conversion, Conversion::default());
+    assert_eq!(Arc::strong_count(&bytes), 2);
+    assert_eq!(bytes.last(), Some(&0xc3));
+    let valid = [vec![b'a'; 1023], vec![0xc3, 0xa9]].concat();
+    let (result, work, conversion) = probe_byte_text(valid.clone(), "text/plain", 1025);
+    assert_eq!(result.unwrap().outputs[0].1, Value::Text(String::from_utf8(valid).unwrap()));
+    assert_eq!((work.utf8_calls, work.utf8_bytes), (1, 1025));
+    assert!(conversion.output_records > 0);
+}
+
+#[test]
+fn missing_route_names_only_the_closed_modality() {
+    let cases = [
+        ("text", Output::Text("private-marker".into())),
+        ("image", Output::Bytes { mime: "private-marker".into(), bytes: png() }),
+        ("audio", Output::Bytes { mime: "private-marker".into(), bytes: Arc::from(b"RIFF\0\0\0\0WAVEfmt ".as_slice()) }),
+        ("video", Output::Bytes { mime: "private-marker".into(), bytes: Arc::from(b"\0\0\0\x18ftypisom".as_slice()) }),
+        ("mesh", Output::Bytes { mime: "private-marker".into(), bytes: Arc::from(b"glTF\x02\0\0\0".as_slice()) }),
+        ("document", Output::Bytes { mime: "private-marker".into(), bytes: Arc::from(b"%PDF-1.7".as_slice()) }),
+    ];
+    for (label, item) in cases {
+        let mut conversion = Conversion::default();
+        let error = outputs_with_limits(&[], &Completed::new(vec![item]), Limits::default(), &mut conversion).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains(&format!("returned {label} output")), "{error}");
+        assert!(!error.message.contains("private-marker"));
+        assert_eq!(conversion, Conversion::default());
+    }
+}
+
+#[test]
+fn output_proof_storage_is_bounded_and_charged_before_semantic_scans() {
+    let done = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(b"hello".as_slice()) }]);
+    let mut work = ScanWork::default();
+    let output_routes = routes();
+    let proof = admit_outputs(&output_routes, &done, Limits::default(), &mut work).unwrap();
+    assert_eq!(proof.items.len(), 1);
+    // With no route cost: record128+MIME94+proof96=318, refused before scanning at317.
+    let mut work = ScanWork::default();
+    assert!(admit_outputs(&[], &done, Limits { outputs: 317, ..Limits::default() }, &mut work).is_err());
+    assert_eq!(work.utf8_calls, 0);
+    assert_eq!(OUTPUT_PROOF_RECORD_BYTES, 64);
+    assert_eq!(OUTPUT_PROOF_ROOT_BYTES, 32);
+}
+
+#[test]
+fn oversized_text_with_invalid_tail_is_rejected_by_raw_work_before_validation() {
+    let bytes = [vec![b'a'; 1024], vec![0xff]].concat();
+    let (result, work, conversion) = probe_byte_text(bytes, "text/plain", 8);
+    assert!(result.unwrap_err().message.contains("raw text"));
+    assert_eq!((work.utf8_calls, work.utf8_bytes), (0, 0));
+    assert_eq!(conversion, Conversion::default());
+}
+
+fn aggregate_bom_refusal_control(shared: bool) {
+    let first: Arc<[u8]> = Arc::from(b"\xef\xbb\xbf".repeat(3));
+    let second = if shared { Arc::clone(&first) } else { Arc::from(b"\xef\xbb\xbf".repeat(3)) };
+    let done = Completed::new(vec![
+        Output::Bytes { mime: "text/plain".into(), bytes: Arc::clone(&first) },
+        Output::Bytes { mime: "text/plain".into(), bytes: second },
+    ]);
+    let retained = Arc::strong_count(&first);
+    let mut work = ScanWork::default();
+    let mut conversion = Conversion::default();
+    let result = outputs_with_work(&routes(), &done, Limits { text: 6, ..Limits::default() }, &mut conversion, &mut work);
+    assert!(result.is_err(), "two raw 9-byte BOM items exceed the 12-byte aggregate work budget: {result:?}");
+    assert_eq!((work.utf8_calls, work.utf8_bytes), (1, 9), "refuse before scanning the offending second item");
+    assert_eq!(conversion, Conversion::default());
+    assert_eq!(first.as_ref(), b"\xef\xbb\xbf".repeat(3));
+    assert_eq!(Arc::strong_count(&first), retained);
+}
+#[test]
+fn aggregate_raw_text_bom_distinct_buffers_refuse_before_second_scan() {
+    aggregate_bom_refusal_control(false)
+}
+#[test]
+fn aggregate_raw_text_bom_aliased_buffers_count_each_occurrence() {
+    aggregate_bom_refusal_control(true)
+}
+
+#[test]
+fn aggregate_raw_text_exact_boundary_and_one_over_do_not_convert_a_prefix() {
+    for (extra, accepted) in [(false, true), (true, false)] {
+        let first = b"\xef\xbb\xbf".repeat(2);
+        let mut second = first.clone();
+        if extra {
+            second.push(b'x')
+        }
+        let done = Completed::new(vec![
+            Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(first) },
+            Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(second) },
+        ]);
+        let mut work = ScanWork::default();
+        let mut conversion = Conversion::default();
+        let result = outputs_with_work(&routes(), &done, Limits { text: 6, ..Limits::default() }, &mut conversion, &mut work);
+        assert_eq!(result.is_ok(), accepted);
+        assert!(work.utf8_bytes <= 6 + 3 * done.outputs.len());
+        if accepted {
+            assert_eq!((work.utf8_calls, work.utf8_bytes), (2, 12));
+            assert_eq!(conversion.output_records, 2)
+        } else {
+            assert_eq!((work.utf8_calls, work.utf8_bytes), (1, 6));
+            assert_eq!(conversion, Conversion::default())
+        }
+    }
+}
+#[test]
+fn aggregate_raw_text_bom_payloads_and_unicode_scan_once_within_the_joint_budget() {
+    for (text, parts, expected) in [(6, vec!["\u{feff}abc", "\u{feff}def"], vec!["abc", "def"]), (4, vec!["\u{feff}é", "\u{feff}é"], vec!["é", "é"])] {
+        let done = Completed::new(parts.iter().map(|s| Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(s.as_bytes()) }).collect());
+        let mut work = ScanWork::default();
+        let mut conversion = Conversion::default();
+        let got = outputs_with_work(&routes(), &done, Limits { text, ..Limits::default() }, &mut conversion, &mut work).unwrap();
+        assert_eq!(work.utf8_calls, 2);
+        assert_eq!(work.utf8_bytes, text + 3 * done.outputs.len());
+        assert_eq!(
+            got.outputs.iter().map(|(_, v)| v).collect::<Vec<_>>(),
+            expected.iter().map(|s| Value::Text((*s).into())).collect::<Vec<_>>().iter().collect::<Vec<_>>()
+        );
+        assert!(conversion.output_records > 0 && conversion.strings > 0);
+    }
+}
+#[test]
+fn aggregate_raw_text_invalid_tail_obeys_remaining_work_and_preserves_paid_result() {
+    for (text, scan_tail) in [(1024, false), (1030, true)] {
+        let tail: Arc<[u8]> = Arc::from([vec![b'a'; 1024], vec![0xff]].concat());
+        let mut done = Completed::new(vec![
+            Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(b"\xef\xbb\xbf".repeat(3)) },
+            Output::Bytes { mime: "text/plain".into(), bytes: Arc::clone(&tail) },
+        ]);
+        done.usage.cost = Some(nodecraft_types::Money::new(nodecraft_types::Currency::USD, 7));
+        let mut work = ScanWork::default();
+        let mut conversion = Conversion::default();
+        let error = outputs_with_work(&routes(), &done, Limits { text, ..Limits::default() }, &mut conversion, &mut work).unwrap_err();
+        assert!(error.message.contains(if scan_tail { "isn't UTF-8" } else { "aggregate raw text" }));
+        assert_eq!((work.utf8_calls, work.utf8_bytes), if scan_tail { (2, 1034) } else { (1, 9) });
+        assert!(work.utf8_bytes <= text + 3 * done.outputs.len());
+        assert_eq!(conversion, Conversion::default());
+        assert_eq!(Arc::strong_count(&tail), 2);
+        assert_eq!(tail.last(), Some(&0xff));
+        assert_eq!(done.usage.cost.unwrap().micros, 7);
+    }
+}
+#[test]
+fn aggregate_raw_text_budget_does_not_rescan_direct_text_or_binary_assets() {
+    let asset = png();
+    let done = Completed::new(vec![
+        Output::Text("ab".into()),
+        image(Arc::clone(&asset)),
+        Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(b"\xef\xbb\xbf".as_slice()) },
+    ]);
+    let mut work = ScanWork::default();
+    let mut conversion = Conversion::default();
+    let got = outputs_with_work(&routes(), &done, Limits { text: 2, ..Limits::default() }, &mut conversion, &mut work).unwrap();
+    assert_eq!((work.utf8_calls, work.utf8_bytes), (1, 3));
+    assert!(Arc::ptr_eq(&got.assets[0].1, &asset));
+    assert_eq!(conversion.output_records, 3);
+}
+#[test]
+fn aggregate_raw_text_budget_arithmetic_is_checked_without_large_fixtures() {
+    assert!(raw_text_budget(usize::MAX, 1).is_err());
+    assert!(raw_text_budget(0, usize::MAX).is_err());
+    let mut budget = raw_text_budget(6, 2).unwrap();
+    assert_eq!(budget.0, 12);
+    budget.charge(12).unwrap();
+    assert!(budget.charge(1).is_err());
+    assert_eq!(budget.0, 0);
 }

@@ -2,19 +2,30 @@
 //! caps allow it, and what has been spent.
 //!
 //! Everything here is pure. A node is paid when its kind has a model parameter
-//! ([`ParamControl::Model`]); its price is the chosen catalog model's price per job times the jobs
+//! ([`nodecraft_types::ParamControl::Model`]); its price is the chosen catalog model's price per job times the jobs
 //! the step plans. Nodes without a model parameter (sources, local actions) are free, except
 //! generation kinds, which can't be priced without one. Totals are
 //! kept per currency (never converted), and a step whose price isn't known blocks any capped run,
 //! so a budget can't be passed by a quote that was silently incomplete.
 
 use crate::planner::RunPlan;
-use nodecraft_catalog::{Catalog, ModelDescriptor, Pricing};
+use nodecraft_catalog::{Catalog, ModelDescriptor};
 use nodecraft_graph::{Canvas, Node};
-use nodecraft_nodes::{Category, Registry};
-use nodecraft_types::{Currency, Error, ErrorKind, Money, NodeId, ParamControl, ParamValues, Value};
+use nodecraft_nodes::Registry;
+use nodecraft_types::{Currency, Error, ErrorKind, Money, NodeId, ParamValues};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+mod metadata;
+use metadata::Metadata;
+pub use metadata::{LedgerIdentity, MAX_METADATA_SHELLS, MetadataFinalizeError, MetadataPermit, MetadataStatistics, UsageMetadata};
+mod ownership;
+use ownership::Ownership;
+pub use ownership::{ChargeOwnership, LegacyGroupEvidence, QuarantineLocation, QuarantinedCharge};
+mod reconcile;
+pub use reconcile::{
+    Holder, MAX_RECONCILE_EXCEPTIONS, MAX_STAGE_CHARGES, OwnershipDecision, OwnershipGroup, OwnershipPlan, OwnershipReconciliation, ReconciledCharge,
+};
 
 /// Why a step has no price yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +43,7 @@ pub enum Unpriced {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepQuote {
     pub node: NodeId,
-    /// The catalog models its model parameters name, in schema order.
+    /// Validated catalog selections in schema order; unknown raw IDs are never report identities.
     pub models: Vec<String>,
     /// The price of one job (all its models together), `None` for free steps.
     pub per_job: Result<Option<Money>, Unpriced>,
@@ -90,75 +101,9 @@ pub fn model_params(node: &Node, model: &ModelDescriptor) -> ParamValues {
 
 /// Price every step of `plan`.
 pub fn quote(plan: &RunPlan, canvas: &Canvas, kinds: &Registry, catalog: &Catalog) -> Result<Quote, Error> {
-    let mut quote = Quote::default();
-    for step in &plan.steps {
-        let node = canvas.nodes().get(&step.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a planned node is not on the canvas"))?;
-        // A known empty job list costs nothing; one job is assumed only while the count is unknown.
-        let jobs = step.jobs.as_ref().map_or(1, |jobs| u64::try_from(jobs.len()).unwrap_or(u64::MAX));
-        let jobs_known = step.jobs.is_some();
-        let (models, per_job) = price_step(node, kinds, catalog);
-        let mut step = StepQuote { node: step.node, models, per_job, jobs, jobs_known };
-        if let Ok(Some(amount)) = step.total() {
-            let total = quote.totals.entry(amount.currency).or_insert_with(|| Money::zero(amount.currency));
-            match total.checked_add(amount) {
-                Ok(sum) => *total = sum,
-                // A total too large to add is reported on the step; the rest still shows.
-                Err(error) => step.per_job = Err(Unpriced::Invalid(error.message)),
-            }
-        }
-        quote.steps.push(step);
-    }
-    Ok(quote)
+    crate::admission::quote(plan, canvas, kinds, catalog)
 }
 
-/// One job's price for `node`: the sum of the models its model parameters name. Free when the
-/// kind has no model parameter (local work) or every model is free.
-fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Vec<String>, Result<Option<Money>, Unpriced>) {
-    let kind = match kinds.get(&node.kind) {
-        Ok(kind) => kind,
-        Err(_) => return (Vec::new(), Err(Unpriced::Invalid(format!("the {} node kind isn't available", node.kind)))),
-    };
-    let descriptor = match kind.resolve_instance(node) {
-        Ok(descriptor) => descriptor,
-        Err(error) => return (Vec::new(), Err(Unpriced::Invalid(error.message))),
-    };
-    let mut models = Vec::new();
-    let mut total: Option<Money> = None;
-    // A generation kind that names no model calls something we can't price: never "free".
-    if descriptor.category == Category::Generation && !descriptor.params.params.iter().any(|spec| spec.control == ParamControl::Model) {
-        return (models, Err(Unpriced::Invalid(format!("the {} node kind has no model to price", node.kind))));
-    }
-    for spec in descriptor.params.params.iter().filter(|spec| spec.control == ParamControl::Model) {
-        let id = match node.params.get(&spec.name) {
-            Some(Value::Text(id)) if !id.is_empty() => id.clone(),
-            _ => return (models, Err(Unpriced::NoModel)),
-        };
-        models.push(id.clone());
-        let Some(model) = catalog.get(&id) else {
-            return (models, Err(Unpriced::UnknownModel(id)));
-        };
-        // Free models cost nothing in any currency, so they never trip a currency check.
-        if model.pricing == Pricing::Free {
-            continue;
-        }
-        let price = match model.quote(&model_params(node, model)) {
-            Ok(Some(money)) => money,
-            Ok(None) => return (models, Err(Unpriced::ByUsage(id))),
-            Err(error) => return (models, Err(Unpriced::Invalid(error.message))),
-        };
-        total = match total {
-            None => Some(price),
-            Some(sum) => match sum.checked_add(price) {
-                Ok(sum) => Some(sum),
-                Err(error) => return (models, Err(Unpriced::Invalid(error.message))),
-            },
-        };
-    }
-    (models, Ok(total))
-}
-
-/// Spending caps. A cap applies to amounts in its own currency; anything else can't be compared
-/// and is blocked, and spend recorded in other currencies doesn't count towards it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Budgets {
     /// Most one job may cost.
@@ -291,6 +236,14 @@ pub struct Spent {
     pub project: BTreeMap<Currency, Money>,
 }
 
+/// Explicit separation of descriptive bucket totals and conservative budget admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageBudgetView {
+    pub reported: Spent,
+    pub admission: Spent,
+    pub has_uncertain_session_charges: bool,
+}
+
 /// How settled a charge is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -325,6 +278,8 @@ pub struct UsageEntry {
     pub session: String,
     pub node: NodeId,
     pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<nodecraft_types::ProviderInstanceId>,
     pub model: String,
     pub cost: Money,
     /// The idempotency key the provider was charged under, so a retry shows as one charge.
@@ -376,28 +331,33 @@ type Totals = BTreeMap<Currency, Money>;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(try_from = "UsageLogFile", into = "UsageLogFile")]
 pub struct UsageLog {
+    provider_identity_version: u8,
     entries: VecDeque<UsageEntry>,
     /// `(provider, idempotency key)` → sequence number of its entry; keys are only unique per
     /// provider. An entry's index is its sequence number minus `first_seq`.
-    keys: BTreeMap<(String, String), u64>,
+    keys: BTreeMap<[u8; 32], u64>,
     first_seq: u64,
     project: Totals,
     sessions: BTreeMap<String, Totals>,
     /// Identities of charges that left the list, oldest first (see [`MAX_RETIRED_KEYS`]).
-    retired: VecDeque<Retired>,
-    retired_set: BTreeSet<Retired>,
+    retired: retirement::Store,
     /// Open charges that left the list, by `(provider, key)` (see [`MAX_PENDING`]).
-    pending: BTreeMap<(String, String), UsageEntry>,
+    pending: BTreeMap<(String, Option<nodecraft_types::ProviderInstanceId>, String), UsageEntry>,
+    pending_identities: BTreeSet<[u8; 32]>,
     /// Text bytes of the listed entries (see [`MAX_LISTED_TEXT`]).
     text_bytes: usize,
     /// When each session last charged (a counter, not saved: rebuilt from the listed entries), so
     /// folding picks the least recently used.
     session_clock: BTreeMap<String, u64>,
     clock: u64,
+    ownership: Ownership,
+    metadata: Metadata,
+    entry_order: VecDeque<u64>,
+    next_order: u64,
 }
 
 /// A retired charge's identity: 16 bytes of a hash of its provider and key.
-type Retired = [u8; 16];
+type Retired = retirement::Key;
 
 fn retired_id(provider: &str, idempotency_key: &str) -> Retired {
     let mut hasher = blake3::Hasher::new();
@@ -407,36 +367,49 @@ fn retired_id(provider: &str, idempotency_key: &str) -> Retired {
     }
     let mut id = [0u8; 16];
     id.copy_from_slice(hasher.finalize().as_bytes().get(..16).unwrap_or(&[0; 16]));
-    id
+    let mut tagged = [0u8; 33];
+    if let Some(prefix) = tagged.get_mut(1..17) {
+        prefix.copy_from_slice(&id);
+    }
+    retirement::Key(tagged)
 }
 
-/// Takes `amount` out of session `name`'s totals; what its own total no longer holds (it was
-/// folded into the earlier sessions') comes out of [`EARLIER_SESSIONS`].
+fn retired_target_id(provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Retired {
+    let Some(instance) = instance else {
+        return retired_id(provider, key);
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nodecraft.provider-instance-retired.v1");
+    hash.update(&u64::try_from(provider.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hash.update(provider.as_bytes());
+    hash.update(&[1]);
+    hash.update(instance.as_bytes());
+    hash.update(&u64::try_from(key.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hash.update(key.as_bytes());
+    let mut id = [0u8; 33];
+    if let Some(tag) = id.first_mut() {
+        *tag = 1;
+    }
+    if let Some(digest) = id.get_mut(1..) {
+        digest.copy_from_slice(hash.finalize().as_bytes());
+    }
+    retirement::Key(id)
+}
+
+/// Open charges always belong to their named session after load admission. Never debit a
+/// newer session generation using an own-first/folded fallback (legacy files lacked ownership).
 fn take_from_session(sessions: &mut BTreeMap<String, Totals>, name: &str, amount: Money) -> Result<(), Error> {
-    let own = sessions.get(name).and_then(|t| t.get(&amount.currency)).map_or(0, |m| m.micros);
-    let from_own = own.min(amount.micros);
-    if from_own > 0
-        && let Some(totals) = sessions.get_mut(name)
-    {
-        sub_from(totals, Money::new(amount.currency, from_own))?;
-    }
-    let rest = amount.micros.saturating_sub(from_own);
-    if rest > 0 {
-        let earlier = sessions.get_mut(EARLIER_SESSIONS).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing a session"))?;
-        sub_from(earlier, Money::new(amount.currency, rest))?;
-    }
-    Ok(())
+    let own = sessions.get_mut(name).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing an open charge's session"))?;
+    sub_from(own, amount)
 }
-
-/// Adds `amount` to session `name`'s totals, or to [`EARLIER_SESSIONS`] when it was folded.
 fn give_to_session(sessions: &mut BTreeMap<String, Totals>, name: &str, amount: Money) -> Result<(), Error> {
-    let target = if sessions.contains_key(name) { name } else { EARLIER_SESSIONS };
-    add_to(sessions.entry(target.to_owned()).or_default(), amount)
+    let own = sessions.get_mut(name).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing an open charge's session"))?;
+    add_to(own, amount)
 }
 
-/// The two sessions a change to an entry of `name` can touch, copied so the change is atomic.
+/// Copy the established owner so a failed settlement leaves all totals unchanged.
 fn touched_sessions(sessions: &BTreeMap<String, Totals>, name: &str) -> BTreeMap<String, Totals> {
-    [name, EARLIER_SESSIONS].into_iter().filter_map(|n| sessions.get(n).map(|t| (n.to_owned(), t.clone()))).collect()
+    sessions.get(name).map(|totals| (name.to_owned(), totals.clone())).into_iter().collect()
 }
 
 fn entry_text(entry: &UsageEntry) -> usize {
@@ -444,7 +417,7 @@ fn entry_text(entry: &UsageEntry) -> usize {
 }
 
 fn hex(id: &Retired) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
+    id.0.get(1..17).unwrap_or_default().iter().map(|b| format!("{b:02x}")).collect::<String>().into_boxed_str().into_string()
 }
 
 fn unhex(text: &str) -> Option<Retired> {
@@ -455,18 +428,24 @@ fn unhex(text: &str) -> Option<Retired> {
     for (i, byte) in id.iter_mut().enumerate() {
         *byte = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
     }
-    Some(id)
+    let mut tagged = [0u8; 33];
+    if let Some(head) = tagged.get_mut(1..17) {
+        head.copy_from_slice(&id);
+    }
+    Some(retirement::Key(tagged))
 }
 
 /// Logs are equal when they list the same charges with the same totals (the key index is
 /// derived from the entries).
 impl PartialEq for UsageLog {
     fn eq(&self, other: &Self) -> bool {
-        self.entries == other.entries
-            && self.project == other.project
-            && self.sessions == other.sessions
-            && self.retired == other.retired
+        self.entries().eq(other.entries())
+            && self.reported_spent("") == other.reported_spent("")
+            && self.merged_sessions() == other.merged_sessions()
+            && self.retired.fifo == other.retired.fifo
+            && self.provider_identity_version == other.provider_identity_version
             && self.pending == other.pending
+            && self.ownership == other.ownership
     }
 }
 impl Eq for UsageLog {}
@@ -475,6 +454,22 @@ impl Eq for UsageLog {}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageLogFile {
+    /// Explicit ownership contract: 0 legacy input, 1 established, 2 immutable quarantine,
+    /// 3 quarantine with confirmed reconciliations (#325).
+    #[serde(default)]
+    pub open_session_ownership: u8,
+    #[serde(default)]
+    pub provider_identity_version: u8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncertain_listed: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncertain_pending: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<UsageEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_groups: Vec<LegacyGroupEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ownership_reconciliations: Vec<OwnershipReconciliation>,
     pub entries: Vec<UsageEntry>,
     pub project: Totals,
     #[serde(default)]
@@ -482,9 +477,39 @@ pub struct UsageLogFile {
     /// Identities (hex) of charges that left the list, oldest first.
     #[serde(default)]
     pub retired: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_targets: Vec<RetiredTargetWire>,
     /// Open charges that left the list.
     #[serde(default)]
     pub pending: Vec<UsageEntry>,
+}
+
+/// One tagged fixed digest. This is finite deduplication, never ownership proof.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetiredTargetWire {
+    pub tag: u8,
+    pub digest: String,
+}
+fn retired_wire(key: &Retired) -> RetiredTargetWire {
+    let tag = key.0.first().copied().unwrap_or(0);
+    let range = if tag == 0 { 1..17 } else { 1..33 };
+    let digest = key.0.get(range).unwrap_or_default().iter().map(|b| format!("{b:02x}")).collect::<String>().into_boxed_str().into_string();
+    RetiredTargetWire { tag, digest }
+}
+fn parse_retired_wire(wire: &RetiredTargetWire) -> Option<Retired> {
+    if wire.tag > 1
+        || wire.digest.len() != if wire.tag == 0 { 32 } else { 64 }
+        || !wire.digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let mut key = [0u8; 33];
+    *key.first_mut()? = wire.tag;
+    for (index, byte) in key.get_mut(1..if wire.tag == 0 { 17 } else { 33 })?.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(wire.digest.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(retirement::Key(key))
 }
 
 /// Where an open charge is.
@@ -500,6 +525,9 @@ fn add_to(map: &mut Totals, amount: Money) -> Result<(), Error> {
 }
 
 fn sub_from(map: &mut Totals, amount: Money) -> Result<(), Error> {
+    if amount.micros == 0 {
+        return Ok(());
+    }
     let total = map.get_mut(&amount.currency).ok_or_else(|| Error::new(ErrorKind::Internal, "usage totals are missing a currency"))?;
     *total = total.checked_sub(amount)?;
     Ok(())
@@ -528,16 +556,38 @@ impl UsageLog {
     /// left the list (within [`MAX_RETIRED_KEYS`]). An empty key is refused, since it couldn't
     /// tell retries from new charges, and so is an implausibly large cost. Nothing changes on an
     /// error.
-    pub fn record(&mut self, entry: UsageEntry) -> Result<bool, Error> {
+    pub fn record(&mut self, mut entry: UsageEntry) -> Result<bool, Error> {
         check_entry(&entry)?;
-        let key = (entry.provider.clone(), entry.idempotency_key.clone());
-        if self.keys.contains_key(&key) || self.pending.contains_key(&key) || self.retired_set.contains(&retired_id(&key.0, &key.1)) {
+        self.metadata.sweep();
+        if let Some(shell) = self.metadata.lookup(&entry.provider, entry.instance, &entry.idempotency_key) {
+            if !shell.matches(&entry.provider, entry.instance, &entry.idempotency_key) {
+                return Err(Error::new(ErrorKind::Conflict, "usage identity digest collision"));
+            }
+            if self.metadata.charge(&entry.provider, entry.instance, &entry.idempotency_key).is_some() {
+                return Ok(false);
+            }
+            return Err(Error::new(ErrorKind::Busy, "that accounting identity has a metadata reservation"));
+        }
+        let key = ownership::identity_target(&entry.provider, entry.instance, &entry.idempotency_key);
+        if let Some(existing) = self.charge_identity(&entry.provider, entry.instance, &entry.idempotency_key)
+            && existing.provider == entry.provider
+            && existing.instance == entry.instance
+            && existing.idempotency_key == entry.idempotency_key
+        {
             return Ok(false);
         }
+        if self.keys.contains_key(&key) || self.pending_identities.contains(&key) || self.ownership.quarantined.contains_key(&key) {
+            return Err(Error::new(ErrorKind::Conflict, "usage identity digest collision"));
+        }
+        if self.retired.contains(&retired_target_id(&entry.provider, entry.instance, &entry.idempotency_key)) {
+            return Ok(false);
+        }
+        let evict = self.room_for(entry_text(&entry))?;
+        let next_order = self.next_order.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "accounting sequence exhausted"))?;
         // New totals first, so an overflow leaves the log as it was.
-        let mut project = self.project.clone();
+        let mut project = self.reported_spent(&entry.session).project;
         add_to(&mut project, entry.cost)?;
-        let mut session = self.sessions.get(&entry.session).cloned().unwrap_or_default();
+        let mut session = self.reported_spent(&entry.session).session;
         add_to(&mut session, entry.cost)?;
         // The same ceiling a saved log is held to, so every log that records can be reloaded.
         if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
@@ -546,11 +596,30 @@ impl UsageLog {
         // A new session past the limit folds the least recently used one (into a copy, so an error
         // leaves the log as it was).
         let folded = if self.sessions.contains_key(&entry.session) { None } else { self.folded_sessions(&entry.session)? };
-        // Nothing below can fail: the log changes from here on.
         let text = entry_text(&entry);
-        while self.entries.len() >= MAX_USAGE_ENTRIES || (!self.entries.is_empty() && self.text_bytes.saturating_add(text) > MAX_LISTED_TEXT) {
+        metadata::compact_entry(&mut entry)?;
+        // If no overlay flush will provide its preallocated spare slot, prepare any
+        // order growth OFF ledger before later fallible retirement preparation.
+        let order = if self.metadata.actuals().next().is_none() && self.entry_order.capacity() < self.entry_order.len().saturating_add(1) {
+            let mut order = VecDeque::new();
+            order
+                .try_reserve_exact(self.entry_order.len().saturating_add(1).max(self.entry_order.capacity().saturating_mul(2)).min(MAX_USAGE_ENTRIES + 1))
+                .map_err(|_| Error::new(ErrorKind::Busy, "cannot allocate accounting sequence"))?;
+            order.extend(self.entry_order.iter().copied());
+            Some(order)
+        } else {
+            None
+        };
+        let retired = self.retired.prepare(self.retirement_batch(evict))?;
+        self.flush_metadata()?;
+        // All fallible admission is complete; commit the planned moves.
+        if let Some(order) = order {
+            self.entry_order = order;
+        }
+        for _ in 0..evict {
             self.retire_oldest();
         }
+        retired.commit(&mut self.retired);
         let seq = self.first_seq.saturating_add(self.entries.len() as u64);
         self.project = project;
         if let Some(sessions) = folded {
@@ -563,7 +632,13 @@ impl UsageLog {
         self.session_clock.insert(entry.session.clone(), self.clock);
         self.keys.insert(key, seq);
         self.text_bytes = self.text_bytes.saturating_add(text);
+        let entry_instance_named = entry.instance.is_some();
         self.entries.push_back(entry);
+        self.entry_order.push_back(next_order);
+        self.next_order = next_order;
+        if entry_instance_named {
+            self.provider_identity_version = 1;
+        }
         Ok(true)
     }
 
@@ -572,46 +647,58 @@ impl UsageLog {
     /// retry isn't charged again.
     fn retire_oldest(&mut self) {
         let Some(oldest) = self.entries.pop_front() else { return };
+        self.entry_order.pop_front();
         self.text_bytes = self.text_bytes.saturating_sub(entry_text(&oldest));
         self.first_seq = self.first_seq.saturating_add(1);
-        let key = (oldest.provider.clone(), oldest.idempotency_key.clone());
-        self.keys.remove(&key);
-        if oldest.status != Charge::Actual && self.pending.len() < MAX_PENDING {
-            self.pending.insert(key, oldest);
+        self.keys.remove(&ownership::identity_target(&oldest.provider, oldest.instance, &oldest.idempotency_key));
+        if self.ownership.is_uncertain(&oldest) {
+            self.ownership.quarantined.insert(ownership::identity_target(&oldest.provider, oldest.instance, &oldest.idempotency_key), oldest);
             return;
         }
-        self.retire_identity(&key.0, &key.1);
+        if oldest.status != Charge::Actual && self.pending.len() < MAX_PENDING {
+            self.pending_identities.insert(ownership::identity_target(&oldest.provider, oldest.instance, &oldest.idempotency_key));
+            self.pending.insert((oldest.provider.clone(), oldest.instance, oldest.idempotency_key.clone()), oldest);
+        }
+        // The enclosing admitted transaction commits its staged retirement delta.
     }
 
-    fn retire_identity(&mut self, provider: &str, idempotency_key: &str) {
-        let id = retired_id(provider, idempotency_key);
-        if self.retired_set.insert(id) {
-            self.retired.push_back(id);
-        }
-        while self.retired.len() > MAX_RETIRED_KEYS {
-            if let Some(forgotten) = self.retired.pop_front() {
-                self.retired_set.remove(&forgotten);
+    fn retirement_batch(&self, evict: usize) -> impl Iterator<Item = Retired> + '_ {
+        let mut pending = self.pending.len();
+        self.entries().take(evict).filter_map(move |entry| {
+            if self.ownership.is_uncertain(entry) {
+                return None;
             }
-        }
+            if entry.status != Charge::Actual && pending < MAX_PENDING {
+                pending += 1;
+                return None;
+            }
+            Some(retired_target_id(&entry.provider, entry.instance, &entry.idempotency_key))
+        })
     }
 
     /// The session totals with room for `current`'s: `None` when there is room already; past
     /// [`MAX_SESSIONS`], the least recently charged sessions other than `current` move into
     /// [`EARLIER_SESSIONS`] (the project total is unchanged).
     fn folded_sessions(&self, current: &str) -> Result<Option<BTreeMap<String, Totals>>, Error> {
-        if self.sessions.len() < MAX_SESSIONS {
+        if self.merged_sessions().len() < MAX_SESSIONS {
             return Ok(None);
         }
         let open: BTreeSet<&str> =
             self.entries.iter().filter(|e| e.status != Charge::Actual).chain(self.pending.values()).map(|e| e.session.as_str()).collect();
-        let mut sessions = self.sessions.clone();
+        let mut sessions = self.merged_sessions();
         // The earlier-sessions total exists before counting, so the first fold frees one slot.
         sessions.entry(EARLIER_SESSIONS.to_owned()).or_default();
         // Least recently charged first; sorted once, so catching up after the limit was exceeded
         // (sessions kept for open charges that have since settled) stays linear.
         let mut candidates: Vec<(u64, String)> = sessions
             .keys()
-            .filter(|name| name.as_str() != current && name.as_str() != EARLIER_SESSIONS && !open.contains(name.as_str()))
+            .filter(|name| {
+                name.as_str() != current
+                    && name.as_str() != EARLIER_SESSIONS
+                    && !open.contains(name.as_str())
+                    && !self.ownership.groups.contains_key(name.as_str())
+                    && !self.metadata.protects(name.as_str())
+            })
             .map(|name| (self.session_clock.get(name.as_str()).copied().unwrap_or(0), name.clone()))
             .collect();
         candidates.sort_unstable();
@@ -628,14 +715,31 @@ impl UsageLog {
     }
 
     /// The listed, unsettled entry for a key and its index.
-    fn open_entry(&self, provider: &str, idempotency_key: &str) -> Result<(Location, &UsageEntry), Error> {
-        let key = (provider.to_owned(), idempotency_key.to_owned());
-        if let Some(entry) = self.pending.get(&key) {
+    fn open_entry(
+        &self,
+        provider: &str,
+        instance: Option<nodecraft_types::ProviderInstanceId>,
+        idempotency_key: &str,
+    ) -> Result<(Location, &UsageEntry), Error> {
+        ownership::check_key(provider, idempotency_key)?;
+        if self.ownership.uncertain.contains(&ownership::identity_target(provider, instance, idempotency_key)) {
+            return Err(ownership::uncertain_error());
+        }
+        let key = ownership::identity_target(provider, instance, idempotency_key);
+        if self.pending_identities.contains(&key) {
+            let entry = self
+                .pending
+                .values()
+                .find(|e| e.provider == provider && e.instance == instance && e.idempotency_key == idempotency_key)
+                .ok_or_else(|| Error::new(ErrorKind::Conflict, "usage identity digest collision"))?;
             return Ok((Location::Pending, entry));
         }
         let seq = *self.keys.get(&key).ok_or_else(|| Error::new(ErrorKind::NotFound, "no open charge has that key (it may have been exported and dropped)"))?;
         let index = usize::try_from(seq.saturating_sub(self.first_seq)).map_err(|_| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
         let entry = self.entries.get(index).ok_or_else(|| Error::new(ErrorKind::Internal, "usage log index out of range"))?;
+        if entry.provider != provider || entry.instance != instance || entry.idempotency_key != idempotency_key {
+            return Err(Error::new(ErrorKind::Conflict, "usage identity digest collision"));
+        }
         if entry.status == Charge::Actual {
             return Err(Error::new(ErrorKind::Conflict, "that charge is already settled"));
         }
@@ -652,13 +756,26 @@ impl UsageLog {
     /// list while pending was full (its last amount stays in the totals, the conservative
     /// outcome). Don't `record` it again, which would count it twice.
     pub fn settle(&mut self, provider: &str, idempotency_key: &str, cost: Money, status: Charge) -> Result<(), Error> {
+        self.settle_identity(provider, None, idempotency_key, cost, status)
+    }
+    pub fn settle_target(&mut self, target: &nodecraft_types::ProviderTarget, idempotency_key: &str, cost: Money, status: Charge) -> Result<(), Error> {
+        self.settle_identity(target.adapter(), target.instance(), idempotency_key, cost, status)
+    }
+    fn settle_identity(
+        &mut self,
+        provider: &str,
+        instance: Option<nodecraft_types::ProviderInstanceId>,
+        idempotency_key: &str,
+        cost: Money,
+        status: Charge,
+    ) -> Result<(), Error> {
         if cost.micros > MAX_CHARGE_MICROS {
             return Err(Error::new(ErrorKind::InvalidInput, "a charge is larger than any job could cost"));
         }
         if status == Charge::Estimate {
             return Err(Error::new(ErrorKind::InvalidInput, "settle to an actual or unresolved charge"));
         }
-        let (location, entry) = self.open_entry(provider, idempotency_key)?;
+        let (location, entry) = self.open_entry(provider, instance, idempotency_key)?;
         if cost.currency != entry.cost.currency {
             return Err(Error::new(ErrorKind::CurrencyMismatch, "a charge can't change currency when it settles"));
         }
@@ -669,9 +786,21 @@ impl UsageLog {
         if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
         }
+        if project
+            .get(&cost.currency)
+            .map_or(0, |m| m.micros)
+            .checked_add(self.metadata.currency_sum(None, cost.currency).unwrap_or(u64::MAX))
+            .is_none_or(|n| n > MAX_TOTAL_MICROS)
+        {
+            return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
+        }
         let mut sessions = touched_sessions(&self.sessions, &entry.session);
         take_from_session(&mut sessions, &entry.session, entry.cost)?;
         give_to_session(&mut sessions, &entry.session, cost)?;
+        let retired = self.retired.prepare(
+            if matches!(location, Location::Pending) && status == Charge::Actual { Some(retired_target_id(provider, instance, idempotency_key)) } else { None }
+                .into_iter(),
+        )?;
         self.project = project;
         self.sessions.extend(sessions);
         match location {
@@ -682,17 +811,19 @@ impl UsageLog {
                 }
             }
             Location::Pending => {
-                let key = (provider.to_owned(), idempotency_key.to_owned());
+                let key = (provider.to_owned(), instance, idempotency_key.to_owned());
                 if status == Charge::Actual {
                     // Settled for good: off the list, so only its identity is kept.
                     self.pending.remove(&key);
-                    self.retire_identity(provider, idempotency_key);
+                    self.pending_identities.remove(&ownership::identity_target(provider, instance, idempotency_key));
+                    // Finite dedup delta was admitted before the monetary update.
                 } else if let Some(entry) = self.pending.get_mut(&key) {
                     entry.cost = cost;
                     entry.status = status;
                 }
             }
         }
+        retired.commit(&mut self.retired);
         Ok(())
     }
 
@@ -700,7 +831,13 @@ impl UsageLog {
     /// invalid input), taking it out of the totals and freeing its key for a later attempt.
     /// Only an estimate can be released: an unresolved charge may have been billed.
     pub fn release(&mut self, provider: &str, idempotency_key: &str) -> Result<(), Error> {
-        let (location, entry) = self.open_entry(provider, idempotency_key)?;
+        self.release_identity(provider, None, idempotency_key)
+    }
+    pub fn release_target(&mut self, target: &nodecraft_types::ProviderTarget, idempotency_key: &str) -> Result<(), Error> {
+        self.release_identity(target.adapter(), target.instance(), idempotency_key)
+    }
+    fn release_identity(&mut self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, idempotency_key: &str) -> Result<(), Error> {
+        let (location, entry) = self.open_entry(provider, instance, idempotency_key)?;
         if entry.status != Charge::Estimate {
             return Err(Error::new(ErrorKind::Conflict, "only an estimate can be released; this charge may have been billed"));
         }
@@ -713,27 +850,46 @@ impl UsageLog {
         let index = match location {
             Location::Listed(index) => index,
             Location::Pending => {
-                self.pending.remove(&(provider.to_owned(), idempotency_key.to_owned()));
+                self.pending.remove(&(provider.to_owned(), instance, idempotency_key.to_owned()));
+                self.pending_identities.remove(&ownership::identity_target(provider, instance, idempotency_key));
                 return Ok(());
             }
         };
+        self.entry_order.remove(index);
         if let Some(removed) = self.entries.remove(index) {
             self.text_bytes = self.text_bytes.saturating_sub(entry_text(&removed));
         }
         // Later entries moved up one: renumber the index (rare, so a rebuild is fine).
         self.first_seq = 0;
-        self.keys = self.entries.iter().enumerate().map(|(i, e)| ((e.provider.clone(), e.idempotency_key.clone()), i as u64)).collect();
+        self.keys = self.entries.iter().enumerate().map(|(i, e)| (ownership::identity_target(&e.provider, e.instance, &e.idempotency_key), i as u64)).collect();
         Ok(())
     }
 
     /// The listed (or pending) charge for `(provider, idempotency_key)`, if any.
     pub fn charge(&self, provider: &str, idempotency_key: &str) -> Option<&UsageEntry> {
-        let key = (provider.to_owned(), idempotency_key.to_owned());
-        if let Some(entry) = self.pending.get(&key) {
+        self.charge_identity(provider, None, idempotency_key)
+    }
+    pub fn charge_target(&self, target: &nodecraft_types::ProviderTarget, idempotency_key: &str) -> Option<&UsageEntry> {
+        self.charge_identity(target.adapter(), target.instance(), idempotency_key)
+    }
+    fn charge_identity(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, idempotency_key: &str) -> Option<&UsageEntry> {
+        if ownership::check_key(provider, idempotency_key).is_err() {
+            return None;
+        }
+        if let Some(entry) = self.metadata.charge(provider, instance, idempotency_key) {
             return Some(entry);
         }
+        if let Some(entry) = self.ownership.quarantined.get(&ownership::identity_target(provider, instance, idempotency_key)) {
+            return (entry.provider == provider && entry.instance == instance && entry.idempotency_key == idempotency_key).then_some(entry);
+        }
+        let key = ownership::identity_target(provider, instance, idempotency_key);
+        if self.pending_identities.contains(&key) {
+            return self.pending.values().find(|e| e.provider == provider && e.instance == instance && e.idempotency_key == idempotency_key);
+        }
         let seq = *self.keys.get(&key)?;
-        self.entries.get(usize::try_from(seq.checked_sub(self.first_seq)?).ok()?)
+        self.entries
+            .get(usize::try_from(seq.checked_sub(self.first_seq)?).ok()?)
+            .filter(|e| e.provider == provider && e.instance == instance && e.idempotency_key == idempotency_key)
     }
 
     /// Open charges that left the list, still to be settled or released.
@@ -743,17 +899,123 @@ impl UsageLog {
 
     /// How many entries are listed.
     pub fn listed(&self) -> usize {
-        self.entries.len()
+        self.entries.len().saturating_add(self.metadata.actuals().count())
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &UsageEntry> {
-        self.entries.iter()
+        let mut ordinary = self.entry_order.iter().zip(self.entries.iter()).peekable();
+        let mut overlay = self.metadata.actuals().peekable();
+        std::iter::from_fn(move || match (ordinary.peek(), overlay.peek()) {
+            (Some((a, _)), Some((b, _))) if **a <= *b => ordinary.next().map(|(_, e)| e),
+            (Some(_), Some(_)) | (None, Some(_)) => overlay.next().map(|(_, e)| e),
+            (Some(_), None) => ordinary.next().map(|(_, e)| e),
+            (None, None) => None,
+        })
     }
 
     /// Totals per currency for `session` and for the whole project, including entries that have
     /// left the list.
     pub fn spent(&self, session: &str) -> Spent {
-        Spent { session: self.sessions.get(session).cloned().unwrap_or_default(), project: self.project.clone() }
+        let mut spent = self.reported_spent(session);
+        for group in self.ownership.groups.get(session).into_iter().flat_map(|groups| groups.values()) {
+            let currency = group.original_open.currency;
+            let named = spent.session.get(&currency).map_or(0, |m| m.micros);
+            let project = spent.project.get(&currency).map_or(0, |m| m.micros);
+            let admitted = (u128::from(named) + u128::from(group.original_open.micros)).min(u128::from(project));
+            spent.session.insert(currency, Money::new(currency, u64::try_from(admitted).unwrap_or(project)));
+        }
+        spent
+    }
+
+    /// Exact declared bucket totals; use `spent` for conservative budget admission.
+    pub fn reported_spent(&self, session: &str) -> Spent {
+        let mut spent = Spent { session: self.sessions.get(session).cloned().unwrap_or_default(), project: self.project.clone() };
+        for (_, e) in self.metadata.actuals() {
+            // Finalization proved every combined total below the fixed ceiling.
+            let p = spent.project.entry(e.cost.currency).or_insert(Money::zero(e.cost.currency));
+            p.micros = p.micros.saturating_add(e.cost.micros);
+            if e.session == session {
+                let s = spent.session.entry(e.cost.currency).or_insert(Money::zero(e.cost.currency));
+                s.micros = s.micros.saturating_add(e.cost.micros);
+            }
+        }
+        spent
+    }
+
+    pub fn budget_view(&self, session: &str) -> UsageBudgetView {
+        UsageBudgetView {
+            reported: self.reported_spent(session),
+            admission: self.spent(session),
+            has_uncertain_session_charges: self.ownership.groups.contains_key(session),
+        }
+    }
+
+    fn merged_sessions(&self) -> BTreeMap<String, Totals> {
+        let mut sessions = self.sessions.clone();
+        for (_, e) in self.metadata.actuals() {
+            let value = sessions.entry(e.session.clone()).or_default().entry(e.cost.currency).or_insert(Money::zero(e.cost.currency));
+            value.micros = value.micros.saturating_add(e.cost.micros);
+        }
+        sessions
+    }
+
+    pub fn ownership(&self, provider: &str, key: &str) -> Result<Option<ChargeOwnership>, Error> {
+        self.ownership_identity(provider, None, key)
+    }
+    pub fn ownership_target(&self, target: &nodecraft_types::ProviderTarget, key: &str) -> Result<Option<ChargeOwnership>, Error> {
+        self.ownership_identity(target.adapter(), target.instance(), key)
+    }
+    fn ownership_identity(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Result<Option<ChargeOwnership>, Error> {
+        ownership::check_key(provider, key)?;
+        let entry = self.charge_identity(provider, instance, key);
+        if entry.is_none() && self.digest_present(provider, instance, key) {
+            return Err(Error::new(ErrorKind::Conflict, "usage identity digest collision"));
+        }
+        Ok(entry.map(|entry| if self.ownership.is_uncertain(entry) { ChargeOwnership::LegacyUncertain } else { ChargeOwnership::Established }))
+    }
+
+    /// Logical retired-container charge: fixed 33-byte keys times reported capacities plus
+    /// public container headers. Excludes allocator/private bucket metadata and is not RSS.
+    pub fn retired_logical_bytes(&self) -> usize {
+        self.retired.logical_bytes()
+    }
+    /// Bounded identity deduplication, including retained historical Actuals and retired keys.
+    pub fn has_recorded(&self, provider: &str, key: &str) -> Result<bool, Error> {
+        self.has_recorded_identity(provider, None, key)
+    }
+    pub fn has_recorded_target(&self, target: &nodecraft_types::ProviderTarget, key: &str) -> Result<bool, Error> {
+        self.has_recorded_identity(target.adapter(), target.instance(), key)
+    }
+    fn has_recorded_identity(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Result<bool, Error> {
+        ownership::check_key(provider, key)?;
+        if self.charge_identity(provider, instance, key).is_some() {
+            return Ok(true);
+        }
+        if self.digest_present(provider, instance, key) {
+            return Err(Error::new(ErrorKind::Conflict, "usage identity digest collision"));
+        }
+        Ok(self.retired.contains(&retired_target_id(provider, instance, key)))
+    }
+
+    fn digest_present(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> bool {
+        let id = ownership::identity_target(provider, instance, key);
+        self.keys.contains_key(&id)
+            || self.pending_identities.contains(&id)
+            || self.ownership.quarantined.contains_key(&id)
+            || self.metadata.lookup(provider, instance, key).is_some_and(|s| !s.matches(provider, instance, key))
+    }
+    pub fn quarantine_entries(&self) -> impl Iterator<Item = QuarantinedCharge<'_>> {
+        self.entries
+            .iter()
+            .map(|e| (e, QuarantineLocation::Listed))
+            .chain(self.pending.values().map(|e| (e, QuarantineLocation::Pending)))
+            .chain(self.ownership.quarantined.values().map(|e| (e, QuarantineLocation::Evicted)))
+            .filter_map(|(entry, location)| {
+                self.ownership
+                    .is_uncertain(entry)
+                    .then(|| self.ownership.evidence(entry).map(|evidence| QuarantinedCharge { entry, evidence, location }))
+                    .flatten()
+            })
     }
 
     /// The listed entries as CSV (RFC 4180), safe to open in a spreadsheet: text cells that could
@@ -771,7 +1033,8 @@ impl UsageLog {
         self.write_csv_rows(out, 0, usize::MAX)
     }
 
-    /// The CSV header and up to `limit` listed entries from `offset` on (for paged exports).
+    /// The CSV header and up to `limit` listed rows from `offset`, including finalized Actuals.
+    /// Held metadata and evicted quarantine are not listed rows.
     pub fn write_csv_rows(&self, out: &mut impl std::io::Write, offset: usize, limit: usize) -> std::io::Result<()> {
         self.write_csv_rows_while(out, offset, limit, |_| true).map(|_| ())
     }
@@ -785,9 +1048,39 @@ impl UsageLog {
         out: &mut impl std::io::Write,
         offset: usize,
         limit: usize,
-        mut accept: impl FnMut(&[u8]) -> bool,
+        accept: impl FnMut(&[u8]) -> bool,
     ) -> std::io::Result<usize> {
-        out.write_all(b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n")?;
+        if self.entries().skip(offset).take(limit).any(|e| e.instance.is_some()) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scoped usage requires scoped CSV export"));
+        }
+        self.write_csv_target_rows_while(out, offset, limit, accept, false)
+    }
+    /// Explicit instance column for all identities; safe for scoped/default mixed pages.
+    pub fn write_scoped_csv_rows(&self, out: &mut impl std::io::Write, offset: usize, limit: usize) -> std::io::Result<()> {
+        self.write_scoped_csv_rows_while(out, offset, limit, |_| true).map(|_| ())
+    }
+    pub fn write_scoped_csv_rows_while(
+        &self,
+        out: &mut impl std::io::Write,
+        offset: usize,
+        limit: usize,
+        accept: impl FnMut(&[u8]) -> bool,
+    ) -> std::io::Result<usize> {
+        self.write_csv_target_rows_while(out, offset, limit, accept, true)
+    }
+    fn write_csv_target_rows_while(
+        &self,
+        out: &mut impl std::io::Write,
+        offset: usize,
+        limit: usize,
+        mut accept: impl FnMut(&[u8]) -> bool,
+        scoped: bool,
+    ) -> std::io::Result<usize> {
+        out.write_all(if scoped {
+            b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key,provider_instance\r\n"
+        } else {
+            b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n"
+        })?;
         let mut written = 0;
         for e in self.entries().skip(offset).take(limit) {
             let amount = format_money(e.cost);
@@ -804,6 +1097,12 @@ impl UsageLog {
                 cell(&e.idempotency_key),
             ];
             let mut row = row.join(",");
+            if scoped {
+                row.push(',');
+                if let Some(instance) = e.instance {
+                    row.push_str(&instance.to_string());
+                }
+            }
             let body_len = row.len();
             row.push_str("\r\n");
             if !accept(row.as_bytes()) {
@@ -816,15 +1115,69 @@ impl UsageLog {
         }
         Ok(written)
     }
+
+    /// Streaming export including evicted immutable uncertainty; ordinary CSV remains listed-only.
+    pub fn write_quarantine_csv(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        if self.quarantine_entries().any(|row| row.entry.instance.is_some()) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scoped usage requires scoped CSV export"));
+        }
+        write_entries_csv(self.quarantine_entries().map(|row| row.entry), out)
+    }
+}
+
+fn write_entries_csv<'a>(entries: impl Iterator<Item = &'a UsageEntry>, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    out.write_all(b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n")?;
+    for e in entries {
+        let amount = format_money(e.cost);
+        let amount = amount.split_once(' ').map_or(amount.as_str(), |(n, _)| n).to_owned();
+        let row = [
+            e.at_ms.to_string(),
+            cell(&e.session),
+            e.node.to_string(),
+            cell(&e.provider),
+            cell(&e.model),
+            amount,
+            String::from(e.cost.currency),
+            e.status.as_str().to_owned(),
+            cell(&e.idempotency_key),
+        ];
+        out.write_all(row.join(",").as_bytes())?;
+        out.write_all(b"\r\n")?;
+    }
+    Ok(())
 }
 
 impl From<UsageLog> for UsageLogFile {
     fn from(log: UsageLog) -> Self {
+        let uncertain_listed = log.entries().enumerate().filter(|(_, e)| log.ownership.is_uncertain(e)).filter_map(|(n, _)| u32::try_from(n).ok()).collect();
+        let uncertain_pending =
+            log.pending.values().enumerate().filter(|(_, e)| log.ownership.is_uncertain(e)).filter_map(|(n, _)| u32::try_from(n).ok()).collect();
+        let entries = log.entries().cloned().collect();
+        let project = log.reported_spent("").project;
+        let sessions = log.merged_sessions();
         Self {
-            entries: log.entries.into(),
-            project: log.project,
-            sessions: log.sessions,
-            retired: log.retired.iter().map(hex).collect(),
+            provider_identity_version: log.provider_identity_version,
+            open_session_ownership: if !log.ownership.records.is_empty() {
+                3
+            } else if log.ownership.uncertain.is_empty() {
+                1
+            } else {
+                2
+            },
+            uncertain_listed,
+            uncertain_pending,
+            quarantined: log.ownership.quarantined.into_values().collect(),
+            legacy_groups: log.ownership.groups.into_values().flat_map(|g| g.into_values()).collect(),
+            ownership_reconciliations: log.ownership.records,
+            entries,
+            project,
+            sessions,
+            retired: if log.provider_identity_version == 0 { log.retired.fifo.iter().map(hex).collect() } else { Vec::new() },
+            retired_targets: if log.provider_identity_version == 1 {
+                log.retired.fifo.iter().map(retired_wire).collect::<Vec<_>>().into_boxed_slice().into_vec()
+            } else {
+                Vec::new()
+            },
             pending: log.pending.into_values().collect(),
         }
     }
@@ -835,12 +1188,13 @@ impl From<UsageLog> for UsageLogFile {
 impl TryFrom<UsageLogFile> for UsageLog {
     type Error = Error;
 
-    fn try_from(file: UsageLogFile) -> Result<Self, Error> {
+    fn try_from(mut file: UsageLogFile) -> Result<Self, Error> {
         let bad = |m: &str| Error::new(ErrorKind::InvalidInput, format!("usage log: {m}"));
+        ownership::check_file_bounds(&file)?;
         if file.entries.len() > MAX_USAGE_ENTRIES {
             return Err(bad("too many entries"));
         }
-        if file.retired.len() > MAX_RETIRED_KEYS {
+        if file.retired.len().saturating_add(file.retired_targets.len()) > MAX_RETIRED_KEYS {
             return Err(bad("too many retired charges"));
         }
         if file.pending.len() > MAX_PENDING {
@@ -856,21 +1210,20 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if text_bytes > MAX_LISTED_TEXT {
             return Err(bad("the entries hold too much text"));
         }
-        let mut retired = VecDeque::with_capacity(file.retired.len());
-        let mut retired_set = BTreeSet::new();
-        for text in &file.retired {
-            let id = unhex(text).ok_or_else(|| bad("a retired charge's identity is malformed"))?;
-            if !retired_set.insert(id) {
-                return Err(bad("a retired charge appears twice"));
-            }
-            retired.push_back(id);
+        if (file.provider_identity_version == 0 && !file.retired_targets.is_empty()) || (file.provider_identity_version == 1 && !file.retired.is_empty()) {
+            return Err(bad("retired identity representation disagrees with provider identity version"));
         }
+        // Length/tag/hex validation precedes owned fixed-size digest construction.
+        if file.retired.iter().any(|s| unhex(s).is_none()) || file.retired_targets.iter().any(|s| parse_retired_wire(s).is_none()) {
+            return Err(bad("a retired charge identity is malformed"));
+        }
+        let retired = retirement::Store::admit(file.retired.iter().filter_map(|s| unhex(s)).chain(file.retired_targets.iter().filter_map(parse_retired_wire)))?;
         let mut listed = Totals::new();
         let mut listed_sessions: BTreeMap<&str, Totals> = BTreeMap::new();
         let mut keys = BTreeMap::new();
         for (seq, entry) in file.entries.iter().enumerate() {
             check_entry(entry)?;
-            if keys.insert((entry.provider.clone(), entry.idempotency_key.clone()), seq as u64).is_some() {
+            if keys.insert((entry.provider.clone(), entry.instance, entry.idempotency_key.clone()), seq as u64).is_some() {
                 return Err(bad("an idempotency key appears twice"));
             }
             add_to(&mut listed, entry.cost)?;
@@ -882,8 +1235,21 @@ impl TryFrom<UsageLogFile> for UsageLog {
             if entry.status == Charge::Actual {
                 return Err(bad("a pending charge is already settled"));
             }
-            let key = (entry.provider.clone(), entry.idempotency_key.clone());
+            let key = (entry.provider.clone(), entry.instance, entry.idempotency_key.clone());
             if keys.contains_key(&key) || pending.insert(key, entry.clone()).is_some() {
+                return Err(bad("an idempotency key appears twice"));
+            }
+            add_to(&mut listed, entry.cost)?;
+            add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
+        }
+        let mut quarantine_keys = BTreeSet::new();
+        for entry in &file.quarantined {
+            check_entry(entry)?;
+            if entry.status == Charge::Actual || entry.cost.micros == 0 {
+                return Err(bad("quarantined charges must remain positive and open"));
+            }
+            let key = (entry.provider.clone(), entry.instance, entry.idempotency_key.clone());
+            if keys.contains_key(&key) || pending.contains_key(&key) || !quarantine_keys.insert(key) {
                 return Err(bad("an idempotency key appears twice"));
             }
             add_to(&mut listed, entry.cost)?;
@@ -910,7 +1276,12 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if !covers(file.sessions.get(EARLIER_SESSIONS), &shortfall) {
             return Err(bad("a session's totals don't cover its charges"));
         }
-        if keys.keys().chain(pending.keys()).any(|(provider, key)| retired_set.contains(&retired_id(provider, key))) {
+        if keys
+            .keys()
+            .chain(pending.keys())
+            .chain(quarantine_keys.iter())
+            .any(|(provider, instance, key)| retired.contains(&retired_target_id(provider, *instance, key)))
+        {
             return Err(bad("a listed charge is also retired"));
         }
         if file.sessions.keys().any(|name| name.len() > MAX_TEXT) {
@@ -932,23 +1303,48 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if file.project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(bad("a total is larger than any project could spend"));
         }
+        let ownership = Ownership::admit(&mut file)?;
         let mut session_clock = BTreeMap::new();
         for (seq, entry) in file.entries.iter().enumerate() {
             session_clock.insert(entry.session.clone(), (seq as u64).saturating_add(1));
         }
         let clock = file.entries.len() as u64;
+        let entry_order = (0..clock).collect();
+        let mut listed_entries = VecDeque::new();
+        listed_entries.try_reserve_exact(file.entries.len()).map_err(|_| Error::new(ErrorKind::Busy, "cannot allocate admitted usage entries"))?;
+        for mut entry in file.entries {
+            metadata::compact_entry(&mut entry)?;
+            listed_entries.push_back(entry);
+        }
+        for entry in pending.values_mut() {
+            metadata::compact_entry(entry)?;
+        }
+        let mut ownership = ownership;
+        for entry in ownership.quarantined.values_mut() {
+            metadata::compact_entry(entry)?;
+        }
+        let sessions = file
+            .sessions
+            .into_iter()
+            .map(|(name, totals)| metadata::compact_session(&name).map(|name| (name, totals)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         Ok(Self {
-            entries: file.entries.into(),
-            keys,
+            provider_identity_version: file.provider_identity_version,
+            entries: listed_entries,
+            keys: keys.into_iter().map(|((p, instance, k), seq)| (ownership::identity_target(&p, instance, &k), seq)).collect(),
             first_seq: 0,
             project: file.project,
-            sessions: file.sessions,
+            sessions,
             retired,
-            retired_set,
+            pending_identities: pending.values().map(|e| ownership::identity_target(&e.provider, e.instance, &e.idempotency_key)).collect(),
             pending,
             text_bytes,
             session_clock,
             clock,
+            ownership,
+            metadata: Metadata::default(),
+            entry_order,
+            next_order: clock,
         })
     }
 }
@@ -966,3 +1362,8 @@ fn cell(text: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+mod retirement;
+
+#[cfg(test)]
+mod target_tests;

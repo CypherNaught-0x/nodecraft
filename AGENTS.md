@@ -36,10 +36,11 @@ reference screenshots and docs of other products: **study, never ship or commit 
 Several people and their agents work on NodeCraft at once. A claim keeps two of them from
 building the same thing.
 
-1. **Find an issue.** Work is tracked as GitHub issues, labelled `area:*` and grouped in
-   milestones (`M0 Skeleton`, `M1 Canvas core`, …). Issues labelled `future` are claimable once
-   their dependencies land. Building something bigger than a bug fix with no issue? Open one
-   first.
+1. **Find an issue.** Work is tracked as GitHub issues, labelled `area:*`, carrying exactly one
+   `difficulty:*`, and grouped in milestones (`M0 Skeleton`, `M1 Canvas core`, …). Difficulty says
+   what signing up costs; the rubric is `docs/issue-labels.md`. Issues labelled `future` are
+   claimable once their dependencies land. Building something bigger than a bug fix with no issue?
+   Open one first, and give it an `area:*` and a `difficulty:*`.
 2. **Check nobody has it:** the issue has no assignee and no `in progress` label, and
    `gh pr list --state open --search "#N"` finds no PR for it.
 3. **Comment `/claim`** on the issue. The bot (`scripts/claim/claim.js`) assigns you, adds
@@ -124,7 +125,7 @@ on, never a panic.
 
 ```text
 crates/
-  types media                 L0  pure data types; standalone media codecs (no workspace deps)
+  types media plugin          L0  pure data types; standalone media codecs and plugin contract (no workspace deps)
   comfy graph                 L1  ComfyUI client; document model + changesets
   nodes catalog actions       L2  node kinds; model catalog; deterministic actions
   exec providers gpu format   L3  run engine; provider adapters; wgpu; .ncraft files
@@ -138,12 +139,18 @@ xtask/                        cargo xtask layers | wasm | ci | version
 packaging/                    per-OS release packaging (docs/releasing.md)
 ```
 
-A crate may depend only on strictly lower layers; `media` depends on no workspace crate;
+A crate may depend only on strictly lower layers; `media` and `plugin` depend on no workspace crate;
 `testkit` is a dev-dependency only.
 
 ## Quality gates
 
-Before every commit:
+**Documentation-only changes:** when a change only edits prose in Markdown or other documentation
+and does not affect product code, build configuration, scripts, or executable examples, skip the
+baseline and pre-commit `cargo xtask ci` runs and do not wait for GitHub CI before merging. Run
+`git diff --check` and any relevant documentation validators (for example, `cargo xtask decisions`
+for decision records). The review policy below still applies.
+
+For all other changes, before every commit:
 
 ```sh
 cargo xtask ci        # fmt --check, clippy -D warnings, tests, layers, wasm
@@ -175,11 +182,15 @@ that drive real pointer and key events through the canvas.
 
 ## Landing changes
 
-- **Sub-agent review before every PR, including drafts.** Have a sub-agent review the existing
-  commits on the branch and the newly added code against the intended base before creating the
-  PR. Give the reviewer the issue, acceptance criteria and validation results. Resolve actionable
-  findings, have fixes reviewed again, and record the reviewed commit range and outcome in the PR.
-  Review does not replace the quality gates above.
+- **At most two review rounds.** For changes needing review, use one initial review and at
+  most one verification of the fixes. Read existing PR comments and reviews first; they count
+  toward this limit. Resolve valid findings and run the relevant checks, then land the change
+  without starting another review round. Do not merge a known unresolved correctness defect.
+- **Obvious fixes need no review or approval.** Documentation, formatting, and small, local
+  corrections with clear behavior and focused validation may land without a human or sub-agent
+  review. Once the required quality gates and GitHub checks pass, mark the PR ready and merge
+  without asking for another confirmation. Keep repository-wide protections intact; use a
+  maintainer-authorized exception only when the owner explicitly authorizes it for the PR.
 - **One topic per commit and per PR.** Commits are small, with a clear subject line; a commit
   that fixes an issue says `Fixes #N`.
 - Changes land through **pull requests** and GitHub CI (Linux, Windows, macOS). The owner may push
@@ -187,6 +198,13 @@ that drive real pointer and key events through the canvas.
 - Stay current: `git pull --rebase origin main` before pushing, resolve conflicts without
   discarding others' work, and re-run the gates after a rebase. **Never force-push `main`** or
   over someone else's commits.
+- **Clean up after a successful merge.** Confirm GitHub reports the PR as merged, then delete
+  its remote branch, remove the task's temporary workspace/worktree, and delete its local branch.
+  Use the Codex archive-worktree tool for managed worktrees and `git worktree remove` for other
+  temporary worktrees; run removal from outside the worktree. Remove the task's build output too.
+  Only clean up resources owned by this task. Preserve uncommitted work and unmerged commits;
+  never force removal or delete the primary checkout, shared workspaces, `main`, or `release`.
+  If cleanup is blocked, report what remains and why.
 - Never commit `plan/`, `log/`, `dev_assets/`, `target*/`, `dist/`, secrets or generated
   screenshots; check `git status` and `git diff --cached` before committing.
 - **Releases are deliberate.** Pushes to `main` are not releases. Follow `docs/releasing.md`
@@ -220,3 +238,4 @@ that drive real pointer and key events through the canvas.
 | MCP server and its tools | `docs/mcp.md` |
 | Control channel (`nodecraft --control`) | `docs/control.md` |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |
+| Issue difficulty rubric | `docs/issue-labels.md` |

@@ -22,6 +22,15 @@ fn archive(project: Json) -> Vec<u8> {
     writer.write_all(&serde_json::to_vec(&json!({"version":1,"project":project})).unwrap()).unwrap();
     writer.finish().unwrap().into_inner()
 }
+// Preserve an actual v1 envelope for contextual refusal tests after current writers advance to v2.
+fn legacy_checkpoint(snapshot: &Snapshot) -> journal::Checkpoint {
+    let archive = archive(serde_json::to_value(&snapshot.project).unwrap());
+    let identity = Blake3::from_bytes(*blake3::hash(&archive).as_bytes());
+    let mut bytes = b"NCRJ0001".to_vec();
+    bytes.extend_from_slice(&(archive.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&archive);
+    journal::Checkpoint { bytes, identity, assets: Default::default() }
+}
 fn forged_record(checkpoint: &journal::Checkpoint, changes: Json) -> Vec<u8> {
     let json = serde_json::to_vec(&json!({"checkpoint":checkpoint.identity,"sequence":1,"changes":{"changes":changes}})).unwrap();
     let mut payload = (json.len() as u64).to_le_bytes().to_vec();
@@ -40,14 +49,16 @@ fn scalar_values() -> Vec<Value> {
         .collect()
 }
 #[test]
-fn genuine_v1_fixtures_recover_without_rewriting_version_or_identity() {
+fn genuine_v1_frames_use_original_identity_and_current_checkpoint_migrates_once() {
     let archive = include_bytes!("fixtures/v1/comments-v1.ncraft");
     let journal_bytes = include_bytes!("fixtures/v1/comments-v1.ncrj");
     let loaded = decode(archive).unwrap();
     assert_eq!(decode(&encode(&loaded).unwrap()).unwrap(), loaded);
     let checkpoint = journal::checkpoint_from_archive(archive.to_vec()).unwrap().1;
-    assert_eq!(checkpoint.archive().unwrap(), archive);
-    assert_eq!(checkpoint.identity, Blake3::from_bytes(*blake3::hash(archive).as_bytes()));
+    assert_ne!(checkpoint.archive().unwrap(), archive);
+    assert_ne!(checkpoint.identity, Blake3::from_bytes(*blake3::hash(archive).as_bytes()));
+    assert_eq!(checkpoint.bytes.get(..8), Some(b"NCRJ0003".as_slice()));
+    assert!(journal::recover(journal_bytes).unwrap().legacy);
     let recovered = journal::recover(journal_bytes).unwrap();
     assert_eq!(recovered.applied, 3);
     assert!(!recovered.truncated_tail);
@@ -56,14 +67,15 @@ fn genuine_v1_fixtures_recover_without_rewriting_version_or_identity() {
     assert_eq!(journal::recover(&journal::checkpoint(&recovered.snapshot).unwrap().bytes).unwrap().snapshot, recovered.snapshot);
 }
 #[test]
-fn public_writers_reject_current_only_values_at_every_replay_role() {
+fn current_writers_admit_new_values_while_v1_envelopes_refuse_every_replay_role() {
     let assets = AssetStore::default();
     for value in scalar_values().into_iter().map(|v| Value::List(vec![Value::List(vec![v])])) {
         let mut n = node();
         n.params.insert("value".into(), value.clone());
         let snapshot = snapshot_with(n.clone(), assets.clone());
-        assert_eq!(encode(&snapshot).unwrap_err().kind, ErrorKind::Unsupported);
-        assert_eq!(journal::checkpoint(&snapshot).err().unwrap().kind, ErrorKind::Unsupported);
+        assert_eq!(validate_v1_project(&snapshot.project).unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(decode(&encode(&snapshot).unwrap()).unwrap(), snapshot);
+        assert!(journal::checkpoint(&snapshot).is_ok());
         let generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![value.clone()], input_hash: None };
         let mut canvas_data = Canvas::new(canvas(), "Canvas");
         let mut p = Project::new(ProjectId::from_bytes([1; 16]), "P").unwrap();
@@ -74,21 +86,28 @@ fn public_writers_reject_current_only_values_at_every_replay_role() {
             Change::AddCanvas { canvas: canvas_data },
             Change::AddNode { canvas: canvas(), node: n.clone() },
             Change::SetNode { canvas: canvas(), node: n.clone() },
-            Change::RestoreNode { canvas: canvas(), node: n, edges: vec![] },
+            Change::RestoreNode { canvas: canvas(), node: n, edges: vec![], pins: vec![] },
             Change::SetParam { canvas: canvas(), id: node().id, name: "scalar".into(), value: Some(value) },
             Change::AddGeneration { canvas: canvas(), id: node().id, index: 0, generation: generation.clone() },
         ] {
             let changes = Changeset::new(vec![change]);
-            assert_eq!(journal::validate_replay(&changes, &assets).unwrap_err().kind, ErrorKind::Unsupported);
-            assert_eq!(journal::frame(Blake3::from_bytes([0; 32]), 1, &changes, &assets, &Default::default()).unwrap_err().kind, ErrorKind::Unsupported);
+            assert!(journal::validate_replay(&changes, &assets).is_ok());
+            assert!(journal::frame(Blake3::from_bytes([0; 32]), 1, &changes, &assets, &Default::default()).is_ok());
+            let checkpoint = legacy_checkpoint(&snapshot_with(node(), AssetStore::default()));
+            let raw = serde_json::to_value(&changes).unwrap();
+            assert_eq!(journal::recover(&forged_record(&checkpoint, raw["changes"].clone())).err().unwrap().kind, ErrorKind::Unsupported);
         }
         let mut n = node();
         n.history.push(generation);
-        assert_eq!(encode(&snapshot_with(n, assets.clone())).unwrap_err().kind, ErrorKind::Unsupported);
+        let snapshot = snapshot_with(n, assets.clone());
+        assert!(validate_v1_project(&snapshot.project).is_err());
+        assert_eq!(decode(&encode(&snapshot).unwrap()).unwrap(), snapshot);
     }
     let mut n = node();
     n.config.insert("text-only".into(), Value::Text("PRIVATE_VALUE".into()));
-    let error = encode(&snapshot_with(n, assets)).unwrap_err();
+    let snapshot = snapshot_with(n, assets);
+    assert_eq!(decode(&encode(&snapshot).unwrap()).unwrap(), snapshot);
+    let error = validate_v1_project(&snapshot.project).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unsupported);
     assert!(!error.to_string().contains("PRIVATE_VALUE"));
 }
@@ -96,7 +115,7 @@ fn public_writers_reject_current_only_values_at_every_replay_role() {
 fn raw_v1_guard_rejects_reserved_roles_but_tolerates_unrelated_extension_names() {
     let base = snapshot_with(node(), AssetStore::default());
     let project = serde_json::to_value(&base.project).unwrap();
-    let checkpoint = journal::checkpoint(&base).unwrap();
+    let checkpoint = legacy_checkpoint(&base);
     let c = canvas().to_string();
     let id = node().id.to_string();
     for reserved in [json!({}), Json::Null, json!({"text":{"type":"text","value":"x"}})] {
@@ -175,7 +194,7 @@ fn config_media_collectors_validate_all_node_roles_even_though_v1_writes_refuse_
         Change::AddCanvas { canvas: canvas_data },
         Change::AddNode { canvas: canvas(), node: n.clone() },
         Change::SetNode { canvas: canvas(), node: n.clone() },
-        Change::RestoreNode { canvas: canvas(), node: n, edges: vec![] },
+        Change::RestoreNode { canvas: canvas(), node: n, edges: vec![], pins: vec![] },
     ] {
         assert_eq!(assets_in_changes(&Changeset::new(vec![change])).unwrap(), [hash].into_iter().collect());
     }
@@ -195,14 +214,17 @@ fn config_node_frames_and_future_generation_hashes_never_acquire_v1_meaning() {
         Change::AddCanvas { canvas: c },
         Change::AddNode { canvas: canvas(), node: n.clone() },
         Change::SetNode { canvas: canvas(), node: n.clone() },
-        Change::RestoreNode { canvas: canvas(), node: n, edges: vec![] },
+        Change::RestoreNode { canvas: canvas(), node: n, edges: vec![], pins: vec![] },
     ] {
         let changes = Changeset::new(vec![change]);
-        assert_eq!(journal::validate_replay(&changes, &snapshot.assets).unwrap_err().kind, ErrorKind::Unsupported);
-        assert_eq!(journal::frame(Blake3::from_bytes([0; 32]), 1, &changes, &snapshot.assets, &Default::default()).unwrap_err().kind, ErrorKind::Unsupported);
+        assert!(journal::validate_replay(&changes, &snapshot.assets).is_ok());
+        assert!(journal::frame(Blake3::from_bytes([0; 32]), 1, &changes, &snapshot.assets, &Default::default()).is_ok());
+        let checkpoint = legacy_checkpoint(&snapshot_with(node(), AssetStore::default()));
+        let raw = serde_json::to_value(&changes).unwrap();
+        assert_eq!(journal::recover(&forged_record(&checkpoint, raw["changes"].clone())).err().unwrap().kind, ErrorKind::Unsupported);
     }
     let snapshot = snapshot_with(node(), AssetStore::default());
-    let checkpoint = journal::checkpoint(&snapshot).unwrap();
+    let checkpoint = legacy_checkpoint(&snapshot);
     for reserved in [Json::Null, json!(Blake3::from_bytes([1; 32]))] {
         let generation = json!({"id":GenerationId::from_bytes([9;16]),"outputs":[],"input_hash":reserved});
         let mut project = serde_json::to_value(&snapshot.project).unwrap();
@@ -214,7 +236,7 @@ fn config_node_frames_and_future_generation_hashes_never_acquire_v1_meaning() {
 }
 
 #[test]
-fn typed_generation_hashes_reject_but_absent_hash_stays_genuine_v1() {
+fn typed_generation_hashes_require_v2_but_absent_hash_stays_genuine_v1() {
     let mut generation = Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![Value::Text("legacy".into())], input_hash: None };
     assert!(serde_json::to_value(&generation).unwrap().get("input_hash").is_none());
     let mut n = node();
@@ -227,17 +249,20 @@ fn typed_generation_hashes_reject_but_absent_hash_stays_genuine_v1() {
     n.history.push(generation.clone());
     let hashed = snapshot_with(n.clone(), AssetStore::default());
     assert_eq!(validate_v1_project(&hashed.project).unwrap_err().kind, ErrorKind::Unsupported);
-    assert_eq!(encode(&hashed).unwrap_err().kind, ErrorKind::Unsupported);
+    assert_eq!(decode(&encode(&hashed).unwrap()).unwrap(), hashed);
     let canvas_data = hashed.project.canvases().get(&canvas()).unwrap().clone();
     for change in [
         Change::AddCanvas { canvas: canvas_data },
         Change::AddNode { canvas: canvas(), node: n.clone() },
         Change::SetNode { canvas: canvas(), node: n.clone() },
-        Change::RestoreNode { canvas: canvas(), node: n, edges: vec![] },
+        Change::RestoreNode { canvas: canvas(), node: n, edges: vec![], pins: vec![] },
         Change::AddGeneration { canvas: canvas(), id: node().id, index: 0, generation },
     ] {
         let changes = Changeset::new(vec![change]);
-        assert_eq!(journal::validate_replay(&changes, &hashed.assets).unwrap_err().kind, ErrorKind::Unsupported);
-        assert_eq!(journal::frame(Blake3::from_bytes([0; 32]), 1, &changes, &hashed.assets, &Default::default()).unwrap_err().kind, ErrorKind::Unsupported);
+        assert!(journal::validate_replay(&changes, &hashed.assets).is_ok());
+        assert!(journal::frame(Blake3::from_bytes([0; 32]), 1, &changes, &hashed.assets, &Default::default()).is_ok());
+        let checkpoint = legacy_checkpoint(&snapshot_with(node(), AssetStore::default()));
+        let raw = serde_json::to_value(&changes).unwrap();
+        assert_eq!(journal::recover(&forged_record(&checkpoint, raw["changes"].clone())).err().unwrap().kind, ErrorKind::Unsupported);
     }
 }

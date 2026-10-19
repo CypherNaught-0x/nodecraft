@@ -48,15 +48,30 @@ pub struct Tokens {
     pub wire_mesh: Color32,
     pub wire_document: Color32,
 
+    pub tag_colors: [Color32; 8],
+    pub tag_marker_width: f32,
+    pub tag_panel_width: f32,
+    pub tag_panel_height: f32,
+    pub tag_row_height: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
+    pub comments_width: f32,
+    pub comments_height: f32,
+    pub comment_marker_size: f32,
+    pub comment_marker_tail: f32,
+    pub comment_marker_ring: f32,
+    pub comment_marker_gap: f32,
+    pub comment_marker_radius: u8,
+    pub comments_button_width: f32,
     pub navigation_width: f32,
     pub minimap_height: f32,
     pub navigation_toolbar_height: f32,
     pub navigation_margin: f32,
     pub navigation_gap: f32,
     pub fit_padding: f32,
+    pub layout_gap: f32,
+    pub layout_button_width: f32,
     pub minimap_node_min: f32,
 
     /// Distance between grid dots, at 100% zoom.
@@ -77,6 +92,10 @@ pub struct Tokens {
     pub duplicate_offset: f32,
     pub card_min_height: f32,
     pub card_max_height: f32,
+    /// Height of the image preview at the top of a card that shows an image (#386).
+    pub card_preview_height: f32,
+    /// Width of a modal question such as the startup recovery prompt (#408).
+    pub dialog_width: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
     pub title_min_screen_px: f32,
@@ -121,14 +140,38 @@ pub const DARK: Tokens = Tokens {
     wire_audio: Color32::from_rgb(0xe0, 0x7a, 0x5a),
     wire_mesh: Color32::from_rgb(0x8f, 0xc3, 0x5a),
     wire_document: Color32::from_rgb(0xa0, 0xa0, 0xa8),
+    tag_colors: [
+        Color32::from_rgb(238, 112, 122),
+        Color32::from_rgb(235, 162, 94),
+        Color32::from_rgb(224, 201, 102),
+        Color32::from_rgb(126, 199, 131),
+        Color32::from_rgb(96, 198, 190),
+        Color32::from_rgb(118, 170, 240),
+        Color32::from_rgb(181, 145, 230),
+        Color32::from_rgb(225, 142, 194),
+    ],
+    tag_marker_width: 5.0,
+    tag_panel_width: 280.0,
+    tag_panel_height: 320.0,
+    tag_row_height: 24.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
+    comments_width: 340.0,
+    comments_height: 500.0,
+    comment_marker_size: 30.0,
+    comment_marker_tail: 6.0,
+    comment_marker_ring: 3.0,
+    comment_marker_gap: 12.0,
+    comment_marker_radius: 6,
+    comments_button_width: 110.0,
     navigation_width: 320.0,
     minimap_height: 160.0,
     navigation_toolbar_height: 30.0,
     navigation_margin: 16.0,
     navigation_gap: 6.0,
+    layout_gap: 64.0,
+    layout_button_width: 150.0,
     fit_padding: 24.0,
     minimap_node_min: 2.0,
     grid_spacing: 20.0,
@@ -144,6 +187,8 @@ pub const DARK: Tokens = Tokens {
     duplicate_offset: 40.0,
     card_min_height: 220.0,
     card_max_height: 720.0,
+    card_preview_height: 180.0,
+    dialog_width: 440.0,
     control_row_height: 64.0,
     control_gap: 6.0,
     title_min_screen_px: 9.0,
@@ -183,6 +228,16 @@ pub const LIGHT: Tokens = Tokens {
     wire_audio: Color32::from_rgb(0xb0, 0x48, 0x2a),
     wire_mesh: Color32::from_rgb(0x4f, 0x8a, 0x1f),
     wire_document: Color32::from_rgb(0x6b, 0x6b, 0x74),
+    tag_colors: [
+        Color32::from_rgb(163, 45, 59),
+        Color32::from_rgb(151, 79, 20),
+        Color32::from_rgb(115, 95, 13),
+        Color32::from_rgb(32, 108, 41),
+        Color32::from_rgb(16, 104, 98),
+        Color32::from_rgb(43, 94, 164),
+        Color32::from_rgb(109, 63, 161),
+        Color32::from_rgb(154, 53, 120),
+    ],
     ..DARK
 };
 
@@ -237,6 +292,12 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.set_visuals(visuals(kind));
 }
 
+impl Tokens {
+    pub fn tag_color(&self, color: Option<&str>) -> Color32 {
+        crate::tags::PALETTE.iter().position(|(id, _)| Some(*id) == color).and_then(|i| self.tag_colors.get(i)).copied().unwrap_or(self.text_muted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +325,31 @@ mod tests {
             assert!(contrast(t.text, t.card_fill) >= 7.0, "{kind:?} body text");
             assert!(contrast(t.text_muted, t.canvas_bg) >= 4.5, "{kind:?} card label");
             assert!(contrast(t.handle_glyph, t.handle_fill) >= 7.0, "{kind:?} handle");
+        }
+    }
+
+    #[test]
+    fn tag_labels_contrast_on_every_surface() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            for color in t.tag_colors {
+                for bg in [t.card_fill, visuals(kind).widgets.hovered.bg_fill, t.panel_fill, t.canvas_bg] {
+                    assert!(contrast(color, bg) >= 4.5, "{kind:?} {color:?} on {bg:?}: {}", contrast(color, bg));
+                }
+            }
+        }
+    }
+    #[test]
+    fn discussion_checkbox_has_contrasting_unchecked_border_and_checked_glyph() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            let mut v = visuals(kind);
+            crate::comments::checkbox_visuals(&mut v, t);
+            for widget in [&v.widgets.inactive, &v.widgets.hovered, &v.widgets.active] {
+                assert!(widget.bg_stroke.width >= 1.0);
+                assert!(contrast(widget.bg_stroke.color, widget.bg_fill) >= 3.0, "{kind:?} unchecked boundary");
+                assert!(contrast(widget.fg_stroke.color, widget.bg_fill) >= 4.5, "{kind:?} checked glyph");
+            }
         }
     }
 

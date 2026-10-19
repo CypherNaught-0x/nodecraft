@@ -1,0 +1,83 @@
+# Replicate public API/model schemas verified 2026-10-18. Facts only; no model code/assets copied.
+# https://replicate.com/stability-ai/sdxl/versions/7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc/api
+# https://replicate.com/replicate/hello-world/versions/5c7d5dc6dd8bf75c1acaa8565735e7986bc5b66206b55cca93cb72c9bf15ccaa/api
+# Runtime hints from each public model overview, not measured locally. Variable runtime is not money.
+[[model]]
+id="replicate.sdxl"
+provider="replicate"
+provider_model="stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
+label="SDXL (Replicate)"
+description="Version-pinned generation, img2img and black/white-mask inpainting. Inline image/mask: 256,000 bytes each, 512,000 total, subject to the response echo budget. Unknown usage price."
+latency_s=4
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1}]
+
+[[model.modes]]
+id="image-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="image",modality="image",min=1,max=1}]
+
+[[model.modes]]
+id="inpaint"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="image",modality="image",min=1,max=1},{role="mask",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="512",max="1024",step="256"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="512",max="1024",step="256"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="num_outputs"
+label="Images"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="num_inference_steps"
+label="Steps"
+control={type="unsigned",min="1",max="100",step="1"}
+default={type="unsigned",value="50"}
+
+[[model.params.params]]
+name="guidance_scale"
+label="Guidance"
+control={type="slider",min=1.0,max=50.0,step=0.5}
+default={type="number",value=7.5}
+
+[[model.params.params]]
+name="prompt_strength"
+label="Prompt strength"
+control={type="slider",min=0.0,max=1.0,step=0.1}
+default={type="number",value=0.8}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="integer",min="-9223372036854775808",max="9223372036854775807"}
+
+[[model]]
+id="replicate.hello"
+provider="replicate"
+provider_model="replicate/hello-world:5c7d5dc6dd8bf75c1acaa8565735e7986bc5b66206b55cca93cb72c9bf15ccaa"
+label="Hello text (Replicate)"
+description="Version-pinned scalar text prediction for small examples. Unknown usage price."
+latency_s=19
+quality=1
+pricing={type="by_usage",currency="USD"}
+[[model.modes]]
+id="text-to-text"
+output="text"
+inputs=[{role="text",modality="text",min=1,max=1,inline=true}]
