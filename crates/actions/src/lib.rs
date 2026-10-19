@@ -4,6 +4,8 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+/// Custom text actions: a bounded, deterministic expression language (#165).
+pub mod expr;
 /// Bounded deterministic CPU image operations.
 pub mod image;
 /// Bounded deterministic CPU text operations; no document mutation.

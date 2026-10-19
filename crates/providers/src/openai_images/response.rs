@@ -258,12 +258,14 @@ struct Datum<'a> {
     b64_json: Cow<'a, str>,
 }
 #[derive(Deserialize, Default)]
-struct Tokens {
+struct Tokens<'a> {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     total_tokens: Option<u64>,
-    input_tokens_details: Option<InputTokens>,
-    output_tokens_details: Option<InputTokens>,
+    #[serde(borrow)]
+    input_tokens_details: Option<&'a serde_json::value::RawValue>,
+    #[serde(borrow)]
+    output_tokens_details: Option<&'a serde_json::value::RawValue>,
 }
 #[derive(Deserialize)]
 struct InputTokens {
@@ -274,7 +276,8 @@ struct InputTokens {
 struct Reply<'a> {
     #[serde(borrow)]
     data: Vec<Datum<'a>>,
-    usage: Option<Tokens>,
+    #[serde(borrow)]
+    usage: Option<&'a serde_json::value::RawValue>,
 }
 #[derive(Deserialize)]
 struct ApiError<'a> {
@@ -330,10 +333,19 @@ fn api_error(reply: &HttpResponse, l: &Limits) -> ProviderError {
         .filter(|n| *n <= 3_600_000);
     e
 }
-fn usage(tokens: Option<Tokens>) -> Result<Usage, ProviderError> {
+fn object(raw: &serde_json::value::RawValue) -> bool {
+    // Complete JSON was already lexically admitted; discriminate its root token
+    // because serde's derived structs also accept positional sequences.
+    raw.get().trim_start_matches([' ', '\n', '\r', '\t']).starts_with('{')
+}
+fn usage(tokens: Option<Tokens<'_>>) -> Result<Usage, ProviderError> {
     let t = tokens.unwrap_or_default();
     for (details, total) in [(&t.input_tokens_details, t.input_tokens), (&t.output_tokens_details, t.output_tokens)] {
-        if let Some(d) = details {
+        if let Some(raw) = details {
+            if !object(raw) {
+                return Err(malformed("image token details must be an object"));
+            }
+            let d: InputTokens = serde_json::from_str(raw.get()).map_err(|_| malformed("invalid image token details"))?;
             let sum = d.image_tokens.checked_add(d.text_tokens).ok_or_else(|| malformed("image token count overflow"))?;
             if total.is_some_and(|n| n != sum) {
                 return Err(malformed("inconsistent image token counts"));
@@ -357,7 +369,15 @@ pub(super) fn parse(reply: HttpResponse, n: usize, format: &str, background: &st
     if parsed.data.is_empty() || parsed.data.len() > n {
         return Err(malformed("invalid image response count"));
     }
-    let usage = usage(parsed.usage)?;
+    // The complete JSON subtree is borrowed only after lexical admission. Parsing it
+    // independently cannot leave the outer deserializer partially consumed. Usage is
+    // informational: its semantic failure must not discard otherwise valid paid images.
+    let usage = parsed
+        .usage
+        .filter(|raw| object(raw))
+        .and_then(|raw| serde_json::from_str::<Tokens>(raw.get()).ok())
+        .and_then(|tokens| usage(Some(tokens)).ok())
+        .unwrap_or_default();
     let mut sizes = Vec::new();
     reserve(&mut sizes, parsed.data.len())?;
     let mut total = 0usize;

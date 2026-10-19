@@ -89,18 +89,18 @@ fn fields(v: &serde_json::Value) -> usize {
     }
 }
 #[test]
-fn realistic_prediction_and_exact_64_field_boundary_precede_typed_parse() {
+fn realistic_prediction_and_exact_non_input_field_boundary_precede_typed_parse() {
     let original = full_prediction();
     assert_eq!(fields(&original), 38);
-    for extra in [0, 26, 27] {
+    for extra in [0, 43, 44] {
         let mut v = original.clone();
         for n in 0..extra {
             v.as_object_mut().unwrap().insert(format!("extra{n}"), serde_json::Value::Null);
         }
-        let (p, _) = fixture(vec![bytes(serde_json::to_vec(&v).unwrap())]);
         reset();
-        let result = block_on(p.submit(&job(SDXL)));
-        if extra <= 26 {
+        let reply = bytes(serde_json::to_vec(&v).unwrap());
+        let result = response::parse(&reply, Record { model: Model::Image, requested: 1 }, Limits::HARD);
+        if extra <= 43 {
             assert!(result.is_ok());
             assert_eq!(counts()[5], 1);
         } else {
@@ -216,7 +216,8 @@ fn serialized_handle_retains_requested_count_and_partial_success_materializes_al
         let seen = m.seen.lock().unwrap();
         assert_eq!(seen.len(), if ok { 4 } else { 2 });
         for r in seen.iter() {
-            assert!(r.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer public-fixture-key"));
+            let api = r.url.starts_with(API);
+            assert_eq!(r.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer public-fixture-key"), api);
             assert!(!r.url.contains("untrusted"));
         }
     }
@@ -671,3 +672,5 @@ fn conservative_echo_counts_del_like_an_ascii_escaping_response_serializer() {
     let prepared = request::prepare(&j, Limits::HARD).unwrap();
     assert_eq!(prepared.echo_bound().unwrap(), 611); // {"text":""} plus 100 six-byte escapes.
 }
+
+mod followups;

@@ -54,5 +54,68 @@ default = { type = "unsigned", value = "1" }
 - **Swapping models** keeps parameters by name when the new model accepts the value, fills the
   rest from its defaults, and names what was removed (not on the new model) and what was reset
   (out of its range) in a notice.
+- **Auto-select** (`Catalog::select`, #78) keeps the models that fit what is wired in, whose
+  provider the person can use and whose price per job fits the budget. The price is quoted with
+  the node's parameters that the model knows, plus its defaults. Known values are checked
+  against their controls in place before anything is copied; one that doesn't fit refuses the
+  model (`Rejected::Invalid`), and parameters the model doesn't know are ignored. A map of more
+  than 256 parameters (more than any schema allows) refuses every model. Survivors are ranked
+  by effort:
+  - *fast*: quickest, then best quality;
+  - *best*: best quality, then quickest;
+  - *balanced*: quality minus a waiting penalty of 0 up to 30 s, 1 up to 2 min, and 2 beyond.
+
+  Ties go to free models, then known prices grouped by currency code (alphabetically; amounts
+  in different currencies are never compared) and cheaper first within a currency, then
+  usage-priced models, then the id. The order is total, so ranking is the same for any input
+  order.
+
+  While a budget is set, usage-priced models and models priced in another currency are refused,
+  since they can't be shown to fit. Every refused model keeps its reason. When nothing fits,
+  `why_none` reports the closest miss. "Use multiple models" (`Selection::several`) takes up to 8
+  fitting models, one per provider first, in ranking order. Phase 1 counts inputs only:
+  reference, style and voice capabilities, the combined multi-model quote and the canvas command
+  come with the picker.
 - Files are untrusted input: at most 4 MiB, 4096 models, 32 modes per model and 16 inputs per
   mode; unknown fields are rejected.
+
+## Catalog-bound execution admission (Part of #275)
+
+`exec::admission::admit_run` owns the exact plan/canvas, selected catalog schema witness and
+canonical job parameters. Generate jobs must match a selected catalog provider and remote
+`provider_model`, with effective visible parameters equal to the frozen node's values. Defaults
+are sent explicitly; hidden values are removed, while unknown keys and invalid hidden overrides
+are refused. Required visible values use executable readiness even for free models. Aliases with
+conflicting successful canonical interpretations are refused. Every Model control participates
+in selection/pricing, including defaulted and hidden controls; multiple selections keep their
+conservative summed estimate. Known usage-based pricing can remain partial, but partial consent
+cannot bypass invalid generation identity/schema. Empty work remains empty.
+
+The complete job vector is admitted before JobIds or any scheduled prefix, including deferred
+work and Source-category callbacks emitting Generate. Legacy `Run::start` supports local/source
+work only; generation uses the consuming `Run::start_admitted`. The general converter and raw
+provider APIs remain trusted low-level host interfaces. Native kind callbacks must remain pure
+and stable; this API is not a sandbox for arbitrary Rust side effects.
+
+Shared work limits are64MiB per step/256MiB per run for retained inputs plus canonical jobs,
+including inserted defaults and repeated owned occurrences. Charges transfer into Run, tighten
+with lower start limits and remain sticky across deferred refusal. Witness/schema/typed request
+metadata has a separate64MiB cap; live admission scratch16MiB and a single preflighted Canvas
+snapshot256MiB. Logical measurement uses Rust shells, collection elements,48 bytes of map/set
+linkage per entry and owned payload lengths. It bounds logical preparation ownership, not spare
+capacity, allocator overhead, process RSS, native callback peaks or arbitrary host queue totals.
+Existing InputHasher, scheduler/dependency indices and later output/history retention keep their
+independent policies;592MiB is a per-preparation envelope, not a whole-Run memory claim.
+
+Engine hosts register `Session::register_run_host`, enqueue the opaque non-Clone PreparedRun,
+then consume it through `Session::authorize_prepared_run` outside dispatch. This rechecks the
+actual live Session/source/catalog/request binding, accepted totals and current budgets without
+re-planning. Stale preparations refuse; they do not silently reprepare or reserve money. Ordinary
+JSON registration of `run.start` is refused. Preview availability does not clone a canvas or
+construct executable preparation. No desktop/CLI scheduler host is supplied by this change.
+
+The retained RunPlan and Usage root shells are charged exactly once to the total-run work
+ledger before selection/report/schema copies, including an empty plan. They are not a per-step
+fee; lower start limits retain this charge. Quote model lists contain validated catalog IDs only.
+Unknown raw selections are excluded independently of any later missing/usage-priced control's
+aggregate reason; valid selected IDs and the all-control pricing policy remain intact.

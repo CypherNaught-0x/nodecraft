@@ -221,6 +221,11 @@ impl Search {
         }
         self.identity = Some(identity);
     }
+    pub fn cancel_navigation(&mut self) {
+        self.pending = None;
+        self.frame_request = None;
+    }
+
     pub fn set_query(&mut self, query: &str) -> Result<(), Error> {
         if query.len() > MAX_QUERY_BYTES {
             return Err(Error::new(ErrorKind::InvalidInput, "search query exceeds 1024 UTF-8 bytes"));
@@ -387,7 +392,7 @@ mod tests {
         let mut node = Node::new(NodeId::from_bytes([5; 16]), "source.text");
         node.config.insert("provider.model".into(), Value::List(vec![Value::Bool(false), Value::Text("vendor/STAR-model".into())]));
         let tag = TagId::from_bytes([6; 16]);
-        Change::PutTag { canvas: c, tag: Tag { id: tag, title: "STAR tag".into() } }.apply(&mut p).unwrap();
+        Change::PutTag { canvas: c, tag: Tag { id: tag, title: "STAR tag".into(), color: None } }.apply(&mut p).unwrap();
         node.tag = Some(tag);
         Change::AddNode { canvas: c, node }.apply(&mut p).unwrap();
         let labels = BTreeMap::from([(NodeId::from_bytes([3; 16]), "Dynamic STAR label".into())]);

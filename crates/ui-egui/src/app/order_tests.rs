@@ -187,3 +187,136 @@ fn issue333_quick_add_waits_for_badge_drag_and_resumes_after_release() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
 }
+
+#[test]
+fn retained_input_badge_drag_blocks_layout_until_release() {
+    let mut h = harness();
+    let badge = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(badge);
+    h.run();
+    h.drag_at(badge);
+    h.run();
+    h.hover_at(badge + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(NodeId::from_bytes([2; 16]));
+    let before = h.state().session.document().clone();
+    // A fresh context has no transient egui drag: the retained input badge owns the gesture.
+    let ctx = egui::Context::default();
+    for mode in ["grid", "layered"] {
+        assert!(h.state_mut().layout_enabled(&ctx, &json!({"mode":mode})).is_err());
+        assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":mode})).is_err());
+    }
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(badge);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).unwrap();
+}
+
+#[test]
+fn retained_input_order_drag_blocks_discussion_view_commands() {
+    let mut h = harness();
+    let badge = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(badge);
+    h.run();
+    h.drag_at(badge);
+    h.run();
+    h.hover_at(badge + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    let before = h.state().session.document().clone();
+    let ctx = egui::Context::default();
+    assert!(h.state_mut().comments_enabled(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+    assert!(h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(badge);
+    h.run();
+    h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).unwrap();
+    assert!(h.state().comments.open);
+}
+
+#[test]
+fn cancellation_precedence_keeps_lower_priority_owners_and_selection() {
+    let mut h = harness();
+    let first = begin_third_badge_drag(&mut h);
+    h.state_mut().selection.only(HUB);
+    let selected = h.state().selection.clone();
+    h.state_mut().wiring = Some(Wiring {
+        from: Endpoint { node: NodeId::from_bytes([1; 16]), port: "out".into() },
+        port_type: PortType { modality: nodecraft_types::Modality::Text, many: false },
+        moving: None,
+    });
+    // Simultaneous owners are a synthetic boundary control: inspect the helper before rendering
+    // can reconcile mutually exclusive gesture state. The second Escape below is real input.
+    h.state_mut().cancel_canvas_gesture();
+    assert!(h.state().wiring.is_none());
+    assert!(h.state().reordering.is_some(), "the noodle owns the first Escape");
+    assert_eq!(h.state().selection, selected);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.drop_at(first);
+    h.run();
+    assert_eq!(h.state().selection, selected);
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn discussion_pin_drag_owns_quick_add_and_escape_before_canvas_selection() {
+    let mut h = harness();
+    let id = nodecraft_types::CommentId::from_bytes([41; 16]);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Order note","pos":{"x":350,"y":100}})).unwrap();
+    h.state_mut().selection.only(HUB);
+    h.run();
+    let pin = h.get_by_role_and_label(egui::accesskit::Role::Button, &format!("Discussion pin {id}")).rect().center();
+    h.hover_at(pin);
+    h.run();
+    h.drag_at(pin);
+    h.run();
+    h.hover_at(pin + Vec2::new(40.0, 25.0));
+    h.run();
+    assert!(h.state().comments.drag.is_some());
+    let before = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let selection = h.state().selection.clone();
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(pin + Vec2::new(40.0, 25.0));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().selection, selection);
+    assert!(h.state().comments.drag.is_none());
+}
+
+/// Local public-safe visual evidence, selected explicitly with an output directory.
+#[test]
+#[ignore = "manual local screenshot capture; requires INPUT_ORDER333_RENDER_ROOT"]
+fn render_input_order333_cancellation() {
+    let root = std::path::PathBuf::from(std::env::var("INPUT_ORDER333_RENDER_ROOT").unwrap());
+    let mut h = harness();
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(HUB);
+    h.run();
+    let before = h.state().session.document().clone();
+    let selection = h.state().selection.clone();
+    let camera = h.state().view;
+    h.render().unwrap().save(root.join("initial.png")).unwrap();
+    let first = begin_third_badge_drag(&mut h);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.drop_at(first);
+    h.run();
+    assert_eq!(h.state().view, camera);
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().selection, selection);
+    assert!(!h.state().session.can_undo());
+    h.render().unwrap().save(root.join("released.png")).unwrap();
+}

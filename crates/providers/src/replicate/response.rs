@@ -31,6 +31,7 @@ struct Lex<'a> {
     text: &'a str,
     at: usize,
     fields: usize,
+    input_fields: usize,
     values: usize,
     metadata: usize,
     input_bytes: usize,
@@ -125,9 +126,16 @@ impl Lex<'_> {
                     return Ok(());
                 }
                 loop {
-                    self.fields += 1;
-                    if self.fields > 64 {
-                        return Err(malformed("Replicate JSON field count exceeds 64"));
+                    if region == Region::Input {
+                        self.input_fields += 1;
+                        if self.input_fields > 32 {
+                            return Err(malformed("Replicate echoed input field count exceeds 32"));
+                        }
+                    } else {
+                        self.fields += 1;
+                        if self.fields > 64 {
+                            return Err(malformed("Replicate JSON non-input field count exceeds 64"));
+                        }
                     }
                     let (is_input, is_output) = {
                         let key = self.string(true, region)?;
@@ -232,6 +240,7 @@ fn preflight(bytes: &[u8], record: Record, l: Limits) -> Result<&str, ProviderEr
         text,
         at: 0,
         fields: 0,
+        input_fields: 0,
         values: 0,
         metadata: 0,
         input_bytes: 0,
@@ -318,6 +327,25 @@ pub(super) fn status(reply: &crate::HttpResponse, l: Limits) -> Result<(), Provi
         .and_then(|s| s.checked_mul(1000))
         .filter(|n| *n <= 3_600_000);
     Err(e)
+}
+pub(super) fn download_status(reply: &crate::HttpResponse, l: Limits, cap: usize) -> Result<(), ProviderError> {
+    if reply.body.len() > cap {
+        return Err(malformed("Replicate output download exceeds remaining capacity"));
+    }
+    status(reply, l).map_err(|mut error| {
+        if matches!(reply.status, 401 | 403) {
+            error.kind = ErrorKind::NotFound;
+        }
+        error.message = match reply.status {
+            300..=399 => "Replicate output redirect refused",
+            401 | 403 => "Replicate output link is inaccessible or expired",
+            404 | 410 => "Replicate output file is unavailable or expired",
+            408 | 504 => "Replicate output download timed out; the accepted prediction may have been billed",
+            _ => "Replicate output download failed",
+        }
+        .into();
+        error
+    })
 }
 pub(super) fn parse(reply: &crate::HttpResponse, record: Record, l: Limits) -> Result<Prediction<'_>, ProviderError> {
     if reply.body.len() > l.response_bytes {

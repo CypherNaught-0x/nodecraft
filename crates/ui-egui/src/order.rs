@@ -52,6 +52,7 @@ pub fn moved(edges: &[EdgeId], moved: EdgeId, target: usize) -> Option<Vec<EdgeI
         return None;
     }
     let mut order: Vec<EdgeId> = edges.iter().copied().filter(|id| *id != moved).collect();
+    // Unique IDs make this clamp redundant; keep it as defense in depth at the insertion boundary.
     order.insert(target.min(order.len()), moved);
     Some(order)
 }

@@ -31,7 +31,26 @@ fn panic_hunt() {
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
-        for field in ["canvas", "id", "pos", "node", "edge", "gesture", "title", "name", "value", "replace", "nodes", "edges", "location", "discard_dirty"] {
+        for field in [
+            "canvas",
+            "id",
+            "pos",
+            "node",
+            "edge",
+            "gesture",
+            "title",
+            "name",
+            "value",
+            "replace",
+            "nodes",
+            "edges",
+            "location",
+            "discard_dirty",
+            "text",
+            "reply",
+            "resolved",
+            "expected_revision",
+        ] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
             corpus.push(params);
@@ -85,6 +104,25 @@ fn template(id: &str) -> (Session, Value) {
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
     }
+    if matches!(id, "tag.put" | "tag.remove" | "node.tag_set") {
+        let tag = nodecraft_types::TagId::from_bytes([9; 16]);
+        nodecraft_graph::Changeset::new(vec![
+            nodecraft_graph::Change::PutTag { canvas: canvas(), tag: nodecraft_graph::Tag { id: tag, title: "Before".into(), color: None } },
+            nodecraft_graph::Change::SetNodeTags {
+                canvas: canvas(),
+                assignments: vec![nodecraft_graph::NodeTagAssignment { node: node_id(1), tag: Some(tag) }],
+            },
+        ])
+        .apply(&mut document)
+        .unwrap();
+    }
+    let root = nodecraft_types::CommentId::from_bytes([10; 16]);
+    let reply = nodecraft_types::CommentId::from_bytes([11; 16]);
+    if id.starts_with("comment.") {
+        let mut comment = nodecraft_graph::Comment::new(root, "Original", nodecraft_graph::Position::default());
+        comment.replies.push(nodecraft_graph::CommentReply { id: reply, text: "Reply".into() });
+        nodecraft_graph::Change::PutComment { canvas: canvas(), comment }.apply(&mut document).unwrap();
+    }
     if id.starts_with("history.") {
         // Two results on node 1, oldest first; `history.next` starts at the older one.
         for n in [0x21, 0x22] {
@@ -129,15 +167,63 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::search_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if id == "canvas.auto_format" {
+        session.swap_resource(Some(common::layout_context(&session)));
+    }
+    if matches!(id, "comment.open" | "comment.compose" | "canvas.comments_toggle") {
+        session.swap_resource(Some(nodecraft_engine::comment_cmds::CommentContext {
+            project: session.document().id(),
+            canvas: canvas(),
+            revision: session.revision(),
+            blocked: false,
+        }));
+        session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
         session.swap_resource(Some(RunCatalog::new(nodecraft_catalog::Catalog::builtin().unwrap()).unwrap()));
         session.swap_resource(Some(BudgetState { budgets: Default::default(), spent: Default::default() }));
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
-        session.register_host_service(RUN_SERVICE, |_| Ok(json!({"run":"accepted"}))).unwrap();
+        session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
+    }
+    if id.starts_with("usage.ownership") || id == "usage.reconcile_ownership" {
+        use nodecraft_engine::ownership_cmds::*;
+        // One quarantined group, so adversarial params reach token and holder checks.
+        let legacy: nodecraft_exec::cost::UsageLog =
+            serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+        session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(legacy.clone()))));
+        let log = std::sync::Arc::new(std::sync::Mutex::new(legacy));
+        session.register_host_service(OWNERSHIP_SERVICE, ownership_service(log, std::sync::Arc::new(|| 0))).unwrap();
+    }
+    if id.starts_with("canvas.tag_filter_") {
+        session.swap_resource(Some(nodecraft_engine::tag_filter_cmds::TagFilterContext {
+            canvas: canvas(),
+            viewport_available: true,
+            blocked: false,
+            open: true,
+            active: true,
+            scanning: false,
+            matches: 1,
+        }));
+        session.register_host_service(nodecraft_engine::tag_filter_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
+        "tag.put" => json!({"canvas":canvas(),"tag":{"id":nodecraft_types::TagId::from_bytes([9;16]),"title":"After","color":"blue"}}),
+        "tag.remove" => json!({"canvas":canvas(),"tag":nodecraft_types::TagId::from_bytes([9;16])}),
+        "node.tag_set" => json!({"canvas":canvas(),"nodes":[node_id(1)],"tag":null}),
+        "canvas.tag_filter_open" | "canvas.tag_filter_close" | "canvas.tag_filter_next" | "canvas.tag_filter_previous" => json!({}),
+        "canvas.tag_filter_set" => json!({"tags":[],"untagged":true}),
+        "comment.create" => json!({"canvas":canvas(),"id":nodecraft_types::CommentId::from_bytes([20;16]),"text":"New","pos":{"x":1,"y":2}}),
+        "comment.edit" => json!({"canvas":canvas(),"id":root,"text":"Edited"}),
+        "comment.reply" => json!({"canvas":canvas(),"id":root,"reply":nodecraft_types::CommentId::from_bytes([12;16]),"text":"New reply"}),
+        "comment.reply_remove" => json!({"canvas":canvas(),"id":root,"reply":reply}),
+        "comment.move" => json!({"canvas":canvas(),"id":root,"pos":{"x":12,"y":24},"node":node_id(1)}),
+        "comment.resolve" => json!({"canvas":canvas(),"id":root,"resolved":true}),
+        "comment.remove" => json!({"canvas":canvas(),"id":root}),
+        "comment.open" => json!({"id":root}),
+        "comment.compose" => json!({"pos":{"x":12,"y":24}}),
+        "canvas.comments_toggle" => json!({}),
         "node.add" => json!({"canvas":canvas(),"node":node(3)}),
         "node.remove" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.move" => movement.clone(),
@@ -145,6 +231,7 @@ fn template(id: &str) -> (Session, Value) {
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
+        "canvas.auto_format" => json!({"mode":"grid"}),
         // The fixture's inputs take one noodle each, so this is refused; the hunt checks it never panics.
         "edge.reorder" => json!({"canvas":canvas(),"to":{"node":node_id(2),"port":"in"},"edges":[edge().id]}),
         "canvas.stale" => json!({"canvas":canvas()}),
@@ -164,6 +251,17 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        "perf.start" | "perf.clear" | "perf.report" => json!({}),
+        // Stop needs a running capture; the hunt checks the refusal never panics.
+        "perf.stop" => json!({}),
+        "usage.ownership" => json!({"session":"a","currency":"USD","offset":0,"limit":1}),
+        "usage.reconcile_ownership" => {
+            // A real token for the fixture's group, so mutations reach the holder and exception checks.
+            let legacy: nodecraft_exec::cost::UsageLog =
+                serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+            let token: String = legacy.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
+            json!({"session":"a","currency":"USD","token":token,"holder":"earlier","except":[{"provider":"t","key":"old"}],"only":[{"provider":"t","key":"old"}],"dry_run":true})
+        }
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
         "history.extract" => {
@@ -192,6 +290,13 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
+        // The plugins service isn't registered here either.
+        "plugins.list" | "plugins.prune" => json!({}),
+        "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
+        "plugins.enable" | "plugins.disable" | "plugins.uninstall" => json!({"package_id":"io.example.palette"}),
+        "plugins.rollback" => json!({"package_id":"io.example.palette","digest":format!("blake3:{}", "0".repeat(64))}),
+        "run.reuse" => json!({"canvas":canvas()}),
+        "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
@@ -217,7 +322,22 @@ fn typed_template_panic_hunt() {
                 cases.push(missing);
             }
         }
-        for path in ["/pos/x", "/pos/y", "/node/id", "/node/kind", "/node/pos/x", "/edge/from/node", "/edge/from/port", "/edge/to/node", "/edge/order"] {
+        for path in [
+            "/pos/x",
+            "/pos/y",
+            "/node/id",
+            "/node/kind",
+            "/node/pos/x",
+            "/edge/from/node",
+            "/edge/from/port",
+            "/edge/to/node",
+            "/edge/order",
+            "/tag/id",
+            "/tag/title",
+            "/tag/color",
+            "/nodes/0",
+            "/tags/0",
+        ] {
             if valid.pointer(path).is_some() {
                 for raw in [Value::Null, json!("secret-do-not-echo"), json!(1e100), json!([])] {
                     let mut mutated = valid.clone();
@@ -254,6 +374,14 @@ fn typed_template_panic_hunt() {
                             | "canvas.fit_selection"
                             | "canvas.minimap_toggle"
                             | "canvas.pan_to"
+                            | "canvas.tag_filter_open"
+                            | "canvas.tag_filter_close"
+                            | "canvas.tag_filter_set"
+                            | "canvas.tag_filter_next"
+                            | "canvas.tag_filter_previous"
+                            | "canvas.comments_toggle"
+                            | "comment.open"
+                            | "comment.compose"
                             | "canvas.stale"
                             | "canvas.search_open"
                             | "canvas.search_query"
@@ -263,11 +391,26 @@ fn typed_template_panic_hunt() {
                             | "run.quote"
                             | "run.start"
                             | "usage.export_csv"
+                            | "perf.start"
+                            | "perf.stop"
+                            | "perf.clear"
+                            | "perf.report"
+                            | "usage.ownership"
+                            | "usage.reconcile_ownership"
+                            // The fixture has no results to reuse: nothing changes.
+                            | "run.reuse"
                     ) {
                         assert_eq!(session.document(), &before);
                         assert_eq!(session.revision(), revision);
                         assert_eq!(session.events_since(0).unwrap(), events);
                         assert_eq!((session.can_undo(), session.can_redo()), history);
+                        continue;
+                    }
+                    // A command that found nothing to change (asking for the value it has) edits nothing.
+                    if session.revision() == revision {
+                        assert_eq!(session.document(), &before, "{id}");
+                        assert_eq!(session.events_since(0).unwrap(), events, "{id}");
+                        assert_eq!((session.can_undo(), session.can_redo()), history, "{id}");
                         continue;
                     }
                     let after = session.document().clone();

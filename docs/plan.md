@@ -679,6 +679,10 @@ Still open:
 
 Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) and a demo.
 
+This section is the plan: what each milestone is *for*. Where each one actually *stands* — and the
+parts of a later milestone already built ahead of their host — is tracked in
+[`../ROADMAP.md`](../ROADMAP.md), which is updated when a milestone task lands.
+
 | M | Name | Contents | Exit criterion |
 |---|---|---|---|
 | 0 | **Skeleton** | Workspace, lints, xtask layers/wasm, CI, AGENTS.md, empty crates, eframe window | `cargo run` opens a themed empty canvas on all three OSes |
@@ -704,7 +708,9 @@ Each milestone ends with a green tree (fmt, clippy, tests, layers, wasm check) a
 - [x] `xtask layers` (table of crate → layer, fails on violations) and `xtask wasm`
 - [x] `ci.yml` (claim-bot tests now; Rust jobs switch on when `Cargo.toml` lands), `claim.yml`,
       PR and issue templates, `CONTRIBUTING.md`, licences
-- [ ] Switch CI to nextest once there are enough test binaries to matter
+- [x] Switch CI to nextest once there are enough test binaries to matter (#49: `ci.yml` runs
+      `cargo nextest run --workspace --profile ci` on Linux, Windows and macOS, with the nextest
+      archive pinned and sha256-verified)
 - [x] craft-libs dependencies pinned in `[workspace.dependencies]` (§5)
 - [x] `AGENTS.md`, `docs/architecture.md` (from §4), `docs/decisions.md`, `ROADMAP.md`
 - [x] `release.yml` calling the shared Craft release workflow, `packaging/` scripts, `xtask version`

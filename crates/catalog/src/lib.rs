@@ -9,9 +9,11 @@
 
 pub mod model;
 pub mod pricing;
+pub mod select;
 
 pub use model::{InputRole, ModeSpec, ModelDescriptor};
 pub use pricing::{Price, Pricing, Unit};
+pub use select::{Choice, Effort, MAX_MULTIPLE, Rejected, Request, Selection};
 
 use nodecraft_types::{Error, ErrorKind, Modality, ParamValues};
 use serde::Deserialize;
@@ -23,9 +25,11 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
 pub const BUILTIN: &[(&str, &str)] = &[
+    ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
+    ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
 ];
 
 #[derive(Deserialize)]
@@ -41,6 +45,14 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Construct the same validated catalog from host/test descriptors.
+    pub fn from_models(models: impl IntoIterator<Item = ModelDescriptor>) -> Result<Self, Error> {
+        let mut catalog = Self::default();
+        for model in models {
+            catalog.insert(model)?;
+        }
+        Ok(catalog)
+    }
     /// The catalog shipped with this build.
     pub fn builtin() -> Result<Self, Error> {
         let mut catalog = Self::default();

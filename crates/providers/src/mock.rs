@@ -1,8 +1,10 @@
 //! A deterministic fake provider. Each model is scripted with a [`MockModel`]; results depend only
 //! on the model, its parameters and its inputs, so tests can compare them byte for byte.
 
-use nodecraft_providers::{BoxFuture, Completed, ErrorKind, JobHandle, JobInput, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
+use crate::{BoxFuture, Completed, ErrorKind, JobHandle, JobInput, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
 use nodecraft_types::Money;
+mod scripts;
+pub use scripts::{MockFailures, MockOperation, MockScript};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -61,6 +63,7 @@ struct State {
     finished: BTreeMap<String, Completed>,
     cancelled: Vec<String>,
     polls: u64,
+    scripted: BTreeMap<String, scripts::Progress>,
 }
 
 /// See the module docs.
@@ -68,13 +71,14 @@ struct State {
 pub struct MockProvider {
     id: String,
     models: Arc<BTreeMap<String, MockModel>>,
+    scripts: Arc<scripts::Scripts>,
     state: Arc<Mutex<State>>,
 }
 
 impl MockProvider {
     /// A mock provider called `id` with `models` (model id → behaviour).
     pub fn new(id: impl Into<String>, models: impl IntoIterator<Item = (String, MockModel)>) -> Self {
-        Self { id: id.into(), models: Arc::new(models.into_iter().collect()), state: Arc::default() }
+        Self { id: id.into(), models: Arc::new(models.into_iter().collect()), scripts: Arc::default(), state: Arc::default() }
     }
 
     /// The default mock provider (`mock`): `mock-text` and `mock-image`, `mock-video`,
@@ -177,11 +181,41 @@ impl Provider for MockProvider {
             s.requests.push(job.clone());
             // Acceptance owns the key, including lost replies and cancelled/completed jobs.
             // Retry payloads must not select another model or execute its failure script.
-            if let Some(id) = s.accepted.get(&job.idempotency_key) {
+            if let Some(id) = s.accepted.get(&job.idempotency_key).cloned() {
+                if let Some(progress) = s.scripted.get_mut(&job.idempotency_key)
+                    && !matches!(progress.terminal, Some(scripts::Terminal::Failed | scripts::Terminal::Cancelled))
+                    && progress.lost > 0
+                {
+                    progress.lost -= 1;
+                    let kind = self.scripts.keys.get(&job.idempotency_key).and_then(|key| key.script.lost_replies).ok_or_else(scripts::invalid)?.kind;
+                    return Err(ProviderError::new(kind, "mock reply lost"));
+                }
                 if let Some(done) = s.finished.get(&job.idempotency_key) {
                     return Ok(Submission::Finished(done.clone()));
                 }
                 return Ok(Submission::Queued(JobHandle { remote_id: id.clone(), data: serde_json::Value::Null }));
+            }
+            if let Some(key) = self.scripts.keys.get(&job.idempotency_key) {
+                if key.model != job.model {
+                    return Err(scripts::invalid());
+                }
+                // Every predecessor must remain failed: cancellation of an older generation
+                // closes this operation too. Constructor-built chains are finite and acyclic.
+                let mut prior = key.prior.as_ref();
+                while let Some(previous) = prior {
+                    if s.scripted.get(previous).is_none_or(|p| p.terminal != Some(scripts::Terminal::Failed)) {
+                        return Err(scripts::invalid());
+                    }
+                    prior = self.scripts.keys.get(previous).and_then(|config| config.prior.as_ref());
+                }
+                let progress = s.scripted.get_mut(&job.idempotency_key).ok_or_else(scripts::invalid)?;
+                if progress.submit > 0 {
+                    progress.submit -= 1;
+                    let kind = key.script.submit_failures.ok_or_else(scripts::invalid)?.kind;
+                    return Err(ProviderError::new(kind, "mock submit failure"));
+                }
+            } else if self.scripts.models.contains(&job.model) {
+                return Err(scripts::invalid());
             }
             let model = *self.models.get(&job.model).ok_or_else(|| ProviderError::new(ErrorKind::UnsupportedInput, "unknown model"))?;
             match model.fail {
@@ -192,7 +226,17 @@ impl Provider for MockProvider {
             let next = s.accepted.len();
             let id = format!("mock-{next}");
             s.accepted.insert(job.idempotency_key.clone(), id.clone());
-            if let Some(MockFailure::LostReply(kind)) = model.fail {
+            let scripted_lost = if let Some(progress) = s.scripted.get_mut(&job.idempotency_key) {
+                if progress.lost > 0 {
+                    progress.lost -= 1;
+                    self.scripts.keys.get(&job.idempotency_key).and_then(|key| key.script.lost_replies).map(|f| f.kind)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(kind) = scripted_lost.or(if let Some(MockFailure::LostReply(kind)) = model.fail { Some(kind) } else { None }) {
                 // Accepted and billed, but the caller never hears so.
                 if model.polls > 0 {
                     s.pending.insert(id, (job.clone(), model.polls));
@@ -218,6 +262,17 @@ impl Provider for MockProvider {
             if s.cancelled.contains(&handle.remote_id) {
                 return Ok(JobProgress::Failed(ProviderError::new(ErrorKind::Cancelled, "cancelled")));
             }
+            let key = s.pending.get(&handle.remote_id).ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "unknown job"))?.0.idempotency_key.clone();
+            if let Some(progress) = s.scripted.get_mut(&key) {
+                let config = self.scripts.keys.get(&key).ok_or_else(scripts::invalid)?;
+                if progress.terminal == Some(scripts::Terminal::Failed) {
+                    return Ok(JobProgress::Failed(ProviderError::new(config.failure.ok_or_else(scripts::invalid)?, "mock job failure")));
+                }
+                if progress.poll > 0 {
+                    progress.poll -= 1;
+                    return Err(ProviderError::new(config.script.poll_failures.ok_or_else(scripts::invalid)?.kind, "mock poll failure"));
+                }
+            }
             let (job, left) = s.pending.get_mut(&handle.remote_id).ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "unknown job"))?;
             let model = *self.models.get(&job.model).ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "unknown model"))?;
             match model.fail {
@@ -231,13 +286,26 @@ impl Provider for MockProvider {
                 let fraction = 1.0 - (*left as f32 / model.polls.max(1) as f32);
                 return Ok(JobProgress::Running { fraction: Some(fraction), message: None, partial: None });
             }
-            Ok(JobProgress::Done(result(&model, job)))
+            let done = result(&model, job);
+            if let Some(progress) = s.scripted.get_mut(&key) {
+                if let Some(kind) = self.scripts.keys.get(&key).and_then(|config| config.failure) {
+                    progress.terminal = Some(scripts::Terminal::Failed);
+                    return Ok(JobProgress::Failed(ProviderError::new(kind, "mock job failure")));
+                }
+                progress.terminal = Some(scripts::Terminal::Done);
+            }
+            Ok(JobProgress::Done(done))
         })();
         Box::pin(async move { outcome })
     }
 
     fn cancel<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
-        self.lock().cancelled.push(handle.remote_id.clone());
+        let mut state = self.lock();
+        let key = state.pending.get(&handle.remote_id).map(|(job, _)| job.idempotency_key.clone());
+        if let Some(progress) = key.and_then(|key| state.scripted.get_mut(&key)) {
+            progress.terminal = Some(scripts::Terminal::Cancelled);
+        }
+        state.cancelled.push(handle.remote_id.clone());
         Box::pin(async { Ok(()) })
     }
 
@@ -245,3 +313,6 @@ impl Provider for MockProvider {
         0
     }
 }
+
+#[cfg(test)]
+mod script_tests;

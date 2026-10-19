@@ -87,3 +87,26 @@ This bounds job-spec storage only. Arbitrary caller-provided concurrency configu
 job error strings/outcomes and caller-owned outputs have separate ownership and limits. No outcome
 or event is silently discarded to enforce these budgets. Paid retry and cooperative cancellation
 semantics, including the fan-in settle-only-when-ready correction, remain unchanged.
+
+
+## Provider endpoint limits and usage export
+
+Provider lanes use canonical target encodings (`p:<adapter-hex>:d` for the default endpoint,
+`p:<adapter-hex>:i:<instance-hex>` for a named endpoint). The literal adapter name `local` is
+separate from the real local Source/Action lane. Configure endpoint concurrency through
+`Limits::set_target_limit(&target, limit)` rather than a bare adapter-name lane string.
+Scoped usage CSV adds `provider_instance`: an empty value is the legacy/default endpoint,
+while a named value identifies its endpoint UUID. This column does not imply old records
+contained a named instance or that a lane string is restoration authority.
+
+Authorized runs derive each queued job's known, unknown or free price from their retained
+admitted quote; a host cannot replace it with an unbudgeted price argument. The accepted
+amounts are also the run's cumulative ceiling per currency (#366,
+[decision](decisions/2026-10-18-run-ceiling.md)): every new priced reservation (deferred
+fan-out, concurrent jobs, retries under a new key, requeues and replacements) is debited at its
+estimate under the usage log's lock and refused before the provider when it would pass the
+accepted amount. Releases on no-delivery evidence credit it back; unresolved and completed
+charges keep their debit. Unknown-price jobs are bounded by the accepted `unpriced_jobs` count
+the same way (never refunded), and the host budgets apply as before. An authorized run's jobs
+carry their bound price privately, so the host can't replace it, and a runner without a budget
+refuses their paid work.

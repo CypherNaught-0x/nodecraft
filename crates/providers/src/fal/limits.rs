@@ -1,0 +1,66 @@
+use super::*;
+const MIB: usize = 1024 * 1024;
+/// Lower-only operation payload bounds, not allocator/RSS or codec workspace bounds.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub input_bytes: usize,
+    pub text_bytes: usize,
+    pub request_bytes: usize,
+    pub response_bytes: usize,
+    pub metadata_bytes: usize,
+    pub output_bytes: usize,
+    pub total_output_bytes: usize,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub total_pixels: u64,
+    pub codec_bytes: u64,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self::HARD
+    }
+}
+impl Limits {
+    pub const HARD: Self = Self {
+        input_bytes: MIB,
+        text_bytes: 16 * 1024,
+        request_bytes: 2 * MIB,
+        response_bytes: 2 * MIB,
+        metadata_bytes: 256 * 1024,
+        output_bytes: 16 * MIB,
+        total_output_bytes: 48 * MIB,
+        output_width: 4096,
+        output_height: 4096,
+        total_pixels: 16_777_216,
+        codec_bytes: 128 * MIB as u64,
+    };
+    pub(super) fn validate(self) -> Result<Self, ProviderError> {
+        let h = Self::HARD;
+        if self.input_bytes > h.input_bytes
+            || self.text_bytes > h.text_bytes
+            || self.request_bytes > h.request_bytes
+            || self.response_bytes > h.response_bytes
+            || self.metadata_bytes > h.metadata_bytes
+            || self.output_bytes > h.output_bytes
+            || self.total_output_bytes > h.total_output_bytes
+            || self.output_width > h.output_width
+            || self.output_height > h.output_height
+            || self.total_pixels > h.total_pixels
+            || self.codec_bytes > h.codec_bytes
+        {
+            return Err(invalid("fal limits may only be lowered"));
+        }
+        Ok(self)
+    }
+    pub(super) fn image(self, input: bool) -> nodecraft_media::Limits {
+        nodecraft_media::Limits {
+            max_input_bytes: if input { self.input_bytes } else { self.output_bytes } as u64,
+            max_width: if input { 1024 } else { self.output_width },
+            max_height: if input { 1024 } else { self.output_height },
+            max_alloc: self.codec_bytes,
+        }
+    }
+}
+pub(super) fn reserve<T>(v: &mut Vec<T>, n: usize) -> Result<(), ProviderError> {
+    v.try_reserve_exact(n).map_err(|_| malformed("fal allocation refused"))
+}

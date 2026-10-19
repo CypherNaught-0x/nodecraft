@@ -119,9 +119,9 @@ fn removing_a_node_restores_all_edges_in_one_inverse_operation() {
 
 #[test]
 fn all_edit_types_and_annotation_stubs_are_reversible() {
-    let field = Field { id: FieldId::from_bytes([1; 16]), title: "Group".into() };
-    let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into() };
-    let comment = Comment { id: CommentId::from_bytes([1; 16]), text: "Note".into(), pos: Position::default() };
+    let field = Field::new(FieldId::from_bytes([1; 16]), "Group");
+    let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into(), color: None };
+    let comment = Comment { id: CommentId::from_bytes([1; 16]), text: "Note".into(), pos: Position::default(), node: None, replies: vec![], resolved: false };
     let mut replacement = node(1);
     replacement.field = Some(field.id);
     replacement.tag = Some(tag.id);
@@ -316,7 +316,7 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             2 => Change::RemoveCanvas { id: canvas },
             3 => Change::SetCanvasTitle { canvas, title: text },
             4 => Change::AddNode { canvas, node: node(n) },
-            5 => Change::RestoreNode { canvas, node: node(n), edges: vec![edge(n, n, other)] },
+            5 => Change::RestoreNode { canvas, node: node(n), edges: vec![edge(n, n, other)], pins: vec![] },
             6 => Change::RemoveNode { canvas, id },
             7 => Change::SetNode { canvas, node: node(n) },
             8 => Change::MoveNode { canvas, id, pos: Position { x: f32::from(other), y: 1.0 } },
@@ -335,11 +335,14 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             16 => Change::Connect { canvas, edge: edge(n, n, other) },
             17 => Change::Disconnect { canvas, id: edge_id(n) },
             18 => Change::SetEdge { canvas, edge: edge(n, other, n) },
-            19 => Change::PutField { canvas, field: Field { id: FieldId::from_bytes([n; 16]), title: text } },
+            19 => Change::PutField { canvas, field: Field::new(FieldId::from_bytes([n; 16]), text) },
             20 => Change::RemoveField { canvas, id: FieldId::from_bytes([n; 16]) },
-            21 => Change::PutTag { canvas, tag: Tag { id: TagId::from_bytes([n; 16]), title: text } },
+            21 => Change::PutTag { canvas, tag: Tag { id: TagId::from_bytes([n; 16]), title: text, color: None } },
             22 => Change::RemoveTag { canvas, id: TagId::from_bytes([n; 16]) },
-            23 => Change::PutComment { canvas, comment: Comment { id: CommentId::from_bytes([n; 16]), text, pos: Position::default() } },
+            23 => Change::PutComment {
+                canvas,
+                comment: Comment { id: CommentId::from_bytes([n; 16]), text, pos: Position::default(), node: None, replies: vec![], resolved: false },
+            },
             _ => Change::RemoveComment { canvas, id: CommentId::from_bytes([n; 16]) },
         }
     })
@@ -441,7 +444,7 @@ fn batches_can_swap_input_orders_and_replace_referenced_annotations() {
         project.clone(),
         Changeset::new(vec![Change::SetEdge { canvas: canvas(), edge: first }, Change::SetEdge { canvas: canvas(), edge: second }]),
     );
-    let field = Field { id: FieldId::from_bytes([1; 16]), title: "Old".into() };
+    let field = Field::new(FieldId::from_bytes([1; 16]), "Old");
     let mut item = node(1);
     item.field = Some(field.id);
     Changeset::new(vec![Change::PutField { canvas: canvas(), field: field.clone() }, Change::SetNode { canvas: canvas(), node: item }])
@@ -463,7 +466,7 @@ fn malformed_restore_and_dangling_edge_prefixes_are_atomic() {
     for changes in [
         vec![
             Change::RemoveNode { canvas: canvas(), id: node_id(2) },
-            Change::RestoreNode { canvas: canvas(), node: node(2), edges: vec![edge(1, 1, 2), edge(1, 1, 2)] },
+            Change::RestoreNode { canvas: canvas(), node: node(2), edges: vec![edge(1, 1, 2), edge(1, 1, 2)], pins: vec![] },
         ],
         vec![Change::Connect { canvas: canvas(), edge: edge(3, 3, 4) }, Change::AddNode { canvas: canvas(), node: node(4) }],
     ] {
