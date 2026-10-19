@@ -9,7 +9,14 @@
 //!   writes aside and renames over), and only then becomes the store's state. A failed write (a
 //!   full disk) leaves the store, its index and every package as they were.
 //! - **Nothing referenced is lost.** Updating keeps the previous digest for rollback; uninstalling
-//!   keeps the digests the caller says projects still reference. Projects are never edited here.
+//!   keeps the digests the caller says projects still reference, and those other installed
+//!   packages lock. Projects are never edited here. Files the index no longer names are removed
+//!   only when the store is next opened, after the index that dropped them is safely on disk.
+//! - **One writer wins.** Before writing, the store checks the index is still the one it read;
+//!   if another NodeCraft (the app, the CLI) changed it meanwhile, the change is refused rather
+//!   than lost, and the store reloads.
+//! - **Trust is checked when it matters.** A package's signature is checked against the trust
+//!   file at import and again at enable, so a key revoked since import stops it being enabled.
 use crate::archive::{self, ArchiveLimits, Package, wire};
 use nodecraft_plugin::id::{HostId, PackageId, RegisteredId};
 use nodecraft_plugin::json::{self, Json, Limits};
@@ -37,6 +44,8 @@ pub trait StoreBackend {
     /// Stores an archive under its digest (durably, before the index names it).
     fn write_object(&mut self, digest: &PackageDigest, bytes: &[u8]) -> Result<(), Error>;
     fn remove_object(&mut self, digest: &PackageDigest) -> Result<(), Error>;
+    /// Every stored archive's digest (to remove the ones the index no longer names).
+    fn list_objects(&self) -> Result<Vec<PackageDigest>, Error>;
 }
 
 /// Whether an installed package's registrations are published.
@@ -88,9 +97,30 @@ pub struct EnableReport {
     pub unbound: Vec<RegisteredId>,
 }
 
+/// What uninstalling did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UninstallReport {
+    /// Digests no longer kept (their files go when the store is next opened).
+    pub removed: Vec<PackageDigest>,
+    /// Digests kept because projects reference them or installed packages lock them.
+    pub kept: Vec<PackageDigest>,
+    /// Installed packages that lock this one; they can't be enabled until it is back.
+    pub dependents: Vec<PackageId>,
+}
+
+/// A verified incoming package, and the archive bytes to store (none when its digest is kept).
+struct Incoming {
+    package: Package,
+    provenance: Provenance,
+    write: Option<Vec<u8>>,
+    size: usize,
+}
+
 pub struct Store<B: StoreBackend> {
     backend: B,
     index: Index,
+    /// The index bytes as last read or written, to notice another writer.
+    seen: Option<Vec<u8>>,
     limits: ArchiveLimits,
 }
 
@@ -105,12 +135,20 @@ fn not_installed() -> Error {
 impl<B: StoreBackend> Store<B> {
     /// Opens the store over `backend`, reading its index (an unreadable index is an error, never
     /// a silent empty store).
-    pub fn open(backend: B) -> Result<Self, Error> {
-        let index = match backend.read_index()? {
-            Some(bytes) => decode_index(&bytes)?,
+    pub fn open(mut backend: B) -> Result<Self, Error> {
+        let seen = backend.read_index()?;
+        let index = match &seen {
+            Some(bytes) => decode_index(bytes)?,
             None => Index::default(),
         };
-        Ok(Self { backend, index, limits: ArchiveLimits::DEFAULT })
+        // Files the index doesn't name: dropped by an uninstall or prune, or left by a write that
+        // failed before its index did. The index naming them is on disk by now.
+        for digest in backend.list_objects()? {
+            if !index.objects.contains_key(&digest) {
+                let _ = backend.remove_object(&digest);
+            }
+        }
+        Ok(Self { backend, index, seen, limits: ArchiveLimits::DEFAULT })
     }
 
     pub fn with_limits(mut self, limits: ArchiveLimits) -> Self {
@@ -128,15 +166,53 @@ impl<B: StoreBackend> Store<B> {
 
     /// Writes `next` and makes it the state, or changes nothing.
     fn commit(&mut self, next: Index) -> Result<(), Error> {
-        self.backend.write_index(encode_index(&next)?.as_bytes())?;
+        let current = self.backend.read_index()?;
+        if current != self.seen {
+            // Another NodeCraft changed the store: take its state, refuse this change.
+            if let Some(bytes) = &current {
+                self.index = decode_index(bytes)?;
+            }
+            self.seen = current;
+            return Err(conflict("the plugin store was changed by another NodeCraft window; try again"));
+        }
+        let bytes = encode_index(&next)?.into_bytes();
+        self.backend.write_index(&bytes)?;
         self.index = next;
+        self.seen = Some(bytes);
         Ok(())
     }
 
     fn verify(&self, bytes: &[u8], trust: &TrustStore) -> Result<(Package, Provenance), Error> {
         let package = archive::open(bytes, self.limits)?;
-        let provenance = signature::verify(&package.digest, package.signature.as_ref(), trust, package.manifest.publisher_key_id.as_ref()).map_err(wire)?;
+        let provenance = provenance(&package, trust)?;
         Ok((package, provenance))
+    }
+
+    /// Verifies an incoming archive; when its digest is already kept, the kept archive is what
+    /// counts (one digest can come from differently built archives), and nothing is written.
+    fn incoming(&self, bytes: &[u8], trust: &TrustStore) -> Result<Incoming, Error> {
+        let (package, provenance) = self.verify(bytes, trust)?;
+        if self.index.objects.contains_key(&package.digest) {
+            let kept = self.backend.read_object(&package.digest)?;
+            let (stored, provenance) = self.verify(&kept, trust)?;
+            if stored.digest != package.digest {
+                return Err(Error::new(ErrorKind::Internal, "a stored package no longer matches its digest; import it again"));
+            }
+            return Ok(Incoming { package: stored, provenance, write: None, size: kept.len() });
+        }
+        Ok(Incoming { package, provenance, write: Some(bytes.to_vec()), size: bytes.len() })
+    }
+
+    /// IDs registered by installed packages other than `except` (enabled or not): no two
+    /// installed packages may spell the same ID, whichever is enabled first.
+    fn installed_ids(&self, except: &PackageId) -> Result<BTreeSet<String>, Error> {
+        let mut ids = BTreeSet::new();
+        for (id, (digest, _)) in &self.index.active {
+            if id != except {
+                ids.extend(self.load_digest(digest)?.manifest.registered_ids().map(|r| r.to_string()));
+            }
+        }
+        Ok(ids)
     }
 
     fn report(&self, package: &Package, provenance: Provenance, bytes: usize, replaced: Option<PackageDigest>) -> ImportReport {
@@ -179,16 +255,20 @@ impl<B: StoreBackend> Store<B> {
     /// Verifies `bytes` and installs the package disabled; with `dry_run`, only reports.
     /// A package already installed is updated with [`Store::update`] instead.
     pub fn import(&mut self, bytes: &[u8], trust: &TrustStore, dry_run: bool) -> Result<ImportReport, Error> {
-        let (package, provenance) = self.verify(bytes, trust)?;
+        let Incoming { package, provenance, write, size } = self.incoming(bytes, trust)?;
         if self.index.active.contains_key(&package.manifest.package_id) {
             return Err(conflict("that package is already installed; update it instead"));
         }
-        let report = self.report(&package, provenance, bytes.len(), None);
+        let taken = self.installed_ids(&package.manifest.package_id)?;
+        register::stage(&package.manifest, &taken).map_err(|e| conflict(format!("an installed package already uses one of its IDs ({e})")))?;
+        let report = self.report(&package, provenance, size, None);
         let mut next = self.index.clone();
         self.admit(&mut next, &report.entry)?;
         next.active.insert(report.entry.package_id.clone(), (report.entry.digest, State::Disabled));
         if !dry_run {
-            self.backend.write_object(&package.digest, bytes)?;
+            if let Some(bytes) = write {
+                self.backend.write_object(&package.digest, &bytes)?;
+            }
             self.commit(next)?;
         }
         Ok(report)
@@ -198,22 +278,26 @@ impl<B: StoreBackend> Store<B> {
     /// rollback. Disable the package first; its dependents keep their exact locks, so they
     /// can't be enabled against the new digest until they are updated too.
     pub fn update(&mut self, bytes: &[u8], trust: &TrustStore, dry_run: bool) -> Result<ImportReport, Error> {
-        let (package, provenance) = self.verify(bytes, trust)?;
+        let Incoming { package, provenance, write, size } = self.incoming(bytes, trust)?;
         let Some((current, state)) = self.index.active.get(&package.manifest.package_id).copied() else {
             return Err(not_installed());
         };
         if current == package.digest {
             return Err(conflict("that exact package is already installed"));
         }
-        if state == State::Enabled {
+        if state == State::Enabled && !dry_run {
             return Err(conflict("disable the package before updating it"));
         }
-        let report = self.report(&package, provenance, bytes.len(), Some(current));
+        let taken = self.installed_ids(&package.manifest.package_id)?;
+        register::stage(&package.manifest, &taken).map_err(|e| conflict(format!("an installed package already uses one of its IDs ({e})")))?;
+        let report = self.report(&package, provenance, size, Some(current));
         let mut next = self.index.clone();
         self.admit(&mut next, &report.entry)?;
         next.active.insert(report.entry.package_id.clone(), (report.entry.digest, State::Disabled));
         if !dry_run {
-            self.backend.write_object(&package.digest, bytes)?;
+            if let Some(bytes) = write {
+                self.backend.write_object(&package.digest, &bytes)?;
+            }
             self.commit(next)?;
         }
         Ok(report)
@@ -249,10 +333,11 @@ impl<B: StoreBackend> Store<B> {
         Ok(package)
     }
 
-    /// Enables `package`: its dependencies must be installed at their locked versions and
-    /// enabled, and none of its IDs may be registered already (`taken`: the host's own IDs).
-    /// Entries bound to a host implementation outside `bindings` stay off.
-    pub fn enable(&mut self, package: &PackageId, taken: &BTreeSet<String>, bindings: &BTreeSet<HostId>) -> Result<EnableReport, Error> {
+    /// Enables `package`: its signature must still verify against `trust`, its dependencies
+    /// must be installed at their locked versions and enabled, and none of its IDs may be taken
+    /// (`taken`: the host's own IDs; installed packages' IDs are checked too). Entries bound to a
+    /// host implementation outside `bindings` stay off.
+    pub fn enable(&mut self, package: &PackageId, trust: &TrustStore, taken: &BTreeSet<String>, bindings: &BTreeSet<HostId>) -> Result<EnableReport, Error> {
         let Some((digest, state)) = self.index.active.get(package).copied() else {
             return Err(not_installed());
         };
@@ -260,26 +345,26 @@ impl<B: StoreBackend> Store<B> {
             return Err(conflict("that package is already enabled"));
         }
         let loaded = self.load_digest(&digest)?;
-        // Every other active package's manifest, for locks and collisions.
-        let mut others = BTreeMap::new();
+        provenance(&loaded, trust)?;
+        // Dependencies must be enabled, so only enabled packages are read.
+        let mut enabled = BTreeMap::new();
         for (id, (d, s)) in &self.index.active {
-            if id != package {
-                others.insert(id.clone(), (self.load_digest(d)?, *d, *s));
+            if id != package && *s == State::Enabled {
+                enabled.insert(id.clone(), (self.load_digest(d)?, *d));
             }
         }
         let installed: BTreeMap<PackageId, Installed<'_>> =
-            others.iter().map(|(id, (p, d, _))| (id.clone(), Installed { manifest: &p.manifest, digest: *d })).collect();
-        let order = lock::resolve(&loaded.manifest, &installed).map_err(|e| Error::new(ErrorKind::Conflict, format!("its dependencies aren't met ({e})")))?;
-        if let Some(off) = order.iter().find(|id| others.get(*id).is_some_and(|(_, _, s)| *s != State::Enabled)) {
-            return Err(conflict(format!("enable {off} first")));
+            enabled.iter().map(|(id, (p, d))| (id.clone(), Installed { manifest: &p.manifest, digest: *d })).collect();
+        if let Err(e) = lock::resolve(&loaded.manifest, &installed) {
+            let off = loaded.manifest.dependencies.iter().find(|dep| !enabled.contains_key(&dep.package_id) && self.index.active.contains_key(&dep.package_id));
+            return Err(match off {
+                Some(dep) => conflict(format!("enable {} first", dep.package_id)),
+                None => conflict(format!("its dependencies aren't met ({e})")),
+            });
         }
         let mut registered: BTreeSet<String> = taken.clone();
-        for (p, _, s) in others.values() {
-            if *s == State::Enabled {
-                registered.extend(p.manifest.registered_ids().map(|id| id.to_string()));
-            }
-        }
-        let staged = register::stage(&loaded.manifest, &registered).map_err(|e| Error::new(ErrorKind::Conflict, format!("nothing was enabled: {e}")))?;
+        registered.extend(self.installed_ids(package)?);
+        let staged = register::stage(&loaded.manifest, &registered).map_err(|e| conflict(format!("nothing was enabled: {e}")))?;
         let mut report = EnableReport { registered: Vec::new(), unbound: Vec::new() };
         for (r, id) in loaded.manifest.registrations.iter().zip(staged) {
             match &r.binding {
@@ -311,29 +396,66 @@ impl<B: StoreBackend> Store<B> {
         self.commit(next)
     }
 
+    /// Digests installed packages lock, and the packages locking each.
+    fn locked(&self) -> Result<BTreeMap<PackageDigest, Vec<PackageId>>, Error> {
+        let mut locked: BTreeMap<PackageDigest, Vec<PackageId>> = BTreeMap::new();
+        for (id, (digest, _)) in &self.index.active {
+            for dep in self.load_digest(digest)?.manifest.dependencies {
+                locked.entry(dep.digest).or_default().push(id.clone());
+            }
+        }
+        Ok(locked)
+    }
+
     /// Uninstalls a disabled `package`. Its kept digests that `referenced` names (projects still
-    /// use them) stay in the store; the rest are removed.
-    pub fn uninstall(&mut self, package: &PackageId, referenced: &BTreeSet<PackageDigest>) -> Result<Vec<PackageDigest>, Error> {
+    /// use them) or that installed packages lock stay in the store; the rest are dropped.
+    pub fn uninstall(&mut self, package: &PackageId, referenced: &BTreeSet<PackageDigest>) -> Result<UninstallReport, Error> {
         let Some((_, state)) = self.index.active.get(package).copied() else {
             return Err(not_installed());
         };
         if state == State::Enabled {
             return Err(conflict("disable the package before uninstalling it"));
         }
+        let locked = self.locked()?;
         let mut next = self.index.clone();
         next.active.remove(package);
-        let removed: Vec<PackageDigest> =
-            next.objects.values().filter(|e| e.package_id == *package && !referenced.contains(&e.digest)).map(|e| e.digest).collect();
-        for digest in &removed {
+        let mut report = UninstallReport { removed: Vec::new(), kept: Vec::new(), dependents: Vec::new() };
+        for entry in self.index.objects.values().filter(|e| e.package_id == *package) {
+            if let Some(by) = locked.get(&entry.digest) {
+                report.dependents.extend(by.iter().filter(|id| *id != package).cloned());
+            }
+            if referenced.contains(&entry.digest) || locked.get(&entry.digest).is_some_and(|by| by.iter().any(|id| id != package)) {
+                report.kept.push(entry.digest);
+            } else {
+                report.removed.push(entry.digest);
+                next.objects.remove(&entry.digest);
+            }
+        }
+        report.dependents.sort();
+        report.dependents.dedup();
+        self.commit(next)?;
+        Ok(report)
+    }
+
+    /// Drops every kept digest that isn't active, referenced by projects (`referenced`) or locked
+    /// by an installed package: old versions kept for rollback. Returns what was dropped.
+    pub fn prune(&mut self, referenced: &BTreeSet<PackageDigest>) -> Result<Vec<PackageDigest>, Error> {
+        let locked = self.locked()?;
+        let active: BTreeSet<PackageDigest> = self.index.active.values().map(|(d, _)| *d).collect();
+        let mut next = self.index.clone();
+        let dropped: Vec<PackageDigest> =
+            self.index.objects.keys().filter(|d| !active.contains(d) && !referenced.contains(d) && !locked.contains_key(d)).copied().collect();
+        for digest in &dropped {
             next.objects.remove(digest);
         }
         self.commit(next)?;
-        // The index no longer names them; a failed removal only leaves an unused file behind.
-        for digest in &removed {
-            let _ = self.backend.remove_object(digest);
-        }
-        Ok(removed)
+        Ok(dropped)
     }
+}
+
+/// A package's signature checked against `trust` now.
+fn provenance(package: &Package, trust: &TrustStore) -> Result<Provenance, Error> {
+    signature::verify(&package.digest, package.signature.as_ref(), trust, package.manifest.publisher_key_id.as_ref()).map_err(wire)
 }
 
 const INDEX_LIMITS: Limits = Limits { bytes: 4 * 1024 * 1024, depth: 6, string_bytes: 4096, entries: 4 * MAX_OBJECTS, raw_numbers: false };
@@ -386,8 +508,10 @@ fn text(m: &mut BTreeMap<String, Json>, key: &str) -> Result<String, Error> {
 
 fn decode_index(bytes: &[u8]) -> Result<Index, Error> {
     let Json::Object(mut root) = archive::parse(bytes, INDEX_LIMITS)? else { return Err(damaged()) };
-    if root.remove("index_version") != Some(Json::Int(INDEX_VERSION)) {
-        return Err(Error::new(ErrorKind::Unsupported, "the plugin store was written by a newer NodeCraft"));
+    match root.remove("index_version") {
+        Some(Json::Int(INDEX_VERSION)) => {}
+        Some(Json::Int(v)) if v > INDEX_VERSION => return Err(Error::new(ErrorKind::Unsupported, "the plugin store was written by a newer NodeCraft")),
+        _ => return Err(damaged()),
     }
     let mut index = Index::default();
     let Some(Json::Array(objects)) = root.remove("objects") else { return Err(damaged()) };
@@ -405,7 +529,7 @@ fn decode_index(bytes: &[u8]) -> Result<Index, Error> {
                 Some(_) => return Err(damaged()),
             },
         };
-        if !m.is_empty() || index.objects.insert(entry.digest, entry).is_some() {
+        if !m.is_empty() || index.objects.insert(entry.digest, entry).is_some() || index.objects.len() > MAX_OBJECTS {
             return Err(damaged());
         }
     }

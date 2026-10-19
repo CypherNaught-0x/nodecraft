@@ -8,6 +8,7 @@
 
 pub mod archive;
 pub mod backend;
+pub mod layout;
 pub mod store;
 
 pub use archive::{ArchiveLimits, Package};

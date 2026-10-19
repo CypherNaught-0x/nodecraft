@@ -1,10 +1,10 @@
 //! Reading a `.ncraft-plugin` archive: a ZIP of stored (uncompressed) entries holding the
 //! package's files, `inventory.json` and optionally `signature.json`.
 //!
-//! Everything is checked before anything is kept: the archive's size; every entry's name (a
-//! portable path, see `nodecraft_plugin::inventory`), kind (no links, no encryption, stored only,
-//! so a declared size can't hide a bomb) and size (read with a cap one byte past what it
-//! declares); the listing against the inventory (nothing unlisted, nothing missing, no two names
+//! Everything is checked before anything is kept: the archive's size; its ZIP structure, on the
+//! raw bytes (`layout`: stored regular files laid end to end, every header agreeing, nothing
+//! hidden, so a declared size can't hide a bomb and no reader sees other files); every entry's
+//! name (a portable path, see `nodecraft_plugin::inventory`); the listing against the inventory (nothing unlisted, nothing missing, no two names
 //! equal after case folding); every file's length and hash; the canonical manifest and that every
 //! file it names is listed; the descriptors' JSON; a license file; and the signature. Nothing in
 //! a package runs, here or later in this phase.
@@ -16,9 +16,9 @@ use nodecraft_plugin::signature::PackageSignature;
 use nodecraft_plugin::{Inventory, Manifest, PackageDigest, WireError};
 use nodecraft_types::{Error, ErrorKind};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::sync::Arc;
-use zip::{CompressionMethod, ZipArchive};
+use zip::CompressionMethod;
 
 /// What an archive may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,44 +73,23 @@ pub fn open(bytes: &[u8], limits: ArchiveLimits) -> Result<Package, Error> {
     if bytes.len() > limits.archive_bytes {
         return Err(refused(format!("the package is larger than {} MiB", limits.archive_bytes / (1024 * 1024))));
     }
-    let mut zip = ZipArchive::new(Cursor::new(bytes)).map_err(|_| refused("the package isn't a readable ZIP archive"))?;
-    if zip.len() > limits.entries {
-        return Err(refused("the package has too many entries"));
-    }
+    // The structure first, on the raw bytes: one layout, so one set of files (see `layout`).
+    let entries = crate::layout::check(bytes, limits.entries)?;
     let mut files: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
     let mut folded = BTreeSet::new();
     let mut expanded: u64 = 0;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(|_| refused("a package entry can't be read"))?;
-        let name = std::str::from_utf8(entry.name_raw()).map_err(|_| refused("a package entry's name isn't UTF-8"))?.to_owned();
-        if entry.encrypted() || entry.is_symlink() {
-            return Err(refused("a package entry is encrypted or a link"));
-        }
-        if entry.is_dir() {
-            // Directory entries carry nothing; their names still have to be portable.
-            let dir = name.strip_suffix('/').unwrap_or(&name);
-            InventoryPath::parse(&format!("{dir}/x")).map_err(wire)?;
-            continue;
-        }
-        if entry.compression() != CompressionMethod::Stored || entry.compressed_size() != entry.size() {
-            return Err(refused("package entries are stored without compression"));
-        }
+    for entry in entries {
+        let name = entry.name;
         let special = name == "inventory.json" || name == "signature.json";
         if !special {
-            InventoryPath::parse(&name).map_err(wire)?;
+            InventoryPath::parse(name).map_err(wire)?;
         }
         if !folded.insert(name.to_ascii_lowercase()) {
             return Err(refused("two package entries have the same name, ignoring case"));
         }
-        let declared = entry.size();
-        expanded = expanded.checked_add(declared).filter(|e| *e <= limits.expanded_bytes).ok_or_else(|| refused("the package expands past its limit"))?;
-        let capacity = usize::try_from(declared).map_err(|_| refused("a package entry is too large"))?;
-        let mut data = Vec::with_capacity(capacity.min(limits.archive_bytes));
-        (&mut entry).take(declared.saturating_add(1)).read_to_end(&mut data).map_err(|_| refused("a package entry is damaged"))?;
-        if u64::try_from(data.len()).ok() != Some(declared) {
-            return Err(refused("a package entry's size differs from its header"));
-        }
-        files.insert(name, data.into());
+        let size = u64::try_from(entry.data.len()).unwrap_or(u64::MAX);
+        expanded = expanded.checked_add(size).filter(|e| *e <= limits.expanded_bytes).ok_or_else(|| refused("the package expands past its limit"))?;
+        files.insert(name.to_owned(), entry.data.into());
     }
     let inventory_bytes = files.remove("inventory.json").ok_or_else(|| refused("the package has no inventory.json"))?;
     let inventory = Inventory::decode(&inventory_bytes).map_err(wire)?;

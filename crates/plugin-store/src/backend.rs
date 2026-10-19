@@ -36,6 +36,9 @@ impl StoreBackend for MemoryBackend {
         self.objects.remove(digest);
         Ok(())
     }
+    fn list_objects(&self) -> Result<Vec<PackageDigest>, Error> {
+        Ok(self.objects.keys().copied().collect())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,6 +67,14 @@ mod native {
     impl FolderBackend {
         pub fn new(root: PathBuf) -> Result<Self, Error> {
             std::fs::create_dir_all(root.join("objects")).map_err(io("the plugin store folder can't be created"))?;
+            // Index writes a crash interrupted.
+            if let Ok(entries) = std::fs::read_dir(&root) {
+                for entry in entries.flatten().take(1024) {
+                    if entry.file_name().to_str().is_some_and(|n| n.starts_with("index.json.") && n.ends_with(".new")) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
             Ok(Self { root })
         }
 
@@ -73,11 +84,20 @@ mod native {
         }
 
         fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-            let aside = path.with_extension("new");
-            let mut file = std::fs::File::create(&aside).map_err(io("the plugin store couldn't be written"))?;
-            file.write_all(bytes).and_then(|()| file.sync_all()).map_err(io("the plugin store couldn't be written (is the disk full?)"))?;
-            drop(file);
-            std::fs::rename(&aside, path).map_err(io("the plugin store couldn't be written"))?;
+            // Unique per process and write: two writers never share (and rename) one half-written
+            // file. A failed write removes its file; `open` sweeps any left by a crash.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut aside = path.as_os_str().to_owned();
+            aside.push(format!(".{}-{n}.new", std::process::id()));
+            let aside = PathBuf::from(aside);
+            let written = std::fs::File::create(&aside)
+                .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+                .and_then(|()| std::fs::rename(&aside, path));
+            if written.is_err() {
+                let _ = std::fs::remove_file(&aside);
+            }
+            written.map_err(io("the plugin store couldn't be written (is the disk full?)"))?;
             // The rename itself is durable once the folder is synced (not possible on Windows).
             if let Some(folder) = path.parent()
                 && let Ok(dir) = std::fs::File::open(folder)
@@ -121,6 +141,21 @@ mod native {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::new(ErrorKind::Internal, "a stored package couldn't be removed")),
                 _ => Ok(()),
             }
+        }
+        fn list_objects(&self) -> Result<Vec<PackageDigest>, Error> {
+            let entries = std::fs::read_dir(self.root.join("objects")).map_err(io("the plugin store can't be read"))?;
+            let mut digests = Vec::new();
+            for entry in entries.flatten().take(4 * crate::store::MAX_OBJECTS) {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if name.ends_with(".new") {
+                    // Left by a write a crash interrupted.
+                    let _ = std::fs::remove_file(entry.path());
+                } else if let Some(digest) = name.strip_suffix(".ncraft-plugin").and_then(|n| PackageDigest::parse(&n.replacen('-', ":", 1)).ok()) {
+                    digests.push(digest);
+                }
+            }
+            Ok(digests)
         }
     }
 }
