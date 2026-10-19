@@ -252,9 +252,55 @@ jobs:
           path: dist/release/*.flatpak
           if-no-files-found: error
 
+  web:
+    name: Web
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NODECRAFT_VERSION: ${{ needs.version.outputs.version }}
+      NODECRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      NODECRAFT_BUILD_SHA: ${{ github.sha }}
+      TRUNK_VERSION: 0.21.14
+      BINARYEN_VERSION: "133"
+      BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-web
+      - name: Install trunk and wasm-bindgen (the version in Cargo.lock)
+        run: |
+          wbg="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[" ]/, "", $3); print $3; exit }' Cargo.lock)"
+          cargo install --locked trunk --version "$TRUNK_VERSION"
+          cargo install --locked wasm-bindgen-cli --version "$wbg"
+      - name: Install wasm-opt (checksum-verified)
+        run: |
+          tarball="binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/$tarball"
+          echo "$BINARYEN_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball"
+          sudo install -m755 "binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt
+          wasm-opt --version
+      - name: Apply the version override
+        if: inputs.version != ''
+        run: cargo xtask version set "$NODECRAFT_VERSION"
+      - name: Build and package the static site
+        run: packaging/web/package.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-web
+          path: dist/release/*.zip
+          if-no-files-found: error
+
   release:
     name: Draft GitHub release
-    needs: [version, macos, windows, linux, flatpak]
+    needs: [version, macos, windows, linux, flatpak, web]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release
