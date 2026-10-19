@@ -3,6 +3,10 @@
 //! identical.
 use super::super::storage::StorageSetup;
 use super::*;
+#[allow(dead_code)]
+mod fixture152 {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-support/perf152_fixture.rs"));
+}
 
 struct Scratch(std::path::PathBuf);
 impl Drop for Scratch {
@@ -29,29 +33,11 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
     let mut h = storage_harness(storage_app(&scratch.0, "recovery", None));
     let canvas = h.state().canvas;
     let original = h.state().session.document().clone();
-    let id = |n: u32| NodeId::from_bytes(u128::from(n + 1000).to_be_bytes());
-    // 20 rows of a Text node feeding a chain of 9 routers: 200 creates and 180 wires.
+    let id = |n: u32| fixture152::id(usize::try_from(n).unwrap());
+    fixture152::build(&mut h.state_mut().session, canvas, "rows", 200, "structure.router");
     let dispatch = |h: &mut Harness<'static, NodeCraftApp>, command: &str, params: serde_json::Value| {
         h.state_mut().session.dispatch(command, &params).unwrap();
     };
-    for n in 0..200u32 {
-        let kind = if n % 10 == 0 { "source.text" } else { "structure.router" };
-        let pos = json!({"x": (n % 10) as f32 * 400.0, "y": (n / 10) as f32 * 320.0});
-        dispatch(&mut h, "node.create", json!({"canvas": canvas, "id": id(n), "kind": kind, "pos": pos}));
-        if n % 10 != 0 {
-            let edge = nodecraft_graph::Edge {
-                id: nodecraft_types::EdgeId::from_bytes(u128::from(n + 5000).to_be_bytes()),
-                from: nodecraft_graph::Endpoint { node: id(n - 1), port: "out".into() },
-                to: nodecraft_graph::Endpoint { node: id(n), port: "in".into() },
-                order: 0,
-            };
-            dispatch(&mut h, "edge.connect", json!({"canvas": canvas, "edge": edge}));
-        }
-    }
-    for n in (0..200u32).step_by(10) {
-        let value = json!({"type": "text", "value": format!("Row {}: a quiet forest at dawn.", n / 10)});
-        dispatch(&mut h, "node.param_set", json!({"canvas": canvas, "id": id(n), "name": "text", "value": value}));
-    }
     h.run();
     let built = h.state().session.document().canvases().get(&canvas).unwrap();
     assert_eq!((built.nodes().len(), built.edges().len()), (original.canvases().get(&canvas).unwrap().nodes().len() + 200, 180));

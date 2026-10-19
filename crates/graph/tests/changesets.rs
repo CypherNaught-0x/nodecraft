@@ -517,38 +517,8 @@ fn types_and_media_hashes_share_bytes_and_canonical_hex() {
 #[test]
 #[ignore = "manual release performance measurement"]
 fn structural_chain_apply_undo_redo_benchmark() {
-    for count in [500u32, 1000, 2000, 4000] {
-        let mut project = project();
-        let before = project.clone();
-        let mut changes = Vec::new();
-        for n in 1..=count {
-            let mut item = node(1);
-            item.id = NodeId::from_bytes(u128::from(n).to_be_bytes());
-            changes.push(Change::AddNode { canvas: canvas(), node: item });
-        }
-        for n in 2..=count {
-            changes.push(Change::Connect {
-                canvas: canvas(),
-                edge: Edge {
-                    id: EdgeId::from_bytes(u128::from(n).to_be_bytes()),
-                    from: Endpoint { node: NodeId::from_bytes(u128::from(n - 1).to_be_bytes()), port: "out".into() },
-                    to: Endpoint { node: NodeId::from_bytes(u128::from(n).to_be_bytes()), port: "in".into() },
-                    order: 0,
-                },
-            });
-        }
-        let started = std::time::Instant::now();
-        let undo = Changeset::new(changes).apply(&mut project).unwrap();
-        let apply_time = started.elapsed();
-        let expected = project.clone();
-        let started = std::time::Instant::now();
-        let redo = undo.apply(&mut project).unwrap();
-        let undo_time = started.elapsed();
-        assert_eq!(project, before);
-        let started = std::time::Instant::now();
-        redo.apply(&mut project).unwrap();
-        let redo_time = started.elapsed();
-        assert_eq!(project, expected);
-        eprintln!("{count} nodes: apply {apply_time:?}, undo {undo_time:?}, redo {redo_time:?}");
-    }
+    perf152::collect();
 }
+
+#[path = "changesets/perf152.rs"]
+mod perf152;
