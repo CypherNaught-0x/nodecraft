@@ -49,6 +49,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.move",
     "node.title",
     "node.param_set",
+    "node.model_preview",
+    "node.set_model",
     "edge.connect",
     "edge.disconnect",
     "edge.rewire",

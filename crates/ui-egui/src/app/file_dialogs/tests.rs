@@ -1,5 +1,8 @@
 use super::*;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 struct Scratch(PathBuf);
@@ -863,4 +866,78 @@ fn inline_save_runner_fallback_completes_without_leaving_a_pending_file_owner() 
     settle(&mut h);
     assert!(!h.state().session.file_status().dirty);
     assert!(!h.state().files.owns_input());
+}
+
+fn model_owner_app(dir: &Scratch) -> (NodeCraftApp, NodeId) {
+    let mut app = dir.app("model-owner-journal");
+    let id = NodeId::from_bytes([157; 16]);
+    let params = [("model".into(), Value::Text("openai-images.sunburst".into())), ("prompt".into(), Value::Text("Circle".into()))].into();
+    let node = app.session.kinds().get("generation.image").unwrap().instantiate_instance(id, Default::default(), &params).unwrap();
+    app.session.dispatch("node.add", &json!({"canvas":app.canvas,"node":node})).unwrap();
+    (app, id)
+}
+
+#[test]
+fn model_and_file_pickers_cannot_acquire_a_second_owner() {
+    let dir = Scratch::new("model-file-owner472");
+    let (mut app, id) = model_owner_app(&dir);
+    let calls = Rc::new(Cell::new(0));
+    let observed = calls.clone();
+    app.files.picker = Box::new(move |_| {
+        observed.set(observed.get() + 1);
+        Ok(Box::pin(std::future::pending()))
+    });
+    let mut h = harness(app);
+    settle(&mut h);
+    h.get_by_label("File").click();
+    settle(&mut h);
+    let revision = h.state().session.revision();
+    let canvas = h.state().canvas;
+    assert!(h.state_mut().open_model_picker(canvas, vec![id], revision).is_err(), "the actual File menu owns model opening");
+    assert!(h.state().model_choice.is_none());
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
+    settle(&mut h);
+    assert!(h.get_by_label("File").accesskit_node().is_disabled());
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    assert_eq!(calls.get(), 0, "model ownership cannot create an OS-picker future");
+    assert!(h.state().files.pending.is_none());
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    h.state_mut().begin_file("file.open", &ctx);
+    assert_eq!(calls.get(), 1, "the finished model owner permits a later File operation");
+    assert!(h.state().files.pending.is_some());
+    assert!(h.state_mut().open_model_picker(canvas, vec![id], revision).is_err(), "a parked File future retains its slot");
+    assert!(h.state().model_choice.is_none());
+}
+
+#[test]
+fn file_completion_keeps_model_opening_refused_until_the_next_frame() {
+    let dir = Scratch::new("model-file-completion472");
+    let (mut app, id) = model_owner_app(&dir);
+    app.files.picker = Box::new(|_| Ok(Box::pin(std::future::ready(Ok(None)))));
+    let attempted = Rc::new(Cell::new(false));
+    let observed = attempted.clone();
+    let mut h = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).with_max_steps(120).build_ui_state(
+        move |ui, app: &mut NodeCraftApp| {
+            let was_pending = app.files.pending.is_some();
+            app.show(ui);
+            if was_pending && app.files.pending.is_none() && !observed.replace(true) {
+                assert!(app.open_model_picker(app.canvas, vec![id], app.session.revision()).is_err(), "completion still owns the current frame");
+                assert!(app.model_choice.is_none());
+            }
+        },
+        app,
+    );
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    settle(&mut h);
+    assert!(attempted.get());
+    let canvas = h.state().canvas;
+    let revision = h.state().session.revision();
+    h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
+    assert!(h.state().model_choice.is_some());
 }

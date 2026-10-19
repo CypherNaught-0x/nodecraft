@@ -12,6 +12,7 @@ pub mod comments;
 pub mod history;
 pub mod ids;
 pub mod keys;
+pub mod model_picker;
 pub mod navigation;
 pub mod noodle;
 pub mod order;

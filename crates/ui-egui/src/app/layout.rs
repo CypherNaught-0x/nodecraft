@@ -132,7 +132,9 @@ impl NodeCraftApp {
         result
     }
     fn layout_busy(&self, ctx: &egui::Context) -> bool {
-        !(canvas::MIN_ZOOM..=canvas::MAX_ZOOM).contains(&self.view.zoom)
+        self.model_choice.is_some()
+            || self.model_frame_owned
+            || !(canvas::MIN_ZOOM..=canvas::MAX_ZOOM).contains(&self.view.zoom)
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.drag.is_some()

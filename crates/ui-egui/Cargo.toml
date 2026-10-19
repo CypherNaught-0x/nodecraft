@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 nodecraft-engine = { workspace = true }
+nodecraft-catalog.workspace = true
 nodecraft-graph.workspace = true
 nodecraft-types.workspace = true
 nodecraft-nodes.workspace = true

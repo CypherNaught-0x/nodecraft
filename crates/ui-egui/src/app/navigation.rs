@@ -24,6 +24,8 @@ impl NodeCraftApp {
         let file_owned = false;
         let blocked = file_owned
             || egui::Popup::is_any_open(ctx)
+            || self.model_choice.is_some()
+            || self.model_frame_owned
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.wiring.is_some()
