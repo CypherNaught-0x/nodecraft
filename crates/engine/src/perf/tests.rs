@@ -64,7 +64,7 @@ fn nothing_is_recorded_while_stopped_and_no_clock_means_unsupported_not_zero() {
     assert_eq!((save.supported, save.samples, save.p50), (false, 0, None));
     assert!(report.workload.is_none());
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["schema"], "nodecraft.perf/1");
+    assert_eq!(json["schema"], "nodecraft.perf/2");
     assert!(json["metrics"][0]["p50"].is_null(), "unmeasured is null, never 0");
 }
 
@@ -104,7 +104,7 @@ fn commands_start_stop_and_report_and_dispatch_is_timed_without_document_content
 
 #[test]
 #[ignore = "overhead measurement, run on demand"]
-fn recording_overhead_on_and_off() {
+fn recorder_push_microbenchmark_on_and_off() {
     let mut r = Recorder::default();
     let started = std::time::Instant::now();
     for us in 0..1_000_000u64 {
@@ -117,7 +117,7 @@ fn recording_overhead_on_and_off() {
         r.record(Metric::Dispatch, us % 20_000);
     }
     let on = started.elapsed();
-    eprintln!("1M samples: off {off:?}, on {on:?}");
+    eprintln!("recorder-only (no callbacks or workload collection), 1M pushes: off {off:?}, on {on:?}");
 }
 
 #[test]
