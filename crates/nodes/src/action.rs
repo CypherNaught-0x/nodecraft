@@ -183,6 +183,76 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
                 slider("height", "Height", 0.01, 1.0, 0.01, 1.0)?,
             ],
         ),
+        image(
+            "image.key",
+            "Remove color",
+            vec![
+                color("target", "Color", "#00ff00"),
+                slider("tolerance", "Tolerance", 0.0, 1.0, 0.01, 0.1)?,
+                slider("softness", "Softness", 0.0, 1.0, 0.01, 0.1)?,
+                choice("mode", "Keep", &[("remove_matched", "Everything else"), ("keep_matched", "Only this color")], "remove_matched"),
+            ],
+        ),
+        image(
+            "image.replace_color",
+            "Replace color",
+            vec![
+                color("target", "Color", "#00ff00"),
+                slider("tolerance", "Tolerance", 0.0, 1.0, 0.01, 0.1)?,
+                slider("softness", "Softness", 0.0, 1.0, 0.01, 0.1)?,
+                color("replacement", "With", "#000000"),
+                toggle("replace_alpha", "Replace transparency too", false),
+            ],
+        ),
+        image(
+            "image.aspect",
+            "Aspect ratio",
+            vec![
+                choice(
+                    "ratio",
+                    "Ratio",
+                    &[("square", "1:1"), ("landscape4_3", "4:3"), ("portrait3_4", "3:4"), ("landscape16_9", "16:9"), ("portrait9_16", "9:16")],
+                    "square",
+                ),
+                choice("mode", "Fit", &[("crop", "Crop"), ("pad", "Pad")], "crop"),
+                when(color("padding", "Padding", "#000000"), "mode", "pad"),
+                slider("x", "Horizontal anchor", 0.0, 1.0, 0.01, 0.5)?,
+                slider("y", "Vertical anchor", 0.0, 1.0, 0.01, 0.5)?,
+            ],
+        ),
+        kind(
+            "image.overlay",
+            "Overlay",
+            vec![port("image", Modality::Image, false), port("overlay", Modality::Image, false)],
+            vec![port("out", Modality::Image, false)],
+            vec![
+                choice(
+                    "anchor",
+                    "Position",
+                    &[
+                        ("center", "Center"),
+                        ("top_left", "Top left"),
+                        ("top", "Top"),
+                        ("top_right", "Top right"),
+                        ("left", "Left"),
+                        ("right", "Right"),
+                        ("bottom_left", "Bottom left"),
+                        ("bottom", "Bottom"),
+                        ("bottom_right", "Bottom right"),
+                    ],
+                    "bottom_right",
+                ),
+                slider("size", "Size", 0.02, 1.0, 0.01, 0.25)?,
+                slider("opacity", "Opacity", 0.0, 1.0, 0.01, 1.0)?,
+            ],
+        ),
+        kind(
+            "image.duplicate",
+            "Duplicate",
+            vec![port("image", Modality::Image, false)],
+            vec![port("out", Modality::Image, true)],
+            vec![count("count", "Copies", 1, 64, 4)],
+        ),
         image("image.resize", "Resize", vec![slider("factor", "Scale", 0.02, 8.0, 0.01, 0.5)?, choice("resampling", "Resampling", RESAMPLING, "bilinear")]),
         kind(
             "text.split",
@@ -217,6 +287,21 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
             ],
         ),
         kind(
+            "text.template",
+            "Template",
+            vec![port("values", Modality::Text, true)],
+            vec![port("out", Modality::Text, false)],
+            vec![ParamSpec {
+                name: "template".into(),
+                label: "Template".into(),
+                description: Some("{{1}}, {{2}}, … insert the connected texts in the order they are connected; a list (such as Split text's parts) counts one field per item.".into()),
+                control: ParamControl::Text { multiline: true, max_bytes: 64 * 1024 },
+                required: false,
+                default: Some(Value::Text("{{1}}".into())),
+                visible_if: None,
+            }],
+        ),
+        kind(
             "text.concat",
             "Join text",
             vec![port("texts", Modality::Text, true)],
@@ -239,15 +324,26 @@ impl NodeKind for ActionKind {
 
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
         let wanted = self.descriptor.inputs.first().map(|p| p.port_type.modality)?;
-        (inputs.len() == 1 && inputs.iter().all(|t| t.modality == wanted)).then(|| ModeId::new("action").ok()).flatten()
+        let fits = !inputs.is_empty() && inputs.len() <= self.descriptor.inputs.len() && inputs.iter().all(|t| t.modality == wanted);
+        fits.then(|| ModeId::new("action").ok()).flatten()
     }
 
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         let params = self.validate_instance(ctx.node, true)?.into_visible_values();
-        let port = self.descriptor.inputs.first().map(|p| p.name.as_str()).unwrap_or_default();
-        let inputs: Vec<Value> = ctx.inputs.iter().filter(|i| i.port == port).map(|i| i.value.clone()).collect();
-        if inputs.is_empty() {
-            return Err(invalid("connect an input first"));
+        // One value per input port, in the order the kind declares them (a list port's values
+        // all go in, in order); every port must be connected.
+        let mut inputs: Vec<Value> = Vec::new();
+        for port in &self.descriptor.inputs {
+            let mut values = ctx.inputs.iter().filter(|i| i.port == port.name).map(|i| i.value.clone());
+            if port.port_type.many {
+                let all: Vec<Value> = values.collect();
+                if all.is_empty() {
+                    return Err(invalid("connect an input first"));
+                }
+                inputs.extend(all);
+            } else {
+                inputs.push(values.next().ok_or_else(|| invalid("connect every input first"))?);
+            }
         }
         let output = self.descriptor.outputs.first().map(|p| p.name.clone()).unwrap_or_default();
         Ok(vec![JobSpec::Action { node: ctx.node.id, action: self.descriptor.id.clone(), params, inputs, output }])
