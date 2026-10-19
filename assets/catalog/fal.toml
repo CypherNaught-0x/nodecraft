@@ -1,0 +1,140 @@
+# Official fal model HTTP schemas and endpoint pricing checked 2026-10-18. Live aliases, no immutable weights.
+# https://fal.ai/models/fal-ai/trellis-2/api?platform=http
+
+[[model]]
+id="fal.flux-schnell"
+provider="fal"
+provider_model="fal-ai/flux/schnell"
+label="FLUX Schnell (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="num_inference_steps"
+label="Steps"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="4"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.wan22"
+provider="fal"
+provider_model="fal-ai/wan/v2.2-a14b/text-to-video"
+label="Wan 2.2 (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1}]
+
+[[model.params.params]]
+name="num_frames"
+label="Frames"
+control={type="unsigned",min="17",max="81",step="1"}
+default={type="unsigned",value="81"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="1:1",label="1:1"}]}
+default={type="text",value="16:9"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.kokoro"
+provider="fal"
+provider_model="fal-ai/kokoro/american-english"
+label="Kokoro (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-audio"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="af_heart",label="af_heart"},{value="am_adam",label="am_adam"}]}
+default={type="text",value="af_heart"}
+
+[[model.params.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.5,max=2.0,step=0.1}
+default={type="number",value=1.0}
+
+[[model]]
+id="fal.trellis2"
+provider="fal"
+provider_model="fal-ai/trellis-2"
+label="Trellis 2 (fal)"
+description="Bounded queue adapter; live model alias. Fixed 512 resolution, dated 0.25 USD estimate."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.25 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.esrgan"
+provider="fal"
+provider_model="fal-ai/esrgan"
+label="ESRGAN (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="upscale"
+output="image"
+inputs=[{role="image",modality="image",min=1,max=1}]

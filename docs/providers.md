@@ -8,6 +8,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
+| **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and direct-adapter reference editing | Three stable Gemini models, unknown usage price; canvas resolver/mixed/list routing limitations below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -16,6 +17,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
+| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 
 ## Setting up catalog providers
@@ -96,8 +98,10 @@ default to unknown; observing zero socket accepts or matching an error kind gran
 evidence. This is an adapter contract, not a sandbox or an automatic enforcement guarantee.
 Browser delivery remains conservative.
 
-Only the audited LLM Provider path can currently certify a whole submission: local validation
-or a native pre-execute build failure, with no earlier possible delivery or outstanding work.
+The audited LLM Provider path can certify a whole submission after local validation or a native
+pre-execute build failure, with no earlier possible delivery or outstanding work. Gemini Images
+can certify pure local validation failure, but deliberately marks delivery unknown before
+constructing its no-redirect HTTP future; a native builder failure there remains conservative.
 Legacy Provider and Http implementations default to unknown before their future constructors
 are called, for **all** error kinds. Comfy remains conservative because submission may query
 history/queue/catalogs, upload inputs and dispatch a prompt. A generic Auth, RateLimited or
@@ -284,6 +288,127 @@ deadline still requests best-effort cancellation when a handle exists. Provider-
 duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
 nor a typed runtime-usage schema is supplied by this safety follow-up.
 
+
+## Gemini Images (`gemini-images` feature)
+
+The existing host provider factory reads the `gemini` keychain account for `gemini-images`,
+using the same readiness and routing path as other catalog adapters. Construction sends no
+requests; this adds no paid-run host or production media-input resolver.
+
+GeminiImages uses the stateless Gemini Interactions REST API at the fixed Google origin, with store/background/stream false. Supported stable model IDs are gemini-nano-banana-2.1, gemini-3.1-flash-lite-image and gemini-3-pro-image. Vertex and retired Imagen endpoints are not implemented. The catalog offers generation and direct-adapter editing with up to fourteen ordered PNG/JPEG/WebP references. Lite is not optimized for multiple-reference or sequential editing. No masks, remote URLs, conversation state, search/tools, count, quality or output-format switches. Output is explicitly inline JPEG. Lite's wire image_size is `1K` per REST enum and guide, despite its model page's conflicting `1024px` prose. Other models offer 1K/2K/4K; the documented local ten-aspect subset is in the catalog.
+
+Pass an API key as a Secret from the host's OS credential store, not a project field. The adapter uses x-goog-api-key as a secret header, generic User-Agent, no redirect following, and no automatic replay of uncertain paid requests. The local idempotency key is not a remote deduplication guarantee. A timeout, redirect, malformed response or cancellation after dispatch may still be billed. Poll has no resumable handle and cancel cannot confirm remote cancellation. Builtin browser transport explicitly refuses no-redirect requests; wasm compilation is supported with an audited host transport. No keys, prompts or provider response excerpts appear in adapter diagnostics.
+
+Pricing is ByUsage USD, unknown rather than free; token counts do not become actual currency. Every finite budget cap, including zero, refuses an unknown paid registration before transport. An explicitly uncapped host may run. Missing or malformed optional usage never discards otherwise valid images; returned Usage.cost is None. Main can have no numeric ledger record when neither estimate nor actual cost is available; this provider does not repair that limitation or imply a zero bill.
+
+The adapter preserves all final image/text blocks in order and validates the complete image collection before returning Completed. Unknown output types, URI-only output, corrupt later images and incomplete/nonterminal responses refuse rather than silently publish partial results. Thought summaries are bounded private metadata, not final output. Text-only output reports an actionable malformed/no-image result; the selected Interactions schema does not expose generateContent finishReason/safetyRatings, so arbitrary 403 or a text sentence is not guessed to be BlockedContent.
+
+Current canvas limitations are explicit: generate::provider_job cannot resolve graph Media assets, so catalog editing data does not implement end-to-end canvas editing. Direct ProviderJob::Media editing works with supplied bytes. generate::produced needs a Text route for mixed text/images, and Run requires list ports for multiple values; scalar image ports refuse multiple images. Hosts must retain the original paid Completed while conversion/assembly may refuse, not drop text/images or retry generation. This is caller responsibility, not automatic durable result retention. Tests exercise the actual converter and Run boundaries without changing engine behavior.
+
+Local lower-only limits: prompt 128,000 bytes / 32,000 characters; 15 inputs / 14 references; 8 MiB per input and 48 MiB total; 64 MiB request; 65 MiB response; 16 final images; 8 MiB per output and 48 MiB total. Structural limits are 64 steps / 256 content items, JSON depth 16 / 8,192 members / 16,384 values / 4,096 strings, 256 KiB metadata including 64 KiB text, and 64 MiB aggregate image base64. Images have an 8,192-pixel axis cap, 17,203,200 pixels per image and 34,406,400 pixels total. These shared image limits apply to references as well as outputs. The aggregate admits two largest documented 4K outputs, not sixteen maximum-size images; every byte, count and pixel bound still applies. Any later invalid or excessive image refuses the whole collection.
+
+For Nano and Pro, requested 1K/2K/4K geometry is checked against lowered axis, per-image, two-image aggregate and JPEG pixel/orientation allowances before reference decoding or POST. This cannot predict the actual returned count or encoded byte length. Lite has no separately identified dimension table in the checked guide: its default envelope is supported, but lowering any geometry or codec allowance conservatively refuses before POST. Actual probe and full codec validation remain mandatory for every image; the 256 MiB codec setting reserves pixels and possible orientation copies, not all codec workspace.
+
+The synchronous request allowance is 300 seconds, providing local service/body-transfer headroom for expensive work without automatically replaying it. This is not a measured service SLA, the engine's total RunLimits deadline, or proof that timeout/cancellation avoids billing. Catalog latency remains an approximate 120-second hint. The fixed request encoder uses a 4,096-byte stack buffer. The [tracked phase worksheet](decisions/2026-10-18-gemini-images.md#resource-ownership) charges known JPEG input/metadata copies and keeps every phase below the existing 628 MiB logical envelope; it does not bound allocator capacities, codec-private workspace, transport internals, concurrent host owners or RSS.
+
+Original synthetic fixtures run offline. The ignored native smoke requires NODECRAFT_LIVE_GEMINI_IMAGES=1 plus NODECRAFT_LIVE_GEMINI_IMAGES_ACKNOWLEDGE_COST=1 and explicit spending authorization; optional second paid edit additionally requires NODECRAFT_LIVE_GEMINI_IMAGES_EDIT=1. No live test is selected in CI. Current source has not been validated against a paid service call.
+
+Contract checked 2026-10-18: [REST](https://ai.google.dev/api/interactions-api), [image guide](https://ai.google.dev/gemini-api/docs/image-generation), [Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image), [Nano](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1), [Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image).
+## fal.ai queue models
+
+The optional `fal` feature supports five explicit live aliases, checked against official HTTP
+schemas on 2026-10-18: `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
+`fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, and `fal-ai/esrgan`. These names are not
+immutable weight versions; upstream schema/model availability can change. Hosts inject a Secret
+and HTTP transport. The adapter never reads credentials, project keys or live-test variables.
+The existing host provider factory reads the `fal` keychain account and constructs the adapter
+off the UI thread, following the same readiness/routing path as other catalog providers.
+It does not supply a desktop paid-run service or production canvas media-input resolver.
+
+FLUX requests 512–1024 dimensions in multiples of 64, one to four PNG outputs, one to four steps
+and optional u32 seed. Wan selects 480p/16fps, 17–81 frames and three aspect ratios, explicitly
+turning interpolation off. Kokoro selects af_heart/am_adam and speed 0.5–2.0, returning WAV.
+Trellis selects resolution 512 and one inline image, returning GLB2. ESRGAN selects scale2,
+RealESRGAN_x4plus, face=false and PNG. Advanced/unknown parameters and extra roles refuse
+before HTTP. Image-to-3D/upscale input contracts are direct-adapter capabilities; their engine
+fixtures use an explicitly test-only immutable asset resolver. No shipping resolver is implied.
+
+The catalog uses ByUsage USD for FLUX/Wan/Kokoro/ESRGAN: unknown is not zero/free. Every finite
+budget cap refuses an unknown paid quote before invocation; an uncapped host still needs actual
+run.quote/run.start partial-price consent. Trellis512 has a dated 0.25 USD per-call estimate,
+verified from the [official endpoint](https://fal.ai/models/fal-ai/trellis-2/api?platform=http).
+Absent monetary usage never becomes a provider-observed invoice: existing runner estimate
+fallback is separate. Unknown-price completions may have no numeric money row, not free work.
+
+Accepted receipts publish a versioned handle before polling, even for already-completed work.
+Persist it to resume after restart without another create. Model-specific operation roots are
+explicitly allowlisted: FLUX uses fal-ai/flux, Wan fal-ai/wan, Kokoro fal-ai/kokoro, Trellis and
+ESRGAN their complete model names. Request IDs are one ASCII alphanumeric/hyphen/underscore
+segment, up to 128 bytes; percent escapes, slashes, dots and URL normalization aliases refuse.
+Only FLUX additionally accepts the full-root status/result(/response)/cancel family printed
+in the [generic queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue).
+Families cannot be mixed. Normal handles use admitted returned routes. Separately, a complete
+bounded receipt with a safe request ID permits exactly one cleanup PUT on the canonical local
+model-root `/cancel` URL if later route or metadata admission refuses. Rejected returned URLs
+never gain authority. The original failure reports the safe ID and actual cleanup disposition;
+malformed, duplicate, secret-bearing or missing identities permit no cleanup. These route
+families compose official model HTTP roots and the generic contract, not observed paid receipts.
+
+No ambiguous create is automatically replayed. X-Fal-No-Retry and disabled fallback are sent,
+but these headers and local idempotency keys do not establish remote billing deduplication.
+NodeCraft treats only the matching HTTP/body pairs 202/CANCELLATION_REQUESTED,
+400/ALREADY_COMPLETED and 404/NOT_FOUND as successful best-effort cancel dispositions. Malformed,
+contradictory, authentication and server replies remain errors. This is an explicit NodeCraft
+policy: fal's SDK documents raising on 400/404. No disposition establishes nonbilling proof. Local poll/result/download/validation failures retain an accepted handle and unfinished
+run ownership; only validated remote terminal failure ends that generation. A retained handle
+cannot guarantee remote CDN retention: expired outputs can remain lost without paid replay.
+No partial Completed is published after a later output fails validation.
+
+API and CDN requests use the explicit no-redirect transport operation. Queue origin alone gets
+auth; output requests carry none. CDN URLs must be HTTPS fal.media or DNS-label subdomains,
+without credentials/explicit ports/fragments; bounded signed queries stay opaque and out of
+errors. Other storage hosts refuse safely. Builtin browser transport refuses no-redirect
+before fetch; successful wasm compilation does not imply browser fal networking support.
+
+Operation limits are lower-only: one PNG/JPEG/WebP input at most 1 MiB / 1024²; aggregate text and
+parameter strings 16 KiB; serialized request 2 MiB; API body 2 MiB; metadata 256 KiB; JSON depth 32 and
+4096 items. Four output files maximum, 16 MiB each / 48 MiB total; image axes 4096 and aggregate
+16,777,216 pixels. Every descriptor is admitted before downloads; actual HTTP body caps shrink
+with remaining aggregate capacity. Full image codecs and actual geometry are checked; WAV,
+MP4 and GLB2 receive bounded container-envelope validation, not complete audio/video/mesh codec
+or playback validation. Media names/MIME alone never validate bytes. All returned files survive
+in order on success. Asset/graph conversion quotas can still refuse with original paid
+CompletionDelivery retained by the host; adapter errors before Completed retain only the
+accepted remote handle, not a hidden partial-file cache.
+
+Known logical-payload worksheet (MiB), with phase overlap rather than a sum across all phases:
+
+| Phase | Known payload owners | MiB |
+|---|---|---:|
+| Input inspection | Inspection 2 + combined decoded/orientation rasters 128 + scratch 1 | 131 |
+| Request/receipt | URI, request, native request clone, API reply, metadata and scratch | 12 |
+| Result metadata | Bounded descriptors and parsing payload | 6 |
+| Download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
+
+A separate container/admin payload allowance of 4 gives a 202 MiB logical-payload worksheet,
+not an allocation or RSS ceiling. HTTP body **length** is bounded; transport `Vec` capacity may
+exceed that length through allocator growth and is additional, including its overlap with Arc
+conversion. The adapter must not reject already-paid valid bytes merely because capacity grew.
+Pixel/orientation objects drop before the next codec/encoder phase; 16-bit PNG and orientation
+are included in known raster owners. Existing media preflight uses decoder.total_bytes plus an
+orientation copy against 128 MiB; most codecs ignore their private allocation limit.
+Codec-private workspace, spare transport capacity, allocator overhead, transport/TLS/kernel
+buffering, caller graph/history and concurrent jobs are outside this worksheet.
+
+HTTP errors preserve optional integer Retry-After seconds only when checked conversion fits
+within one hour. Optional `X-Fal-Billable-Units` evidence is tracked in #437; it is not tokens or
+money and is not invented as Usage cost.
+
+Unit/engine/native tests use synthetic official-shape JSON and originally authored small media,
+not authenticated receipts or paid output. The ignored live test requires fresh human spending
+authorization, explicit --ignored, NODECRAFT_LIVE_FAL=1 and
+NODECRAFT_LIVE_FAL_ACKNOWLEDGE_COST=1 BEFORE reading test-only FAL_KEY. It requests one small
+FLUX image; normal CI never runs it. No paid call was used for adapter validation.
 ## Seedream bounds and billing
 
 The optional `seedream` adapter uses the fixed BytePlus ModelArk image generation endpoint.
