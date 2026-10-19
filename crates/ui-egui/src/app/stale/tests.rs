@@ -51,3 +51,12 @@ fn utf8_and_controls_are_bounded_and_normalized() {
     assert!(!text.contains('\t'));
     assert!(text.len() <= MAX_TEXT);
 }
+
+#[test]
+fn explicit_unknown_diagnostic_kind_is_supported_but_arbitrary_strings_are_not() {
+    let mut value = report();
+    value["unknown"]["kind"] = json!("unknown");
+    assert!(summary(&value, 2).unwrap().contains("unknown: Unavailable"));
+    value["unknown"]["kind"] = json!("unrecognised_future_or_hostile_kind");
+    assert!(summary(&value, 2).is_err());
+}

@@ -99,6 +99,7 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.replace_color",
         "image.resize",
         "image.rotate",
+        "image.shader",
         "image.tint",
     ];
     let mut image_one: Vec<&str> = image_actions.to_vec();

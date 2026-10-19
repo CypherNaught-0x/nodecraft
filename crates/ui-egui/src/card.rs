@@ -323,17 +323,17 @@ fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, gr
     let response = ui.interact(area, ui.id().with("image"), Sense::hover());
     let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
     match image {
-        Preview::Ready { texture, size } => {
+        Preview::Ready { texture, size, source_size } => {
             let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
             let scale = (area.width() / w).min(area.height() / h);
             let fitted = Rect::from_center_size(area.center(), Vec2::new(w * scale, h * scale));
             painter.image(*texture, fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
             if let Some((rows, columns, full)) = grid {
-                draw_grid(&painter, fitted, rows, columns, full.unwrap_or(*size), t);
-                let label = format!("Image {}×{}, split preview {rows} rows by {columns} columns", size[0], size[1]);
+                draw_grid(&painter, fitted, rows, columns, full.unwrap_or(*source_size), t);
+                let label = format!("Image {}×{}, split preview {rows} rows by {columns} columns", source_size[0], source_size[1]);
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label.clone()));
             } else {
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Image {}×{}", size[0], size[1])));
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Image {}×{}", source_size[0], source_size[1])));
             }
         }
         Preview::Pending | Preview::Unavailable(_) => {

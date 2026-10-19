@@ -193,11 +193,15 @@ impl NodeCraftApp {
             .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
         let notice = self.notice.as_deref().or(hidden);
         if notice.is_some() || self.stale_snapshot.is_some() {
-            egui::Area::new(ui.id().with("notice"))
+            let mut dismiss_check = false;
+            let notice_id = ui.id().with("notice");
+            let previous_size = egui::AreaState::load(ui.ctx(), notice_id).map(|state| state.rect().size());
+            let area = egui::Area::new(notice_id)
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
+                        ui.set_max_width((2.0 * t.card_width).min(viewport.width().max(0.0)));
                         if let Some(notice) = notice {
                             ui.label(notice);
                         }
@@ -205,11 +209,18 @@ impl NodeCraftApp {
                             self.editors.clear();
                         }
                         if let Some(snapshot) = &self.stale_snapshot {
-                            ui.set_max_width((2.0 * t.card_width).min(viewport.width().max(0.0)));
                             ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
+                            dismiss_check = ui.small_button("Dismiss check").clicked();
                         }
                     });
                 });
+            // A changed bottom-anchored area needs a settled frame before its controls are hit-tested.
+            if previous_size != Some(area.response.rect.size()) {
+                ui.ctx().request_repaint();
+            }
+            if dismiss_check {
+                self.stale_snapshot = None;
+            }
             for (open, id) in [(self.palette.is_some(), "quick_add_palette"), (self.turn_into.is_some(), "turn_into_menu")] {
                 if open {
                     ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(id)));

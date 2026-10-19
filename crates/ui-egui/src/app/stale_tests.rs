@@ -11,6 +11,7 @@ fn stale_palette_action_is_available_without_empty_params() {
     );
 }
 
+use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 use nodecraft_graph::{Edge, Endpoint, Generation, Port};
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
@@ -481,4 +482,57 @@ fn stale339_visual_current() {
     check(&mut h);
     assert!(visible(&h));
     h.render().unwrap().save(root.join("zero-recorded.png")).unwrap();
+}
+
+#[test]
+fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draft() {
+    let mut h = super::tests::harness();
+    let canvas = h.state().canvas;
+    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().values().next().unwrap().id;
+    for title in ["First public title", "Second public title"] {
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":node,"title":title})).unwrap();
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().selection.only(node);
+    h.run();
+    check(&mut h);
+    assert!(visible(&h));
+    // A real hidden editor draft must outlive this unrelated view-only dismissal.
+    h.get_by_role_and_label(Role::TextInput, "Text").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("Retain this public unsaved draft".into()));
+    h.run();
+    h.state_mut().view.zoom = 0.15;
+    h.state_mut().notice = Some("Keep this unrelated notice".into());
+    h.run();
+    assert!(h.state().editors.values().any(|editor| editor.hidden_dirty));
+    let drafts: Vec<_> = h.state().editors.iter().map(|(id, editor)| (*id, editor.draft_count(), editor.hidden_dirty)).collect();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let events = h.state().session.events_since(0).unwrap();
+    let selection = h.state().selection.clone();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    let view = h.state().view;
+    assert_eq!(history, (true, true));
+    assert!(h.ctx.content_rect().contains_rect(h.get_by_role_and_label(Role::Button, "Dismiss check").rect()));
+    h.get_by_role_and_label(Role::Button, "Dismiss check").click();
+    h.run();
+    assert!(h.state().stale_snapshot.is_none());
+    assert!(!visible(&h));
+    assert!(h.query_by_role_and_label(Role::Button, "Dismiss check").is_none());
+    h.get_by_label("Keep this unrelated notice");
+    h.get_by_role_and_label(Role::Button, "Discard drafts");
+    assert_eq!(h.state().notice.as_deref(), Some("Keep this unrelated notice"));
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.state().session.events_since(0).unwrap(), events);
+    assert_eq!(h.state().selection, selection, "the pointer must not activate the underlying canvas");
+    assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+    assert_eq!(h.state().view, view);
+    assert_eq!(h.state().editors.iter().map(|(id, editor)| (*id, editor.draft_count(), editor.hidden_dirty)).collect::<Vec<_>>(), drafts);
+    assert!(h.state().palette.is_none() && h.state().drag.is_none() && h.state().marquee.is_none() && h.state().wiring.is_none());
+    h.state_mut().view.zoom = 1.0;
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::MultilineTextInput, "Text").value().as_deref(), Some("Retain this public unsaved draft"));
 }

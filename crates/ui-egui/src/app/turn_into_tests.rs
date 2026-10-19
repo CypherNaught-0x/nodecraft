@@ -153,3 +153,49 @@ fn a_picked_up_noodle_dropped_on_empty_canvas_still_just_disconnects() {
     assert!(h.state().turn_into.is_none());
     assert!(!links(&h).contains(&(chain_id(1), chain_id(2))));
 }
+
+#[test]
+fn retained_menu_owns_clipboard_delete_and_history_keys_after_minimap_integration() {
+    for redo in [false, true] {
+        let mut h = chain_harness();
+        let canvas = h.state().canvas;
+        h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas,"id":chain_id(4),"pos":{"x":900.0,"y":400.0}})).unwrap();
+        if redo {
+            h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        }
+        h.state_mut().selection.only(chain_id(1));
+        h.run();
+        open_menu(&mut h);
+        let before = h.state().session.document().clone();
+        let revision = h.state().session.revision();
+        let selection = h.state().selection.clone();
+        let history = (h.state().session.can_undo(), h.state().session.can_redo());
+        let events = [
+            egui::Event::Copy,
+            egui::Event::Cut,
+            egui::Event::Paste("Turn into ownership sentinel".into()),
+            egui::Event::Key { key: egui::Key::D, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND },
+            egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: if redo { egui::Modifiers::COMMAND | egui::Modifiers::SHIFT } else { egui::Modifiers::COMMAND },
+            },
+        ];
+        for event in events {
+            h.event(event);
+            h.run();
+            assert!(h.state().turn_into.is_some());
+            assert_eq!(h.state().session.document(), &before);
+            assert_eq!(h.state().session.revision(), revision);
+            assert_eq!(h.state().selection, selection);
+            assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+            assert!(!h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(_))));
+        }
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().turn_into.is_none());
+    }
+}
