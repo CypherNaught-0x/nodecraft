@@ -15,6 +15,7 @@ struct Counters {
     appends: usize,
     flushes: usize,
     fail_append: bool,
+    fail_checkpoint: bool,
 }
 #[derive(Clone, Default)]
 struct Storage(Rc<RefCell<Counters>>);
@@ -32,6 +33,9 @@ impl ProjectStorage for Storage {
     fn checkpoint(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let mut s = self.0.borrow_mut();
         s.checkpoints += 1;
+        if s.fail_checkpoint {
+            return Err(invalid("injected checkpoint error"));
+        }
         s.memory.checkpoint(bytes)
     }
     fn append(&mut self, bytes: &[u8]) -> Result<(), Error> {
@@ -262,4 +266,45 @@ fn config_only_media_survives_history_root_collection_and_asset_gc() {
     assert!(s.assets.validate_project(s.document()).unwrap().contains(&hash));
     s.dispatch("edit.redo", &Value::Null).unwrap();
     assert!(s.retained_assets().unwrap().contains(&hash));
+}
+
+#[test]
+fn recovered_work_replaces_the_document_unsaved_at_its_file_and_checkpointed() {
+    // A session edits, then "crashes": its journal holds the edits.
+    let crashed = Storage::default();
+    let mut s = Session::with_storage(Snapshot { project: project(), assets: Default::default(), epoch: 0 }, Box::new(crashed.clone())).unwrap();
+    let mut extra = node();
+    extra.id = nodecraft_types::NodeId::from_bytes([0x5a; 16]);
+    s.dispatch("node.add", &serde_json::json!({"canvas": canvas(), "node": extra})).unwrap();
+    let edited = s.document().clone();
+    let recovered = journal::recover(&crashed.0.borrow().memory.recovery).unwrap();
+    assert_eq!(recovered.applied, 1);
+    // A new session offers it, and the person chooses Recover.
+    let fresh = Storage::default();
+    let start = || Snapshot { project: project(), assets: Default::default(), epoch: 0 };
+    let mut next = Session::with_storage(start(), Box::new(fresh.clone())).unwrap();
+    let revision = next.revision();
+    // A checkpoint that fails changes nothing.
+    fresh.0.borrow_mut().fail_checkpoint = true;
+    let before = (next.document().clone(), next.file_status());
+    assert!(next.recover(recovered.snapshot.clone(), None).is_err());
+    assert_eq!((next.document().clone(), next.file_status()), before);
+    assert_eq!(next.revision(), revision);
+    fresh.0.borrow_mut().fail_checkpoint = false;
+    let file = StorageLocation::Path("/projects/a.ncraft".into());
+    next.recover(recovered.snapshot.clone(), Some(file.clone())).unwrap();
+    assert_eq!(next.document(), &edited);
+    assert!(next.revision() > revision);
+    let status = next.file_status();
+    assert!(status.dirty && status.location == Some(file) && !status.recovery_required, "unsaved at its file, checkpointed");
+    assert!(!next.can_undo(), "history starts fresh");
+    // Its own journal now starts from the recovered project.
+    assert_eq!(journal::recover(&fresh.0.borrow().memory.recovery).unwrap().snapshot.project, edited);
+    // A session with edits of its own refuses: they'd be lost.
+    let mut busy = Session::with_storage(start(), Box::new(Storage::default())).unwrap();
+    busy.dispatch("node.add", &serde_json::json!({"canvas": canvas(), "node": Node::new(NodeId::from_bytes([0x5b; 16]), "source.text")})).unwrap();
+    assert_eq!(busy.recover(recovered.snapshot.clone(), None).unwrap_err().kind, ErrorKind::Conflict);
+    // Without storage, there is nothing to recover into.
+    let mut plain = Session::new(project()).unwrap();
+    assert_eq!(plain.recover(recovered.snapshot, None).unwrap_err().kind, ErrorKind::Unsupported);
 }

@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use nodecraft_format::{AssetStore, ProjectStorage, Snapshot};
+use nodecraft_format::{AssetStore, ProjectStorage, Snapshot, StorageLocation};
 use nodecraft_graph::{Change, Changeset, Project};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
@@ -267,6 +267,35 @@ impl Session {
     }
     pub fn status_revision(&self) -> u64 {
         self.status_revision
+    }
+    /// Host lifecycle boundary (#408): replaces the document with work recovered from an earlier
+    /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
+    /// session's file, or untitled), history starts fresh, and the change is published like an
+    /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
+    pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        if self.can_undo() || self.can_redo() {
+            return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
+        }
+        if !self.file_status().available {
+            return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
+        }
+        snapshot.project.validate()?;
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let next = self.execution.next()?;
+        let before = self.file_status();
+        let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+        storage.adopt_recovered(&snapshot, location)?;
+        self.document = snapshot.project;
+        self.assets = snapshot.assets;
+        self.undo = History::default();
+        self.redo = History::default();
+        self.gesture = None;
+        self.state = revision;
+        self.publish(revision, "file.recover", next);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        Ok(())
     }
     /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
     pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {

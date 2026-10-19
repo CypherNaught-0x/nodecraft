@@ -7,7 +7,7 @@ use nodecraft_engine::Session;
 use nodecraft_format::{AssetStore, NativeStorage, Snapshot};
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Where the app keeps its recovery journal, and the project to open at startup.
 #[derive(Clone, Debug)]
@@ -39,6 +39,60 @@ fn holds_work(recovery: &std::path::Path) -> bool {
     }
 }
 
+/// The file beside a journal (live or kept) naming the project file its session had open, so
+/// recovered work goes back to that file (#408). Absent for an untitled project.
+pub fn location_file(journal: &Path) -> PathBuf {
+    let mut name = journal.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".location");
+    journal.with_file_name(name)
+}
+
+/// The project file recorded beside `journal`, if any.
+pub fn recorded_location(journal: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(location_file(journal)).ok()?;
+    let text = text.trim_end_matches('\n');
+    (!text.is_empty() && text.len() <= MAX_LOCATION_BYTES).then(|| PathBuf::from(text))
+}
+
+/// Records `location` beside `journal` (written aside, then renamed over, so it's never half
+/// written); `None` removes the record.
+pub fn record_location(journal: &Path, location: Option<&Path>) -> std::io::Result<()> {
+    let file = location_file(journal);
+    let Some(location) = location.and_then(Path::to_str) else {
+        return match std::fs::remove_file(&file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    };
+    let mut aside = file.clone().into_os_string();
+    aside.push(".new");
+    std::fs::write(&aside, location)?;
+    std::fs::rename(&aside, &file)
+}
+
+/// Longest project path recorded beside a journal.
+const MAX_LOCATION_BYTES: usize = 4096;
+
+/// The journals kept beside `recovery`, oldest first.
+pub fn kept_journals(recovery: &Path) -> Vec<PathBuf> {
+    let Some(name) = recovery.file_name().and_then(|n| n.to_str()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{name}.unrecovered-");
+    let Ok(entries) = recovery.parent().map_or_else(|| std::fs::read_dir("."), std::fs::read_dir) else {
+        return Vec::new();
+    };
+    let mut kept: Vec<(u32, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let n = entry.file_name().to_str()?.strip_prefix(&prefix)?.parse::<u32>().ok()?;
+            Some((n, entry.path()))
+        })
+        .collect();
+    kept.sort();
+    kept.into_iter().map(|(_, path)| path).collect()
+}
+
 /// Copies a journal holding work at `recovery` to a fresh `<name>.unrecovered-<n>` beside it,
 /// flushed to disk, and returns where. Call with the journal's lock held.
 fn keep_unrecovered(recovery: &std::path::Path) -> Result<Option<PathBuf>, Error> {
@@ -54,6 +108,13 @@ fn keep_unrecovered(recovery: &std::path::Path) -> Result<Option<PathBuf>, Error
             // On disk before the original is checkpointed over.
             // Windows flushes only files opened for writing.
             std::fs::OpenOptions::new().write(true).open(&kept).and_then(|file| file.sync_all()).map_err(unreadable)?;
+            // The project file it belongs to goes with it; without it, the work is recovered
+            // untitled, which loses nothing.
+            if let Some(location) = recorded_location(recovery)
+                && let Err(error) = record_location(&kept, Some(&location))
+            {
+                log::warn!("the kept journal's project file wasn't recorded: {error}");
+            }
             return Ok(Some(kept));
         }
     }
