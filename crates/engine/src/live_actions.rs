@@ -74,12 +74,7 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     }
     // Results already made for these exact inputs are reused first (free); what they feed is
     // planned in the next round, from the document with them in place.
-    let hits = crate::cache::hits(live, kinds, wanted.iter().copied(), || {
-        let bytes = crate::execution_identity::nonce()?;
-        let mut id = [0u8; 16];
-        id.copy_from_slice(bytes.get(..16).unwrap_or(&[0; 16]));
-        Ok(nodecraft_types::GenerationId::from_bytes(id))
-    })?;
+    let hits = crate::cache::hits(session.document(), canvas, kinds, wanted.iter().copied(), crate::cache::fresh_id)?;
     if !hits.is_empty() {
         return Ok(Some(LiveJob { canvas, base: session.revision(), id: [0; 16], plan: None, hits, live: live.clone(), assets: AssetStore::default() }));
     }
@@ -96,6 +91,8 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     if runnable.is_empty() {
         return Ok(None);
     }
+    // One round records at most one step's worth; the rest follow in the next round.
+    let runnable: BTreeSet<NodeId> = runnable.into_iter().take(crate::run_cmds::MAX_RESULTS).collect();
     let Planned::Ready(plan) = plan(live, kinds, &RunMode::WithUpstream, &runnable, &stale)? else { return Ok(None) };
     if !local_only(&plan, live, kinds) {
         return Ok(None);

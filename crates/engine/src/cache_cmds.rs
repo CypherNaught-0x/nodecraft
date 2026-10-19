@@ -3,7 +3,7 @@
 use crate::commands::{CommandSpec, Context, Effect, Phase, params};
 use nodecraft_exec::staleness::CACHE_CONFIG;
 use nodecraft_graph::{Change, Changeset};
-use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, Value as Wire};
+use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value as Wire};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -41,13 +41,6 @@ fn always(_: &Context<'_>, _: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn fresh() -> Result<GenerationId, Error> {
-    let bytes = crate::execution_identity::nonce()?;
-    let mut id = [0u8; 16];
-    id.copy_from_slice(bytes.get(..16).unwrap_or(&[0; 16]));
-    Ok(GenerationId::from_bytes(id))
-}
-
 fn reuse(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: ReuseParams = params(value)?;
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
@@ -58,7 +51,7 @@ fn reuse(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         return Err(Error::new(ErrorKind::InvalidInput, "look at 10,000 nodes at most"));
     }
     let nodes: Vec<NodeId> = p.nodes.unwrap_or_else(|| canvas.nodes().keys().copied().collect());
-    let hits = crate::cache::hits(canvas, c.kinds, nodes, fresh)?;
+    let hits = crate::cache::hits(c.document, p.canvas, c.kinds, nodes, crate::cache::fresh_id)?;
     let reused: Vec<NodeId> = hits.iter().map(crate::cache::Hit::node).collect();
     if hits.is_empty() {
         return Ok(Effect::None { result: json!({"reused": reused}) });
@@ -105,7 +98,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: cache_schema,
-            params_doc: "{canvas, id, enabled: bool|null}; whether the node reuses identical results; null returns it to its kind's default (on for actions, off for model calls). Doesn't make results stale. Returns {enabled}.",
+            params_doc: "{canvas, id, enabled: bool|null}; whether the node reuses identical results; null returns it to its kind's default (on for every kind that doesn't call a model, off for model calls). Doesn't make results stale. Returns {enabled}.",
             enabled: always,
             run: cache_set,
         },

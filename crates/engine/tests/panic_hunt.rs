@@ -409,6 +409,8 @@ fn typed_template_panic_hunt() {
                     // A command that found nothing to change (asking for the value it has) edits nothing.
                     if session.revision() == revision {
                         assert_eq!(session.document(), &before, "{id}");
+                        assert_eq!(session.events_since(0).unwrap(), events, "{id}");
+                        assert_eq!((session.can_undo(), session.can_redo()), history, "{id}");
                         continue;
                     }
                     let after = session.document().clone();

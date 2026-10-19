@@ -37,7 +37,7 @@ use std::{
 };
 
 /// The node `config` key holding whether it reuses identical results (#91): a boolean.
-pub const CACHE_CONFIG: &str = "cache";
+pub const CACHE_CONFIG: &str = "nodecraft.cache";
 
 /// Domain tag mixed into every hash. Bump it when what is hashed changes; results stamped under
 /// an older tag are then reported stale (see the module docs).
