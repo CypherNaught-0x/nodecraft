@@ -50,6 +50,8 @@ fn panic_hunt() {
             "reply",
             "resolved",
             "expected_revision",
+            "ids",
+            "revision",
             "model",
             "preview_binding",
         ] {
@@ -66,6 +68,12 @@ fn panic_hunt() {
     corpus.push(json!({"canvas":common::canvas(),"edge":common::edge(),"replace":[common::edge().id, common::edge().id]}));
     corpus.push(json!({"canvas":common::canvas(),"nodes":[common::node_id(1), common::node_id(1)],"edges":[common::edge().id]}));
     corpus.push(json!({"canvas":common::canvas(),"nodes":vec![common::node_id(9); 20_000]}));
+    // Bulk decoding must be exercised with the complete envelope, beyond its target preflight.
+    for raw in [Value::Null, json!("wrong"), json!({"type":"list","value":[null]}), json!({"type":"number","value":1e100})] {
+        corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(2)],"revision":0,"name":"text","value":raw}));
+    }
+    corpus.push(json!({"canvas":common::canvas(),"ids":vec![common::node_id(1);257],"revision":0,"name":"text","value":null}));
+    corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(1)],"revision":0,"name":"text","value":null}));
     for id in ids {
         for params in &corpus {
             let before = session.document().clone();
@@ -101,10 +109,13 @@ fn template(id: &str) -> (Session, Value) {
     if id == "edge.connect" {
         nodecraft_graph::Change::Disconnect { canvas: canvas(), id: edge().id }.apply(&mut document).unwrap();
     }
-    if id == "node.param_set" {
-        let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(3), &std::collections::BTreeMap::new()).unwrap();
-        source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
-        nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    if matches!(id, "node.param_set" | "node.params_set_bulk") {
+        let nodes = if id == "node.params_set_bulk" { vec![3, 4] } else { vec![3] };
+        for n in nodes {
+            let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(n), &std::collections::BTreeMap::new()).unwrap();
+            source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
+            nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+        }
     }
     if matches!(id, "node.model_preview" | "node.set_model") {
         let seed = Session::new(document.clone()).unwrap();
@@ -241,6 +252,7 @@ fn template(id: &str) -> (Session, Value) {
         "node.move" => movement.clone(),
         "node.title" => json!({"canvas":canvas(),"id":node_id(1),"title":"Renamed"}),
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
+        "node.params_set_bulk" => json!({"canvas":canvas(),"ids":[node_id(3),node_id(4)],"revision":0,"name":"text","value":null}),
         "node.model_preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"}),
         "node.set_model" => {
             let mut request = json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"});
@@ -359,6 +371,8 @@ fn typed_template_panic_hunt() {
             "/tag/title",
             "/tag/color",
             "/nodes/0",
+            "/ids/0",
+            "/ids/1",
             "/tags/0",
         ] {
             if valid.pointer(path).is_some() {

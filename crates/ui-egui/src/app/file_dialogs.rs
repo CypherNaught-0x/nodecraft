@@ -25,6 +25,7 @@ impl Stamp {
         Arc::ptr_eq(&self.session, &app.session.view_identity())
             && self.revision == app.session.revision()
             && !app.editors.values().any(EditorState::has_uncommitted)
+            && !app.bulk.has_uncommitted()
     }
 }
 enum Purpose {
@@ -166,7 +167,7 @@ impl NodeCraftApp {
             self.notice = Some("Saving and opening are unavailable in this window.".into());
             return;
         }
-        if self.editors.values().any(EditorState::has_uncommitted) {
+        if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
             return;
         }
@@ -494,7 +495,7 @@ impl NodeCraftApp {
             && self.files.pending.is_none()
             && !self.file_busy(ui.ctx())
         {
-            if self.editors.values().any(EditorState::has_uncommitted) {
+            if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() {
                 self.notice = Some("Finish or discard the current field edits before opening a project.".into());
             } else {
                 self.choose_open(path, Stamp::capture(self));

@@ -156,6 +156,48 @@ fn node_edits_use_shared_validation_and_undo_over_mcp() {
 }
 
 #[test]
+fn bulk_parameters_share_atomic_engine_admission_over_mcp() {
+    let mut s = server();
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let ids = [nodecraft_types::NodeId::from_bytes([18; 16]), nodecraft_types::NodeId::from_bytes([19; 16])];
+    for id in ids {
+        let node = kinds.get("source.text").unwrap().instantiate_instance(id, Default::default(), &Default::default()).unwrap();
+        assert_eq!(call(&mut s, "command_run", json!({"id":"node.add","params":{"canvas":CANVAS,"node":node}}))["isError"], false);
+    }
+    let original = s.session().unwrap().document().clone();
+    let revision = s.session().unwrap().revision();
+    let args = json!({"canvas":CANVAS,"ids":ids,"revision":revision,"name":"text","value":{"type":"text","value":"One shared prompt"}});
+    let listed = call(&mut s, "command_list", json!({"query":"node.params_set_bulk"}));
+    assert_eq!(listed["structuredContent"]["commands"][0]["id"], "node.params_set_bulk");
+    assert!(s.session().unwrap().enabled("node.params_set_bulk", &args).is_ok());
+    assert_eq!(call(&mut s, "command_run", json!({"id":"node.params_set_bulk","params":args}))["isError"], false);
+    assert_eq!(s.session().unwrap().revision(), revision + 1);
+    let changed = s.session().unwrap().document().clone();
+    for id in ids {
+        let inspected = call(&mut s, "canvas_inspect", json!({"canvas":CANVAS,"node":id}));
+        assert_eq!(inspected["structuredContent"]["node"]["params"]["text"]["value"], "One shared prompt");
+    }
+    assert_eq!(call(&mut s, "command_run", json!({"id":"edit.undo"}))["isError"], false);
+    assert_eq!(s.session().unwrap().document(), &original);
+    let revision = s.session().unwrap().revision();
+    for (targets, value) in [
+        (ids, json!({"type":"bool","value":true})),
+        ([ids[0], nodecraft_types::NodeId::from_bytes([20; 16])], json!({"type":"text","value":"No partial publication"})),
+    ] {
+        let args = json!({"canvas":CANVAS,"ids":targets,"revision":revision,"name":"text","value":value});
+        assert!(s.session().unwrap().enabled("node.params_set_bulk", &args).is_err());
+        assert_eq!(call(&mut s, "command_run", json!({"id":"node.params_set_bulk","params":args}))["isError"], true);
+        assert_eq!(s.session().unwrap().document(), &original);
+        assert_eq!(s.session().unwrap().revision(), revision);
+        assert!(s.session().unwrap().can_redo());
+        assert!(s.session().unwrap().events_since(revision).unwrap().is_empty());
+    }
+    assert_eq!(call(&mut s, "command_run", json!({"id":"edit.redo"}))["isError"], false);
+    assert_eq!(s.session().unwrap().revision(), revision + 1);
+    assert_eq!(s.session().unwrap().document(), &changed);
+}
+
+#[test]
 fn tool_failures_are_results_the_model_can_read() {
     let mut s = server();
     for (args, says) in [

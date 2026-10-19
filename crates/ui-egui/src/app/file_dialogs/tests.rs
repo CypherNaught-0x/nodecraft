@@ -941,3 +941,99 @@ fn file_completion_keeps_model_opening_refused_until_the_next_frame() {
     h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
     assert!(h.state().model_choice.is_some());
 }
+
+fn bulk_file_app(dir: &Scratch) -> NodeCraftApp {
+    let mut app = dir.app("bulk-file-journal");
+    let mut ids = std::collections::BTreeSet::new();
+    for (byte, text) in [(71_u8, "First retained text"), (72, "Second retained text")] {
+        let id = NodeId::from_bytes([byte; 16]);
+        let mut node = app.session.kinds().get("source.text").unwrap().descriptor().instantiate(id, &Default::default()).unwrap();
+        node.params.insert("text".into(), Value::Text(text.into()));
+        app.session.dispatch("node.add", &json!({"canvas":app.canvas,"node":node})).unwrap();
+        ids.insert(id);
+    }
+    app.selection.replace(ids);
+    app
+}
+
+#[test]
+fn bulk_file_menu_and_parked_picker_disable_actual_bulk_reset_controls() {
+    let dir = Scratch::new("bulk-file-owner473");
+    let mut app = bulk_file_app(&dir);
+    app.files.picker = Box::new(|_| Ok(Box::pin(std::future::pending())));
+    let mut h = harness(app);
+    settle(&mut h);
+    let before = h.state().session.document().clone();
+    h.get_by_label("File").click();
+    settle(&mut h);
+    let reset = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default");
+    assert!(reset.accesskit_node().is_disabled(), "the File panel owns bulk controls");
+    reset.click();
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &before);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    settle(&mut h);
+    assert!(h.state().files.pending.is_some());
+    let reset = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default");
+    assert!(reset.accesskit_node().is_disabled(), "a parked File future owns bulk controls");
+    reset.click();
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn dirty_bulk_draft_refuses_file_factory_and_remains_recoverable() {
+    let dir = Scratch::new("bulk-file-draft473");
+    let mut app = bulk_file_app(&dir);
+    let calls = Rc::new(Cell::new(0));
+    let observed = calls.clone();
+    app.files.picker = Box::new(move |_| {
+        observed.set(observed.get() + 1);
+        Ok(Box::pin(std::future::pending()))
+    });
+    let mut h = harness(app);
+    settle(&mut h);
+    let before = h.state().session.document().clone();
+    h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Edit for all…").click();
+    settle(&mut h);
+    h.event(egui::Event::Text("Recover this shared draft".into()));
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    assert_eq!(calls.get(), 0, "a bulk draft must not be replaced by file acquisition");
+    assert!(h.state().files.pending.is_none());
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::MultilineTextInput, "Text").value().as_deref(), Some("Recover this shared draft"));
+}
+
+#[test]
+fn file_completion_frame_cannot_publish_a_cached_bulk_reset_click() {
+    let dir = Scratch::new("bulk-file-completion473");
+    let mut app = bulk_file_app(&dir);
+    app.files.picker = Box::new(|_| Ok(Box::pin(std::future::ready(Ok(None)))));
+    let mut h = harness(app);
+    settle(&mut h);
+    let before = h.state().session.document().clone();
+    let reset = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default").rect().center();
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    assert!(h.state().files.pending.is_some());
+    h.input_mut().events.extend([
+        egui::Event::PointerMoved(reset),
+        egui::Event::PointerButton { pos: reset, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        egui::Event::PointerButton { pos: reset, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+    ]);
+    h.step();
+    assert!(h.state().files.pending.is_none());
+    assert_eq!(h.state().session.document(), &before, "completion owns the cached pointer click");
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default").accesskit_node().is_disabled());
+    settle(&mut h);
+    h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default").click();
+    settle(&mut h);
+    assert_ne!(h.state().session.document(), &before, "a later unowned explicit click remains usable");
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before);
+}

@@ -352,6 +352,7 @@ pub struct NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     drop_acquisition: drop::Acquisition,
     editors: BTreeMap<NodeId, EditorState>,
+    bulk: crate::bulk::Panel,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
     /// World rectangles painted this frame: authoritative for selection, noodle anchors,
@@ -642,6 +643,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             drop_acquisition: drop::Acquisition::new(),
             editors: BTreeMap::new(),
+            bulk: Default::default(),
             drag: None,
             marquee: None,
             painted: BTreeMap::new(),
@@ -758,7 +760,46 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
-        let model_blocks = self.model_overlay(ui);
+        let mut model_blocks = self.model_overlay(ui);
+        let bulk_enabled = !model_blocks
+            && !file_owns_input
+            && !file_menu_owns_input
+            && self.session.file_status().operation.is_none()
+            && !self.drop_pointer_owned()
+            && self.drag.is_none()
+            && self.marquee.is_none()
+            && self.wiring.is_none()
+            && self.reordering.is_none()
+            && self.comments.drag.is_none()
+            && !self.comments.gesture_cancelled
+            && !self.navigation.pointer_owned
+            && self.navigation.drag.is_none()
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+            && !self.keys.open
+            && (!canvas::text_input_focused(ui.ctx()) || self.bulk.owns_text_focus(ui.ctx()))
+            && (!egui::Popup::is_any_open(ui.ctx()) || self.bulk.owns_popup(ui.ctx()))
+            && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
+        let (bulk_blocks, bulk_request) = self.bulk.show(ui, &self.session, self.canvas, self.selection.nodes(), bulk_enabled, t);
+        if bulk_enabled && let Some(request) = bulk_request {
+            let result = match request {
+                crate::bulk::Intent::Parameters(params) => self.session.dispatch("node.params_set_bulk", &params).map(|_| ()),
+                crate::bulk::Intent::OpenModel { canvas, exact_ids, revision } => {
+                    let result = self.open_model_picker(canvas, exact_ids, revision);
+                    if result.is_ok() {
+                        model_blocks = true;
+                    }
+                    result
+                }
+            };
+            match result {
+                Ok(()) => self.notice = None,
+                Err(error) => {
+                    self.bulk.failed(error.message.clone());
+                    self.notice = Some(error.message);
+                }
+            }
+        }
         let comments_blocks = if model_blocks { true } else { self.comments_overlay(ui) };
         // A context menu is not permission to commit a dirty editor draft.
         if self.text_focused
@@ -846,6 +887,7 @@ impl NodeCraftApp {
                 || self.marquee.is_some()
                 || self.wiring.is_some()
                 || minimap_owned
+                || bulk_blocks
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || egui::Popup::is_any_open(ui.ctx())
@@ -920,6 +962,7 @@ impl NodeCraftApp {
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || minimap_owned
+                || bulk_blocks
                 || egui::Popup::is_any_open(ui.ctx());
             if !self.text_focused && !busy {
                 let bindings: Vec<(egui::Modifiers, egui::Key, String)> =
@@ -959,6 +1002,7 @@ impl NodeCraftApp {
         let file_owns_input = file_owns_input || self.files.owns_input();
         let overlay_blocks = self.navigation_overlay(ui, minimap_press)
             || model_blocks
+            || bulk_blocks
             || search_blocks
             || layout_blocks
             || comments_blocks
@@ -1499,6 +1543,7 @@ impl NodeCraftApp {
         self.navigation.finish_frame(ui.ctx());
         self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
+        self.bulk.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
         self.keys_button(ui, viewport);
