@@ -135,6 +135,7 @@ crates/
 apps/
   nodecraft                   desktop app (eframe/wgpu)
   nodecraft-cli               headless CLI with the integrated MCP server
+  nodecraft-web               the same app in the browser (wasm preview, built with trunk)
 xtask/                        cargo xtask layers | wasm | ci | version
 packaging/                    per-OS release packaging (docs/releasing.md)
 ```

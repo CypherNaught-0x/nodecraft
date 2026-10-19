@@ -12,9 +12,9 @@ an admission handle. Same-parent contention refuses without waiting; independent
 progress without a global mutex/registry. Windows marker contents are read only after exclusive
 locking, while pre-lock metadata/type/reparse/length checks remain conservative. PID is not proof.
 
-Bound startup work to4,096 parent entries,64 inventory ATTEMPTS and256 payload unlinks. Validate
+Bound startup work to 4,096 parent entries, 64 inventory ATTEMPTS and 256 payload unlinks. Validate
 all known flat entries before deleting any; charge rejected inventories too. Fixed kind/u64
-records retain no per-file heap path; actual inventory backing stays within512KiB and reusable
+records retain no per-file heap path; actual inventory backing stays within 512 KiB and reusable
 paths are bounded separately. Limits are per operation, not whole-process RSS or filesystem-time
 promises. A named basename-only maintenance API provides a bounded fallback beyond the startup
 window; no eventual scan progress or new UI/CLI routing is claimed.

@@ -3098,6 +3098,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodecraft-web"
+version = "0.2.0-rc.1"
+dependencies = [
+ "eframe",
+ "log",
+ "nodecraft-ui-egui",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

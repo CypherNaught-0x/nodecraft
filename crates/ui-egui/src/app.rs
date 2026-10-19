@@ -714,15 +714,22 @@ impl NodeCraftApp {
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
         if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
-            let command = ui.input_mut(|input| {
-                self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
-                    spec.shortcut
-                        .into_iter()
-                        .chain(spec.alternate_shortcuts.iter().copied())
-                        .any(|shortcut| consume_shortcut(input, shortcut))
-                        .then_some(spec.id)
+            // Held minimap input owns mutation keys through release. Fresh presses still
+            // use the post-undo/delete admission below, since those edits can change availability.
+            let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
+            let command = if minimap_held {
+                None
+            } else {
+                ui.input_mut(|input| {
+                    self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
+                        spec.shortcut
+                            .into_iter()
+                            .chain(spec.alternate_shortcuts.iter().copied())
+                            .any(|shortcut| consume_shortcut(input, shortcut))
+                            .then_some(spec.id)
+                    })
                 })
-            });
+            };
             if let Some(command) = command {
                 if let Err(error) = self.session.dispatch(command, &json!({})) {
                     self.notice = Some(error.message);
@@ -735,7 +742,7 @@ impl NodeCraftApp {
                 (
                     i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
                     i.key_pressed(egui::Key::Escape),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+                    !minimap_held && (i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)),
                 )
             });
             if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
@@ -1832,5 +1839,7 @@ mod tests;
 #[cfg(test)]
 mod turn_into_tests;
 
+#[cfg(test)]
+mod held_minimap_tests;
 #[cfg(test)]
 mod stale_tests;

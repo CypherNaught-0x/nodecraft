@@ -1,5 +1,8 @@
 ## 2026-10-18 · Native storage capability is separate from archive wire version (#348)
 
+Superseded by [current graph/streaming compatibility](2026-10-19-current-graph-streaming-compatibility.md).
+The original numeric v1/v2 proposal below is retained as historical decision evidence.
+
 A native sealed ArchivePlan selects numeric version 1 only when its exact prepared stored-ZIP
 layout fits every frozen small-host limit and uses no ZIP64 size, offset, extra or footer.
 Otherwise it selects numeric version 2, retaining the existing large limits and frozen graph
