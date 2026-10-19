@@ -115,7 +115,7 @@ rather than reusing an old recorder-only nanosecond estimate.
 | Command | Does |
 |---|---|
 | `cargo xtask layers` | print the crate → layer table and fail on layering violations |
-| `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate |
+| `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate and the `nodecraft-web` app |
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
 | `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |

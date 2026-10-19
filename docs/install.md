@@ -71,6 +71,14 @@ No signing step is needed.
 
 Use the `aarch64` files on ARM machines.
 
+## Web (preview)
+
+`nodecraft-web-<version>.zip` is a static site. Unzip it and serve the folder over HTTP from any
+host or path, for example `python3 -m http.server` inside it, then open the page in a browser with
+WebGPU or WebGL 2. Opening `index.html` from disk does not work, because browsers refuse to load
+WebAssembly from `file://`. The preview opens the starter canvas only: project files, API keys and
+runs are not available in the browser yet.
+
 ## Building from source
 
 See [`development.md`](development.md): `cargo run --release -p nodecraft`.
