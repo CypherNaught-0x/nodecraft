@@ -197,6 +197,21 @@ async function claim(github, context, now) {
     }
   }
 
+  // Validate before clearing a lapsed owner or changing any issue metadata.
+  const difficulties = (issue.labels || [])
+    .map((label) => (typeof label === 'string' ? label : label.name))
+    .filter((name) => typeof name === 'string' && name.startsWith('difficulty:'));
+  if (difficulties.length !== 1 || !['difficulty:easy', 'difficulty:medium', 'difficulty:hard'].includes(difficulties[0])) {
+    await react(github, context, 'eyes');
+    await reply(
+      github,
+      context,
+      'Before claiming, ask a maintainer to set exactly one difficulty label: `difficulty:easy`, `difficulty:medium` or `difficulty:hard`. ' +
+        `See the [difficulty rubric](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/docs/issue-labels.md). Then retry \`/claim\`.`,
+    );
+    return;
+  }
+
   // Free (or lapsed): hand it to the commenter. Clear a lapsed claimant first.
   if (assignees.length) {
     await github.rest.issues.removeAssignees({ ...repoArgs(context), issue_number: n, assignees });

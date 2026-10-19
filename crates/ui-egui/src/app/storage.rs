@@ -26,12 +26,21 @@ pub const MAX_KEPT: u32 = 99;
 /// damage or an old format that recovery has to look at. A journal holding only the checkpoint
 /// (the session started and did nothing) isn't.
 fn holds_work(recovery: &std::path::Path, storage: &NativeStorage) -> bool {
-    if std::fs::metadata(recovery).is_ok_and(|metadata| metadata.len() == 0) || !recovery.exists() {
-        return false;
-    }
     // The caller already owns this journal's lock. Native replay dispatches classic
     // and streamed envelopes without buffering the whole recovery file.
-    match storage.recover() {
+    holds_work_with_metadata(std::fs::metadata(recovery).map(|metadata| metadata.len()), || storage.recover())
+}
+
+fn holds_work_with_metadata(length: std::io::Result<u64>, replay: impl FnOnce() -> Result<nodecraft_format::journal::Recovered, Error>) -> bool {
+    match length {
+        Ok(0) => return false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        // A retained handle cannot make an inaccessible/replaced pathname empty.
+        // Keep/refuse rather than silently checkpointing over uncertain work.
+        Err(_) => return true,
+        Ok(_) => {}
+    }
+    match replay() {
         Ok(recovered) => recovered.applied > 0 || recovered.damage.is_some() || recovered.truncated_tail || recovered.legacy,
         // Unreadable bytes are kept: only a person should decide they're worthless.
         Err(_) => true,
