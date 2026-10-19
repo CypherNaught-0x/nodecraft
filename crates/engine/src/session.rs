@@ -120,6 +120,12 @@ impl PersistentAdmission {
     }
 }
 
+/// A background save's session-side completion: the assets it retains and its execution step.
+struct PendingSave {
+    roots: std::collections::BTreeSet<nodecraft_types::Blake3>,
+    next: u64,
+}
+
 /// Owns the document and is its only command mutation path. Read access is immutable.
 /// The panic guard stages edits before publication; native unwinding preserves the live state.
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
@@ -139,6 +145,11 @@ pub struct Session {
     state: u64,
     assets: AssetStore,
     persistence: Option<crate::persistence::Persistence>,
+    save_runner: Option<Arc<dyn crate::save_runner::SaveRunner>>,
+    /// A background save still writing: what to finish once it has published.
+    saving: Option<PendingSave>,
+    /// The outcome of a background save that an edit waited for, until the host polls it.
+    settled: Option<Result<Value, Error>>,
     status_revision: u64,
     admission_identity: Arc<()>,
     #[cfg(test)]
@@ -187,6 +198,9 @@ impl Session {
             state: 0,
             assets: AssetStore::default(),
             persistence: None,
+            save_runner: None,
+            saving: None,
+            settled: None,
             status_revision: 0,
             admission_identity: identity,
             #[cfg(test)]
@@ -260,6 +274,14 @@ impl Session {
         guard(|| crate::run_cmds::authorize(&self.context(Phase::Dispatch), prepared, options))
     }
     pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
+        Self::with_store(snapshot, crate::persistence::Store::Local(storage))
+    }
+    /// [`Self::with_storage`] over a storage a [`crate::save_runner::SaveRunner`] can write
+    /// through on another thread, so `file.save` with `background` keeps the UI responsive.
+    pub fn with_sendable_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage + Send>) -> Result<Self, Error> {
+        Self::with_store(snapshot, crate::persistence::Store::Sendable(storage))
+    }
+    fn with_store(snapshot: Snapshot, storage: crate::persistence::Store) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
         snapshot.project.validate()?;
         let registry = Registry::builtins()?;
@@ -275,7 +297,59 @@ impl Session {
     pub fn assets(&self) -> &AssetStore {
         &self.assets
     }
+    /// Lets `file.save` and `file.save_as` with `background` write on `runner` (#461).
+    pub fn set_save_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
+        self.save_runner = Some(runner);
+    }
+    /// The latest background save's outcome once it has finished, the same value `file.save`
+    /// returns inline; `None` while it is still writing or when there was none.
+    pub fn poll_save(&mut self) -> Option<Result<Value, Error>> {
+        self.latest_save(false)
+    }
+    /// [`Self::poll_save`], waiting for a background save to finish (before quitting, say).
+    pub fn finish_save(&mut self) -> Option<Result<Value, Error>> {
+        self.latest_save(true)
+    }
+    fn latest_save(&mut self, wait: bool) -> Option<Result<Value, Error>> {
+        let settled = self.settled.take();
+        self.settle_save(wait).or(settled)
+    }
+    fn settle_save(&mut self, wait: bool) -> Option<Result<Value, Error>> {
+        let before = self.file_status();
+        let outcome = self.persistence.as_mut()?.settle(wait)?;
+        let pending = self.saving.take();
+        let result = outcome.map(|ready| {
+            if let Some(pending) = pending {
+                self.saved(pending);
+            }
+            serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only})
+        });
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        Some(result)
+    }
+    /// Every change to the document, its assets or its storage first waits for a background
+    /// save, so the save publishes exactly the state it snapshotted. Keeps the outcome for
+    /// [`Self::poll_save`]; a later save's outcome replaces an earlier one, since it describes
+    /// the file as it now is.
+    pub(crate) fn settle_for_edit(&mut self) {
+        if self.saving.is_some() {
+            match self.settle_save(true) {
+                Some(outcome) => self.settled = Some(outcome),
+                // Nothing was pending after all: never wait (or re-dispatch) for it again.
+                None => self.saving = None,
+            }
+        }
+    }
+    fn saved(&mut self, pending: PendingSave) {
+        self.assets.retain(&pending.roots);
+        self.admission_identity = Arc::new(());
+        self.execution.advance(pending.next);
+        self.gesture = None;
+    }
     pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
+        self.settle_for_edit();
         self.import_small(bytes)
     }
     /// Host housekeeping: remove logical assets absent from the document and all undo/redo
@@ -284,6 +358,7 @@ impl Session {
     /// physical reclamation: readers and preparations retain their pins. Ordinary source Drop
     /// may perform owned cleanup and retain debt; no explicit fallible step follows publication.
     pub fn collect_assets(&mut self) -> Result<bool, Error> {
+        self.settle_for_edit();
         guard(|| {
             let roots = self.retained_assets()?;
             let changed = self.assets.hashes().any(|hash| !roots.contains(hash));
@@ -314,6 +389,7 @@ impl Session {
     /// session's file, or untitled), history starts fresh, and the change is published like an
     /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
     pub fn recover(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        self.settle_for_edit();
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
         }
@@ -370,6 +446,7 @@ impl Session {
         staged: &AssetStore,
         base: u64,
     ) -> Result<(), Error> {
+        self.settle_for_edit();
         if self.revision != base {
             return Err(Error::new(ErrorKind::Conflict, "the results are out of date"));
         }
@@ -425,6 +502,7 @@ impl Session {
     }
     /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
     pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {
+        self.settle_for_edit();
         let before = self.file_status();
         let result =
             self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?.close(self.state, discard_dirty);
@@ -512,6 +590,12 @@ impl Session {
             (spec.enabled)(&context, params)?;
             (spec.run)(&context, params)
         })?;
+        let reads = matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::PreparedRun { .. });
+        if !reads && self.saving.is_some() {
+            // The save's outcome can change what this command may do: decide again after it.
+            self.settle_for_edit();
+            return self.dispatch_inner(id, params);
+        }
         let effect = match effect {
             Effect::None { result } => {
                 validate_json(&result)?;
@@ -540,17 +624,24 @@ impl Session {
                     Ok(result)
                 });
             }
-            Effect::Save { location } => {
+            Effect::Save { location, background } => {
                 let next = self.execution.next()?;
                 let roots = self.retained_assets()?;
-                let identity = Arc::new(());
+                let runner = if background { self.save_runner.clone() } else { None };
                 let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
-                let ready = storage.save(&self.document, &self.assets, &roots, self.state, location)?;
-                self.assets.retain(&roots);
-                self.admission_identity = identity;
-                self.execution.advance(next);
-                self.gesture = None;
-                return Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}));
+                let saving = storage.save(&self.document, &self.assets, &roots, self.state, location, runner.as_deref())?;
+                let pending = PendingSave { roots, next };
+                let read_only = self.file_status().read_only;
+                return Ok(match saving {
+                    crate::persistence::Saving::Done(ready) => {
+                        self.saved(pending);
+                        serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":read_only})
+                    }
+                    crate::persistence::Saving::Started => {
+                        self.saving = Some(pending);
+                        serde_json::json!({"saved":false,"saving":true,"recovery_ready":false,"read_only":read_only})
+                    }
+                });
             }
             Effect::Open { location, discard_dirty } => {
                 if self.file_status().dirty && !discard_dirty {

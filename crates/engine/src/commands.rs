@@ -125,6 +125,8 @@ pub enum Effect {
     },
     Save {
         location: Option<nodecraft_format::StorageLocation>,
+        /// Write on the host's save runner, when it has one, instead of inline.
+        background: bool,
     },
     PreparedRun {
         prepared: Box<crate::run_cmds::PreparedRun>,
@@ -177,6 +179,7 @@ impl Registry {
             .chain(crate::edge_cmds::specs())
             .chain(crate::keys_cmds::specs())
             .chain(crate::stale_cmds::specs())
+            .chain(crate::describe_cmds::specs())
             .chain(crate::navigation_cmds::specs())
             .chain(crate::create_cmds::specs())
             .chain(crate::clipboard_cmds::specs())

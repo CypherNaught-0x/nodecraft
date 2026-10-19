@@ -31,6 +31,22 @@ fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
         .with_size(Vec2::new(1000.0, 700.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
 }
+// Native saves now complete on a real worker. Simulated frames must yield wall-clock time;
+// the fixed deadline fails rather than hiding a stuck publication or retrying an operation.
+fn settle(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if !h.state().session.file_status().saving
+            && h.output().viewport_output.get(&egui::ViewportId::ROOT).unwrap().repaint_delay != std::time::Duration::ZERO
+        {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "file workflow did not settle within the fixture deadline");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 fn add(app: &mut NodeCraftApp, n: u8) {
     let node = nodecraft_graph::Node::new(NodeId::from_bytes([n; 16]), "source.text");
     app.session.dispatch("node.add", &json!({"canvas":app.canvas,"node":node})).unwrap();
@@ -62,18 +78,18 @@ fn untitled_save_as_and_existing_save_use_real_atomic_files_and_bounded_recents(
     add(&mut app, 41);
     let calls = stub(&mut app, vec![Some(first.clone()), Some(second.clone())]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-    h.run();
+    settle(&mut h);
     assert!(first.is_file());
     assert_eq!(calls.get(), 1);
     assert!(!h.state().session.file_status().dirty);
     add(h.state_mut(), 42);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-    h.run();
+    settle(&mut h);
     assert_eq!(calls.get(), 1);
     h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::S);
-    h.run();
+    settle(&mut h);
     assert_eq!(calls.get(), 2);
     assert!(second.is_file());
     assert_eq!(h.state().files.projects.recent(), vec![second.to_str().unwrap(), first.to_str().unwrap()]);
@@ -90,15 +106,15 @@ fn clean_open_palette_and_cancel_use_only_ui_picker_boundary() {
     app.session.dispatch("file.save_as", &json!({"location":dir.file("initial.ncraft").to_str().unwrap()})).unwrap();
     let expected = app.session.document().clone();
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
+    settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
     assert!(h.state().notice.is_none());
     // The same UI dispatch used by a chosen palette entry obtains a location.
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
-    h.run();
+    settle(&mut h);
     assert_eq!(calls.get(), 2);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file)));
     assert!(!h.state().session.file_status().dirty);
@@ -117,12 +133,12 @@ fn dirty_cancel_discard_and_save_before_open_preserve_exact_work() {
         let expected = app.session.document().clone();
         let calls = stub(&mut app, vec![Some(target.clone()), Some(source.clone())]);
         let mut h = harness(app);
-        h.run();
+        settle(&mut h);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-        h.run();
+        settle(&mut h);
         h.get_by_label("Save changes before opening?");
         h.get_by_label(choice).click();
-        h.run();
+        settle(&mut h);
         if choice == "Cancel" {
             assert_eq!(h.state().session.document(), &expected);
             assert!(!source.exists());
@@ -148,11 +164,11 @@ fn cancelled_or_failed_save_never_continues_the_dirty_open() {
         let expected = app.session.document().clone();
         stub(&mut app, vec![Some(target), bad.clone()]);
         let mut h = harness(app);
-        h.run();
+        settle(&mut h);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-        h.run();
+        settle(&mut h);
         h.get_by_label("Save").click();
-        h.run();
+        settle(&mut h);
         assert_eq!(h.state().session.document(), &expected);
         assert!(h.state().session.file_status().dirty);
         assert_eq!(h.state().notice.is_some(), bad.is_some());
@@ -175,7 +191,7 @@ fn late_picker_after_edits_or_replacement_and_duplicate_requests_never_dispatch(
             Ok(Box::pin(std::future::poll_fn(move |_| if gate.get() { Poll::Ready(Ok(Some(path.clone()))) } else { Poll::Pending })))
         });
         let mut h = harness(app);
-        h.run();
+        settle(&mut h);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
         h.step();
         let ctx = h.ctx.clone();
@@ -222,7 +238,7 @@ fn actual_palette_choice_opens_the_picker_and_public_command_calls_do_not() {
     app.session.dispatch("file.save_as", &json!({"location":dir.file("start.ncraft").to_str().unwrap()})).unwrap();
     let calls = stub(&mut app, vec![Some(target.clone())]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.state_mut().view.zoom = 0.1;
     h.step();
     let at = egui::pos2(150.0, 600.0);
@@ -236,9 +252,9 @@ fn actual_palette_choice_opens_the_picker_and_public_command_calls_do_not() {
     }
     assert!(h.state().palette.is_some(), "raw double-click opens actual palette");
     h.event(egui::Event::Text("file.open".into()));
-    h.run();
+    settle(&mut h);
     h.key_press(egui::Key::Enter);
-    h.run();
+    settle(&mut h);
     assert_eq!(calls.get(), 1);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(target)));
     assert!(h.state_mut().session.dispatch("file.open", &json!({})).is_err());
@@ -250,7 +266,7 @@ fn minimap_held_and_release_owned_state_refuses_file_shortcuts() {
     let mut app = dir.app("journal");
     let calls = stub(&mut app, vec![]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     let at = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map.center();
     h.event(egui::Event::PointerMoved(at));
     h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
@@ -284,9 +300,9 @@ fn dirty_confirmation_invalidates_before_discard_after_a_new_edit() {
     add(&mut app, 52);
     stub(&mut app, vec![Some(target)]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
+    settle(&mut h);
     h.get_by_label("Save changes before opening?");
     add(h.state_mut(), 53);
     let expected = h.state().session.document().clone();
@@ -302,17 +318,17 @@ fn missing_recent_is_retained_until_explicit_menu_removal() {
     let mut app = dir.app("journal");
     app.files.projects.remember(missing.to_str().unwrap());
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     h.get_by_label("missing-public.ncraft").click();
-    h.run();
+    settle(&mut h);
     assert!(h.state().notice.is_some());
     assert_eq!(h.state().files.projects.recent().len(), 1);
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     h.get_by_label("Remove").click();
-    h.run();
+    settle(&mut h);
     assert!(h.state().files.projects.recent().is_empty());
 }
 
@@ -331,11 +347,11 @@ fn actual_native_save_error_keeps_dirty_work_and_does_not_open_target() {
     std::fs::remove_file(&source).unwrap();
     std::fs::remove_dir(parent).unwrap();
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
+    settle(&mut h);
     h.get_by_label("Save").click();
-    h.run();
+    settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(source)));
     assert!(h.state().session.file_status().dirty);
@@ -356,9 +372,9 @@ fn read_only_settings_never_turn_successful_save_into_failed_or_claim_persistenc
     let target = dir.file("public.ncraft");
     stub(&mut app, vec![Some(target.clone())]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-    h.run();
+    settle(&mut h);
     assert!(target.is_file());
     assert!(!h.state().session.file_status().dirty);
     assert!(h.state().notice.as_deref().unwrap().contains("could not be saved"));
@@ -376,10 +392,10 @@ fn recovery_modal_owns_file_shortcuts_and_cannot_launch_a_picker() {
     app.attach_recovery(dir.file("journal"), kept);
     let calls = stub(&mut app, vec![]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.get_by_label("Recover unsaved work?");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
+    settle(&mut h);
     assert_eq!(calls.get(), 0);
     assert!(h.state().files.pending.is_none());
 }
@@ -389,16 +405,16 @@ fn uncommitted_text_draft_is_not_silently_saved_or_replaced() {
     let mut app = dir.app("journal");
     let calls = stub(&mut app, vec![]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     let expected = h.state().session.document().clone();
     h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Text").click();
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     h.event(egui::Event::Text(" public uncommitted draft".into()));
-    h.run();
+    settle(&mut h);
     assert!(h.state().editors.values().any(EditorState::has_uncommitted));
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-    h.run();
+    settle(&mut h);
     assert_eq!(calls.get(), 0);
     assert_eq!(h.state().session.document(), &expected);
     assert!(h.state().notice.as_deref().unwrap().contains("field edits"));
@@ -410,9 +426,9 @@ fn file_panel_owns_canvas_keys_and_derived_zoom() {
     let mut app = dir.app("journal");
     add(&mut app, 57);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     assert!(h.state().files.menu_open);
     let expected = h.state().session.document().clone();
     let view = h.state().view;
@@ -438,16 +454,16 @@ fn picker_errors_and_panics_leave_the_document_unchanged_and_release_the_slot() 
             _ => Ok(Box::pin(std::future::poll_fn(|_| panic!("fixture picker panic")))),
         });
         let mut h = harness(app);
-        h.run();
+        settle(&mut h);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-        h.run();
+        settle(&mut h);
         assert_eq!(h.state().session.document(), &original);
         assert!(h.state().files.pending.is_none());
         assert!(h.state().notice.is_some());
         let target = dir.file("after-error.ncraft");
         stub(h.state_mut(), vec![Some(target.clone())]);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-        h.run();
+        settle(&mut h);
         assert!(target.is_file());
     }
 }
@@ -474,15 +490,15 @@ fn render_file407_workflow_evidence() {
     add(&mut app, 59);
     stub(&mut app, vec![Some(target)]);
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
+    settle(&mut h);
     h.get_by_label("Save changes before opening?");
     h.render().unwrap().save(output.join("dirty-confirmation.png")).unwrap();
     h.get_by_label("Discard").click();
-    h.run();
+    settle(&mut h);
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     h.get_by_label("Public-forest.ncraft");
     h.render().unwrap().save(output.join("recent-projects.png")).unwrap();
 }
@@ -496,11 +512,11 @@ fn file_chrome_is_separate_from_comments_at_narrow_and_regular_widths() {
             .with_max_steps(120)
             .with_size(Vec2::new(width, 700.0))
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), dir.app("journal"));
-        h.run();
+        settle(&mut h);
         let file = h.get_by_label("File").rect();
         assert!(!file.intersects(h.get_by_label("Comments").rect()));
         h.get_by_label("File").click();
-        h.run();
+        settle(&mut h);
         assert!(!file.intersects(h.get_by_label("Open project…").rect()));
         assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open project…").rect()));
     }
@@ -535,7 +551,7 @@ fn correction407_supported_replacement_keeps_picker_slot_and_recents() {
         })))
     });
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
     h.step();
     assert_eq!(calls.get(), 1);
@@ -548,7 +564,7 @@ fn correction407_supported_replacement_keeps_picker_slot_and_recents() {
     assert_eq!(calls.get(), 1);
     let expected = h.state().session.document().clone();
     ready.set(true);
-    h.run();
+    settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
     assert!(h.state().notice.as_deref().unwrap().contains("changed"));
     assert_eq!(dropped.get(), 1);
@@ -560,11 +576,11 @@ fn correction407_supported_replacement_keeps_picker_slot_and_recents() {
 fn correction407_file_panel_blocks_authoritative_navigation() {
     let dir = Scratch::new("nav-query407");
     let mut h = harness(dir.app("journal"));
-    h.run();
+    settle(&mut h);
     let ctx = h.ctx.clone();
     assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_ok());
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_err());
     assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).is_err());
 }
@@ -572,15 +588,15 @@ fn correction407_file_panel_blocks_authoritative_navigation() {
 fn correction407_file_panel_blocks_actual_navigation_pointer() {
     let dir = Scratch::new("nav-pointer407");
     let mut h = harness(dir.app("journal"));
-    h.run();
+    settle(&mut h);
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     assert!(h.state().files.menu_open);
     let view = h.state().view;
     let visible = h.state().navigation.visible;
     for label in ["Fit all", "100%", "Hide map"] {
         h.get_by_label(label).click();
-        h.run();
+        settle(&mut h);
         assert_eq!(h.state().navigation.visible, visible);
         assert_eq!(h.state().view, view);
     }
@@ -593,12 +609,12 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
         assert!(!h.state().navigation.pointer_owned);
     }
     h.key_press(egui::Key::Escape);
-    h.run();
+    settle(&mut h);
     assert!(!h.state().files.menu_open);
     let ctx = h.ctx.clone();
     assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_ok());
     h.get_by_label("Hide map").click();
-    h.run();
+    settle(&mut h);
     assert!(!h.state().navigation.visible);
 }
 
@@ -634,9 +650,9 @@ fn correction407_pending_completion_and_choice_close_keep_navigation_owned_throu
             },
             app,
         );
-        h.run();
+        settle(&mut h);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-        h.run();
+        settle(&mut h);
         assert!(h.state().files.pending.is_some());
         let ctx = h.ctx.clone();
         assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_err());
@@ -644,7 +660,7 @@ fn correction407_pending_completion_and_choice_close_keep_navigation_owned_throu
         let view = h.state().view;
         if confirm {
             h.get_by_label("Cancel").click();
-            h.run();
+            settle(&mut h);
         } else {
             gate.set(true);
             let pos = h.get_by_label("Hide map").rect().center();
@@ -658,7 +674,7 @@ fn correction407_pending_completion_and_choice_close_keep_navigation_owned_throu
         assert!(transitions.get() > 0);
         assert_eq!(h.state().navigation.visible, visible);
         assert_eq!(h.state().view, view);
-        h.run();
+        settle(&mut h);
         assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_ok());
     }
 }
@@ -673,7 +689,7 @@ fn file_ownership_preserves_every_cards_canvas_origin_and_actual_hit_rect() {
     }
     app.files.picker = Box::new(|_| Ok(Box::pin(std::future::pending())));
     let mut h = harness(app);
-    h.run();
+    settle(&mut h);
     let view = h.state().view;
     let check = |h: &Harness<'_, NodeCraftApp>| {
         assert_eq!(h.state().view, view);
@@ -688,14 +704,163 @@ fn file_ownership_preserves_every_cards_canvas_origin_and_actual_hit_rect() {
     };
     check(&h);
     h.get_by_label("File").click();
-    h.run();
+    settle(&mut h);
     assert!(h.state().files.menu_open);
     check(&h);
     h.key_press(egui::Key::Escape);
-    h.run();
+    settle(&mut h);
     check(&h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
+    settle(&mut h);
     assert!(h.state().files.pending.is_some());
     check(&h);
+}
+
+#[derive(Default)]
+struct HeldSave(std::sync::Mutex<Option<nodecraft_engine::save_runner::SaveJob>>);
+impl nodecraft_engine::save_runner::SaveRunner for HeldSave {
+    fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+        let mut slot = self.0.lock().unwrap();
+        assert!(slot.is_none());
+        *slot = Some(job);
+        Ok(())
+    }
+}
+impl HeldSave {
+    fn run(&self) {
+        self.0.lock().unwrap().take().unwrap().run();
+    }
+}
+#[test]
+fn native_save_returns_before_disk_work_and_blocks_duplicate_file_actions() {
+    let dir = Scratch::new("background-save");
+    let mut app = dir.app("journal");
+    let path = dir.file("source.ncraft");
+    app.session.dispatch("file.save_as", &json!({"location":path.to_str().unwrap()})).unwrap();
+    add(&mut app, 81);
+    let expected = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    let calls = stub(&mut app, vec![]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.step();
+    assert!(h.state().session.file_status().saving, "the event frame must not execute the held save");
+    assert!(runner.0.lock().unwrap().is_some());
+    assert!(h.state().files.owns_input());
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    assert_eq!(calls.get(), 0);
+    assert_eq!(h.state().session.document(), &expected);
+    runner.run();
+    h.step();
+    settle(&mut h);
+    assert!(!h.state().files.owns_input());
+    assert!(!h.state().session.file_status().dirty);
+    assert_eq!(nodecraft_format::decode(&std::fs::read(path).unwrap()).unwrap().project, expected);
+}
+
+#[test]
+fn selected_save_as_waits_for_publication_before_recents_and_open_or_failure() {
+    for fail in [false, true] {
+        let dir = Scratch::new(if fail { "async-fail" } else { "async-open" });
+        let target = saved(&dir, "target.ncraft", 82);
+        let parent = dir.file("save-parent");
+        std::fs::create_dir(&parent).unwrap();
+        let source = parent.join("source.ncraft");
+        let mut app = dir.app("journal");
+        add(&mut app, 83);
+        let expected = app.session.document().clone();
+        let runner = Arc::new(HeldSave::default());
+        app.session.set_save_runner(runner.clone());
+        let calls = stub(&mut app, vec![Some(source.clone())]);
+        let mut h = harness(app);
+        settle(&mut h);
+        let stamp = Stamp::capture(h.state());
+        h.state_mut().save_then_open(target.clone(), stamp);
+        h.step();
+        assert!(h.state().session.file_status().saving);
+        assert_eq!(h.state().session.document(), &expected);
+        assert!(h.state().files.projects.recent().is_empty());
+        assert!(!source.exists());
+        let ctx = h.ctx.clone();
+        h.state_mut().begin_file("file.save_as", &ctx);
+        assert_eq!(calls.get(), 1);
+        if fail {
+            std::fs::remove_dir(&parent).unwrap();
+        }
+        runner.run();
+        h.step();
+        settle(&mut h);
+        assert!(!h.state().files.owns_input());
+        if fail {
+            assert_eq!(h.state().session.document(), &expected);
+            assert!(h.state().session.file_status().dirty);
+            assert!(h.state().files.projects.recent().is_empty());
+            assert!(h.state().notice.is_some());
+        } else {
+            assert_eq!(nodecraft_format::decode(&std::fs::read(&source).unwrap()).unwrap().project, expected);
+            assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(target.clone())));
+            assert_eq!(h.state().files.projects.recent(), vec![target.to_str().unwrap(), source.to_str().unwrap()]);
+        }
+    }
+}
+#[test]
+fn completed_save_cannot_open_after_replacement_and_quit_never_runs_continuation() {
+    for quit in [false, true] {
+        let dir = Scratch::new(if quit { "async-quit" } else { "async-stale" });
+        let target = saved(&dir, "target.ncraft", 84);
+        let source = dir.file("source.ncraft");
+        let mut app = dir.app("journal");
+        app.session.dispatch("file.save_as", &json!({"location":source.to_str().unwrap()})).unwrap();
+        add(&mut app, 85);
+        let expected = app.session.document().clone();
+        let runner = Arc::new(HeldSave::default());
+        app.session.set_save_runner(runner.clone());
+        let stamp = Stamp::capture(&app);
+        app.save_then_open(target, stamp);
+        assert!(app.session.file_status().saving);
+        runner.run();
+        if quit {
+            app.close_storage();
+            assert_eq!(app.session.document(), &expected);
+            assert_eq!(app.session.file_status().location, Some(nodecraft_format::StorageLocation::Path(source)));
+            assert!(match std::fs::metadata(dir.file("journal")) {
+                Ok(metadata) => metadata.len() == 0,
+                Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            });
+        } else {
+            // A host replacement between frames must not receive the old save's Open.
+            let replacement = dir.app("replacement");
+            app.session = replacement.session;
+            let replaced = app.session.document().clone();
+            let mut h = harness(app);
+            settle(&mut h);
+            assert_eq!(h.state().session.document(), &replaced);
+            assert!(!h.state().files.owns_input());
+            assert!(h.state().files.projects.recent().is_empty());
+        }
+    }
+}
+#[test]
+fn inline_save_runner_fallback_completes_without_leaving_a_pending_file_owner() {
+    struct Inline;
+    impl nodecraft_engine::save_runner::SaveRunner for Inline {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            Err(job)
+        }
+    }
+    let dir = Scratch::new("inline-save");
+    let mut app = dir.app("journal");
+    let path = dir.file("inline.ncraft");
+    app.session.dispatch("file.save_as", &json!({"location":path.to_str().unwrap()})).unwrap();
+    add(&mut app, 86);
+    app.session.set_save_runner(Arc::new(Inline));
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    settle(&mut h);
+    assert!(!h.state().session.file_status().dirty);
+    assert!(!h.state().files.owns_input());
 }

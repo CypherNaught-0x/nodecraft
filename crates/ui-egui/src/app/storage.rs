@@ -8,6 +8,28 @@ use nodecraft_format::{AssetStore, NativeStorage, Snapshot};
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+
+/// Writes saves on a thread of their own (#461), so a save's durability syncs never hold up
+/// a frame.
+struct ThreadSaves;
+impl nodecraft_engine::save_runner::SaveRunner for ThreadSaves {
+    fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+        // The job stays reachable here, so a thread that can't start hands it back to run inline.
+        let slot = Arc::new(Mutex::new(Some(job)));
+        let worker = Arc::clone(&slot);
+        let started = std::thread::Builder::new().name("nodecraft-save".into()).spawn(move || {
+            let job = worker.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(job) = job {
+                job.run();
+            }
+        });
+        match started {
+            Ok(_) => Ok(()),
+            Err(_) => slot.lock().unwrap_or_else(PoisonError::into_inner).take().map_or(Ok(()), Err),
+        }
+    }
+}
 
 /// Where the app keeps its recovery journal, and the project to open at startup.
 #[derive(Clone, Debug)]
@@ -151,7 +173,8 @@ impl NodeCraftApp {
         // session checkpoints over it, so keep a copy first (recovery offers it, #408).
         let kept = keep_unrecovered(&setup.recovery, &storage)?;
         let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
-        let mut session = Session::with_storage(snapshot, Box::new(storage))?;
+        let mut session = Session::with_sendable_storage(snapshot, Box::new(storage))?;
+        session.set_save_runner(Arc::new(ThreadSaves));
         let mut canvas = canvas;
         let mut opened = Ok(());
         if let Some(path) = setup.open {
@@ -178,6 +201,10 @@ impl NodeCraftApp {
     /// no edits), close the recovery journal so it isn't offered next time. Unsaved work keeps
     /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
+        // Quitting waits for a save still writing; until it publishes, the project is unsaved.
+        if let Some(Err(error)) = self.session.finish_save() {
+            log::warn!("project not saved: {}", error.message);
+        }
         let status = self.session.file_status();
         let untouched = status.location.is_none() && !self.session.can_undo() && !self.session.can_redo();
         if status.available
@@ -196,7 +223,18 @@ impl NodeCraftApp {
             Some(_) | None => "Untitled".to_owned(),
         };
         let dirty = if status.available && status.dirty { " •" } else { "" };
-        format!("{name}{dirty} — NodeCraft")
+        let saving = if status.saving { " (saving…)" } else { "" };
+        format!("{name}{dirty}{saving} — NodeCraft")
+    }
+
+    /// Picks up a background save's outcome (#461): a failure becomes the notice, and while
+    /// one is writing the frames keep coming so its end is seen promptly.
+    pub(super) fn poll_save(&mut self, ctx: &egui::Context) {
+        match self.session.poll_save() {
+            Some(result) => self.file_save_completed(ctx, result),
+            None if self.session.file_status().saving => ctx.request_repaint_after(std::time::Duration::from_millis(16)),
+            None => {}
+        }
     }
 }
 

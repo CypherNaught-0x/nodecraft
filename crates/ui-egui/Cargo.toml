@@ -30,6 +30,9 @@ getrandom.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native async sheets/portals stay at the UI layer and on its main thread (#407).
 rfd = "=0.17.2"
+# Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
 
 [dev-dependencies]
 nodecraft-format.workspace = true

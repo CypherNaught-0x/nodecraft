@@ -115,6 +115,13 @@ All supplied values, including hidden fields, must remain type-valid and within 
 Boolean, finite floating-point and exact signed/unsigned integer `Value` variants store scalar
 parameters without string coercion; only full-width integer wire encodings use decimal strings.
 
+The descriptor contract ([`descriptor-contract.md`](descriptor-contract.md), #162) wraps a schema
+with units, default policies (unset/literal/auto/random seed), visibility and enabling conditions,
+hidden-value policy, identity/cost/shape effects, meaning tags and cross-field checks
+(`types::Contract`), and adds port roles, wire bounds and input-selected modes
+(`nodes::NodeContract`). `NodeKind::contract` defaults to one derived from the descriptor;
+registration validates it, and `node.describe` returns it to the CLI and MCP.
+
 ### Instance schemas, configuration and migration
 
 `descriptor()` is static palette metadata. UI, MCP and planners resolve a stored node with
@@ -217,6 +224,16 @@ hover, selection highlights and uncommitted editor drafts. Cards read the engine
 node-kind descriptors directly. All accepted title, parameter and position edits dispatch commands;
 rendering never writes automatic titles into the document. Each card has a transformed egui layer
 so its schema widgets use world coordinates while pointer hit tests follow canvas pan/zoom.
+
+Native dropped-file acquisition is a private shell service with one process-wide worker and one
+occupied request. It opens, checks metadata on, reads and closes the same file off the UI thread.
+The pending view polls a bounded result and offers Cancel; only a current Session identity,
+project/canvas and revision can accept it through the existing synchronous `import_files` route.
+A blocked filesystem call cannot be interrupted portably: abandonment ends the pending view, but
+keeps the process slot busy until that call returns or the process restarts. No replacement worker
+is spawned. Browser file drops remain unsupported. See the
+[native drop decision](decisions/2026-10-18-bounded-native-drop-acquisition.md) for resource bounds
+and the distinction between acquisition and synchronous engine import.
 
 `engine::Session` now owns a validated `Project`, its command and node-kind registries, undo/redo stacks and
 revision notifications. Frontends call `enabled(id, &params)` for a disabled reason and
@@ -361,6 +378,11 @@ updates location and savepoint after atomic publication and breaks drag coalesci
 carry content state IDs, so undo/redo to the saved state clears dirty even though revision increases.
 `file_status()` plus `status_revision()` notify hosts of save/dirty/recovery changes independently
 of `DocChanged`; saving does not manufacture document edits.
+A host that installs a `SaveRunner` (the native app) can pass `background: true` to `file.save`/
+`file.save_as`: the snapshot is taken on the calling thread, the file work runs as a `SaveJob` on
+the host's thread, and the result is `{saved:false,saving:true}` until `Session::poll_save`
+reports the outcome. Every later change waits for the pending save first; reads do not
+(`docs/decisions/2026-10-19-background-saves.md`).
 
 `ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
 active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only

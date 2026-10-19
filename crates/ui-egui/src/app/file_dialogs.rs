@@ -34,6 +34,7 @@ enum Purpose {
 enum Phase {
     Picking { future: PickFuture, purpose: Purpose },
     Confirm(PathBuf),
+    Saving { then_open: Option<PathBuf>, saved_path: Option<PathBuf> },
 }
 struct Pending {
     stamp: Stamp,
@@ -125,7 +126,8 @@ fn admitted(path: &Path, save: bool) -> Result<&str, String> {
 }
 impl NodeCraftApp {
     fn file_busy(&self, ctx: &egui::Context) -> bool {
-        self.recovery.is_some()
+        self.session.file_status().saving
+            || self.recovery.is_some()
             || self.files.menu_open
             || egui::Popup::is_any_open(ctx)
             || self.palette.is_some()
@@ -167,9 +169,7 @@ impl NodeCraftApp {
         self.notice = None;
         let status = self.session.file_status();
         if id == "file.save" && status.location.is_some() && !status.read_only {
-            if let Err(error) = self.session.dispatch("file.save", &json!({})) {
-                self.notice = Some(error.message);
-            }
+            self.start_file_save(None, None, Stamp::capture(self));
             return;
         }
         let purpose = if id == "file.open" { Purpose::Open } else { Purpose::Save { then_open: None } };
@@ -233,11 +233,61 @@ impl NodeCraftApp {
         if status.location.is_none() || status.read_only {
             self.start_picker(stamp, Purpose::Save { then_open: Some(path) });
         } else {
-            match self.session.dispatch("file.save", &json!({})) {
-                Ok(_) => self.open_selected(path, false),
-                Err(error) => self.notice = Some(error.message),
-            }
+            self.start_file_save(None, Some(path), stamp);
         }
+    }
+    fn start_file_save(&mut self, path: Option<PathBuf>, then_open: Option<PathBuf>, stamp: Stamp) {
+        let result = match &path {
+            Some(path) => admitted(path, true)
+                .and_then(|location| self.session.dispatch("file.save_as", &json!({"location":location,"background":true})).map_err(|error| error.message)),
+            None => self.session.dispatch("file.save", &json!({"background":true})).map_err(|error| error.message),
+        };
+        match result {
+            Ok(result) if result.get("saving").and_then(serde_json::Value::as_bool) == Some(true) => {
+                self.files.pending = Some(Pending { stamp, phase: Phase::Saving { then_open, saved_path: path } });
+            }
+            Ok(result) if result.get("saved").and_then(serde_json::Value::as_bool) == Some(true) => {
+                self.complete_file_save(stamp, then_open, path, Ok(()));
+            }
+            Ok(_) => self.notice = Some("The save did not confirm publication; the current project was kept.".into()),
+            Err(error) => self.notice = Some(error),
+        }
+    }
+    fn complete_file_save(&mut self, stamp: Stamp, then_open: Option<PathBuf>, saved_path: Option<PathBuf>, result: Result<(), String>) {
+        if !stamp.matches(self) {
+            self.notice = Some("The project changed while saving. Open the project again.".into());
+            return;
+        }
+        if let Err(error) = result {
+            self.notice = Some(error);
+            return;
+        }
+        if let Some(path) = saved_path {
+            self.remember_project(&path);
+        }
+        if let Some(path) = then_open {
+            self.open_selected(path, false);
+        }
+    }
+    pub(super) fn file_save_completed(&mut self, ctx: &egui::Context, result: Result<serde_json::Value, Error>) {
+        if !self.files.pending.as_ref().is_some_and(|pending| matches!(pending.phase, Phase::Saving { .. })) {
+            if let Err(error) = result {
+                self.notice = Some(error.message);
+            }
+            return;
+        }
+        self.files.own_frame(ctx);
+        if let Some(Pending { stamp, phase: Phase::Saving { then_open, saved_path } }) = self.files.pending.take() {
+            let result = result.and_then(|value| {
+                if value.get("saved").and_then(serde_json::Value::as_bool) == Some(true) {
+                    Ok(())
+                } else {
+                    Err(Error::new(ErrorKind::Internal, "The save did not confirm publication; the current project was kept."))
+                }
+            });
+            self.complete_file_save(stamp, then_open, saved_path, result.map_err(|error| error.message));
+        }
+        self.clear_file_input(ctx);
     }
     /// Called before canvas input. A completion/choice keeps ownership for this entire frame.
     pub(super) fn file_dialog_frame(&mut self, ctx: &egui::Context) -> bool {
@@ -289,21 +339,18 @@ impl NodeCraftApp {
                         match purpose {
                             Purpose::Open => self.choose_open(path, pending.stamp),
                             Purpose::Save { then_open } => {
-                                let result = admitted(&path, true).and_then(|location| {
-                                    self.session.dispatch("file.save_as", &json!({"location":location})).map(|_| ()).map_err(|e| e.message)
-                                });
-                                match result {
-                                    Ok(()) => {
-                                        self.remember_project(&path);
-                                        if let Some(next) = then_open {
-                                            self.open_selected(next, false);
-                                        }
-                                    }
-                                    Err(error) => self.notice = Some(error),
-                                }
+                                self.start_file_save(Some(path), then_open, pending.stamp);
                             }
                         }
                     }
+                }
+            }
+            Phase::Saving { then_open, saved_path } => {
+                if pending.stamp.matches(self) {
+                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Saving { then_open, saved_path } });
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                } else {
+                    self.notice = Some("The project changed while saving. Open the project again.".into());
                 }
             }
             Phase::Confirm(path) => {

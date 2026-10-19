@@ -205,22 +205,22 @@ a fresh exclusive lock on the permanent `.nodecraft-assets-v1.lock` parent file.
 irrelevant and it is never truncated, renamed or removed. Same-parent admission is nonblocking;
 different parents may proceed independently. No process-global registry or waiting loop is used.
 
-Startup maintenance visits at most4,096 parent entries, tries at most64 qualified inventories
-(including inventories later refused), and unlinks at most256 generated payloads. Each orphan
+Startup maintenance visits at most 4,096 parent entries, tries at most 64 qualified inventories
+(including inventories later refused), and unlinks at most 256 generated payloads. Each orphan
 requires an ordinary private directory, a separately opened exclusive marker lock and exact
 bounded marker bytes. Windows marker bytes are read only AFTER locking; pre-lock checks use
 metadata/type/reparse/path diagnostics and expected length. Symlinks and all Windows reparse
-points are excluded. A complete flat preflight admits at most4,096 `stage-N`, `archive-N` or
+points are excluded. A complete flat preflight admits at most 4,096 `stage-N`, `archive-N` or
 `capture-N` files plus the marker; unknown names, nested/nonregular entries, malformed IDs or
 overflow refuse the WHOLE candidate before any payload deletion. Files are reinspected before
 unlink. No payload bytes or hashes are read for maintenance, and no recursive removal is used.
 
 Inventory entries contain only a fixed kind and canonical u64, without individual heap paths.
-Actual admitted Vec backing is at most512KiB. The canonical parent and one reusable working
-path are separately bounded to64KiB each; the native workspace's returned root remains its
+Actual admitted Vec backing is at most 512 KiB. The canonical parent and one reusable working
+path are separately bounded to 64 KiB each; the native workspace's returned root remains its
 existing lifetime owner. These are per active operation, not process-global/RSS, OS directory
-buffer, filesystem latency or allocated-block guarantees. The4,096 payload ceiling comes from
-the existing cleanup-slot table, including failed-unlink debt; it is not the32-backing limit.
+buffer, filesystem latency or allocated-block guarantees. The 4,096 payload ceiling comes from
+the existing cleanup-slot table, including failed-unlink debt; it is not the 32-backing limit.
 A failed qualified deletion aborts another constructor before it creates a new workspace.
 Successful partial deletions are retained truthfully, with the valid marker left for retry.
 Admission stays held while the last marker handle closes and the marker/empty directory retire,
@@ -231,10 +231,10 @@ silently adopted, recursively deleted or given replacement authority.
 expose bounded counts and scan/budget/failure flags, without paths or payload data. `Complete`
 means the bounded pass/target finished, not that live or unqualified entries were removed. Exactly
 filling the scan window conservatively reports incomplete without an extra directory read.
-Directory order is unspecified: a stable4,096-entry prefix can hide later roots forever.
+Directory order is unspecified: a stable 4,096-entry prefix can hide later roots forever.
 `native_workspace::sweep_named_orphan(parent, basename, cancel)` is the bounded single-root
 fallback, repeating the same authority/preflight checks without scanning the parent. It removes
-at most256 payloads per call (up to16 batches for a4,096-file root when IO succeeds). Basenames
+at most 256 payloads per call (up to 16 batches for a 4,096-file root when IO succeeds). Basenames
 cannot be paths. This library slice supplies no UI/CLI maintenance command or automatic retry
 worker; host notification/routing is separate work.
 

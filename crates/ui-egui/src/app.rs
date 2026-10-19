@@ -321,6 +321,8 @@ pub struct NodeCraftApp {
     pub viewport: Rect,
     pub notice: Option<String>,
     stale_snapshot: Option<stale::StaleSnapshot>,
+    #[cfg(not(target_arch = "wasm32"))]
+    drop_acquisition: drop::Acquisition,
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
@@ -604,6 +606,8 @@ impl NodeCraftApp {
             viewport: Rect::NOTHING,
             notice: None,
             stale_snapshot: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            drop_acquisition: drop::Acquisition::new(),
             editors: BTreeMap::new(),
             drag: None,
             marquee: None,
@@ -676,6 +680,7 @@ impl NodeCraftApp {
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            self.poll_save(ui.ctx());
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);
             self.track_recovery();
@@ -724,6 +729,7 @@ impl NodeCraftApp {
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
         }
         let tag_blocks = self.tag_overlay(ui);
+        let drop_blocks = self.poll_drop(ui, t);
         let search_blocks = self.search_overlay(ui);
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
@@ -742,7 +748,7 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
             // Held minimap input owns mutation keys through release. Fresh presses still
             // use the post-undo/delete admission below, since those edits can change availability.
             let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
@@ -798,7 +804,8 @@ impl NodeCraftApp {
                 || self.comments.drag.is_some()
                 || self.comments.gesture_cancelled
                 || egui::Popup::is_any_open(ui.ctx())
-                || self.keys.open;
+                || self.keys.open
+                || self.drop_pointer_owned();
             let (copy, cut, pasted, duplicate) = ui.input_mut(|i| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {
@@ -906,7 +913,8 @@ impl NodeCraftApp {
             || comments_blocks
             || tag_blocks
             || file_owns_input
-            || file_menu_owns_input;
+            || file_menu_owns_input
+            || drop_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
         let canvas_blocks = overlay_blocks || popup_owned || file_owns_input || file_menu_owns_input;
         let shift = ui.input(|i| i.modifiers.shift);

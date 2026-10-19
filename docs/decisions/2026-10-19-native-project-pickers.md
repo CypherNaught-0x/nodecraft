@@ -34,3 +34,5 @@ by recovery-checkpoint failure. Clean adopted locations also reflect startup/con
 SaveAs; this is recent-list presentation, never save/deletion authority. Missing entries remain
 until explicit removal. Read-only or failed settings persistence leaves the file operation successful
 and reports that recents were not saved. Comments, unknown settings and provider/account fields survive.
+
+Current-main integration with #461: native menu/shortcut Save, selected Save As and confirmed Save-before-Open opt into background saving. The controller retains input ownership until polling confirms publication; only then are the destination remembered and the selected project opened. Failure or stale document identity/revision cancels continuation. Quit waits through the existing storage close path and never executes a delayed Open. Engine/CLI/control defaults remain synchronous. Hosts unable to start a worker retain the existing inline fallback.
