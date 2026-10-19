@@ -182,10 +182,13 @@ that drive real pointer and key events through the canvas.
 
 ## Landing changes
 
-- **At most two review rounds.** For changes needing review, use one initial review and at
-  most one verification of the fixes. Read existing PR comments and reviews first; they count
-  toward this limit. Resolve valid findings and run the relevant checks, then land the change
-  without starting another review round. Do not merge a known unresolved correctness defect.
+- **At most two review rounds.** For changes not exempt below, have an independent sub-agent
+  review the existing branch commits and newly added code against the intended base before
+  creating a PR, including a draft. Give the reviewer the issue, acceptance criteria and
+  validation results; record the reviewed range and outcome in the PR. This is the initial round,
+  followed by at most one verification of the fixes. Read existing PR comments and reviews first;
+  they count toward this limit. Do not restart the review cycle for an already-reviewed PR. Resolve valid findings and run the relevant checks, then land the change without starting
+  another review round. Do not merge a known unresolved correctness defect.
 - **Obvious fixes need no review or approval.** Documentation, formatting, and small, local
   corrections with clear behavior and focused validation may land without a human or sub-agent
   review. Once the required quality gates and GitHub checks pass, mark the PR ready and merge
