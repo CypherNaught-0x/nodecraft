@@ -145,11 +145,7 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
         }
         return cache.get(&node.id);
     }
-    let descriptor = session.kinds().get(&node.kind).ok()?.resolve_instance(node).ok()?;
-    if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
-        return None;
-    }
-    let nodecraft_nodes::ResolvedParams { visible, .. } = descriptor.params.resolve(&node.params, false).ok()?;
+    let admission::Admitted { descriptor, visible, bytes } = admission::admit(session, node, Some(cache))?;
     let (descriptor, borrowed_identity, bytes) = match descriptor {
         Cow::Borrowed(descriptor) => {
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
@@ -158,14 +154,10 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
             if let Some((shared, bytes, _)) = cache.shared.get(&identity) {
                 (Arc::clone(shared), Some(identity), *bytes)
             } else {
-                let bytes = descriptor_bytes(descriptor)?;
                 (Arc::new(descriptor.clone()), Some(identity), bytes)
             }
         }
-        Cow::Owned(descriptor) => {
-            let bytes = descriptor_bytes(&descriptor)?;
-            (Arc::new(descriptor), None, bytes)
-        }
+        Cow::Owned(descriptor) => (Arc::new(descriptor), None, bytes),
     };
     cache.insert(node.id, CachedSchema { descriptor, visible, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock });
     while cache.bytes > MAX_SCHEMA_CACHE_BYTES {
@@ -247,8 +239,8 @@ fn quick_add_key(spec: &str) -> Option<(egui::Modifiers, egui::Key)> {
     egui::Key::from_name(&single.to_ascii_uppercase().to_string()).map(|key| (modifiers, key))
 }
 
-/// A card's world rect: as painted this frame, or (for cards not drawn, e.g. off screen) from the
-/// kind's static descriptor.
+/// Noodle endpoints use painted rectangles when available. The static fallback preserves
+/// crossing noodles and an active wiring source culled after pan/zoom; selection never uses it.
 fn card_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
     painted.get(&node.id).copied().unwrap_or_else(|| card::world_rect(node, kinds.get(&node.kind).ok().map(|kind| kind.descriptor()), t))
 }
@@ -263,17 +255,17 @@ fn drop_targets<'a>(canvas: &'a Canvas, painted: &'a BTreeMap<NodeId, Rect>) -> 
 /// A card's world rect for box selection: as painted this frame, or for a card that wasn't drawn,
 /// its resolved instance rect when the card could reach the box at all (the largest card at its
 /// position). Cards that can't reach it skip the resolution.
-fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, node: &nodecraft_graph::Node, world: Rect, t: &theme::Tokens) -> Rect {
-    if painted.contains_key(&node.id) {
-        return card_geometry(painted, kinds, node, t);
+fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut admission::GeometryCache, node: &Node, world: Rect, t: &Tokens) -> Rect {
+    if let Some(rect) = painted.get(&node.id) {
+        return *rect;
     }
     let largest = Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, t.card_max_height));
     if !largest.intersects(world) {
         return largest;
     }
-    let resolved = kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok());
-    card::world_rect(node, resolved.as_deref(), t)
+    cache.rect(session, node, t)
 }
+mod admission;
 
 mod comments;
 mod drop;
@@ -326,8 +318,8 @@ pub struct NodeCraftApp {
     editors: BTreeMap<NodeId, EditorState>,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
-    /// World rects of the cards painted this frame. Geometry for selection (and noodles) comes
-    /// from here, not the evictable schema cache, so it matches what is on screen.
+    /// World rectangles painted this frame: authoritative for selection, noodle anchors,
+    /// port drop targets and scoped host geometry, independent of schema-cache eviction.
     painted: BTreeMap<NodeId, Rect>,
     wiring: Option<Wiring>,
     /// The input order badge being dragged: its list input and edge.
@@ -367,6 +359,7 @@ pub struct NodeCraftApp {
     /// Exact previous text owner survives Escape and disabled-toolbar interaction.
     last_text_focus: Option<egui::Id>,
     schemas: SchemaCache,
+    marquee_geometry: admission::GeometryCache,
     cache_clock: u64,
     next_gesture: u64,
     centred: bool,
@@ -389,6 +382,7 @@ impl NodeCraftApp {
         match &mut self.marquee {
             Some(marquee) if !marquee.cancelled => {
                 marquee.cancelled = true;
+                self.marquee_geometry.clear();
                 self.selection = marquee.base.clone();
             }
             _ => self.selection.clear(),
@@ -636,6 +630,7 @@ impl NodeCraftApp {
             text_focused: false,
             last_text_focus: None,
             schemas: SchemaCache::default(),
+            marquee_geometry: admission::GeometryCache::default(),
             cache_clock: 0,
             next_gesture: 0,
             centred: false,
@@ -698,6 +693,13 @@ impl NodeCraftApp {
         self.previews.poll(ui.ctx());
         let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
+        let changed_session = self.marquee_geometry.prepare(&mut self.session, self.canvas, self.theme);
+        if changed_session {
+            self.schemas = SchemaCache::default();
+        }
+        if self.marquee.as_ref().is_none_or(|m| m.cancelled) {
+            self.marquee_geometry.clear();
+        }
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
@@ -901,6 +903,11 @@ impl NodeCraftApp {
                 self.cancel_canvas_gesture();
             }
         }
+        // Undo/redo, deletion, paste and quick-add above can change this frame's revision.
+        // Restamp before either cached placeholder admission or marquee geometry is read.
+        if self.marquee_geometry.prepare(&mut self.session, self.canvas, self.theme) {
+            self.schemas = SchemaCache::default();
+        }
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
@@ -999,7 +1006,8 @@ impl NodeCraftApp {
                     let assets = self.session.assets();
                     self.previews.request_asset(ui.ctx(), hash, edge, || assets.preview_read(asset))
                 });
-                let schema = cached_schema(&mut self.schemas, &self.session, node, self.cache_clock);
+                let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
+                let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
                 let editor = self.editors.entry(node.id).or_default();
                 // Cards use their parent's max_rect origin as the canvas origin. A layout
@@ -1304,7 +1312,7 @@ impl NodeCraftApp {
                 let world = Rect::from_two_pos(marquee.start, self.view.to_world(viewport.min, pointer));
                 self.selection = marquee.base.clone();
                 self.selection.extend(
-                    selection::in_box(canvas, world, |node| box_geometry(&self.painted, kinds, node, world, t)),
+                    selection::in_box(canvas, world, |node| box_geometry(&self.painted, &self.session, &mut self.marquee_geometry, node, world, t)),
                     curves.iter().filter(|(_, curve, _)| noodle::touches(curve, world)).map(|(id, _, _)| *id),
                 );
                 // Above the card layers, which are drawn over the background painter.
@@ -1312,7 +1320,7 @@ impl NodeCraftApp {
                     self.view.rect_to_screen(viewport.min, world),
                     0.0,
                     t.marquee_fill,
-                    egui::Stroke::new(1.0, t.accent),
+                    t.marquee_stroke(),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -1393,6 +1401,7 @@ impl NodeCraftApp {
         }
         if !ui.input(|i| i.pointer.primary_down()) {
             self.marquee = None;
+            self.marquee_geometry.clear();
         }
         self.view.pan_by(pan);
         self.drop_files(ui, viewport, t);
@@ -1914,6 +1923,9 @@ mod preview_tests;
 mod split_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod marquee_tests;
 #[cfg(test)]
 mod turn_into_tests;
 

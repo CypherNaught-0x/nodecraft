@@ -290,6 +290,10 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
 }
 
 impl Tokens {
+    pub fn marquee_stroke(&self) -> Stroke {
+        Stroke::new(1.0, self.accent)
+    }
+
     pub fn tag_color(&self, color: Option<&str>) -> Color32 {
         crate::tags::PALETTE.iter().position(|(id, _)| Some(*id) == color).and_then(|i| self.tag_colors.get(i)).copied().unwrap_or(self.text_muted)
     }
