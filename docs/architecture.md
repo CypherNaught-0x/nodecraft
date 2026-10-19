@@ -115,6 +115,13 @@ All supplied values, including hidden fields, must remain type-valid and within 
 Boolean, finite floating-point and exact signed/unsigned integer `Value` variants store scalar
 parameters without string coercion; only full-width integer wire encodings use decimal strings.
 
+The descriptor contract ([`descriptor-contract.md`](descriptor-contract.md), #162) wraps a schema
+with units, default policies (unset/literal/auto/random seed), visibility and enabling conditions,
+hidden-value policy, identity/cost/shape effects, meaning tags and cross-field checks
+(`types::Contract`), and adds port roles, wire bounds and input-selected modes
+(`nodes::NodeContract`). `NodeKind::contract` defaults to one derived from the descriptor;
+registration validates it, and `node.describe` returns it to the CLI and MCP.
+
 ### Instance schemas, configuration and migration
 
 `descriptor()` is static palette metadata. UI, MCP and planners resolve a stored node with
