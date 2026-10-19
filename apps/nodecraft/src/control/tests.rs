@@ -217,3 +217,5 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
     let restored = h.state_mut().session.swap_resource::<NavigationContext>(None).unwrap();
     assert!(restored.blocked && !restored.viewport_available && !restored.fit_all && !restored.fit_selection);
 }
+
+mod search;

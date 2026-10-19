@@ -180,6 +180,9 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
         if NodeCraftApp::is_navigation_command(id) {
             self.navigation_idle()?;
             self.app.navigation_enabled(self.ctx, id, params)
+        } else if NodeCraftApp::is_search_command(id) {
+            self.navigation_idle()?;
+            self.app.search_enabled(self.ctx, id, params)
         } else {
             self.app.session.enabled(id, params)
         }
@@ -188,6 +191,9 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
         if NodeCraftApp::is_navigation_command(id) {
             self.navigation_idle()?;
             self.app.dispatch_navigation(self.ctx, id, params)
+        } else if NodeCraftApp::is_search_command(id) {
+            self.navigation_idle()?;
+            self.app.dispatch_search(self.ctx, id, params)
         } else {
             self.app.session.dispatch(id, params)
         }

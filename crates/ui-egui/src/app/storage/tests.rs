@@ -67,22 +67,33 @@ fn a_project_path_at_startup_is_opened_and_cmd_s_saves_it() {
     add_text(h.state_mut(), 61);
     assert!(h.state().session.file_status().dirty);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.step();
+    // The file is written on the save thread; the frame keeps polling until it lands.
+    for _ in 0..10_000 {
+        if !h.state().session.file_status().saving {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        h.step();
+    }
     h.run();
     assert!(!h.state().session.file_status().dirty, "⌘S saved: {:?}", h.state().notice);
     assert_eq!(h.state().window_title(), "start.ncraft — NodeCraft");
 }
 
 #[test]
-fn an_untitled_project_says_how_to_give_it_a_file() {
+fn cancelling_untitled_save_and_open_is_silent() {
     let dir = Scratch::new("untitled");
     let mut h = harness(app(&dir.0, None));
     h.run();
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
-    h.run();
-    assert_eq!(h.state().notice.as_deref(), Some("This project has no file yet. Start NodeCraft with a project path to save to it."));
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
-    h.run();
-    assert_eq!(h.state().notice.as_deref(), Some("To open a project, start NodeCraft with its path."));
+    let original = h.state().session.document().clone();
+    for key in [egui::Key::S, egui::Key::O] {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, key);
+        h.run();
+        assert!(h.state().notice.is_none());
+        assert_eq!(h.state().session.document(), &original);
+        assert!(h.state().session.file_status().location.is_none());
+    }
 }
 
 #[test]
@@ -179,4 +190,14 @@ fn only_confirmed_absence_or_zero_length_can_discard_without_replay() {
         assert!(!replayed.get(), "metadata errors must preserve work independently of replay");
     }
     assert!(holds_work_with_metadata(Ok(1), || Err(Error::new(ErrorKind::Conflict, "replay unavailable"))));
+}
+
+#[test]
+fn file_picker_actions_are_discoverable_for_an_untitled_project() {
+    let dir = Scratch::new("picker-palette407");
+    let app = app(&dir.0, None);
+    let entries = app.palette_entries();
+    for id in ["file.open", "file.save", "file.save_as"] {
+        assert!(entries.iter().any(|entry| entry.target == crate::palette::Target::Command(id)), "missing {id}");
+    }
 }

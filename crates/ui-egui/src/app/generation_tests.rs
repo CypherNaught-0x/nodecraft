@@ -238,3 +238,56 @@ fn generation_policy_literal_displays_resolved_default() {
     assert!(h.query_all_by_value("resolved literal").next().is_some());
     assert!(h.query_by_value("fabricated literal schema").is_none());
 }
+
+#[test]
+fn generation_marquee_admission_uses_the_same_owned_conditional_states_as_the_card() {
+    let app = conditional_scene();
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+    let admitted = admission::admit(&app.session, node, None).unwrap();
+    assert!(!admitted.visible.contains("quality"));
+    assert!(admitted.visible.contains("size"));
+    assert!(!admitted.enabled.as_ref().unwrap().contains("size"));
+    let mut schemas = SchemaCache::default();
+    let rendered = cached_schema(&mut schemas, &app.session, node, 1).unwrap();
+    assert_eq!(admitted.visible, rendered.visible);
+    assert_eq!(admitted.enabled, rendered.enabled);
+}
+
+#[test]
+fn generation_marquee_geometry_rejects_same_revision_replaced_catalog_like_the_renderer() {
+    let mut app = conditional_scene();
+    let mut geometry = admission::GeometryCache::default();
+    geometry.prepare(&mut app.session, C, app.theme);
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().clone();
+    geometry.rect(&app.session, &node, app.theme.tokens());
+    assert!(!geometry.placeholder(N));
+    assert_eq!(geometry.len(), 1);
+    let revision = app.session.revision();
+    let replacement = nodecraft_engine::generation_catalog::GenerationCatalog::builtin().unwrap();
+    app.session.swap_resource(Some(replacement.run_catalog()));
+    app.session.swap_resource(Some(replacement));
+    assert_eq!(app.session.revision(), revision);
+    assert!(geometry.prepare(&mut app.session, C, app.theme));
+    assert_eq!(geometry.len(), 0);
+    geometry.rect(&app.session, &node, app.theme.tokens());
+    assert!(geometry.placeholder(N));
+    assert!(admission::admit(&app.session, &node, None).is_none());
+    let mut schemas = SchemaCache::default();
+    assert!(cached_schema(&mut schemas, &app.session, &node, 1).is_none());
+}
+
+#[test]
+fn generation_shared_admission_charges_enabled_names_within_the_existing_cache_budget() {
+    let app = conditional_scene();
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+    let admitted = admission::admit(&app.session, node, None).unwrap();
+    let names =
+        admitted.visible.iter().chain(admitted.enabled.iter().flatten()).fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
+    assert!(admitted.bytes.checked_add(names).unwrap() <= MAX_SCHEMA_CACHE_BYTES);
+    let mut cache = SchemaCache::default();
+    cached_schema(&mut cache, &app.session, node, 1).unwrap();
+    assert_eq!(cache_bytes(&cache), cache.bytes);
+    assert_eq!(cache.bytes, admitted.bytes + names);
+    assert!(cache.bytes <= MAX_SCHEMA_CACHE_BYTES);
+    assert!(std::mem::size_of::<admission::GeometryCache>() <= 128);
+}

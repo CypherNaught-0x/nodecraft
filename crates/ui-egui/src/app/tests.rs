@@ -2096,6 +2096,40 @@ fn minimap_drag_owns_quick_add_keys_until_pointer_release() {
     assert_eq!(h.state().session.document(), &document, "post-release quick-add is one undo step");
 }
 
+#[test]
+fn crossing_noodles_and_culled_wiring_origin_keep_fallback_geometry() {
+    let mut h = chain_harness();
+    let before = h.state().session.document().clone();
+    // Actual source handle starts the gesture before its card is scrolled out of view.
+    let from = port_point(&h, 1, noodle::Side::Output);
+    h.hover_at(from);
+    h.run();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + Vec2::new(20.0, 0.0));
+    h.run();
+    assert!(h.state().wiring.is_some());
+    h.state_mut().view = CanvasView { pan: Vec2::new(-360.0, 200.0), zoom: 1.0 };
+    h.run();
+    assert!(!h.state().painted.contains_key(&chain_id(1)));
+    assert!(h.state().wiring.is_some());
+    let app = h.state();
+    let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
+    let lines = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens());
+    let first = lines.iter().find(|(id, ..)| *id == EdgeId::from_bytes([10; 16])).unwrap();
+    assert!(first.1.first().unwrap().x < 360.0 && first.1.last().unwrap().x > 360.0, "crossing edge still spans viewport boundary");
+    let target = port_point(&h, 3, noodle::Side::Input);
+    h.hover_at(target);
+    h.run();
+    h.drop_at(target);
+    h.run();
+    assert!(h.state().wiring.is_none());
+    assert_eq!(links(&h), [link(1, 2), link(1, 3)].into_iter().collect());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
 // One raw frame is essential: Harness::event may otherwise deliver queued input separately.
 fn minimap_clipboard_action(kind: usize) -> egui::Event {
     match kind {

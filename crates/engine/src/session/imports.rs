@@ -97,6 +97,7 @@ impl Session {
     }
     /// Import-only publication: no document event or undo step is fabricated.
     pub fn import_asset_from(&mut self, source: &AssetRange, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<Blake3, Error> {
+        self.settle_for_edit();
         let prepared = self.prepare_imports(std::slice::from_ref(source), cancel, metrics)?;
         let hash = prepared.hashes.first().copied().ok_or_else(|| invalid("import batch has no result"))?;
         self.commit_imports(prepared)?;
@@ -113,6 +114,7 @@ impl Session {
     /// Dispatch one ordinary graph Edit using exactly this batch's candidate store.
     /// Service/file/history effects never execute through this import-only boundary.
     pub fn dispatch_with_imports(&mut self, command: &str, params: &Value, prepared: PreparedImports) -> Result<Value, Error> {
+        self.settle_for_edit();
         let before = self.file_status();
         let result = guard(|| {
             if !prepared.source.matches(self) {

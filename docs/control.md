@@ -77,8 +77,16 @@ connecting; this is not a bound on filesystem stalls.
 editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
 live availability for parameterless commands. These operations change only the view, without
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
-Classification is shared with MCP; the live host does not grant access to human-only or paid
-commands. Screenshot requests retain their separate asynchronous capture path.
+The five `canvas.search_*` commands use the app's existing scoped search host: open the bar,
+set a query, step next/previous, or close it. Queries retain the 1024 UTF-8 byte bound and the
+incremental per-frame scanner; a response may report scanning before the match is framed.
+Search requests also refuse an active minimap gesture. Headless sessions still have no live
+search capability.
+
+Classification is shared with MCP; the live host does not widen it. Human-only and unclassified
+commands stay excluded. Agent-visible `run.start` still requires engine quote/consent validation
+and a capable run host; this bridge does not bypass either. Screenshot requests retain their
+separate asynchronous capture path.
 
 ## Headless stdio
 
