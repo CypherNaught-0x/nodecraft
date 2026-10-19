@@ -51,9 +51,13 @@ default = { type = "unsigned", value = "1" }
   make the incomplete price explicit. Token counters are not an exact monetary invoice.
   Check prices against the provider's pricing page when adding or updating a model, and say in
   the PR where they came from.
-- **Swapping models** keeps parameters by name when the new model accepts the value, fills the
-  rest from its defaults, and names what was removed (not on the new model) and what was reset
-  (out of its range) in a notice.
+- **Swapping production generation models** uses the source and destination's model-owned
+  parameter contracts. A shared name alone does not establish shared meaning: control types,
+  units, meaning tags, target options/ranges and conditional reset rules participate. The
+  complete preview names dropped/reset fields and destination defaults before Apply; it never
+  includes dropped user values. The node-owned prompt, config and history remain recoverable.
+  See [model selection](model-selection.md). The standalone `catalog::migrate` helper remains
+  the earlier schema/name migration API; it is not the generation command's semantic authority.
 - **Auto-select** (`Catalog::select`, #78) keeps the models that fit what is wired in, whose
   provider the person can use and whose price per job fits the budget. The price is quoted with
   the node's parameters that the model knows, plus its defaults. Known values are checked

@@ -19,6 +19,8 @@ impl NodeCraftApp {
         let fit_available = canvas::valid_rect(viewport) && viewport.width() > 2.0 * padding && viewport.height() > 2.0 * padding;
         let viewport_available = canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0;
         let blocked = egui::Popup::is_any_open(ctx)
+            || self.model_choice.is_some()
+            || self.model_frame_owned
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.wiring.is_some()

@@ -45,6 +45,7 @@ pub enum Intent {
     Move(Position),
     Title(String),
     Parameter { name: String, value: Option<Value> },
+    Model,
     History(HistoryIntent),
 }
 pub struct CardResponse {
@@ -267,6 +268,11 @@ pub fn show(
             match descriptor {
                 None => {
                     ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
+                    if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
+                        && ui.button("Choose supported model…").clicked()
+                    {
+                        intents.push(Intent::Model);
+                    }
                 }
                 Some(d) => {
                     for spec in &d.params.params {
@@ -278,13 +284,25 @@ pub fn show(
                             let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
                             let value = node.params.get(&spec.name).or(spec.default.as_ref());
                             let editable = enabled.is_none_or(|names| names.contains(&spec.name));
-                            let changed = if editable {
-                                control(ui, &spec.control, value, &spec.name, editor, label.id, t)
+                            if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
+                                let current = match value {
+                                    Some(Value::Text(id)) => id.as_str(),
+                                    _ => "Unavailable saved model",
+                                };
+                                let preview: String = current.chars().take(t.preview_chars).collect();
+                                ui.label(&preview);
+                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                    intents.push(Intent::Model);
+                                }
                             } else {
-                                ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner
-                            };
-                            if editable && let Some(value) = changed {
-                                intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                                let changed = if editable {
+                                    control(ui, &spec.control, value, &spec.name, editor, label.id, t)
+                                } else {
+                                    ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner
+                                };
+                                if editable && let Some(value) = changed {
+                                    intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                                }
                             }
                             ui.add_space(t.control_gap);
                         });
@@ -551,6 +569,13 @@ fn control(
 }
 
 impl EditorState {
+    /// Drafts remain recoverable view state while a model preview is open. Applying a model
+    /// cannot silently discard them or copy them into a semantically different parameter.
+    pub(crate) fn has_dirty(&self) -> bool {
+        self.title.as_ref().is_some_and(|draft| draft.text != draft.original)
+            || self.text.values().any(|draft| draft.text != draft.original)
+            || !self.sliders.is_empty()
+    }
     fn hide_fields(&mut self, visible: Option<&BTreeSet<String>>) {
         if self.text.iter().any(|(name, draft)| !visible.is_some_and(|fields| fields.contains(name)) && draft.text != draft.original) {
             self.hidden_dirty = true;

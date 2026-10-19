@@ -25,6 +25,8 @@ pub mod jobs;
 pub mod keys_cmds;
 pub mod layout_cmds;
 pub mod live_actions;
+pub mod model_cmds;
+pub mod model_swap;
 pub mod navigation_cmds;
 pub mod node_cmds;
 pub mod order_cmds;

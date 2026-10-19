@@ -50,6 +50,8 @@ fn panic_hunt() {
             "reply",
             "resolved",
             "expected_revision",
+            "model",
+            "preview_binding",
         ] {
             let mut params = json!({"canvas":common::canvas(),"id":common::node_id(1),"pos":{"x":1,"y":0}});
             params[field] = raw.clone();
@@ -103,6 +105,16 @@ fn template(id: &str) -> (Session, Value) {
         let mut source = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(3), &std::collections::BTreeMap::new()).unwrap();
         source.params.insert("text".into(), nodecraft_types::Value::Text("before".into()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
+    }
+    if matches!(id, "node.model_preview" | "node.set_model") {
+        let seed = Session::new(document.clone()).unwrap();
+        let supplied = [
+            ("model".into(), nodecraft_types::Value::Text("openai-images.sunburst".into())),
+            ("prompt".into(), nodecraft_types::Value::Text("Public-safe corpus prompt".into())),
+        ]
+        .into();
+        let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
     }
     if matches!(id, "tag.put" | "tag.remove" | "node.tag_set") {
         let tag = nodecraft_types::TagId::from_bytes([9; 16]);
@@ -229,6 +241,14 @@ fn template(id: &str) -> (Session, Value) {
         "node.move" => movement.clone(),
         "node.title" => json!({"canvas":canvas(),"id":node_id(1),"title":"Renamed"}),
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
+        "node.model_preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"}),
+        "node.set_model" => {
+            let mut request = json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"});
+            let preview = session.dispatch("node.model_preview", &request).unwrap();
+            request["expected_revision"] = preview["revision"].clone();
+            request["preview_binding"] = preview["binding"].clone();
+            request
+        }
         "edge.connect" => json!({"canvas":canvas(),"edge":edge()}),
         "edge.disconnect" => json!({"canvas":canvas(),"id":edge().id}),
         "canvas.auto_format" => json!({"mode":"grid"}),
@@ -355,6 +375,9 @@ fn typed_template_panic_hunt() {
             if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
                 params["accept"]["token"] = fresh["accept"]["token"].clone();
             }
+            if id == "node.set_model" && params.get("preview_binding") == valid.get("preview_binding") {
+                params["preview_binding"] = fresh["preview_binding"].clone();
+            }
             let before = session.document().clone();
             let revision = session.revision();
             let events = session.events_since(0).unwrap();
@@ -386,6 +409,7 @@ fn typed_template_panic_hunt() {
                             | "comment.compose"
                             | "canvas.stale"
                             | "node.describe"
+                            | "node.model_preview"
                             | "canvas.search_open"
                             | "canvas.search_query"
                             | "canvas.search_next"
@@ -450,4 +474,18 @@ fn run_start_template_reaches_the_registered_host() {
     assert_eq!(session.revision(), revision);
     assert_eq!(session.events_since(0).unwrap(), events);
     assert_eq!((session.can_undo(), session.can_redo()), history);
+}
+
+#[test]
+fn model_templates_reach_the_production_kind_and_current_preview_binding() {
+    for id in ["node.model_preview", "node.set_model"] {
+        let (mut session, params) = template(id);
+        let before = session.document().clone();
+        session.dispatch(id, &params).unwrap();
+        if id == "node.model_preview" {
+            assert_eq!(session.document(), &before);
+        } else {
+            assert_ne!(session.document(), &before);
+        }
+    }
 }

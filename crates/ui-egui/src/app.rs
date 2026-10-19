@@ -322,6 +322,7 @@ mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
 mod metrics;
+mod models;
 mod navigation;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
@@ -399,6 +400,9 @@ pub struct NodeCraftApp {
     split_shown: Option<(NodeId, u32, u32)>,
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
+    model_choice: Option<models::ModelChoice>,
+    /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
+    model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
     text_focused: bool,
     /// Exact previous text owner survives Escape and disabled-toolbar interaction.
@@ -664,6 +668,8 @@ impl NodeCraftApp {
             split_seen: None,
             split_shown: None,
             turn_into: None,
+            model_choice: None,
+            model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
             schemas: SchemaCache::default(),
@@ -730,7 +736,8 @@ impl NodeCraftApp {
             self.view.reset(viewport, home);
             self.centred = true;
         }
-        let comments_blocks = self.comments_overlay(ui);
+        let model_blocks = self.model_overlay(ui);
+        let comments_blocks = if model_blocks { true } else { self.comments_overlay(ui) };
         // A context menu is not permission to commit a dirty editor draft.
         if self.text_focused
             && !egui::Popup::is_any_open(ui.ctx())
@@ -744,14 +751,14 @@ impl NodeCraftApp {
             ui.ctx().memory_mut(|m| m.request_focus(owner));
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
         }
-        let tag_blocks = self.tag_overlay(ui);
+        let tag_blocks = if model_blocks { true } else { self.tag_overlay(ui) };
         let drop_blocks = self.poll_drop(ui, t);
-        let search_blocks = self.search_overlay(ui);
+        let search_blocks = if model_blocks { true } else { self.search_overlay(ui) };
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
         // Save and open (#406) work from a text field too (no field uses them); not while the palette
         // or "Turn into" is open. Without a file yet, saving needs a location: say how to give one.
-        if self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks && self.palette.is_none() && self.turn_into.is_none() {
             let (save_as, save, open) =
                 ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
             if save || save_as || open {
@@ -760,7 +767,7 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks && !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
             // Held minimap input owns mutation keys through release. Fresh presses still
             // use the post-undo/delete admission below, since those edits can change availability.
             let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
@@ -916,8 +923,9 @@ impl NodeCraftApp {
         let popup_owned = egui::Popup::is_any_open(ui.ctx());
         // Taken before navigation too: a fit or pan from the overlay also moves the view.
         let view_before = self.view;
-        let layout_blocks = self.layout_overlay(ui);
-        let overlay_blocks = self.navigation_overlay(ui, minimap_press) || search_blocks || layout_blocks || comments_blocks || tag_blocks || drop_blocks;
+        let layout_blocks = if model_blocks { true } else { self.layout_overlay(ui) };
+        let overlay_blocks =
+            self.navigation_overlay(ui, minimap_press) || model_blocks || search_blocks || layout_blocks || comments_blocks || tag_blocks || drop_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
         let canvas_blocks = overlay_blocks || popup_owned;
         let shift = ui.input(|i| i.modifiers.shift);
@@ -1062,7 +1070,8 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     }
-                    if (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
+                    if !model_blocks
+                        && (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
                         && (!self.text_focused && !canvas::text_input_focused(ui.ctx()) || egui::Popup::is_any_open(ui.ctx()))
                     {
                         r.context_menu(|ui| {
@@ -1171,7 +1180,8 @@ impl NodeCraftApp {
                             .intents
                             .into_iter()
                             .filter(|intent| {
-                                (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
+                                !model_blocks
+                                    && (!overlay_blocks || self.text_focused || (popup_owned && matches!(intent, Intent::Parameter { .. })))
                                     && (!canvas_blocks || !matches!(intent, Intent::Move(_)))
                             })
                             .map(|intent| (node.id, intent)),
@@ -1195,7 +1205,8 @@ impl NodeCraftApp {
                 }
             }
             // Double-click empty canvas (not a noodle) for the quick-add palette.
-            if background.double_clicked()
+            if !canvas_blocks
+                && background.double_clicked()
                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
             {
                 let world = self.view.to_world(viewport.min, p);
@@ -1337,7 +1348,17 @@ impl NodeCraftApp {
         if let Some((node, owner)) = comment_target {
             self.compose_on_node(ui.ctx(), node, Some(owner));
         }
+        if let Some(id) = intents.iter().find_map(|(id, intent)| matches!(intent, Intent::Model).then_some(*id))
+            && let Err(error) = self.open_model_picker(self.canvas, vec![id], self.session.revision())
+        {
+            self.notice = Some(error.message);
+        }
         for (id, intent) in intents {
+            // A model-opening click can make a text draft lose focus in this same pass.
+            // Preserve its draft; never auto-commit it before constructing the preview.
+            if self.model_frame_owned {
+                continue;
+            }
             let (command, params, editing) = match intent {
                 Intent::Move(pos) => {
                     if let Some(drag) = &mut self.drag
@@ -1355,6 +1376,7 @@ impl NodeCraftApp {
                     Some((command, params)) => (command, params, None),
                     None => continue,
                 },
+                Intent::Model => continue,
             };
             match self.session.dispatch(command, &params) {
                 Ok(_) => {
@@ -1385,7 +1407,9 @@ impl NodeCraftApp {
             self.marquee = None;
         }
         self.view.pan_by(pan);
-        self.drop_files(ui, viewport, t);
+        if !self.model_frame_owned {
+            self.drop_files(ui, viewport, t);
+        }
         if let Some(mut open) = self.palette.take() {
             let entries = self.palette_entries();
             match open.show(ui.ctx(), &entries, t) {
