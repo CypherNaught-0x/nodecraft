@@ -1,5 +1,6 @@
 use super::*;
 use egui_kittest::Harness;
+use egui_kittest::kittest::NodeT;
 use std::collections::BTreeSet;
 
 pub(super) fn harness() -> Harness<'static, NodeCraftApp> {
@@ -2548,4 +2549,648 @@ fn minimap291_visual_current() {
     assert_eq!(counts(&h).0, expected);
     h.render().unwrap().save(std::env::var("NODECRAFT_291_SCREENSHOT").unwrap()).unwrap();
     println!("Rendered actual held-map Paste outcome: blocked={blocked}, nodes={expected}, revision={}", h.state().session.revision());
+}
+
+fn bulk71_app() -> NodeCraftApp {
+    let mut app = NodeCraftApp::headless().unwrap();
+    let canvas = app.canvas;
+    let mut document = app.session.document().clone();
+    let original_id = node(&app).id;
+    let mut first = node(&app).clone();
+    first.pos = nodecraft_graph::Position { x: -360.0, y: -120.0 };
+    first.params.insert("text".into(), Value::Text("A quiet mountain lake".into()));
+    Change::SetNode { canvas, node: first.clone() }.apply(&mut document).unwrap();
+    let second_id = NodeId::from_bytes([71; 16]);
+    first.id = second_id;
+    first.pos = nodecraft_graph::Position { x: 20.0, y: -120.0 };
+    first.params.insert("text".into(), Value::Text("An evening forest trail".into()));
+    Change::AddNode { canvas, node: first }.apply(&mut document).unwrap();
+    app.session = Session::new(document).unwrap();
+    app.selection.replace([original_id, second_id].into_iter().collect());
+    app
+}
+fn bulk71_harness() -> Harness<'static, NodeCraftApp> {
+    Harness::builder().with_step_dt(1.0 / 60.0).with_size(Vec2::new(1200.0, 800.0)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            ui.heading("NodeCraft — shared parameters");
+            app.show(ui);
+        },
+        bulk71_app(),
+    )
+}
+#[test]
+#[ignore = "manual public-safe bulk panel capture; requires NODECRAFT_BULK71_SCREENSHOT"]
+fn bulk71_visual_current() {
+    let mut h = bulk71_harness();
+    h.run();
+    assert_eq!(h.state().selection.nodes().len(), 2);
+    h.render().unwrap().save(std::env::var("NODECRAFT_BULK71_SCREENSHOT").unwrap()).unwrap();
+}
+#[test]
+fn bulk71_mixed_text_edits_all_with_one_undo_and_owns_shortcuts() {
+    let mut h = bulk71_harness();
+    h.run();
+    let before = h.state().session.document().clone();
+    let edit = h.get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("A shared public-safe prompt".into()));
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::MultilineTextInput, "Text").value().as_deref(), Some("A shared public-safe prompt"));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    assert_eq!(canvas.nodes().len(), 2);
+    assert!(
+        canvas.nodes().values().all(|node| node.params.get("text") == Some(&Value::Text("A shared public-safe prompt".into()))),
+        "actual nodes: {:?}, notice: {:?}, revision: {}",
+        canvas.nodes(),
+        h.state().notice,
+        h.state().session.revision()
+    );
+    assert_eq!(h.state().session.revision(), 1);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+}
+#[test]
+fn bulk71_selection_change_never_commits_previous_draft() {
+    let mut h = bulk71_harness();
+    h.run();
+    let before = h.state().session.document().clone();
+    let edit = h.get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("Do not apply to another selection".into()));
+    h.run();
+    assert_eq!(h.get_by_role_and_label(Role::MultilineTextInput, "Text").value().as_deref(), Some("Do not apply to another selection"));
+    let id = *h.state().selection.nodes().first().unwrap();
+    h.state_mut().selection.only(id);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), 0);
+}
+
+fn bulk71_custom_harness(params: Vec<ParamSpec>, second_params: BTreeMap<String, Value>) -> Harness<'static, NodeCraftApp> {
+    let mut h = schema_harness(params);
+    let canvas = h.state().canvas;
+    let first = node(h.state()).clone();
+    let descriptor = h.state().session.kinds().get(&first.kind).unwrap().descriptor().clone();
+    let mut document = h.state().session.document().clone();
+    let mut second = first.clone();
+    second.id = NodeId::from_bytes([71; 16]);
+    second.pos.x += 380.0;
+    second.params.extend(second_params);
+    let ids = [first.id, second.id].into_iter().collect();
+    Change::AddNode { canvas, node: second }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(TestKind(descriptor))).unwrap();
+    h.state_mut().session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    h.state_mut().selection.replace(ids);
+    h
+}
+#[test]
+fn bulk71_mixed_toggle_and_choice_use_explicit_values_and_keep_owned_popup_live() {
+    let mut h = schema_harness(vec![
+        spec("enabled", ParamControl::Toggle, Value::Bool(false)),
+        spec(
+            "quality",
+            ParamControl::Choice { options: vec![Choice { value: "low".into(), label: "Low".into() }, Choice { value: "high".into(), label: "High".into() }] },
+            Value::Text("low".into()),
+        ),
+    ]);
+    let canvas = h.state().canvas;
+    let first = node(h.state()).clone();
+    let descriptor = h.state().session.kinds().get(&first.kind).unwrap().descriptor().clone();
+    let mut document = h.state().session.document().clone();
+    let mut second = first.clone();
+    second.id = NodeId::from_bytes([71; 16]);
+    second.pos.x += 380.0;
+    second.params.insert("enabled".into(), Value::Bool(true));
+    second.params.insert("quality".into(), Value::Text("high".into()));
+    let ids = [first.id, second.id].into_iter().collect();
+    Change::AddNode { canvas, node: second }.apply(&mut document).unwrap();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(TestKind(descriptor))).unwrap();
+    h.state_mut().session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    h.state_mut().selection.replace(ids);
+    h.run();
+    let original = h.state().session.document().clone();
+    let on = h.get_by_role_and_label(Role::Button, "On for all").rect().center();
+    click(&mut h, on);
+    assert!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().values().all(|node| node.params.get("enabled") == Some(&Value::Bool(true))));
+    let choice = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::ComboBox, "quality").rect().center();
+    click(&mut h, choice);
+    h.run();
+    let high = h.get_by_label("High").rect().center();
+    click(&mut h, high);
+    assert!(
+        h.state()
+            .session
+            .document()
+            .canvases()
+            .get(&canvas)
+            .unwrap()
+            .nodes()
+            .values()
+            .all(|node| node.params.get("quality") == Some(&Value::Text("high".into())))
+    );
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &original);
+}
+
+#[test]
+fn bulk71_another_control_cannot_replace_a_blurring_text_commit() {
+    let mut h = bulk71_custom_harness(
+        vec![
+            spec("text", ParamControl::Text { multiline: true, max_bytes: 1024 }, Value::Text("First".into())),
+            spec("enabled", ParamControl::Toggle, Value::Bool(false)),
+        ],
+        BTreeMap::from([("text".into(), Value::Text("Second".into())), ("enabled".into(), Value::Bool(true))]),
+    );
+    h.run();
+    let canvas = h.state().canvas;
+    let original = h.state().session.document().clone();
+    let edit = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("Keep this committed draft".into()));
+    h.run();
+    let on = h.get_by_role_and_label(Role::Button, "On for all").rect().center();
+    click(&mut h, on);
+    let nodes = h.state().session.document().canvases().get(&canvas).unwrap().nodes();
+    assert!(nodes.values().all(|node| node.params.get("text") == Some(&Value::Text("Keep this committed draft".into()))));
+    assert_eq!(nodes.values().filter(|node| node.params.get("enabled") == Some(&Value::Bool(true))).count(), 1);
+    assert_eq!(h.state().session.revision(), 1);
+    let on = h.get_by_role_and_label(Role::Button, "On for all").rect().center();
+    click(&mut h, on);
+    assert_eq!(h.state().session.revision(), 2);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &original);
+}
+
+#[test]
+fn bulk71_conditional_disabled_row_refuses_pointer_edit_until_all_targets_enable_it() {
+    use nodecraft_nodes::{JobSpec, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx};
+    use nodecraft_types::{Condition, Error, HiddenPolicy, ParamRule, PortType};
+    struct Conditional(NodeDescriptor);
+    impl NodeKind for Conditional {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+            None
+        }
+        fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+            Ok(vec![])
+        }
+        fn contract(&self, descriptor: &NodeDescriptor) -> NodeContract {
+            let mut c = NodeContract::derive(descriptor);
+            c.params.rules.push(ParamRule {
+                enabled_when: Some(Condition::Equals { param: "show".into(), value: Value::Bool(true) }),
+                hidden: HiddenPolicy::Reset,
+                ..ParamRule::implied("text")
+            });
+            c
+        }
+    }
+    let mut h = bulk71_custom_harness(
+        vec![
+            spec("show", ParamControl::Toggle, Value::Bool(true)),
+            spec("text", ParamControl::Text { multiline: true, max_bytes: 1024 }, Value::Text("First".into())),
+        ],
+        BTreeMap::from([("show".into(), Value::Bool(false)), ("text".into(), Value::Text("Second".into()))]),
+    );
+    let descriptor = h.state().session.kinds().get(&node(h.state()).kind).unwrap().descriptor().clone();
+    let document = h.state().session.document().clone();
+    let mut kinds = nodecraft_nodes::Registry::default();
+    kinds.register(Box::new(Conditional(descriptor))).unwrap();
+    h.state_mut().session = Session::with_registries(document.clone(), nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    h.run();
+    let disabled = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, disabled);
+    h.event(egui::Event::Text("Must not be committed".into()));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), 0);
+    let on = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "On for all").rect().center();
+    click(&mut h, on);
+    assert_eq!(h.state().session.revision(), 1);
+    let edit = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("Both enabled".into()));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.revision(), 2);
+    assert!(
+        h.state()
+            .session
+            .document()
+            .canvases()
+            .get(&h.state().canvas)
+            .unwrap()
+            .nodes()
+            .values()
+            .all(|node| node.params.get("text") == Some(&Value::Text("Both enabled".into())))
+    );
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document);
+}
+
+fn bulk71_real_model_harness() -> Harness<'static, NodeCraftApp> {
+    let mut app = NodeCraftApp::headless().unwrap();
+    let canvas = app.canvas;
+    let mut document = app.session.document().clone();
+    let ids = [NodeId::from_bytes([101; 16]), NodeId::from_bytes([102; 16])];
+    let models = ["openai-images.sunburst", "openai-images.flare"];
+    for (index, (id, model)) in ids.into_iter().zip(models).enumerate() {
+        let values = BTreeMap::from([("model".into(), Value::Text(model.into())), ("prompt".into(), Value::Text(format!("Public scene {index}")))]);
+        let mut node = app.session.kinds().get("generation.image").unwrap().instantiate_instance(id, Default::default(), &values).unwrap();
+        node.pos = nodecraft_graph::Position { x: if index == 0 { -360.0 } else { 20.0 }, y: -120.0 };
+        Change::AddNode { canvas, node }.apply(&mut document).unwrap();
+    }
+    app.session = Session::new(document.clone()).unwrap();
+    app.selection.replace(ids.into_iter().collect());
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1200.0, 800.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    h
+}
+
+#[test]
+fn bulk71_real_registered_mixed_models_edit_prompt_through_owned_text_control() {
+    let mut h = bulk71_real_model_harness();
+    let canvas = h.state().canvas;
+    let document = h.state().session.document().clone();
+    let ids = [NodeId::from_bytes([101; 16]), NodeId::from_bytes([102; 16])];
+    let models = ["openai-images.sunburst", "openai-images.flare"];
+    let edit = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("A quiet lake at sunset".into()));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.revision(), 1);
+    for (id, model) in ids.into_iter().zip(models) {
+        let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap();
+        assert_eq!(node.params.get("prompt"), Some(&Value::Text("A quiet lake at sunset".into())));
+        assert_eq!(node.params.get("model"), Some(&Value::Text(model.into())));
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &document);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn bulk71_catalog_replacement_discards_old_draft_and_refusal_cache_recovers() {
+    use nodecraft_engine::generation_catalog::GenerationCatalog;
+    let mut h = bulk71_real_model_harness();
+    let original = h.state().session.document().clone();
+    let edit = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("Never apply this obsolete draft".into()));
+    h.run();
+    assert_eq!(h.state().session.revision(), 0);
+    let old = h.state().session.generation_catalog().unwrap().clone();
+    let replacement = GenerationCatalog::builtin().unwrap();
+    h.state_mut().session.swap_resource(Some(replacement.run_catalog()));
+    h.state_mut().session.swap_resource(Some(replacement));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.document(), &original);
+    assert_eq!(h.state().session.revision(), 0);
+    assert!(!h.state().session.can_undo());
+    h.state_mut().session.swap_resource(Some(old.run_catalog()));
+    h.state_mut().session.swap_resource(Some(old));
+    h.run();
+    let edit = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    click(&mut h, edit);
+    h.event(egui::Event::Text("Fresh explicit intent".into()));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.revision(), 1);
+    for id in h.state().selection.nodes() {
+        assert_eq!(
+            h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(id).unwrap().params.get("prompt"),
+            Some(&Value::Text("Fresh explicit intent".into()))
+        );
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &original);
+}
+
+// A floating Area requests repaint while the pointer is held. Advance the press once,
+// then require quiescence only after releasing, so this remains a complete real click.
+fn bulk71_model_click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
+    h.hover_at(pos);
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+}
+
+fn bulk71_choose_model(h: &mut Harness<'static, NodeCraftApp>, model: &str) {
+    h.event(egui::Event::Text(model.into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.query_by_label("Apply model change").is_some(), "choosing only prepares a complete review");
+}
+#[test]
+fn bulk71_real_model_picker_previews_all_then_applies_one_undoable_transaction() {
+    let mut h = bulk71_real_model_harness();
+    let before = h.state().session.document().clone();
+    let picker = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Change model…").rect().center();
+    bulk71_model_click(&mut h, picker);
+    assert!(h.state().model_choice.is_some());
+    bulk71_choose_model(&mut h, "openai-images.flare");
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), 0);
+    let apply = h.get_by_label("Apply model change").rect().center();
+    bulk71_model_click(&mut h, apply);
+    assert!(h.state().model_choice.is_none());
+    assert_eq!(h.state().session.revision(), 1);
+    let after = h.state().session.document().clone();
+    for id in h.state().selection.nodes() {
+        let node = after.canvases().get(&h.state().canvas).unwrap().nodes().get(id).unwrap();
+        assert_eq!(node.params.get("model"), Some(&Value::Text("openai-images.flare".into())));
+        assert!(node.history.is_empty());
+    }
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert!(!h.state().session.can_undo());
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &after);
+}
+#[test]
+fn bulk71_blurred_invalid_shared_draft_blocks_pointer_and_programmatic_model_apply() {
+    for programmatic in [false, true] {
+        let mut h = bulk71_real_model_harness();
+        let before = h.state().session.document().clone();
+        let field = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::TextInput, "Images").rect().center();
+        bulk71_model_click(&mut h, field);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("invalid".into()));
+        h.run();
+        let summary = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_label("2 selected nodes").rect().center();
+        bulk71_model_click(&mut h, summary);
+        assert_eq!(h.state().session.document(), &before);
+        assert_eq!(h.state().session.revision(), 0);
+        if programmatic {
+            let canvas = h.state().canvas;
+            let ids = h.state().selection.nodes().iter().copied().collect();
+            h.state_mut().open_model_picker(canvas, ids, 0).unwrap();
+            h.run();
+        } else {
+            let picker = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Change model…").rect().center();
+            bulk71_model_click(&mut h, picker);
+        }
+        bulk71_choose_model(&mut h, "openai-images.flare");
+        let apply = h.get_by_label("Apply model change");
+        assert!(apply.accesskit_node().is_disabled());
+        let at = apply.rect().center();
+        bulk71_model_click(&mut h, at);
+        assert!(h.state().model_choice.is_some());
+        assert_eq!(h.state().session.document(), &before);
+        assert_eq!(h.state().session.revision(), 0);
+        let cancel = h.get_by_label("Cancel model change").rect().center();
+        bulk71_model_click(&mut h, cancel);
+        assert!(h.state().model_choice.is_none());
+        let field = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::TextInput, "Images");
+        assert_eq!(field.value().as_deref(), Some("invalid"));
+        let at = field.rect().center();
+        bulk71_model_click(&mut h, at);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("2".into()));
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().session.revision(), 1);
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(h.state().session.document(), &before);
+    }
+}
+
+#[test]
+fn bulk71_unavailable_models_use_shared_repair_picker_and_one_exact_undo() {
+    let mut h = bulk71_real_model_harness();
+    let mut project = h.state().session.document().clone();
+    let canvas = h.state().canvas;
+    let ids = [NodeId::from_bytes([101; 16]), NodeId::from_bytes([102; 16])];
+    for id in ids {
+        let mut node = project.canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().clone();
+        node.params.insert("model".into(), Value::Text("LegacyModel:v2".into()));
+        Change::SetNode { canvas, node }.apply(&mut project).unwrap();
+    }
+    h.state_mut().session = Session::new(project.clone()).unwrap();
+    h.run();
+    let panel = h.get_by_role_and_label(Role::Window, "Shared parameters");
+    let picker = panel.get_by_role_and_label(Role::Button, "Change model…").rect().center();
+    assert!(panel.query_by_role_and_label(Role::TextInput, "Images").is_none());
+    bulk71_model_click(&mut h, picker);
+    bulk71_choose_model(&mut h, "openai-images.flare");
+    assert_eq!(h.state().session.document(), &project);
+    assert_eq!(h.state().session.revision(), 0);
+    let apply_node = h.get_by_label("Apply model change");
+    assert!(!apply_node.accesskit_node().is_disabled(), "{apply_node:?}");
+    let apply_rect = apply_node.rect();
+    assert!(h.ctx.content_rect().contains_rect(apply_rect), "Apply {apply_rect:?} outside {:?}", h.ctx.content_rect());
+    let window_rect = h.get_by_role_and_label(Role::Window, "Review model change").rect();
+    assert!(window_rect.contains_rect(apply_rect), "Apply {apply_rect:?} outside review {window_rect:?}");
+    let apply = apply_rect.center();
+    bulk71_model_click(&mut h, apply);
+    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Window, "Review model change"));
+    for id in ids {
+        assert_eq!(
+            h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("model"),
+            Some(&Value::Text("openai-images.flare".into()))
+        );
+    }
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &project);
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn bulk71_model_repair_never_bypasses_future_version_or_known_port_drift() {
+    for future in [false, true] {
+        let h = bulk71_real_model_harness();
+        let mut project = h.state().session.document().clone();
+        let canvas = h.state().canvas;
+        let id = NodeId::from_bytes([101; 16]);
+        let mut node = project.canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().clone();
+        if future {
+            node.params.insert("model".into(), Value::Text("LegacyModel:v2".into()));
+            node.config.insert("generation_contract_major".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
+        } else {
+            node.inputs.pop();
+        }
+        Change::SetNode { canvas, node }.apply(&mut project).unwrap();
+        let session = Session::new(project).unwrap();
+        let ids = [id, NodeId::from_bytes([102; 16])].into_iter().collect();
+        assert!(crate::bulk::Snapshot::read(&session, canvas, &ids).is_err());
+    }
+}
+
+#[test]
+#[ignore = "manual real-catalog bulk before/after capture; NODECRAFT_BULK71_MEDIA_DIR and NODECRAFT_BULK71_MEDIA_EXPECT"]
+fn bulk71_real_catalog_media() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let out = std::path::PathBuf::from(std::env::var_os("NODECRAFT_BULK71_MEDIA_DIR").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let expected = std::env::var("NODECRAFT_BULK71_MEDIA_EXPECT").unwrap() == "1";
+    let canvas = nodecraft_types::CanvasId::from_bytes([71; 16]);
+    let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([71; 16]), "Public shared model parameters").unwrap();
+    nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+    let seed = nodecraft_engine::Session::new(project.clone()).unwrap();
+    let ids = [nodecraft_types::NodeId::from_bytes([101; 16]), nodecraft_types::NodeId::from_bytes([102; 16])];
+    for (index, (id, model)) in ids.into_iter().zip(["openai-images.sunburst", "openai-images.flare"]).enumerate() {
+        let values: nodecraft_types::ParamValues = [
+            ("model".into(), nodecraft_types::Value::Text(model.into())),
+            ("prompt".into(), nodecraft_types::Value::Text(if index == 0 { "A quiet blue lake" } else { "Soft light above hills" }.into())),
+            ("n".into(), nodecraft_types::Value::Unsigned(nodecraft_types::Unsigned(if index == 0 { 2 } else { 1 }))),
+        ]
+        .into();
+        let mut node = seed.kinds().get("generation.image").unwrap().instantiate_instance(id, Default::default(), &values).unwrap();
+        node.title = if index == 0 { "First public image" } else { "Second public image" }.into();
+        node.pos = nodecraft_graph::Position { x: if index == 0 { -360.0 } else { 20.0 }, y: -120.0 };
+        nodecraft_graph::Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+    }
+    let mut app = NodeCraftApp::from_session(nodecraft_engine::Session::new(project.clone()).unwrap(), canvas).unwrap();
+    app.selection.replace(ids.into_iter().collect());
+    let mut h = egui_kittest::Harness::builder()
+        .wgpu()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(egui::Vec2::new(1200.0, 900.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    assert_eq!(h.query_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").is_some(), expected);
+    h.render().unwrap().save(out.join(if expected { "after.png" } else { "before.png" })).unwrap();
+    if expected {
+        let panel = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters");
+        assert!(panel.query_by_label("Mixed models").is_some());
+        panel.get_by_role_and_label(egui::accesskit::Role::Button, "Change model…").click();
+        h.run();
+        h.event(egui::Event::Text("openai-images.flare".into()));
+        h.run();
+        h.render().unwrap().save(out.join("picker.png")).unwrap();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert!(h.query_by_label_contains("Drop quality").is_some());
+        let apply = h.get_by_label("Apply model change");
+        assert!(!apply.accesskit_node().is_disabled());
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::Window, "Review model change").rect().contains_rect(apply.rect()));
+        h.render().unwrap().save(out.join("review.png")).unwrap();
+    }
+    assert_eq!(h.state().session.document(), &project);
+    assert_eq!(h.state().session.revision(), 0);
+}
+
+#[test]
+fn bulk71_real_owned_model_conditional_fields_refuse_then_edit_all_atomically() {
+    use nodecraft_engine::{commands::Registry, generation_catalog::GenerationCatalog, run_cmds::RunCatalog};
+    use nodecraft_types::{Condition, Contract, HiddenPolicy, ParamControl, ParamOwner, ParamRule, ParamSpec, Unsigned};
+    let canvas = CanvasId::from_bytes([71; 16]);
+    let ids = [NodeId::from_bytes([101; 16]), NodeId::from_bytes([102; 16])];
+    let mut models = Vec::new();
+    for model_id in ["fixture/first", "fixture/second"] {
+        let mut model = nodecraft_catalog::Catalog::builtin().unwrap().get("openai-images.flare").unwrap().clone();
+        model.id = model_id.into();
+        model.params.params.push(ParamSpec {
+            name: "detail".into(),
+            label: "Fixture detail".into(),
+            description: None,
+            control: ParamControl::Text { multiline: true, max_bytes: 128 },
+            required: false,
+            default: None,
+            visible_if: None,
+        });
+        let mut contract = Contract::from_schema(model_id, ParamOwner::Model, model.params.clone());
+        contract.rules.push(ParamRule { unit: nodecraft_types::Unit::Count, meaning: Some("generated_image_count".into()), ..ParamRule::implied("n") });
+        contract.rules.push(ParamRule {
+            meaning: Some("fixture_detail".into()),
+            enabled_when: Some(Condition::Equals { param: "n".into(), value: Value::Unsigned(Unsigned(1)) }),
+            hidden: HiddenPolicy::Reset,
+            ..ParamRule::implied("detail")
+        });
+        model.parameter_contract = Some(contract);
+        models.push(model);
+    }
+    let catalog = GenerationCatalog::new(RunCatalog::new(nodecraft_catalog::Catalog::from_models(models).unwrap()).unwrap()).unwrap();
+    let kinds = catalog.registry().unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([71; 16]), "Public conditional model fixture").unwrap();
+    Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+    for (index, id) in ids.into_iter().enumerate() {
+        let values: nodecraft_types::ParamValues = [
+            ("model".into(), Value::Text(if index == 0 { "fixture/first" } else { "fixture/second" }.into())),
+            ("prompt".into(), Value::Text("Public conditional prompt".into())),
+            ("n".into(), Value::Unsigned(Unsigned(if index == 0 { 1 } else { 2 }))),
+            ("detail".into(), Value::Text("Original detail".into())),
+        ]
+        .into();
+        let mut node = kinds.get("generation.image").unwrap().instantiate_instance(id, Default::default(), &values).unwrap();
+        node.pos = nodecraft_graph::Position { x: if index == 0 { -360.0 } else { 20.0 }, y: -120.0 };
+        Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+    }
+    let mut session = Session::with_registries(project.clone(), Registry::builtins().unwrap(), kinds).unwrap();
+    session.swap_resource(Some(catalog.run_catalog()));
+    session.swap_resource(Some(catalog));
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    app.selection.replace(ids.into_iter().collect());
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1200.0, 900.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    let panel = h.get_by_role_and_label(Role::Window, "Shared parameters");
+    let disabled = panel.query_all_by_role_and_label(Role::Button, "Edit for all…").find(|node| node.accesskit_node().is_disabled()).unwrap().rect().center();
+    bulk71_model_click(&mut h, disabled);
+    assert_eq!(h.state().session.document(), &project);
+    assert!(
+        h.state_mut()
+            .session
+            .dispatch("node.params_set_bulk", &json!({"canvas":canvas,"ids":ids,"revision":0,"name":"detail","value":{"type":"text","value":"Refused detail"}}))
+            .is_err()
+    );
+    assert_eq!(h.state().session.document(), &project);
+    let edit = h
+        .get_by_role_and_label(Role::Window, "Shared parameters")
+        .query_all_by_role_and_label(Role::Button, "Edit for all…")
+        .find(|node| !node.accesskit_node().is_disabled())
+        .unwrap()
+        .rect()
+        .center();
+    bulk71_model_click(&mut h, edit);
+    h.event(egui::Event::Text("1".into()));
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.revision(), 1);
+    let edit = h.get_by_role_and_label(Role::Window, "Shared parameters").get_by_role_and_label(Role::Button, "Edit for all…").rect().center();
+    bulk71_model_click(&mut h, edit);
+    h.event(egui::Event::Text("Shared detail".into()));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().session.revision(), 2);
+    for id in ids {
+        assert_eq!(
+            h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("detail"),
+            Some(&Value::Text("Shared detail".into()))
+        );
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &project);
+    assert!(!h.state().session.can_undo());
 }

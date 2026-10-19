@@ -6,6 +6,7 @@
 
 pub mod action_exec;
 pub mod build_info;
+pub mod bulk_cmds;
 pub mod cache;
 pub mod cache_cmds;
 pub mod clipboard_cmds;

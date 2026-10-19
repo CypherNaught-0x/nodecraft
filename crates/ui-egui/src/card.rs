@@ -11,7 +11,7 @@ use nodecraft_nodes::NodeDescriptor;
 use nodecraft_types::{Integer, Number, ParamControl, Unsigned, Value};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
 };
 
 pub const BODY_MIN_ZOOM: f32 = 0.55;
@@ -24,6 +24,10 @@ pub struct EditorState {
     sliders: BTreeMap<String, SliderDraft>,
     error: Option<(EditTarget, String)>,
     pub hidden_dirty: bool,
+    choices: HashSet<egui::Id>,
+    draft_limit: Option<usize>,
+    focus_request: Option<egui::Id>,
+    text_ids: BTreeMap<String, egui::Id>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditTarget {
@@ -406,6 +410,21 @@ fn control(
     label: egui::Id,
     t: &Tokens,
 ) -> Option<Option<Value>> {
+    control_with_mode(ui, control, value, name, editor, label, t, false)
+}
+
+/// Bulk Mixed numeric values have no meaningful slider position: enter an exact value instead.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn control_with_mode(
+    ui: &mut egui::Ui,
+    control: &ParamControl,
+    value: Option<&Value>,
+    name: &str,
+    editor: &mut EditorState,
+    label: egui::Id,
+    t: &Tokens,
+    numeric_text: bool,
+) -> Option<Option<Value>> {
     match control {
         ParamControl::Toggle => {
             let mut checked = matches!(value, Some(Value::Bool(true)));
@@ -422,7 +441,7 @@ fn control(
                 _ => "",
             };
             let mut selected = current.to_owned();
-            egui::ComboBox::from_id_salt("choice")
+            let response = egui::ComboBox::from_id_salt("choice")
                 .selected_text(options.iter().find(|o| o.value == current).map_or("Choose…", |o| o.label.as_str()))
                 .show_ui(ui, |ui| {
                     for option in options {
@@ -431,11 +450,14 @@ fn control(
                 })
                 .response
                 .labelled_by(label);
+            if editor.draft_limit.is_some() {
+                editor.choices.insert(response.id);
+            }
             if selected != current {
                 return Some(Some(Value::Text(selected)));
             }
         }
-        ParamControl::Slider { min: Some(min), max: Some(max), step } => {
+        ParamControl::Slider { min: Some(min), max: Some(max), step } if !numeric_text => {
             let original = match value {
                 Some(Value::Number(n)) => n.get(),
                 _ => min.get(),
@@ -509,6 +531,11 @@ fn control(
                 }
                 return None;
             }
+            let remaining_draft_chars = editor.draft_limit.map(|limit| {
+                let others =
+                    editor.text.iter().filter(|(field, _)| field.as_str() != name).map(|(_, draft)| draft.text.len()).fold(0usize, usize::saturating_add);
+                limit.saturating_sub(others) / 4
+            });
             let draft = editor.text.get_mut(name)?;
             if draft.original != original && draft.text == draft.original {
                 *draft = Draft { original: original.to_string(), text: original.to_string(), focus: false, was_focused: false };
@@ -524,11 +551,18 @@ fn control(
                 ParamControl::Color => 9,
                 _ => 512,
             };
+            let char_limit = remaining_draft_chars.map_or(max, |limit| max.min(limit));
             let widget =
                 if multiline { egui::TextEdit::multiline(&mut draft.text).desired_rows(t.text_rows) } else { egui::TextEdit::singleline(&mut draft.text) };
-            let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(max)).labelled_by(label);
+            let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(char_limit)).labelled_by(label);
+            if editor.draft_limit.is_some() {
+                editor.text_ids.insert(name.to_owned(), r.id);
+            }
             if draft.focus {
                 r.request_focus();
+                if editor.draft_limit.is_some() {
+                    editor.focus_request = Some(r.id);
+                }
                 draft.focus = false;
             }
             let owned_focus = r.has_focus() || r.lost_focus() || draft.was_focused;
@@ -569,6 +603,27 @@ fn control(
 }
 
 impl EditorState {
+    pub(crate) fn field_owns_focus(&self, name: &str, id: egui::Id) -> bool {
+        self.text_ids.get(name) == Some(&id)
+    }
+    pub(crate) fn owns_text_focus(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|memory| memory.focused()).is_some_and(|id| self.text_ids.values().any(|field| *field == id))
+    }
+    pub(crate) fn take_focus_request(&mut self) -> Option<egui::Id> {
+        self.focus_request.take()
+    }
+    pub(crate) fn set_draft_limit(&mut self, limit: usize) {
+        self.draft_limit = Some(limit);
+    }
+    pub(crate) fn owns_popup(&self, ctx: &egui::Context) -> bool {
+        self.choices.iter().any(|id| egui::ComboBox::is_open(ctx, *id))
+    }
+    pub(crate) fn begin_empty(&mut self, name: &str) {
+        self.text.insert(name.to_owned(), Draft { original: String::new(), text: String::new(), focus: true, was_focused: false });
+    }
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.error.as_ref().map(|(_, message)| message.as_str())
+    }
     /// Drafts remain recoverable view state while a model preview is open. Applying a model
     /// cannot silently discard them or copy them into a semantically different parameter.
     pub(crate) fn has_dirty(&self) -> bool {

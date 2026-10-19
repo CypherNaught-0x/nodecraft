@@ -103,7 +103,7 @@ impl NodeCraftApp {
     }
 
     fn model_targets_dirty(&self, ids: &[NodeId]) -> bool {
-        ids.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_dirty))
+        self.bulk.targets_dirty(self.canvas, ids) || ids.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_dirty))
     }
 
     /// Called before all canvas shortcut/gesture owners. A closing/Apply pass remains owned.
@@ -168,7 +168,7 @@ impl NodeCraftApp {
                             ui.label("This changes model settings only. Starting a paid run still requires its own quote and consent.");
                             if dirty {
                                 ui.label(
-                                    "Unsaved card edits are preserved. Cancel this picker, then finish or cancel those edits before applying a model change.",
+                                    "Unsaved parameter edits are preserved. Cancel this picker, then finish or cancel those edits before applying a model change.",
                                 );
                             }
                             if let Some(error) = &choice.error {
