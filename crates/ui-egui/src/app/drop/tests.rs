@@ -1,6 +1,7 @@
 use super::super::tests::harness;
 use super::*;
 use egui_kittest::Harness;
+use nodecraft_engine::import::MAX_FILES;
 use std::{path::PathBuf, sync::Arc};
 
 /// A file dropped by the test, read from a real path as eframe's would be.
@@ -42,7 +43,22 @@ fn drop_at(h: &mut Harness<'static, NodeCraftApp>, at: Pos2, paths: &[PathBuf]) 
     for path in paths {
         h.input_mut().dropped_files.push(Arc::new(Dropped(path.clone())));
     }
-    h.run();
+    h.step();
+    finish_drop(h);
+}
+fn finish_drop(h: &mut Harness<'static, NodeCraftApp>) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().drop_pending() {
+        h.step();
+        assert!(std::time::Instant::now() < end, "bounded asynchronous drop completion");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+fn drop_harness() -> (Harness<'static, NodeCraftApp>, native::TestService) {
+    let mut h = harness();
+    let worker = native::TestService::filesystem();
+    h.state_mut().drop_acquisition.service = Ok(worker.service.clone());
+    (h, worker)
 }
 
 fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<nodecraft_graph::Node> {
@@ -51,7 +67,7 @@ fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<nodecraft_graph::Node> {
 
 #[test]
 fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
-    let mut h = harness();
+    let (mut h, _worker) = drop_harness();
     let before = h.state().session.document().clone();
     let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
     let scratch = Scratch::new("nodes");
@@ -76,7 +92,7 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
 
 #[test]
 fn unsupported_and_oversized_files_are_skipped_with_a_notice() {
-    let mut h = harness();
+    let (mut h, _worker) = drop_harness();
     let count = nodes(&h).len();
     let scratch = Scratch::new("skips");
     let big = scratch.write("big.bin", &vec![0u8; MAX_DROP_BYTES + 1]);
@@ -94,7 +110,7 @@ fn unsupported_and_oversized_files_are_skipped_with_a_notice() {
 
 #[test]
 fn a_drop_reads_at_most_its_total_and_its_file_count() {
-    let mut h = harness();
+    let (mut h, _worker) = drop_harness();
     let scratch = Scratch::new("totals");
     // Four text-free files of almost 16 MiB: the fourth would pass the drop's 48 MiB and isn't read.
     let big: Vec<PathBuf> = (0..4u8).map(|n| scratch.write(&format!("{n}.bin"), &vec![b'a' + n; MAX_DROP_BYTES - 1])).collect();
@@ -107,4 +123,20 @@ fn a_drop_reads_at_most_its_total_and_its_file_count() {
     drop_at(&mut h, Pos2::new(300.0, 300.0), &many);
     assert_eq!(nodes(&h).len(), before + MAX_FILES);
     assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("at most 32 files")), "{:?}", h.state().notice);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dropped_fifo_is_refused_without_blocking_the_worker() {
+    let (mut h, _worker) = drop_harness();
+    let scratch = Scratch::new("fifo");
+    let fifo = scratch.0.join("pipe.txt");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    // No writer ever opens it: a blocking open would hold the worker until the deadline.
+    drop_at(&mut h, Pos2::new(600.0, 300.0), std::slice::from_ref(&fifo));
+    assert_eq!(h.state().notice.as_deref().map(|n| n.ends_with("only files can be added, not folders or devices.")), Some(true), "{:?}", h.state().notice);
+    let before = nodes(&h).len();
+    let text = scratch.write("after.txt", b"still reading");
+    drop_at(&mut h, Pos2::new(600.0, 300.0), &[text]);
+    assert_eq!(nodes(&h).len(), before + 1, "the worker is free again: {:?}", h.state().notice);
 }
