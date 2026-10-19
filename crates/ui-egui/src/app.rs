@@ -32,6 +32,8 @@ pub(crate) const MAX_SCHEMA_CACHE_BYTES: usize = 16 * 1024 * 1024;
 struct CachedSchema {
     descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
     visible: BTreeSet<String>,
+    enabled: Option<BTreeSet<String>>,
+    catalog: Option<nodecraft_engine::generation_catalog::GenerationCatalogStamp>,
     descriptor_bytes: usize,
     borrowed_identity: Option<usize>,
     revision: u64,
@@ -54,9 +56,21 @@ struct SchemaCache {
 impl SchemaCache {
     /// Bytes an entry adds on its own (overhead, visibility names, an owned descriptor).
     fn own_bytes(entry: &CachedSchema) -> usize {
-        let names = entry.visible.iter().map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
+        let names = entry.visible.iter().chain(entry.enabled.iter().flatten()).map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
         let owned = if entry.borrowed_identity.is_none() { entry.descriptor_bytes } else { 0 };
         256usize.saturating_add(names).saturating_add(owned)
+    }
+    // Before geometry reads, invalidate only generation entries whose runtime resource/
+    // definition binding changed. No document hashing or per-node payload walk in paint.
+    fn refresh_generation(&mut self, session: &Session) {
+        let current = session.generation_catalog().ok().and_then(|catalog| {
+            catalog.validate_definition_binding(session.kinds().get(nodecraft_nodes::generation::KIND).ok()?).ok()?;
+            Some(catalog.stamp())
+        });
+        let gone: Vec<_> = self.entries.iter().filter(|(_, entry)| entry.catalog.is_some() && entry.catalog != current).map(|(id, _)| *id).collect();
+        for id in gone {
+            self.remove(&id);
+        }
     }
     fn get(&self, id: &NodeId) -> Option<&CachedSchema> {
         self.entries.get(id)
@@ -141,13 +155,29 @@ pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> 
     counter.0.checked_mul(4).filter(|bytes| *bytes <= MAX_SCHEMA_CACHE_BYTES)
 }
 fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
-    if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision()) {
+    let kind = session.kinds().get(&node.kind).ok()?;
+    let catalog = if node.kind == nodecraft_nodes::generation::KIND {
+        let binding = session.generation_catalog().and_then(|catalog| {
+            catalog.validate_definition_binding(kind)?;
+            Ok(catalog.stamp())
+        });
+        match binding {
+            Ok(stamp) => Some(stamp),
+            Err(_) => {
+                cache.remove(&node.id);
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    if cache.get(&node.id).is_some_and(|entry| entry.revision == session.revision() && entry.catalog == catalog) {
         if let Some(entry) = cache.entries.get_mut(&node.id) {
             entry.last_used = clock;
         }
         return cache.get(&node.id);
     }
-    let admission::Admitted { descriptor, visible, bytes } = admission::admit(session, node, Some(cache))?;
+    let admission::Admitted { descriptor, visible, enabled, bytes } = admission::admit(session, node, Some(cache))?;
     let (descriptor, borrowed_identity, bytes) = match descriptor {
         Cow::Borrowed(descriptor) => {
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
@@ -161,7 +191,10 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
         }
         Cow::Owned(descriptor) => (Arc::new(descriptor), None, bytes),
     };
-    cache.insert(node.id, CachedSchema { descriptor, visible, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock });
+    cache.insert(
+        node.id,
+        CachedSchema { descriptor, visible, enabled, catalog, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock },
+    );
     while cache.bytes > MAX_SCHEMA_CACHE_BYTES {
         let oldest = cache.entries.iter().filter(|(id, _)| **id != node.id).min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id);
         if let Some(id) = oldest {
@@ -267,7 +300,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
     }
     cache.rect(session, node, t)
 }
-mod admission;
+pub(crate) mod admission;
 
 mod comments;
 mod drop;
@@ -499,16 +532,16 @@ impl NodeCraftApp {
     fn register_plugins(services: &mut nodecraft_engine::commands::Services, dir: std::path::PathBuf) -> Result<(), Error> {
         use nodecraft_engine::plugin_cmds::{PluginHost, register_plugin_service};
         let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
-        taken.extend(nodecraft_nodes::Registry::builtins()?.descriptors().map(|d| d.id.clone()));
+        taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
         let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?)?;
         register_plugin_service(services, store, PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() })
     }
 
     /// The headless app with these host services on its session (the keychain, for one).
     pub fn with_services(services: nodecraft_engine::commands::Services) -> Result<Self, Error> {
-        let kinds = nodecraft_nodes::Registry::builtins()?;
+        let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
         let (document, canvas) = Self::starter_document(&kinds)?;
-        let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins()?, kinds)?.with_services(services);
+        let session = Session::new(document)?.with_services(services);
         Self::from_session(session, canvas)
     }
 
@@ -702,6 +735,7 @@ impl NodeCraftApp {
         if self.marquee.as_ref().is_none_or(|m| m.cancelled) {
             self.marquee_geometry.clear();
         }
+        self.schemas.refresh_generation(&self.session);
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
@@ -1025,6 +1059,7 @@ impl NodeCraftApp {
                     card::CardView {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
+                        enabled: schema.and_then(|cached| cached.enabled.as_ref()),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
                         image,
                         grid: self.split_shown.filter(|(id, ..)| *id == node.id).map(|(_, rows, columns)| {
@@ -1910,6 +1945,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod generation_tests;
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]

@@ -2102,6 +2102,8 @@ fn last_shared_descriptor_removal_and_replacement_release_accounting() {
     let entry = |descriptor: Arc<NodeDescriptor>, identity, descriptor_bytes| CachedSchema {
         descriptor,
         visible: BTreeSet::new(),
+        enabled: None,
+        catalog: None,
         borrowed_identity: Some(identity),
         descriptor_bytes,
         revision: 0,

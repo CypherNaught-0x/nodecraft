@@ -103,6 +103,8 @@ pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
 pub struct CardView<'a> {
     pub descriptor: Option<&'a NodeDescriptor>,
     pub visible: Option<&'a BTreeSet<String>>,
+    /// Resolved editability; disabling retains field drafts.
+    pub enabled: Option<&'a BTreeSet<String>>,
     pub preview_pos: Option<Position>,
     /// The node's image, when it has one (#386).
     pub image: Option<crate::preview::Preview>,
@@ -133,7 +135,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, preview_pos, image, grid } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, image, grid } = card;
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -275,7 +277,13 @@ pub fn show(
                             let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
                             let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
                             let value = node.params.get(&spec.name).or(spec.default.as_ref());
-                            if let Some(value) = control(ui, &spec.control, value, &spec.name, editor, label.id, t) {
+                            let editable = enabled.is_none_or(|names| names.contains(&spec.name));
+                            let changed = if editable {
+                                control(ui, &spec.control, value, &spec.name, editor, label.id, t)
+                            } else {
+                                ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner
+                            };
+                            if editable && let Some(value) = changed {
                                 intents.push(Intent::Parameter { name: spec.name.clone(), value });
                             }
                             ui.add_space(t.control_gap);

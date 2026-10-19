@@ -7,7 +7,7 @@ use crate::{
 use nodecraft_catalog::{Price, Unit};
 use nodecraft_graph::{Canvas, Change, Port, Project};
 use nodecraft_nodes::{GenerateOutput, ModeId, NodeDescriptor, NodeKind, PlanCtx};
-use nodecraft_types::{Modality, ParamSpec, PortType, ProjectId, Unsigned, VisibleIf};
+use nodecraft_types::{Currency, Modality, ParamSpec, PortType, ProjectId, Unsigned, VisibleIf};
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 fn id(n: u8) -> NodeId {
     NodeId::from_bytes([n; 16])
@@ -28,6 +28,7 @@ fn schema(count: u64) -> ParamSchema {
 }
 fn catalog(count: u64) -> Catalog {
     let model = ModelDescriptor {
+        parameter_contract: None,
         id: "selected".into(),
         provider: "mock".into(),
         provider_model: "remote".into(),
@@ -198,6 +199,7 @@ fn value_and_map_logical_formula_counts_payload_once() {
 
 pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
     Catalog::from_models([ModelDescriptor {
+        parameter_contract: None,
         id: id.into(),
         provider: provider.into(),
         provider_model: remote.into(),

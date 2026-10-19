@@ -105,6 +105,15 @@ impl Resolution {
 }
 
 impl Contract {
+    /// Resolve model settings in a whole node map without copying a filtered input map.
+    /// Foreign keys remain caller-owned and are ignored, while all known values and shared
+    /// aggregate input limits are still checked before effective values are copied.
+    pub fn resolve_selected(&self, supplied: &ParamValues, ready: bool) -> Result<Resolution, Error> {
+        let mut resolution = self.resolve(supplied, ready)?;
+        resolution.issues.retain(|issue| issue.code != IssueCode::UnknownParam);
+        Ok(resolution)
+    }
+
     /// Resolve stored values. Problems with the values become [`Issue`]s; only an invalid
     /// contract or oversized input is an `Err`. With `ready` false (placing an unconfigured
     /// node), missing required values are not reported.

@@ -74,6 +74,10 @@ pub struct NodeContract {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modes: Vec<ModeContract>,
     pub params: Contract,
+    /// Additional semantic owners, never flattened into the node's namespace. Their
+    /// disjoint schemas follow params.schema in the instance descriptor's layout.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_groups: Vec<Contract>,
 }
 
 impl NodeContract {
@@ -96,6 +100,7 @@ impl NodeContract {
                 .collect(),
             modes: Vec::new(),
             params: Contract::from_schema(descriptor.id.clone(), owner, descriptor.params.clone()),
+            owned_groups: Vec::new(),
         }
     }
 
@@ -105,10 +110,10 @@ impl NodeContract {
         if self.version.major != ContractVersion::CURRENT.major {
             return Err(Error::new(ErrorKind::Unsupported, "this node contract needs a newer NodeCraft"));
         }
-        if self.kind != descriptor.id || self.params.namespace != descriptor.id || self.params.schema != descriptor.params {
+        if self.kind != descriptor.id || self.params.namespace != descriptor.id {
             return Err(invalid("a node contract must describe its own kind and parameters"));
         }
-        self.params.validate()?;
+        self.validate_ownership(descriptor)?;
         let inputs: Vec<_> = self.inputs.iter().map(|input| input.port.as_str()).collect();
         let outputs: Vec<_> = self.outputs.iter().map(|output| output.port.as_str()).collect();
         if inputs != descriptor.inputs.iter().map(|port| port.name.as_str()).collect::<Vec<_>>()
@@ -220,6 +225,8 @@ impl NodeContract {
         }
     }
 }
+
+mod ownership;
 
 #[cfg(test)]
 mod tests;

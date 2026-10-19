@@ -102,7 +102,7 @@ impl ModeId {
 impl TryFrom<String> for ModeId {
     type Error = Error;
     fn try_from(value: String) -> Result<Self, Error> {
-        if identifier(&value) { Ok(Self(value)) } else { Err(invalid("invalid mode id")) }
+        if nodecraft_types::model_namespace(&value) { Ok(Self(value)) } else { Err(invalid("invalid mode id")) }
     }
 }
 impl From<ModeId> for String {
@@ -190,6 +190,11 @@ pub struct NodeMigration {
 
 pub trait NodeKind: Send + Sync {
     fn descriptor(&self) -> &NodeDescriptor;
+    /// Runtime-only identity of an immutable definition snapshot. It is not a serialized
+    /// parameter identity or a caller-created capability. Legacy kinds have none.
+    fn definition_snapshot(&self) -> Option<[u8; 32]> {
+        None
+    }
     /// Static palette metadata only. Instance consumers call resolve_instance().
     fn instance<'a>(&'a self, _node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
         Ok(Cow::Borrowed(self.descriptor()))

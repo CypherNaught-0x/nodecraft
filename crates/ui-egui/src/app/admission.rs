@@ -1,9 +1,10 @@
 //! Shared renderer/marquee admission. No descriptor or effective Value is retained by geometry.
 use super::*;
 
-pub(super) struct Admitted<'a> {
+pub(crate) struct Admitted<'a> {
     pub descriptor: Cow<'a, nodecraft_nodes::NodeDescriptor>,
     pub visible: BTreeSet<String>,
+    pub enabled: Option<BTreeSet<String>>,
     pub bytes: usize,
 }
 pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&SchemaCache>) -> Option<Admitted<'a>> {
@@ -11,18 +12,43 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
     if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
         return None;
     }
-    let proof = descriptor.params.validated().ok()?;
-    let visible = proof.resolve_borrowed(&node.params, false).ok()?.visible;
+    let enabled: Option<BTreeSet<String>>;
+    let visible: BTreeSet<String>;
+    if node.kind == nodecraft_nodes::generation::KIND {
+        let catalog = session.generation_catalog().ok()?;
+        let kind = session.kinds().get(&node.kind).ok()?;
+        catalog.validate_definition_binding(kind).ok()?;
+        let resolution = kind.instance_contract(node).ok()?.resolve(&node.params, false).ok()?;
+        visible = resolution.params.iter().filter(|state| state.visible).map(|state| state.name.clone()).collect();
+        enabled = Some(resolution.params.iter().filter(|state| state.enabled).map(|state| state.name.clone()).collect());
+    } else {
+        let proof = descriptor.params.validated().ok()?;
+        visible = proof.resolve_borrowed(&node.params, false).ok()?.visible;
+        enabled = None;
+    }
     let known = match &descriptor {
         Cow::Borrowed(value) => cache.and_then(|cache| cache.shared.get(&(*value as *const nodecraft_nodes::NodeDescriptor as usize))).map(|slot| slot.1),
         Cow::Owned(_) => None,
     };
     let bytes = known.or_else(|| descriptor_bytes(&descriptor))?;
-    let overhead = visible.iter().fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
+    let overhead = visible.iter().chain(enabled.iter().flatten()).fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
     if bytes.checked_add(overhead)? > MAX_SCHEMA_CACHE_BYTES {
         return None;
     }
-    Some(Admitted { descriptor, visible, bytes })
+    Some(Admitted { descriptor, visible, enabled, bytes })
+}
+
+/// Navigation needs no view-cache access; keep the cached implementation private to App.
+pub(crate) fn admit_uncached<'a>(session: &'a Session, node: &Node) -> Option<Admitted<'a>> {
+    admit(session, node, None)
+}
+
+/// Existing runtime identity only; no retained catalog/descriptor owner or document scan.
+pub(crate) fn definition_snapshot(session: &Session) -> Option<[u8; 32]> {
+    let catalog = session.generation_catalog().ok()?;
+    let kind = session.kinds().get(nodecraft_nodes::generation::KIND).ok()?;
+    catalog.validate_definition_binding(kind).ok()?;
+    kind.definition_snapshot()
 }
 
 // Logical retention includes a fixed root allowance and conservative per-entry overhead.
@@ -34,6 +60,7 @@ const _: () = assert!(std::mem::size_of::<(NodeId, Rect, bool)>() <= 128);
 pub(super) struct GeometryCache {
     identity: Option<Arc<crate::navigation::SessionIdentity>>,
     key: Option<(CanvasId, u64, ThemeKind)>,
+    catalog: Option<[u8; 32]>,
     entries: Vec<(NodeId, Rect, bool)>,
 }
 const _: () = assert!(std::mem::size_of::<GeometryCache>() <= 128);
@@ -42,12 +69,16 @@ impl GeometryCache {
         let identity = crate::navigation::Geometry::identity(session);
         let changed = self.identity.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &identity));
         let key = (canvas, session.revision(), theme);
-        let invalidated = changed || self.key != Some(key);
+        // Catalog resources can be replaced without a document revision. Match the
+        // generated renderer's opaque definition binding before reusing rect/placeholder.
+        let catalog = definition_snapshot(session);
+        let invalidated = changed || self.key != Some(key) || self.catalog != catalog;
         if invalidated {
             self.clear();
         }
         self.identity = Some(identity);
         self.key = Some(key);
+        self.catalog = catalog;
         invalidated
     }
     #[cfg(test)]

@@ -211,14 +211,32 @@ impl ParamControl {
 
 impl ParamSchema {
     pub fn validate(&self) -> Result<(), Error> {
+        Self::validate_specs(self.params.iter())
+    }
+
+    /// Validate a disjoint schema layout without cloning any controls/defaults. Pointer
+    /// scratch is bounded before allocation; ownership groups share the original limits.
+    pub fn validate_parts(parts: &[&Self]) -> Result<(), Error> {
+        if parts.len() > MAX_PARAMS {
+            return Err(invalid("schema exceeds owner limit"));
+        }
+        let count = parts.iter().try_fold(0usize, |n, part| n.checked_add(part.params.len()).ok_or_else(|| invalid("schema exceeds parameter limit")))?;
+        if count > MAX_PARAMS {
+            return Err(invalid("schema exceeds parameter limit"));
+        }
+        let specs: Vec<_> = parts.iter().flat_map(|part| part.params.iter()).collect();
+        Self::validate_specs(specs.into_iter())
+    }
+
+    fn validate_specs<'a>(specs: impl ExactSizeIterator<Item = &'a ParamSpec>) -> Result<(), Error> {
         #[cfg(test)]
         SCHEMA_VALIDATIONS.with(|count| count.set(count.get() + 1));
-        if self.params.len() > MAX_PARAMS {
+        if specs.len() > MAX_PARAMS {
             return Err(invalid("schema exceeds parameter limit"));
         }
         let mut seen: BTreeMap<&str, &ParamSpec> = BTreeMap::new();
         let mut bytes = 0_usize;
-        for spec in &self.params {
+        for spec in specs {
             if !name(&spec.name)
                 || spec.label.trim().is_empty()
                 || spec.label.len() > 256

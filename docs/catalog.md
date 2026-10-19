@@ -119,3 +119,29 @@ ledger before selection/report/schema copies, including an empty plan. They are 
 fee; lower start limits retain this charge. Quote model lists contain validated catalog IDs only.
 Unknown raw selections are excluded independently of any later missing/usage-priced control's
 aggregate reason; valid selected IDs and the all-control pricing policy remain intact.
+
+## Model-owned parameter contracts and production image kind (#465)
+
+A model may supply `parameter_contract`: its owner must be `model`, namespace must equal its
+lossless catalog ID, and its schema must equal `params` exactly. It adds shared visibility,
+enabling, reset and cross-field rules. Selection, quote and executable admission use the same
+effective submission map; they never reinsert a disabled default. Missing contracts preserve
+the legacy schema behavior and imply no cross-model semantic compatibility. Only the verified
+OpenAI image `n` controls currently share a generated-image-count meaning/unit. Matching labels
+or names do not establish compatibility for other built-in settings.
+
+The standard engine Session registers `generation.image` from one immutable catalog snapshot.
+Its node-owned controls are model and prompt; model-owned controls retain their original
+namespace. Default-registry composition does not install credentials, a scheduler or a paid
+desktop run host. The current production planner supports ordered connected/local text prompts
+and image outputs through the existing authorized engine pipeline. Wired media inputs, unknown
+models, unsupported roles/versions and random-seed realization refuse explicitly. Saved unknown
+model IDs remain unchanged and readable. Model replacement requires the separate #157 migration
+transaction; ordinary parameter editing cannot replace this production selector.
+
+Generated cards resolve the combined contract and retain separate visible/editable metadata.
+A document revision and immutable paired catalog binding certify their bounded cache entries;
+same-revision resource replacement invalidates them. The constructor has a checked64 MiB logical
+metadata ledger (including mode-by-union-port rows), and the existing card cache remains16 MiB.
+These are logical retained-owner scopes, excluding caller-owned catalog, spare capacity,
+allocator/RSS and arbitrary native callback peaks. Existing execution/output limits remain separate.

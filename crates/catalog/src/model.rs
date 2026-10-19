@@ -15,9 +15,7 @@ fn invalid(model: &str, message: &str) -> Error {
 /// Lowercase ASCII letters, digits and `.`, `-`, `_`, `/` (e.g. `fal.flux-dev`), in
 /// `/`-separated segments that are neither empty nor `.`/`..`, so an id is safe as a path.
 pub fn is_id(value: &str) -> bool {
-    value.len() <= 128
-        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_' | b'/'))
-        && value.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+    nodecraft_types::model_namespace(value)
 }
 
 /// One input a mode takes, e.g. the prompt, a reference image, or a first frame.
@@ -64,6 +62,10 @@ pub struct ModelDescriptor {
     /// Resolutions, aspect ratios, durations and other settings, as a parameter schema.
     #[serde(default)]
     pub params: ParamSchema,
+    /// Optional semantic rules for precisely this model's schema. Absent preserves the
+    /// original schema-only catalog interpretation.
+    #[serde(default)]
+    pub parameter_contract: Option<nodecraft_types::Contract>,
     pub pricing: Pricing,
     /// Typical seconds from submit to result.
     pub latency_s: u32,
@@ -113,6 +115,12 @@ impl ModelDescriptor {
             }
         }
         self.params.validate().map_err(|error| invalid(id, &error.message))?;
+        if let Some(contract) = &self.parameter_contract {
+            contract.validate()?;
+            if contract.owner != nodecraft_types::ParamOwner::Model || contract.namespace != self.id || contract.schema != self.params {
+                return Err(invalid(id, "parameter contract must own this exact model id and schema"));
+            }
+        }
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
             if *default_count == Some(0) {
                 return Err(invalid(id, "`default_count` must be at least 1"));
@@ -147,12 +155,26 @@ impl ModelDescriptor {
         Ok(())
     }
 
+    /// Executable model settings. Semantic contracts use the same submission operation as
+    /// the production generation kind; schema-only inventories retain their legacy rules.
+    pub fn effective_params(&self, params: &ParamValues, ready: bool) -> Result<ParamValues, Error> {
+        self.validate()?;
+        if let Some(contract) = &self.parameter_contract {
+            return contract.resolve_selected(params, ready)?.submission();
+        }
+        let resolved = self.params.resolve_view(params, ready, true)?;
+        Ok(resolved.values.into_iter().filter(|(k, _)| resolved.visible.contains(*k)).map(|(k, v)| (k.to_owned(), v.clone())).collect())
+    }
+
     /// The price of one job with these parameters: schema defaults are applied first, so the
     /// quote counts what the run will actually ask for. `None` when the cost depends on usage.
     pub fn quote(&self, params: &ParamValues) -> Result<Option<Money>, Error> {
         // A descriptor built or changed in code must meet the same rules as one loaded from a
         // file, or e.g. a zero `default_count` would quote a paid job as free.
         self.validate()?;
+        if let Some(contract) = &self.parameter_contract {
+            return self.pricing.quote(&contract.resolve(params, false)?.submission()?, self.pricing.currency().unwrap_or(Currency::USD));
+        }
         let resolved = self.params.resolve(params, false)?;
         let visible: ParamValues = resolved.visible_values().map(|(k, v)| (k.clone(), v.clone())).collect();
         self.pricing.quote(&visible, self.pricing.currency().unwrap_or(Currency::USD))
@@ -161,10 +183,14 @@ impl ModelDescriptor {
     /// [`Self::quote`] for a node's whole parameter map, borrowing it: parameters this model's
     /// schema doesn't know are skipped, known ones are checked against their controls in place
     /// (so an invalid or oversized value is refused before anything is copied), and defaults
-    /// fill the rest. Nothing is cloned. A map over the schema's parameter-count limit is
+    /// fill the rest. Legacy schemas remain borrowed; explicit parameter contracts create
+    /// bounded resolved settings only after validation. A map over the schema's parameter-count limit is
     /// refused outright, as for every other resolution.
     pub fn quote_selected(&self, params: &ParamValues) -> Result<Option<Money>, Error> {
         self.validate()?;
+        if let Some(contract) = &self.parameter_contract {
+            return self.pricing.quote(&contract.resolve_selected(params, false)?.submission()?, self.pricing.currency().unwrap_or(Currency::USD));
+        }
         let resolved = self.params.resolve_view(params, false, true)?;
         let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
         self.pricing.quote_lookup(get, self.pricing.currency().unwrap_or(Currency::USD))
