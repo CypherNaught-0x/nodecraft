@@ -22,7 +22,7 @@ impl CommandHost for Observed {
     }
 }
 #[test]
-fn human_only_paid_and_unclassified_commands_never_reach_the_host() {
+fn human_only_and_unclassified_commands_never_reach_the_host() {
     let session = blank_session(ProjectId::from_bytes([1; 16]), CanvasId::from_bytes([2; 16])).unwrap();
     let mut registry = Registry::builtins().unwrap();
     let spec = *registry.get("node.title").unwrap();
@@ -43,5 +43,11 @@ fn human_only_paid_and_unclassified_commands_never_reach_the_host() {
             .iter()
             .all(|entry| !matches!(entry["id"].as_str(), Some("keys.set" | "keys.remove" | "file.open" | "file.save" | "run.selected" | "test.unclassified")))
     );
+    // Paid is not a separate exclusion: classified run.start reaches engine admission, which
+    // still refuses absent/invalid quote and host resources. No provider is installed here.
+    assert!(nodecraft_automation::mcp::visible("run.start"));
+    let request = Request::RunCommand(json!({"id":"run.start","params":{}}).as_object().unwrap().clone());
+    assert!(answer_with(&mut host, &request).unwrap().is_err());
+    assert_eq!(host.calls, 1);
     assert!(answer_with(&mut host, &Request::Screenshot).is_none());
 }
