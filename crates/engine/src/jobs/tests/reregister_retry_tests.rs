@@ -111,7 +111,7 @@ fn local_no_handle_failure_does_not_delete_other_jobs_shared_accepted_handle() {
     let mut run = runner.run(start(1, "shared"), CancelToken::default());
     assert!(run.as_mut().poll(&mut std::task::Context::from_waker(futures::task::noop_waker_ref())).is_pending());
     runner.register(JobId(2), q(p.clone(), "shared", None));
-    runner.restore_handle("reregister", "shared".into(), JobHandle { remote_id: "accepted".into(), data: serde_json::Value::Null });
+    runner.restore_handle("reregister", "shared".into(), JobHandle { remote_id: "accepted".into(), data: serde_json::Value::Null }).unwrap();
     p.gate.store(true, Ordering::SeqCst);
     assert!(matches!(block_on(run), Outcome::Failed { transient: false, .. }));
     assert_eq!(block_on(runner.run(start(2, "shared"), CancelToken::default())), Outcome::Done);
@@ -128,11 +128,11 @@ fn fresh_start_and_terminal_settle_retire_only_the_scheduler_lease() {
     // Settling leaves an ordinary same-key registration reference intact.
     runner.settle(JobId(1));
     assert!(runner.lock().jobs.get(&JobId(1)).unwrap().scheduler.is_none());
-    assert!(runner.lock().handles.contains_key(&("reregister".into(), "old".into())));
+    assert!(runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
     assert!(matches!(block_on(runner.run(start(1, "old"), CancelToken::default())), Outcome::Failed { transient: true, .. }));
     runner.register(JobId(1), q(p.clone(), "proposed", None));
     runner.settle(JobId(1));
-    assert!(!runner.lock().handles.contains_key(&("reregister".into(), "old".into())));
+    assert!(!runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
     assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
     assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"]);
     assert!(runner.lock().jobs.is_empty() && runner.lock().failures.is_empty() && runner.lock().handles.is_empty());
@@ -334,10 +334,15 @@ fn older_restored_generation_success_preserves_newer_same_base_lease() {
     let mut old = runner.run(start(1, "base"), CancelToken::default());
     let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
     assert!(old.as_mut().poll(&mut cx).is_pending());
-    runner.restore_generation("generations", "base".into(), 1, JobHandle { remote_id: "base#1".into(), data: serde_json::Value::Null });
+    runner.restore_generation("generations", "base".into(), 1, JobHandle { remote_id: "base#1".into(), data: serde_json::Value::Null }).unwrap();
     let mut new = runner.run(start(1, "base"), CancelToken::default());
     assert!(new.as_mut().poll(&mut cx).is_pending());
     let serial = runner.lock().running_serial[&JobId(1)];
+    let refused = runner
+        .restore_generation("invalid-address".repeat(40), "base".into(), u32::MAX, JobHandle { remote_id: "uninstalled".into(), data: serde_json::Value::Null })
+        .unwrap_err();
+    assert_eq!(refused.into_handle().remote_id, "uninstalled");
+    assert_eq!(runner.lock().running_serial[&JobId(1)], serial, "refusal preserves the live replacement");
     p.old_ready.store(true, Ordering::SeqCst);
     assert_eq!(block_on(old), Outcome::Done);
     let retained = runner.lock().jobs.get(&JobId(1)).and_then(|j| j.scheduler.as_ref()).is_some_and(|lease| lease.invocation == serial);
@@ -347,4 +352,58 @@ fn older_restored_generation_success_preserves_newer_same_base_lease() {
     assert_eq!(outputs.lock().unwrap().len(), 2, "both completed results stay caller-owned");
     assert_eq!(*p.polls.lock().unwrap(), ["base", "base#1"]);
     assert!(runner.lock().jobs.is_empty() && runner.lock().running.is_empty());
+}
+
+#[test]
+fn different_key_precancel_preserves_old_retry_until_admission_or_explicit_settle() {
+    for settle_first in [false, true] {
+        let p = Script::new(vec![Reply::Lost, Reply::Lost, Reply::Done]);
+        let (mut runner, budget) = budgeted(None);
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let delivered = Arc::clone(&outputs);
+        runner.on_output = Arc::new(move |_, output| delivered.lock().unwrap().push(output));
+        runner.register(JobId(1), q(p.clone(), "old", None));
+        assert!(matches!(block_on(runner.run(start(1, "old"), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+        assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 1);
+        let lease = runner.lock().jobs.get(&JobId(1)).unwrap().scheduler.clone().unwrap();
+        let registration = Arc::clone(&runner.lock().jobs.get(&JobId(1)).unwrap().identity);
+        for key in ["proposed", "another-proposal"] {
+            let cancelled = CancelToken::default();
+            cancelled.cancel();
+            assert_eq!(block_on(runner.run(start(1, key), cancelled)), Outcome::Cancelled);
+            assert_eq!(*p.keys.lock().unwrap(), ["old"], "a cancelled proposal cannot reach the provider");
+            assert_eq!(*p.polled.lock().unwrap(), ["old", "old"]);
+            assert!(outputs.lock().unwrap().is_empty());
+            assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 1);
+            let state = runner.lock();
+            assert_eq!(state.metadata.len(), 1, "proposed keys must not accumulate inactive permits");
+            assert!(state.owns_scheduler(JobId(1), &lease));
+            assert!(Arc::ptr_eq(&state.jobs.get(&JobId(1)).unwrap().identity, &registration));
+        }
+        if settle_first {
+            runner.settle(JobId(1));
+            assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 0);
+            let state = runner.lock();
+            assert!(state.metadata.is_empty());
+            assert!(state.jobs.get(&JobId(1)).unwrap().scheduler.is_none());
+            assert!(!state.handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
+            drop(state);
+            assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
+            assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"], "host acknowledgement ends the old retry lifetime");
+            assert_eq!(*p.polled.lock().unwrap(), ["old", "old", "fresh"]);
+        } else {
+            assert_eq!(block_on(runner.run(start(1, "old"), CancelToken::default())), Outcome::Done);
+            assert_eq!(*p.keys.lock().unwrap(), ["old"], "the original accepted handle must resume without a second submit");
+            assert_eq!(*p.polled.lock().unwrap(), ["old", "old", "old"]);
+        }
+        let outputs = outputs.lock().unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0].completed.outputs.as_slice(), [Output::Text(text)] if text == "done"));
+        assert!(matches!(outputs[0].accounting, CompletionAccounting::NoReportedCost));
+        assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, 0);
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 0, "unknown cost must not fabricate zero money");
+        runner.forget(JobId(1));
+        let state = runner.lock();
+        assert!(state.jobs.is_empty() && state.metadata.is_empty() && state.handles.is_empty());
+    }
 }

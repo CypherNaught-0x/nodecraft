@@ -5,12 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use nodecraft_format::{AssetStore, ProjectStorage, Snapshot};
+use nodecraft_format::{AssetStore, ProjectStorage, Snapshot, StorageLocation};
 use nodecraft_graph::{Change, Changeset, Project};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
 
-use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_json};
+use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_input_json, validate_json};
 
 /// Enough to undo building a 1,000-node graph (about 3,000 steps, #65); the byte budget below is
 /// what bounds memory.
@@ -68,6 +68,8 @@ enum Direction {
     Edit,
     Undo,
     Redo,
+    /// A derived result (#88): replaces the top undo entry with one that also undoes it.
+    Amend,
 }
 struct Prepared {
     document: Project,
@@ -104,6 +106,8 @@ impl PersistentAdmission {
 /// The panic guard stages edits before publication; native unwinding preserves the live state.
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
 pub struct Session {
+    view_identity: std::sync::Arc<()>,
+    routing: crate::provider_routing::RoutingAuthority,
     document: Project,
     registry: Registry,
     kinds: nodecraft_nodes::Registry,
@@ -119,7 +123,10 @@ pub struct Session {
     persistence: Option<crate::persistence::Persistence>,
     status_revision: u64,
     admission_identity: Arc<()>,
+    #[cfg(test)]
+    replay_limit: usize,
     execution: crate::execution_identity::ExecutionSource,
+    perf: crate::perf::Recorder,
 }
 
 impl Session {
@@ -138,10 +145,12 @@ impl Session {
     }
     fn from_validated(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry, execution: crate::execution_identity::ExecutionSource) -> Self {
         Self {
+            view_identity: std::sync::Arc::new(()),
             document,
             registry,
             kinds,
             resources: Resources::default(),
+            routing: Default::default(),
             services: Services::default(),
             undo: History::default(),
             redo: History::default(),
@@ -153,8 +162,24 @@ impl Session {
             persistence: None,
             status_revision: 0,
             admission_identity: Arc::new(()),
+            #[cfg(test)]
+            replay_limit: MAX_HISTORY_BYTES,
             execution,
+            perf: crate::perf::Recorder::default(),
         }
+    }
+
+    /// The performance recorder (#151): off until `perf.start`; the host gives it a clock.
+    pub fn perf(&self) -> &crate::perf::Recorder {
+        &self.perf
+    }
+    pub fn perf_mut(&mut self) -> &mut crate::perf::Recorder {
+        &mut self.perf
+    }
+
+    /// Non-persistent host identity; retained tokens prevent address reuse across Session replacement.
+    pub fn view_identity(&self) -> std::sync::Arc<()> {
+        std::sync::Arc::clone(&self.view_identity)
     }
 
     pub fn document(&self) -> &Project {
@@ -180,6 +205,13 @@ impl Session {
         !self.redo.entries.is_empty()
     }
 
+    /// Install endpoint authority atomically. Generic resources cannot change this nonce.
+    pub fn set_provider_routing(&mut self, routing: crate::provider_routing::ProviderRouting) -> Result<(), Error> {
+        let nonce = crate::execution_identity::nonce()?;
+        self.routing = crate::provider_routing::RoutingAuthority { routing, nonce: Some(nonce) };
+        Ok(())
+    }
+
     /// Replace a host-owned capability without discarding other injected resources.
     /// A host may scope a live view snapshot to one enabled/dispatch call and restore it after.
     pub fn swap_resource<T: std::any::Any>(&mut self, value: Option<T>) -> Option<T> {
@@ -188,6 +220,17 @@ impl Session {
     /// Add a host callback without replacing services supplied by another frontend.
     pub fn register_host_service(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
         self.services.register(id, handler)
+    }
+    /// Receives/enqueues typed work. Authorize outside dispatch before scheduling.
+    pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
+        self.services.register_run_host(handler)
+    }
+    pub fn authorize_prepared_run(
+        &self,
+        prepared: crate::run_cmds::PreparedRun,
+        options: nodecraft_exec::run::RunOptions,
+    ) -> Result<(crate::run_cmds::AuthorizedRun, nodecraft_exec::run::Progress), Error> {
+        guard(|| crate::run_cmds::authorize(&self.context(Phase::Dispatch), prepared, options))
     }
     pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
@@ -227,6 +270,113 @@ impl Session {
     pub fn status_revision(&self) -> u64 {
         self.status_revision
     }
+    /// Host lifecycle boundary (#408): replaces the document with work recovered from an earlier
+    /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
+    /// session's file, or untitled), history starts fresh, and the change is published like an
+    /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
+    pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        if self.can_undo() || self.can_redo() {
+            return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
+        }
+        if !self.file_status().available {
+            return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
+        }
+        snapshot.project.validate()?;
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let next = self.execution.next()?;
+        let before = self.file_status();
+        let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+        storage.adopt_recovered(&snapshot, location)?;
+        self.document = snapshot.project;
+        self.assets = snapshot.assets;
+        self.undo = History::default();
+        self.redo = History::default();
+        self.gesture = None;
+        self.state = revision;
+        self.publish(revision, "file.recover", next);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        Ok(())
+    }
+    /// Host boundary for live recompute (#88): records results derived from the document as it
+    /// is at `base` (the revision the results were computed from), importing the images they
+    /// name from `staged`. The record joins the undo step of the edit that made the results
+    /// stale, so one undo restores that edit's old values and old results together, and a
+    /// result never becomes an undo step of its own. Refused (`Conflict`, nothing changed) when
+    /// the document has moved on since `base`, or while there is something to redo.
+    pub fn record_derived(
+        &mut self,
+        canvas: CanvasId,
+        results: Vec<(NodeId, nodecraft_graph::Generation)>,
+        staged: &AssetStore,
+        base: u64,
+    ) -> Result<(), Error> {
+        self.record_derived_with(canvas, results, &[], staged, base)
+    }
+
+    /// [`Self::record_derived`], also applying cached results (`hits`, #91) in the same step.
+    pub fn record_derived_with(
+        &mut self,
+        canvas: CanvasId,
+        results: Vec<(NodeId, nodecraft_graph::Generation)>,
+        hits: &[crate::cache::Hit],
+        staged: &AssetStore,
+        base: u64,
+    ) -> Result<(), Error> {
+        if self.revision != base {
+            return Err(Error::new(ErrorKind::Conflict, "the results are out of date"));
+        }
+        if !self.redo.entries.is_empty() {
+            return Err(Error::new(ErrorKind::Conflict, "derived results wait until there is nothing to redo"));
+        }
+        let count = results.len().saturating_add(hits.len());
+        if count == 0 || count > crate::run_cmds::MAX_RESULTS {
+            return Err(invalid("record 1 to 1000 derived results"));
+        }
+        // Validate every result before touching the assets.
+        let live = self.document.canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+        let mut changes = crate::cache::changes(canvas, live, hits)?;
+        let mut seen: std::collections::BTreeSet<NodeId> = hits.iter().map(crate::cache::Hit::node).collect();
+        if seen.len() != hits.len() {
+            return Err(invalid("a node has two derived results"));
+        }
+        for (node, generation) in &results {
+            if !seen.insert(*node) {
+                return Err(invalid("a node has two derived results"));
+            }
+            let current = live.nodes().get(node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result's node is gone"))?;
+            changes.extend(nodecraft_exec::run::record_changes(canvas, current, generation.clone())?);
+        }
+        let mut needed = Vec::new();
+        for (_, generation) in &results {
+            media(&generation.outputs, &mut needed);
+        }
+        for hash in needed {
+            if self.assets.get(&hash).is_none() {
+                let bytes = staged.get(&hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result names an image that wasn't staged"))?.to_vec();
+                self.import_asset(&bytes)?;
+            }
+        }
+        let mut prepared = guard(|| self.prepare(Effect::Edit { changes: Changeset::new(changes), result: Value::Null, gesture: None }))?;
+        // One undo entry: first undo the result, then the edit below it (if any).
+        // When the combined step would exceed the history or replay budgets, the results get a
+        // step of their own instead: never evict history or make an undo unreplayable.
+        if let Some(below) = self.undo.entries.back() {
+            let mut combined = prepared.inverse.inverse.changes.clone();
+            combined.extend(below.inverse.changes.iter().cloned());
+            let inverse = Changeset::new(combined);
+            let fits = inverse.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12)).is_ok();
+            if let (true, Ok(bytes)) = (fits, history_bytes(&inverse)) {
+                let total = self.undo.bytes.saturating_sub(below.bytes).saturating_add(bytes);
+                if total <= MAX_HISTORY_BYTES {
+                    prepared.inverse = Entry { inverse, bytes, state: below.state };
+                    prepared.direction = Direction::Amend;
+                }
+            }
+        }
+        self.commit_prepared(prepared, "run.derived").map(|_| ())
+    }
     /// Host lifecycle boundary: flush and discard recovery after a clean close or explicit discard.
     pub fn close_recovery(&mut self, discard_dirty: bool) -> Result<(), Error> {
         let before = self.file_status();
@@ -257,6 +407,7 @@ impl Session {
 
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
+            routing: &self.routing,
             document: &self.document,
             revision: self.revision,
             kinds: &self.kinds,
@@ -267,13 +418,14 @@ impl Session {
             phase,
             file: self.file_status(),
             execution: &self.execution,
+            perf: &self.perf,
         }
     }
 
     /// Returns an actionable reason when disabled; never mutates the session.
     pub fn enabled(&self, id: &str, params: &Value) -> Result<(), Error> {
         guard(|| {
-            validate_json(params)?;
+            validate_input_json(params)?;
             let spec = self.registry.get(id)?;
             let context = self.context(Phase::Preview);
             (spec.enabled)(&context, params)?;
@@ -288,16 +440,25 @@ impl Session {
 
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let before = self.file_status();
+        // Capture commands don't time themselves.
+        let start = if id.starts_with("perf.") { None } else { self.perf.now() };
         let result = self.dispatch_inner(id, params);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
+        }
+        // Only commands that ran count: a refusal is fast and would pull the latencies down.
+        if let Some(start) = start.filter(|_| result.is_ok()) {
+            self.perf.record_since(crate::perf::Metric::Dispatch, start);
+            if let Some(metric) = crate::perf::Metric::of_command(id) {
+                self.perf.record_since(metric, start);
+            }
         }
         result
     }
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
         let effect = guard(|| {
-            validate_json(params)?;
+            validate_input_json(params)?;
             let context = self.context(Phase::Dispatch);
             (spec.enabled)(&context, params)?;
             (spec.run)(&context, params)
@@ -306,6 +467,21 @@ impl Session {
             Effect::None { result } => {
                 validate_json(&result)?;
                 return Ok(result);
+            }
+            Effect::PreparedRun { prepared } => {
+                return guard(|| {
+                    let result = self.services.invoke_run_host(*prepared)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            Effect::Perf { action } => {
+                match action {
+                    crate::perf_cmds::PerfAction::Start => self.perf.set_enabled(true),
+                    crate::perf_cmds::PerfAction::Stop => self.perf.set_enabled(false),
+                    crate::perf_cmds::PerfAction::Clear => self.perf.clear(),
+                }
+                return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
@@ -376,6 +552,11 @@ impl Session {
                 self.undo.push(prepared.inverse);
                 self.gesture = None;
             }
+            // The edit below keeps its gesture: a drag that a result joined stays one step.
+            Direction::Amend => {
+                self.undo.pop();
+                self.undo.push(prepared.inverse);
+            }
         }
         self.document = prepared.document;
         self.state = prepared.state;
@@ -392,6 +573,27 @@ impl Session {
         }
     }
 
+    fn replay_limit(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.replay_limit
+        }
+        #[cfg(not(test))]
+        {
+            MAX_HISTORY_BYTES
+        }
+    }
+    fn validate_actual_redo(&self, redo: Option<&Changeset>) -> Result<(), Error> {
+        if let Some(redo) = redo {
+            redo.validate_replay_budget(self.replay_limit().saturating_sub(12))?;
+            history_bytes(redo)?;
+            if self.persistence.is_some() {
+                nodecraft_format::journal::validate_replay(redo, &self.assets)?;
+            }
+        }
+        Ok(())
+    }
+
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
         let next_execution_generation = self.execution.next()?;
         self.context(Phase::Dispatch).editable()?;
@@ -402,7 +604,9 @@ impl Session {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let (document, inverse) = changes.stage(&self.document)?;
+                let staged = changes.stage_certified(&self.document)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 // Graph canonical sizing includes the operation array. History stores the full
                 // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
                 changes.validate_replay_budget(MAX_HISTORY_BYTES.saturating_sub(12))?;
@@ -418,15 +622,19 @@ impl Session {
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let staged = entry.inverse.stage_certified(&self.document)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let (document, inverse) = entry.inverse.stage(&self.document)?;
+                let staged = entry.inverse.stage_certified(&self.document)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
-            Effect::None { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } => {
+            Effect::None { .. } | Effect::PreparedRun { .. } | Effect::Service { .. } | Effect::Open { .. } | Effect::Save { .. } | Effect::Perf { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }
         };
@@ -488,6 +696,17 @@ pub(crate) fn guard<T>(operation: impl FnOnce() -> Result<T, Error>) -> Result<T
         .map_err(|_| Error::new(ErrorKind::Internal, "command failed unexpectedly; document and undo history were preserved"))?
 }
 
+/// The asset hashes `values` name (lists included), in order.
+fn media(values: &[nodecraft_types::Value], out: &mut Vec<nodecraft_types::Blake3>) {
+    for value in values {
+        match value {
+            nodecraft_types::Value::Media(asset) => out.push(asset.hash),
+            nodecraft_types::Value::List(items) => media(items, out),
+            _ => {}
+        }
+    }
+}
+
 fn history_bytes(changes: &Changeset) -> Result<usize, Error> {
     struct Counter(usize);
     impl Write for Counter {
@@ -513,6 +732,71 @@ mod tests {
     use nodecraft_graph::{Canvas, Generation, Node};
     use nodecraft_types::{GenerationId, ProjectId};
     use serde_json::json;
+
+    #[test]
+    fn actual_pin_redo_over_history_limit_preserves_session_and_journal() {
+        use nodecraft_format::{MemoryStorage, ProjectStorage, StorageLocation};
+        use nodecraft_graph::{Comment, Position};
+        use nodecraft_types::CommentId;
+        use std::{cell::RefCell, rc::Rc};
+        #[derive(Clone, Default)]
+        struct Shared(Rc<RefCell<MemoryStorage>>);
+        impl ProjectStorage for Shared {
+            fn load(&mut self, p: &StorageLocation) -> Result<Vec<u8>, Error> {
+                self.0.borrow_mut().load(p)
+            }
+            fn save(&mut self, p: &StorageLocation, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().save(p, b)
+            }
+            fn checkpoint(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().checkpoint(b)
+            }
+            fn append(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.borrow_mut().append(b)
+            }
+        }
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let id = CommentId::from_bytes([3; 16]);
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Budget").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::PutComment { canvas, comment: Comment::new(id, "Root", Position::default()) }.apply(&mut project).unwrap();
+        let node = Node::new(NodeId::from_bytes([2; 16]), "source.text");
+        let forward =
+            Changeset::new(vec![Change::SetCommentPin { canvas, id, node: Some(node.id), pos: Position { x: 1.0, y: 2.0 } }, Change::AddNode { canvas, node }]);
+        let staged = forward.stage_certified(&project).unwrap();
+        let redo = staged.actual_redo.unwrap();
+        let cap = history_bytes(&redo).unwrap() - 1;
+        forward.validate_replay_budget(cap - 12).unwrap();
+        assert!(history_bytes(&staged.inverse).unwrap() <= cap);
+        let storage = Shared::default();
+        let mut session =
+            Session::with_storage(Snapshot { project: project.clone(), assets: Default::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+        session
+            .registry
+            .register(crate::commands::CommandSpec {
+                id: "test.pin_budget",
+                label: "Pin budget",
+                shortcut: None,
+                alternate_shortcuts: &[],
+                input_schema: || json!({}),
+                params_doc: "{}",
+                enabled: |_, _| Ok(()),
+                run: |c, _| Ok(Effect::Edit { changes: c.resources.require::<Changeset>()?.clone(), result: Value::Null, gesture: None }),
+            })
+            .unwrap();
+        session.resources.insert(forward);
+        session.replay_limit = cap;
+        let journal = storage.0.borrow().recovery.clone();
+        assert!(session.dispatch("test.pin_budget", &json!({})).is_err());
+        assert_eq!(session.document(), &project);
+        assert_eq!(session.revision(), 0);
+        assert!(!session.can_undo() && !session.can_redo());
+        assert!(session.events.is_empty());
+        assert_eq!(storage.0.borrow().recovery, journal);
+        session.replay_limit = cap + 1;
+        session.dispatch("test.pin_budget", &json!({})).unwrap();
+        assert_eq!(session.revision(), 1);
+    }
 
     #[test]
     fn non_document_effect_works_at_exhausted_document_revision() {
@@ -548,7 +832,7 @@ mod tests {
         let canvas = CanvasId::from_bytes([1; 16]);
         let node = Node::new(NodeId::from_bytes([2; 16]), "test.text");
         let changes = Changeset::new(vec![Change::AddNode { canvas, node: node.clone() }]);
-        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![] }]);
+        let restore = Changeset::new(vec![Change::RestoreNode { canvas, node, edges: vec![], pins: vec![] }]);
         let full = history_bytes(&restore).unwrap();
         assert!(changes.validate_replay_budget(full - 12).is_ok());
         assert!(changes.validate_replay_budget(full - 13).is_err());
@@ -731,6 +1015,9 @@ mod tests {
                         id: CommentId::from_bytes([value["n"].as_u64().unwrap() as u8; 16]),
                         text: "x".repeat(usize::try_from(value["len"].as_u64().unwrap()).unwrap()),
                         pos: Default::default(),
+                        node: None,
+                        replies: vec![],
+                        resolved: false,
                     },
                 },
                 "node" => {

@@ -7,6 +7,7 @@
 mod generation_contract;
 mod payload;
 
+pub mod admission;
 pub mod cost;
 pub mod driver;
 pub mod planner;

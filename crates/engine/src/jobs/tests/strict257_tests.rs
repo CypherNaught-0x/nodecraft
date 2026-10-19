@@ -50,6 +50,7 @@ fn one_slot() -> UsageLog {
     file.sessions.insert(String::new(), [(nodecraft_types::Currency::USD, usd(n - 1))].into());
     file.quarantined = (0..count)
         .map(|i| UsageEntry {
+            instance: None,
             at_ms: 0,
             session: "a".into(),
             node: NodeId::from_bytes([1; 16]),
@@ -92,6 +93,7 @@ fn blocked_unknown_price_holds_last_slot_and_completed_actual_cannot_be_displace
             .lock()
             .unwrap()
             .record(UsageEntry {
+                instance: None,
                 at_ms: 1,
                 session: "now".into(),
                 node: NodeId::from_bytes([1; 16]),
@@ -234,7 +236,7 @@ fn historical_uncertainty_cannot_bypass_ownership_with_an_unpriced_facade_or_han
     let mut queued = priced(provider.clone(), None);
     queued.price = None;
     runner.register(JobId(1), queued);
-    runner.restore_handle("held", "old".into(), JobHandle { remote_id: "existing".into(), data: serde_json::Value::Null });
+    runner.restore_handle("held", "old".into(), JobHandle { remote_id: "existing".into(), data: serde_json::Value::Null }).unwrap();
     assert!(matches!(
         block_on(runner.run(Start { idempotency_key: "old".into(), ..job(1) }, CancelToken::default())),
         Outcome::Failed { transient: false, .. }
@@ -356,10 +358,25 @@ fn exact_inactive_retry_at_attempt_cap_reuses_its_original_permit() {
         assert!(matches!(block_on(runner.run(start, CancelToken::default())), Outcome::Failed { transient: true, .. }));
     }
     assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS);
+    let lease = runner.lock().jobs.get(&JobId(1)).unwrap().scheduler.clone().unwrap();
+    let different = || Start { idempotency_key: "different-key".into(), ..job(1) };
+    assert!(matches!(block_on(runner.run(different(), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+    let cancelled = CancelToken::default();
+    cancelled.cancel();
+    assert_eq!(block_on(runner.run(different(), cancelled)), Outcome::Cancelled);
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS);
+    assert!(runner.lock().owns_scheduler(JobId(1), &lease));
+    assert_eq!(first.submits.load(Ordering::SeqCst), 1);
     let extra = RetryCost::new();
     runner.register(JobId(10001), priced(extra.clone(), None));
     assert!(matches!(block_on(runner.run(job(10001), CancelToken::default())), Outcome::Failed { transient: false, .. }));
     assert_eq!(extra.submits.load(Ordering::SeqCst), 0);
+    // Prove settle frees a slot WHILE full, then refill it before the original retry can finish.
+    runner.settle(JobId(10000));
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS - 1);
+    assert!(matches!(block_on(runner.run(job(10001), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+    assert_eq!(extra.submits.load(Ordering::SeqCst), 1);
+    assert_eq!(budget.log.lock().unwrap().metadata_statistics().held, MAX_METADATA_SHELLS);
     let original = std::mem::take(&mut *budget.log.lock().unwrap());
     let retry = || Start { idempotency_key: "cap-0".into(), ..job(1) };
     assert!(matches!(block_on(runner.run(retry(), CancelToken::default())), Outcome::Failed { transient: false, .. }));

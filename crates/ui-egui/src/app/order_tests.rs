@@ -128,3 +128,52 @@ fn a_release_off_screen_still_ends_the_drag_and_other_buttons_pan() {
     assert!((h.state().view.pan - pan - Vec2::new(40.0, 0.0)).length() < 1.0, "{:?}", h.state().view.pan - pan);
     assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
 }
+
+#[test]
+fn retained_input_badge_drag_blocks_layout_until_release() {
+    let mut h = harness();
+    let badge = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(badge);
+    h.run();
+    h.drag_at(badge);
+    h.run();
+    h.hover_at(badge + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    h.state_mut().selection.only(NodeId::from_bytes([1; 16]));
+    h.state_mut().selection.add(NodeId::from_bytes([2; 16]));
+    let before = h.state().session.document().clone();
+    // A fresh context has no transient egui drag: the retained input badge owns the gesture.
+    let ctx = egui::Context::default();
+    for mode in ["grid", "layered"] {
+        assert!(h.state_mut().layout_enabled(&ctx, &json!({"mode":mode})).is_err());
+        assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":mode})).is_err());
+    }
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(badge);
+    h.run();
+    assert!(h.state().reordering.is_none());
+    h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid"})).unwrap();
+}
+
+#[test]
+fn retained_input_order_drag_blocks_discussion_view_commands() {
+    let mut h = harness();
+    let badge = h.get_by_label("Input 1 of 3 into in of Router, drag to reorder").rect().center();
+    h.hover_at(badge);
+    h.run();
+    h.drag_at(badge);
+    h.run();
+    h.hover_at(badge + Vec2::new(0.0, 30.0));
+    h.run();
+    assert!(h.state().reordering.is_some());
+    let before = h.state().session.document().clone();
+    let ctx = egui::Context::default();
+    assert!(h.state_mut().comments_enabled(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+    assert!(h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).is_err());
+    assert_eq!(h.state().session.document(), &before);
+    h.drop_at(badge);
+    h.run();
+    h.state_mut().dispatch_comments(&ctx, "canvas.comments_toggle", &json!({})).unwrap();
+    assert!(h.state().comments.open);
+}

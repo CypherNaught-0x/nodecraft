@@ -31,6 +31,11 @@ fn title(_: &Context<'_>, json: &Json) -> Result<Effect, Error> {
     Ok(edit(Change::SetNodeTitle { canvas: p.canvas, id: p.id, title }))
 }
 fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
+    if json.get("value").and_then(|v| v.get("type")).and_then(Json::as_str) == Some("text")
+        && json.get("value").and_then(|v| v.get("value")).and_then(Json::as_str).is_some_and(|text| text.len() > 1024 * 1024)
+    {
+        return Err(crate::commands::invalid("parameter text exceeds UTF-8 byte limit"));
+    }
     let p: ParamParams = params(json)?;
     let node = c
         .document

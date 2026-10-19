@@ -1,0 +1,80 @@
+{
+  "accounting": [
+    "not_budgeted"
+  ],
+  "calls": [
+    {
+      "cancel": 0,
+      "poll": 0,
+      "submit": 3,
+      "synthetic": false
+    }
+  ],
+  "cleanup": true,
+  "deliveries": [
+    {
+      "attempt": 3,
+      "disposition": "recorded",
+      "epoch": 0,
+      "job": 1,
+      "outputs": [
+        {
+          "bytes": 31,
+          "type": "text"
+        }
+      ]
+    }
+  ],
+  "jobs": [
+    {
+      "accepted": true,
+      "attempts": [
+        1,
+        2,
+        3
+      ],
+      "epoch": 0,
+      "job": 1,
+      "notified": true,
+      "provider": true,
+      "rejected": false,
+      "terminal": "done",
+      "transitions": [
+        {
+          "attempt": 0,
+          "kind": "queued"
+        },
+        {
+          "attempt": 1,
+          "kind": "started"
+        },
+        {
+          "attempt": 2,
+          "kind": "retrying"
+        },
+        {
+          "attempt": 2,
+          "kind": "started"
+        },
+        {
+          "attempt": 3,
+          "kind": "retrying"
+        },
+        {
+          "attempt": 3,
+          "kind": "started"
+        },
+        {
+          "attempt": 0,
+          "kind": "done"
+        }
+      ],
+      "updates": []
+    }
+  ],
+  "ledger": [],
+  "peak": 1,
+  "recorded": true,
+  "results": 1,
+  "retained": 1
+}

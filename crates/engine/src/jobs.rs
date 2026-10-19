@@ -1,8 +1,8 @@
 //! Runs provider jobs on the exec scheduler: the bridge between `exec` and `providers`, which
 //! share a layer and can't depend on each other.
 //!
-//! [`ProviderRunner`] implements `exec::driver::JobRunner`. For each scheduled job it looks up the
-//! [`ProviderJob`] and its provider, and runs it with `providers::run_to_completion`. When a run
+//! [`ProviderRunner`] implements `exec::driver::JobRunner`. For each scheduled job it uses the
+//! [`ProviderJob`] and its captured typed endpoint binding, and runs it with `providers::run_to_completion`. When a run
 //! fails after the provider accepted the job, the handle is kept: the scheduler's retry then
 //! *resumes* that job instead of submitting it again, so a retry never pays twice.
 //!
@@ -29,12 +29,16 @@ use nodecraft_exec::cost::{
 };
 
 mod accounting;
+mod restore;
 pub use accounting::{AccountingFailure, AccountingRetry, AccountingRetryError, CompletionAccounting, CompletionDelivery};
 use nodecraft_types::{Money, NodeId};
+pub use restore::RestoreHandleError;
 
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{JobId, Outcome, Start};
-use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, JobHandle, Provider, ProviderError, ProviderJob, RunLimits, RunUpdate};
+#[cfg(test)]
+use nodecraft_providers::Provider;
+use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, JobHandle, ProviderError, ProviderJob, RunLimits, RunUpdate};
 
 /// Where a finished job's outputs and usage go (the engine turns the outputs into an
 /// `AddGeneration` changeset; budgets charge the usage's reported cost).
@@ -50,6 +54,7 @@ pub type UpdateSink = dyn Fn(JobId, Sent<'_>, RunUpdate) + Send + Sync;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sent<'a> {
     pub key: &'a str,
+    pub target: &'a nodecraft_types::ProviderTarget,
     pub generation: u32,
 }
 
@@ -64,11 +69,36 @@ pub fn is_budget_refusal(error: &str) -> bool {
 /// A provider job the scheduler will run, and the provider to run it on.
 #[derive(Clone)]
 pub struct QueuedJob {
-    pub provider: Arc<dyn Provider>,
+    pub provider: crate::provider_routing::RegisteredProvider,
     pub job: ProviderJob,
     /// What the job is expected to cost, for budgets. `None` for local and free work, which isn't
-    /// charged.
+    /// charged. For a job from an authorized run, budgets use the run's own bound price instead
+    /// (see [`Self::charged_price`]), so changing this changes nothing.
     pub price: Option<JobPrice>,
+    /// The authorized run's admitted price (`Some(None)` for free work), set only by
+    /// [`crate::run_cmds::AuthorizedRun::queued_job`].
+    pub(crate) bound: Option<Option<JobPrice>>,
+}
+
+impl QueuedJob {
+    /// A job outside an authorized run: only the budgets bound `price`, which is the trusted
+    /// host's statement. Jobs of an authorized run come from
+    /// [`crate::run_cmds::AuthorizedRun::queued_job`].
+    pub fn new(provider: crate::provider_routing::RegisteredProvider, job: ProviderJob, price: Option<JobPrice>) -> Self {
+        Self { provider, job, price, bound: None }
+    }
+    /// The price budgets and the run ceiling use: an authorized run's own admitted price, or
+    /// `price` for other work.
+    pub fn charged_price(&self) -> Option<&JobPrice> {
+        match &self.bound {
+            Some(bound) => bound.as_ref(),
+            None => self.price.as_ref(),
+        }
+    }
+    /// Whether the job comes from an authorized run.
+    pub fn is_authorized(&self) -> bool {
+        self.bound.is_some()
+    }
 }
 
 /// A paid job's quote: the node and model it charges, and one job's estimate (`None` when the
@@ -78,6 +108,23 @@ pub struct JobPrice {
     pub node: NodeId,
     pub model: String,
     pub estimate: Option<Money>,
+    /// The authorized run's accepted-amount ceiling (#366), which every new priced reservation
+    /// is debited against. Only [`crate::run_cmds::AuthorizedRun::queued_job`] attaches one, so
+    /// no caller can attach another run's ceiling or widen one.
+    pub(crate) ceiling: Option<crate::run_ceiling::RunCeiling>,
+}
+
+impl JobPrice {
+    /// A price for work outside an authorized run, so with no run ceiling: only the budgets
+    /// apply. Like the estimate itself, this is the trusted host's statement; prices for an
+    /// authorized run come from [`crate::run_cmds::AuthorizedRun::queued_job`].
+    pub fn new(node: NodeId, model: String, estimate: Option<Money>) -> Self {
+        Self { node, model, estimate, ceiling: None }
+    }
+    /// The run ceiling this price is bound to, if it came from an authorized run.
+    pub fn ceiling(&self) -> Option<&crate::run_ceiling::RunCeiling> {
+        self.ceiling.as_ref()
+    }
 }
 
 /// The budgets paid jobs are held to, and the log they are charged in. The host shares the log
@@ -95,7 +142,7 @@ pub struct JobBudget {
 /// Accounting belongs to a captured provider/key, even if its JobId is re-registered.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Attempt {
-    provider: String,
+    provider: nodecraft_types::ProviderTarget,
     /// The key sent to the provider (and charged under).
     key: String,
     /// The scheduler's key, which the registration keeps (#223).
@@ -104,7 +151,7 @@ struct Attempt {
 
 impl Attempt {
     fn matches_job(&self, job: &QueuedJob) -> bool {
-        job.provider.id() == self.provider && job.job.idempotency_key == self.base
+        job.provider.target() == &self.provider && job.job.idempotency_key == self.base
     }
 }
 
@@ -113,13 +160,18 @@ impl Attempt {
 struct Reserved {
     identity: LedgerIdentity,
     invocation: u64,
-    provider: String,
+    provider: nodecraft_types::ProviderTarget,
     key: String,
     /// The scheduler's key `key` derives from.
     base: String,
     estimate: Money,
     /// The job may have reached the provider: settle as unresolved, never release.
     maybe_billed: bool,
+    /// Credited back when the reservation is released.
+    ceiling: Option<crate::run_ceiling::RunCeiling>,
+    /// This reservation took the run's debit for its key; only that owner's release credits it,
+    /// never a later job that found the key already reserved.
+    debited: bool,
 }
 
 struct RetainedMetadata {
@@ -159,7 +211,7 @@ struct State {
     jobs: HashMap<JobId, RegisteredJob>,
     /// Handles of jobs a provider accepted, by provider and idempotency key, so retries resume
     /// them, and a job moved to another provider never resumes the first one's handle (#228).
-    handles: HashMap<(String, String), JobHandle>,
+    handles: HashMap<(nodecraft_types::ProviderTarget, String), JobHandle>,
     /// Open reservations of jobs that haven't settled.
     reserved: HashMap<JobId, Reserved>,
     /// Jobs inside `run` right now, and those asked to settle meanwhile (done when `run` ends).
@@ -167,7 +219,7 @@ struct State {
     settle_after: std::collections::HashSet<JobId>,
     forget_after: std::collections::HashSet<JobId>,
     /// Generations reported failed, keyed by provider and scheduler base (main297).
-    failures: HashMap<(String, String), u32>,
+    failures: HashMap<(nodecraft_types::ProviderTarget, String), u32>,
     running_serial: HashMap<JobId, u64>,
     invocations: HashMap<u64, (JobId, Attempt)>,
     next_invocation: u64,
@@ -226,9 +278,9 @@ impl State {
     }
 
     /// The attempt a registration's next run would send: under its derived key after failures.
-    fn registered(&self, provider: &str, base: String) -> Attempt {
+    fn registered(&self, provider: &nodecraft_types::ProviderTarget, base: String) -> Attempt {
         let failures = self.failures.get(&(provider.to_owned(), base.clone())).copied().unwrap_or(0);
-        Attempt { provider: provider.to_owned(), key: sent_key(&base, failures), base }
+        Attempt { provider: provider.clone(), key: sent_key(&base, failures), base }
     }
 
     fn owns_scheduler(&self, id: JobId, lease: &SchedulerLease) -> bool {
@@ -272,13 +324,21 @@ fn close(budget: &JobBudget, r: &Reserved) {
     if log.ledger_identity() != r.identity {
         return;
     }
-    let open = log.charge(&r.provider, &r.key).is_some_and(|e| e.status == Charge::Estimate);
+    let open = log.charge_target(&r.provider, &r.key).is_some_and(|e| e.status == Charge::Estimate);
     if !open {
         return;
     }
     // Neither can fail for an open estimate in its own currency; if one did, the estimate stays
     // charged, which is the safe side.
-    let _ = if r.maybe_billed { log.settle(&r.provider, &r.key, r.estimate, Charge::Unresolved) } else { log.release(&r.provider, &r.key) };
+    if r.maybe_billed {
+        let _ = log.settle_target(&r.provider, &r.key, r.estimate, Charge::Unresolved);
+    } else if log.release_target(&r.provider, &r.key).is_ok()
+        && r.debited
+        && let Some(ceiling) = &r.ceiling
+    {
+        // Released on evidence that nothing reached the provider: the run may use the room again.
+        ceiling.credit(&r.provider, &r.key);
+    }
 }
 
 /// Reserves (or adopts) a priced job's estimate. `Err` is the refusal message.
@@ -289,33 +349,42 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
     let budgets = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let mut log = lock_log(budget);
     let maybe_billed = resumed;
-    let (provider, key) = (attempt.provider.as_str(), attempt.key.as_str());
-    if log.ownership(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? == Some(ChargeOwnership::LegacyUncertain) {
+    let (provider, key) = (&attempt.provider, attempt.key.as_str());
+    if log.ownership_target(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? == Some(ChargeOwnership::LegacyUncertain) {
         return Err(format!("{REFUSAL_PREFIX}historical charge ownership is uncertain; inspect the usage log before retrying"));
     }
-    if let Some(entry) = log.charge(provider, key) {
-        // A retry of a job already reserved (or settled) under this key: nothing new to charge.
+    if let Some(entry) = log.charge_target(provider, key) {
+        // A retry of a job already reserved (or settled) under this key: nothing new to charge
+        // in the log, which is shared across runs. This run still accounts the work once (a
+        // same-run retry finds its own debit); the debit is never credited from here.
+        account_in_run(price, provider, key, Some(entry.cost), resumed)?;
         return Ok((entry.status == Charge::Estimate).then(|| Reserved {
             identity: log.ledger_identity(),
             invocation: 0,
-            provider: provider.into(),
+            provider: provider.clone(),
             key: key.into(),
             base: attempt.base.clone(),
             estimate: entry.cost,
             maybe_billed,
+            ceiling: price.ceiling.clone(),
+            debited: false,
         }));
     }
-    if log.has_recorded(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? {
+    if log.has_recorded_target(provider, key).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))? {
+        account_in_run(price, provider, key, price.estimate, resumed)?;
         return Ok(None);
     }
     let Some(estimate) = price.estimate else {
         // An unknown price: fine without caps (nothing to charge), refused with any.
         let capped = budgets.per_call.is_some() || budgets.session.is_some() || budgets.project.is_some();
-        return if capped && !resumed {
-            Err(format!("{REFUSAL_PREFIX}the price of {} isn't known, so the budget can't be checked", price.model))
-        } else {
-            Ok(None)
-        };
+        if capped && !resumed {
+            return Err(format!("{REFUSAL_PREFIX}the price of {} isn't known, so the budget can't be checked", price.model));
+        }
+        // An authorized run admits only as many unknown-price jobs as were accepted.
+        if let Some(ceiling) = &price.ceiling {
+            ceiling.admit_unpriced(provider, key, resumed).map_err(|e| format!("{REFUSAL_PREFIX}{e}"))?;
+        }
+        return Ok(None);
     };
     if !resumed {
         let step = StepQuote { node: price.node, models: vec![price.model.clone()], per_job: Ok(Some(estimate)), jobs: 1, jobs_known: true };
@@ -325,11 +394,18 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
             return Err(format!("{REFUSAL_PREFIX}{}", block.message()));
         }
     }
+    // The run's accepted-amount ceiling, under the log lock so parallel jobs can't both take
+    // the last of it. An adopted job already ran: debited, never refused.
+    let debited = match &price.ceiling {
+        Some(ceiling) => ceiling.debit(provider, key, estimate, resumed).map_err(|e| format!("{REFUSAL_PREFIX}{e}"))?,
+        None => false,
+    };
     let entry = UsageEntry {
         at_ms,
         session: budget.session.clone(),
         node: price.node,
-        provider: provider.into(),
+        provider: provider.adapter().to_owned(),
+        instance: provider.instance(),
         model: price.model.clone(),
         cost: estimate,
         idempotency_key: key.into(),
@@ -341,16 +417,57 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
         Ok(_) => Ok(Some(Reserved {
             identity: log.ledger_identity(),
             invocation: 0,
-            provider: provider.into(),
+            provider: provider.clone(),
             key: key.into(),
             base: attempt.base.clone(),
             estimate,
             maybe_billed,
+            ceiling: price.ceiling.clone(),
+            debited,
         })),
         Err(e) if !resumed || matches!(e.kind, nodecraft_types::ErrorKind::Busy | nodecraft_types::ErrorKind::Conflict) => {
             Err(format!("{REFUSAL_PREFIX}{}", e.message))
         }
         Err(_) => Ok(None),
+    }
+    // Nothing was recorded for this key, so the debit just taken is undone, unless the work was
+    // already submitted: failing to record its charge proves nothing about delivery.
+    .inspect_err(|_| undo_debit(debited && !resumed, price, provider, key))
+    .inspect(|reserved| {
+        if reserved.is_none() {
+            undo_debit(debited && !resumed, price, provider, key);
+        }
+    })
+}
+
+/// Accounts work whose key the usage log already holds (from this run or an earlier one) in this
+/// run's ceiling. Money and the unknown-price count are independent: any retained `exposure` (the
+/// row's amount, which for an open estimate or unresolved charge is not a known bill) is debited,
+/// and a job the authorized run classifies as unknown-price also uses one of the accepted count.
+/// Adopted work is accounted past both; new work is refused past either, and a refusal undoes
+/// the debit this call took.
+fn account_in_run(price: &JobPrice, provider: &nodecraft_types::ProviderTarget, key: &str, exposure: Option<Money>, resumed: bool) -> Result<(), String> {
+    let Some(ceiling) = &price.ceiling else { return Ok(()) };
+    let refusal = |e: String| format!("{REFUSAL_PREFIX}{e}");
+    let debited = match exposure {
+        Some(money) => ceiling.debit(provider, key, money, resumed).map_err(refusal)?,
+        None => false,
+    };
+    if price.estimate.is_none()
+        && let Err(e) = ceiling.admit_unpriced(provider, key, resumed)
+    {
+        if debited && !resumed {
+            ceiling.credit(provider, key);
+        }
+        return Err(refusal(e));
+    }
+    Ok(())
+}
+
+/// Nothing was recorded for this key, so the debit just taken for it is undone.
+fn undo_debit(debited: bool, price: &JobPrice, provider: &nodecraft_types::ProviderTarget, key: &str) {
+    if let (true, Some(ceiling)) = (debited, &price.ceiling) {
+        ceiling.credit(provider, key);
     }
 }
 
@@ -392,6 +509,10 @@ impl Drop for RunGuard {
             let settle = owns_running && s.settle_after.remove(&self.job);
             let forget = owns_running && s.forget_after.remove(&self.job);
             let reserved = if settle { s.take_reserved(self.job, &self.attempt) } else { None };
+            // Only a returned retryable failure keeps this captured lease for backoff. Drop/
+            // unwind, success, terminal failure/cancellation or deferred settle/forget retires it;
+            // retire_scheduler still checks Arc identity + invocation, so stale guards cannot
+            // retire a replacement's lease.
             if (!self.returned || !self.retry || settle || forget)
                 && let Some(lease) = &self.scheduler
             {
@@ -405,7 +526,7 @@ impl Drop for RunGuard {
                 && s.jobs.get(&self.job).is_some_and(|job| Arc::ptr_eq(&job.identity, &self.registration))
                 && let Some(q) = s.jobs.remove(&self.job)
             {
-                let old = s.registered(q.queued.provider.id(), q.queued.job.idempotency_key);
+                let old = s.registered(q.queued.provider.target(), q.queued.job.idempotency_key);
                 s.prune_handle(&old);
             }
             // Also clean late Submitted handles after a re-registration, on every return/drop.
@@ -474,20 +595,23 @@ impl ProviderRunner {
     /// A same-provider replacement preserves the last scheduler identity until a new Start or
     /// terminal host notification retires it. A proposed key alone cannot end a scheduled retry.
     /// Other registrations and active invocations can also share its handle.
+    /// A different `Provider::id` carries no old scheduler lease or inactive retry permit, so a
+    /// later retry uses the new provider. Active captured invocation/output ownership remains
+    /// protected; a different provider object with the same id is still the same identity here.
     /// An empty key on the same provider leaves the previous scheduler-assigned key in place;
     /// `run` supplies the authoritative key and cleans up if it changes.
     pub fn register(&self, id: JobId, mut job: QueuedJob) {
         let mut s = self.lock();
         if job.job.idempotency_key.is_empty()
-            && let Some(old) = s.jobs.get(&id).filter(|old| old.provider.id() == job.provider.id())
+            && let Some(old) = s.jobs.get(&id).filter(|old| old.provider.target() == job.provider.target())
         {
             job.job.idempotency_key.clone_from(&old.job.idempotency_key);
         }
-        let incoming = s.registered(job.provider.id(), job.job.idempotency_key.clone());
-        let scheduler = s.jobs.get_mut(&id).filter(|old| old.provider.id() == job.provider.id()).and_then(|old| old.scheduler.take());
+        let incoming = s.registered(job.provider.target(), job.job.idempotency_key.clone());
+        let scheduler = s.jobs.get_mut(&id).filter(|old| old.provider.target() == job.provider.target()).and_then(|old| old.scheduler.take());
         s.metadata.retain(|attempt, held| held.job != id || *attempt == incoming || scheduler.as_ref().is_some_and(|lease| lease.attempt == *attempt));
         if let Some(old) = s.jobs.insert(id, RegisteredJob { queued: job, identity: Arc::new(()), scheduler }) {
-            let attempt = s.registered(old.queued.provider.id(), old.queued.job.idempotency_key);
+            let attempt = s.registered(old.queued.provider.target(), old.queued.job.idempotency_key);
             s.prune_handle(&attempt);
             if let Some(lease) = old.scheduler {
                 s.prune_handle(&lease.attempt);
@@ -498,15 +622,51 @@ impl ProviderRunner {
     /// Restores a first-generation handle saved before a restart (from `RunUpdate::Submitted`),
     /// keyed by the provider that issued it and the scheduler's idempotency key, so the job is
     /// resumed rather than submitted again. See [`Self::restore_generation`].
-    pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) {
-        self.restore_generation(provider, idempotency_key, 0, handle);
+    pub fn restore_handle(&self, provider: impl Into<String>, idempotency_key: String, handle: JobHandle) -> Result<(), RestoreHandleError> {
+        self.restore_generation(provider, idempotency_key, 0, handle)
     }
 
     /// Restores a handle saved before a restart with the [`Sent::generation`] it was reported
     /// with: it is stored under the derived key it was sent under, and the job's failure count is
     /// brought back, so the retry resumes that generation and charges under its key.
-    pub fn restore_generation(&self, provider: impl Into<String>, idempotency_key: String, generation: u32, handle: JobHandle) {
+    ///
+    /// Only the legacy/default provider address is validated. Arbitrary adapter strings within
+    /// the target bound and legacy base keys (including keys normalized by [`sent_key`]) remain
+    /// supported; this does not apply the stricter named-restoration key policy.
+    /// On refusal, runner and accounting state are unchanged and the error owns the original
+    /// accepted handle. Keep the persisted provider/base/generation identity until restoration
+    /// succeeds, recover the handle with [`RestoreHandleError::into_handle`], and explicitly retry
+    /// after correcting the address. Never delete the saved identity or submit a replacement.
+    pub fn restore_generation(
+        &self,
+        provider: impl Into<String>,
+        idempotency_key: String,
+        generation: u32,
+        handle: JobHandle,
+    ) -> Result<(), RestoreHandleError> {
         let provider = provider.into();
+        let target = match nodecraft_types::ProviderTarget::default_instance(&provider) {
+            Ok(target) => target,
+            Err(cause) => return Err(RestoreHandleError::new(cause, handle)),
+        };
+        self.restore_identity(target, idempotency_key, generation, handle);
+        Ok(())
+    }
+    /// Trusted host restoration requires the actual endpoint binding, never a parsed lane.
+    pub fn restore_target_generation(
+        &self,
+        binding: &crate::provider_routing::RegisteredProvider,
+        idempotency_key: String,
+        generation: u32,
+        handle: JobHandle,
+    ) -> Result<(), nodecraft_types::Error> {
+        if idempotency_key.is_empty() || idempotency_key.len() > 64 || !idempotency_key.is_ascii() {
+            return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "invalid restored scheduler identity"));
+        }
+        self.restore_identity(binding.target().try_clone()?, idempotency_key, generation, handle);
+        Ok(())
+    }
+    fn restore_identity(&self, provider: nodecraft_types::ProviderTarget, idempotency_key: String, generation: u32, handle: JobHandle) {
         let mut s = self.lock();
         let key = sent_key(&idempotency_key, generation);
         if generation > 0 {
@@ -526,7 +686,7 @@ impl ProviderRunner {
             return;
         }
         if let Some(q) = s.jobs.remove(&id) {
-            let old = s.registered(q.queued.provider.id(), q.queued.job.idempotency_key);
+            let old = s.registered(q.queued.provider.target(), q.queued.job.idempotency_key);
             s.prune_handle(&old);
             if let Some(lease) = q.scheduler {
                 s.prune_handle(&lease.attempt);
@@ -588,14 +748,21 @@ impl JobRunner for ProviderRunner {
                 let Some(queued) = s.jobs.get(&start.job) else {
                     return Outcome::Failed { error: format!("{} has no provider job registered", start.job), transient: false };
                 };
-                if queued.provider.id().len() > nodecraft_exec::cost::MAX_TEXT
-                    || queued.price.as_ref().is_some_and(|p| p.model.len() > nodecraft_exec::cost::MAX_TEXT)
+                if queued.provider.target().adapter().len() > nodecraft_exec::cost::MAX_TEXT
+                    || queued.charged_price().is_some_and(|p| p.model.len() > nodecraft_exec::cost::MAX_TEXT)
                 {
                     return Outcome::Failed { error: format!("{REFUSAL_PREFIX}accounting identity metadata is too long"), transient: false };
                 }
+                // An authorized run's paid work is admitted only against its budget and ceiling.
+                if budget.is_none() && queued.is_authorized() && queued.charged_price().is_some() {
+                    return Outcome::Failed {
+                        error: format!("{REFUSAL_PREFIX}this runner has no budget, so the authorized run's paid job can't be accounted"),
+                        transient: false,
+                    };
+                }
                 (queued.queued.clone(), Arc::clone(&queued.identity))
             };
-            let provider_id = queued.provider.id().to_owned();
+            let provider_id = queued.provider.target().clone();
             // The scheduler's key wins: requeued jobs get a fresh one. Keep the registration in
             // step so `forget` finds the handle stored under it.
             let (key, generation) = {
@@ -702,10 +869,10 @@ impl JobRunner for ProviderRunner {
                 published: false,
             };
             let outcome = async {
-                let at_ms = if queued.price.is_some() { budget.as_ref().map_or(0, |b| (b.wall_clock_ms)()) } else { 0 };
+                let at_ms = if queued.charged_price().is_some() { budget.as_ref().map_or(0, |b| (b.wall_clock_ms)()) } else { 0 };
                 let identity = if let Some(budget) = &budget {
                     let log = lock_log(budget);
-                    match log.ownership(&provider_id, &key) {
+                    match log.ownership_target(&provider_id, &key) {
                         Ok(Some(ChargeOwnership::LegacyUncertain)) => {
                             return Outcome::Failed {
                                 error: format!("{REFUSAL_PREFIX}historical charge ownership is uncertain; inspect the usage log"),
@@ -759,29 +926,32 @@ impl JobRunner for ProviderRunner {
                     }
                 }
                 if guard.metadata.is_none()
-                    && let (Some(budget), Some(price)) = (&budget, &queued.price)
+                    && let (Some(budget), Some(price)) = (&budget, queued.charged_price())
                 {
                     match reserve(budget, &attempt, price, handle.is_some(), at_ms) {
                         Ok(Some(r)) => {
                             let mut s = lock();
                             let maybe = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.maybe_billed) || r.maybe_billed;
-                            s.reserved.insert(job_id, Reserved { invocation, maybe_billed: maybe, ..r });
+                            // A retry of this job's own attempt keeps the debit it took.
+                            let debited = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.debited) || r.debited;
+                            s.reserved.insert(job_id, Reserved { invocation, maybe_billed: maybe, debited, ..r });
                         }
                         Ok(None) => {}
                         Err(refusal) => return Outcome::Failed { error: refusal, transient: false },
                     }
                 }
                 if guard.metadata.is_none()
-                    && let (Some(budget), Some(price)) = (&budget, &queued.price)
+                    && let (Some(budget), Some(price)) = (&budget, queued.charged_price())
                 {
                     let mut log = lock_log(budget);
-                    match log.has_recorded(&provider_id, &key) {
+                    match log.has_recorded_target(&provider_id, &key) {
                         Ok(false) => {
                             let m = UsageMetadata {
                                 at_ms,
                                 session: &budget.session,
                                 node: price.node,
-                                provider: &provider_id,
+                                provider: provider_id.adapter(),
+                                instance: provider_id.instance(),
                                 model: &price.model,
                                 idempotency_key: &key,
                             };
@@ -801,7 +971,9 @@ impl JobRunner for ProviderRunner {
                     if !s.jobs.get(&job_id).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration)) {
                         return Outcome::Failed { error: format!("{REFUSAL_PREFIX}job registration changed during accounting admission"), transient: false };
                     }
-                    // Only admitted replacement work retires inactive old capabilities.
+                    // Only admitted replacement work retires inactive old capabilities. A refused
+                    // or pre-cancelled different-key Start leaves the older retry permit/lease
+                    // until an admitted Start or host settle/forget; it still counts at the cap.
                     s.metadata.retain(|old, held| held.job != job_id || *old == attempt);
                     // Accounting is fully admitted before replacing the scheduler lifetime.
                     let previous = s.jobs.get_mut(&job_id).and_then(|job| job.scheduler.take());
@@ -834,11 +1006,11 @@ impl JobRunner for ProviderRunner {
                             r.maybe_billed = true;
                         }
                     }
-                    on_update(job_id, Sent { key: &key, generation }, update);
+                    on_update(job_id, Sent { key: &key, generation, target: &provider_id }, update);
                 };
                 let result = match handle {
-                    Some(handle) => nodecraft_providers::resume(queued.provider.as_ref(), &handle, &signal, &clock, limits, record).await,
-                    None => nodecraft_providers::run_to_completion(queued.provider.as_ref(), &queued.job, &signal, &clock, limits, record).await,
+                    Some(handle) => nodecraft_providers::resume(queued.provider.provider().as_ref(), &handle, &signal, &clock, limits, record).await,
+                    None => nodecraft_providers::run_to_completion(queued.provider.provider().as_ref(), &queued.job, &signal, &clock, limits, record).await,
                 };
                 match result {
                     Ok(done) => {
@@ -854,7 +1026,7 @@ impl JobRunner for ProviderRunner {
                         };
                         let accounting = accounting::finish(accounting::Finish {
                             budget: budget.as_ref(),
-                            price: queued.price.as_ref(),
+                            price: queued.charged_price(),
                             reserved: reserved.as_ref(),
                             identity,
                             attempt: &attempt,
@@ -889,8 +1061,8 @@ impl JobRunner for ProviderRunner {
                         let lost = failure.uncertain;
                         // Use the captured provider that executed this attempt, even if its job
                         // registration was replaced while awaiting the response.
-                        let will_retry =
-                            failure.error.is_transient() && (failure.handle.is_some() || !failure.uncertain || queued.provider.retry_ambiguous_submit());
+                        let will_retry = failure.error.is_transient()
+                            && (failure.handle.is_some() || !failure.uncertain || queued.provider.provider().retry_ambiguous_submit());
                         let reserved = {
                             let mut s = lock();
                             if let Some(r) = s.reserved.get_mut(&job_id).filter(|r| r.matches(&attempt)) {
@@ -998,7 +1170,7 @@ mod tests {
             Arc::new(|_, _, _| {}),
         );
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
-        runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
+        runner.register(JobId(1), QueuedJob::new(crate::provider_routing::RegisteredProvider::default_instance(provider.clone()).unwrap(), job, None));
         // First attempt: submitted, then the connection keeps failing.
         let first = block_on(runner.run(start(1), CancelToken::default()));
         assert!(matches!(first, Outcome::Failed { transient: true, .. }), "{first:?}");
@@ -1051,7 +1223,7 @@ mod tests {
             Arc::new(|_, _, _| {}),
         );
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
-        runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
+        runner.register(JobId(1), QueuedJob::new(crate::provider_routing::RegisteredProvider::default_instance(provider.clone()).unwrap(), job, None));
         assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
         assert_eq!(block_on(runner.run(start(2), CancelToken::default())), Outcome::Done);
         assert_eq!(provider.submits.load(Ordering::SeqCst), 2, "a failed generation is retried as a new one");
@@ -1071,7 +1243,7 @@ mod tests {
         assert!(matches!(block_on(runner.run(start(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
-        runner.register(JobId(1), QueuedJob { provider: provider.clone(), job, price: None });
+        runner.register(JobId(1), QueuedJob::new(crate::provider_routing::RegisteredProvider::default_instance(provider.clone()).unwrap(), job, None));
         let token = CancelToken::default();
         token.cancel();
         assert_eq!(block_on(runner.run(start(1), token)), Outcome::Cancelled);
@@ -1142,7 +1314,12 @@ mod tests {
 
     fn priced(provider: Arc<dyn Provider>, micros: Option<u64>) -> QueuedJob {
         let job = ProviderJob { model: "m".into(), params: Default::default(), inputs: vec![], idempotency_key: String::new() };
-        QueuedJob { provider, job, price: Some(JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: micros.map(usd) }) }
+        QueuedJob {
+            provider: crate::provider_routing::RegisteredProvider::default_instance(provider).unwrap(),
+            job,
+            price: Some(JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: micros.map(usd), ceiling: None }),
+            bound: None,
+        }
     }
 
     fn job(n: u64) -> Start {
@@ -1151,6 +1328,196 @@ mod tests {
 
     fn spent(b: &JobBudget) -> u64 {
         b.log.lock().unwrap().spent("now").project.get(&nodecraft_types::Currency::USD).map_or(0, |m| m.micros)
+    }
+
+    #[test]
+    fn the_run_ceiling_is_debited_once_and_credited_only_by_its_owner() {
+        let (_, budget) = budgeted(None);
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into(), 0);
+        let price = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(20)), ceiling: Some(ceiling.clone()) };
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        let usd_status = || ceiling.status(nodecraft_types::Currency::USD);
+        // The owner's debit; a second job finding the key reserved takes none.
+        let owner = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        assert!(owner.debited);
+        let finder = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        assert!(!finder.debited);
+        assert_eq!(usd_status(), (20, 20));
+        assert!(reserve(&budget, &attempt("b"), &price, false, 1).unwrap_err().contains("accepted"), "one over the ceiling");
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 1, "the refused job recorded nothing");
+        // A possibly billed release keeps the debit; a no-delivery release by the owner frees it.
+        let billed = Reserved { maybe_billed: true, ..owner.clone() };
+        close(&budget, &billed);
+        assert_eq!(usd_status(), (20, 20));
+        let (_, budget) = budgeted(None);
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into(), 0);
+        let price = JobPrice { ceiling: Some(ceiling.clone()), ..price };
+        let owner = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        close(&budget, &Reserved { debited: false, ..owner.clone() });
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (20, 20), "only the debit's owner credits it");
+        let owner = reserve(&budget, &attempt("c"), &price, false, 1);
+        assert!(owner.is_err(), "the non-owner close released the estimate but kept the debit");
+        let (_, budget) = budgeted(None);
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into(), 0);
+        let price = JobPrice { ceiling: Some(ceiling.clone()), ..price };
+        let owner = reserve(&budget, &attempt("a"), &price, false, 1).unwrap().unwrap();
+        close(&budget, &owner);
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (20, 0));
+        assert!(reserve(&budget, &attempt("b"), &price, false, 1).unwrap().unwrap().debited, "the room is used again");
+        // Adopted work is debited past the ceiling, never refused.
+        assert!(reserve(&budget, &attempt("d"), &price, true, 1).unwrap().unwrap().debited);
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (20, 40));
+    }
+
+    #[test]
+    fn adopted_work_keeps_its_debit_when_its_charge_cant_be_recorded() {
+        // A log at its project limit refuses every new charge (Overflow).
+        let mut file = nodecraft_exec::cost::UsageLogFile::default();
+        let full = usd(nodecraft_exec::cost::MAX_TOTAL_MICROS);
+        file.project = [(nodecraft_types::Currency::USD, full)].into_iter().collect();
+        file.sessions = [("old".to_owned(), [(nodecraft_types::Currency::USD, full)].into_iter().collect())].into_iter().collect();
+        let (_, budget) = budgeted(None);
+        *budget.log.lock().unwrap() = UsageLog::try_from(file).unwrap();
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 100)].into(), 0);
+        let price = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(80)), ceiling: Some(ceiling.clone()) };
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        // New work that can't be recorded is refused and leaves no debit.
+        assert!(reserve(&budget, &attempt("fresh"), &price, false, 1).is_err());
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (100, 0));
+        // Adopted work already ran: it goes ahead uncharged, but its exposure stays on the run.
+        assert!(reserve(&budget, &attempt("adopted"), &price, true, 1).unwrap().is_none());
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (100, 80));
+        assert!(reserve(&budget, &attempt("next"), &price, false, 1).is_err(), "80 + 80 would pass 100");
+    }
+
+    #[test]
+    fn an_authorized_runs_bound_price_wins_and_needs_a_budget() {
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 100)].into(), 0);
+        let bound = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(80)), ceiling: Some(ceiling) };
+        let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
+        let mut queued = priced(provider.clone(), Some(80));
+        queued.bound = Some(Some(bound.clone()));
+        // A host that swaps the public price changes nothing the budget sees.
+        queued.price = Some(JobPrice::new(NodeId::from_bytes([5; 16]), "test.img".into(), Some(usd(1))));
+        assert_eq!(queued.charged_price(), Some(&bound));
+        queued.price = None;
+        assert_eq!(queued.charged_price(), Some(&bound));
+        assert!(queued.is_authorized() && !QueuedJob::new(queued.provider.clone(), queued.job.clone(), None).is_authorized());
+        // A runner without a budget refuses the authorized run's paid job before the provider.
+        let runner = ProviderRunner::new(Arc::new(InstantRuntime(AtomicU64::new(0))), RunLimits::default(), Arc::new(|_, _| {}), Arc::new(|_, _, _| {}));
+        runner.register(JobId(1), queued);
+        let refused = block_on(runner.run(job(1), CancelToken::default()));
+        assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("no budget")), "{refused:?}");
+        assert_eq!(provider.submits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn work_adopted_from_an_earlier_runs_row_counts_in_the_new_run() {
+        // Run A reserved "old" (USD 80) in the shared log and it may have been billed. Run B,
+        // accepting USD 100, adopts that submission: it accounts the 80 even though the log needs
+        // no new row, so a fresh 80 doesn't fit.
+        let (_, budget) = budgeted(None);
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        let usd_ceiling = |limit: u64, unpriced: u64| crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, limit)].into(), unpriced);
+        let price = |estimate: Option<u64>, ceiling: &crate::run_ceiling::RunCeiling| JobPrice {
+            node: NodeId::from_bytes([5; 16]),
+            model: "test.img".into(),
+            estimate: estimate.map(usd),
+            ceiling: Some(ceiling.clone()),
+        };
+        let run_a = usd_ceiling(100, 0);
+        reserve(&budget, &attempt("old"), &price(Some(80), &run_a), false, 1).unwrap().unwrap();
+        let run_b = usd_ceiling(100, 0);
+        let adopted = reserve(&budget, &attempt("old"), &price(Some(80), &run_b), true, 1).unwrap().unwrap();
+        assert!(!adopted.debited, "never credited from the adoption path");
+        assert_eq!(run_b.status(nodecraft_types::Currency::USD), (100, 80));
+        assert_eq!(run_b.unpriced_status(), (0, 0), "priced work never touches the count");
+        assert!(reserve(&budget, &attempt("fresh"), &price(Some(80), &run_b), false, 1).unwrap_err().contains("accepted"));
+        // Re-adopting the same submission in run B accounts nothing more.
+        reserve(&budget, &attempt("old"), &price(Some(80), &run_b), true, 1).unwrap();
+        assert_eq!(run_b.status(nodecraft_types::Currency::USD), (100, 80));
+        // Once settled, the row still counts in a run that adopts it, priced or not.
+        budget.log.lock().unwrap().settle_target(&target, "old", usd(80), Charge::Actual).unwrap();
+        let run_c = usd_ceiling(100, 0);
+        assert!(reserve(&budget, &attempt("old"), &price(Some(80), &run_c), true, 1).unwrap().is_none());
+        assert_eq!(run_c.status(nodecraft_types::Currency::USD), (100, 80));
+        let run_d = usd_ceiling(100, 1);
+        reserve(&budget, &attempt("old"), &price(None, &run_d), true, 1).unwrap();
+        assert_eq!(run_d.status(nodecraft_types::Currency::USD), (100, 80), "the row's own amount is accounted");
+        assert_eq!(run_d.unpriced_status(), (1, 1), "and the authorized unknown-price job is counted");
+        // New work on a key another run holds is admitted only within this run's room.
+        let run_e = usd_ceiling(50, 0);
+        assert!(reserve(&budget, &attempt("old"), &price(Some(80), &run_e), false, 1).is_err());
+    }
+
+    #[test]
+    fn adopting_an_estimated_or_unresolved_row_uses_the_unknown_price_count() {
+        // An earlier priced run left an open estimate (or an unresolved charge) of USD 80 for
+        // "old". A new run whose authorized step is unknown-price, accepting one such job,
+        // adopts that submission: it keeps the money and uses the count, so a fresh-key
+        // unknown-price job is refused before the provider.
+        for unresolved in [false, true] {
+            let (runner, budget) = budgeted(None);
+            let target = crate::provider_routing::RegisteredProvider::default_instance(Arc::new(Flaky {
+                submits: AtomicU64::new(0),
+                polls: AtomicU64::new(0),
+                fail_polls: 0,
+            }))
+            .unwrap()
+            .target()
+            .clone();
+            let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+            let earlier = JobPrice::new(NodeId::from_bytes([5; 16]), "test.img".into(), Some(usd(80)));
+            reserve(&budget, &attempt("old"), &earlier, false, 1).unwrap().unwrap();
+            if unresolved {
+                budget.log.lock().unwrap().settle_target(&target, "old", usd(80), Charge::Unresolved).unwrap();
+            }
+            let ceiling = crate::run_ceiling::RunCeiling::new(std::collections::BTreeMap::new(), 1);
+            let unknown = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.usage".into(), estimate: None, ceiling: Some(ceiling.clone()) };
+            // (a) The adoption uses the count and (c) keeps the row's money.
+            reserve(&budget, &attempt("old"), &unknown, true, 1).unwrap();
+            assert_eq!(ceiling.unpriced_status(), (1, 1), "unresolved: {unresolved}");
+            assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (0, 80));
+            // (b) Adopting the same submission again uses nothing more.
+            reserve(&budget, &attempt("old"), &unknown, true, 1).unwrap();
+            assert_eq!(ceiling.unpriced_status(), (1, 1));
+            assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (0, 80));
+            // (d) A fresh-key unknown-price job of the run is refused by the runner before the
+            // provider.
+            let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
+            let mut queued = priced(provider.clone(), None);
+            queued.bound = Some(Some(unknown.clone()));
+            runner.register(JobId(9), queued);
+            let refused = block_on(runner.run(job(9), CancelToken::default()));
+            assert!(matches!(&refused, Outcome::Failed { transient: false, error } if is_budget_refusal(error) && error.contains("used up")), "{refused:?}");
+            assert_eq!(provider.submits.load(Ordering::SeqCst), 0);
+            assert_eq!(ceiling.unpriced_status(), (1, 1));
+        }
+    }
+
+    #[test]
+    fn credits_cannot_reopen_room_after_adopted_exposure_saturates() {
+        // Admitted prices only: a legitimate USD 100 reservation, then two adopted submissions at
+        // u64::MAX − 100 whose log rows are refused by the per-charge bound.
+        let (_, budget) = budgeted(None);
+        let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
+        let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
+        let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, u64::MAX)].into(), 0);
+        let price =
+            |micros: u64| JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(micros)), ceiling: Some(ceiling.clone()) };
+        let legit = reserve(&budget, &attempt("legit"), &price(100), false, 1).unwrap().unwrap();
+        for key in ["h1", "h2"] {
+            assert!(reserve(&budget, &attempt(key), &price(u64::MAX - 100), true, 1).unwrap().is_none(), "adopted, uncharged");
+        }
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (u64::MAX, u64::MAX));
+        // The legitimate reservation is released on no-delivery evidence: the room stays shut.
+        close(&budget, &legit);
+        assert_eq!(budget.log.lock().unwrap().entries().count(), 0, "released");
+        assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (u64::MAX, u64::MAX));
+        assert!(reserve(&budget, &attempt("fresh"), &price(100), false, 1).unwrap_err().contains("accepted"));
     }
 
     #[test]
@@ -1223,7 +1590,7 @@ mod tests {
         let (runner, budget) = budgeted(Some(100_000));
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         runner.register(JobId(1), priced(provider.clone(), Some(900_000)));
-        runner.restore_handle("flaky", "nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("flaky", "nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done, "already paid for");
         assert_eq!(provider.submits.load(Ordering::SeqCst), 0, "resumed, not resubmitted");
         assert_eq!(spent(&budget), 900_000);
@@ -1249,7 +1616,7 @@ mod tests {
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
         // A handle restored for one provider is never offered to another.
         runner.register(JobId(2), priced(Arc::new(Reports(None)), Some(1)));
-        runner.restore_handle("flaky", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("flaky", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
         assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done, "submitted afresh, not resumed");
     }
 
@@ -1266,7 +1633,7 @@ mod tests {
         // Resumed after a restart, with no estimate, reporting a cost: recorded too.
         let resumed = Arc::new(ResumesWith(usd(900)));
         runner.register(JobId(2), priced(resumed, None));
-        runner.restore_handle("resumes", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null });
+        runner.restore_handle("resumes", "nodecraft:r:2".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
         assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done);
         assert_eq!(spent(&budget), 4_200 + 900);
     }
@@ -1567,11 +1934,13 @@ mod tests {
 
     mod ambiguous_retry_tests;
     mod delivery_evidence_tests;
+    mod endpoint_tests;
     mod fresh_key_tests;
     #[cfg(not(target_arch = "wasm32"))]
     mod native_build_tests;
     mod paid_unpriced_tests;
     mod reregister_retry_tests;
+    mod restore_tests;
     mod stale_handle_tests;
     mod strict257_tests;
 }

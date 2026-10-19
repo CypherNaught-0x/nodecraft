@@ -20,6 +20,10 @@
 pub mod comfyui;
 mod delivery;
 mod error;
+#[cfg(feature = "fal")]
+pub mod fal;
+#[cfg(feature = "gemini-images")]
+pub mod gemini_images;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
@@ -32,6 +36,8 @@ mod provider;
 #[cfg(feature = "replicate")]
 pub mod replicate;
 pub mod secrets;
+#[cfg(feature = "seedream")]
+pub mod seedream;
 mod task;
 
 pub use delivery::{HttpFailure, RequestContext, SubmitContext};

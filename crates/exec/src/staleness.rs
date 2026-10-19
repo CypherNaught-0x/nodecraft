@@ -19,8 +19,9 @@
 //! admitted before authoritative validation; additional/transformed effective values returned by
 //! custom validators are admitted before hashing. Native hooks may allocate before returning.
 //! Rejected recipes retain a sanitized reason of at most 256 bytes, charged once (128 + reason
-//! bytes). A returned local diagnostic reserves another 576 bytes before construction. Thus an
-//! almost-exhausted invalid query may fail admission; successful v2 hash bytes/budgets are unchanged.
+//! bytes). Detailed stale reports reserve another 576 bytes before routing or recipe hooks, even
+//! when no unknown result is found. Standalone diagnostics pay those bytes before construction.
+//! Reports can refuse earlier; the 256 MiB ceiling and legacy v2 hash budgets are unchanged.
 //!
 //! **Recipe versions:** the hash starts with a domain tag ([`DOMAIN`]). The stored hash carries no
 //! version, so after a change to the recipe an old result can't be told from one whose inputs
@@ -34,6 +35,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
 };
+
+/// The node `config` key holding whether it reuses identical results (#91): a boolean.
+pub const CACHE_CONFIG: &str = "nodecraft.cache";
 
 /// Domain tag mixed into every hash. Bump it when what is hashed changes; results stamped under
 /// an older tag are then reported stale (see the module docs).
@@ -53,7 +57,8 @@ pub struct HashDiagnostic {
 }
 
 /// Known stale results plus the first local invalidity, in canvas NodeId order.
-/// `unknown_total` counts only results with a recorded input hash that were checked.
+/// `unknown_total` counts checked results with recorded hashes whose current hash is unavailable,
+/// including multiple results sharing one rejected upstream node; it is not a unique-node count.
 /// A stale set alone is not proof that every other node is fresh.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaleReport {
@@ -246,6 +251,9 @@ fn reason_shape(text: &str) -> (usize, bool) {
 /// target → (port, position, upstream, upstream port).
 type Feeds = BTreeMap<NodeId, Vec<(String, u32, NodeId, String)>>;
 
+// Created only by the report constructor after charging its own meter; consumed once.
+struct DiagnosticCredit;
+
 /// Input hashes over one canvas, reusable across queries: routers are resolved once, and each
 /// node's recipe and each upstream output are digested once (memoized), all charged to one byte
 /// budget. Once an admission exceeds that shared budget, subsequent hashes return the budget
@@ -259,6 +267,7 @@ pub struct InputHasher {
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
     outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
     meter: Meter,
+    diagnostic_credit: Option<DiagnosticCredit>,
     #[cfg(test)]
     diagnostic_cache_bytes: usize,
     #[cfg(test)]
@@ -268,8 +277,18 @@ pub struct InputHasher {
 impl InputHasher {
     /// A hasher for `canvas` with a byte budget of `budget` across all its queries.
     pub fn new(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<Self, Error> {
-        let incoming = crate::routing::incoming(canvas, kinds)?;
+        Self::with_meter(canvas, kinds, Meter { left: budget, hashed: 0, refused: false }, None)
+    }
+
+    fn for_report(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<Self, Error> {
         let mut meter = Meter { left: budget, hashed: 0, refused: false };
+        // Routing itself invokes router validation hooks, so reserve before constructing it.
+        meter.charge(MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD)?;
+        Self::with_meter(canvas, kinds, meter, Some(DiagnosticCredit))
+    }
+
+    fn with_meter(canvas: &Canvas, kinds: &Registry, mut meter: Meter, diagnostic_credit: Option<DiagnosticCredit>) -> Result<Self, Error> {
+        let incoming = crate::routing::incoming(canvas, kinds)?;
         let mut feeds: Feeds = BTreeMap::new();
         for (target, list) in &incoming.feeds {
             let mut owned = Vec::with_capacity(list.len());
@@ -290,6 +309,7 @@ impl InputHasher {
             recipes: BTreeMap::new(),
             outputs: BTreeMap::new(),
             meter,
+            diagnostic_credit,
             #[cfg(test)]
             diagnostic_cache_bytes: 0,
             #[cfg(test)]
@@ -312,7 +332,15 @@ impl InputHasher {
         charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
         w.text(&node.kind);
-        w.params(&node.config)?;
+        // Whether a node reuses cached results (#91) doesn't change what it makes: leave the
+        // switch out, so turning it on or off never makes a result stale.
+        if node.config.contains_key(CACHE_CONFIG) {
+            let mut config = node.config.clone();
+            config.remove(CACHE_CONFIG);
+            w.params(&config)?;
+        } else {
+            w.params(&node.config)?;
+        }
         let recipe = match kinds.get(&node.kind) {
             Err(_) => {
                 w.params(&node.params)?;
@@ -416,7 +444,12 @@ impl InputHasher {
                     .ok_or_else(|| Error::new(ErrorKind::Internal, "a rejected hash has no cached reason"))?,
             ),
         };
-        self.meter.charge(MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD)?;
+        if self.meter.refused {
+            return Err(too_large());
+        }
+        if self.diagnostic_credit.take().is_none() {
+            self.meter.charge(MAX_DIAGNOSTIC_BYTES + DIAGNOSTIC_OUTPUT_OVERHEAD)?;
+        }
         // Fixed role text + canonical UUID + at most 256 reason bytes fits below 512. Write
         // directly into the admitted String, never an intermediate formatted native Error.
         let mut message = String::with_capacity(MAX_DIAGNOSTIC_BYTES);
@@ -579,8 +612,9 @@ pub fn stale(canvas: &Canvas, kinds: &Registry) -> Result<BTreeSet<NodeId>, Erro
 }
 
 /// [`stale`] with one bounded diagnostic and a count of locally invalid checked results.
-/// Uses the same hasher/cache and never repeats hooks to recover a reason. The first diagnostic
-/// costs the existing 576-byte output reservation; refusal returns an error, not a partial report.
+/// Uses the same hasher/cache and never repeats hooks to recover a reason. One 576-byte output
+/// is reserved before routing or hashing, even without an unknown result. Formatting consumes it
+/// without another charge; refusal returns an error, not a partial report.
 pub fn stale_report(canvas: &Canvas, kinds: &Registry) -> Result<StaleReport, Error> {
     query_stale(canvas, kinds, MAX_QUERY_BYTES, true).map(|(report, _)| report)
 }
@@ -592,7 +626,7 @@ fn stale_within(canvas: &Canvas, kinds: &Registry, budget: usize) -> Result<(BTr
 
 fn query_stale(canvas: &Canvas, kinds: &Registry, budget: usize, details: bool) -> Result<(StaleReport, usize), Error> {
     let has_result = |node: &Node| node.active.is_some_and(|active| node.history.iter().any(|g| g.id == active));
-    let mut query = InputHasher::new(canvas, kinds, budget)?;
+    let mut query = if details { InputHasher::for_report(canvas, kinds, budget)? } else { InputHasher::new(canvas, kinds, budget)? };
     let none = BTreeMap::new();
     let mut stale = BTreeSet::new();
     let mut unknown_total = 0usize;

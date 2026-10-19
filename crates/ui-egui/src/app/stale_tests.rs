@@ -441,3 +441,44 @@ fn actual_downstream_unrecorded_active_result_is_counted_as_engine_reports() {
     h.get_by_label_contains("2 stale results; 0 checked results");
     h.get_by_label_contains("stale status can propagate downstream");
 }
+
+#[test]
+fn performance_palette_report_keeps_main_clipboard_behavior() {
+    let mut h = super::tests::harness();
+    let before = h.state().session.document().clone();
+    open(&mut h, "Performance report");
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.step();
+    assert!(h.state().palette.is_none());
+    assert_eq!(h.state().notice.as_deref(), Some("Performance report copied to the clipboard."));
+    let copied = h
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text),
+            _ => None,
+        })
+        .expect("the actual palette action must publish clipboard output");
+    let report: serde_json::Value = serde_json::from_str(copied).unwrap();
+    assert!(report.is_object());
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), 0);
+}
+
+/// Explicit local screenshots; ordinary CI keeps this renderer unselected.
+#[test]
+#[ignore = "manual local screenshot capture; requires STALE339_RENDER_ROOT"]
+fn stale339_visual_current() {
+    let root = std::path::PathBuf::from(std::env::var("STALE339_RENDER_ROOT").unwrap());
+    let (app, _, _) = diagnostic();
+    let mut h = ui(app);
+    check(&mut h);
+    assert!(visible(&h));
+    h.render().unwrap().save(root.join("invalid-checked-results.png")).unwrap();
+    let mut h = ui(NodeCraftApp::from_session(Session::new(recorded_project()).unwrap(), C).unwrap());
+    check(&mut h);
+    assert!(visible(&h));
+    h.render().unwrap().save(root.join("zero-recorded.png")).unwrap();
+}
