@@ -278,6 +278,8 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Regis
 mod comments;
 mod drop;
 mod layout;
+#[cfg(not(target_arch = "wasm32"))]
+mod live;
 mod metrics;
 mod navigation;
 mod order;
@@ -326,6 +328,9 @@ pub struct NodeCraftApp {
     /// The startup question about an earlier session's unsaved work (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovery: Option<recovery::RecoveryOffer>,
+    /// Live recompute of action nodes (#88).
+    #[cfg(not(target_arch = "wasm32"))]
+    live: live::Live,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovered: Option<recovery::RecoveryOffer>,
@@ -578,6 +583,8 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             recovery: None,
             #[cfg(not(target_arch = "wasm32"))]
+            live: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             recovered: None,
             #[cfg(not(target_arch = "wasm32"))]
             recovery_journal: None,
@@ -637,6 +644,10 @@ impl NodeCraftApp {
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);
             self.track_recovery();
+            // Not while the startup question is open: its answer may replace the document.
+            if self.recovery.is_none() {
+                self.live_recompute(ui.ctx());
+            }
         }
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();

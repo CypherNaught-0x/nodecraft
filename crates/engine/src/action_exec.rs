@@ -100,23 +100,22 @@ fn image_request(action: &str, p: &ParamValues) -> Result<ImageRequest, String> 
     serde_json::from_value(Json::Object(body)).map_err(|_| "the action's settings are out of range".to_owned())
 }
 
-/// Every text value in `inputs`, one list level flattened (what a list port carries), in order.
+/// Every text value in `inputs`, in order: lists (a list port, a split's parts) are flattened,
+/// at most three levels deep.
 fn texts(inputs: &[Value]) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    for value in inputs {
-        match value {
-            Value::Text(t) => out.push(t.clone()),
-            Value::List(items) => {
-                for item in items {
-                    match item {
-                        Value::Text(t) => out.push(t.clone()),
-                        _ => return Err("a text action takes text".into()),
-                    }
-                }
+    fn walk(values: &[Value], depth: usize, out: &mut Vec<String>) -> Result<(), String> {
+        for value in values {
+            match value {
+                Value::Text(t) => out.push(t.clone()),
+                Value::List(items) if depth < 3 => walk(items, depth + 1, out)?,
+                Value::List(_) => return Err("lists are nested too deeply".into()),
+                _ => return Err("a text action takes text".into()),
             }
-            _ => return Err("a text action takes text".into()),
         }
+        Ok(())
     }
+    let mut out = Vec::new();
+    walk(inputs, 0, &mut out)?;
     Ok(out)
 }
 
