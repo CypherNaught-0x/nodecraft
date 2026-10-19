@@ -154,6 +154,16 @@ pub enum JobSpec {
         params: ParamValues,
         inputs: Vec<GenerateInput>,
     },
+    /// A deterministic local action (#410): `action` names the operation (`image.blur`,
+    /// `text.split`), `params` are the node's visible values, `inputs` the values connected to
+    /// its input port, in order; the result goes to `output`. No provider, no cost.
+    Action {
+        node: NodeId,
+        action: String,
+        params: ParamValues,
+        inputs: Vec<Value>,
+        output: String,
+    },
 }
 
 /// An output port a model call fills, and the modality of results it takes.

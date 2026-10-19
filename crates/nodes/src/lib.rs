@@ -4,6 +4,7 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+pub mod action;
 pub mod audio;
 mod descriptor;
 pub mod image;

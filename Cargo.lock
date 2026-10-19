@@ -2896,6 +2896,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "keyring",
+ "nodecraft-actions",
  "nodecraft-catalog",
  "nodecraft-exec",
  "nodecraft-format",

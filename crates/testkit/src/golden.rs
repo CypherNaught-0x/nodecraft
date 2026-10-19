@@ -113,6 +113,7 @@ pub fn run(
         let spec = run.work(job.id).cloned().ok_or_else(|| Error::new(ErrorKind::Internal, "a scheduled job has no work"))?;
         let progress = match &spec {
             JobSpec::Source { output, value, .. } => run.job_done(kinds, job.id, vec![(output.clone(), value.clone())]),
+            JobSpec::Action { .. } => run.job_failed(job.id, "the golden runner has no action executor"),
             JobSpec::Generate { node, outputs, .. } => {
                 let attempt = generate::provider_job(&spec, &job.idempotency_key).and_then(|(provider, request)| {
                     let inputs: Vec<Json> = request

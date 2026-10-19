@@ -68,8 +68,15 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
         for input in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document] {
             let port = PortType { modality: input, many: false };
             assert!(kind.mode(&[port]).is_none());
-            // Only the router takes a wire of any modality (it is created with the wire's).
-            assert_eq!(registry.compatible(&[port]).map(|d| d.id.as_str()).collect::<Vec<_>>(), vec![nodecraft_nodes::router::ID]);
+            // The router takes a wire of any modality (it is created with the wire's); action
+            // kinds (#410) take their own modality.
+            let compatible: Vec<&str> = registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| *id != nodecraft_nodes::router::ID).collect();
+            assert!(registry.compatible(&[port]).any(|d| d.id == nodecraft_nodes::router::ID));
+            for id in compatible {
+                let action = registry.get(id).unwrap().descriptor();
+                assert_eq!(action.category, nodecraft_nodes::Category::Action, "{id}");
+                assert_eq!(action.inputs.first().map(|p| p.port_type.modality), Some(input), "{id}");
+            }
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
             let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()) }];
             assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
@@ -96,6 +103,8 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(node.params.is_empty());
                 assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
             }
+            // Action kinds (#410) need a connected input before they can be planned.
+            id if descriptor.category == nodecraft_nodes::Category::Action => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "{id}"),
             id => panic!("add an explicit default-planning contract for builtin {id}"),
         }
     }
