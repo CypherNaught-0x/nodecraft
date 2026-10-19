@@ -194,7 +194,9 @@ fn a_quote_prices_each_step_read_only() {
 /// Quotes `nodes`, then builds `run.start` params accepting that quote with `amounts`.
 fn start_params(s: &mut Session, nodes: &[u8], amounts: Value, partial: bool) -> Value {
     let quoted = s.dispatch("run.quote", &request(nodes)).unwrap();
-    with_accept(nodes, json!({"token": quoted["token"], "amounts": amounts, "partial": partial}))
+    // Partial consent here also accepts a small count of unknown-price jobs (#366).
+    let unpriced = if partial { json!(16) } else { Value::Null };
+    with_accept(nodes, json!({"token": quoted["token"], "amounts": amounts, "partial": partial, "unpriced_jobs": unpriced}))
 }
 
 #[test]
@@ -227,6 +229,23 @@ fn a_run_starts_only_with_an_accepted_price_within_the_budgets() {
     let error = capped.dispatch("run.start", &params).unwrap_err();
     assert!(error.message.contains("budget"), "{}", error.message);
     assert!(started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_accepted_amounts_become_the_runs_ceiling() {
+    let (mut s, started) = session(Budgets::default(), true);
+    let bad = start_params(&mut s, &[2], json!({"USD": 120_000, "usd": 5}), false);
+    assert_eq!(s.dispatch("run.start", &bad).unwrap_err().kind, ErrorKind::InvalidInput, "an invalid currency is refused, not ignored");
+    let ok = start_params(&mut s, &[2], json!({"USD": 150_000}), false);
+    s.dispatch("run.start", &ok).unwrap();
+    let prepared = started.lock().unwrap().pop().unwrap();
+    let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+    assert_eq!(run.ceiling(nodecraft_types::Currency::USD), (150_000, 0));
+    assert_eq!(run.ceiling(nodecraft_types::Currency::EUR), (0, 0), "nothing accepted in EUR");
+    let queued = run.queued_job(progress.jobs[0].id, "fixture").unwrap();
+    let price = queued.price.unwrap();
+    assert_eq!(price.estimate, Some(usd(120_000)));
+    assert!(price.ceiling.is_some(), "every priced job carries the run's ceiling");
 }
 
 #[test]
@@ -1005,7 +1024,9 @@ fn validated_multi_model_identities_sum_and_usage_partial_policy_are_preserved()
     let q = s.dispatch("run.quote", &request(&[2])).unwrap();
     assert_eq!(q["steps"][0]["models"], json!(["test.usage", "test.free"]));
     assert_eq!(q["complete"], false);
-    let params = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true}));
+    let missing = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true}));
+    assert!(s.dispatch("run.start", &missing).unwrap_err().message.contains("unpriced_jobs"), "partial consent alone is not a count");
+    let params = with_accept(&[2], json!({"token":q["token"],"amounts":{},"partial":true,"unpriced_jobs":1}));
     s.dispatch("run.start", &params).unwrap();
     assert_eq!(*called.lock().unwrap(), 1);
 }

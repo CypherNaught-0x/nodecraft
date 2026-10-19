@@ -32,6 +32,8 @@ mod provider;
 #[cfg(feature = "replicate")]
 pub mod replicate;
 pub mod secrets;
+#[cfg(feature = "seedream")]
+pub mod seedream;
 mod task;
 
 pub use delivery::{HttpFailure, RequestContext, SubmitContext};

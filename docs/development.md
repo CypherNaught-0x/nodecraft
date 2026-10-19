@@ -63,13 +63,14 @@ Metrics:
 - `frame_prepare`: shell CPU preparation, including workload collection;
 - `frame_interval`: time between frame starts;
 - `dispatch`: successful commands, including handlers and durable I/O;
-- `graph_stage` and `graph_stage_refused`: successful and refused `Changeset::stage` calls,
-  respectively, including draft cloning, applying changes, validation and inverse construction;
+- `graph_stage` and `graph_stage_refused`: successful and refused `Changeset::stage_certified` calls,
+  respectively, including draft cloning, applying changes, validation, inverse construction and
+  the inverse-certification probe;
 - `undo`, `redo`, `load` and `save`: overlapping classifications of successful dispatch;
 - `presentation`: unsupported until a host supplies real presentation timestamps. It always has
   zero samples, null percentiles and `presentation_timestamps_not_available`, even with a CPU clock.
 
-Stage samples exclude handler work, later replay/history/asset admission, durable append and final
+Stage samples exclude handler work, subsequent actual-redo and replay/history/asset admission, durable append and final
 publication. Successful staging followed by a later refusal still counts as executed staging;
 preview/availability checks and nonmutating effects do not. Refusals are not mixed with successful
 stage or dispatch latencies. These are overlapping boundaries, not additive phases.

@@ -236,7 +236,7 @@ fn historical_uncertainty_cannot_bypass_ownership_with_an_unpriced_facade_or_han
     let mut queued = priced(provider.clone(), None);
     queued.price = None;
     runner.register(JobId(1), queued);
-    runner.restore_handle("held", "old".into(), JobHandle { remote_id: "existing".into(), data: serde_json::Value::Null });
+    runner.restore_handle("held", "old".into(), JobHandle { remote_id: "existing".into(), data: serde_json::Value::Null }).unwrap();
     assert!(matches!(
         block_on(runner.run(Start { idempotency_key: "old".into(), ..job(1) }, CancelToken::default())),
         Outcome::Failed { transient: false, .. }

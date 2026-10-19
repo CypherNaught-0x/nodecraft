@@ -8,6 +8,10 @@ impl NodeCraftApp {
     /// Splits `node`'s image into `rows` × `columns` Image nodes laid out beside it, and selects
     /// them.
     pub(super) fn split_grid(&mut self, node: NodeId, rows: u32, columns: u32, t: &Tokens) {
+        if self.comments.drag.is_some() || self.comments.gesture_cancelled {
+            self.notice = Some("Finish moving the discussion pin before splitting an image.".into());
+            return;
+        }
         let document = self.session.document();
         let revision = self.session.revision();
         let count = rows.saturating_mul(columns) as usize;

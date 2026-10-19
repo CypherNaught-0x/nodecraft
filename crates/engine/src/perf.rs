@@ -53,9 +53,10 @@ pub enum Metric {
     FrameInterval,
     /// Any command, start to finish (`Session::dispatch`).
     Dispatch,
-    /// Clone/apply/validation/inverse work inside a successful Changeset::stage call.
+    /// Clone/apply/validation/inverse certification inside a successful Changeset::stage_certified call.
+    /// Excludes subsequent actual-redo admission, publication and durable append.
     GraphStage,
-    /// The same boundary when Changeset::stage returns an error; never mixed with successes.
+    /// The same boundary when Changeset::stage_certified returns an error; never mixed with successes.
     GraphStageRefused,
     /// Real presentation timestamps are not available from the current hosts.
     Presentation,
@@ -185,6 +186,7 @@ impl Recorder {
     }
     /// The time since `start` (from [`Self::now`]) recorded as one sample of `metric`.
     pub fn record_since(&mut self, metric: Metric, start: u64) {
+        // Reject unsupported presentation before invoking a host clock callback.
         if metric == Metric::Presentation {
             return;
         }

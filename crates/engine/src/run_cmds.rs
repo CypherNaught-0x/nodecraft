@@ -8,7 +8,10 @@
 //!   `accept` the price it was shown: amounts covering the current totals, and `partial: true`
 //!   when some step can't be priced. So no caller (UI, CLI, agent) starts a paid run without
 //!   seeing its cost first, and a price that grew since the quote is refused. The run itself goes
-//!   to the host's `run.start` service, which plans the same request and runs it.
+//!   to the host's `run.start` service, which plans the same request and runs it. The accepted
+//!   amounts and the accepted count of unknown-price jobs stay with the authorized run as its
+//!   cumulative ceiling (see [`crate::run_ceiling`]), so deferred fan-out and retries can't
+//!   reserve more, or admit more unknown-price jobs, than was accepted.
 //! - `run.record` (host only): records a run's results, one generation per node, as one undo
 //!   step.
 //! - `usage.export_csv` (read-only): spreadsheet-safe CSV pages, at most 2,000 rows and
@@ -113,6 +116,10 @@ struct Accept {
     /// count is known only at run time (it could cost more than quoted).
     #[serde(default)]
     partial: bool,
+    /// How many jobs of unknown price the run may admit (#366). Required when a step has no
+    /// price; absent means none, never unlimited.
+    #[serde(default)]
+    unpriced_jobs: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -429,13 +436,39 @@ impl PreparedRun {
         self.run.canvas
     }
 }
+/// The accepted amounts by currency: the run's ceiling (#366). A code that isn't a currency is
+/// refused rather than ignored, so the caller never believes it accepted an amount it didn't.
+fn accepted_limits(accept: &Accept) -> Result<BTreeMap<nodecraft_types::Currency, u64>, Error> {
+    accept
+        .amounts
+        .iter()
+        .map(|(code, micros)| {
+            nodecraft_types::Currency::try_from(code.clone())
+                .map(|currency| (currency, *micros))
+                .map_err(|_| invalid("an accepted amount names an invalid currency"))
+        })
+        .collect()
+}
 fn accept_quote(c: &Context<'_>, quote: &nodecraft_exec::cost::Quote, accept: &Accept) -> Result<(), Error> {
+    accepted_limits(accept)?;
     let budget = c.resources.require::<BudgetState>()?;
     if !check(quote, &budget.budgets, &budget.spent)?.allowed() {
         return Err(invalid("the run exceeds current budgets"));
     }
     if !quote.is_complete() && !accept.partial {
         return Err(invalid("part of the price is unknown; explicit partial consent is required"));
+    }
+    // Unknown-price steps need an explicit count of such jobs, at least what the quote shows
+    // (a deferred step counts as one job here, as it does for its price).
+    let nodes: BTreeSet<NodeId> = quote.unpriced().map(|(node, _)| node).collect();
+    let unpriced = quote
+        .steps
+        .iter()
+        .filter(|step| nodes.contains(&step.node))
+        .try_fold(0u64, |n, step| n.checked_add(step.jobs))
+        .ok_or_else(|| invalid("the quote's job count is out of range"))?;
+    if unpriced > 0 && accept.unpriced_jobs.is_none_or(|accepted| accepted < unpriced) {
+        return Err(invalid("part of the price is unknown; accept a count of unknown-price jobs (`unpriced_jobs`) covering the quote"));
     }
     for (currency, total) in &quote.totals {
         let agreed = accept.amounts.get(&String::from(*currency)).copied().unwrap_or(0);
@@ -455,8 +488,9 @@ pub(crate) fn authorize(
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
     accept_quote(c, &prepared.quote, &prepared.accept)?;
+    let ceiling = crate::run_ceiling::RunCeiling::new(accepted_limits(&prepared.accept)?, prepared.accept.unpriced_jobs.unwrap_or(0));
     let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
-    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote }, progress))
+    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote, ceiling }, progress))
 }
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.phase == crate::commands::Phase::Preview {
@@ -642,7 +676,8 @@ fn start_schema() -> Value {
             json!({"type": "object", "additionalProperties": false, "required": ["token"], "properties": {
                 "token": {"type": "string"},
                 "amounts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
-                "partial": {"type": "boolean"}}}),
+                "partial": {"type": "boolean"},
+                "unpriced_jobs": {"type": "integer", "minimum": 0}}}),
         );
     }
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
@@ -681,7 +716,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: start_schema,
-            params_doc: "{canvas, mode, nodes?, field?, accept: {token, amounts: {CUR: micros}, partial?: bool}}; starts the run only if it is still exactly what run.quote priced (`token`), the budgets allow it, the accepted amounts cover every currency's total, and `partial` is set when part of the price isn't known.",
+            params_doc: "{canvas, mode, nodes?, field?, accept: {token, amounts: {CUR: micros}, partial?: bool, unpriced_jobs?: count}}; starts the run only if it is still exactly what run.quote priced (`token`), the budgets allow it, the accepted amounts cover every currency's total, `partial` is set when part of the price isn't known, and `unpriced_jobs` covers the quote's jobs of unknown price. While it runs, the amounts are a ceiling on what it may reserve per currency and `unpriced_jobs` on how many unknown-price jobs it may admit, including deferred fan-out and retries under new keys.",
             enabled: enabled_start,
             run: run_start,
         },
@@ -714,6 +749,8 @@ mod tests;
 /// Authorized work and only the bindings selected by its immutable admission witness.
 pub struct AuthorizedRun {
     quote: nodecraft_exec::cost::Quote,
+    /// What the caller accepted, as a cumulative ceiling on the run's priced reservations.
+    ceiling: crate::run_ceiling::RunCeiling,
     run: nodecraft_exec::run::Run,
     bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
 }
@@ -741,7 +778,8 @@ impl AuthorizedRun {
         let nodecraft_nodes::JobSpec::Generate { node, .. } = work else { return Err(invalid("job is not generated work")) };
         let step = self.quote.steps.iter().find(|step| step.node == *node).ok_or_else(|| invalid("job has no admitted price"))?;
         let price = match &step.per_job {
-            Ok(None) => None, // Explicitly free catalog selections, not absent host metadata.
+            Ok(None) => None, // Explicitly free catalog selections, not absent host metadata: free work is
+            // neither debited nor counted (it isn't unknown-price).
             amount => {
                 let length = step
                     .models
@@ -758,11 +796,19 @@ impl AuthorizedRun {
                     }
                     model.push_str(name);
                 }
-                Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten() })
+                Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten(), ceiling: Some(self.ceiling.clone()) })
             }
         };
         let (_, job) = crate::generate::provider_job(work, key)?;
-        Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, price })
+        Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, bound: Some(price.clone()), price })
+    }
+    /// The run's accepted amount and what it has reserved against it, in micros.
+    pub fn ceiling(&self, currency: nodecraft_types::Currency) -> (u64, u64) {
+        self.ceiling.status(currency)
+    }
+    /// The accepted count of unknown-price jobs and how many the run has admitted.
+    pub fn unpriced_jobs(&self) -> (u64, u64) {
+        self.ceiling.unpriced_status()
     }
     pub fn job_done(
         &mut self,

@@ -111,7 +111,7 @@ fn local_no_handle_failure_does_not_delete_other_jobs_shared_accepted_handle() {
     let mut run = runner.run(start(1, "shared"), CancelToken::default());
     assert!(run.as_mut().poll(&mut std::task::Context::from_waker(futures::task::noop_waker_ref())).is_pending());
     runner.register(JobId(2), q(p.clone(), "shared", None));
-    runner.restore_handle("reregister", "shared".into(), JobHandle { remote_id: "accepted".into(), data: serde_json::Value::Null });
+    runner.restore_handle("reregister", "shared".into(), JobHandle { remote_id: "accepted".into(), data: serde_json::Value::Null }).unwrap();
     p.gate.store(true, Ordering::SeqCst);
     assert!(matches!(block_on(run), Outcome::Failed { transient: false, .. }));
     assert_eq!(block_on(runner.run(start(2, "shared"), CancelToken::default())), Outcome::Done);
@@ -334,10 +334,15 @@ fn older_restored_generation_success_preserves_newer_same_base_lease() {
     let mut old = runner.run(start(1, "base"), CancelToken::default());
     let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
     assert!(old.as_mut().poll(&mut cx).is_pending());
-    runner.restore_generation("generations", "base".into(), 1, JobHandle { remote_id: "base#1".into(), data: serde_json::Value::Null });
+    runner.restore_generation("generations", "base".into(), 1, JobHandle { remote_id: "base#1".into(), data: serde_json::Value::Null }).unwrap();
     let mut new = runner.run(start(1, "base"), CancelToken::default());
     assert!(new.as_mut().poll(&mut cx).is_pending());
     let serial = runner.lock().running_serial[&JobId(1)];
+    let refused = runner
+        .restore_generation("invalid-address".repeat(40), "base".into(), u32::MAX, JobHandle { remote_id: "uninstalled".into(), data: serde_json::Value::Null })
+        .unwrap_err();
+    assert_eq!(refused.into_handle().remote_id, "uninstalled");
+    assert_eq!(runner.lock().running_serial[&JobId(1)], serial, "refusal preserves the live replacement");
     p.old_ready.store(true, Ordering::SeqCst);
     assert_eq!(block_on(old), Outcome::Done);
     let retained = runner.lock().jobs.get(&JobId(1)).and_then(|j| j.scheduler.as_ref()).is_some_and(|lease| lease.invocation == serial);

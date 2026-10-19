@@ -97,7 +97,27 @@ fn token_file_public_sparse_and_missing_files_fail_without_network() {
     assert!(error.message.contains("--control"));
 }
 
-fn hello_server(token: String) -> (SocketAddr, std::thread::JoinHandle<()>) {
+struct HelloServer {
+    addr: SocketAddr,
+    task: Option<std::thread::JoinHandle<TcpStream>>,
+    stream: Option<TcpStream>,
+}
+impl HelloServer {
+    fn complete_handshake(&mut self) {
+        self.stream = Some(self.task.take().unwrap().join().unwrap());
+    }
+}
+impl Drop for HelloServer {
+    fn drop(&mut self) {
+        // Clean up even when caller setup or an assertion unwinds. The existing accept
+        // deadline and socket timeouts bound the join; never panic while unwinding.
+        if let Some(task) = self.task.take() {
+            let _ = task.join();
+        }
+    }
+}
+
+fn hello_server(token: String) -> HelloServer {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -119,26 +139,29 @@ fn hello_server(token: String) -> (SocketAddr, std::thread::JoinHandle<()>) {
         assert_eq!(hello["method"], "hello");
         assert_eq!(hello["params"]["token"], token);
         writeln!(stream, "{}", json!({"id":hello["id"],"result":{"protocol":PROTOCOL}})).unwrap();
+        stream
     });
-    (addr, task)
+    HelloServer { addr, task: Some(task), stream: None }
 }
 
 #[test]
 fn token_file_public_connect_and_reconnect_reread_current_file() {
     let path = TempToken::new();
-    let (first, task) = hello_server("ab".repeat(32));
-    std::fs::write(&path.0, serde_json::to_vec(&TokenFile { port: first.port(), token: "ab".repeat(32), pid: 1 }).unwrap()).unwrap();
+    let mut first_server = hello_server("ab".repeat(32));
+    std::fs::write(&path.0, serde_json::to_vec(&TokenFile { port: first_server.addr.port(), token: "ab".repeat(32), pid: 1 }).unwrap()).unwrap();
     let mut client = Client::from_token_file(&path.0).unwrap();
-    task.join().unwrap();
-    assert_eq!(client.reader.get_ref().peer_addr().unwrap(), first);
+    first_server.complete_handshake();
+    assert_eq!(client.reader.get_ref().peer_addr().unwrap(), first_server.addr);
+    drop(first_server);
     std::fs::write(&path.0, bytes("invalid-public-test-token")).unwrap();
     assert_eq!(client.reconnect().unwrap_err().kind, ErrorKind::InvalidInput);
-    let (second, task) = hello_server("cd".repeat(32));
-    std::fs::write(&path.0, serde_json::to_vec(&TokenFile { port: second.port(), token: "cd".repeat(32), pid: 2 }).unwrap()).unwrap();
+    let mut second_server = hello_server("cd".repeat(32));
+    std::fs::write(&path.0, serde_json::to_vec(&TokenFile { port: second_server.addr.port(), token: "cd".repeat(32), pid: 2 }).unwrap()).unwrap();
     client.reconnect().unwrap();
-    task.join().unwrap();
-    assert_eq!(client.reader.get_ref().peer_addr().unwrap(), second);
+    second_server.complete_handshake();
+    assert_eq!(client.reader.get_ref().peer_addr().unwrap(), second_server.addr);
     assert!(matches!(&client.origin, Origin::File(origin) if origin == &path.0));
+    drop(second_server);
 }
 
 #[test]

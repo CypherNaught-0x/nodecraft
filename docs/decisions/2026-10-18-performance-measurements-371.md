@@ -1,8 +1,9 @@
 ## 2026-10-18 · Graph stage and rendered-curve performance measurements (#371)
 
 - **Name the actual boundary.** Report schema `nodecraft.perf/2` adds successful/refused
-  `Changeset::stage` timings: clone/apply/validation/inverse work, not final pointer publication
-  or durable append. Availability previews do not record. Completed staging survives later
+  `Changeset::stage_certified` timings: clone/apply/validation/inverse work including the inverse
+  certification probe. Subsequent actual-redo replay/history admission, final pointer publication
+  and durable append are outside this span. Availability previews do not record. Completed staging survives later
   admission refusal; overall dispatch remains success-only. These boundaries overlap.
 - **Visibility follows the drawing geometry.** The paint snapshot records submitted persistent
   cubics against the actual painter clip using the renderer's adaptive flattening tolerance.
