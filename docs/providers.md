@@ -17,6 +17,27 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
+| **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
+
+## Setting up catalog providers
+
+The engine builds an adapter for every provider the model catalog names
+(`engine::provider_setup`, #409). Each paid adapter reads its key from the keychain account below;
+ComfyUI reads its server from `config.toml`. An adapter that can't be built is reported with what
+to do, and a node routed to it is refused before planning, so no request is sent.
+
+| Catalog provider | Keychain account | Also needs |
+|---|---|---|
+| `openai-images` | `openai` | — |
+| `replicate` | `replicate` | — |
+| `seedream` | `seedream` | — |
+| `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
+
+Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
+adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing
+from the adapters already built. ComfyUI's token is optional: a keychain that can't be opened or
+was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
+with read-only settings none is made and ComfyUI stays off.
 
 ## Chat conversations and tools
 
@@ -271,7 +292,9 @@ The optional `fal` feature supports five explicit live aliases, checked against 
 schemas on 2026-10-18: `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
 `fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, and `fal-ai/esrgan`. These names are not
 immutable weight versions; upstream schema/model availability can change. Hosts inject a Secret
-and HTTP transport. The library never reads credentials, project keys or live-test variables.
+and HTTP transport. The adapter never reads credentials, project keys or live-test variables.
+The existing host provider factory reads the `fal` keychain account and constructs the adapter
+off the UI thread, following the same readiness/routing path as other catalog providers.
 It does not supply a desktop paid-run service or production canvas media-input resolver.
 
 FLUX requests 512–1024 dimensions in multiples of 64, one to four PNG outputs, one to four steps
@@ -296,14 +319,19 @@ ESRGAN their complete model names. Request IDs are one ASCII alphanumeric/hyphen
 segment, up to 128 bytes; percent escapes, slashes, dots and URL normalization aliases refuse.
 Only FLUX additionally accepts the full-root status/result(/response)/cancel family printed
 in the [generic queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue).
-Families cannot be mixed. Cancellation uses an admitted RETURNED URL; the short-root /cancel
-allowlist composes the generic cancellation contract with each official model HTTP app root,
-not observed per-model paid receipts. Missing/unknown routes refuse, never get guessed.
+Families cannot be mixed. Normal handles use admitted returned routes. Separately, a complete
+bounded receipt with a safe request ID permits exactly one cleanup PUT on the canonical local
+model-root `/cancel` URL if later route or metadata admission refuses. Rejected returned URLs
+never gain authority. The original failure reports the safe ID and actual cleanup disposition;
+malformed, duplicate, secret-bearing or missing identities permit no cleanup. These route
+families compose official model HTTP roots and the generic contract, not observed paid receipts.
 
 No ambiguous create is automatically replayed. X-Fal-No-Retry and disabled fallback are sent,
 but these headers and local idempotency keys do not establish remote billing deduplication.
-Cancellation is best effort, including ALREADY_COMPLETED/NOT_FOUND, and is not nonbilling
-proof. Local poll/result/download/validation failures retain an accepted handle and unfinished
+NodeCraft treats only the matching HTTP/body pairs 202/CANCELLATION_REQUESTED,
+400/ALREADY_COMPLETED and 404/NOT_FOUND as successful best-effort cancel dispositions. Malformed,
+contradictory, authentication and server replies remain errors. This is an explicit NodeCraft
+policy: fal's SDK documents raising on 400/404. No disposition establishes nonbilling proof. Local poll/result/download/validation failures retain an accepted handle and unfinished
 run ownership; only validated remote terminal failure ends that generation. A retained handle
 cannot guarantee remote CDN retention: expired outputs can remain lost without paid replay.
 No partial Completed is published after a later output fails validation.
@@ -325,19 +353,74 @@ in order on success. Asset/graph conversion quotas can still refuse with origina
 CompletionDelivery retained by the host; adapter errors before Completed retain only the
 accepted remote handle, not a hidden partial-file cache.
 
-Known-owner worksheet (MiB): borrowed input/text2; input inspection2+combined decoded/rotation128
-+scratch1=131; URI/request/native body clone/API reply/metadata/scratch phase 12; metadata phase 6;
-download validation2+metadata1+API reply2+media48+Vec-to-Arc overlap16+combined decoded/rotation128
-+scratch1=198. Separate bounded container/admin allowance 4 gives 202 MiB conservative logical
-payload envelope. Pixel/orientation objects drop before the next codec/encoder phase.16-bit
-PNG and orientation are included. Existing media preflight uses decoder.total_bytes plus an
-orientation copy against 128 MiB; most codecs ignore their private allocation limit. The 202 MiB
-worksheet is NOT total allocator calls/RSS or a private codec-workspace bound. Codec-private
-workspace, allocator overhead, transport/TLS/kernel buffering, caller graph/history and other
-concurrent jobs are additional. Actual retained capacities and copies are audited separately.
+Known logical-payload worksheet (MiB), with phase overlap rather than a sum across all phases:
+
+| Phase | Known payload owners | MiB |
+|---|---|---:|
+| Input inspection | Inspection 2 + combined decoded/orientation rasters 128 + scratch 1 | 131 |
+| Request/receipt | URI, request, native request clone, API reply, metadata and scratch | 12 |
+| Result metadata | Bounded descriptors and parsing payload | 6 |
+| Download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
+
+A separate container/admin payload allowance of 4 gives a 202 MiB logical-payload worksheet,
+not an allocation or RSS ceiling. HTTP body **length** is bounded; transport `Vec` capacity may
+exceed that length through allocator growth and is additional, including its overlap with Arc
+conversion. The adapter must not reject already-paid valid bytes merely because capacity grew.
+Pixel/orientation objects drop before the next codec/encoder phase; 16-bit PNG and orientation
+are included in known raster owners. Existing media preflight uses decoder.total_bytes plus an
+orientation copy against 128 MiB; most codecs ignore their private allocation limit.
+Codec-private workspace, spare transport capacity, allocator overhead, transport/TLS/kernel
+buffering, caller graph/history and concurrent jobs are outside this worksheet.
+
+HTTP errors preserve optional integer Retry-After seconds only when checked conversion fits
+within one hour. Optional `X-Fal-Billable-Units` evidence is tracked in #437; it is not tokens or
+money and is not invented as Usage cost.
 
 Unit/engine/native tests use synthetic official-shape JSON and originally authored small media,
 not authenticated receipts or paid output. The ignored live test requires fresh human spending
 authorization, explicit --ignored, NODECRAFT_LIVE_FAL=1 and
 NODECRAFT_LIVE_FAL_ACKNOWLEDGE_COST=1 BEFORE reading test-only FAL_KEY. It requests one small
 FLUX image; normal CI never runs it. No paid call was used for adapter validation.
+## Seedream bounds and billing
+
+The optional `seedream` adapter uses the fixed BytePlus ModelArk image generation endpoint.
+The catalog quotes **0.04 USD for one requested output** (estimate, not an actual billing receipt),
+verified 2026-10-18 against [current official pricing](https://docs.byteplus.com/en/docs/modelark/model-pricing?redirect=1).
+The [official image API](https://docs.byteplus.com/en/docs/modelark/image-generation-api?redirect=1)
+supports generation and ordered reference editing. This adapter requests one nonstreaming base64
+JPEG, with watermark **always enabled**; there is no option to disable it. Sequential batches
+and newer 5.0 controls are unsupported. Keys belong in the host keychain, never project or error
+text. Constructing an adapter does not read credentials.
+
+Up to **14 ordered reference occurrences**, including duplicates, are supported subject to all
+input limits: PNG/JPEG/WebP, 8 MiB each, 48 MiB combined, 16,777,216 pixels per image and
+**32,000,000 pixels combined**. Fourteen 2048×2048 references exceed the combined pixel limit and
+are refused locally. Both input dimensions must exceed 14 and aspect ratio must not exceed 16.
+The prompt limit is 128,000 bytes and 32,000 characters. Output is one JPEG up to 8 MiB,
+16,777,216 pixels and ratio 16; the derived 16,384-axis limit admits wide 4K shapes. Request,
+response and metadata limits are 64 MiB, 13 MiB and 256 KiB. Limits can only be lowered; lowered
+output geometry that cannot admit server-selected shapes refuses before sending.
+
+All references are probed before sequential full decoding, and decoded pixels are dropped before
+encoding. Local validation/encoding refusals carry affirmative nonacceptance and release budget
+reservations. Immediately before invoking transport, delivery becomes uncertain: lost replies,
+HTTP errors, cancellation/deadlines and malformed paid responses can still incur cost. There is
+no documented submit deduplication or resumable handle, so automatic paid replay is disabled.
+
+Response admission deliberately requires the exact dated model ID, unique required size metadata
+matching decoded dimensions, and exactly one complete JPEG with no bytes after EOI. Model aliases,
+missing size or trailing data are refused rather than guessed or silently truncated; such refusals
+after sending may still be billed. Malformed optional usage preserves an otherwise valid image
+with unknown usage; token counts and catalog estimates never become fabricated actual charges.
+The [logical memory worksheet](decisions/2026-10-18-seedream-local-delivery-and-resource-limits.md)
+records phase owners and exclusions; codec workspace and process RSS are not universally bounded.
+
+All HTTP uses the explicit no-redirect contract, with no fallback. Browser Reqwest refuses it, so
+wasm needs an audited host transport. The adapter does not follow/download result URLs. Direct
+adapter multi-reference edits are supported; existing graph Media→ProviderJob conversion still
+needs an asset resolver, so end-to-end canvas editing is not claimed. Hosts retain Completed if
+output routing/conversion refuses it.
+
+The ignored live test requires NODECRAFT_LIVE_SEEDREAM=1,
+NODECRAFT_LIVE_SEEDREAM_ACKNOWLEDGE_COST=1 and ARK_API_KEY, plus separate explicit human spending
+authorization. It never runs in CI; ordinary contracts use authored fixtures and local HTTP.

@@ -24,8 +24,13 @@ fn png_extent(b: &[u8]) -> Result<(), ProviderError> {
         if count > 4096 {
             return Err(bad());
         }
-        let len = b.get(at..at + 4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map(u32::from_be_bytes).and_then(|n| usize::try_from(n).ok()).ok_or_else(bad)?;
-        let kind = b.get(at + 4..at + 8).ok_or_else(bad)?;
+        let len = b
+            .get(at..at.checked_add(4).ok_or_else(bad)?)
+            .and_then(|s| <[u8; 4]>::try_from(s).ok())
+            .map(u32::from_be_bytes)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(bad)?;
+        let kind = b.get(at.checked_add(4).ok_or_else(bad)?..at.checked_add(8).ok_or_else(bad)?).ok_or_else(bad)?;
         let end = at.checked_add(12).and_then(|n| n.checked_add(len)).filter(|n| *n <= b.len()).ok_or_else(bad)?;
         if count == 1 && (kind != b"IHDR" || len != 13) {
             return Err(bad());
@@ -55,7 +60,7 @@ fn wav(b: &[u8]) -> Result<(), ProviderError> {
         let n = usize::try_from(u32le(b, at + 4)?).map_err(|_| bad())?;
         let start = at.checked_add(8).ok_or_else(bad)?;
         let end = start.checked_add(n).filter(|n| *n <= b.len()).ok_or_else(bad)?;
-        match b.get(at..at + 4) {
+        match b.get(at..at.checked_add(4).ok_or_else(bad)?) {
             Some(b"fmt ") => {
                 if fmt.is_some() || n < 16 {
                     return Err(bad());
@@ -111,10 +116,10 @@ fn mp4(b: &[u8]) -> Result<(), ProviderError> {
             }
             let read = |pos: usize| b.get(pos..pos.checked_add(4)?).and_then(|s| <[u8; 4]>::try_from(s).ok()).map(u32::from_be_bytes);
             let size = read(at).ok_or_else(bad)?;
-            let kind = b.get(at + 4..at + 8).ok_or_else(bad)?;
+            let kind = b.get(at.checked_add(4).ok_or_else(bad)?..at.checked_add(8).ok_or_else(bad)?).ok_or_else(bad)?;
             let (header, len) = if size == 1 {
                 let n = b
-                    .get(at + 8..at + 16)
+                    .get(at.checked_add(8).ok_or_else(bad)?..at.checked_add(16).ok_or_else(bad)?)
                     .and_then(|s| <[u8; 8]>::try_from(s).ok())
                     .map(u64::from_be_bytes)
                     .and_then(|n| usize::try_from(n).ok())

@@ -138,7 +138,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         return Err(invalid("fal prompt required"));
     }
     if model == Model::Audio && prompt.is_some_and(|s| s.len() > 4096) {
-        return Err(invalid("fal audio prompt exceeds4096bytes"));
+        return Err(invalid("fal audio prompt exceeds 4096 bytes"));
     }
     if matches!(model, Model::Mesh | Model::Upscale) && media.is_none() {
         return Err(invalid("fal image required"));
@@ -153,7 +153,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             let width = integer(j, "width", 1024, 512, 1024)?;
             let height = integer(j, "height", 1024, 512, 1024)?;
             if width % 64 != 0 || height % 64 != 0 {
-                return Err(invalid("fal image dimensions require multiples of64"));
+                return Err(invalid("fal image dimensions require multiples of 64"));
             }
             let output_pixels = width
                 .checked_mul(height)
@@ -204,7 +204,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
                 .checked_add(2)
                 .and_then(|n| n.checked_div(3))
                 .and_then(|n| n.checked_mul(4))
-                .and_then(|n| n.checked_add(mime.len() + 13))
+                .and_then(|n| mime.len().checked_add(13).and_then(|prefix| n.checked_add(prefix)))
                 .ok_or_else(|| invalid("fal encoded image overflow"))
         })
         .transpose()?

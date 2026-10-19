@@ -388,11 +388,12 @@ fn reported_terminal_failure_and_best_effort_cancel_are_distinct() {
     let JobProgress::Failed(e) = block_on(f.poll(&handle(WAN))).unwrap() else { panic!() };
     assert_eq!(e.kind, ErrorKind::JobFailed);
     assert!(!e.to_string().contains("private"));
-    for code in [200, 400, 404] {
-        let t = Transport::new(vec![HttpResponse { status: code, headers: vec![], body: vec![] }]);
+    for (code, disposition) in [(202, "CANCELLATION_REQUESTED"), (400, "ALREADY_COMPLETED"), (404, "NOT_FOUND")] {
+        let t = Transport::new(vec![HttpResponse { status: code, headers: vec![], body: serde_json::to_vec(&json!({"status":disposition})).unwrap() }]);
         let f = Fal::new(key(), t.clone());
-        assert_eq!(block_on(f.cancel(&handle(WAN))).is_ok(), code == 200);
+        assert!(block_on(f.cancel(&handle(WAN))).is_ok());
         let req = t.requests.lock().unwrap();
+        assert_eq!(req.len(), 1);
         assert_eq!(req[0].url, format!("{ORIGIN}/fal-ai/wan/requests/r_1/cancel"));
         assert_eq!(req[0].method, HttpMethod::Put);
     }
@@ -482,10 +483,10 @@ fn oriented_input_preserves_original_encoding_and_charges_both_rasters() {
 }
 
 #[test]
-fn returned_capacity_declared_aggregate_and_png_tail_refuse_safely() {
+fn returned_length_declared_aggregate_and_png_tail_refuse_safely() {
     let mut oversized = Vec::with_capacity(Limits::HARD.response_bytes + 1);
     oversized.extend_from_slice(b"{}");
-    assert!(status(&bytes(oversized), Limits::HARD.response_bytes).is_err());
+    assert!(status(&bytes(oversized), Limits::HARD.response_bytes).is_ok());
     let (rec, _) = Record::read(&handle(FLUX), &key()).unwrap();
     let mut r = rec;
     r.requested = 4;
@@ -522,4 +523,121 @@ fn actual_length_capacity_and_container_conflicts_are_not_partial_success() {
     let (rec, _) = Record::read(&handle(WAN), &key()).unwrap();
     let fake = b"\0\0\0\x18ftypisom\0\0\0\0iso2avc1\0\0\0\x10moovbad data\0\0\0\x09mdatx";
     assert!(media::validate(fake, rec, Limits::HARD, &mut 0).is_err());
+}
+
+#[test]
+fn api_and_download_accept_spare_capacity_but_never_excess_length() {
+    let spare = |mut r: HttpResponse, cap: usize| {
+        let mut body = Vec::with_capacity(cap + 1);
+        body.extend_from_slice(&r.body);
+        r.body = body;
+        assert!(r.body.capacity() > cap && r.body.len() <= cap);
+        r
+    };
+    let (out, body, _) = output(FLUX);
+    let original = body.clone();
+    let t = Transport::new(vec![
+        spare(reply(receipt(FLUX)), Limits::HARD.response_bytes),
+        spare(reply(json!({"status":"COMPLETED"})), Limits::HARD.response_bytes),
+        spare(reply(out), Limits::HARD.response_bytes),
+        spare(bytes(body), Limits::HARD.output_bytes),
+    ]);
+    let f = Fal::new(key(), t.clone());
+    let Submission::Queued(h) = block_on(f.submit(&job(FLUX))).unwrap() else { panic!() };
+    let JobProgress::Done(done) = block_on(f.poll(&h)).unwrap() else { panic!() };
+    assert_eq!(done.outputs, vec![Output::Bytes { mime: "image/png".into(), bytes: original.into() }]);
+    assert_eq!(t.requests.lock().unwrap().len(), 4);
+    assert!(status(&bytes(vec![0; 33]), 32).is_err());
+    let (out, body, _) = output(FLUX);
+    let cap = body.len() - 1;
+    let t = Transport::new(vec![reply(json!({"status":"COMPLETED"})), reply(out), bytes(body)]);
+    let f = Fal::with_limits(key(), t, Limits { output_bytes: cap, ..Limits::HARD }).unwrap();
+    assert!(block_on(f.poll(&handle(FLUX))).is_err());
+}
+
+#[test]
+fn identity_only_receipts_cleanup_local_routes_and_report_actual_outcome() {
+    for (cancel_status, cancel_body, outcome) in [
+        (202, json!({"status":"CANCELLATION_REQUESTED"}), "cancellation_requested"),
+        (400, json!({"status":"ALREADY_COMPLETED"}), "already_completed"),
+        (404, json!({"status":"NOT_FOUND"}), "not_found"),
+        (401, json!({"secret":KEY}), "failed_auth"),
+        (503, json!({"secret":KEY}), "failed_busy"),
+        (202, json!({"status":"NOT_FOUND"}), "failed_response_validation"),
+    ] {
+        for refusal in 0..3 {
+            let mut r = receipt(FLUX);
+            match refusal {
+                0 => r["status_url"] = json!("https://untrusted.test/never"),
+                1 => {
+                    r.as_object_mut().unwrap().remove("cancel_url");
+                }
+                _ => r["status"] = json!([]),
+            }
+            let t = Transport::new(vec![reply(r), HttpResponse { status: cancel_status, headers: vec![], body: serde_json::to_vec(&cancel_body).unwrap() }]);
+            let f = Fal::new(key(), t.clone());
+            let error = block_on(f.submit(&job(FLUX))).unwrap_err();
+            assert!(error.message.contains("accepted request r_1"));
+            assert!(error.message.contains(outcome), "{}", error.message);
+            assert!(error.message.contains("billing remains uncertain"));
+            assert!(!error.message.contains(KEY));
+            assert!(!error.message.contains("untrusted"));
+            let requests = t.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].method, HttpMethod::Post);
+            assert_eq!(requests[1].method, HttpMethod::Put);
+            assert_eq!(requests[1].url, format!("{ORIGIN}/fal-ai/flux/requests/r_1/cancel"));
+            assert!(!f.retry_ambiguous_submit());
+        }
+    }
+    // Complete, escaped identity alone can authorize only canonical local cleanup.
+    let t = Transport::new(vec![
+        bytes(br#"{"request_\u0069d":"r_\u0031"}"#.to_vec()),
+        HttpResponse { status: 202, headers: vec![], body: br#"{"status":"CANCELLATION_REQUESTED"}"#.to_vec() },
+    ]);
+    assert!(block_on(Fal::new(key(), t.clone()).submit(&job(FLUX))).unwrap_err().message.contains("accepted request r_1"));
+    assert_eq!(t.requests.lock().unwrap()[1].url, format!("{ORIGIN}/fal-ai/flux/requests/r_1/cancel"));
+}
+
+#[test]
+fn cancellation_refuses_malformed_or_contradictory_status_and_preserves_http_errors() {
+    for (code, body) in [
+        (202, json!({})),
+        (202, json!({"status":"NOT_FOUND"})),
+        (400, json!({"status":"CANCELLATION_REQUESTED"})),
+        (404, json!({"status":"ALREADY_COMPLETED"})),
+        (202, json!({"status":"CANCELLATION_REQUESTED","error":"private"})),
+        (200, json!({"status":"CANCELLATION_REQUESTED"})),
+    ] {
+        let t = Transport::new(vec![HttpResponse { status: code, headers: vec![], body: serde_json::to_vec(&body).unwrap() }]);
+        assert_eq!(block_on(Fal::new(key(), t).cancel(&handle(FLUX))).unwrap_err().kind, ErrorKind::Malformed);
+    }
+    for (code, kind) in [(401, ErrorKind::Auth), (403, ErrorKind::Auth), (500, ErrorKind::Server)] {
+        let t = Transport::new(vec![HttpResponse { status: code, headers: vec![], body: KEY.as_bytes().to_vec() }]);
+        let e = block_on(Fal::new(key(), t).cancel(&handle(FLUX))).unwrap_err();
+        assert_eq!(e.kind, kind);
+        assert!(!e.message.contains(KEY));
+    }
+    for body in [br#"{"status":"CANCELLATION_REQUESTED","status":"CANCELLATION_REQUESTED"}"#.as_slice(), b"{", br#"{"status":"CANCELLATION_REQUESTED"}tail"#] {
+        let t = Transport::new(vec![HttpResponse { status: 202, headers: vec![], body: body.to_vec() }]);
+        assert!(block_on(Fal::new(key(), t).cancel(&handle(FLUX))).is_err());
+    }
+}
+
+#[test]
+fn retry_after_is_bounded_checked_and_optional() {
+    for (value, expected) in [
+        ("12", Some(12_000)),
+        ("3600", Some(3_600_000)),
+        ("3601", None),
+        ("-1", None),
+        ("bogus", None),
+        ("9999999999999999", None),
+        ("12345678901234567", None),
+    ] {
+        let r = HttpResponse { status: 429, headers: vec![("Retry-After".into(), value.into())], body: vec![] };
+        let e = status(&r, Limits::HARD.response_bytes).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::RateLimited);
+        assert_eq!(e.retry_after_ms, expected);
+    }
 }

@@ -8,6 +8,7 @@ pub mod app;
 pub mod canvas;
 pub mod card;
 pub mod clipboard;
+pub mod comments;
 pub mod history;
 pub mod ids;
 pub mod keys;
@@ -15,8 +16,10 @@ pub mod navigation;
 pub mod noodle;
 pub mod order;
 pub mod palette;
+pub mod preview;
 pub mod search;
 pub mod selection;
+pub mod tags;
 pub mod theme;
 pub mod turn_into;
 

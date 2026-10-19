@@ -8,7 +8,11 @@
 //! dropped first), and never does I/O. Reports hold only numbers, metric names and build and
 //! platform labels: no document contents, prompts, assets, secrets or paths. Nothing is uploaded.
 use serde::Serialize;
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, VecDeque},
+    panic::{AssertUnwindSafe, catch_unwind},
+};
 
 /// The report's format; bump it when a field changes meaning.
 pub const REPORT_SCHEMA: &str = "nodecraft.perf/1";
@@ -98,6 +102,7 @@ pub type Clock = Box<dyn Fn() -> u64>;
 pub struct Recorder {
     enabled: bool,
     clock: Option<Clock>,
+    clock_failed: Cell<bool>,
     samples: BTreeMap<Metric, VecDeque<u64>>,
     /// Samples ever recorded, dropped as invalid, and frame intervals skipped as idle, per
     /// metric (since the last clear).
@@ -117,10 +122,11 @@ impl Recorder {
         self.enabled = enabled;
     }
     pub fn has_clock(&self) -> bool {
-        self.clock.is_some()
+        self.clock.is_some() && !self.clock_failed.get()
     }
     pub fn set_clock(&mut self, clock: Option<Clock>) {
         self.clock = clock;
+        self.clock_failed.set(false);
     }
     /// Drops every sample and count.
     pub fn clear(&mut self) {
@@ -134,9 +140,28 @@ impl Recorder {
     pub fn set_renderer(&mut self, renderer: Option<String>) {
         self.renderer = renderer.map(|name| name.chars().filter(|c| !c.is_control()).take(128).collect());
     }
-    /// The clock's time, while recording and if there is a clock.
+    /// The clock's time while recording and available. An unwinding callback failure
+    /// disables this clock until set_clock replaces it; historical samples survive.
+    /// Abort-only targets cannot contain a panic that aborts instead of unwinding.
     pub fn now(&self) -> Option<u64> {
-        self.clock.as_ref().filter(|_| self.enabled).map(|clock| clock())
+        if !self.enabled || !self.has_clock() {
+            return None;
+        }
+        let clock = self.clock.as_ref()?;
+        match catch_unwind(AssertUnwindSafe(clock)) {
+            Ok(time) => Some(time),
+            Err(payload) => {
+                self.clock_failed.set(true);
+                // A host's panic payload may itself panic on Drop. Try cleanup once;
+                // never recursively drop another hostile payload. The exceptional
+                // retained bytes depend on that host payload, not a bounded-memory
+                // guarantee. Replacing the clock is the only way to rearm it.
+                if let Err(cleanup_payload) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                    std::mem::forget(cleanup_payload);
+                }
+                None
+            }
+        }
     }
     /// The time since `start` (from [`Self::now`]) recorded as one sample of `metric`.
     pub fn record_since(&mut self, metric: Metric, start: u64) {
@@ -193,7 +218,7 @@ impl Recorder {
                 MetricReport {
                     metric,
                     unit: "us",
-                    supported: self.clock.is_some(),
+                    supported: self.has_clock(),
                     samples: sorted.len(),
                     recorded: self.recorded.get(&metric).copied().unwrap_or(0),
                     invalid: self.invalid.get(&metric).copied().unwrap_or(0),
@@ -209,7 +234,7 @@ impl Recorder {
         Report {
             schema: REPORT_SCHEMA,
             recording: self.enabled,
-            clock: self.clock.is_some(),
+            clock: self.has_clock(),
             max_samples: MAX_SAMPLES,
             frame_budget_us: FRAME_BUDGET_US,
             interval_budget_us: INTERVAL_BUDGET_US,
@@ -254,7 +279,7 @@ fn percentile(sorted: &[u64], p: u64) -> Option<u64> {
 pub struct Report {
     pub schema: &'static str,
     pub recording: bool,
-    /// Whether the host gave a clock; without one, no timing is supported.
+    /// Whether a host clock is available (present and not failed).
     pub clock: bool,
     pub max_samples: usize,
     pub frame_budget_us: u64,

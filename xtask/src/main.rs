@@ -138,7 +138,7 @@ fn cmd_wasm(root: &Path) -> Result<(), String> {
         "--target",
         "wasm32-unknown-unknown",
         "--features",
-        "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/fal",
+        "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/fal",
     ]);
     for pkg in &set {
         c.args(["-p", pkg]);
@@ -191,13 +191,21 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
                 "--workspace",
                 "--all-targets",
                 "--features",
-                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/fal",
+                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/fal",
                 "--",
                 "-D",
                 "warnings",
             ]),
         ),
-        ("test", cargo_step(&["test", "--workspace", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/fal"])),
+        (
+            "test",
+            cargo_step(&[
+                "test",
+                "--workspace",
+                "--features",
+                "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/fal",
+            ]),
+        ),
         ("layers", Box::new(|| cmd_layers(root).and_then(|()| decisions::check(root)))),
         ("wasm", Box::new(|| cmd_wasm(root))),
     ];

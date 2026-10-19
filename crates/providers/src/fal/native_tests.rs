@@ -88,7 +88,7 @@ async fn native_queue_adapter_reaches_complete_png_and_best_effort_cancel() {
     ];
     let worker = std::thread::spawn(move || {
         let mut requests = Vec::new();
-        for body in bodies {
+        for (index, body) in bodies.into_iter().enumerate() {
             let deadline = Instant::now() + Duration::from_secs(10);
             let (mut socket, _) = loop {
                 match listener.accept() {
@@ -116,7 +116,8 @@ async fn native_queue_adapter_reaches_complete_png_and_best_effort_cancel() {
                     }
                 }
             }
-            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            let status = if index == 4 { 202 } else { 200 };
+            write!(socket, "HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
             socket.write_all(&body).unwrap();
             requests.push(bytes);
         }
@@ -133,4 +134,55 @@ async fn native_queue_adapter_reaches_complete_png_and_best_effort_cancel() {
     assert!(String::from_utf8_lossy(&requests[0]).starts_with("POST /fal-ai/flux/schnell"));
     assert!(String::from_utf8_lossy(&requests[4]).starts_with("PUT /fal-ai/flux/requests/r_1/cancel"));
     assert!(!String::from_utf8_lossy(&requests[3]).to_lowercase().contains("authorization:"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_chunked_body_obeys_length_limit_not_allocator_capacity() {
+    for over in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = if over { vec![b'a'; 66_000] } else { vec![b'a'; 63_000] };
+        let expected = body.clone();
+        let worker = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(10);
+            let (mut socket, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => std::thread::sleep(Duration::from_millis(1)),
+                    Err(e) => panic!("{e}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            socket.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            let mut write = || -> std::io::Result<()> {
+                socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")?;
+                for chunk in body.chunks(3000) {
+                    write!(socket, "{:x}\r\n", chunk.len())?;
+                    socket.write_all(chunk)?;
+                    socket.write_all(b"\r\n")?;
+                }
+                socket.write_all(b"0\r\n\r\n")
+            };
+            // A capped client may close early; this never retries a request.
+            if let Err(error) = write() {
+                assert!(over, "{error}");
+            }
+        });
+        let result = crate::ReqwestHttp::new()
+            .unwrap()
+            .send_no_redirect(HttpRequest::get(format!("http://{address}/fixture")).max_response_bytes(65_536).timeout_ms(10_000))
+            .await;
+        worker.join().unwrap();
+        if over {
+            assert!(result.is_err());
+        } else {
+            let response = result.unwrap();
+            assert_eq!(response.body, expected);
+            assert!(status(&response, 65_536).is_ok());
+        }
+    }
 }

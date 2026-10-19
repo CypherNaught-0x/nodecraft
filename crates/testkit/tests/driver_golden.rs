@@ -902,8 +902,9 @@ fn isolated_same_key_default_named_lifecycle_keeps_two_charge_identities() {
         Action { trigger: Trigger::Update(JobId(1), "submitted"), kind: ActionKind::Cancel(vec![JobId(1)]) },
         Action { trigger: Trigger::Event(JobId(1), "cancelled"), kind: ActionKind::Requeue { job: JobId(1), key: BASE.into(), replacement: Some(1) } },
     ];
+    // The possibly billed first attempt keeps its debit, so both attempts must be accepted.
     let mut r = request();
-    r.amounts.insert("USD".into(), 20);
+    r.amounts.insert("USD".into(), 40);
     let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
     assert!(!out.recorded);
     assert!(out.results.is_empty());
@@ -1246,8 +1247,9 @@ fn concurrent_deferred_paid_jobs_share_session_project_caps_and_currency() {
                 Budgets { session: Some(Money::new(Currency::USD, cap)), ..Default::default() }
             };
             f.actions.push(Action { trigger: Trigger::At(10), kind: ActionKind::PollGate(0) });
+            // Both fanned-out jobs are accepted (#366), so only the budget cap decides.
             let mut r = request();
-            r.amounts.insert("USD".into(), 40);
+            r.amounts.insert("USD".into(), 80);
             let out = run_driver(s, r, f).unwrap();
             if cap == 80 {
                 assert_eq!(out.adapters[0].counters().submits, 2);
@@ -1354,4 +1356,208 @@ fn literal_local_adapter_lane_is_distinct_from_actual_source_runner_lane() {
     assert_eq!(out.adapters[0].counters().submits, 1);
     assert_eq!(out.deliveries.len(), 1);
     assert!(out.recorded);
+}
+
+/// The deferred-fan-out session from `concurrent_deferred_paid_jobs_share_session_project_caps_and_currency`:
+/// one deferred step quoted as one USD 40 job that becomes two at run time.
+fn fan_out_session() -> Session {
+    let base = multi_session(true);
+    let mut p = base.document().clone();
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    node.params.insert("second".into(), Value::Text("mock-counted".into()));
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    let mut kinds = kinds::registry().unwrap();
+    kinds.register(Box::new(ActionSource(source_descriptor()))).unwrap();
+    let mut d = kinds.get("mock.text").unwrap().descriptor().clone();
+    d.id = "driver.multi".into();
+    d.outputs[0].port_type.many = true;
+    let mut second = d.params.params[0].clone();
+    second.name = "second".into();
+    second.default = Some(Value::Text("mock-counted".into()));
+    d.params.params.push(second);
+    kinds.register(Box::new(Multi(d))).unwrap();
+    Session::with_registries(p, Registry::builtins().unwrap(), kinds).unwrap()
+}
+
+#[test]
+fn deferred_fan_out_past_the_accepted_amount_is_refused_before_the_provider() {
+    use nodecraft_types::{Currency, Money};
+    for (accepted, submits) in [(79, 1), (80, 2)] {
+        let mut f = fixture(1);
+        f.adapters[0].poll_open = false;
+        f.adapters[0].models[0].1.cost = Some(Money::new(Currency::USD, 20));
+        f.scheduler.global = 2;
+        f.scheduler.default_per_lane = 2;
+        f.actions.push(Action { trigger: Trigger::At(10), kind: ActionKind::PollGate(0) });
+        let mut r = request();
+        r.amounts.insert("USD".into(), accepted);
+        let out = run_driver(fan_out_session(), r, f).unwrap();
+        assert_eq!(out.adapters[0].counters().submits, submits, "accepted {accepted}: no budgets, only the run ceiling");
+        let log = out.budget.log.lock().unwrap();
+        assert_eq!(log.entries().count(), submits, "a refused job reserves nothing");
+        if submits == 1 {
+            assert_eq!(out.jobs.iter().filter(|j| j.provider && j.terminal == Some("failed")).count(), 1);
+            assert!(out.deliveries.is_empty(), "the run fails; the accepted sibling's charge is kept, never freed");
+        }
+    }
+}
+
+#[test]
+fn a_requeue_after_a_possibly_billed_attempt_must_fit_what_is_left() {
+    let mut f = fixture(1);
+    f.record = false;
+    f.adapters[0].poll_open = false;
+    f.actions = vec![
+        Action { trigger: Trigger::Update(JobId(1), "submitted"), kind: ActionKind::Cancel(vec![JobId(1)]) },
+        Action { trigger: Trigger::Event(JobId(1), "cancelled"), kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None } },
+    ];
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+    assert_eq!(out.jobs.len(), 2);
+    assert_eq!(out.jobs[1].terminal, Some("failed"));
+    assert_eq!(out.adapters[0].counters().submits, 1, "the requeue never reaches the provider");
+    let log = out.budget.log.lock().unwrap();
+    let entries: Vec<_> = log.entries().collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!((entries[0].cost.micros, entries[0].status), (20, nodecraft_exec::cost::Charge::Unresolved));
+}
+
+/// A cancel before the provider never strands the accepted amount; the credit itself is proven by
+/// `the_run_ceiling_is_debited_once_and_credited_only_by_its_owner` in the engine.
+#[test]
+fn a_cancel_before_the_provider_leaves_room_for_the_requeue() {
+    let mut f = fixture(0);
+    f.record = false;
+    f.actions = vec![
+        Action { trigger: Trigger::At(0), kind: ActionKind::Cancel(vec![JobId(1)]) },
+        Action { trigger: Trigger::Event(JobId(1), "cancelled"), kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None } },
+    ];
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+    assert_eq!(out.jobs[0].terminal, Some("cancelled"));
+    assert_eq!(out.jobs[1].terminal, Some("done"));
+    assert_eq!(out.adapters[0].counters().submits, 1);
+}
+
+#[test]
+fn unknown_price_fan_out_is_bounded_by_the_accepted_job_count() {
+    // One deferred unknown-price step (mock-counted + mock-usage) quoted as one job that becomes
+    // two at run time: the accepted count, not a price, bounds it.
+    for (accepted, submits) in [(1, 1), (2, 2)] {
+        let mut f = fixture(0);
+        f.epoch_ceiling = 3;
+        f.adapters[0].models.push(("mock-usage".into(), MockModel::new(MockOutput::Text)));
+        let mut r = request();
+        r.amounts.insert("USD".into(), 20);
+        r.unpriced_jobs = Some(accepted);
+        let out = run_driver(multi_session(true), r, f).unwrap();
+        assert_eq!(out.adapters[0].counters().submits, submits, "accepted {accepted}");
+        if submits == 1 {
+            let refused = out.jobs.iter().filter(|j| j.provider && j.terminal == Some("failed")).count();
+            assert_eq!(refused, 1, "the second job is refused before the provider");
+        }
+    }
+    // Partial consent without a count admits no unknown-price job: the run never starts.
+    let mut f = fixture(0);
+    f.epoch_ceiling = 3;
+    f.adapters[0].models.push(("mock-usage".into(), MockModel::new(MockOutput::Text)));
+    let mut r = request();
+    r.amounts.insert("USD".into(), 20);
+    r.unpriced_jobs = None;
+    let e = run_driver(multi_session(true), r, f).err().unwrap();
+    assert_eq!(e.outcome.adapters[0].counters().submits, 0);
+}
+
+#[test]
+fn an_accepted_but_lost_reply_keeps_its_debit_and_a_requeue_must_fit() {
+    use nodecraft_providers::{
+        ErrorKind,
+        mock::{MockFailures, MockOperation, MockScript},
+    };
+    // Every reply to the first attempt is lost, so it may have been billed. With USD 20 accepted
+    // its debit fills the ceiling and the requeue under a new key never reaches the provider;
+    // with USD 40 (the control) the requeue is sent.
+    for (accepted, requeue_sent) in [(20, false), (40, true)] {
+        let mut f = fixture(0);
+        f.record = false;
+        f.adapters[0].models.push(("mock-counted".into(), MockModel::new(MockOutput::Text)));
+        f.adapters[0].operations.push(MockOperation {
+            id: "operation".into(),
+            model: "mock-counted".into(),
+            sent_keys: vec![nodecraft_engine::jobs::sent_key(BASE, 0)],
+            script: MockScript { lost_replies: Some(MockFailures { count: 4, kind: ErrorKind::Network }), ..Default::default() },
+        });
+        f.actions = vec![Action {
+            trigger: Trigger::Event(JobId(1), "failed"),
+            kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None },
+        }];
+        let mut r = request();
+        r.amounts.insert("USD".into(), accepted);
+        let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+        assert_eq!(out.jobs.len(), 2);
+        assert_eq!(out.jobs[0].terminal, Some("failed"));
+        let sent: Vec<String> = out.adapters[0].requests().unwrap().into_iter().map(|r| r.idempotency_key).collect();
+        assert!(sent.iter().any(|k| k == BASE), "the first attempt reached the provider");
+        assert_eq!(sent.iter().any(|k| k != BASE), requeue_sent, "USD {accepted}: {sent:?}");
+        let log = out.budget.log.lock().unwrap();
+        let first = log.entries().find(|e| e.idempotency_key == BASE).unwrap();
+        assert_eq!((first.cost.micros, first.status), (20, nodecraft_exec::cost::Charge::Unresolved), "the possibly billed attempt keeps its charge");
+        assert_eq!(log.entries().count(), if requeue_sent { 2 } else { 1 }, "a refused requeue reserves nothing");
+        if !requeue_sent {
+            assert_eq!(out.jobs[1].terminal, Some("failed"));
+        }
+    }
+}
+
+#[test]
+fn each_currency_has_its_own_ceiling_through_the_driver() {
+    use nodecraft_types::{Currency, Money};
+    // A job priced EUR 20 with plenty of USD accepted: after a possibly billed attempt, the
+    // requeue must fit the EUR amount, and the USD amount doesn't help.
+    // The mock catalog with mock-counted priced in EUR.
+    let euro_catalog = || {
+        let base = nodecraft_testkit::catalog::mock_catalog().unwrap();
+        let models = base.models().cloned().map(|mut m| {
+            if m.id == "mock-counted" {
+                m.pricing = nodecraft_catalog::Pricing::PerUnit {
+                    unit: nodecraft_catalog::Unit::Image,
+                    price: nodecraft_catalog::Price(Money::new(Currency::EUR, 10)),
+                    count: Some("count".into()),
+                    default_count: None,
+                };
+            }
+            m
+        });
+        nodecraft_catalog::Catalog::from_models(models.collect::<Vec<_>>()).unwrap()
+    };
+    for (accepted, second) in [(20, "failed"), (40, "done")] {
+        let mut f = fixture(1);
+        f.catalog = Some(euro_catalog());
+        f.record = false;
+        f.adapters[0].poll_open = false;
+        f.actions = vec![
+            Action { trigger: Trigger::Update(JobId(1), "submitted"), kind: ActionKind::Cancel(vec![JobId(1)]) },
+            Action {
+                trigger: Trigger::Event(JobId(1), "cancelled"),
+                kind: ActionKind::Requeue { job: JobId(1), key: "ceiling-second".into(), replacement: None },
+            },
+        ];
+        if second == "done" {
+            f.actions.push(Action { trigger: Trigger::Epoch(JobId(1), 1, "submitted"), kind: ActionKind::PollGate(0) });
+        }
+        let mut r = request();
+        r.amounts.insert("EUR".into(), accepted);
+        r.amounts.insert("USD".into(), 1_000_000);
+        let out = run_driver(session_many(1, false, "mock-counted"), r, f).unwrap();
+        assert_eq!(out.jobs.len(), 2);
+        assert_eq!(out.jobs[1].terminal, Some(second), "EUR {accepted}");
+        let log = out.budget.log.lock().unwrap();
+        assert!(log.entries().all(|e| e.cost.currency == Currency::EUR));
+        assert_eq!(log.entries().count(), if second == "done" { 2 } else { 1 });
+        let first = log.entries().find(|e| e.idempotency_key == BASE).unwrap();
+        assert_eq!(first.status, nodecraft_exec::cost::Charge::Unresolved, "the cancelled-after-submit attempt keeps its charge");
+        assert_eq!(out.adapters[0].counters().submits, if second == "done" { 2 } else { 1 });
+    }
 }

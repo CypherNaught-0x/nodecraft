@@ -36,8 +36,8 @@ fn transport(e: ProviderError) -> ProviderError {
         retry_after_ms: e.retry_after_ms.filter(|n| *n <= 3_600_000),
     }
 }
-fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
-    if r.body.len() > cap || r.body.capacity() > cap {
+fn response_bounds(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
+    if r.body.len() > cap {
         return Err(malformed("fal response exceeds admitted body limit"));
     }
     if r.headers.len() > 128 {
@@ -61,11 +61,22 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
     if content_length.is_some_and(|n| n != r.body.len()) {
         return Err(malformed("fal Content-Length disagrees with received bytes"));
     }
+    Ok(())
+}
+fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
+    response_bounds(r, cap)?;
     if r.is_success() {
         return Ok(());
     }
     let kind = crate::ProviderError::from_status(r.status, b"").kind;
-    Err(ProviderError::new(kind, "fal request failed; processing or billing may remain uncertain"))
+    let mut error = ProviderError::new(kind, "fal request failed; processing or billing may remain uncertain");
+    error.retry_after_ms = r
+        .header("retry-after")
+        .filter(|value| value.len() <= 16)
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .and_then(|seconds| seconds.checked_mul(1000))
+        .filter(|millis| *millis <= 3_600_000);
+    Err(error)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
@@ -183,6 +194,21 @@ impl Record {
         Ok((record, r))
     }
 }
+#[derive(Debug, PartialEq, Eq)]
+enum CancelDisposition {
+    Requested,
+    AlreadyCompleted,
+    NotFound,
+}
+impl CancelDisposition {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Requested => "cancellation_requested",
+            Self::AlreadyCompleted => "already_completed",
+            Self::NotFound => "not_found",
+        }
+    }
+}
 /// Host-injected credential and trusted bounded HTTP implementation; constructor performs no I/O.
 pub struct Fal {
     key: Secret,
@@ -199,7 +225,7 @@ impl Fal {
     fn auth(&self, r: HttpRequest) -> HttpRequest {
         r.secret_header("Authorization", format!("Key {}", self.key.expose()))
     }
-    async fn cancel_route(&self, url: &str) -> Result<(), ProviderError> {
+    async fn cancel_route(&self, url: &str) -> Result<CancelDisposition, ProviderError> {
         let r = self
             .http
             .send_no_redirect(
@@ -207,7 +233,21 @@ impl Fal {
             )
             .await
             .map_err(transport)?;
-        status(&r, self.limits.response_bytes)
+        response_bounds(&r, self.limits.response_bytes)?;
+        if !matches!(r.status, 202 | 400 | 404) {
+            status(&r, self.limits.response_bytes)?;
+            return Err(malformed("fal unexpected cancellation HTTP status"));
+        }
+        let body = json::parse(&r.body, self.limits)?;
+        if body.get("error").is_some_and(|value| value.get() != "null") {
+            return Err(malformed("fal contradictory cancellation response"));
+        }
+        match (r.status, body.text("status")?.as_ref()) {
+            (202, "CANCELLATION_REQUESTED") => Ok(CancelDisposition::Requested),
+            (400, "ALREADY_COMPLETED") => Ok(CancelDisposition::AlreadyCompleted),
+            (404, "NOT_FOUND") => Ok(CancelDisposition::NotFound),
+            _ => Err(malformed("fal cancellation status disagrees with HTTP response")),
+        }
     }
     async fn create(&self, j: &ProviderJob, context: Option<&crate::SubmitContext>) -> Result<Submission, ProviderError> {
         let (record, body) = request::prepare(j, self.limits)?;
@@ -232,9 +272,9 @@ impl Fal {
         let receipt = json::parse(&r.body, Limits { metadata_bytes: Limits::HARD.metadata_bytes, ..self.limits }).and_then(|o| {
             let i = o.text("request_id")?;
             id(&i, &self.key)?;
-            let urls = Routes { status: o.text("status_url")?, result: o.text("response_url")?, cancel: o.text("cancel_url")? };
-            routes(record.model, &i, &urls, &self.key)?;
-            Ok((i, urls))
+            // Identity-only authority permits cleanup on a local canonical route, never on
+            // a response-provided URL that may be precisely what admission refused.
+            Ok(i)
         });
         let admitted = json::parse(&r.body, self.limits).and_then(|o| {
             let s = o.optional_text("status")?;
@@ -246,13 +286,27 @@ impl Fal {
             {
                 return Err(malformed("fal invalid queue position"));
             }
-            Ok(())
+            let i = o.text("request_id")?;
+            id(&i, &self.key)?;
+            let urls = Routes { status: o.text("status_url")?, result: o.text("response_url")?, cancel: o.text("cancel_url")? };
+            routes(record.model, &i, &urls, &self.key)?;
+            Ok(urls)
         });
         match (receipt, admitted) {
-            (Ok((i, urls)), Ok(())) => Ok(Submission::Queued(record.handle(&i, &urls))),
-            (Ok((_i, urls)), Err(mut e)) => {
-                let _ = self.cancel_route(&urls.cancel).await;
-                e.message.push_str("; accepted request cancellation was requested; billing remains uncertain");
+            (Ok(i), Ok(urls)) => Ok(Submission::Queued(record.handle(&i, &urls))),
+            (Ok(i), Err(mut e)) => {
+                let cancel = format!("{ORIGIN}/{}/requests/{i}/cancel", record.model.root());
+                let outcome = match self.cancel_route(&cancel).await {
+                    Ok(disposition) => disposition.label(),
+                    Err(error) => match error.kind {
+                        ErrorKind::Auth => "failed_auth",
+                        ErrorKind::RateLimited | ErrorKind::Busy => "failed_busy",
+                        ErrorKind::Network | ErrorKind::Timeout => "failed_transport",
+                        ErrorKind::Malformed => "failed_response_validation",
+                        _ => "failed_remote",
+                    },
+                };
+                e.message.push_str(&format!("; accepted request {i}; cancel outcome {outcome}; billing remains uncertain"));
                 Err(e)
             }
             (Err(e), _) => Err(e),
@@ -312,8 +366,10 @@ impl Fal {
             if reply.body.len() > cap {
                 return Err(malformed("fal output exceeds remaining byte capacity"));
             }
-            status(&reply, self.limits.output_bytes)
-                .map_err(|e| ProviderError::new(e.kind, "fal output download failed; the accepted request may have been billed"))?;
+            status(&reply, self.limits.output_bytes).map_err(|mut error| {
+                error.message = "fal output download failed; the accepted request may have been billed".into();
+                error
+            })?;
             if reply.body.is_empty() || f.size.is_some_and(|n| usize::try_from(n).ok() != Some(reply.body.len())) {
                 return Err(malformed("fal output size disagrees with body"));
             }
@@ -321,7 +377,7 @@ impl Fal {
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if f.width.is_some() || f.height.is_some() {
+            if matches!(record.model, Model::Image | Model::Upscale) && (f.width.is_some() || f.height.is_some()) {
                 let meta =
                     nodecraft_media::probe_image(&reply.body, &self.limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
@@ -355,7 +411,7 @@ impl Provider for Fal {
     fn cancel<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
             let (_, r) = Record::read(h, &self.key)?;
-            self.cancel_route(&r.cancel).await
+            self.cancel_route(&r.cancel).await.map(|_| ())
         })
     }
     fn poll_interval_ms(&self, _: &JobProgress) -> u64 {

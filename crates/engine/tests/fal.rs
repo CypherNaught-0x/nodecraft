@@ -161,7 +161,7 @@ fn request() -> serde_json::Value {
 fn consent(s: &mut Session, partial: bool, amount: u64) -> serde_json::Value {
     let q = s.dispatch("run.quote", &request()).unwrap();
     let mut v = request();
-    v["accept"] = json!({"token":q["token"],"partial":partial,"amounts":{"USD":amount}});
+    v["accept"] = json!({"token":q["token"],"partial":partial,"unpriced_jobs":1,"amounts":{"USD":amount}});
     v
 }
 #[derive(Default)]
@@ -288,7 +288,7 @@ fn all_five_genuine_consent_run_driver_converter_record_and_undo() {
         assert_eq!(estimate, if m == TRELLIS { Some(usd(250_000)) } else { None });
         // Only this immutable, single-step fixture's Media resolver needs a price read.
         // It comes from the SAME prepared admission consumed below, never host input.
-        let media_price = Some(JobPrice { node: step.node, model: catalog_id(m).into(), estimate });
+        let media_price = Some(JobPrice::new(step.node, catalog_id(m).into(), estimate));
         let (mut run, progress) = session
             .authorize_prepared_run(
                 prepared,
@@ -311,16 +311,16 @@ fn all_five_genuine_consent_run_driver_converter_record_and_undo() {
             assert_eq!(asset.hash, hash(&input));
             assert_eq!(asset.mime.as_str(), "image/png");
             assert!(input.len() < 1024);
-            QueuedJob {
-                provider: run.binding(spec.id).unwrap().clone(),
-                price: media_price,
-                job: ProviderJob {
+            QueuedJob::new(
+                run.binding(spec.id).unwrap().clone(),
+                ProviderJob {
                     model: m.into(),
                     params: Default::default(),
                     inputs: vec![JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: input.clone() }],
                     idempotency_key: spec.idempotency_key.clone(),
                 },
-            }
+                media_price,
+            )
         } else {
             run.queued_job(spec.id, &spec.idempotency_key).unwrap()
         };
@@ -444,16 +444,16 @@ fn actual_runner_unknown_caps_lost_submit_and_cancellation_preserve_ownership() 
             ProviderRunner::new(Arc::new(Immediate::default()), RunLimits::default(), Arc::new(|_, _| panic!()), Arc::new(|_, _, _| {})).with_budget(b.clone());
         r.register(
             JobId(1),
-            QueuedJob {
-                provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-                job: ProviderJob {
+            QueuedJob::new(
+                RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+                ProviderJob {
                     model: FLUX.into(),
                     params: Default::default(),
                     inputs: vec![JobInput::Text { role: "prompt".into(), text: "a circle".into() }],
                     idempotency_key: "f".into(),
                 },
-                price: Some(JobPrice { node: N, model: "fal.flux-schnell".into(), estimate: None }),
-            },
+                Some(JobPrice::new(N, "fal.flux-schnell".into(), None)),
+            ),
         );
         let out = block_on(
             r.run(scheduler::Start { job: JobId(1), lane: scheduler::Lane::new("fal"), attempt: 1, idempotency_key: "f".into() }, CancelToken::default()),
@@ -468,16 +468,16 @@ fn actual_runner_unknown_caps_lost_submit_and_cancellation_preserve_ownership() 
             ProviderRunner::new(Arc::new(Immediate::default()), RunLimits::default(), Arc::new(|_, _| panic!()), Arc::new(|_, _, _| {})).with_budget(b.clone());
         r.register(
             JobId(1),
-            QueuedJob {
-                provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-                job: ProviderJob {
+            QueuedJob::new(
+                RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+                ProviderJob {
                     model: TRELLIS.into(),
                     params: Default::default(),
                     inputs: vec![JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: png().into() }],
                     idempotency_key: "f".into(),
                 },
-                price: Some(JobPrice { node: N, model: "fal.trellis2".into(), estimate: Some(usd(250_000)) }),
-            },
+                Some(JobPrice::new(N, "fal.trellis2".into(), Some(usd(250_000)))),
+            ),
         );
         let cancel = CancelToken::default();
         if mode == 1 {
@@ -520,16 +520,16 @@ fn actual_driver_resumes_accepted_poll_failure_without_a_second_paid_create() {
     );
     r.register(
         JobId(1),
-        QueuedJob {
-            provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-            job: ProviderJob {
+        QueuedJob::new(
+            RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+            ProviderJob {
                 model: TRELLIS.into(),
                 params: Default::default(),
                 inputs: vec![JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: png().into() }],
                 idempotency_key: "resume-original".into(),
             },
-            price: Some(JobPrice { node: N, model: "fal.trellis2".into(), estimate: Some(usd(250_000)) }),
-        },
+            Some(JobPrice::new(N, "fal.trellis2".into(), Some(usd(250_000)))),
+        ),
     );
     let mut scheduler = Scheduler::new(Default::default());
     scheduler
@@ -574,11 +574,11 @@ fn local_trellis_refusal_must_not_consume_finite_allowance_before_any_http() {
     );
     runner.register(
         JobId(1),
-        QueuedJob {
-            provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-            job: ProviderJob { model: TRELLIS.into(), params: Default::default(), inputs: vec![], idempotency_key: "local-refusal".into() },
-            price: Some(JobPrice { node: N, model: "fal.trellis2".into(), estimate: Some(estimate) }),
-        },
+        QueuedJob::new(
+            RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+            ProviderJob { model: TRELLIS.into(), params: Default::default(), inputs: vec![], idempotency_key: "local-refusal".into() },
+            Some(JobPrice::new(N, "fal.trellis2".into(), Some(estimate))),
+        ),
     );
     let mut scheduler = Scheduler::new(Default::default());
     scheduler
@@ -603,11 +603,11 @@ fn local_trellis_refusal_must_not_consume_finite_allowance_before_any_http() {
     assert!(rows.is_empty(), "pure local refusal cannot consume the finite allowance");
     runner.register(
         JobId(2),
-        QueuedJob {
-            provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-            job: trellis_job("valid-after-missing", png().into()),
-            price: Some(trellis_price()),
-        },
+        QueuedJob::new(
+            RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+            trellis_job("valid-after-missing", png().into()),
+            Some(trellis_price()),
+        ),
     );
     let mut scheduler = Scheduler::new(Default::default());
     scheduler.add(vec![driver_job(JobId(2), "valid-after-missing")]).unwrap();
@@ -629,11 +629,7 @@ fn trellis_job(key: &str, image: Arc<[u8]>) -> ProviderJob {
     }
 }
 fn trellis_price() -> JobPrice {
-    JobPrice {
-        node: N,
-        model: "fal.trellis2".into(),
-        estimate: nodecraft_catalog::Catalog::builtin().unwrap().get("fal.trellis2").unwrap().quote(&Default::default()).unwrap(),
-    }
+    JobPrice::new(N, "fal.trellis2".into(), nodecraft_catalog::Catalog::builtin().unwrap().get("fal.trellis2").unwrap().quote(&Default::default()).unwrap())
 }
 fn driver_job(id: JobId, key: &str) -> scheduler::JobSpec {
     scheduler::JobSpec {
@@ -667,14 +663,12 @@ fn local_request_bound_and_corrupt_image_refusals_release_same_ledger_for_real_q
         let image: Arc<[u8]> = if kind == 0 { png().into() } else { Arc::from(b"corrupt compressed image".as_slice()) };
         runner.register(
             JobId(1),
-            QueuedJob {
-                provider: RegisteredProvider::default_instance(Arc::new(
-                    Fal::with_limits(Secret::new("fixture-key-not-real").unwrap(), t.clone(), limits).unwrap(),
-                ))
-                .unwrap(),
-                job: trellis_job("local-invalid", image),
-                price: Some(trellis_price()),
-            },
+            QueuedJob::new(
+                RegisteredProvider::default_instance(Arc::new(Fal::with_limits(Secret::new("fixture-key-not-real").unwrap(), t.clone(), limits).unwrap()))
+                    .unwrap(),
+                trellis_job("local-invalid", image),
+                Some(trellis_price()),
+            ),
         );
         let mut scheduler = Scheduler::new(Default::default());
         scheduler.add(vec![driver_job(JobId(1), "local-invalid")]).unwrap();
@@ -689,11 +683,11 @@ fn local_request_bound_and_corrupt_image_refusals_release_same_ledger_for_real_q
         assert_eq!(b.log.lock().unwrap().entries().count(), 0);
         runner.register(
             JobId(2),
-            QueuedJob {
-                provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-                job: trellis_job("valid-after-local", png().into()),
-                price: Some(trellis_price()),
-            },
+            QueuedJob::new(
+                RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+                trellis_job("valid-after-local", png().into()),
+                Some(trellis_price()),
+            ),
         );
         let mut scheduler = Scheduler::new(Default::default());
         scheduler.add(vec![driver_job(JobId(2), "valid-after-local")]).unwrap();
@@ -752,11 +746,11 @@ fn transport_invocation_errors_and_accepted_receipt_cleanup_never_grant_local_pr
         );
         runner.register(
             JobId(1),
-            QueuedJob {
-                provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-                job: trellis_job("sent-uncertain", png().into()),
-                price: Some(trellis_price()),
-            },
+            QueuedJob::new(
+                RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+                trellis_job("sent-uncertain", png().into()),
+                Some(trellis_price()),
+            ),
         );
         let mut scheduler = Scheduler::new(Default::default());
         scheduler.add(vec![driver_job(JobId(1), "sent-uncertain")]).unwrap();
@@ -775,6 +769,7 @@ fn transport_invocation_errors_and_accepted_receipt_cleanup_never_grant_local_pr
 struct QueuedPollPending {
     calls: AtomicUsize,
     posts: AtomicUsize,
+    cancel_status: u16,
 }
 impl Http for QueuedPollPending {
     fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
@@ -794,7 +789,15 @@ impl Http for QueuedPollPending {
         }
         assert_eq!(n, 2);
         assert_eq!(r.method, HttpMethod::Put);
-        Box::pin(async { Ok(HttpResponse { status: 200, headers: vec![], body: vec![] }) })
+        let status = self.cancel_status;
+        let disposition = match status {
+            202 => "CANCELLATION_REQUESTED",
+            400 => "ALREADY_COMPLETED",
+            404 => "NOT_FOUND",
+            _ => panic!(),
+        };
+        let body = serde_json::to_vec(&json!({"status":disposition})).unwrap();
+        Box::pin(async move { Ok(HttpResponse { status, headers: vec![], body }) })
     }
 }
 // Keep the cancellation deadline pending in this exact control. An immediately-ready
@@ -818,40 +821,88 @@ impl Runtime for CancellationRuntime {
 
 #[test]
 fn cancellation_after_valid_queued_receipt_keeps_uncertainty_and_never_recreates() {
-    let t = Arc::new(QueuedPollPending { calls: AtomicUsize::new(0), posts: AtomicUsize::new(0) });
-    let b = budget(Default::default());
-    let submitted = Arc::new(AtomicUsize::new(0));
-    let seen = submitted.clone();
-    let runner = ProviderRunner::new(
-        Arc::new(CancellationRuntime),
-        RunLimits::default(),
-        Arc::new(|_, _| panic!("no completion")),
-        Arc::new(move |_, _, update| {
-            if matches!(update, nodecraft_providers::RunUpdate::Submitted(_)) {
-                seen.fetch_add(1, Ordering::SeqCst);
-            }
-        }),
-    )
-    .with_budget(b.clone());
-    runner.register(
-        JobId(1),
-        QueuedJob {
-            provider: RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
-            job: trellis_job("accepted-cancel", png().into()),
-            price: Some(trellis_price()),
-        },
-    );
-    let cancel = CancelToken::default();
-    let mut task = runner
-        .run(scheduler::Start { job: JobId(1), lane: scheduler::Lane::new("fal"), attempt: 1, idempotency_key: "accepted-cancel".into() }, cancel.clone());
-    let w = futures::task::noop_waker();
-    assert!(task.as_mut().poll(&mut std::task::Context::from_waker(&w)).is_pending());
-    assert_eq!(submitted.load(Ordering::SeqCst), 1);
-    assert_eq!(t.calls.load(Ordering::SeqCst), 2);
-    cancel.cancel();
-    assert_eq!(block_on(task), scheduler::Outcome::Cancelled);
-    runner.settle(JobId(1));
-    assert_eq!(t.posts.load(Ordering::SeqCst), 1);
-    assert_eq!(t.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(b.log.lock().unwrap().entries().map(|e| (e.status, e.cost)).collect::<Vec<_>>(), [(Charge::Unresolved, usd(250_000))]);
+    for cancel_status in [202, 400, 404] {
+        let t = Arc::new(QueuedPollPending { calls: AtomicUsize::new(0), posts: AtomicUsize::new(0), cancel_status });
+        let b = budget(Default::default());
+        let submitted = Arc::new(AtomicUsize::new(0));
+        let seen = submitted.clone();
+        let runner = ProviderRunner::new(
+            Arc::new(CancellationRuntime),
+            RunLimits::default(),
+            Arc::new(|_, _| panic!("no completion")),
+            Arc::new(move |_, _, update| {
+                if matches!(update, nodecraft_providers::RunUpdate::Submitted(_)) {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                }
+            }),
+        )
+        .with_budget(b.clone());
+        runner.register(
+            JobId(1),
+            QueuedJob::new(
+                RegisteredProvider::default_instance(Arc::new(Fal::new(Secret::new("fixture-key-not-real").unwrap(), t.clone()))).unwrap(),
+                trellis_job("accepted-cancel", png().into()),
+                Some(trellis_price()),
+            ),
+        );
+        let cancel = CancelToken::default();
+        let mut task = runner
+            .run(scheduler::Start { job: JobId(1), lane: scheduler::Lane::new("fal"), attempt: 1, idempotency_key: "accepted-cancel".into() }, cancel.clone());
+        let w = futures::task::noop_waker();
+        assert!(task.as_mut().poll(&mut std::task::Context::from_waker(&w)).is_pending());
+        assert_eq!(submitted.load(Ordering::SeqCst), 1);
+        assert_eq!(t.calls.load(Ordering::SeqCst), 2);
+        cancel.cancel();
+        assert_eq!(block_on(task), scheduler::Outcome::Cancelled);
+        runner.settle(JobId(1));
+        assert_eq!(t.posts.load(Ordering::SeqCst), 1);
+        assert_eq!(t.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(b.log.lock().unwrap().entries().map(|e| (e.status, e.cost)).collect::<Vec<_>>(), [(Charge::Unresolved, usd(250_000))]);
+    }
+}
+
+#[test]
+fn factory_built_fal_keeps_unknown_price_consent_and_job_count_admission() {
+    use nodecraft_engine::{
+        provider_setup,
+        secrets::{Account, MemoryStore, SecretStore},
+        settings::ProviderSettings,
+    };
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("fal").unwrap(), &Secret::new("fixture-key-not-real").unwrap()).unwrap();
+    for capped in [false, true] {
+        let caps = if capped { Budgets { per_call: Some(usd(1_000_000)), ..Default::default() } } else { Budgets::default() };
+        let (mut session, captured, _, transport) = fixture(FLUX, caps);
+        let settings = ProviderSettings::default();
+        let env = provider_setup::HostEnv { keys: &keys, http: transport.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+        let setup = provider_setup::build(&nodecraft_catalog::Catalog::builtin().unwrap(), |adapter| provider_setup::make(adapter, &env));
+        assert_eq!(setup.readiness("fal"), Some(&provider_setup::Readiness::Ready));
+        session.set_provider_routing(setup.routing([(N, "fal")]).unwrap()).unwrap();
+        let quote = session.dispatch("run.quote", &request()).unwrap();
+        assert_eq!(quote["complete"], false);
+        if capped {
+            let accepted = consent(&mut session, true, 250_000);
+            assert!(session.dispatch("run.start", &accepted).is_err());
+            assert!(captured.lock().unwrap().is_empty());
+        } else {
+            let rejected = consent(&mut session, false, 250_000);
+            assert!(session.dispatch("run.start", &rejected).is_err());
+            let mut accepted = consent(&mut session, true, 250_000);
+            accepted["accept"].as_object_mut().unwrap().remove("unpriced_jobs");
+            assert!(session.dispatch("run.start", &accepted).is_err());
+            accepted["accept"]["unpriced_jobs"] = json!(1);
+            session.dispatch("run.start", &accepted).unwrap();
+            let prepared = captured.lock().unwrap().pop().unwrap();
+            let (run, progress) = session
+                .authorize_prepared_run(prepared, RunOptions { id: [8; 16], first_job: 1, limits: Default::default(), retry: RetryPolicy::default() })
+                .unwrap();
+            let spec = &progress.jobs[0];
+            let queued = run.queued_job(spec.id, &spec.idempotency_key).unwrap();
+            assert!(queued.is_authorized());
+            assert_eq!(queued.charged_price().unwrap().estimate, None);
+            assert_eq!(run.unpriced_jobs(), (1, 0));
+            assert_eq!(queued.provider.target().adapter(), "fal");
+        }
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 0, "admission never contacts Fal");
+    }
 }
