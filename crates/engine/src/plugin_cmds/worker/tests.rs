@@ -63,7 +63,7 @@ fn initialization_is_off_thread_and_public_results_repeat_until_acknowledged() {
 }
 
 #[test]
-fn unread_completions_keep_capacity_and_exact_results_without_dropping_any_request() {
+fn unfinished_capacity_is_preserved_and_oldest_terminals_yield_to_new_requests() {
     let (entered, calls) = sync_channel(1);
     let (release, permits) = sync_channel(1);
     let worker = PluginWorker::spawn(
@@ -83,19 +83,28 @@ fn unread_completions_keep_capacity_and_exact_results_without_dropping_any_reque
     assert_eq!(worker.submit(&json!({"op":"list"})).unwrap_err().kind, ErrorKind::Busy);
     release.send(()).unwrap();
     let values: Vec<_> = ids.iter().map(|id| wait(&worker, id)).collect();
-    assert_eq!(worker.submit(&json!({"op":"prune"})).unwrap_err().kind, ErrorKind::Busy, "done results still own their slots");
     for (id, value) in ids.iter().zip(&values) {
         assert_eq!(value["pending"], *id);
         assert_eq!(value["result"], json!({"packages":[]}));
         assert_eq!(worker.result(id).unwrap(), *value);
     }
-    worker.forget(&ids[0]).unwrap();
     let next = worker.submit(&json!({"op":"prune"})).unwrap();
     assert!(!ids.contains(&next));
     assert_eq!(wait(&worker, &next)["result"], json!({"removed":[]}));
+    assert_eq!(worker.result(&ids[0]).unwrap_err().kind, ErrorKind::NotFound, "oldest terminal was reclaimed");
     for (id, value) in ids.iter().zip(&values).skip(1) {
         assert_eq!(worker.result(id).unwrap(), *value);
     }
+    // Forget swaps a later entry with the last physical slot; order remains admission order.
+    worker.forget(&ids[3]).unwrap();
+    let fresh = worker.submit(&json!({"op":"list"})).unwrap();
+    wait(&worker, &fresh);
+    assert_eq!(worker.result(&ids[1]).unwrap(), values[1], "free capacity does not evict");
+    let newest = worker.submit(&json!({"op":"list"})).unwrap();
+    wait(&worker, &newest);
+    assert_eq!(worker.result(&ids[1]).unwrap_err().kind, ErrorKind::NotFound, "oldest by sequence, not physical Vec position");
+    assert_eq!(worker.result(&ids[2]).unwrap(), values[2]);
+    assert_eq!(worker.result(&next).unwrap()["status"], "completed");
 }
 
 struct ReadGate {
@@ -241,3 +250,5 @@ fn registration_conflicts_cannot_leave_an_admission_route_without_its_results() 
     assert!(register_plugin_worker(&mut services, PluginWorker::spawn(memory, host()).unwrap()).is_err());
     assert!(!services.contains(PLUGIN_SERVICE));
 }
+
+mod lifecycle;

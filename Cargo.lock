@@ -2944,10 +2944,12 @@ dependencies = [
  "chacha20poly1305",
  "craft-atomic",
  "craft-settings",
+ "crc32fast",
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-types",
  "proptest",
+ "same-file",
  "serde",
  "serde_json",
  "tempfile",
@@ -2960,6 +2962,7 @@ name = "nodecraft-gpu"
 version = "0.2.0-rc.1"
 dependencies = [
  "futures",
+ "naga",
  "nodecraft-actions",
  "serde_json",
  "wgpu",

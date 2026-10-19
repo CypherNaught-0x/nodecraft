@@ -252,7 +252,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: pending_schema,
-        params_doc: "{pending: string}; reads a retained queued/running/completed/failed envelope without consuming it. Terminal results/errors stay until plugins.forget. Pending IDs belong to the host that returned them.",
+        params_doc: "{pending: string}; reads a retained queued/running/completed/failed envelope without consuming it. Terminal results/errors stay until plugins.forget or oldest-terminal eviction at host capacity. Evicted IDs return NotFound. Pending IDs belong to this host.",
         enabled: results_enabled,
         run: result,
     });

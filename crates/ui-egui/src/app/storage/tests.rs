@@ -160,3 +160,23 @@ fn an_earlier_sessions_journal_is_kept_not_overwritten() {
     assert_eq!(std::fs::read(&kept).unwrap(), before, "byte for byte");
     assert_eq!(kept.file_name().unwrap(), "recovery.unrecovered-1");
 }
+
+#[test]
+fn only_confirmed_absence_or_zero_length_can_discard_without_replay() {
+    use std::io;
+    for (length, expected) in [
+        (Err(io::Error::from(io::ErrorKind::PermissionDenied)), true),
+        (Err(io::Error::other("metadata temporarily unavailable")), true),
+        (Err(io::Error::from(io::ErrorKind::NotFound)), false),
+        (Ok(0), false),
+    ] {
+        let replayed = std::cell::Cell::new(false);
+        let keep = holds_work_with_metadata(length, || {
+            replayed.set(true);
+            Err(Error::new(ErrorKind::Conflict, "replay unavailable"))
+        });
+        assert_eq!(keep, expected);
+        assert!(!replayed.get(), "metadata errors must preserve work independently of replay");
+    }
+    assert!(holds_work_with_metadata(Ok(1), || Err(Error::new(ErrorKind::Conflict, "replay unavailable"))));
+}

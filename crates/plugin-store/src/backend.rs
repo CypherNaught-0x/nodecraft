@@ -63,6 +63,16 @@ mod native {
         move |_| Error::new(ErrorKind::Internal, detail)
     }
 
+    fn lock_error(error: std::fs::TryLockError) -> Error {
+        match error {
+            std::fs::TryLockError::WouldBlock => Error::new(ErrorKind::Busy, "the plugin store is busy in another request; try again"),
+            std::fs::TryLockError::Error(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                Error::new(ErrorKind::Unsupported, "the plugin store needs a filesystem with transaction locking; use a supported local filesystem")
+            }
+            std::fs::TryLockError::Error(_) => Error::new(ErrorKind::Internal, "the plugin store lock failed; check filesystem access and locking support"),
+        }
+    }
+
     /// How old a stored file must be before an unindexed one is swept.
     const SETTLED: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -143,11 +153,7 @@ mod native {
                 .truncate(false)
                 .open(self.root.join(".lock"))
                 .map_err(io("the plugin store lock can't be opened"))?;
-            match file.try_lock() {
-                Ok(()) => {}
-                Err(std::fs::TryLockError::WouldBlock) => return Err(Error::new(ErrorKind::Busy, "the plugin store is busy in another request; try again")),
-                Err(_) => return Err(Error::new(ErrorKind::Unsupported, "the plugin store filesystem doesn't support transaction locking")),
-            }
+            file.try_lock().map_err(lock_error)?;
             Ok(Box::new(file))
         }
         fn read_index(&self) -> Result<Option<Vec<u8>>, Error> {
@@ -191,6 +197,26 @@ mod native {
                 }
             }
             Ok(digests)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn lock_failures_are_typed_fail_closed_and_do_not_expose_os_details() {
+            assert_eq!(lock_error(std::fs::TryLockError::WouldBlock).kind, ErrorKind::Busy);
+            for (kind, expected) in [
+                (std::io::ErrorKind::Unsupported, ErrorKind::Unsupported),
+                (std::io::ErrorKind::PermissionDenied, ErrorKind::Internal),
+                (std::io::ErrorKind::Interrupted, ErrorKind::Internal),
+            ] {
+                let error = lock_error(std::fs::TryLockError::Error(std::io::Error::new(kind, "/private/os-detail")));
+                assert_eq!(error.kind, expected);
+                assert!(!error.message.contains("private"));
+                assert!(error.message.contains("filesystem"));
+            }
         }
     }
 }

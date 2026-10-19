@@ -6,17 +6,33 @@ use std::{
 };
 
 use nodecraft_format::{AssetStore, ProjectStorage, Snapshot, StorageLocation};
-use nodecraft_graph::{Change, Changeset, Project};
+use nodecraft_graph::{Change, Changeset, Project, StagedChanges};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::Value;
 
 use crate::commands::{Context, Effect, Phase, Registry, Resources, Services, invalid, validate_input_json, validate_json};
+
+/// One completed actual graph stage, with no document/error ownership.
+struct StageObservation {
+    start: u64,
+    end: u64,
+    refused: bool,
+}
+impl StageObservation {
+    fn record(self, recorder: &mut crate::perf::Recorder) {
+        let metric = if self.refused { crate::perf::Metric::GraphStageRefused } else { crate::perf::Metric::GraphStage };
+        recorder.record_between(metric, self.start, self.end);
+    }
+}
 
 /// Enough to undo building a 1,000-node graph (about 3,000 steps, #65); the byte budget below is
 /// what bounds memory.
 pub const MAX_HISTORY_STEPS: usize = 4096;
 pub const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 256;
+
+mod imports;
+pub use imports::PreparedImports;
 
 /// Notification log entry. Each consumer keeps its own revision cursor and reads the current
 /// document after a notification. A lagging consumer receives a resync error, not partial history.
@@ -81,6 +97,8 @@ struct Prepared {
     source: SourceStamp,
     state: u64,
     next_execution_generation: u64,
+    assets: AssetStore,
+    next_identity: Arc<()>,
 }
 struct SourceStamp {
     identity: Arc<()>,
@@ -144,6 +162,15 @@ impl Session {
         Ok(Self::from_validated(document, registry, kinds, execution))
     }
     fn from_validated(document: Project, registry: Registry, kinds: nodecraft_nodes::Registry, execution: crate::execution_identity::ExecutionSource) -> Self {
+        Self::from_validated_identity(document, registry, kinds, execution, Arc::new(()))
+    }
+    fn from_validated_identity(
+        document: Project,
+        registry: Registry,
+        kinds: nodecraft_nodes::Registry,
+        execution: crate::execution_identity::ExecutionSource,
+        identity: Arc<()>,
+    ) -> Self {
         Self {
             view_identity: std::sync::Arc::new(()),
             document,
@@ -161,7 +188,7 @@ impl Session {
             assets: AssetStore::default(),
             persistence: None,
             status_revision: 0,
-            admission_identity: Arc::new(()),
+            admission_identity: identity,
             #[cfg(test)]
             replay_limit: MAX_HISTORY_BYTES,
             execution,
@@ -238,8 +265,9 @@ impl Session {
         let registry = Registry::builtins()?;
         let kinds = nodecraft_nodes::Registry::builtins()?;
         let execution = crate::execution_identity::ExecutionSource::new()?;
-        let persistence = crate::persistence::Persistence::new(storage, &snapshot)?;
-        let mut session = Self::from_validated(snapshot.project, registry, kinds, execution);
+        let identity = Arc::new(());
+        let (persistence, snapshot) = crate::persistence::Persistence::new(storage, snapshot)?;
+        let mut session = Self::from_validated_identity(snapshot.project, registry, kinds, execution, identity);
         session.assets = snapshot.assets;
         session.persistence = Some(persistence);
         Ok(session)
@@ -248,21 +276,32 @@ impl Session {
         &self.assets
     }
     pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
-        let next = self.execution.next()?;
-        let hash = self.assets.insert(bytes)?;
-        self.admission_identity = Arc::new(());
-        self.execution.advance(next);
-        Ok(hash)
+        self.import_small(bytes)
     }
-    /// Drops assets nothing refers to any more (not the document, nor its undo or redo history),
-    /// as a save does: for an import whose nodes couldn't be added after all.
+    /// Host housekeeping: remove logical assets absent from the document and all undo/redo
+    /// entries. This does not change document history, dirty state or the recovery ledger.
+    /// A true result invalidates prepared source authority, but does not promise immediate
+    /// physical reclamation: readers and preparations retain their pins. Ordinary source Drop
+    /// may perform owned cleanup and retain debt; no explicit fallible step follows publication.
+    pub fn collect_assets(&mut self) -> Result<bool, Error> {
+        guard(|| {
+            let roots = self.retained_assets()?;
+            let changed = self.assets.hashes().any(|hash| !roots.contains(hash));
+            let authority = if changed { Some((self.execution.next()?, Arc::new(()))) } else { None };
+            // Keep the complete live map until all explicit fallible maintenance succeeds.
+            self.assets.collect_garbage()?;
+            if let Some((next, identity)) = authority {
+                self.assets.retain(&roots);
+                self.admission_identity = identity;
+                self.execution.advance(next);
+            }
+            Ok(changed)
+        })
+    }
+    /// Compatibility name for explicit logical housekeeping, not import rollback.
+    /// See `collect_assets`: unchanged maps preserve authority and pinned bytes remain charged.
     pub fn prune_assets(&mut self) -> Result<(), Error> {
-        let next = self.execution.next()?;
-        let roots = self.retained_assets()?;
-        self.assets.retain(&roots);
-        self.admission_identity = Arc::new(());
-        self.execution.advance(next);
-        Ok(())
+        self.collect_assets().map(|_| ())
     }
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
         self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
@@ -274,7 +313,7 @@ impl Session {
     /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
     /// session's file, or untitled), history starts fresh, and the change is published like an
     /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
-    pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+    pub fn recover(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
         }
@@ -282,8 +321,15 @@ impl Session {
             return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
         }
         snapshot.project.validate()?;
+        snapshot.assets = snapshot.assets.in_context(
+            self.assets.context().clone(),
+            &nodecraft_format::asset_source::TransferCancel::default(),
+            &nodecraft_format::asset_source::StreamMetrics::default(),
+        )?;
         let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
         let next = self.execution.next()?;
+        let identity = Arc::new(());
+        self.reserve_event()?;
         let before = self.file_status();
         let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
         storage.adopt_recovered(&snapshot, location)?;
@@ -293,7 +339,7 @@ impl Session {
         self.redo = History::default();
         self.gesture = None;
         self.state = revision;
-        self.publish(revision, "file.recover", next);
+        self.publish(revision, "file.recover", next, identity);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
         }
@@ -353,7 +399,7 @@ impl Session {
             media(&generation.outputs, &mut needed);
         }
         for hash in needed {
-            if self.assets.get(&hash).is_none() {
+            if !self.assets.contains(&hash) {
                 let bytes = staged.get(&hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "a derived result names an image that wasn't staged"))?.to_vec();
                 self.import_asset(&bytes)?;
             }
@@ -388,9 +434,12 @@ impl Session {
         result
     }
     fn retained_assets(&self) -> Result<std::collections::BTreeSet<nodecraft_types::Blake3>, Error> {
-        let mut roots = self.assets.validate_project(&self.document)?;
+        let mut roots = self.assets.validate_project_presence(&self.document)?;
         for entry in self.undo.entries.iter().chain(&self.redo.entries) {
             roots.extend(nodecraft_format::assets_in_changes(&entry.inverse)?);
+        }
+        if roots.iter().any(|hash| !self.assets.contains(hash)) {
+            return Err(Error::new(ErrorKind::InvalidInput, "history references a missing retained asset"));
         }
         Ok(roots)
     }
@@ -494,10 +543,11 @@ impl Session {
             Effect::Save { location } => {
                 let next = self.execution.next()?;
                 let roots = self.retained_assets()?;
+                let identity = Arc::new(());
                 let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
-                let ready = storage.save(&self.document, &self.assets, self.state, location)?;
+                let ready = storage.save(&self.document, &self.assets, &roots, self.state, location)?;
                 self.assets.retain(&roots);
-                self.admission_identity = Arc::new(());
+                self.admission_identity = identity;
                 self.execution.advance(next);
                 self.gesture = None;
                 return Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}));
@@ -508,6 +558,8 @@ impl Session {
                 }
                 let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
                 let next = self.execution.next()?;
+                let identity = Arc::new(());
+                self.reserve_event()?;
                 let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
                 let snapshot = storage.open(location, revision)?;
                 self.document = snapshot.project;
@@ -516,21 +568,42 @@ impl Session {
                 self.redo = History::default();
                 self.gesture = None;
                 self.state = revision;
-                self.publish(revision, spec.id, next);
+                self.publish(revision, spec.id, next, identity);
                 return Ok(serde_json::json!({"opened":true,"read_only":self.file_status().read_only}));
             }
             document_effect => document_effect,
         };
-        let prepared = guard(|| self.prepare(effect))?;
-        self.commit_prepared(prepared, spec.id)
+        let mut stage = None;
+        let prepared = guard(|| self.prepare_observed(effect, Some(&mut stage)));
+        // Preserve completed staging observations even if later admission fails. A stage
+        // that unwinds cannot finish its observation and contributes no fabricated sample.
+        if let Some(stage) = stage {
+            stage.record(&mut self.perf);
+        }
+        self.commit_prepared(prepared?, spec.id)
     }
     fn commit_prepared(&mut self, mut prepared: Prepared, command: &'static str) -> Result<Value, Error> {
         if !prepared.source.matches(self) {
             return Err(Error::new(ErrorKind::Conflict, "prepared edit no longer matches the session document, assets or revision"));
         }
         let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        // Reserve bounded publication bookkeeping before the potentially durable append.
+        self.reserve_event()?;
+        let history = match prepared.direction {
+            Direction::Edit | Direction::Redo | Direction::Amend => &mut self.undo,
+            Direction::Undo => &mut self.redo,
+        };
+        history.entries.try_reserve(1).map_err(|_| Error::new(ErrorKind::Internal, "cannot reserve undo history publication"))?;
         if let Some(admission) = prepared.admission.take() {
             let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Conflict, "prepared persistent edit requires its original storage"))?;
+            if storage.capability() == nodecraft_format::StorageCapability::StreamingV2 {
+                admission.replay.verify_changed_assets(
+                    &prepared.document,
+                    &prepared.assets,
+                    &nodecraft_format::asset_source::TransferCancel::default(),
+                    &storage.metrics(),
+                )?;
+            }
             storage.append(admission)?;
         }
         // No handler or fallible graph operation runs after this point.
@@ -559,20 +632,33 @@ impl Session {
             }
         }
         self.document = prepared.document;
+        self.assets = prepared.assets;
         self.state = prepared.state;
-        self.publish(revision, command, prepared.next_execution_generation);
+        self.publish(revision, command, prepared.next_execution_generation, prepared.next_identity);
         Ok(prepared.result)
     }
-    fn publish(&mut self, revision: u64, command: &'static str, next_execution_generation: u64) {
+    fn reserve_event(&mut self) -> Result<(), Error> {
+        self.events.try_reserve(1).map_err(|_| Error::new(ErrorKind::Internal, "cannot reserve document event publication"))
+    }
+    fn publish(&mut self, revision: u64, command: &'static str, next_execution_generation: u64, identity: Arc<()>) {
         self.revision = revision;
         self.execution.advance(next_execution_generation);
-        self.admission_identity = Arc::new(());
+        self.admission_identity = identity;
         self.events.push_back(DocChanged { revision, command });
         if self.events.len() > MAX_EVENTS {
             self.events.pop_front();
         }
     }
 
+    fn stage(&self, changes: &Changeset, observation: &mut Option<&mut Option<StageObservation>>) -> Result<StagedChanges, Error> {
+        let start = observation.as_ref().and_then(|_| self.perf.now());
+        let result = changes.stage_certified(&self.document);
+        let end = observation.as_ref().and_then(|_| self.perf.now());
+        if let (Some(slot), Some(start), Some(end)) = (observation.as_deref_mut(), start, end) {
+            *slot = Some(StageObservation { start, end, refused: result.is_err() });
+        }
+        result
+    }
     fn replay_limit(&self) -> usize {
         #[cfg(test)]
         {
@@ -595,6 +681,21 @@ impl Session {
     }
 
     fn prepare(&self, effect: Effect) -> Result<Prepared, Error> {
+        self.prepare_observed(effect, None)
+    }
+    fn prepare_observed(&self, effect: Effect, observation: Option<&mut Option<StageObservation>>) -> Result<Prepared, Error> {
+        self.prepare_with_assets_observed(effect, &self.assets, false, observation)
+    }
+    fn prepare_with_assets(&self, effect: Effect, assets: &AssetStore, imported: bool) -> Result<Prepared, Error> {
+        self.prepare_with_assets_observed(effect, assets, imported, None)
+    }
+    fn prepare_with_assets_observed(
+        &self,
+        effect: Effect,
+        assets: &AssetStore,
+        imported: bool,
+        mut observation: Option<&mut Option<StageObservation>>,
+    ) -> Result<Prepared, Error> {
         let next_execution_generation = self.execution.next()?;
         self.context(Phase::Dispatch).editable()?;
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
@@ -604,7 +705,7 @@ impl Session {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let staged = changes.stage_certified(&self.document)?;
+                let staged = self.stage(&changes, &mut observation)?;
                 self.validate_actual_redo(staged.actual_redo.as_ref())?;
                 let (document, inverse) = (staged.document, staged.inverse);
                 // Graph canonical sizing includes the operation array. History stores the full
@@ -622,14 +723,14 @@ impl Session {
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let staged = entry.inverse.stage_certified(&self.document)?;
+                let staged = self.stage(&entry.inverse, &mut observation)?;
                 self.validate_actual_redo(staged.actual_redo.as_ref())?;
                 let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let staged = entry.inverse.stage_certified(&self.document)?;
+                let staged = self.stage(&entry.inverse, &mut observation)?;
                 self.validate_actual_redo(staged.actual_redo.as_ref())?;
                 let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
@@ -639,12 +740,26 @@ impl Session {
             }
         };
         let bytes = history_bytes(&inverse)?;
+        if imported && self.persistence.is_none() {
+            // Memory-only imports still authenticate their actual references, without
+            // imposing the frozen persistent graph-role format on memory documents.
+            assets.verify_changed_references(
+                &document,
+                &forward,
+                &nodecraft_format::asset_source::TransferCancel::default(),
+                &nodecraft_format::asset_source::StreamMetrics::default(),
+            )?;
+        }
         let admission = if self.persistence.is_some() {
             // The checkpoint admitted the v1 root. Complete immutable forward/inverse
             // payload guards preserve that representation without another project walk.
-            let replay = nodecraft_format::journal::AdmittedReplay::new(forward, &self.assets)?;
-            nodecraft_format::journal::validate_replay(&inverse, &self.assets)?;
-            replay.validate_changed_assets(&document, &self.assets)?;
+            let replay = nodecraft_format::journal::AdmittedReplay::new(forward, assets)?;
+            nodecraft_format::journal::validate_replay(&inverse, assets)?;
+            if self.persistence.as_ref().is_some_and(|p| p.capability() == nodecraft_format::StorageCapability::StreamingV2) {
+                replay.validate_changed_presence(&document, assets)?;
+            } else {
+                replay.validate_changed_assets(&document, assets)?;
+            }
             Some(PersistentAdmission { replay })
         } else {
             None
@@ -659,6 +774,8 @@ impl Session {
             source: SourceStamp { identity: Arc::clone(&self.admission_identity), revision: self.revision },
             next_execution_generation,
             state,
+            assets: assets.clone(),
+            next_identity: Arc::new(()),
         })
     }
 
@@ -785,6 +902,14 @@ mod tests {
             })
             .unwrap();
         session.resources.insert(forward);
+        let ticks = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let clock = ticks.clone();
+        session.perf_mut().set_clock(Some(Box::new(move || {
+            let next = clock.get() + 10;
+            clock.set(next);
+            next
+        })));
+        session.perf_mut().set_enabled(true);
         session.replay_limit = cap;
         let journal = storage.0.borrow().recovery.clone();
         assert!(session.dispatch("test.pin_budget", &json!({})).is_err());
@@ -793,6 +918,13 @@ mod tests {
         assert!(!session.can_undo() && !session.can_redo());
         assert!(session.events.is_empty());
         assert_eq!(storage.0.borrow().recovery, journal);
+        // Certification completed; the subsequent actual-redo admission refusal is outside
+        // its timing boundary and must not turn that completed work into a refused stage.
+        let report = session.perf().report();
+        let samples = |metric| report.metrics.iter().find(|row| row.metric == metric).unwrap().samples;
+        assert_eq!(samples(crate::perf::Metric::GraphStage), 1);
+        assert_eq!(samples(crate::perf::Metric::GraphStageRefused), 0);
+        assert_eq!(samples(crate::perf::Metric::Dispatch), 0);
         session.replay_limit = cap + 1;
         session.dispatch("test.pin_budget", &json!({})).unwrap();
         assert_eq!(session.revision(), 1);
@@ -1087,12 +1219,12 @@ mod tests {
         session.dispatch("test.large", &json!({"op":"delete"})).unwrap();
         assert!(session.document().canvases().is_empty());
         session.dispatch("file.save_as", &json!({"location":"empty.ncraft"})).unwrap();
-        assert_eq!(session.assets().byte_len(), nodecraft_format::MAX_TOTAL_ASSET_BYTES);
+        assert_eq!(session.assets().byte_len(), nodecraft_format::MAX_TOTAL_ASSET_BYTES as u64);
         session.dispatch("edit.undo", &Value::Null).unwrap();
         assert_eq!(session.document().canvases().get(&canvas).unwrap().nodes().len(), 3);
         let recovered = journal::recover(&storage.0.borrow().recovery).unwrap();
         assert_eq!(&recovered.snapshot.project, session.document());
-        assert_eq!(recovered.snapshot.assets.byte_len(), nodecraft_format::MAX_TOTAL_ASSET_BYTES);
+        assert_eq!(recovered.snapshot.assets.byte_len(), nodecraft_format::MAX_TOTAL_ASSET_BYTES as u64);
         session.dispatch("edit.redo", &Value::Null).unwrap();
         assert!(session.document().canvases().is_empty());
     }

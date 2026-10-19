@@ -94,3 +94,177 @@ fn shutting_down_skips_queued_decodes() {
     // At most the one decode in progress finishes; a 2048² decode takes well under this.
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
 }
+
+#[test]
+fn resident_asset_capabilities_keep_inline_preview_support() {
+    let ctx = egui::Context::default();
+    let mut store = nodecraft_format::AssetStore::default();
+    let body = png(8, 6);
+    let hash = store.insert(&body).unwrap();
+    let asset = nodecraft_types::AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+    let mut previews = Previews::default();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        previews.worker_failed = true;
+    }
+    assert!(matches!(previews.request_asset(&ctx, hash, 128.0, || store.preview_read(&asset)), Preview::Ready { size: [8, 6], .. }));
+    assert!(matches!(previews.request_asset(&ctx, hash, 128.0, || panic!("a Ready hit must not reacquire")), Preview::Ready { .. }));
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lazy_asset_without_worker_is_unsupported_rather_than_missing() {
+    let root = std::env::temp_dir().join(format!("nodecraft-preview348-inline-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let workspace = nodecraft_format::native_assets::NativeAssetWorkspace::new(&root, Default::default()).unwrap();
+    let context = nodecraft_format::AssetContext::native(workspace);
+    let mut store = nodecraft_format::AssetStore::with_context(context);
+    let hash = store.insert(&png(8, 6)).unwrap();
+    assert!(store.get(&hash).is_none());
+    let asset = nodecraft_types::AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+    let before = store.context().storage_usage().unwrap();
+    let ctx = egui::Context::default();
+    let mut previews = Previews { worker_failed: true, ..Default::default() };
+    assert!(matches!(previews.request_asset(&ctx, hash, 128.0, || store.preview_read(&asset)), Preview::Unavailable("Preview not available here")));
+    assert_eq!(store.context().storage_usage().unwrap(), before);
+    assert_eq!(previews.bytes(), 0);
+    drop((previews, store));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+pub(super) fn panic_attempt(entered: &std::sync::mpsc::SyncSender<()>, proceed: &std::sync::mpsc::Receiver<()>) -> ! {
+    assert_eq!(std::thread::current().name(), Some("nodecraft-previews"));
+    entered.send(()).unwrap();
+    proceed.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    panic!("injected whole-attempt guard control, not a corrupt-file exploit");
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_worker_contains_an_injected_attempt_panic_and_accepts_the_next_job() {
+    let ctx = egui::Context::default();
+    let mut previews = Previews::default();
+    let (entered, ready) = std::sync::mpsc::sync_channel(1);
+    let (go, proceed) = std::sync::mpsc::sync_channel(1);
+    let hash = Blake3::from_bytes([60; 32]);
+    let _ = previews.request_input(&ctx, hash, 128.0, || Ok(Input::Panic { entered, proceed }));
+    ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    go.send(()).unwrap();
+    for _ in 0..200 {
+        previews.poll(&ctx);
+        if previews.in_flight == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(matches!(previews.request(&ctx, hash, 128.0, || None), Preview::Unavailable("Can't preview this image")));
+    assert_eq!(previews.restarts, 0);
+    let hash = Blake3::from_bytes([61; 32]);
+    let _ = previews.request(&ctx, hash, 128.0, || Some(png(8, 6)));
+    for _ in 0..200 {
+        previews.poll(&ctx);
+        if previews.in_flight == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(matches!(previews.request(&ctx, hash, 128.0, || None), Preview::Ready { .. }));
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cancellation_drops_queued_native_capabilities_without_decoding_or_leaking_pins() {
+    let root = std::env::temp_dir().join(format!("nodecraft-preview348-queue-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let workspace = nodecraft_format::native_assets::NativeAssetWorkspace::new(&root, Default::default()).unwrap();
+    let context = nodecraft_format::AssetContext::native(workspace);
+    let mut store = nodecraft_format::AssetStore::with_context(context.clone());
+    let ctx = egui::Context::default();
+    let mut previews = Previews::default();
+    let (entered, ready) = std::sync::mpsc::sync_channel(1);
+    let (go, proceed) = std::sync::mpsc::sync_channel(1);
+    let _ = previews.request_input(&ctx, Blake3::from_bytes([62; 32]), 128.0, || Ok(Input::Panic { entered, proceed }));
+    ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    for width in 9..12 {
+        let hash = store.insert(&png(width, 6)).unwrap();
+        let asset = nodecraft_types::AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+        let _ = previews.request_asset(&ctx, hash, 128.0, || store.preview_read(&asset));
+    }
+    assert_eq!(previews.in_flight, MAX_IN_FLIGHT);
+    drop(store);
+    assert_eq!(context.retained_usage().unwrap().0, 3);
+    previews.worker.as_ref().unwrap().cancel();
+    go.send(()).unwrap();
+    drop(previews);
+    assert_eq!(context.retained_usage().unwrap().0, 0);
+    nodecraft_format::AssetStore::with_context(context.clone()).collect_garbage().unwrap();
+    assert_eq!(context.storage_usage().unwrap().verified, 0);
+    drop(context);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn source_dimensions_survive_inline_thumbnail_sizes_and_ready_hits_without_reads() {
+    let ctx = egui::Context::default();
+    let bytes = png(1024, 768);
+    let hash = Blake3::from_bytes([91; 32]);
+    for (edge, thumbnail) in [(128, [128, 96]), (512, [512, 384])] {
+        let mut previews = Previews::inline(&ctx, hash, edge, &bytes);
+        let mut reads = 0;
+        match previews.request(&ctx, hash, edge as f32, || {
+            reads += 1;
+            Some(bytes.clone())
+        }) {
+            Preview::Ready { size, source_size, .. } => {
+                assert_eq!(size, thumbnail);
+                assert_eq!(source_size, [1024, 768]);
+            }
+            _ => panic!("ready"),
+        }
+        assert_eq!(reads, 0, "Ready hits do not read or probe again");
+        assert_eq!(previews.bytes(), thumbnail[0] as usize * thumbnail[1] as usize * 4);
+    }
+}
+
+#[test]
+fn smaller_pending_fallback_retains_source_dimensions_without_another_read() {
+    let ctx = egui::Context::default();
+    let hash = Blake3::from_bytes([92; 32]);
+    let mut previews = Previews::inline(&ctx, hash, 128, &png(1024, 768));
+    previews.entries.insert((hash, 512), Entry::Pending);
+    let mut reads = 0;
+    let shown = previews.request(&ctx, hash, 512.0, || {
+        reads += 1;
+        None
+    });
+    assert!(matches!(shown, Preview::Ready { size: [128, 96], source_size: [1024, 768], .. }));
+    assert_eq!(reads, 0);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_worker_keeps_decoded_source_dimensions_in_ready_and_fallback() {
+    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let root = std::env::temp_dir().join(format!("nodecraft-native-dimensions-{}-{unique}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let workspace = nodecraft_format::native_assets::NativeAssetWorkspace::new(&root, Default::default()).unwrap();
+    let mut store = nodecraft_format::AssetStore::with_context(nodecraft_format::AssetContext::native(workspace));
+    let hash = store.insert(&png(1024, 768)).unwrap();
+    assert!(store.get(&hash).is_none(), "exercise nonresident native capability, not a resident shortcut");
+    let asset = nodecraft_types::AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+    let ctx = egui::Context::default();
+    let mut previews = Previews::default();
+    let _ = previews.request_asset(&ctx, hash, 128.0, || store.preview_read(&asset));
+    for _ in 0..200 {
+        previews.poll(&ctx);
+        if previews.in_flight == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(previews.in_flight, 0);
+    let ready = previews.request_asset(&ctx, hash, 128.0, || panic!("Ready must not capture or reread"));
+    assert!(matches!(ready, Preview::Ready { size: [128, 96], source_size: [1024, 768], .. }));
+    previews.entries.insert((hash, 512), Entry::Pending);
+    let fallback = previews.request_asset(&ctx, hash, 512.0, || panic!("Pending fallback must not reread"));
+    assert!(matches!(fallback, Preview::Ready { size: [128, 96], source_size: [1024, 768], .. }));
+    drop((previews, store));
+    std::fs::remove_dir_all(root).unwrap();
+}

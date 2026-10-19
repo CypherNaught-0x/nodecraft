@@ -94,14 +94,20 @@ fn concurrent_distinct_writable_opens_do_not_collide_on_the_upstream_pid_probe()
     use std::sync::{Arc, Barrier};
     let dir = tempfile::tempdir().unwrap();
     let gate = Arc::new(Barrier::new(2));
-    let handles: Vec<_> = (0..2)
+    // Same-parent constructor admission is deliberately nonblocking. Prepare owners before
+    // racing the actual Open/probe operation this control is intended to exercise.
+    let fixtures: Vec<_> = (0..2)
         .map(|index| {
             let path = dir.path().join(format!("existing-{index}.ncraft"));
             std::fs::write(&path, b"public fixture").unwrap();
-            let recovery = dir.path().join(format!("recovery-{index}"));
+            (NativeStorage::new(dir.path().join(format!("recovery-{index}"))).unwrap(), path)
+        })
+        .collect();
+    let handles: Vec<_> = fixtures
+        .into_iter()
+        .map(|(mut storage, path)| {
             let gate = Arc::clone(&gate);
             std::thread::spawn(move || {
-                let mut storage = NativeStorage::new(recovery).unwrap();
                 let mut modes = Vec::new();
                 for _ in 0..100 {
                     gate.wait();
@@ -134,16 +140,16 @@ fn simultaneous_absent_aliases_use_the_published_canonical_guard() {
         std::fs::remove_file(&paths[0]).unwrap();
         let entered = Arc::new(Barrier::new(2));
         let done = Arc::new(Barrier::new(2));
-        let handles: Vec<_> = paths
-            .iter()
-            .enumerate()
-            .map(|(index, path)| {
-                let path = path.clone();
-                let recovery = dir.path().join(format!("recovery-{index}"));
+        // Constructor contention is a separate tested contract; keep both admitted owners
+        // alive while the original Save publication race and alias barriers run unchanged.
+        let fixtures: Vec<_> =
+            paths.iter().enumerate().map(|(index, path)| (NativeStorage::new(dir.path().join(format!("recovery-{index}"))).unwrap(), path.clone())).collect();
+        let handles: Vec<_> = fixtures
+            .into_iter()
+            .map(|(mut storage, path)| {
                 let entered = Arc::clone(&entered);
                 let done = Arc::clone(&done);
                 std::thread::spawn(move || {
-                    let mut storage = NativeStorage::new(recovery).unwrap();
                     entered.wait();
                     let outcome = storage.save_with_access(&StorageLocation::Path(path.clone()), b"public fixture");
                     done.wait(); // Keep both storages/guards alive through both attempts.
@@ -225,10 +231,12 @@ fn concurrent_dangling_cross_directory_alias_never_publishes_twice() {
         .enumerate()
         .map(|(index, path)| {
             let recovery = dir.path().join(format!("recovery-{index}"));
+            // Parent admission is nonblocking; create the fixture owners before
+            // racing the actual saves under their original barriers.
+            let mut storage = NativeStorage::new(recovery).unwrap();
             let start = Arc::clone(&start);
             let done = Arc::clone(&done);
             std::thread::spawn(move || {
-                let mut storage = NativeStorage::new(recovery).unwrap();
                 start.wait();
                 let outcome = storage.save_with_access(&StorageLocation::Path(path), &vec![index as u8; 1024 * 1024]);
                 done.wait();
@@ -259,7 +267,7 @@ fn damaged_recovery_preserves_original_bytes_and_refuses_append_until_a_new_chec
     let mut storage = NativeStorage::new(path.clone()).unwrap();
     let recovered = storage.recover().unwrap();
     assert_eq!(recovered.applied, 1);
-    assert_eq!(recovered.damage.unwrap().offset, damaged_at);
+    assert_eq!(recovered.damage.unwrap().offset, damaged_at as u64);
     assert!(storage.append(b"must not append after damage").is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let checkpoint = journal::checkpoint(&recovered.snapshot).unwrap();

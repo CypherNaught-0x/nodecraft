@@ -94,6 +94,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "usage.ownership",
     "run.reuse",
     "node.cache_set",
+    "node.shader_set",
     "plugins.list",
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",

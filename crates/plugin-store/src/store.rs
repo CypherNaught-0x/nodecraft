@@ -45,6 +45,7 @@ impl StoreLock for std::fs::File {}
 pub trait StoreBackend {
     /// Excludes other cooperating readers/writers through verification, comparison and publish.
     /// Low-level backend methods must be called under this guard when shared externally.
+    /// Native guards are not reentrant: do not call public Store methods while holding one.
     fn transaction(&self) -> Result<Box<dyn StoreLock>, Error> {
         Ok(Box::new(()))
     }

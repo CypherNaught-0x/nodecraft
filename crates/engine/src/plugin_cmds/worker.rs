@@ -1,4 +1,5 @@
-//! Native asynchronous package service. Completed results stay until explicitly acknowledged.
+//! Native asynchronous package service. Terminal results stay until acknowledged or displaced
+//! by a later admission at capacity; unfinished operations are never displaced.
 use super::*;
 use std::sync::{
     Arc, Mutex, MutexGuard, TryLockError,
@@ -6,7 +7,7 @@ use std::sync::{
     mpsc::{SyncSender, TrySendError, sync_channel},
 };
 
-/// Total accepted operations, including unread completions, per registered host.
+/// Total retained operations, including unread completions, per registered host.
 pub const MAX_PENDING: usize = 16;
 /// Encoded terminal envelope, in addition to the existing command JSON shape/text bounds.
 pub const MAX_RESULT_BYTES: usize = 1024 * 1024;
@@ -22,6 +23,7 @@ enum Status {
 }
 struct Slot {
     id: String,
+    sequence: u64,
     status: Status,
 }
 struct State {
@@ -32,8 +34,11 @@ struct State {
 fn stopped() -> Error {
     Error::new(ErrorKind::Internal, "the plugin worker stopped; inspect the store before retrying an operation")
 }
-fn busy() -> Error {
-    Error::new(ErrorKind::Busy, "plugin results are still pending or retained; read and forget completed results before submitting more")
+fn capacity() -> Error {
+    Error::new(ErrorKind::Busy, "the plugin work queue is full of unfinished requests; try again after one finishes")
+}
+fn updating() -> Error {
+    Error::new(ErrorKind::Busy, "the plugin worker is updating; try again")
 }
 fn missing() -> Error {
     Error::new(ErrorKind::NotFound, "that plugin request isn't retained by this host")
@@ -103,7 +108,7 @@ fn lock(shared: &Mutex<State>) -> MutexGuard<'_, State> {
 fn try_lock(shared: &Mutex<State>) -> Result<MutexGuard<'_, State>, Error> {
     match shared.try_lock() {
         Ok(state) => Ok(state),
-        Err(TryLockError::WouldBlock) => Err(busy()),
+        Err(TryLockError::WouldBlock) => Err(updating()),
         Err(TryLockError::Poisoned(error)) => Ok(recover(shared, error)),
     }
 }
@@ -115,6 +120,13 @@ pub struct PluginWorker {
     state: Arc<Mutex<State>>,
     prefix: String,
     next: AtomicU64,
+}
+impl Drop for PluginWorker {
+    fn drop(&mut self) {
+        // The last host owner closes admission. This mutex protects only bounded state moves,
+        // never a backend callback or OS I/O. Do not join an operation already in progress.
+        lock(&self.state).stopped = true;
+    }
 }
 impl PluginWorker {
     /// `factory`, including native directory/index initialization, runs on the first request.
@@ -188,30 +200,40 @@ impl PluginWorker {
         if state.stopped {
             return Err(stopped());
         }
-        if state.slots.len() >= MAX_PENDING {
-            return Err(busy());
-        }
+        // Sequence order survives forget's swap_remove; queued/running slots are never victims.
+        let replacement = if state.slots.len() >= MAX_PENDING {
+            Some(state.slots.iter_mut().filter(|slot| matches!(slot.status, Status::Done(_))).min_by_key(|slot| slot.sequence).ok_or_else(capacity)?)
+        } else {
+            None
+        };
         let number = self
             .next
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Error::new(ErrorKind::Busy, "plugin request IDs are exhausted; restart the host"))?;
         let id = format!("{}-{number}", self.prefix);
-        state.slots.push(Slot { id: id.clone(), status: Status::Queued });
+        let slot = Slot { id: id.clone(), sequence: number, status: Status::Queued };
+        // The worker must acquire this same mutex before starting the received job. Publish
+        // its slot before unlocking, and keep an old terminal result intact if enqueue fails.
         match self.jobs.try_send(Job { id: id.clone(), request }) {
-            Ok(()) => Ok(id),
-            Err(error) => {
-                state.slots.pop(); // Only this newly reserved slot is rolled back.
-                match error {
-                    TrySendError::Full(_) => Err(busy()),
-                    TrySendError::Disconnected(_) => {
-                        state.stop();
-                        Err(stopped())
-                    }
+            Ok(()) => {
+                if let Some(previous) = replacement {
+                    *previous = slot;
+                } else {
+                    state.slots.push(slot);
                 }
+                Ok(id)
             }
+            Err(error) => match error {
+                TrySendError::Full(_) => Err(capacity()),
+                TrySendError::Disconnected(_) => {
+                    state.stop();
+                    Err(stopped())
+                }
+            },
         }
     }
-    /// Non-consuming. A terminal envelope stays identical until [`Self::forget`].
+    /// Non-consuming. A terminal envelope stays identical until acknowledgement or eviction
+    /// as the oldest terminal at capacity. An evicted ID returns NotFound.
     pub fn result(&self, id: &str) -> Result<Value, Error> {
         check_id(id)?;
         let state = try_lock(&self.state)?;

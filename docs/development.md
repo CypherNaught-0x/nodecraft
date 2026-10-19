@@ -56,23 +56,59 @@ labels, never document contents or paths.
    clipboard. Stop with **Stop performance capture**. The headless CLI session (`control`, `mcp`)
    records too.
 
-The report (`schema: "nodecraft.perf/1"`) gives, per metric, p50/p95/p99/max in microseconds,
-the samples kept (the latest 4,096), how many were recorded and how many were refused as invalid.
+The report (`schema: "nodecraft.perf/2"`) gives, per metric, p50/p95/p99/max in microseconds,
+the samples kept (the latest 4,096), recorded/invalid counts and an explicit availability reason.
 Metrics:
-- `frame_prepare`: CPU time in the shell per frame;
-- `frame_interval`: the time between frame starts;
-- `dispatch`: any command;
-- `undo`, `redo`, `load` and `save`.
 
-The two frame metrics also count frames over budget: 16,667 µs to prepare, and 1.5 × that
-between frames, which leaves room for scheduling jitter. The app redraws only on input, so an
-interval over 250 ms is counted as `idle` rather than kept as a slow frame. Only commands that
-ran are timed; refusals aren't. `workload` gives the last frame's visible and total nodes and
-edges. `environment` adds the CPU count and, in the desktop app, the GPU adapter and backend. `frame_prepare` excludes GPU work and
-presentation, so it can't prove 60 fps on its own. A metric without a clock (the browser build
-for now) is `supported: false` with `null` values, never zero. Recording costs one bounded push
-per sample (about 90 ns in a debug build). `cargo test -p nodecraft-engine --lib recording_overhead -- --ignored --nocapture`
-prints the cost with capture on and off.
+- `frame_prepare`: shell CPU preparation, including workload collection;
+- `frame_interval`: time between frame starts;
+- `dispatch`: successful commands, including handlers and durable I/O;
+- `graph_stage` and `graph_stage_refused`: successful and refused `Changeset::stage_certified` calls,
+  respectively, including draft cloning, applying changes, validation, inverse construction and
+  the inverse-certification probe;
+- `undo`, `redo`, `load` and `save`: overlapping classifications of successful dispatch;
+- `presentation`: unsupported until a host supplies real presentation timestamps. It always has
+  zero samples, null percentiles and `presentation_timestamps_not_available`, even with a CPU clock.
+
+Stage samples exclude handler work, subsequent actual-redo and replay/history/asset admission, durable append and final
+publication. Successful staging followed by a later refusal still counts as executed staging;
+preview/availability checks and nonmutating effects do not. Refusals are not mixed with successful
+stage or dispatch latencies. These are overlapping boundaries, not additive phases.
+
+The frame metrics count samples over 16,667 µs preparation and 1.5 times that between starts.
+The app redraws on input: intervals over 250 ms are filtered as idle. These are interval-gap
+heuristics, not observed dropped/presented frames. CPU preparation cannot prove 60 fps.
+
+`workload` is the paint snapshot's visible/total nodes and edges, before later frame intents.
+`visible_edges` uses the submitted cubic's adaptive flattening tolerance, actual painter clip,
+and widest selected stroke/halo. The open-stroke envelope includes joins and antialiasing; it is
+conservative near clip corners, not pixel-exact or an occlusion test. Both cards can be offscreen
+while their curve crosses the clip. Neither endpoints nor the control hull alone decide visibility.
+Invalid geometry/options gives `visible_edges: null` and a static `visibility_unavailable` reason,
+not a plausible zero. Capturing adds a streaming flatten pass proportional to renderer work with
+constant local geometry state; it allocates no per-edge point buffer or second tessellated mesh.
+Disabled capture bypasses that pass. Rendering remains unchanged.
+
+`environment` adds CPU count and the host's renderer label. Without a CPU clock (currently wasm),
+CPU metrics are unsupported; previously retained samples can survive a subsequently failed clock.
+Reports contain no document data and are never uploaded. Timing buffers stay bounded; this is not
+a global memory/RSS guarantee.
+
+The ignored `recorder_push_microbenchmark_on_and_off` measures only bounded recorder pushes,
+excluding clock callbacks, dispatch and workload collection. It is not end-to-end capture cost.
+For complete collection overhead, run the three bounded native paired benchmark tests once:
+
+```sh
+cargo test -p nodecraft-engine -p nodecraft-ui-egui --lib perf371_ -- --ignored --nocapture
+```
+
+They retain ordered off/on/on/off observations, include clock callbacks and all capture work,
+and use fixed public fixtures with warmup excluded. UI timings cover actual show and equivalent
+CPU tessellation on both sides, including adaptive visibility collection; no GPU, presentation,
+window or assistive-technology-free production speed is inferred. Output includes workload,
+callback/curve counts, build/platform and elapsed totals; no flaky timing threshold runs in CI.
+Results depend on the machine, build and sampling order. Report the actual run and provenance
+rather than reusing an old recorder-only nanosecond estimate.
 
 ## xtask
 
@@ -118,3 +154,33 @@ Native `nodecraft-exec` tests use the pinned `allocation-counter` dev-dependency
 allocation-free metadata finalization. Its allocator applies to the entire exec test binary, including
 unrelated tests, so coordinate any additional test allocator instrumentation. Production and wasm
 allocators are unchanged.
+
+## Physical storage validation
+
+Ordinary tests run only small same-path calibration:
+
+```sh
+cargo test -p nodecraft-engine --test physical_zip64147 physical_zip64_session_small_calibration -- --nocapture
+cargo test -p nodecraft-format --lib physical_zip64_atomic_small_calibration -- --nocapture
+```
+
+The two ignored large tests each physically write/verify `u32::MAX + 2` asset bytes, without a
+sparse file, reflink or giant buffer. They are manual resource-intensive proof, not ordinary CI.
+Before running, review the exact frozen harness and simultaneous extent/reader/debt inventory,
+obtain separate resource approval, refresh free space on the selected volume, and run these
+commands sequentially in a dedicated existing parent directory. Each owned fixture is removed
+before its test returns. The engine test must finish and clean up before the atomic test starts.
+
+```sh
+NODECRAFT_PHYSICAL147=1 NODECRAFT_PHYSICAL147_ROOT=/chosen/existing/parent CARGO_INCREMENTAL=0 cargo test -p nodecraft-engine --test physical_zip64147 physical_zip64_session_large -- --ignored --exact --nocapture
+NODECRAFT_PHYSICAL147=1 NODECRAFT_PHYSICAL147_ROOT=/chosen/existing/parent CARGO_INCREMENTAL=0 cargo test -p nodecraft-format --lib storage::native::physical147::physical_zip64_atomic_large -- --ignored --exact --nocapture
+```
+
+Retain full logs, exact source/toolchain/binary provenance, successful write counters and per-phase
+extent inventories. Source reads, logical reservations and allocated filesystem blocks are
+separate measures. On 2026-10-18 both large commands passed sequentially on native macOS with
+4,294,967,297-byte assets; the atomic fault followed 4,294,967,296 successfully forwarded file-write
+bytes, above u32::MAX. Small calibration does not establish those results. The accepted physical
+run does not replace final CI or later source-composition checks; future runs still need their
+own resource review. See [storage.md](storage.md) for measured values and platform/RSS/device-write
+limitations.

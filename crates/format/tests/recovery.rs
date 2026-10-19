@@ -70,7 +70,7 @@ fn physical_damage_reports_exact_prefix_offset_reason_and_never_replays_later_fr
         assert_eq!(recovered.snapshot.project.title(), "Good prefix");
         assert!(recovered.truncated_tail);
         let damage = recovered.damage.unwrap();
-        assert_eq!(damage.offset, prefix.len());
+        assert_eq!(damage.offset, prefix.len() as u64);
         assert_eq!(damage.reason, reason);
         assert!(!damage.reason.description().is_empty());
         assert_eq!(bytes, original, "pure recovery preserves original evidence");
