@@ -244,3 +244,46 @@ fn render_recovery_review_evidence() {
     h.run();
     h.render().unwrap().save(folder.join("recovered.png")).unwrap();
 }
+
+#[test]
+fn genuine_comments_v2_journal_is_offered_recovered_and_saved_by_the_desktop() {
+    let dir = Scratch::new("classic-v2");
+    let bytes = include_bytes!("../../../../format/tests/fixtures/v2/comments-v2.ncrj");
+    std::fs::write(dir.journal(), bytes).unwrap();
+    let expected = nodecraft_format::journal::recover(bytes).unwrap().snapshot.project;
+    let mut h = launch(&dir, None);
+    assert!(asked(&h));
+    assert_eq!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().changes, 3);
+    h.get_by_label("Recover").click();
+    h.run();
+    assert_eq!(*h.state().session.document(), expected);
+    assert!(h.state().session.document().canvases().values().any(|canvas| !canvas.comments().is_empty()));
+    h.state_mut().session.dispatch("file.save_as", &json!({"location":dir.project().to_str().unwrap()})).unwrap();
+    h.run();
+    assert_eq!(nodecraft_format::decode(&std::fs::read(dir.project()).unwrap()).unwrap().project, expected);
+    assert_eq!(dir.kept_files(), 0);
+}
+
+#[test]
+fn native_offer_keeps_private_asset_ranges_after_its_reader_and_source_are_gone() {
+    use nodecraft_format::{ArchivePlan, CheckpointPlan, NativeStorage, ProjectStorage};
+    let dir = Scratch::new("native-source-lifetime");
+    let path = dir.journal();
+    let mut snapshot = nodecraft_format::decode(include_bytes!("../../../../format/tests/fixtures/v2/comments-v2.ncraft")).unwrap();
+    let hash = *snapshot.assets.hashes().next().unwrap();
+    let expected = snapshot.assets.get(&hash).unwrap().to_vec();
+    {
+        let mut native = NativeStorage::new(path.clone()).unwrap();
+        snapshot.assets = snapshot.assets.in_context(native.asset_context().unwrap(), &Default::default(), &Default::default()).unwrap();
+        let archive = ArchivePlan::prepare(&snapshot, native.capability(), &Default::default(), &Default::default()).unwrap();
+        native.checkpoint_plan(&CheckpointPlan::new(archive).unwrap(), &Default::default(), &Default::default()).unwrap();
+    }
+    drop(snapshot);
+    let offer = RecoveryOffer::read(path.clone());
+    let found = offer.found.as_ref().unwrap();
+    assert!(found.snapshot.assets.get(&hash).is_none());
+    std::fs::remove_file(path).unwrap();
+    let reference = nodecraft_types::AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: Default::default() };
+    let lease = found.snapshot.assets.open_verified(&reference, &Default::default(), &Default::default()).unwrap();
+    assert_eq!(lease.read_small(1024, &Default::default()).unwrap(), expected);
+}

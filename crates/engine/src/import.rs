@@ -3,22 +3,20 @@
 //! and every file that can be held becomes a source node, all added as one undo step through
 //! `canvas.paste`. Files that can't are reported with a reason instead of failing the rest.
 //!
-//! Everything that can refuse a file is checked before any byte is stored: the text a single
-//! paste can carry, and the room left in the asset store. If adding the nodes still fails, what
-//! was stored for them is pruned, so a drop never leaves media behind.
+//! Eligibility and unique retained capacity are planned before one Session-bound import batch.
+//! The candidate store and all nodes publish together through `canvas.paste`; refusing a drop
+//! never logically removes unrelated staged assets. Private cleanup debt can still require retry.
 use crate::Session;
 use nodecraft_format::{MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES};
-use nodecraft_graph::{Node, Position};
+use nodecraft_graph::Position;
 use nodecraft_media::{Limits, MediaKind, Sniffed, probe_image, sniff};
-use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, MediaMeta, Mime, NodeId, ParamValues, Value};
-use serde_json::json;
-use std::collections::BTreeMap;
+use nodecraft_types::{CanvasId, Error, MediaMeta, Mime, NodeId};
 
 /// Most files one drop adds; the rest are reported as skipped.
 pub const MAX_FILES: usize = 32;
-/// Largest media file a project holds (its per-asset cap).
+/// Per-file limit for this bounded byte/drop adapter; native stream APIs support larger assets.
 pub const MAX_MEDIA_BYTES: usize = MAX_ASSET_BYTES;
-/// All the media a project holds together.
+/// Buffered UI drop acquisition envelope, independent of native retained-project capacity.
 pub const MAX_PROJECT_MEDIA_BYTES: usize = MAX_TOTAL_ASSET_BYTES;
 /// Most text one drop adds, across all its files. A paste is one command, and a command's
 /// strings share a 1 MiB budget; this leaves room for the ids, kinds and media types beside it.
@@ -128,79 +126,24 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })
 }
 
-/// Stores planned media and builds the nodes, the first at `at` and the rest `step` apart.
-fn build(session: &mut Session, plans: Vec<(NodeId, Plan<'_>)>, at: Position, step: f32) -> Result<Vec<Node>, Error> {
-    let mut nodes = Vec::with_capacity(plans.len());
-    for (id, plan) in plans {
-        let (kind, parameter, value) = match plan {
-            Plan::Text(text) => ("source.text", "text", Value::Text(text)),
-            Plan::Media { kind, mime, meta, bytes } => {
-                let hash = session.import_asset(bytes)?;
-                (kind, "asset", Value::Media(AssetRef { hash, mime, meta }))
-            }
-        };
-        let supplied: ParamValues = [(parameter.to_owned(), value)].into_iter().collect();
-        let mut node = session.kinds().get(kind)?.instantiate_instance(id, BTreeMap::new(), &supplied)?;
-        node.pos = Position { x: at.x + step * nodes.len() as f32, y: at.y };
-        nodes.push(node);
-    }
-    Ok(nodes)
-}
-
-/// Adds `files` to `canvas` as source nodes, the first at `at` and the rest in a row `step`
-/// apart, as one undo step. `ids` supplies a fresh id per file (the caller's, so replay stays
-/// deterministic). `Err` only when adding the nodes fails; files that can't be held are listed
-/// in [`Imported::skipped`].
+/// Adds source nodes through one candidate-store transaction and one undo step. Ineligible
+/// files are skipped in input order; a rejected transaction preserves existing staged assets.
+/// At most 32 node/source plans are admitted, but skipped bookkeeping is O(files.len()).
 pub fn import_files(session: &mut Session, canvas: CanvasId, at: Position, step: f32, files: &[Incoming<'_>], ids: &[NodeId]) -> Result<Imported, Error> {
-    if ids.len() < files.len().min(MAX_FILES) {
-        return Err(Error::new(ErrorKind::InvalidInput, "an id is needed for every file"));
-    }
-    let mut imported = Imported::default();
-    // Decide every file within the drop's text budget and the store's room, storing nothing yet.
-    let mut plans = Vec::new();
-    let mut text_left = MAX_DROP_TEXT_BYTES;
-    let mut store_left = MAX_TOTAL_ASSET_BYTES.saturating_sub(session.assets().byte_len());
-    let mut assets_left = MAX_ASSETS.saturating_sub(session.assets().len());
-    for (index, file) in files.iter().enumerate() {
-        let name = file.name.chars().take(80).collect::<String>();
-        let (Some(id), true) = (ids.get(index), index < MAX_FILES) else {
-            imported.skipped.push((name, format!("at most {MAX_FILES} files are added at once")));
-            continue;
-        };
-        match plan(file, text_left) {
-            Ok(Plan::Text(text)) => {
-                text_left = text_left.saturating_sub(text.len());
-                plans.push((*id, Plan::Text(text)));
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids));
+    match result {
+        Ok(imported) => Ok(imported),
+        Err(mut error) => {
+            // The candidate has ended before maintenance. This never retains/removes logical
+            // entries or turns successful publication into a refusal. Debt remains charged.
+            if crate::session::guard(|| session.assets().collect_garbage()).is_err() {
+                error.message.push_str(" Asset maintenance also failed; retry maintenance before importing again.");
             }
-            Ok(Plan::Media { bytes, .. }) if bytes.len() > store_left || assets_left == 0 => {
-                imported.skipped.push((name, format!("the project's media is full ({} MiB)", MAX_TOTAL_ASSET_BYTES / (1024 * 1024))));
-            }
-            Ok(media) => {
-                if let Plan::Media { bytes, .. } = &media {
-                    store_left = store_left.saturating_sub(bytes.len());
-                    assets_left = assets_left.saturating_sub(1);
-                }
-                plans.push((*id, media));
-            }
-            Err(why) => imported.skipped.push((name, why)),
+            Err(error)
         }
     }
-    if plans.is_empty() {
-        return Ok(imported);
-    }
-    let added = build(session, plans, at, step).and_then(|nodes| {
-        imported.nodes = nodes.iter().map(|node| node.id).collect();
-        session.dispatch("canvas.paste", &json!({"canvas": canvas, "nodes": nodes, "edges": []}))
-    });
-    if let Err(error) = added {
-        // Nothing refers to what was stored for this drop: don't leave it taking the project's room.
-        // The paste's own error is the one to report, whether or not the prune works.
-        let _ = session.prune_assets();
-        imported.nodes.clear();
-        return Err(error);
-    }
-    Ok(imported)
 }
 
+mod staged;
 #[cfg(test)]
 mod tests;

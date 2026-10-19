@@ -25,18 +25,32 @@ pub const MAX_KEPT: u32 = 99;
 /// Whether the journal at `recovery` holds work worth keeping: edits after its checkpoint, or
 /// damage or an old format that recovery has to look at. A journal holding only the checkpoint
 /// (the session started and did nothing) isn't.
-fn holds_work(recovery: &std::path::Path) -> bool {
-    let Ok(bytes) = std::fs::read(recovery) else {
-        return false;
-    };
-    if bytes.is_empty() {
-        return false;
+fn holds_work(recovery: &std::path::Path, storage: &NativeStorage) -> bool {
+    // The caller already owns this journal's lock. Native replay dispatches classic
+    // and streamed envelopes without buffering the whole recovery file.
+    holds_work_with_metadata(std::fs::metadata(recovery).map(|metadata| metadata.len()), || storage.recover())
+}
+
+fn holds_work_with_metadata(length: std::io::Result<u64>, replay: impl FnOnce() -> Result<nodecraft_format::journal::Recovered, Error>) -> bool {
+    match length {
+        Ok(0) => return false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        // A retained handle cannot make an inaccessible/replaced pathname empty.
+        // Keep/refuse rather than silently checkpointing over uncertain work.
+        Err(_) => return true,
+        Ok(_) => {}
     }
-    match nodecraft_format::journal::recover(&bytes) {
+    match replay() {
         Ok(recovered) => recovered.applied > 0 || recovered.damage.is_some() || recovered.truncated_tail || recovered.legacy,
         // Unreadable bytes are kept: only a person should decide they're worthless.
         Err(_) => true,
     }
+}
+
+/// Read a kept journal through the native, bounded replay path. The returned asset
+/// store owns its private ranges/context, so offers remain readable after this host drops.
+pub(super) fn replay_kept(path: &Path) -> Result<nodecraft_format::journal::Recovered, Error> {
+    NativeStorage::new(path.to_path_buf())?.recover()
 }
 
 /// The file beside a journal (live or kept) naming the project file its session had open, so
@@ -95,9 +109,9 @@ pub fn kept_journals(recovery: &Path) -> Vec<PathBuf> {
 
 /// Copies a journal holding work at `recovery` to a fresh `<name>.unrecovered-<n>` beside it,
 /// flushed to disk, and returns where. Call with the journal's lock held.
-fn keep_unrecovered(recovery: &std::path::Path) -> Result<Option<PathBuf>, Error> {
+fn keep_unrecovered(recovery: &std::path::Path, storage: &NativeStorage) -> Result<Option<PathBuf>, Error> {
     let unreadable = |_| Error::new(ErrorKind::Conflict, "an earlier session's recovery journal can't be kept, so it wasn't replaced");
-    if !holds_work(recovery) {
+    if !holds_work(recovery, storage) {
         return Ok(None);
     }
     let name = recovery.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "session.journal".into());
@@ -135,7 +149,7 @@ impl NodeCraftApp {
         let storage = NativeStorage::new(setup.recovery.clone())?;
         // A journal left by a session that didn't close cleanly holds unsaved work. Starting a
         // session checkpoints over it, so keep a copy first (recovery offers it, #408).
-        let kept = keep_unrecovered(&setup.recovery)?;
+        let kept = keep_unrecovered(&setup.recovery, &storage)?;
         let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
         let mut session = Session::with_storage(snapshot, Box::new(storage))?;
         let mut canvas = canvas;

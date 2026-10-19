@@ -164,3 +164,33 @@ A diagnostic distinguishes the checked result from its failing input node. Only 
 recorded hashes are hash-checked; downstream staleness can propagate, and unrecorded results are
 not verified fresh. Changing the document, canvas or session clears the display. View changes
 and Save can retain the historical check; rerun it after changing external configuration.
+
+## Physical storage validation
+
+Ordinary tests run only small same-path calibration:
+
+```sh
+cargo test -p nodecraft-engine --test physical_zip64147 physical_zip64_session_small_calibration -- --nocapture
+cargo test -p nodecraft-format --lib physical_zip64_atomic_small_calibration -- --nocapture
+```
+
+The two ignored large tests each physically write/verify `u32::MAX + 2` asset bytes, without a
+sparse file, reflink or giant buffer. They are manual resource-intensive proof, not ordinary CI.
+Before running, review the exact frozen harness and simultaneous extent/reader/debt inventory,
+obtain separate resource approval, refresh free space on the selected volume, and run these
+commands sequentially in a dedicated existing parent directory. Each owned fixture is removed
+before its test returns. The engine test must finish and clean up before the atomic test starts.
+
+```sh
+NODECRAFT_PHYSICAL147=1 NODECRAFT_PHYSICAL147_ROOT=/chosen/existing/parent CARGO_INCREMENTAL=0 cargo test -p nodecraft-engine --test physical_zip64147 physical_zip64_session_large -- --ignored --exact --nocapture
+NODECRAFT_PHYSICAL147=1 NODECRAFT_PHYSICAL147_ROOT=/chosen/existing/parent CARGO_INCREMENTAL=0 cargo test -p nodecraft-format --lib storage::native::physical147::physical_zip64_atomic_large -- --ignored --exact --nocapture
+```
+
+Retain full logs, exact source/toolchain/binary provenance, successful write counters and per-phase
+extent inventories. Source reads, logical reservations and allocated filesystem blocks are
+separate measures. On 2026-10-18 both large commands passed sequentially on native macOS with
+4,294,967,297-byte assets; the atomic fault followed 4,294,967,296 successfully forwarded file-write
+bytes, above u32::MAX. Small calibration does not establish those results. The accepted physical
+run does not replace final CI or later source-composition checks; future runs still need their
+own resource review. See [storage.md](storage.md) for measured values and platform/RSS/device-write
+limitations.
