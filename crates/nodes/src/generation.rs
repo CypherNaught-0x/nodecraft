@@ -247,14 +247,7 @@ impl NodeKind for GenerationKind {
         if node.kind != KIND || node.inputs != d.descriptor.inputs || node.outputs != d.descriptor.outputs {
             return Err(invalid("generation ports do not match the selected model"));
         }
-        let r = d.contract.resolve(&node.params, ready)?;
-        if let Some(issue) = r.issues.first() {
-            return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
-        }
-        Ok(ResolvedParams {
-            values: r.params.iter().filter_map(|p| p.value.value().map(|v| (p.name.clone(), v.clone()))).collect(),
-            visible: r.params.iter().filter(|p| p.enabled && p.affects.identity).map(|p| p.name.clone()).collect(),
-        })
+        d.contract.resolve(&node.params, ready)?.into_resolved(ready)
     }
     fn instantiate_instance(&self, id: NodeId, mut config: BTreeMap<String, Value>, supplied: &ParamValues) -> Result<Node, Error> {
         let mut node = Node::new(id, KIND);

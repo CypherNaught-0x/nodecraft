@@ -97,6 +97,55 @@ fn hidden_and_disabled_values_are_never_submitted() {
 }
 
 #[test]
+fn the_run_path_submits_exactly_what_submission_does() {
+    let contract = video();
+    let stored = values(&[("end_strength", int(40)), ("speed", text("fast")), ("steps", int(7)), ("seed", Value::Unsigned(Unsigned(3)))]);
+    let resolution = contract.resolve(&stored, true).unwrap();
+    let submitted = resolution.submission().unwrap();
+    let resolved = resolution.into_resolved(true).unwrap();
+    assert_eq!(resolved.values.get("steps"), Some(&int(7)), "disabled values stay for the editor");
+    assert_eq!(resolved.values.get("end_strength"), Some(&int(40)), "hidden ones too");
+    assert!(!resolved.values.contains_key("quality"), "auto has no value");
+    assert_eq!(resolved.into_visible_values(), submitted);
+}
+
+#[test]
+fn edits_may_pass_through_states_a_run_refuses() {
+    let contract = video();
+    // Too long for the fast speed, and the required duration cleared in another edit.
+    let failing = values(&[("duration", int(15)), ("speed", text("fast")), ("seed", Value::Unsigned(Unsigned(3)))]);
+    assert!(contract.resolve(&failing, false).unwrap().into_resolved(false).is_ok());
+    let error = contract.resolve(&failing, true).unwrap().into_resolved(true).unwrap_err();
+    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "Clips over 10 seconds need the slow speed"));
+    // A wrong value is refused even while editing.
+    assert!(contract.resolve(&values(&[("steps", int(99))]), false).unwrap().into_resolved(false).is_err());
+}
+
+#[test]
+fn a_run_never_silently_drops_a_random_seed() {
+    let contract = video();
+    assert!(contract.resolve(&values(&[]), false).unwrap().into_resolved(false).is_ok(), "placing the node is fine");
+    let error = contract.resolve(&values(&[]), true).unwrap().into_resolved(true).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    let fixed = contract.resolve(&values(&[("seed", Value::Unsigned(Unsigned(3)))]), true).unwrap().into_resolved(true).unwrap();
+    assert_eq!(fixed.into_visible_values().get("seed"), Some(&Value::Unsigned(Unsigned(3))));
+}
+
+#[test]
+fn a_stored_value_replaces_its_default_in_the_text_budget() {
+    let big = "x".repeat(600_000);
+    let contract = Contract::from_schema(
+        "test.big",
+        ParamOwner::Node,
+        ParamSchema { params: vec![spec("prompt", ParamControl::Text { multiline: true, max_bytes: 1_000_000 }, Some(text(&big)))] },
+    );
+    let resolved = contract.resolve(&values(&[("prompt", text(&big))]), true).unwrap();
+    assert!(resolved.issues.is_empty());
+    let schema = contract.schema.resolve(&values(&[("prompt", text(&big))]), true).unwrap();
+    assert_eq!(resolved.into_resolved(true).unwrap(), schema, "the same admission as ParamSchema::resolve");
+}
+
+#[test]
 fn a_hidden_invalid_value_still_blocks_submission() {
     let resolved = video().resolve(&values(&[("end_strength", int(400))]), true).unwrap();
     assert_eq!(resolved.issues.len(), 1);

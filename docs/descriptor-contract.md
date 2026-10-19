@@ -105,6 +105,25 @@ affect identity. A literal default and the same value typed in explicitly are on
 entering the default never makes a node stale. The `auto` and `random_seed` markers are kept, so
 switching a seed from fixed to random does change the identity.
 
+### Running
+
+Planning, running and staleness see a node's values through `NodeKind::validate_instance`. Its
+default resolves the node's instance contract and keeps the result as `into_resolved(ready)`:
+
+- **What is sent** is exactly `submission()`: a hidden or disabled value stays on the node for the
+  editor, but no job receives it.
+- **What a result's identity hashes** is the same set, so editing a disabled value never makes a
+  result stale. Parameters that declare `identity: false` are still hashed for now, which can
+  only make a result stale too often, never too rarely.
+- **What blocks.** An invalid or unknown value is refused even while editing. A missing required
+  value or a failed check blocks only a run (`ready`), so a person can edit through a state a run
+  would refuse. Each blocked node names the first issue.
+- **Random seeds.** A run whose effective seed is `random_seed` is refused as unsupported until the
+  drawn seed can be recorded with its generation; a fixed seed runs.
+
+A kind that overrides `instance_contract` must override `validate_instance` to match, as
+`generation.image` does.
+
 Only a contract that fails validation, or input over the size limits, is an `Err`. Validation
 rejects:
 
@@ -223,15 +242,13 @@ so the CLI and MCP see the same fields, conditions and issues as the inspector.
 ## What is not in 1.0
 
 Version 1.0 defines and tests the contract, validates every built-in kind's contract at
-registration, and exposes it through `node.describe`. Planning and running still resolve values
-through `ParamSchema::resolve`. Moving the run path onto `Resolution::submission()` comes next,
-and must land before any kind declares `visible_when`, `enabled_when` or checks. Until then those
-rules have no effect on what is sent.
+registration, exposes it through `node.describe`, and plans and runs every kind through it (see
+[Running](#running)).
 
 These are tracked on #162 and on the issues that need them:
 
-- planning and running through the contract's resolution;
-- persisting a generation's effective settings snapshot;
+- persisting a generation's effective settings snapshot, and with it random seeds;
+- leaving `identity: false` parameters out of a result's identity;
 - dynamic, model-scoped option sources;
 - typed nested records and lists;
 - generated UI reading rules (enabled state, reset) and the bulk panel itself (#71);
