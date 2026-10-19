@@ -1,7 +1,7 @@
 //! Shared renderer/marquee admission. No descriptor or effective Value is retained by geometry.
 use super::*;
 
-pub(super) struct Admitted<'a> {
+pub(crate) struct Admitted<'a> {
     pub descriptor: Cow<'a, nodecraft_nodes::NodeDescriptor>,
     pub visible: BTreeSet<String>,
     pub enabled: Option<BTreeSet<String>>,
@@ -38,6 +38,19 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
     Some(Admitted { descriptor, visible, enabled, bytes })
 }
 
+/// Navigation needs no view-cache access; keep the cached implementation private to App.
+pub(crate) fn admit_uncached<'a>(session: &'a Session, node: &Node) -> Option<Admitted<'a>> {
+    admit(session, node, None)
+}
+
+/// Existing runtime identity only; no retained catalog/descriptor owner or document scan.
+pub(crate) fn definition_snapshot(session: &Session) -> Option<[u8; 32]> {
+    let catalog = session.generation_catalog().ok()?;
+    let kind = session.kinds().get(nodecraft_nodes::generation::KIND).ok()?;
+    catalog.validate_definition_binding(kind).ok()?;
+    kind.definition_snapshot()
+}
+
 // Logical retention includes a fixed root allowance and conservative per-entry overhead.
 // The sorted Vec has no per-entry heap children. Capacity is checked separately, not assumed.
 const MAX_ENTRIES: usize = 4095;
@@ -58,11 +71,7 @@ impl GeometryCache {
         let key = (canvas, session.revision(), theme);
         // Catalog resources can be replaced without a document revision. Match the
         // generated renderer's opaque definition binding before reusing rect/placeholder.
-        let catalog = session.generation_catalog().ok().and_then(|catalog| {
-            let kind = session.kinds().get(nodecraft_nodes::generation::KIND).ok()?;
-            catalog.validate_definition_binding(kind).ok()?;
-            kind.definition_snapshot()
-        });
+        let catalog = definition_snapshot(session);
         let invalidated = changed || self.key != Some(key) || self.catalog != catalog;
         if invalidated {
             self.clear();

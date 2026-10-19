@@ -1,4 +1,8 @@
-use crate::{file_cmds::FileStatus, save_runner::SaveRunner, session::guard};
+use crate::{
+    file_cmds::{FileOperation, FileOperationKind, FilePhase, FileStatus},
+    save_runner::SaveRunner,
+    session::guard,
+};
 use nodecraft_format::{
     ArchivePlan, AssetStore, CheckpointPlan, ProjectAccess, ProjectStorage, RecordedAssets, Snapshot, StorageCapability, StorageLocation,
     asset_source::{StreamMetrics, TransferCancel},
@@ -6,7 +10,11 @@ use nodecraft_format::{
 use nodecraft_graph::Project;
 use nodecraft_types::{Blake3, Error, ErrorKind};
 use std::collections::BTreeSet;
-use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+    mpsc,
+};
 
 struct CheckpointState {
     identity: Blake3,
@@ -41,38 +49,137 @@ struct Published {
     access: ProjectAccess,
     adopted: Option<CheckpointState>,
 }
-/// A background save's file work: the same steps, in the same order, as an inline save.
+/// Which [`FilePhase`] a file operation is in, shared with the thread doing it.
+#[derive(Clone)]
+struct Progress(Arc<AtomicU8>);
+impl Progress {
+    fn new(phase: FilePhase) -> Self {
+        Self(Arc::new(AtomicU8::new(phase as u8)))
+    }
+    fn set(&self, phase: FilePhase) {
+        self.0.store(phase as u8, Ordering::Release);
+    }
+    fn get(&self) -> FilePhase {
+        [FilePhase::Preparing, FilePhase::Reading, FilePhase::Writing, FilePhase::Checkpointing]
+            .into_iter()
+            .find(|phase| *phase as u8 == self.0.load(Ordering::Acquire))
+            .unwrap_or(FilePhase::Checkpointing)
+    }
+}
+/// What a file operation's thread reports to; inline operations get a fresh one.
+#[derive(Clone)]
+struct Control {
+    cancel: TransferCancel,
+    progress: Progress,
+}
+impl Control {
+    fn new(phase: FilePhase) -> Self {
+        Self { cancel: TransferCancel::default(), progress: Progress::new(phase) }
+    }
+    fn cancelled(&self) -> bool {
+        self.cancel.check().is_err()
+    }
+}
+/// A save's file work, inline or on the runner. Cancelling stops it only until the
+/// destination is published: the checkpoint after that gets a token of its own.
 fn write(
     storage: &mut dyn ProjectStorage,
     snapshot: &Snapshot,
     capability: StorageCapability,
     location: &StorageLocation,
+    control: &Control,
     metrics: &StreamMetrics,
 ) -> Result<Published, Error> {
-    let cancel = TransferCancel::default();
-    let archive = ArchivePlan::prepare(snapshot, capability, &cancel, metrics)?;
+    let cancel = &control.cancel;
+    let archive = ArchivePlan::prepare(snapshot, capability, cancel, metrics)?;
     let checkpoint = CheckpointPlan::new(archive)?;
     let adopted = CheckpointState::prepare(&checkpoint)?;
+    control.progress.set(FilePhase::Writing);
     let _ = guard(|| storage.flush());
-    let access = guard(|| storage.save_plan(location, checkpoint.archive(), &cancel, metrics))?;
+    cancel.check()?;
+    let access = guard(|| storage.save_plan(location, checkpoint.archive(), cancel, metrics))?;
+    control.progress.set(FilePhase::Checkpointing);
     // Save succeeded. A failed recovery replacement must not claim it was unpublished.
-    let adopted = guard(|| storage.checkpoint_plan(&checkpoint, &cancel, metrics)).is_ok().then_some(adopted);
+    let adopted = guard(|| storage.checkpoint_plan(&checkpoint, &TransferCancel::default(), metrics)).is_ok().then_some(adopted);
     Ok(Published { access, adopted })
 }
+/// What an open read, ready to adopt.
+pub(crate) struct Opened {
+    snapshot: Snapshot,
+    adopted: CheckpointState,
+    access: ProjectAccess,
+}
+/// An open that failed, and whether it failed after its replacement checkpoint was published
+/// (a host breaking its infallible `commit_open`), so the old document can't journal on.
+struct OpenFailure {
+    error: Error,
+    latch: bool,
+}
+/// An open's file work, inline or on the runner: freeze and decode the file, then publish its
+/// recovery checkpoint, which is the point of no return. Cancelling stops it before that.
+fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &Control, metrics: &StreamMetrics) -> Result<Opened, OpenFailure> {
+    let cancel = &control.cancel;
+    let prepared = (|| {
+        let prepared = guard(|| storage.prepare_open_snapshot(location, cancel, metrics))?;
+        let (snapshot, checkpoint, access) = prepared.into_parts();
+        let adopted = CheckpointState::prepare(&checkpoint)?;
+        control.progress.set(FilePhase::Checkpointing);
+        cancel.check()?;
+        guard(|| storage.checkpoint_plan(&checkpoint, cancel, metrics))?;
+        Ok::<_, Error>(Opened { snapshot, adopted, access })
+    })();
+    let opened = match prepared {
+        Ok(opened) => opened,
+        Err(error) => {
+            guard(|| {
+                storage.cancel_open();
+                Ok(())
+            })
+            .map_err(|error| OpenFailure { error, latch: false })?;
+            return Err(OpenFailure { error, latch: false });
+        }
+    };
+    // This hook is infallible by protocol; all next-state ownership is already ready.
+    guard(|| {
+        storage.commit_open();
+        Ok(())
+    })
+    .map_err(|error| OpenFailure { error, latch: true })?;
+    Ok(opened)
+}
+enum Outcome {
+    Saved { location: StorageLocation, epoch: u64, state: u64, result: Result<Published, Error> },
+    Opened { location: StorageLocation, state: u64, result: Result<Opened, OpenFailure> },
+}
+/// A file operation's work: `Send` where it can run on the runner, and on the web (whose asset
+/// sources aren't `Send`) anything, since it always runs inline there.
+#[cfg(not(target_arch = "wasm32"))]
+trait Work: FnOnce(&mut dyn ProjectStorage) -> Outcome + Send + 'static {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: FnOnce(&mut dyn ProjectStorage) -> Outcome + Send + 'static> Work for T {}
+#[cfg(target_arch = "wasm32")]
+trait Work: FnOnce(&mut dyn ProjectStorage) -> Outcome {}
+#[cfg(target_arch = "wasm32")]
+impl<T: FnOnce(&mut dyn ProjectStorage) -> Outcome> Work for T {}
 struct Done {
     storage: Box<dyn ProjectStorage + Send>,
-    outcome: Result<Published, Error>,
+    outcome: Outcome,
 }
 struct Pending {
     done: mpsc::Receiver<Done>,
-    location: StorageLocation,
-    epoch: u64,
-    state: u64,
+    kind: FileOperationKind,
+    control: Control,
 }
-/// How [`Persistence::save`] went: finished (`true` when recovery is ready), or still writing.
-pub(crate) enum Saving {
-    Done(bool),
+/// How [`Persistence::save`] or [`Persistence::open`] went: finished, or still running on the
+/// runner, for [`Persistence::settle`] to finish.
+pub(crate) enum Started<T> {
+    Done(T),
     Started,
+}
+/// What [`Persistence::settle`] finished: a save (`true` when recovery is ready) or an open.
+pub(crate) enum Settled {
+    Saved(bool),
+    Opened(Snapshot),
 }
 pub(crate) struct Persistence {
     store: Store,
@@ -147,7 +254,12 @@ impl Persistence {
             dirty: self.saved_state != Some(state),
             recovery_required: self.recovery_required,
             read_only: self.read_only,
-            saving: self.pending.is_some(),
+            saving: self.pending.as_ref().is_some_and(|pending| pending.kind == FileOperationKind::Save),
+            operation: self.pending.as_ref().map(|pending| FileOperation {
+                kind: pending.kind,
+                phase: pending.control.progress.get(),
+                cancel_requested: pending.control.cancelled(),
+            }),
         }
     }
     pub fn append(&mut self, admission: crate::session::PersistentAdmission) -> Result<(), Error> {
@@ -193,10 +305,8 @@ impl Persistence {
         state: u64,
         location: Option<StorageLocation>,
         runner: Option<&dyn SaveRunner>,
-    ) -> Result<Saving, Error> {
-        if self.pending.is_some() {
-            return Err(Error::new(ErrorKind::Busy, "a save is already in progress"));
-        }
+    ) -> Result<Started<bool>, Error> {
+        self.idle()?;
         if self.read_only && location.as_ref().is_none_or(|location| Some(location) == self.location.as_ref()) {
             return Err(Error::new(ErrorKind::Conflict, "source is read-only; use Save As to a writable destination"));
         }
@@ -205,7 +315,32 @@ impl Persistence {
         // Spill history-only roots before replacing any base or output destination.
         assets.verify_retained(retained, &TransferCancel::default(), &self.metrics)?;
         let snapshot = Snapshot { project: document.clone(), assets: assets.clone(), epoch };
-        // Browser asset sources aren't `Send`; the web host has no runner and saves inline.
+        let control = Control::new(FilePhase::Preparing);
+        let (capability, metrics) = (self.capability, self.metrics.clone());
+        let work = {
+            let control = control.clone();
+            move |storage: &mut dyn ProjectStorage| {
+                let result = guard(|| write(storage, &snapshot, capability, &location, &control, &metrics));
+                Outcome::Saved { location, epoch, state, result }
+            }
+        };
+        match self.run(FileOperationKind::Save, control, runner, work)? {
+            Started::Started => Ok(Started::Started),
+            Started::Done(Settled::Saved(ready)) => Ok(Started::Done(ready)),
+            Started::Done(Settled::Opened(_)) => Err(Error::new(ErrorKind::Internal, "a save finished as an open")),
+        }
+    }
+    fn idle(&self) -> Result<(), Error> {
+        match self.pending.as_ref().map(|pending| pending.kind) {
+            None => Ok(()),
+            Some(FileOperationKind::Save) => Err(Error::new(ErrorKind::Busy, "a save is already in progress")),
+            Some(FileOperationKind::Open) => Err(Error::new(ErrorKind::Busy, "a project is still opening")),
+        }
+    }
+    /// Runs `work` on `runner` when there is one and the storage is `Send`, else inline. Either
+    /// way its outcome goes through [`Self::finish`], so both paths publish the same state.
+    fn run(&mut self, kind: FileOperationKind, control: Control, runner: Option<&dyn SaveRunner>, work: impl Work) -> Result<Started<Settled>, Error> {
+        // Browser asset sources aren't `Send`; the web host has no runner and works inline.
         #[cfg(target_arch = "wasm32")]
         let _ = runner;
         #[cfg(not(target_arch = "wasm32"))]
@@ -213,23 +348,26 @@ impl Persistence {
             match std::mem::replace(&mut self.store, Store::Lent) {
                 Store::Sendable(mut storage) => {
                     let (sender, done) = mpsc::sync_channel(1);
-                    let (capability, metrics, target) = (self.capability, self.metrics.clone(), location.clone());
                     let job = crate::save_runner::SaveJob::new(move || {
-                        let outcome = guard(|| write(storage.as_mut(), &snapshot, capability, &target, &metrics));
+                        let outcome = work(storage.as_mut());
                         // A closed receiver means the session is gone; the storage drops here.
                         let _ = sender.send(Done { storage, outcome });
                     });
                     let refused = runner.spawn(job).err();
-                    self.pending = Some(Pending { done, location, epoch, state });
-                    let Some(job) = refused else { return Ok(Saving::Started) };
+                    self.pending = Some(Pending { done, kind, control });
+                    let Some(job) = refused else { return Ok(Started::Started) };
                     job.run();
-                    return self.settle(true).unwrap_or_else(|| Err(Error::new(ErrorKind::Internal, "the save did not finish"))).map(Saving::Done);
+                    return self.settle(true).unwrap_or_else(|| Err(Error::new(ErrorKind::Internal, "the file operation did not finish"))).map(Started::Done);
                 }
                 other => self.store = other,
             }
         }
-        let published = write(self.store.get()?, &snapshot, self.capability, &location, &self.metrics)?;
-        Ok(Saving::Done(self.publish(location, epoch, state, published)))
+        let outcome = work(self.store.get()?);
+        self.finish(outcome, &control).map(Started::Done)
+    }
+    /// Asks the pending operation to stop; `false` when there is none.
+    pub fn cancel(&self) -> bool {
+        self.pending.as_ref().map(|pending| pending.control.cancel.cancel()).is_some()
     }
     fn publish(&mut self, location: StorageLocation, epoch: u64, state: u64, published: Published) -> bool {
         self.location = Some(location);
@@ -242,9 +380,9 @@ impl Persistence {
         }
         !self.recovery_required
     }
-    /// Finishes a background save: `None` while none is pending or (without `wait`) it is still
-    /// writing, else its outcome (`true` when recovery is ready).
-    pub fn settle(&mut self, wait: bool) -> Option<Result<bool, Error>> {
+    /// Finishes a background save or open: `None` while none is pending or (without `wait`) it
+    /// is still running, else its outcome.
+    pub fn settle(&mut self, wait: bool) -> Option<Result<Settled, Error>> {
         let pending = self.pending.as_ref()?;
         let done = if wait {
             pending.done.recv().ok()
@@ -260,46 +398,70 @@ impl Persistence {
             // The runner dropped the job unrun, and the storage with it: nothing more can be
             // journalled. The journal on disk still holds every edit up to this save.
             self.recovery_required = true;
-            return Some(Err(Error::new(ErrorKind::Internal, "the save stopped before it finished; restart NodeCraft to recover your work")));
+            let what = match pending.kind {
+                FileOperationKind::Save => "the save",
+                FileOperationKind::Open => "opening the project",
+            };
+            return Some(Err(Error::new(ErrorKind::Internal, format!("{what} stopped before it finished; restart NodeCraft to recover your work"))));
         };
         self.store = Store::Sendable(done.storage);
-        Some(done.outcome.map(|published| self.publish(pending.location, pending.epoch, pending.state, published)))
+        Some(self.finish(done.outcome, &pending.control))
     }
-    pub fn open(&mut self, location: StorageLocation, state: u64) -> Result<Snapshot, Error> {
-        let cancel = TransferCancel::default();
-        let prepared = (|| {
-            let prepared = guard(|| self.store.get()?.prepare_open_snapshot(&location, &cancel, &self.metrics))?;
-            let (snapshot, checkpoint, access) = prepared.into_parts();
-            let adopted = CheckpointState::prepare(&checkpoint)?;
-            guard(|| self.store.get()?.checkpoint_plan(&checkpoint, &cancel, &self.metrics))?;
-            Ok::<_, Error>((snapshot, adopted, access))
-        })();
-        let (snapshot, adopted, access) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                guard(|| {
-                    self.store.get()?.cancel_open();
-                    Ok(())
-                })?;
-                return Err(error);
+    /// Publishes a finished operation. One stopped by `file.cancel` reports the cancellation:
+    /// nothing was published, so what was there before still is. Any other failure keeps its
+    /// own error, even when a cancel was asked for after it.
+    fn finish(&mut self, outcome: Outcome, control: &Control) -> Result<Settled, Error> {
+        let cancelled = |error: &Error| control.cancelled() && TransferCancel::is_cancellation(error);
+        match outcome {
+            Outcome::Saved { location, epoch, state, result } => match result {
+                Ok(published) => Ok(Settled::Saved(self.publish(location, epoch, state, published))),
+                Err(error) if cancelled(&error) => Err(Error::new(ErrorKind::Conflict, "the save was cancelled; the file is unchanged")),
+                Err(error) => Err(error),
+            },
+            Outcome::Opened { location, state, result } => match result {
+                Ok(opened) => Ok(Settled::Opened(self.opened(location, state, opened))),
+                Err(failure) => {
+                    if failure.latch {
+                        // The replacement checkpoint is published: the old live document can
+                        // no longer journal against it.
+                        self.recovery_required = true;
+                        return Err(failure.error);
+                    }
+                    if cancelled(&failure.error) {
+                        return Err(Error::new(ErrorKind::Conflict, "opening was cancelled; the current project is unchanged"));
+                    }
+                    Err(failure.error)
+                }
+            },
+        }
+    }
+    fn opened(&mut self, location: StorageLocation, state: u64, opened: Opened) -> Snapshot {
+        self.adopt(opened.adopted);
+        self.location = Some(location);
+        self.read_only = opened.access == ProjectAccess::ReadOnly;
+        self.saved_state = Some(state);
+        self.epoch = opened.snapshot.epoch;
+        opened.snapshot
+    }
+    /// Opens `location` as the document at `state`. With a `runner` and a `Send` storage, the
+    /// file work runs there and this returns [`Started::Started`]; [`Self::settle`] finishes
+    /// it. Otherwise it runs inline.
+    pub fn open(&mut self, location: StorageLocation, state: u64, runner: Option<&dyn SaveRunner>) -> Result<Started<Snapshot>, Error> {
+        self.idle()?;
+        let control = Control::new(FilePhase::Reading);
+        let metrics = self.metrics.clone();
+        let work = {
+            let control = control.clone();
+            move |storage: &mut dyn ProjectStorage| {
+                let result = read(storage, &location, &control, &metrics);
+                Outcome::Opened { location, state, result }
             }
         };
-        // This hook is infallible by protocol; all next-state ownership is already ready.
-        if let Err(error) = guard(|| {
-            self.store.get()?.commit_open();
-            Ok(())
-        }) {
-            // A host violating its infallible hook cannot authorize edits against the
-            // old live document after its replacement checkpoint was published.
-            self.recovery_required = true;
-            return Err(error);
+        match self.run(FileOperationKind::Open, control, runner, work)? {
+            Started::Started => Ok(Started::Started),
+            Started::Done(Settled::Opened(snapshot)) => Ok(Started::Done(snapshot)),
+            Started::Done(Settled::Saved(_)) => Err(Error::new(ErrorKind::Internal, "an open finished as a save")),
         }
-        self.adopt(adopted);
-        self.location = Some(location);
-        self.read_only = access == ProjectAccess::ReadOnly;
-        self.saved_state = Some(state);
-        self.epoch = snapshot.epoch;
-        Ok(snapshot)
     }
     /// Adopts `snapshot` (work recovered from an earlier session's journal) as the session's new
     /// checkpoint, at `location` (the file the earlier session had, if any) and unsaved.

@@ -37,7 +37,7 @@ impl Session {
 
     /// Import only, using the same opaque Session receipt and success-only authority change.
     pub fn import_asset_reader(&mut self, reader: &mut dyn Read, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<Blake3, Error> {
-        self.settle_for_edit();
+        self.settle_for_edit()?;
         let prepared = self.prepare_reader_imports(&mut [reader], cancel, metrics)?;
         let hash = prepared.hashes.first().copied().ok_or_else(|| invalid("reader import has no result"))?;
         self.commit_imports(prepared)?;

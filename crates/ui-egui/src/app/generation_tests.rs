@@ -291,3 +291,46 @@ fn generation_shared_admission_charges_enabled_names_within_the_existing_cache_b
     assert!(cache.bytes <= MAX_SCHEMA_CACHE_BYTES);
     assert!(std::mem::size_of::<admission::GeometryCache>() <= 128);
 }
+
+#[test]
+fn generation_catalog_replacement_updates_actual_placeholder_wheel_hover_without_revision_change() {
+    for inside in [true, false] {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(1200.0, 850.0))
+            .with_max_steps(120)
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), public_scene(false));
+        h.step();
+        let old = *h.state().painted.get(&N).unwrap();
+        let revision = h.state().session.revision();
+        let document = h.state().session.document().clone();
+        let replacement = nodecraft_engine::generation_catalog::GenerationCatalog::builtin().unwrap();
+        h.state_mut().session.swap_resource(Some(replacement.run_catalog()));
+        h.state_mut().session.swap_resource(Some(replacement));
+        h.step();
+        let node = h.state().session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+        let placeholder = card::world_rect(node, None, h.state().theme.tokens());
+        assert_eq!(h.state().painted.get(&N), Some(&placeholder));
+        assert!(old.height() > placeholder.height() + 40.0);
+        let world = if inside { placeholder.center() } else { old.max - Vec2::splat(12.0) };
+        assert_eq!(placeholder.contains(world), inside);
+        let pointer = h.state().view.to_screen(h.state().viewport.min, world);
+        assert!(h.state().viewport.contains(pointer));
+        h.hover_at(pointer);
+        h.step();
+        let pan = h.state().view.pan;
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: Vec2::new(0.0, 40.0),
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(h.state().view.pan == pan, inside, "only the currently painted placeholder owns wheel hover");
+        if !inside {
+            assert_eq!(h.state().navigation.geometry.rects.get(&N), Some(&placeholder));
+            assert!(!h.state().navigation.geometry.sizes.contains_key(&N));
+        }
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+    }
+}
