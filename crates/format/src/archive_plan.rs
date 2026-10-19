@@ -73,10 +73,12 @@ impl ArchivePlan {
                 (crate::archive::VERSION, candidate, candidate_layout)
             } else {
                 drop(candidate);
-                let json =
-                    crate::archive::bounded_json(&Manifest { version: 4, epoch: snapshot.epoch, project: &snapshot.project }, crate::MAX_MANIFEST_BYTES)?;
+                let json = crate::archive::bounded_json(
+                    &Manifest { version: crate::archive::STREAMING_V4, epoch: snapshot.epoch, project: &snapshot.project },
+                    crate::MAX_MANIFEST_BYTES,
+                )?;
                 let layout = layout(json.len() as u64, assets.values().copied())?;
-                (4, json, layout)
+                (crate::archive::STREAMING_V4, json, layout)
             };
             let workspace = snapshot.assets.context().0.workspace.as_ref().ok_or_else(unsupported)?;
             let sealed = workspace.generate_archive(layout.bytes, cancel, metrics, |output| {
@@ -133,7 +135,8 @@ impl ArchivePlan {
         }
         let (snapshot, version) = crate::archive::decode_versioned(&bytes)?;
         // Small hosts publish NCRJ0003. Migrate the archive before selecting that
-        // envelope rather than placing old graph bytes under a newer magic.
+        // envelope rather than placing old graph bytes under a newer magic. VERSION is
+        // the graph writer declaration; decode_versioned gates old 3/4 before typed parsing.
         if version < crate::archive::VERSION {
             bytes = crate::encode(&snapshot)?;
         }

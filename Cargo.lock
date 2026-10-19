@@ -3085,6 +3085,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "getrandom 0.3.4",
+ "libc",
  "log",
  "nodecraft-engine",
  "nodecraft-format",

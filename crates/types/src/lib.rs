@@ -5,6 +5,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 mod asset;
+mod contract;
 mod error;
 mod ids;
 mod money;
@@ -14,6 +15,10 @@ mod schema;
 mod value;
 
 pub use asset::{AssetRef, Blake3, MediaMeta, Mime};
+pub use contract::{
+    Affects, Check, Comparison, Condition, ConnectedText, Contract, ContractVersion, DefaultPolicy, DropReason, Dropped, Effective, HiddenPolicy, Issue,
+    IssueCode, Migration, ParamOwner, ParamRule, ParamState, Resolution, Shared, TextPrecedence, Unit, compose_text, overlay, shared_value,
+};
 pub use error::{Error, ErrorKind};
 pub use ids::*;
 pub use money::{Currency, Money, Rounding};

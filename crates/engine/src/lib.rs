@@ -13,6 +13,7 @@ mod command_schemas;
 pub mod commands;
 pub mod comment_cmds;
 pub mod create_cmds;
+pub mod describe_cmds;
 pub mod edge_cmds;
 mod execution_identity;
 pub mod file_cmds;

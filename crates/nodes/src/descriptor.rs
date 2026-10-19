@@ -242,6 +242,19 @@ pub trait NodeKind: Send + Sync {
         }
         Ok(migration)
     }
+    /// The descriptor contract (#162) for `descriptor`, this kind's static descriptor or one of
+    /// its instance descriptors. The default is implied by the descriptor; kinds override it to
+    /// add port roles, wire bounds, modes and parameter rules.
+    fn contract(&self, descriptor: &NodeDescriptor) -> crate::NodeContract {
+        crate::NodeContract::derive(descriptor)
+    }
+    /// The checked contract of a stored node. CLI, MCP and UI describe nodes through this.
+    fn instance_contract(&self, node: &Node) -> Result<crate::NodeContract, Error> {
+        let descriptor = self.resolve_instance(node)?;
+        let contract = self.contract(&descriptor);
+        contract.validate(&descriptor)?;
+        Ok(contract)
+    }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId>;
     /// Dynamic kinds can override input compatibility using their per-instance config.
     fn instance_mode(&self, node: &Node, inputs: &[PortType]) -> Result<Option<ModeId>, Error> {

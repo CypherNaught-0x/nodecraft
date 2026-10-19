@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type ParamValues = BTreeMap<String, Value>;
-const MAX_PARAMS: usize = 256;
-const MAX_TEXT: usize = 1024 * 1024;
+pub(crate) const MAX_PARAMS: usize = 256;
+pub(crate) const MAX_TEXT: usize = 1024 * 1024;
 const MAX_CHOICES: usize = 16_384;
 const MAX_OPTION_TEXT: usize = 4096;
 #[cfg(test)]
@@ -115,10 +115,10 @@ impl ResolvedParams {
     }
 }
 
-fn invalid(message: &'static str) -> Error {
+pub(crate) fn invalid(message: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
-fn name(value: &str) -> bool {
+pub(crate) fn name(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
@@ -166,7 +166,7 @@ impl ParamControl {
     }
 
     // The schema has already validated the control; do not scan large option lists again.
-    fn validate_value_checked(&self, value: &Value) -> Result<(), Error> {
+    pub(crate) fn validate_value_checked(&self, value: &Value) -> Result<(), Error> {
         let valid = match (self, value) {
             (Self::Text { max_bytes, .. }, Value::Text(text)) => text.len() <= *max_bytes,
             (Self::Choice { options }, Value::Text(text)) => options.iter().any(|option| {
@@ -384,7 +384,7 @@ impl ParamSchema {
     }
 }
 
-fn value_text_bytes(value: &Value) -> usize {
+pub(crate) fn value_text_bytes(value: &Value) -> usize {
     match value {
         Value::Text(text) => text.len(),
         Value::Media(asset) => asset.mime.as_str().len(),
