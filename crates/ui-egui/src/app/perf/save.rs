@@ -87,6 +87,8 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
     // The file still holds the whole graph. The project is single-writer, so close this window
     // first, as a user would before opening it elsewhere.
     drop(h);
+    let (_, _, _, open_error) = NodeCraftApp::storage_session(StorageSetup { recovery: scratch.0.join("recovery-check"), open: Some(file.clone()) }).unwrap();
+    assert!(open_error.is_none(), "the saved file reopens: {open_error:?}");
     let started = Instant::now();
     let reopened = storage_harness(storage_app(&scratch.0, "recovery-reopen", Some(file.clone())));
     let open = started.elapsed();
