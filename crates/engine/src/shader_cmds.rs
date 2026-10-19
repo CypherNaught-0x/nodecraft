@@ -66,7 +66,14 @@ fn set(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the shader isn't valid: {}", e.0.chars().take(4000).collect::<String>())))?;
     let mut changed = node.clone();
     changed.config.insert(CONFIG.into(), config_value(&shader)?);
+    // Kept values move into their new range; ones for undeclared parameters go.
     changed.params.retain(|name, _| shader.params.iter().any(|d| d.name == *name));
+    for declared in &shader.params {
+        if let Some(nodecraft_types::Value::Number(n)) = changed.params.get(&declared.name) {
+            let clamped = n.get().clamp(declared.min, declared.max);
+            changed.params.insert(declared.name.clone(), nodecraft_types::Value::Number(nodecraft_types::Number::new(clamped)?));
+        }
+    }
     if changed == *node {
         return Ok(Effect::None { result: json!({"changed": false}) });
     }

@@ -8,8 +8,15 @@
 - **Validated with naga before any GPU sees it** (`nodecraft_gpu::shader::validate`, naga pinned
   to wgpu's version): the assembled module must parse and validate; the person's code may declare
   no bindings, globals, overrides or entry points, reference no host buffer except through the
-  helpers, and contain no loop (so every invocation finishes) or barrier; source ≤ 32 KiB. The
-  person's source comes first so compiler messages carry their own line numbers.
+  helpers, and contain no loop or barrier; no value may exceed 16 KiB (GPU stacks are small); and
+  a static cost (operations, each call counted at its callee's full cost) is at most 100,000 per
+  pixel, so call chains can't multiply the work. Source ≤ 32 KiB. The person's source comes first
+  so compiler messages carry their own line numbers.
+- **Failures never panic.** Every GPU call runs inside validation, internal and out-of-memory
+  error scopes, and an error none of them caught marks the runner broken (wgpu's default handler
+  would panic). A shader the backend refuses isn't compiled again. Bounded work per pixel still
+  takes a while on a huge image: a run over 10 seconds fails, and the next run starts on a fresh
+  runner. Shaders run one at a time on one process-wide runner.
 - **Stored on the node**: `config["nodecraft.shader"]` as JSON, set with `node.shader_set`
   (validated, one undo step, open to agents: it's free and reversible). The kind's sliders come
   from the declarations; changing the shader changes the input hash, so results go stale and live

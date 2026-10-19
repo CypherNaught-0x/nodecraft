@@ -276,8 +276,23 @@ impl LocalActions {
             *gpu = Some(nodecraft_gpu::shader::ShaderRunner::request().map_err(|_| "custom shaders need a GPU, and none is available".to_owned())?);
         }
         let runner = gpu.as_mut().ok_or("custom shaders need a GPU, and none is available")?;
-        let pixels =
-            runner.run(&valid, &values, source.width(), source.height(), source.pixels()).map_err(|e| format!("the shader failed on the GPU ({e:?})"))?;
+        let pixels = match runner.run(&valid, &values, source.width(), source.height(), source.pixels()) {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                // A runner that failed may be unusable: the next run starts on a fresh one.
+                if runner.is_lost() {
+                    *gpu = None;
+                }
+                return Err(match error {
+                    nodecraft_gpu::image::GpuImageError::Unsupported => "this GPU can't compile the shader; simplify it".to_owned(),
+                    nodecraft_gpu::image::GpuImageError::Busy => {
+                        format!("the shader took longer than {} seconds on the GPU", nodecraft_gpu::shader::TIMEOUT.as_secs())
+                    }
+                    nodecraft_gpu::image::GpuImageError::Resource => "the image is too large for the GPU".to_owned(),
+                    _ => "the GPU failed while running the shader".to_owned(),
+                });
+            }
+        };
         let out =
             Raster::new(source.width(), source.height(), pixels, ImageLimits::default()).map_err(|e| format!("the shader's result can't be used: {e}"))?;
         self.stage(&out)

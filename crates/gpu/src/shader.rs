@@ -13,15 +13,22 @@
 //! **Validated before it reaches a GPU** ([`validate`]), with naga: the assembled module must
 //! parse and validate, and the person's code must stay a pure per-pixel function. It may declare
 //! no bindings, globals or overrides, touch no host buffer except through the helpers, contain no
-//! loop (so every invocation finishes) and no barrier. The source is bounded, and so are the
-//! parameters. A shader that passes can still be slow, but it can't run forever or write outside
-//! its pixel.
-use naga::{Block, Expression, Statement};
+//! loop and no barrier; no value may exceed 16 KiB; and a static cost (every operation, with
+//! each call counted at its callee's full cost) is bounded per pixel, so call chains can't
+//! multiply the work. The source is bounded, and so are the parameters. A shader that passes
+//! does bounded work per pixel, but a large image can still take long: the runner gives up after
+//! a timeout and starts afresh.
+use naga::{ArraySize, Block, Expression, Handle, Statement, TypeInner};
+use std::collections::BTreeMap;
 
 /// Longest shader source.
 pub const MAX_SOURCE: usize = 32 * 1024;
 /// Most declared parameters.
 pub const MAX_PARAMS: usize = 16;
+/// Largest value a shader may hold (a function-scope array, say): beyond this, GPU stacks run out.
+pub const MAX_VALUE_BYTES: u32 = 16 * 1024;
+/// Most operations one pixel may cost, counting every call through its callee's cost.
+pub const MAX_COST: u64 = 100_000;
 
 /// A declared float parameter.
 #[derive(Clone, Debug, PartialEq)]
@@ -164,7 +171,64 @@ pub fn validate(spec: &ShaderSpec) -> Result<ValidShader, ShaderError> {
     if !effect {
         return refuse("a shader defines fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32>");
     }
+    // Sizes: every fixed-size type within MAX_VALUE_BYTES (the host's buffers are the only
+    // runtime-sized arrays, and only host globals may hold them).
+    let mut layouter = naga::proc::Layouter::default();
+    layouter.update(module.to_ctx()).map_err(|_| ShaderError("a type's size can't be worked out".into()))?;
+    for (handle, ty) in module.types.iter() {
+        if matches!(ty.inner, TypeInner::Array { size: ArraySize::Dynamic, .. }) {
+            continue;
+        }
+        if layouter[handle].size > MAX_VALUE_BYTES {
+            return refuse(format!("a value is too large; values are at most {} KiB", MAX_VALUE_BYTES / 1024));
+        }
+    }
+    // Work: every function's cost with calls counted at their callee's cost (WGSL has no
+    // recursion, so the call graph is acyclic).
+    let mut costs: BTreeMap<Handle<naga::Function>, u64> = BTreeMap::new();
+    let mut order: Vec<Handle<naga::Function>> = module.functions.iter().map(|(h, _)| h).collect();
+    // Arena order puts callees before callers in WGSL (no forward calls); iterate to a fixpoint
+    // anyway, bounded by the function count.
+    for _ in 0..order.len().saturating_add(1) {
+        let mut changed = false;
+        for &handle in &order {
+            let function = &module.functions[handle];
+            let cost = function_cost(function, &costs);
+            if costs.get(&handle) != Some(&cost) {
+                costs.insert(handle, cost);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    order.clear();
+    let main = module.entry_points.first().map(|e| function_cost(&e.function, &costs)).unwrap_or(u64::MAX);
+    if main > MAX_COST {
+        return refuse(format!("the shader does too much work per pixel (about {main} operations; at most {MAX_COST})"));
+    }
     Ok(ValidShader { module: module_text, params: spec.params.len() })
+}
+
+/// A function's cost: its expressions, plus each call at its callee's cost.
+fn function_cost(function: &naga::Function, costs: &BTreeMap<Handle<naga::Function>, u64>) -> u64 {
+    fn calls(block: &Block, costs: &BTreeMap<Handle<naga::Function>, u64>) -> u64 {
+        let mut total: u64 = 0;
+        for statement in block.iter() {
+            let add = match statement {
+                Statement::Call { function, .. } => costs.get(function).copied().unwrap_or(MAX_COST.saturating_add(1)),
+                Statement::Block(inner) => calls(inner, costs),
+                Statement::If { accept, reject, .. } => calls(accept, costs).saturating_add(calls(reject, costs)),
+                Statement::Switch { cases, .. } => cases.iter().fold(0u64, |sum, case| sum.saturating_add(calls(&case.body, costs))),
+                Statement::Loop { body, continuing, .. } => calls(body, costs).saturating_add(calls(continuing, costs)),
+                _ => 0,
+            };
+            total = total.saturating_add(add);
+        }
+        total
+    }
+    u64::try_from(function.expressions.len()).unwrap_or(u64::MAX).saturating_add(calls(&function.body, costs))
 }
 
 /// No loops (every invocation finishes) and no barriers.
@@ -189,7 +253,7 @@ fn check_block(block: &Block, name: &str) -> Result<(), ShaderError> {
     Ok(())
 }
 
-pub use runner::ShaderRunner;
+pub use runner::{ShaderRunner, TIMEOUT};
 
 mod runner;
 

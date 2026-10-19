@@ -81,3 +81,36 @@ fn a_shader_node_runs_live_on_the_gpu() {
     let (_, image) = nodecraft_media::decode_image(s.assets().get(&result.hash).unwrap(), &nodecraft_media::Limits::default()).unwrap();
     assert_eq!(image.to_rgba8().get_pixel(0, 0).0, [255, 175, 95, 255], "inverted");
 }
+
+#[test]
+fn kept_values_move_into_the_new_range_and_damaged_config_is_an_error_not_a_panic() {
+    let mut s = session();
+    s.dispatch(
+        "node.param_set",
+        &json!({"canvas": CANVAS, "id": SHADER, "name": "amount", "value": Value::Number(nodecraft_types::Number::new(1.0).unwrap())}),
+    )
+    .unwrap();
+    let source = "fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color * amount(); }";
+    s.dispatch(
+        "node.shader_set",
+        &json!({"canvas": CANVAS, "id": SHADER, "source": source, "params": [{"name": "amount", "label": "Amount", "min": 0.0, "max": 0.5, "default": 0.25}]}),
+    )
+    .unwrap();
+    let node = s.document().canvases().get(&CANVAS).unwrap().nodes().get(&SHADER).unwrap().clone();
+    assert_eq!(node.params.get("amount"), Some(&Value::Number(nodecraft_types::Number::new(0.5).unwrap())));
+    s.kinds().get("image.shader").unwrap().validate_instance(&node, true).expect("still plannable");
+    let kind = s.kinds().get("image.shader").unwrap();
+    for bad in
+        [Value::Bool(true), Value::Text("{not json".into()), Value::Text("x".repeat(70 * 1024)), Value::Text(r#"{"source":"","params":[],"extra":1}"#.into())]
+    {
+        let mut damaged = node.clone();
+        damaged.config.insert(nodecraft_nodes::shader::CONFIG.into(), bad);
+        assert!(kind.resolve_instance(&damaged).is_err());
+    }
+    let mut inverted = node.clone();
+    inverted.config.insert(
+        nodecraft_nodes::shader::CONFIG.into(),
+        Value::Text(r#"{"source":"","params":[{"name":"a","label":"A","min":1.0,"max":0.0,"default":0.5}]}"#.into()),
+    );
+    assert!(kind.resolve_instance(&inverted).is_err(), "min above max");
+}
