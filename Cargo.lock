@@ -3005,6 +3005,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodecraft-plugin-store"
+version = "0.2.0-rc.1"
+dependencies = [
+ "ed25519-dalek",
+ "nodecraft-plugin",
+ "nodecraft-types",
+ "proptest",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "nodecraft-provider-testkit"
 version = "0.2.0-rc.1"
 dependencies = [
