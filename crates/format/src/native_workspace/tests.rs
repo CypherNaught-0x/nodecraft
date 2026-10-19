@@ -45,6 +45,7 @@ fn fixture(parent: &Path, id: u64, payloads: usize) -> PathBuf {
     let name = format!("{PREFIX}123-{id}");
     let root = parent.join(&name);
     let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
