@@ -27,6 +27,7 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 pub const BUILTIN: &[(&str, &str)] = &[
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
+    ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
     ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
