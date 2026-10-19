@@ -73,9 +73,9 @@ temporarily human-only until MCP enforces allowed read/write roots (#116); they 
 through the engine and native app. `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325); agents can still review those charges with `usage.ownership`. The
-`plugin.*` changes (import, update, enable, disable, rollback, uninstall, prune) read package files
+`plugins.*` changes (import, update, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
-see what is installed with `plugin.list` (#172). A new
+see what is installed with `plugins.list` (#172). A new
 command stays hidden until it is added to one of the
 lists, and a test fails until then. `canvas.auto_format` is temporarily human-only: it consumes
 the live selection and trusted card geometry, which MCP and the control bridge cannot supply yet.

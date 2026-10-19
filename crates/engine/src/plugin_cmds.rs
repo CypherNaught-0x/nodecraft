@@ -1,4 +1,4 @@
-//! `plugin.*` commands (#172): list, import, update, enable, disable, roll back, uninstall and
+//! `plugins.*` commands (#172): list, import, update, enable, disable, roll back, uninstall and
 //! prune data packages in the local store. They change no document and add no undo step; the
 //! host's `plugins` service ([`register_plugin_service`]) owns the store and the trust file.
 //! Nothing in a package runs, and nothing here opens a dialog.
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// The host-service capability the `plugin.*` commands use.
+/// The host-service capability the `plugins.*` commands use.
 pub const PLUGIN_SERVICE: &str = "plugins.store";
 /// Largest trust file read.
 const MAX_TRUST_BYTES: u64 = 256 * 1024;
@@ -74,8 +74,9 @@ struct RollbackParams {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-fn always(_: &Context<'_>, _: &Value) -> Result<(), Error> {
-    Ok(())
+/// Available only where the host keeps a package store.
+fn enabled(c: &Context<'_>, _: &Value) -> Result<(), Error> {
+    if c.services.contains(PLUGIN_SERVICE) { Ok(()) } else { Err(Error::new(ErrorKind::Unsupported, "plugin packages aren't available here")) }
 }
 
 fn service(request: Value) -> Effect {
@@ -140,60 +141,60 @@ pub fn specs() -> Vec<CommandSpec> {
         alternate_shortcuts: &[],
         input_schema,
         params_doc,
-        enabled: always,
+        enabled,
         run,
     };
     vec![
         spec(
-            "plugin.list",
+            "plugins.list",
             "List plugin packages",
             none_schema,
             "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest]}]}.",
             list,
         ),
         spec(
-            "plugin.import",
+            "plugins.import",
             "Import plugin package",
             file_schema,
             "{location: string, dry_run?: bool}; verifies a .ncraft-plugin data package and installs it disabled (dry_run: only reports). Returns {package_id, version, digest, provenance, signed_by, license, notices, registrations, dry_run}. Never opens a dialog.",
             import,
         ),
         spec(
-            "plugin.update",
+            "plugins.update",
             "Update plugin package",
             file_schema,
             "{location: string, dry_run?: bool}; installs a new version of a disabled package, disabled, keeping the old one for rollback. Returns the import report with `replaced`.",
             update,
         ),
         spec(
-            "plugin.enable",
+            "plugins.enable",
             "Enable plugin package",
             package_only_schema,
             "{package_id}; checks its signature, exact dependency locks and IDs, then publishes all its registrations or none. Returns {registered: [id], unbound: [id]}.",
             enable,
         ),
         spec(
-            "plugin.disable",
+            "plugins.disable",
             "Disable plugin package",
             package_only_schema,
             "{package_id}; refused while an enabled package depends on it. Returns {disabled: true}.",
             disable,
         ),
         spec(
-            "plugin.rollback",
+            "plugins.rollback",
             "Roll back plugin package",
             rollback_schema,
             "{package_id, digest}; makes a kept version of a disabled package active again. Returns {rolled_back: true}.",
             rollback,
         ),
         spec(
-            "plugin.uninstall",
+            "plugins.uninstall",
             "Uninstall plugin package",
             package_only_schema,
             "{package_id}; removes a disabled package, keeping versions installed packages lock. Returns {removed: [digest], kept: [digest], dependents: [package_id]}. Projects are never edited.",
             uninstall,
         ),
-        spec("plugin.prune", "Prune old plugin versions", none_schema, "{}; drops kept versions nothing uses. Returns {removed: [digest]}.", prune),
+        spec("plugins.prune", "Prune old plugin versions", none_schema, "{}; drops kept versions nothing uses. Returns {removed: [digest]}.", prune),
     ]
 }
 
@@ -211,6 +212,14 @@ fn read_capped(path: &std::path::Path, cap: u64, what: &str) -> Result<Vec<u8>, 
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::io::Read;
+        if !path.is_absolute() {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("the {what} location must be an absolute path")));
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => return Err(Error::new(ErrorKind::InvalidInput, format!("the {what} location isn't a file"))),
+            Err(_) => return Err(Error::new(ErrorKind::NotFound, format!("the {what} can't be opened"))),
+        }
         let file = std::fs::File::open(path).map_err(|_| Error::new(ErrorKind::NotFound, format!("the {what} can't be opened")))?;
         let mut bytes = Vec::new();
         file.take(cap + 1).read_to_end(&mut bytes).map_err(|_| Error::new(ErrorKind::Internal, format!("the {what} can't be read")))?;
@@ -228,22 +237,26 @@ fn read_capped(path: &std::path::Path, cap: u64, what: &str) -> Result<Vec<u8>, 
 
 fn trust(host: &PluginHost) -> Result<TrustStore, Error> {
     let Some(path) = &host.trust else { return Ok(TrustStore::default()) };
-    if !path.exists() {
-        return Ok(TrustStore::default());
+    // Only a missing file means no trusted keys; any other failure (permissions, a broken link)
+    // is reported, so a revoked key can never pass as merely unknown.
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(TrustStore::default()),
+        Err(_) => return Err(Error::new(ErrorKind::Internal, "the trust file can't be read")),
+        Ok(_) => {}
     }
     TrustStore::decode(&read_capped(path, MAX_TRUST_BYTES, "trust file")?)
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the trust file is invalid ({e})")))
 }
 
 fn report_json(r: &ImportReport, dry_run: bool) -> Value {
-    let provenance = match &r.provenance {
-        Provenance::Unsigned => "unsigned",
-        Provenance::Verified { .. } => "verified",
-        Provenance::UnknownKey { .. } => "unknown_key",
+    let (provenance, key_id) = match &r.provenance {
+        Provenance::Unsigned => ("unsigned", None),
+        Provenance::Verified { key_id } => ("verified", Some(key_id.to_string())),
+        Provenance::UnknownKey { key_id } => ("unknown_key", Some(key_id.to_string())),
     };
     json!({
         "package_id": r.entry.package_id.as_str(), "version": r.entry.version.to_string(), "digest": r.entry.digest.to_string(),
-        "provenance": provenance, "signed_by": r.entry.signed_by, "license": r.entry.license, "notices": r.notices,
+        "provenance": provenance, "key_id": key_id, "signed_by": r.entry.signed_by, "license": r.entry.license, "notices": r.notices,
         "registrations": r.registrations.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
         "replaced": r.replaced.map(|d| d.to_string()), "dry_run": dry_run,
     })
@@ -256,6 +269,8 @@ fn package_id(request: &Value) -> Result<PackageId, Error> {
 
 /// Runs one `plugins` request against `store`.
 pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value) -> Result<Value, Error> {
+    // Another window or the CLI may have changed the store since the last request.
+    store.refresh()?;
     let referenced = BTreeSet::new();
     match request.get("op").and_then(Value::as_str) {
         Some("list") => {

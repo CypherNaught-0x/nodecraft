@@ -404,10 +404,12 @@ impl NodeCraftApp {
         };
         // Plugin data packages (#172) live in the settings folder; without one the plugin.*
         // commands are unsupported, and a store that can't open is logged, not fatal.
+        let mut plugin_problem = None;
         if let Some(dir) = store.dir().map(|d| d.join("plugins"))
             && let Err(error) = Self::register_plugins(&mut services, dir)
         {
             log::warn!("plugin packages unavailable: {}", error.message);
+            plugin_problem = Some(format!("Plugin packages are unavailable: {}", error.message));
         }
         // Storage that can't start (another window holds the journal, or the project won't
         // open) still opens the window, without project files, and says why.
@@ -432,7 +434,7 @@ impl NodeCraftApp {
             }
             None => Self::with_services(services)?,
         };
-        app.notice = problem;
+        app.notice = problem.or(plugin_problem);
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
         if let Some(journal) = journal {
             app.attach_recovery(journal, kept);
