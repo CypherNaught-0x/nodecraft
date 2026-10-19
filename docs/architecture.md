@@ -115,6 +115,13 @@ All supplied values, including hidden fields, must remain type-valid and within 
 Boolean, finite floating-point and exact signed/unsigned integer `Value` variants store scalar
 parameters without string coercion; only full-width integer wire encodings use decimal strings.
 
+The descriptor contract ([`descriptor-contract.md`](descriptor-contract.md), #162) wraps a schema
+with units, default policies (unset/literal/auto/random seed), visibility and enabling conditions,
+hidden-value policy, identity/cost/shape effects, meaning tags and cross-field checks
+(`types::Contract`), and adds port roles, wire bounds and input-selected modes
+(`nodes::NodeContract`). `NodeKind::contract` defaults to one derived from the descriptor;
+registration validates it, and `node.describe` returns it to the CLI and MCP.
+
 ### Instance schemas, configuration and migration
 
 `descriptor()` is static palette metadata. UI, MCP and planners resolve a stored node with
@@ -206,6 +213,10 @@ Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`
 (`cargo xtask wasm`). Filesystem access, threads and processes go through platform services that the
 apps provide; network I/O uses `reqwest`, which works on both targets.
 
+`apps/nodecraft-web` is the browser app: the same `NodeCraftApp` on eframe's `WebRunner`, built
+by trunk (`packaging/web/package.sh`). It is a preview: no browser host provides project storage,
+the keychain or local runs yet, so those commands report *unsupported*.
+
 ## The engine/UI seam
 
 The shell (`ui-egui`) holds only view state: pan and zoom (`canvas::CanvasView`), open panels,
@@ -213,6 +224,16 @@ hover, selection highlights and uncommitted editor drafts. Cards read the engine
 node-kind descriptors directly. All accepted title, parameter and position edits dispatch commands;
 rendering never writes automatic titles into the document. Each card has a transformed egui layer
 so its schema widgets use world coordinates while pointer hit tests follow canvas pan/zoom.
+
+Native dropped-file acquisition is a private shell service with one process-wide worker and one
+occupied request. It opens, checks metadata on, reads and closes the same file off the UI thread.
+The pending view polls a bounded result and offers Cancel; only a current Session identity,
+project/canvas and revision can accept it through the existing synchronous `import_files` route.
+A blocked filesystem call cannot be interrupted portably: abandonment ends the pending view, but
+keeps the process slot busy until that call returns or the process restarts. No replacement worker
+is spawned. Browser file drops remain unsupported. See the
+[native drop decision](decisions/2026-10-18-bounded-native-drop-acquisition.md) for resource bounds
+and the distinction between acquisition and synchronous engine import.
 
 `engine::Session` now owns a validated `Project`, its command and node-kind registries, undo/redo stacks and
 revision notifications. Frontends call `enabled(id, &params)` for a disabled reason and

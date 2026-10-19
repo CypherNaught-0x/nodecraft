@@ -72,9 +72,14 @@ impl GeometryCache {
         let admitted = admit(session, node, None);
         let rect = card::world_rect(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t);
         let placeholder = admitted.is_none();
-        if self.entries.len() < MAX_ENTRIES {
-            if self.entries.len() == self.entries.capacity() && self.entries.try_reserve_exact(1).is_err() {
-                return rect;
+        let entry_limit = MAX_ENTRIES.min(MAX_BYTES.saturating_sub(128) / std::mem::size_of::<(NodeId, Rect, bool)>());
+        if self.entries.len() < entry_limit {
+            if self.entries.len() == self.entries.capacity() {
+                // Batch growth for ascending candidates; sorted insertion may still shift other entries.
+                let target = self.entries.capacity().saturating_mul(2).max(16).min(entry_limit);
+                if self.entries.try_reserve_exact(target.saturating_sub(self.entries.len())).is_err() {
+                    return rect;
+                }
             }
             if self.entries.capacity().checked_mul(std::mem::size_of::<(NodeId, Rect, bool)>()).and_then(|n| n.checked_add(128)).is_none_or(|n| n > MAX_BYTES) {
                 self.clear();

@@ -284,3 +284,31 @@ fn raw_redo_and_release_invalidates_cached_placeholder_before_painting() {
     assert!(h.state().painted.contains_key(&id), "restored valid tall card must not reuse the old placeholder verdict");
     assert!(h.state().selection.contains(id), "selection must use the restored painted geometry");
 }
+
+#[test]
+fn ascending_geometry_entries_grow_in_batches_and_release_capacity() {
+    let (h, _, tall) = fixture("valid");
+    let app = h.state();
+    let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().next().unwrap();
+    let mut cache = admission::GeometryCache::default();
+    let mut previous_bytes = 0;
+    let mut growths = 0;
+    for n in 0u32..512 {
+        let mut candidate = node.clone();
+        let mut id = [0u8; 16];
+        id.get_mut(..4).unwrap().copy_from_slice(&n.to_be_bytes());
+        candidate.id = NodeId::from_bytes(id);
+        assert_eq!(cache.rect(&app.session, &candidate, app.theme.tokens()), tall);
+        let bytes = cache.retained_bytes();
+        if bytes != previous_bytes {
+            growths += 1;
+            previous_bytes = bytes;
+        }
+        assert_eq!(cache.len(), usize::try_from(n).unwrap() + 1);
+        assert!(bytes <= 512 * 1024);
+    }
+    assert!(growths <= 10, "ascending entries requested {growths} separate capacity increases");
+    cache.clear();
+    assert_eq!(cache.len(), 0);
+    assert_eq!(cache.retained_bytes(), 0);
+}

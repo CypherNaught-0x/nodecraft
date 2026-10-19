@@ -375,7 +375,7 @@ fn scan_entries(
             return Ok(report);
         }
     }
-    // Deliberately no4097th read: exactly filling the window cannot prove exhaustion.
+    // Deliberately no 4097th read: exactly filling the window cannot prove exhaustion.
     report.scan_window_exhausted = true;
     Ok(report)
 }
