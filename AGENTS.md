@@ -45,7 +45,7 @@ building the same thing.
    `gh pr list --state open --search "#N"` finds no PR for it.
 3. **Comment `/claim`** on the issue. The bot (`scripts/claim/claim.js`) assigns you, adds
    `in progress` and replies with your deadline, or tells you who holds it.
-4. **Open a draft PR within 72 hours**, titled `<summary> (#N)` with `Fixes #N` in the body. An
+4. **Open a draft PR within 24 hours**, titled `<summary> (#N)` with `Fixes #N` in the body. An
    empty commit is fine to start: `git commit --allow-empty -m "claim: #N"`. Without a PR in time
    the claim lapses.
 5. **Push at least every 14 days**; a claim whose PR has had no pushes for 14 days is released by
@@ -135,6 +135,7 @@ crates/
 apps/
   nodecraft                   desktop app (eframe/wgpu)
   nodecraft-cli               headless CLI with the integrated MCP server
+  nodecraft-web               the same app in the browser (wasm preview, built with trunk)
 xtask/                        cargo xtask layers | wasm | ci | version
 packaging/                    per-OS release packaging (docs/releasing.md)
 ```

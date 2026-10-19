@@ -64,11 +64,11 @@ now is connecting it to the window. The target:
 
 ## Under the hood
 
-- A Rust 2024 workspace of 17 layered crates and 2 apps (`types` → `graph` →
+- A Rust 2024 workspace of 17 layered crates and 3 apps (`types` → `graph` →
   `nodes`/`catalog`/`actions` → `exec`/`providers`/`gpu`/`format` → `engine` →
   `ui-egui`/`agent`/`automation`), with the layering enforced by `cargo xtask layers`.
 - egui/eframe on wgpu. Every library crate also builds for `wasm32-unknown-unknown`, checked by
-  `cargo xtask wasm`, ready for a browser version.
+  `cargo xtask wasm`; `apps/nodecraft-web` runs the same app in a browser (a preview).
 - Every action is a command with typed JSON params, and every edit is an invertible changeset —
   undo, autosave, automation and future live collaboration all use that one path.
 - Built never to crash: no `unsafe`, no `unwrap`/`panic` outside tests, hostile input bounded at
@@ -108,7 +108,7 @@ Windows packages and also as a separate macOS download.
 ## Contributing
 
 Pick an issue and comment `/claim`. A bot assigns it to you, and you open a draft PR within
-72 hours. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the claim rules, the non-negotiable code rules
+24 hours. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the claim rules, the non-negotiable code rules
 and checklists for adding commands, node kinds and providers.
 
 ## Status and roadmap

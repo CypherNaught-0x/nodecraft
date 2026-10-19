@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NodeCraft</title>
+  <!-- trunk builds the size-optimised profile. package.sh runs wasm-opt after trunk, which would
+       break subresource-integrity hashes, so trunk writes none. -->
+  <link data-trunk rel="rust" data-bin="nodecraft-web" data-cargo-profile="wasm-release" data-wasm-opt="0" data-integrity="none">
+  <link data-trunk rel="icon" href="../../assets/app-icon/hicolor/32x32/apps/io.github.cyphernaught0x.nodecraft.png">
+  <style>
+    /* canvas_bg and text_muted from crates/ui-egui/src/theme.rs, so the page doesn't flash. */
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #080809; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #nodecraft_status {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      margin: 0; padding: 1rem; pointer-events: none; color: #8a8a93; font: 14px system-ui, sans-serif; text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="nodecraft_canvas"></canvas>
+  <p id="nodecraft_status">Loading NodeCraft…</p>
+  <noscript><p>NodeCraft needs WebAssembly and JavaScript enabled to run in the browser.</p></noscript>
+</body>
+</html>

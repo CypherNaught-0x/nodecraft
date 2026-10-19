@@ -1,0 +1,15 @@
+# Ownership for the paths that decide what CI runs.
+#
+# `scripts/ci/rust-scope.sh` is the whitelist that lets a pull request skip the required Rust checks,
+# and `.github/workflows/` and `.github/actions/` are those checks. The workflow already refuses to
+# skip a change set that touches them, and it classifies with the *base* revision's copy so a pull
+# request cannot rewrite the rule to excuse itself. This is the human half: a whitelist widened for
+# the wrong reason looks exactly like one widened for the right one in the diff.
+#
+# The repo ruleset has `require_code_owner_review` off, so these entries request a review from the
+# owner of a touched path rather than block a merge on it. That is the intent: visibility on CI
+# changes, not a second gate on top of the one CI already enforces.
+# See docs/decisions/2026-10-18-rust-ci-skips-prose-only-changes.md.
+/scripts/ci/        @CypherNaught-0x
+/.github/workflows/ @CypherNaught-0x
+/.github/actions/   @CypherNaught-0x

@@ -66,9 +66,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   (#410) and nothing recomputes live (#88). Cards do render image previews now (#386).
 - **The in-canvas agent is a 5-line stub.** `crates/agent` has no code; the MCP server and control
   channel are what external agents use today.
-- **No browser build.** Every library crate compiles to wasm and `web` is reserved in the layer
-  map, but there is no `apps/nodecraft-web`. Dropping files in a browser is an explicit
-  *unsupported*.
+- **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
+  releases ship it as `nodecraft-web-<v>.zip` (#99), but no browser host provides project storage,
+  keys or runs yet, and dropping files in a browser is an explicit *unsupported*.
 - **FFmpeg is CI-only.** The video sidecar exists behind a `video` feature that no product crate
   enables yet (#411); the `source.video` and `source.audio` kinds carry metadata, but there is no
   playback UI (#105, #106), no video actions (#108) and no video generation.
