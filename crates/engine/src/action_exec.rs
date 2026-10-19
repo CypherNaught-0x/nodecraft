@@ -71,6 +71,10 @@ fn color(text: &str) -> Result<Json, String> {
     Ok(json!({"r": byte(0)?, "g": byte(2)?, "b": byte(4)?, "a": alpha}))
 }
 
+fn matcher(p: &ParamValues) -> Result<Json, String> {
+    Ok(json!({"target": color(word(p, "target")?)?, "tolerance": number(p, "tolerance")?, "softness": number(p, "softness")?}))
+}
+
 /// The image request for action `action` with `params`.
 fn image_request(action: &str, p: &ParamValues) -> Result<ImageRequest, String> {
     let body = match action {
@@ -89,6 +93,22 @@ fn image_request(action: &str, p: &ParamValues) -> Result<ImageRequest, String> 
             let (x, y) = (number(p, "x")?.clamp(0.0, 0.99), number(p, "y")?.clamp(0.0, 0.99));
             json!({"options": {"kind": "normalized", "x": x, "y": y, "width": number(p, "width")?.min(1.0 - x), "height": number(p, "height")?.min(1.0 - y)}})
         }
+        "image.key" => json!({"options": {"matcher": matcher(p)?, "mode": word(p, "mode")?}}),
+        "image.replace_color" => {
+            json!({"options": {"matcher": matcher(p)?, "replacement": color(word(p, "replacement")?)?, "replace_alpha": flag(p, "replace_alpha")?}})
+        }
+        "image.aspect" => {
+            let mode = match word(p, "mode")? {
+                // Shown only for Pad; black when the value hasn't been resolved with it visible.
+                "pad" => json!({"kind": "pad", "padding": {"kind": "solid", "color": color(word(p, "padding").unwrap_or("#000000"))?}}),
+                _ => json!({"kind": "crop"}),
+            };
+            json!({"options": {"ratio": {"kind": word(p, "ratio")?}, "mode": mode, "anchor": {"x": number(p, "x")?, "y": number(p, "y")?}}})
+        }
+        "image.overlay" => json!({"options": {
+            "anchor": {"kind": word(p, "anchor")?}, "offset_x": 0, "offset_y": 0,
+            "size": {"kind": "relative_width", "fraction": number(p, "size")?}, "opacity": number(p, "opacity")?, "resampling": "bilinear"}}),
+        "image.duplicate" => json!({"count": whole(p, "count")?}),
         "image.resize" => json!({"options": {"size": {"kind": "scale", "factor": number(p, "factor")?}, "resampling": word(p, "resampling")?}}),
         _ => return Err(format!("{action} isn't an image action this host runs")),
     };
@@ -149,6 +169,10 @@ fn text_request(action: &str, p: &ParamValues, inputs: &[Value]) -> Result<TextR
             };
             TextRequest::Replace { input: first()?, options }
         }
+        "text.template" => {
+            let fields = all.iter().enumerate().map(|(i, text)| ((i + 1).to_string(), text.clone())).collect();
+            TextRequest::Template { template: word(p, "template")?.to_owned(), fields }
+        }
         "text.concat" => {
             let options = ConcatOptions {
                 separator: word(p, "separator")?.to_owned(),
@@ -164,43 +188,61 @@ fn text_request(action: &str, p: &ParamValues, inputs: &[Value]) -> Result<TextR
 }
 
 impl LocalActions {
-    fn image(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
-        let request = image_request(action, params)?;
-        let Some(Value::Media(source)) = inputs.first() else { return Err("connect an image first".into()) };
-        // The project's images, or one an earlier action in this run made (chains).
+    /// The image `value` names, decoded within the actions' limits: one of the project's, or one
+    /// an earlier action in this run made (chains).
+    fn raster(&self, value: Option<&Value>) -> Result<Raster, String> {
+        let Some(Value::Media(source)) = value else { return Err("connect an image first".into()) };
         let staged = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash).map(<[u8]>::to_vec);
         let bytes = match &staged {
             Some(bytes) => bytes.as_slice(),
             None => self.assets.get(&source.hash).ok_or("the input image isn't in this project")?,
         };
         let actions = ImageLimits::default();
-        // Bounded before decoding: the pixel count the actions accept, at four bytes each, plus
-        // the decoder's own working copy.
-        let rgba_bytes = actions.pixels.saturating_mul(4);
-        let limits = nodecraft_media::Limits {
-            max_width: actions.edge,
-            max_height: actions.edge,
-            max_alloc: rgba_bytes.saturating_mul(2),
-            ..nodecraft_media::Limits::default()
-        };
+        let limits = decode_limits();
         let meta = nodecraft_media::probe_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
         if u64::from(meta.width).saturating_mul(u64::from(meta.height)) > actions.pixels {
             return Err(format!("the input image is larger than {} megapixels", actions.pixels / 1_000_000));
         }
         let (_, decoded) = nodecraft_media::decode_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
         let rgba = decoded.into_rgba8();
-        let raster = Raster::new(rgba.width(), rgba.height(), rgba.into_raw(), actions).map_err(|e| format!("the image can't be processed: {e}"))?;
-        let result = request
-            .execute(nodecraft_actions::image::ImageInputs::single(&raster), &mut CpuExecutor::serial(), actions)
-            .map_err(|e| format!("{action} failed: {e}"))?;
-        let ImageResult::Image(out) = result else { return Err(format!("{action} made more than one image")) };
-        let png = nodecraft_media::encode_png(out.width(), out.height(), out.pixels(), &limits).map_err(|e| format!("the result can't be encoded: {e}"))?;
+        Raster::new(rgba.width(), rgba.height(), rgba.into_raw(), actions).map_err(|e| format!("the image can't be processed: {e}"))
+    }
+
+    /// Encodes `out` as PNG into staging; its reference.
+    fn stage(&self, out: &Raster) -> Result<Value, String> {
+        let png =
+            nodecraft_media::encode_png(out.width(), out.height(), out.pixels(), &decode_limits()).map_err(|e| format!("the result can't be encoded: {e}"))?;
         if png.len() > nodecraft_format::MAX_ASSET_BYTES {
             return Err(format!("the result is larger than {} MiB; make it smaller first (Resize)", nodecraft_format::MAX_ASSET_BYTES / (1024 * 1024)));
         }
         let hash = self.staged.lock().unwrap_or_else(PoisonError::into_inner).insert(&png).map_err(|e| e.message)?;
         let mime = "image/png".parse().map_err(|_| "image/png isn't a media type".to_owned())?;
         Ok(Value::Media(AssetRef { hash, mime, meta: MediaMeta { width: Some(out.width()), height: Some(out.height()), ..MediaMeta::default() } }))
+    }
+
+    fn image(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        let request = image_request(action, params)?;
+        let source = self.raster(inputs.first())?;
+        let overlay = if action == "image.overlay" { Some(self.raster(inputs.get(1))?) } else { None };
+        let result = request
+            .execute(nodecraft_actions::image::ImageInputs { source: &source, overlay: overlay.as_ref() }, &mut CpuExecutor::serial(), ImageLimits::default())
+            .map_err(|e| format!("{action} failed: {e}"))?;
+        match result {
+            ImageResult::Image(out) => self.stage(&out),
+            ImageResult::Images(all) => all.iter().map(|out| self.stage(out)).collect::<Result<Vec<_>, _>>().map(Value::List),
+        }
+    }
+}
+
+/// Decoding and encoding limits matching what the actions accept: their edge, and their pixel
+/// count at four bytes each plus the decoder's working copy.
+fn decode_limits() -> nodecraft_media::Limits {
+    let actions = ImageLimits::default();
+    nodecraft_media::Limits {
+        max_width: actions.edge,
+        max_height: actions.edge,
+        max_alloc: actions.pixels.saturating_mul(8),
+        ..nodecraft_media::Limits::default()
     }
 }
 

@@ -24,15 +24,17 @@ fn every_action_kind_runs_with_its_defaults() {
     let mut ran = 0;
     for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action) {
         let input = if descriptor.id.starts_with("image.") { image.clone() } else { Value::Text("a, b\\nc".into()) };
-        let out = actions.execute(&descriptor.id, &defaults(&kinds, &descriptor.id), &[input]).unwrap_or_else(|e| panic!("{}: {e}", descriptor.id));
+        let inputs = vec![input; descriptor.inputs.len()];
+        let out = actions.execute(&descriptor.id, &defaults(&kinds, &descriptor.id), &inputs).unwrap_or_else(|e| panic!("{}: {e}", descriptor.id));
         match (&out, descriptor.id.starts_with("image.")) {
             (Value::Media(asset), true) => assert!(asset.meta.width.is_some(), "{}", descriptor.id),
+            (Value::List(items), true) => assert!(items.iter().all(|i| matches!(i, Value::Media(_))), "{}", descriptor.id),
             (Value::Text(_) | Value::List(_), false) => {}
             other => panic!("{}: {other:?}", descriptor.id),
         }
         ran += 1;
     }
-    assert_eq!(ran, 11);
+    assert_eq!(ran, 17);
     // Every new image is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());
@@ -214,9 +216,8 @@ fn every_choice_and_slider_end_runs() {
             for value in values {
                 let mut params = defaults(&kinds, &descriptor.id);
                 params.insert(spec.name.clone(), value.clone());
-                actions
-                    .execute(&descriptor.id, &params, std::slice::from_ref(&image))
-                    .unwrap_or_else(|e| panic!("{} {}={value:?}: {e}", descriptor.id, spec.name));
+                let inputs = vec![image.clone(); descriptor.inputs.len()];
+                actions.execute(&descriptor.id, &params, &inputs).unwrap_or_else(|e| panic!("{} {}={value:?}: {e}", descriptor.id, spec.name));
             }
         }
     }
@@ -228,4 +229,48 @@ fn every_choice_and_slider_end_runs() {
     let mut split = defaults(&kinds, "text.split");
     split.insert("separator".into(), Value::Text(String::new()));
     assert!(actions.execute("text.split", &split, &[Value::Text("a".into())]).unwrap_err().contains("separator"));
+}
+
+#[test]
+fn the_new_kinds_do_what_they_say() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let base = assets.insert(&png(40, 30)).unwrap();
+    let mark = assets.insert(&png(10, 10)).unwrap();
+    let media = |hash| Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    let Value::Media(over) = actions.execute("image.overlay", &defaults(&kinds, "image.overlay"), &[media(base), media(mark)]).unwrap() else { panic!() };
+    assert_eq!((over.meta.width, over.meta.height), (Some(40), Some(30)), "the base image's size");
+    let mut three = defaults(&kinds, "image.duplicate");
+    three.insert("count".into(), Value::Unsigned(nodecraft_types::Unsigned(3)));
+    let Value::List(copies) = actions.execute("image.duplicate", &three, &[media(base)]).unwrap() else { panic!() };
+    assert_eq!(copies.len(), 3);
+    let Value::Media(square) = actions.execute("image.aspect", &defaults(&kinds, "image.aspect"), &[media(base)]).unwrap() else { panic!() };
+    assert_eq!(square.meta.width, square.meta.height, "square by default");
+    let mut template = defaults(&kinds, "text.template");
+    template.insert("template".into(), Value::Text("{{2}} then {{1}}".into()));
+    assert_eq!(
+        actions.execute("text.template", &template, &[Value::List(vec![Value::Text("a".into()), Value::Text("b".into())])]).unwrap(),
+        Value::Text("b then a".into())
+    );
+    // Overlay without its second image says so.
+    assert!(actions.execute("image.overlay", &defaults(&kinds, "image.overlay"), &[media(base)]).is_err());
+}
+
+#[test]
+fn an_overlay_plans_with_both_of_its_inputs_in_port_order() {
+    use nodecraft_nodes::{InputValue, PlanCtx};
+    use nodecraft_types::{Modality, PortType};
+    let kinds = Registry::builtins().unwrap();
+    let kind = kinds.get("image.overlay").unwrap();
+    let node = kind.instantiate_instance(NodeId::from_bytes([1; 16]), Default::default(), &Default::default()).unwrap();
+    let t = PortType { modality: Modality::Image, many: false };
+    let input = |port: &str, n: u8| InputValue { port: port.into(), port_type: t, value: Value::Text(format!("{n}")) };
+    // Connected in the "wrong" order: planning still puts the base image first.
+    let jobs =
+        kind.plan(&PlanCtx { node: &node, inputs: &[input("overlay", 2), input("image", 1)], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap();
+    let Some(nodecraft_nodes::JobSpec::Action { inputs, .. }) = jobs.first() else { panic!() };
+    assert_eq!(inputs, &vec![Value::Text("1".into()), Value::Text("2".into())]);
+    assert!(kind.plan(&PlanCtx { node: &node, inputs: &[input("image", 1)], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).is_err(), "both are needed");
+    assert!(kind.mode(&[t, t]).is_some() && kind.mode(&[t]).is_some() && kind.mode(&[t, t, t]).is_none());
 }

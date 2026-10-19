@@ -86,7 +86,21 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     let kinds = Registry::builtins().unwrap();
     let ids = |output| kinds_accepting(&kinds, output).into_iter().map(|d| d.id.as_str()).collect::<Vec<_>>();
     // Action kinds (#410) take one item; a list goes into a router or a list input (Join).
-    let image_actions = ["image.blur", "image.crop", "image.filter", "image.flip", "image.grade", "image.resize", "image.rotate", "image.tint"];
+    let image_actions = [
+        "image.aspect",
+        "image.blur",
+        "image.crop",
+        "image.duplicate",
+        "image.filter",
+        "image.flip",
+        "image.grade",
+        "image.key",
+        "image.overlay",
+        "image.replace_color",
+        "image.resize",
+        "image.rotate",
+        "image.tint",
+    ];
     let mut image_one: Vec<&str> = image_actions.to_vec();
     image_one.push(router::ID);
     image_one.sort();
@@ -95,10 +109,10 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     assert_eq!(got, image_one);
     let mut text_one = ids(PortType { modality: Modality::Text, many: false });
     text_one.sort();
-    assert_eq!(text_one, [router::ID, "text.concat", "text.replace", "text.split"]);
+    assert_eq!(text_one, [router::ID, "text.concat", "text.replace", "text.split", "text.template"]);
     let mut text_many = ids(PortType { modality: Modality::Text, many: true });
     text_many.sort();
-    assert_eq!(text_many, [router::ID, "text.concat"], "only list inputs take a list");
+    assert_eq!(text_many, [router::ID, "text.concat", "text.template"], "only list inputs take a list");
     assert_eq!(ids(PortType { modality: Modality::Image, many: true }), [router::ID]);
     for modality in [Modality::Video, Modality::Audio] {
         assert_eq!(ids(PortType { modality, many: false }), [router::ID], "{modality:?}");
