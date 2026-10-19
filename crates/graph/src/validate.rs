@@ -9,8 +9,11 @@ pub const MAX_VALUE_DEPTH: usize = 32;
 pub const MAX_VALUE_ITEMS: usize = 4096;
 /// Most batches one fanned result's items combine.
 pub const MAX_ITEM_AXES: usize = 16;
-/// Parameters one recorded job may carry: the parameter schema's own limit.
+/// Parameters one recorded job may carry: the parameter schema's own limit
+/// (`nodecraft_types::schema::MAX_PARAMS`).
 const MAX_JOB_PARAMS: usize = 256;
+/// Inputs one recorded job may carry.
+const MAX_JOB_INPUTS: usize = 256;
 pub const MAX_NODE_BYTES: usize = 8 * 1024 * 1024;
 /// Most generations a node keeps.
 pub const MAX_HISTORY: usize = 1024;
@@ -118,6 +121,13 @@ fn settings(generation: &Generation) -> Result<(), Error> {
         for (name, param) in &job.params {
             text(name, 256)?;
             value(param)?;
+        }
+        if job.inputs.len() > MAX_JOB_INPUTS {
+            return Err(invalid("job settings exceed the input limit"));
+        }
+        for input in &job.inputs {
+            text(&input.role, 256)?;
+            value(&input.value)?;
         }
         if let Some(item) = job.item
             && usize::try_from(item).map_or(true, |item| item >= generation.items.len())

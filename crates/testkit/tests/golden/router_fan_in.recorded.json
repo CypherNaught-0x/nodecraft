@@ -154,6 +154,24 @@
               ],
               "settings": [
                 {
+                  "inputs": [
+                    {
+                      "role": "prompt",
+                      "value": {
+                        "type": "list",
+                        "value": [
+                          {
+                            "type": "text",
+                            "value": "an owl"
+                          },
+                          {
+                            "type": "text",
+                            "value": "at dusk"
+                          }
+                        ]
+                      }
+                    }
+                  ],
                   "model": "mock-text",
                   "params": {
                     "style": {

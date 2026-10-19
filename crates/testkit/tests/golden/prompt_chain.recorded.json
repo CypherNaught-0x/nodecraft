@@ -75,6 +75,20 @@
               ],
               "settings": [
                 {
+                  "inputs": [
+                    {
+                      "role": "prompt",
+                      "value": {
+                        "type": "list",
+                        "value": [
+                          {
+                            "type": "text",
+                            "value": "a fox in the snow"
+                          }
+                        ]
+                      }
+                    }
+                  ],
                   "model": "mock-text",
                   "params": {
                     "style": {
@@ -143,6 +157,20 @@
               ],
               "settings": [
                 {
+                  "inputs": [
+                    {
+                      "role": "prompt",
+                      "value": {
+                        "type": "list",
+                        "value": [
+                          {
+                            "type": "text",
+                            "value": "mock-text: a fox in the snow #8486ca86"
+                          }
+                        ]
+                      }
+                    }
+                  ],
                   "model": "mock-image",
                   "params": {
                     "style": {

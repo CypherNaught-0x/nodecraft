@@ -519,6 +519,29 @@ fn recording_a_large_result_drops_old_generations_until_it_fits() {
     assert!(record_changes(C, &node, Generation::new(GenerationId::from_bytes([10; 16]), vec![Value::Text("x".repeat(MAX_NODE_BYTES))])).is_err());
 }
 
+#[test]
+fn a_result_that_fits_beside_the_active_one_only_without_its_settings_is_recorded_without_them() {
+    let text = |n: usize| Value::Text(format!("{n}{}", "x".repeat(1_000_000)));
+    let mut node = Node::new(id(1), "test.join");
+    node.history.push(Generation::new(GenerationId::from_bytes([1; 16]), (0..5).map(text).collect()));
+    node.active = Some(GenerationId::from_bytes([1; 16]));
+    let job = |n: usize| nodecraft_graph::JobSettings {
+        provider: "mock".into(),
+        instance: None,
+        model: "remote".into(),
+        params: [("prompt".into(), text(n))].into(),
+        inputs: Vec::new(),
+        item: None,
+    };
+    let result = Generation { settings: (0..3).map(job).collect(), ..Generation::new(GenerationId::from_bytes([2; 16]), vec![text(9)]) };
+    let changes = record_changes(C, &node, result.clone()).unwrap();
+    let recorded = changes.iter().find_map(|c| if let Change::AddGeneration { generation, .. } = c { Some(generation) } else { None }).unwrap();
+    assert!(recorded.settings.is_empty() && recorded.outputs == result.outputs, "the paid result is kept, its settings dropped");
+    // A result that doesn't fit even without them still fails.
+    let outputs = (0..4).map(text).collect();
+    assert!(record_changes(C, &node, Generation { outputs, ..result }).is_err());
+}
+
 /// List in, list out: one job per item (so an empty list plans no jobs).
 struct Each(NodeDescriptor);
 impl NodeKind for Each {
@@ -988,6 +1011,7 @@ fn settings_too_large_to_keep_are_dropped_but_a_result_too_large_still_fails() {
         instance: None,
         model: "remote".into(),
         params: [("prompt".into(), Value::Text(format!("{n}{}", "x".repeat(1_000_000))))].into(),
+        inputs: Vec::new(),
         item: None,
     };
     let small = Generation { settings: vec![job(0)], ..Generation::new(GenerationId::from_bytes([1; 16]), vec![Value::Text("made".into())]) };

@@ -1,5 +1,5 @@
 //! Recorded job settings (#162): what each provider job of a result was submitted with.
-use nodecraft_graph::{Canvas, Change, Changeset, Generation, ItemKey, JobSettings, Node, Project};
+use nodecraft_graph::{Canvas, Change, Changeset, Generation, ItemKey, JobInput, JobSettings, Node, Project};
 use nodecraft_types::{CanvasId, GenerationId, ItemId, NodeId, ProjectId, Unsigned, Value};
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
@@ -15,7 +15,14 @@ fn record(generation: Generation) -> Result<Project, nodecraft_types::Error> {
 }
 
 fn job(item: Option<u32>) -> JobSettings {
-    JobSettings { provider: "mock".into(), instance: None, model: "remote-v2".into(), params: [("seed".into(), Value::Unsigned(Unsigned(42)))].into(), item }
+    JobSettings {
+        provider: "mock".into(),
+        instance: None,
+        model: "remote-v2".into(),
+        params: [("seed".into(), Value::Unsigned(Unsigned(42)))].into(),
+        inputs: vec![JobInput { role: "prompt".into(), value: Value::Text("a cat".into()) }],
+        item,
+    }
 }
 
 fn with(settings: Vec<JobSettings>) -> Generation {
@@ -58,4 +65,10 @@ fn malformed_settings_are_rejected() {
     assert!(record(with(vec![JobSettings { params: [("p".into(), deep)].into(), ..job(None) }])).is_err());
     let many = (0..257).map(|n| (format!("p{n}"), Value::Bool(true))).collect();
     assert!(record(with(vec![JobSettings { params: many, ..job(None) }])).is_err());
+    let input = |role: &str, value| JobInput { role: role.into(), value };
+    let deep = (0..40).fold(Value::Text("x".into()), |value, _| Value::List(vec![value]));
+    assert!(record(with(vec![JobSettings { inputs: vec![input("prompt", deep)], ..job(None) }])).is_err());
+    assert!(record(with(vec![JobSettings { inputs: vec![input(&"r".repeat(257), Value::Bool(true))], ..job(None) }])).is_err());
+    let many = (0..257).map(|_| input("image", Value::Bool(true))).collect();
+    assert!(record(with(vec![JobSettings { inputs: many, ..job(None) }])).is_err());
 }

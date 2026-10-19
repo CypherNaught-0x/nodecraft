@@ -68,6 +68,7 @@ fn describes_the_settings_the_active_result_was_made_with() {
         instance: None,
         model: model.into(),
         params: [("seed".into(), nodecraft_types::Value::Unsigned(nodecraft_types::Unsigned(7)))].into(),
+        inputs: Vec::new(),
         item: None,
     };
     let result = |n: u8, model: &str| nodecraft_graph::Generation {

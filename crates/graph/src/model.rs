@@ -48,8 +48,9 @@ pub struct Generation {
     /// one value per item, in this order. Empty for an ordinary result.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ItemTag>,
-    /// What each of its provider jobs was asked to do (#162), in job order: enough to see how
-    /// the result was made and to repeat it. Empty for a result made without a provider, one
+    /// What each of its provider jobs was asked to do (#162), in job order: the provider,
+    /// model, parameters and inputs it was submitted with. The catalog version of the model is
+    /// not recorded yet, so a model that changes behind the same id can't be told apart. Empty for a result made without a provider, one
     /// recorded before settings were kept, or one whose settings were too large to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<JobSettings>,
@@ -63,7 +64,8 @@ impl Generation {
 }
 
 /// The effective settings one provider job was submitted with: never a credential, only the
-/// provider, which configured instance of it, the provider's model id and the parameters.
+/// provider, which configured instance of it, the provider's model id, the parameters and the
+/// inputs it was given.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobSettings {
     pub provider: String,
@@ -72,9 +74,19 @@ pub struct JobSettings {
     pub model: String,
     #[serde(default)]
     pub params: ParamValues,
+    /// The inputs the job was given, in submission order. Media are recorded by reference.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<JobInput>,
     /// For a fanned result, the index into its `items` of the item this job was for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<u32>,
+}
+
+/// One input a provider job was given, in a role such as `prompt` or `image`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobInput {
+    pub role: String,
+    pub value: Value,
 }
 
 /// One batch item a fanned result was made from.

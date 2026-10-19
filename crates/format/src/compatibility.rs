@@ -312,6 +312,7 @@ mod tests {
             instance: None,
             model: "mock-model".into(),
             params: Default::default(),
+            inputs: Vec::new(),
             item: None,
         });
         set.history.push(job);

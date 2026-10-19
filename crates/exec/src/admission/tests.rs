@@ -129,14 +129,15 @@ fn a_result_records_the_settings_its_job_was_submitted_with() {
         admit_run(plan(Some(vec![job(id(1), [("hidden".into(), Value::Unsigned(Unsigned(99)))].into())])), C, canvas, &kinds, &catalog, Default::default())
             .unwrap();
     let (mut run, progress) = Run::start_admitted(admitted, &kinds, options()).unwrap();
-    let JobSpec::Generate { params, .. } = run.work(progress.jobs[0].id).unwrap().clone() else { panic!() };
+    let JobSpec::Generate { params, inputs, .. } = run.work(progress.jobs[0].id).unwrap().clone() else { panic!() };
     let done = run.job_done(&kinds, progress.jobs[0].id, vec![("out".into(), Value::Text("made".into()))]);
     let settings = &done.finished[0].generation.settings;
     // Exactly what was sent: the remote model id and the canonical parameters, the hidden
-    // value stripped and the defaults filled in.
+    // value stripped and the defaults filled in, and the inputs it was given.
+    let inputs = inputs.into_iter().map(|input| nodecraft_graph::JobInput { role: input.role, value: input.value }).collect();
     assert_eq!(
         settings,
-        &vec![nodecraft_graph::JobSettings { provider: "mock".into(), instance: None, model: "remote".into(), params: params.clone(), item: None }]
+        &vec![nodecraft_graph::JobSettings { provider: "mock".into(), instance: None, model: "remote".into(), params: params.clone(), inputs, item: None }]
     );
     assert_eq!(params.get("count"), Some(&Value::Unsigned(Unsigned(2))));
     assert!(!params.contains_key("hidden"));

@@ -2,7 +2,9 @@
 
 - **Per job, as sent.** `Generation.settings` holds one `JobSettings` per provider job, in job
   order: provider, provider instance, the provider's model id and the parameters after catalog
-  admission canonicalised them, so it is what the provider actually received. A fanned result
+  admission canonicalised them, so it is what the provider actually received, plus the inputs
+  it was given by role (media by reference). The catalog version of the model is not recorded
+  yet: a model that changes behind the same id can't be told apart. A fanned result
   (#92) tags each job with the index of its item. Local jobs (sources, actions) record nothing;
   their inputs are already the result's input hash.
 - **Not identity.** Settings describe a result; staleness and caching still compare input hashes.
@@ -11,7 +13,8 @@
 - **Never at the cost of a result.** A result whose settings would push it over the node byte
   limit is recorded without them, as an over-budget input hash is recorded as unknown.
 - **Format.** The field is omitted when empty, so older files are unchanged, and version 1
-  refuses it like input hashes and item tags.
+  refuses it like input hashes and item tags. An older build that reads a newer file drops
+  the field when it saves.
 - **Random seeds stay refused** for now. Admission requires a job's parameters to equal the
   source's submission exactly, so a drawn seed has to be added after admission, by the run that
   owns the entropy; that is a separate change, and its seeds will be recorded here.

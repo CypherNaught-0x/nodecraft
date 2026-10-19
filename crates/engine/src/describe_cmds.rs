@@ -73,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: describe_schema,
-        params_doc: "{kind: string} | {canvas: CanvasId, id: NodeId} -> {contract, resolution?, settings?}; the descriptor contract (ports with roles and wire bounds, modes, parameters with rules and checks; docs/descriptor-contract.md) of a kind, or of a stored node plus its resolved parameters (effective value and source, visible, enabled, issues) and the settings each provider job of its active result was submitted with (provider, instance, model, params, item; empty when none were recorded). Read-only.",
+        params_doc: "{kind: string} | {canvas: CanvasId, id: NodeId} -> {contract, resolution?, settings?}; the descriptor contract (ports with roles and wire bounds, modes, parameters with rules and checks; docs/descriptor-contract.md) of a kind, or of a stored node plus its resolved parameters (effective value and source, visible, enabled, issues) and the settings each provider job of its active result was submitted with (provider, instance, model, params, inputs, item; empty when none were recorded; can be as large as the node). Read-only.",
         enabled: enabled_describe,
         run: describe,
     }]
