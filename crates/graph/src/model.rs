@@ -316,11 +316,29 @@ impl Comment {
     }
 }
 
+/// What a canvas is for (#163). A sheet is a Batch Generate table: its Generate nodes are its
+/// rows, in position order, and it opens as a table rather than as a node graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasKind {
+    #[default]
+    Canvas,
+    Sheet,
+}
+
+impl CanvasKind {
+    pub fn is_canvas(&self) -> bool {
+        *self == Self::Canvas
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Canvas {
     pub(crate) id: CanvasId,
     #[serde(default)]
     pub(crate) title: String,
+    #[serde(default, skip_serializing_if = "CanvasKind::is_canvas")]
+    pub(crate) kind: CanvasKind,
     #[serde(default)]
     pub(crate) nodes: BTreeMap<NodeId, Node>,
     #[serde(default)]
@@ -338,6 +356,7 @@ impl Canvas {
         Self {
             id,
             title: title.into(),
+            kind: CanvasKind::Canvas,
             nodes: BTreeMap::new(),
             edges: BTreeMap::new(),
             fields: BTreeMap::new(),
@@ -346,11 +365,19 @@ impl Canvas {
         }
     }
 
+    /// An empty Batch Generate sheet (#163).
+    pub fn sheet(id: CanvasId, title: impl Into<String>) -> Self {
+        Self { kind: CanvasKind::Sheet, ..Self::new(id, title) }
+    }
+
     pub fn id(&self) -> CanvasId {
         self.id
     }
     pub fn title(&self) -> &str {
         &self.title
+    }
+    pub fn kind(&self) -> CanvasKind {
+        self.kind
     }
     pub fn nodes(&self) -> &BTreeMap<NodeId, Node> {
         &self.nodes

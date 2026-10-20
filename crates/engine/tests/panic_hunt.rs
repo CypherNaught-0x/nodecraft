@@ -245,6 +245,20 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::tag_filter_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    // A Batch Generate sheet with two rows and a text source to wire into them.
+    let sheet = nodecraft_types::CanvasId::from_bytes([0x51; 16]);
+    let sheet_rows: Vec<Value> = if id.starts_with("sheet.") && id != "sheet.create" {
+        session.dispatch("sheet.create", &json!({"canvas":sheet,"title":"Sheet"})).unwrap();
+        let made = session.dispatch("sheet.rows_add", &json!({"canvas":sheet,"seed":node_id(0x52),"prompts":["one","two"]})).unwrap();
+        let note = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(0x53), &std::collections::BTreeMap::new()).unwrap();
+        session.dispatch("node.add", &json!({"canvas":sheet,"node":note})).unwrap();
+        if id == "sheet.reference_unwire" {
+            session.dispatch("sheet.reference_wire", &json!({"canvas":sheet,"seed":node_id(0x55),"reference":node_id(0x53)})).unwrap();
+        }
+        made["rows"].as_array().unwrap().clone()
+    } else {
+        Vec::new()
+    };
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
     let pending = if matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register_results(&mut session)) } else { None };
@@ -285,6 +299,15 @@ fn template(id: &str) -> (Session, Value) {
         // The fixture's inputs take one noodle each, so this is refused; the hunt checks it never panics.
         "edge.reorder" => json!({"canvas":canvas(),"to":{"node":node_id(2),"port":"in"},"edges":[edge().id]}),
         "canvas.stale" => json!({"canvas":canvas()}),
+        "sheet.create" => json!({"canvas":nodecraft_types::CanvasId::from_bytes([0x50; 16]),"title":"Sheet"}),
+        "sheet.list" => json!({}),
+        "sheet.rows" => json!({"canvas":sheet}),
+        "sheet.rows_add" => json!({"canvas":sheet,"seed":node_id(0x54),"prompts":["three"],"after":sheet_rows[0]}),
+        "sheet.rows_duplicate" => json!({"canvas":sheet,"seed":node_id(0x54),"rows":[sheet_rows[0]]}),
+        "sheet.rows_remove" => json!({"canvas":sheet,"rows":[sheet_rows[0], sheet_rows[1]]}),
+        "sheet.row_move" => json!({"canvas":sheet,"row":sheet_rows[1],"index":0}),
+        "sheet.reference_wire" => json!({"canvas":sheet,"seed":node_id(0x54),"reference":node_id(0x53),"rows":[sheet_rows[1]]}),
+        "sheet.reference_unwire" => json!({"canvas":sheet,"reference":node_id(0x53),"rows":[sheet_rows[0]]}),
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.options" => json!({"canvas":canvas(),"id":node_id(1),"param":"text"}),
         "edge.rewire" => {
@@ -394,6 +417,9 @@ fn typed_template_panic_hunt() {
             "/ids/0",
             "/ids/1",
             "/tags/0",
+            "/rows/0",
+            "/rows/1",
+            "/prompts/0",
         ] {
             if valid.pointer(path).is_some() {
                 for raw in [Value::Null, json!("secret-do-not-echo"), json!(1e100), json!([])] {
@@ -446,6 +472,8 @@ fn typed_template_panic_hunt() {
                             | "comment.open"
                             | "comment.compose"
                             | "canvas.stale"
+                            | "sheet.list"
+                            | "sheet.rows"
                             | "node.describe"
                             | "node.options"
                             | "node.model_preview"
