@@ -438,6 +438,17 @@ fn template(id: &str) -> (Session, Value) {
         "mask.margins_set" => json!({"canvas":canvas(),"id":node_id(1),"margins":{"left":0,"top":0,"right":64,"bottom":0}}),
         "mask.edit" => json!({"canvas":canvas(),"mask":node_id(1),"id":node_id(7),
             "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2},"prompt":"a door"}),
+        "layers.list" => json!({"canvas":canvas(),"id":node_id(1)}),
+        "node.layers_set" => {
+            json!({"canvas":canvas(),"id":node_id(1),"layers":[{"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}]})
+        }
+        "layers.add" => {
+            json!({"canvas":canvas(),"id":node_id(1),"layer":{"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}})
+        }
+        "layers.update" => json!({"canvas":canvas(),"id":node_id(1),"layer":"t1","set":{"x":10,"content":{"text":"Hello"}}}),
+        "layers.remove" => json!({"canvas":canvas(),"id":node_id(1),"layer":"t1"}),
+        "layers.reorder" => json!({"canvas":canvas(),"id":node_id(1),"layer":"t1","index":0}),
+        "layers.align" => json!({"canvas":canvas(),"id":node_id(1),"layers":["t1"],"to":"center"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)

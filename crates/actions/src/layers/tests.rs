@@ -171,7 +171,7 @@ fn a_preview_scales_the_whole_frame() {
 
 #[test]
 fn stored_layers_round_trip_and_hostile_ones_are_refused() {
-    let mut l = layer("src-1", 10.0, 20.0, 30.0, 40.0, Content::Source { origin: "n1".into(), nth: 0 });
+    let mut l = layer("src-1", 10.0, 20.0, 30.0, 40.0, Content::Source { origin: "n1".into(), nth: 0, fit: false });
     l.rotation = 15.0;
     let layers = Layers { layers: vec![l, layer("txt", 1.0, 1.0, 1.0, 1.0, text("a", 12.0, Align::Center))] };
     let json = layers.encode().unwrap();
@@ -214,7 +214,7 @@ fn frames_images_and_work_are_bounded() {
     assert!(composite(frame(100, 100, WHITE), &layers, &[], f64::NAN, ImageLimits::default()).is_err());
     let missing = Layers { layers: vec![layer("a", 0.0, 0.0, 10.0, 10.0, Content::Image { input: 3, fit: false })] };
     assert_eq!(composite(frame(100, 100, WHITE), &missing, &[], 1.0, ImageLimits::default()).unwrap_err(), ImageError::Parameter("image layer"));
-    let unresolved = Layers { layers: vec![layer("a", 0.0, 0.0, 10.0, 10.0, Content::Source { origin: "n".into(), nth: 0 })] };
+    let unresolved = Layers { layers: vec![layer("a", 0.0, 0.0, 10.0, 10.0, Content::Source { origin: "n".into(), nth: 0, fit: false })] };
     assert!(composite(frame(100, 100, WHITE), &unresolved, &[], 1.0, ImageLimits::default()).is_err());
     let busy = Layers { layers: (0..MAX_LAYERS).map(|i| layer(&format!("l{i}"), 0.0, 0.0, 1.0, 1.0, rect("#000000"))).collect() };
     let tight = ImageLimits { work: 100_000, ..ImageLimits::default() };
@@ -248,7 +248,7 @@ fn layers_far_off_the_frame_and_extreme_values_draw_nothing_and_do_not_panic() {
 #[test]
 fn stored_sources_follow_their_image_and_new_images_get_fitted_layers_on_top() {
     let f = frame(200, 100, CLEAR);
-    let source = |id: &str, origin: &str, nth: u32| layer(id, 50.0, 50.0, 20.0, 20.0, Content::Source { origin: origin.into(), nth });
+    let source = |id: &str, origin: &str, nth: u32| layer(id, 50.0, 50.0, 20.0, 20.0, Content::Source { origin: origin.into(), nth, fit: false });
     let stored = Layers { layers: vec![source("b-layer", "b", 0), rect_layer("shape"), source("gone", "z", 0), source("a2", "a", 1)] };
     // Wires reordered: b's image is now input 0, a's second image input 2.
     let sources = ["b".to_owned(), "a".to_owned(), "a".to_owned(), String::new()];
@@ -265,8 +265,13 @@ fn stored_sources_follow_their_image_and_new_images_get_fitted_layers_on_top() {
     // What the editor lists: the stored layers as they are, plus the automatic ones.
     let listed = stored.with_sources(&sources, f);
     assert_eq!(listed.layers.len(), 6);
-    assert_eq!(listed.layers[4].content, Content::Source { origin: "a".into(), nth: 0 });
+    assert_eq!(listed.layers[4].content, Content::Source { origin: "a".into(), nth: 0, fit: true });
     assert_eq!(listed.layers[4].id, auto_id("a", 0));
+    // Storing the listed layers keeps an automatic one fitted, and where it was.
+    let again = Layers { layers: listed.layers.into_iter().filter(|l| l.id != "gone").collect() }.resolve(&sources, f).unwrap();
+    let ids: Vec<&str> = again.layers.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(ids, ["b-layer", "shape", "a2", "a-0", "input3-0"]);
+    assert_eq!(again.get("a-0").map(|l| &l.content), Some(&Content::Image { input: 1, fit: true }));
 }
 
 fn rect_layer(id: &str) -> Layer {

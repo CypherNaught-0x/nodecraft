@@ -74,8 +74,13 @@ pub struct Layer {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Content {
     /// The `nth` image connected from node `origin`, as stored in the node. Planning resolves it
-    /// to `Image`, so a source keeps its layer when wires are reordered.
-    Source { origin: String, nth: u32 },
+    /// to `Image`, so a source keeps its layer when wires are reordered. `fit` as for `Image`.
+    Source {
+        origin: String,
+        nth: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        fit: bool,
+    },
     /// The `input`th image handed to `composite`. With `fit`, the image keeps its proportions
     /// and is centred in the box at the largest size that fits; otherwise it fills the box.
     Image {
@@ -221,12 +226,12 @@ impl Layers {
         let mut layers = Vec::new();
         for layer in &self.layers {
             let content = match &layer.content {
-                Content::Source { origin, nth } => {
+                Content::Source { origin, nth, fit } => {
                     let Some(input) = keys.iter().position(|(o, n)| o == origin && n == nth) else { continue };
                     if let Some(slot) = used.get_mut(input) {
                         *slot = true;
                     }
-                    Content::Image { input: input as u32, fit: false }
+                    Content::Image { input: input as u32, fit: *fit }
                 }
                 other => other.clone(),
             };
@@ -234,9 +239,7 @@ impl Layers {
         }
         for (input, (origin, nth)) in keys.iter().enumerate() {
             if !used.get(input).copied().unwrap_or(true) {
-                let mut auto = auto_layer(origin, *nth, input, frame);
-                auto.content = Content::Image { input: input as u32, fit: true };
-                layers.push(auto);
+                layers.push(Layer { content: Content::Image { input: input as u32, fit: true }, ..auto_layer(origin, *nth, input, frame) });
             }
         }
         let resolved = Self { layers };
@@ -249,7 +252,7 @@ impl Layers {
     pub fn with_sources(&self, sources: &[String], frame: Frame) -> Self {
         let mut layers = self.layers.clone();
         for (input, (origin, nth)) in source_keys(sources).into_iter().enumerate() {
-            let named = self.layers.iter().any(|l| matches!(&l.content, Content::Source { origin: o, nth: n } if *o == origin && *n == nth));
+            let named = self.layers.iter().any(|l| matches!(&l.content, Content::Source { origin: o, nth: n, .. } if *o == origin && *n == nth));
             if !named && layers.len() < MAX_LAYERS {
                 layers.push(auto_layer(&origin, nth, input, frame));
             }
@@ -283,7 +286,7 @@ pub fn auto_id(origin: &str, nth: u32) -> String {
 }
 
 /// The automatic layer for the `nth` image from `origin` (input `input`): the whole frame, the
-/// image fitted inside it.
+/// image fitted inside it. Stored as it is, it stays fitted.
 pub fn auto_layer(origin: &str, nth: u32, input: usize, frame: Frame) -> Layer {
     let (w, h) = (f64::from(frame.width), f64::from(frame.height));
     Layer {
@@ -299,7 +302,7 @@ pub fn auto_layer(origin: &str, nth: u32, input: usize, frame: Frame) -> Layer {
         rotation: 0.0,
         flip_x: false,
         flip_y: false,
-        content: Content::Source { origin: origin.into(), nth },
+        content: Content::Source { origin: origin.into(), nth, fit: true },
     }
 }
 
@@ -349,6 +352,19 @@ impl Layer {
             }
         }
         Ok(())
+    }
+
+    /// The layer's bounds in frame pixels, rotation included: (left, top, right, bottom).
+    pub fn bounds(&self) -> (f64, f64, f64, f64) {
+        let t = self.transform();
+        let corners = [(0.0, 0.0), (self.width, 0.0), (0.0, self.height), (self.width, self.height)].map(|p| t * vello_cpu::kurbo::Point::from(p));
+        let fold = |f: fn(f64, f64) -> f64, start: f64, axis: fn(&vello_cpu::kurbo::Point) -> f64| corners.iter().map(axis).fold(start, f);
+        (
+            fold(f64::min, f64::INFINITY, |p| p.x),
+            fold(f64::min, f64::INFINITY, |p| p.y),
+            fold(f64::max, f64::NEG_INFINITY, |p| p.x),
+            fold(f64::max, f64::NEG_INFINITY, |p| p.y),
+        )
     }
 
     /// Maps the layer's own box (`0..width`, `0..height`) into frame pixels.
