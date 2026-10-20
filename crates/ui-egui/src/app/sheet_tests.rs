@@ -255,6 +255,31 @@ fn a_project_opens_on_its_canvas_even_when_a_sheet_sorts_first() {
 }
 
 #[test]
+fn a_published_technique_is_neither_home_nor_listed_with_the_sheets() {
+    let mut h = scene(&[]);
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let supplied: nodecraft_types::ParamValues = [("text".to_owned(), Value::Text("a fox".into()))].into_iter().collect();
+    let node = kinds.get("source.text").unwrap().instantiate_instance(NodeId::from_bytes([41; 16]), Default::default(), &supplied).unwrap();
+    h.state_mut().session.dispatch("node.add", &json!({"canvas": C, "node": node})).unwrap();
+    // Its canvas id sorts before the working canvas's.
+    let published = CanvasId::from_bytes([1; 16]);
+    let technique = nodecraft_types::TechniqueId::from_bytes([2; 16]);
+    h.state_mut()
+        .session
+        .dispatch(
+            "technique.publish",
+            &json!({"canvas": C, "published": published, "seed": NodeId::from_bytes([3; 16]), "technique": technique, "name": "Fox text",
+                "outputs": [{"node": NodeId::from_bytes([41; 16])}]}),
+        )
+        .unwrap();
+    assert_eq!(super::sheet_view::home_canvas(h.state().session.document()), Some(C));
+    h.run();
+    open_sheets(&mut h);
+    assert!(h.query_by_label_contains("Fox text").is_none(), "a published version isn't a canvas to open");
+    assert!(h.query_by_label("Canvas").is_some());
+}
+
+#[test]
 fn a_prompt_still_being_typed_is_kept_when_a_dialog_takes_the_input() {
     let mut h = on_sheet(&["a fox", "an owl"]);
     type_into(&mut h, "a fox", " at dusk");
