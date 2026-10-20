@@ -247,7 +247,7 @@ pub fn plan_expanded(
     options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
     let canvas: &Canvas = &expanded.canvas;
-    let graph = Graph::new(canvas, kinds, targets, &expanded.collects, options)?;
+    let graph = Graph::new(canvas, kinds, targets, &expanded.collects, &expanded.inner, options)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id) || expanded.inner.contains_key(id)) {
@@ -361,7 +361,18 @@ struct Fanned {
 
 enum FannedFrom {
     Values(Vec<Value>),
-    Step { node: NodeId, port: String },
+    /// One value per item of a fanned step; a `list` output gives each item's list (#533).
+    Step {
+        node: NodeId,
+        port: String,
+        list: bool,
+    },
+}
+
+/// What a technique node's output takes from its inlined node: one source, or one per item.
+enum Collected {
+    Plain(Vec<InputSource>),
+    Fanned(Vec<ItemTag>, FannedFrom),
 }
 
 /// Edges indexed by target, once per plan.
@@ -379,6 +390,8 @@ struct Graph<'a> {
     pairing: BTreeMap<NodeId, batch::Pairing>,
     /// Where each inlined technique node's outputs come from (#94).
     collects: &'a BTreeMap<NodeId, Vec<Collect>>,
+    /// Each inlined node's technique node on the real canvas.
+    inner: &'a BTreeMap<NodeId, NodeId>,
 }
 
 impl<'a> Graph<'a> {
@@ -387,6 +400,7 @@ impl<'a> Graph<'a> {
         kinds: &'a Registry,
         targets: &'a nodecraft_types::TargetSelection,
         collects: &'a BTreeMap<NodeId, Vec<Collect>>,
+        inner: &'a BTreeMap<NodeId, NodeId>,
         options: &'a dyn nodecraft_types::OptionLookup,
     ) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
@@ -396,7 +410,7 @@ impl<'a> Graph<'a> {
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
         let pairing = canvas.nodes().values().filter(|n| n.kind == batch::ID).filter_map(|n| Some((n.id, batch::pairing(n).ok()?))).collect();
-        Ok(Self { canvas, kinds, targets, options, into, routing, pairing, collects })
+        Ok(Self { canvas, kinds, targets, options, into, routing, pairing, collects, inner })
     }
 
     /// What `id` is made from: its inputs' nodes and, for a technique node, the inlined nodes
@@ -589,7 +603,7 @@ impl<'a> Graph<'a> {
                         }
                         // A list input collects every item of a fanned step.
                         Some(_) if collects => from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list: true }),
-                        Some(tags) => fan(&mut from, tags.clone(), FannedFrom::Step { node: *up, port: (*up_port).to_owned() }),
+                        Some(tags) => fan(&mut from, tags.clone(), FannedFrom::Step { node: *up, port: (*up_port).to_owned(), list: false }),
                         None => from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list }),
                     }
                 } else {
@@ -670,16 +684,34 @@ impl<'a> Graph<'a> {
         let (Some(mode), true) = (mode, blockers.is_empty()) else {
             return Err(blockers);
         };
+        // A technique node takes each output from its inlined node; one fanned by a batch fans
+        // the technique node too, one run of its version per item (#533).
         if let Some(collects) = self.collects.get(&id) {
-            let unsupported = |upstream: Option<NodeId>| vec![blocker(None, upstream, Reason::Invalid("batches into techniques aren't supported yet".into()))];
-            if !fanned.is_empty() {
-                return Err(unsupported(None));
-            }
+            // Its own inputs only feed the inlined nodes: a batch on them fans the technique
+            // node through what it collects, or not at all when the version collects the items.
+            // Those inputs, holding only stand-ins for the items, are left out of its step.
+            let fed: BTreeSet<usize> = fanned.drain(..).map(|fan| fan.input).collect();
+            inputs = std::mem::take(&mut inputs).into_iter().enumerate().filter(|(index, _)| !fed.contains(index)).map(|(_, input)| input).collect();
             for collect in collects {
-                let (from, port_type) = self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| match reason {
-                    Some(reason) => vec![blocker(None, Some(upstream), reason)],
-                    None => unsupported(Some(upstream)),
-                })?;
+                let (collected, port_type) =
+                    self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| vec![blocker(None, Some(upstream), reason)])?;
+                // A batch inside the version stays unsupported (#93); only one on the canvas
+                // fans a technique node.
+                if let Collected::Fanned(tags, _) = &collected
+                    && tags.iter().flatten().any(|key| self.inner.contains_key(&key.batch))
+                {
+                    return Err(vec![blocker(None, Some(collect.node), Reason::Invalid("a batch inside its technique can't fan it out yet".into()))]);
+                }
+                let from = match collected {
+                    Collected::Plain(from) => from,
+                    Collected::Fanned(tags, source) => {
+                        if let FannedFrom::Values(values) = &source {
+                            fan_bytes = fan_bytes.saturating_add(values.iter().map(value_bytes).fold(0usize, usize::saturating_add));
+                        }
+                        fanned.push(Fanned { input: inputs.len(), slot: 0, tags, from: source });
+                        vec![InputSource::Value(Value::List(Vec::new()))]
+                    }
+                };
                 inputs.push(PlannedInput { port: format!("{}{}", technique::OUTPUT_PREFIX, collect.output), port_type, from });
             }
         }
@@ -726,7 +758,7 @@ impl<'a> Graph<'a> {
             for (fan, row) in fanned.iter().zip(&cell.rows) {
                 let source = match &fan.from {
                     FannedFrom::Values(values) => InputSource::Value(values.get(*row).cloned().ok_or_else(|| invalid("an item is missing".into()))?),
-                    FannedFrom::Step { node, port } => InputSource::Item { node: *node, port: port.clone(), index: *row, list: false },
+                    FannedFrom::Step { node, port, list } => InputSource::Item { node: *node, port: port.clone(), index: *row, list: *list },
                 };
                 if let Some(slot) = cell_inputs.get_mut(fan.input).and_then(|input| input.from.get_mut(fan.slot)) {
                     *slot = source;
@@ -757,7 +789,7 @@ impl<'a> Graph<'a> {
     }
 
     /// Where one output of a technique node comes from: the inlined node's step in this run, or
-    /// its result as is. `Err` names the node, with `None` for a batch fanning it out.
+    /// its result as is; per item when a batch fans that node out. `Err` names the node.
     fn collect(
         &self,
         collect: &Collect,
@@ -765,26 +797,31 @@ impl<'a> Graph<'a> {
         state: &mut State,
         bytes: &mut usize,
         after: &mut BTreeSet<NodeId>,
-    ) -> Result<(Vec<InputSource>, PortType), (NodeId, Option<Reason>)> {
-        let inner = self.canvas.nodes().get(&collect.node).ok_or((collect.node, Some(Reason::NoResult)))?;
-        let port_type = inner.outputs.iter().find(|p| p.name == collect.port).map(|p| p.port_type).ok_or((collect.node, Some(Reason::NoResult)))?;
+    ) -> Result<(Collected, PortType), (NodeId, Reason)> {
+        let inner = self.canvas.nodes().get(&collect.node).ok_or((collect.node, Reason::NoResult))?;
+        let port_type = inner.outputs.iter().find(|p| p.name == collect.port).map(|p| p.port_type).ok_or((collect.node, Reason::NoResult))?;
         if run.contains(&collect.node) && !self.is_source(inner) {
-            if state.fanned.contains_key(&collect.node) {
-                return Err((collect.node, None));
-            }
             after.insert(collect.node);
-            return Ok((vec![InputSource::Step { node: collect.node, port: collect.port.clone(), list: port_type.many }], port_type));
+            let (node, port, list) = (collect.node, collect.port.clone(), port_type.many);
+            return Ok(match state.fanned.get(&collect.node) {
+                Some(tags) => (Collected::Fanned(tags.clone(), FannedFrom::Step { node, port, list }), port_type),
+                None => (Collected::Plain(vec![InputSource::Step { node, port, list }]), port_type),
+            });
         }
-        let (value, _, items) = self.resolve(collect.node, &collect.port).map_err(|reason| (collect.node, Some(reason)))?;
-        if !items.is_empty() {
-            return Err((collect.node, None));
-        }
+        let (value, _, items) = self.resolve(collect.node, &collect.port).map_err(|reason| (collect.node, reason))?;
         if !self.charge(bytes, &mut state.plan_bytes, value_bytes(&value)) {
-            return Err((collect.node, Some(Reason::Invalid(over_budget(*bytes).into()))));
+            return Err((collect.node, Reason::Invalid(over_budget(*bytes).into())));
         }
         Ok(match value {
-            Value::List(values) if port_type.many => (values.into_iter().map(InputSource::Value).collect(), port_type),
-            value => (vec![InputSource::Value(value)], port_type),
+            // A result kept per item: each item's value (or list) in turn.
+            Value::List(values) if !items.is_empty() => {
+                if port_type.many {
+                    return Err((collect.node, Reason::Invalid("a technique's list output kept per batch item can't be reused; run it again".into())));
+                }
+                (Collected::Fanned(items, FannedFrom::Values(values)), port_type)
+            }
+            Value::List(values) if port_type.many => (Collected::Plain(values.into_iter().map(InputSource::Value).collect()), port_type),
+            value => (Collected::Plain(vec![InputSource::Value(value)]), port_type),
         })
     }
 

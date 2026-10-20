@@ -199,3 +199,42 @@ fn a_removed_version_blocks_only_its_technique_node() {
     let fine = f.session.dispatch("run.quote", &json!({"canvas": C, "mode": "selected", "nodes": [SOURCE, WRITER]})).unwrap();
     assert_eq!(fine["allowed"], true, "{fine}");
 }
+
+/// A batch into a technique node runs its version once per item (#533): one paid call per item,
+/// quoted on the technique node, and one result per item on it, tagged like any batch result.
+#[test]
+fn a_batch_into_a_technique_node_runs_it_once_per_item() {
+    let mut f = fixture();
+    let batch = NodeId::from_bytes([13; 16]);
+    f.session.dispatch("edge.disconnect", &json!({"canvas": C, "id": EdgeId::from_bytes([9; 16])})).unwrap();
+    f.session.dispatch("node.create", &json!({"canvas": C, "id": batch, "kind": nodecraft_nodes::batch::ID, "pos": {"x": 0, "y": 300}})).unwrap();
+    f.session
+        .dispatch("node.param_set", &json!({"canvas": C, "id": batch, "name": "text", "value": {"type": "text", "value": "a fox\nan owl\na hare"}}))
+        .unwrap();
+    let edge = json!({"id": EdgeId::from_bytes([22; 16]), "from": {"node": batch, "port": "item"}, "to": {"node": PLACED, "port": "subject"}, "order": 0});
+    f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    let request = json!({"canvas": C, "mode": "with_upstream", "nodes": [PLACED]});
+    let q = f.session.dispatch("run.quote", &request).unwrap();
+    assert_eq!(q["allowed"], true, "{q}");
+    assert_eq!(q["totals"]["USD"]["micros"], json!(30_000), "one paid call per item: {q}");
+    let priced: Vec<NodeId> = q["steps"].as_array().unwrap().iter().map(|step| serde_json::from_value(step["node"].clone()).unwrap()).collect();
+    assert!(priced.iter().all(|id| [batch, PLACED].contains(id)), "inner steps are priced on the technique node: {q}");
+    let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = request;
+    start["accept"] = json!({"token": q["token"], "partial": false, "unpriced_jobs": 0, "amounts": amounts});
+    f.session.dispatch("run.start", &start).unwrap();
+    let notices = drive(&mut f);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    assert_eq!(f.mock.requests().len(), 3, "one paid call per item");
+    let placed = node(&f.session, PLACED);
+    assert_eq!(placed.history.len(), 1, "one result holding every item");
+    let done = &placed.history[0];
+    assert_eq!(done.items.len(), 3, "{done:?}");
+    assert!(done.items.iter().all(|tag| tag.len() == 1 && tag[0].batch == batch), "tagged by the batch's items: {:?}", done.items);
+    let Value::List(answers) = &done.outputs[0] else { panic!("one answer per item: {done:?}") };
+    let texts: Vec<&str> = answers.iter().map(|a| if let Value::Text(t) = a { t.as_str() } else { panic!("{a:?}") }).collect();
+    for (text, subject) in texts.iter().zip(["a fox", "an owl", "a hare"]) {
+        assert!(text.starts_with(&format!("mock-text: {subject} #")), "{texts:?}");
+    }
+    assert!(node(&f.session, WRITER).history.is_empty());
+}

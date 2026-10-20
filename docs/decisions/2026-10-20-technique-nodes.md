@@ -35,5 +35,6 @@
   read-only), Edit technique (its source canvas, to publish again), Upgrade to the newest version
   and Detach.
 
-Not yet: Batch fan-out through a technique node's inputs, and live updates of technique nodes
-(`live_actions` plans without inlining, so they wait for a run).
+Not yet: live updates of technique nodes (`live_actions` plans without inlining, so they wait
+for a run). Batch fan-out through a technique node's inputs landed later; see
+[2026-10-20-technique-batch.md](2026-10-20-technique-batch.md).
