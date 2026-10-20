@@ -40,6 +40,8 @@ pub struct Tokens {
     pub marquee_fill: Color32,
     /// Errors and failed states in chrome (not the accent, which reads as a highlight).
     pub danger: Color32,
+    /// The badge on a card whose result no longer matches its inputs (its text is `card_fill`).
+    pub stale: Color32,
     /// Noodle and port colours by the modality they carry.
     pub wire_text: Color32,
     pub wire_image: Color32,
@@ -142,6 +144,7 @@ pub const DARK: Tokens = Tokens {
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
     danger: Color32::from_rgb(0xf0, 0x6a, 0x5f),
+    stale: Color32::from_rgb(0xe0, 0xa8, 0x3a),
     wire_text: Color32::from_rgb(0xd9, 0xb4, 0x5a),
     wire_image: Color32::from_rgb(0x5a, 0xa7, 0xe0),
     wire_video: Color32::from_rgb(0xc6, 0x78, 0xdd),
@@ -235,6 +238,7 @@ pub const LIGHT: Tokens = Tokens {
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
     danger: Color32::from_rgb(0xc4, 0x37, 0x2b),
+    stale: Color32::from_rgb(0x8a, 0x58, 0x00),
     wire_text: Color32::from_rgb(0x9a, 0x74, 0x14),
     wire_image: Color32::from_rgb(0x1f, 0x6f, 0xb0),
     wire_video: Color32::from_rgb(0x8a, 0x3f, 0xb0),

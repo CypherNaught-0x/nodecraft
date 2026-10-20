@@ -6,6 +6,7 @@
 //! the quote waits for the answer ([`Tick::ready`]). Once the adapter is ready, the card is routed
 //! to it and quoted as before. [`Runs::tick`] pumps the host once a frame and keeps what the
 //! cards show: which are running and why the last run of one failed.
+use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
@@ -106,11 +107,22 @@ pub(super) enum Route {
     Waiting,
 }
 
+/// A run waiting for its providers to be set up.
+#[derive(Clone)]
+struct Waiting {
+    canvas: CanvasId,
+    node: NodeId,
+    kind: RunKind,
+    /// Adapters asked for and not yet answered.
+    pending: BTreeSet<String>,
+    settings: ProviderSettings,
+}
+
 /// What one frame's pump brought.
 #[derive(Default)]
 pub(super) struct Tick {
-    /// A card whose provider is now set up, to quote again.
-    pub ready: Option<NodeId>,
+    /// A run whose providers are now set up, to quote again.
+    pub ready: Option<(NodeId, RunKind)>,
     /// A card stopped waiting for its provider without being quoted (it's on another canvas).
     pub abandoned: bool,
     /// Something to tell the person: a run that couldn't start or a provider that can't run.
@@ -125,8 +137,8 @@ pub(super) struct Runs {
     asked: BTreeSet<String>,
     /// Bumped when a key changes: adapters asked for before then are built with the old key.
     epoch: u64,
-    /// The card waiting for its adapter, with that adapter and the settings it was asked with.
-    waiting: Option<(CanvasId, NodeId, String, ProviderSettings)>,
+    /// The run waiting for its adapters.
+    waiting: Option<Waiting>,
     /// Why the last run of a card failed, until it runs again.
     failed: BTreeMap<(CanvasId, NodeId), String>,
     running: BTreeSet<(CanvasId, NodeId)>,
@@ -190,32 +202,40 @@ impl Runs {
         self.host.install(session);
     }
 
-    /// Routes card `id` to its provider when it is set up, or asks for it to be.
-    pub(super) fn route(&mut self, session: &mut Session, canvas: CanvasId, id: NodeId, settings: &ProviderSettings) -> Result<Route, Error> {
+    /// Routes the cards a run of `id` may reach (the card alone, or with its upstream for a
+    /// refresh) to their providers when those are set up, or asks for them to be.
+    pub(super) fn route(&mut self, session: &mut Session, canvas: CanvasId, id: NodeId, kind: RunKind, settings: &ProviderSettings) -> Result<Route, Error> {
         let adapters = adapters_of(session, canvas);
-        let Some(adapter) = adapters.get(&id).cloned() else {
-            return Ok(Route::Ready);
+        let reached = match kind {
+            RunKind::Generate => BTreeSet::from([id]),
+            RunKind::Refresh => with_upstream(session, canvas, id),
         };
-        match self.setup.readiness(&adapter) {
-            Some(Readiness::Ready) => {
-                // Every card whose provider is ready, so a run of more than this card reaches its
-                // providers too.
-                let ready = adapters.iter().filter(|(_, a)| self.setup.readiness(a) == Some(&Readiness::Ready)).map(|(node, a)| (*node, a.as_str()));
-                session.set_provider_routing(self.setup.routing(ready)?)?;
-                Ok(Route::Ready)
-            }
-            Some(other) => {
-                let message = other.message(&adapter).unwrap_or_default();
-                // Tried afresh next time: the person may add the key or the server meanwhile.
-                self.setup.forget(&adapter);
-                Err(Error::new(ErrorKind::Unsupported, message))
-            }
-            None => {
-                self.ask(&adapter, settings)?;
-                self.waiting = Some((canvas, id, adapter, settings.clone()));
-                Ok(Route::Waiting)
+        let needed: BTreeSet<String> = reached.iter().filter_map(|node| adapters.get(node).cloned()).collect();
+        let mut pending = BTreeSet::new();
+        for adapter in needed {
+            match self.setup.readiness(&adapter) {
+                Some(Readiness::Ready) => {}
+                Some(other) => {
+                    let message = other.message(&adapter).unwrap_or_default();
+                    // Tried afresh next time: the person may add the key or the server meanwhile.
+                    self.setup.forget(&adapter);
+                    return Err(Error::new(ErrorKind::Unsupported, message));
+                }
+                None => {
+                    self.ask(&adapter, settings)?;
+                    pending.insert(adapter);
+                }
             }
         }
+        if !pending.is_empty() {
+            self.waiting = Some(Waiting { canvas, node: id, kind, pending, settings: settings.clone() });
+            return Ok(Route::Waiting);
+        }
+        // Every card whose provider is ready, so a run of more than these cards reaches its
+        // providers too.
+        let ready = adapters.iter().filter(|(_, a)| self.setup.readiness(a) == Some(&Readiness::Ready)).map(|(node, a)| (*node, a.as_str()));
+        session.set_provider_routing(self.setup.routing(ready)?)?;
+        Ok(Route::Ready)
     }
 
     /// Asks the provider thread for `adapter`, unless it already was in this epoch.
@@ -249,11 +269,13 @@ impl Runs {
         self.epoch = self.epoch.wrapping_add(1);
         self.asked.clear();
         session.set_provider_routing(ProviderRouting::default())?;
-        if let Some((_, _, adapter, settings)) = self.waiting.clone()
-            && let Err(error) = self.ask(&adapter, &settings)
-        {
-            self.waiting = None;
-            return Err(error);
+        if let Some(waiting) = self.waiting.clone() {
+            for adapter in &waiting.pending {
+                if let Err(error) = self.ask(adapter, &waiting.settings) {
+                    self.waiting = None;
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }
@@ -269,11 +291,12 @@ impl Runs {
             self.asked.remove(&adapter);
             self.setup.forget(&adapter);
             self.setup.ensure(&adapter, |_| result);
-            if let Some((on, node, wanted, _)) = &self.waiting
-                && *wanted == adapter
+            if let Some(waiting) = &mut self.waiting
+                && waiting.pending.remove(&adapter)
+                && waiting.pending.is_empty()
             {
-                if *on == canvas {
-                    tick.ready = Some(*node);
+                if waiting.canvas == canvas {
+                    tick.ready = Some((waiting.node, waiting.kind));
                 } else {
                     tick.abandoned = true;
                 }
@@ -330,6 +353,28 @@ impl Drop for Runs {
             tokio.shutdown_background();
         }
     }
+}
+
+/// `id` and every node upstream of it on `canvas`.
+fn with_upstream(session: &Session, canvas: CanvasId, id: NodeId) -> BTreeSet<NodeId> {
+    let mut seen = BTreeSet::from([id]);
+    let Some(canvas) = session.document().canvases().get(&canvas) else {
+        return seen;
+    };
+    let mut inputs: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for edge in canvas.edges().values() {
+        inputs.entry(edge.to.node).or_default().push(edge.from.node);
+    }
+    // The graph may have cycles: the seen-set ends the walk.
+    let mut next = vec![id];
+    while let Some(node) = next.pop() {
+        for from in inputs.get(&node).into_iter().flatten() {
+            if seen.insert(*from) {
+                next.push(*from);
+            }
+        }
+    }
+    seen
 }
 
 /// The adapter each card with a catalog model on `canvas` runs on.

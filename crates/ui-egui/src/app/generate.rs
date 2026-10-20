@@ -11,9 +11,34 @@ const MAX_LINES: usize = 8;
 const MAX_LINE_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 32;
 
+/// What a run from a card does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RunKind {
+    /// Generate: the card alone.
+    Generate,
+    /// Refresh a stale result (#211): the card with whatever upstream is stale or has no result.
+    Refresh,
+}
+
+impl RunKind {
+    fn mode(self) -> &'static str {
+        match self {
+            Self::Generate => "selected",
+            Self::Refresh => "with_upstream",
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Self::Generate => "Generate",
+            Self::Refresh => "Refresh",
+        }
+    }
+}
+
 pub(super) struct RunConfirm {
     session: Arc<()>,
     canvas: CanvasId,
+    kind: RunKind,
     nodes: Vec<NodeId>,
     pub(super) revision: u64,
     quote: Quote,
@@ -89,23 +114,29 @@ impl Quote {
 impl NodeCraftApp {
     /// Quote a run of one card and ask before starting it. Selection alone never starts a run.
     pub(super) fn request_generate(&mut self, id: NodeId) -> Result<(), Error> {
+        self.request_run(id, RunKind::Generate)
+    }
+
+    /// Quote a run from card `id` and ask before starting it.
+    pub(super) fn request_run(&mut self, id: NodeId, kind: RunKind) -> Result<(), Error> {
         if self.run_confirm.is_some() {
             return Ok(());
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(runs) = &mut self.runs {
             let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
-            if runs.route(&mut self.session, self.canvas, id, &settings)? == super::runs::Route::Waiting {
+            if runs.route(&mut self.session, self.canvas, id, kind, &settings)? == super::runs::Route::Waiting {
                 self.notice = Some(super::runs::SETTING_UP.into());
                 return Ok(());
             }
         }
         let nodes = vec![id];
-        let value = self.session.dispatch("run.quote", &json!({"canvas": self.canvas, "mode": "selected", "nodes": nodes}))?;
+        let value = self.session.dispatch("run.quote", &json!({"canvas": self.canvas, "mode": kind.mode(), "nodes": nodes}))?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
         self.run_confirm = Some(RunConfirm {
             session: self.session.view_identity(),
             canvas: self.canvas,
+            kind,
             nodes,
             revision: self.session.revision(),
             quote,
@@ -133,8 +164,8 @@ impl NodeCraftApp {
             self.notice = Some(notice);
         }
         // Quoted last: if it can't be, that is the newest thing to say.
-        if let Some(id) = tick.ready
-            && let Err(error) = self.request_generate(id)
+        if let Some((id, kind)) = tick.ready
+            && let Err(error) = self.request_run(id, kind)
         {
             self.notice = Some(error.message);
         }
@@ -153,7 +184,7 @@ impl NodeCraftApp {
         let mut requote = false;
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
-            ui.heading("Generate");
+            ui.heading(confirm.kind.title());
             let quote = &confirm.quote;
             if stale {
                 ui.label("The canvas changed after this price was quoted. Nothing was started.");
@@ -192,7 +223,8 @@ impl NodeCraftApp {
                 if stale && !failed {
                     requote = ui.button("Quote again").clicked();
                 } else if quote.allowed && !failed {
-                    let label = if quote.totals.is_empty() { "Generate now".to_owned() } else { format!("Generate for {}", quote.price()) };
+                    let title = confirm.kind.title();
+                    let label = if quote.totals.is_empty() { format!("{title} now") } else { format!("{title} for {}", quote.price()) };
                     start = ui.add_enabled(quote.acceptable(confirm.partial), egui::Button::new(label)).clicked();
                 }
                 close |= ui.button(if failed { "Close" } else { "Cancel" }).clicked();
@@ -208,7 +240,8 @@ impl NodeCraftApp {
             if quote.unpriced_jobs > 0 {
                 accept["unpriced_jobs"] = json!(quote.unpriced_jobs);
             }
-            match self.session.dispatch("run.start", &json!({"canvas": confirm.canvas, "mode": "selected", "nodes": confirm.nodes, "accept": accept})) {
+            match self.session.dispatch("run.start", &json!({"canvas": confirm.canvas, "mode": confirm.kind.mode(), "nodes": confirm.nodes, "accept": accept}))
+            {
                 Ok(_) => {
                     self.notice = None;
                     close = true;
@@ -217,7 +250,7 @@ impl NodeCraftApp {
             }
         }
         if requote && let Some(&id) = confirm.nodes.first() {
-            if let Err(error) = self.request_generate(id) {
+            if let Err(error) = self.request_run(id, confirm.kind) {
                 self.notice = Some(error.message);
             }
             return true;

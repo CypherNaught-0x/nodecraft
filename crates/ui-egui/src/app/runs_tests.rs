@@ -234,6 +234,70 @@ fn leaving_the_canvas_while_its_provider_is_set_up_clears_the_waiting_notice() {
     assert!(h.state().run_confirm.is_none(), "nothing is quoted for a card on another canvas");
 }
 
+const BADGE: &str = "Stale result: refresh";
+
+fn refresh_accept(h: &mut Harness<'static, NodeCraftApp>) {
+    let label = h.get_by_label_contains("Refresh for").accesskit_node().label().unwrap_or_default();
+    press(h, Role::Button, &label);
+}
+
+/// Generates the card once and waits for its result.
+fn generated(h: &mut Harness<'static, NodeCraftApp>) {
+    press(h, Role::Button, "Generate");
+    frames_until(h, |app| app.run_confirm.is_some());
+    accept(h);
+    frames_until(h, |app| idle(app) && !node(app).history.is_empty());
+}
+
+#[test]
+fn an_edited_card_shows_a_stale_badge_and_refreshing_runs_it_again() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock.clone()));
+    generated(&mut h);
+    assert!(h.query_by_label(BADGE).is_none(), "a fresh result has no badge");
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": C, "id": N, "name": "prompt", "value": Value::Text("A blue square".into())})).unwrap();
+    h.run();
+    press(&mut h, Role::Button, BADGE);
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert!(mock.requests().len() == 1, "the badge quotes; it starts nothing");
+    h.get_by_label("Refresh");
+    refresh_accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && node(app).history.len() == 2);
+    h.run();
+    assert_eq!(mock.requests().len(), 2);
+    assert!(h.query_by_label(BADGE).is_none(), "the refreshed result matches its inputs");
+}
+
+#[test]
+fn an_edited_upstream_text_marks_the_card_stale_and_refresh_runs_with_it() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock.clone()));
+    let text = NodeId::from_bytes([95; 16]);
+    let session = &mut h.state_mut().session;
+    session.dispatch("node.create", &json!({"canvas": C, "id": text, "kind": "source.text", "pos": {"x": -250.0, "y": 120.0}})).unwrap();
+    session.dispatch("node.param_set", &json!({"canvas": C, "id": text, "name": "text", "value": Value::Text("A red square".into())})).unwrap();
+    let edge = EdgeId::from_bytes([96; 16]);
+    session
+        .dispatch(
+            "edge.connect",
+            &json!({"canvas": C, "edge": {"id": edge, "from": {"node": text, "port": "out"}, "to": {"node": N, "port": "prompt"}, "order": 0}}),
+        )
+        .unwrap();
+    h.run();
+    generated(&mut h);
+    assert!(h.query_by_label(BADGE).is_none());
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": C, "id": text, "name": "text", "value": Value::Text("A blue square".into())})).unwrap();
+    h.run();
+    press(&mut h, Role::Button, BADGE);
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    refresh_accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && node(app).history.len() == 2);
+    h.run();
+    assert!(h.query_by_label(BADGE).is_none());
+    let prompts: Vec<String> = mock.requests().iter().map(|request| format!("{request:?}")).collect();
+    assert!(prompts.last().is_some_and(|last| last.contains("A blue square")), "{prompts:?}");
+}
+
 #[test]
 #[ignore = "manual public-safe capture; RUNS409_RENDER_DIR"]
 fn runs409_visual() {
@@ -260,4 +324,21 @@ fn runs409_visual() {
     accept(&mut h);
     frames_until(&mut h, |app| idle(app) && app.runs.as_ref().is_some_and(|runs| runs.failure(C, N).is_some()));
     render(h).render().unwrap().save(dir.join("runs409-failed.png")).unwrap();
+}
+
+#[test]
+#[ignore = "manual public-safe capture; STALE211_RENDER_DIR"]
+fn stale211_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("STALE211_RENDER_DIR").unwrap());
+    let mut h = scene(making(image(MockModel::new(MockOutput::Image))));
+    generated(&mut h);
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": C, "id": N, "name": "prompt", "value": Value::Text("A blue square".into())})).unwrap();
+    for (theme, name) in [(crate::theme::ThemeKind::Dark, "stale211-dark.png"), (crate::theme::ThemeKind::Light, "stale211-light.png")] {
+        h.state_mut().theme = theme;
+        let mut shot = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
+        crate::theme::apply(&shot.ctx, theme);
+        shot.run();
+        shot.render().unwrap().save(dir.join(name)).unwrap();
+        h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
+    }
 }
