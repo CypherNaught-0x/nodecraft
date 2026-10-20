@@ -381,10 +381,10 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             node: step.node,
             models,
             per_job,
-            // A fanned step (#92) planned later runs at least one job per item.
+            // A fanned step (#92) planned later runs at least one job per item it runs.
             jobs: match (&step.jobs, &step.fanout) {
                 (Some(jobs), _) => u64::try_from(jobs.len()).unwrap_or(u64::MAX),
-                (None, Some(fanout)) => u64::try_from(fanout.items.len().max(1)).unwrap_or(u64::MAX),
+                (None, Some(fanout)) => u64::try_from(fanout.running().max(1)).unwrap_or(u64::MAX),
                 (None, None) => 1,
             },
             jobs_known: step.jobs.is_some(),

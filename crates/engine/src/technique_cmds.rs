@@ -154,7 +154,7 @@ fn job_count(steps: &[nodecraft_exec::planner::Step]) -> Option<usize> {
     steps.iter().try_fold(0usize, |n, step| {
         let jobs = match (&step.jobs, &step.fanout) {
             (Some(jobs), _) => jobs.len(),
-            (None, Some(fanout)) => fanout.items.len().max(1),
+            (None, Some(fanout)) => fanout.running().max(1),
             (None, None) => 1,
         };
         n.checked_add(jobs)
