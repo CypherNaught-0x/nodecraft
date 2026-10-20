@@ -12,7 +12,7 @@
 use crate::planner::{Blocker, Reason};
 use nodecraft_graph::{Canvas, Edge, Endpoint, Node};
 use nodecraft_nodes::{Registry, technique};
-use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId};
+use nodecraft_types::{CanvasId, EdgeId, Error, NodeId};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -20,6 +20,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub const MAX_DEPTH: usize = 8;
 /// Most nodes inlining may add to one canvas, across all its techniques.
 pub const MAX_INLINED_NODES: usize = 2000;
+/// Most wires inlining may add to one canvas. A fed input multiplies its wires by its feeds, so
+/// nested techniques could otherwise grow them exponentially.
+pub const MAX_INLINED_EDGES: usize = 10_000;
 
 /// Where one output of a technique node comes from: `port` of the inlined `node`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +89,12 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
     let mut inner = BTreeMap::new();
     let mut blockers: Vec<Blocker> = Vec::new();
     let mut blocked = BTreeSet::new();
+    let mut edge_ids: BTreeSet<[u8; 16]> = BTreeSet::new();
+    // Wires into each node of the real canvas, indexed once.
+    let mut incoming: BTreeMap<NodeId, Vec<&Edge>> = BTreeMap::new();
+    for edge in canvas.edges().values() {
+        incoming.entry(edge.to.node).or_default().push(edge);
+    }
     let mut block = |blocked: &mut BTreeSet<NodeId>, owner: NodeId, message: &str| {
         if blocked.insert(owner) {
             blockers.push(Blocker { node: owner, port: None, upstream: None, reason: Reason::Invalid(message.to_owned()) });
@@ -123,12 +132,14 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
             block(&mut blocked, owner, "its techniques nest too deeply");
             continue;
         }
-        if added.len().saturating_add(version.nodes().len()) > MAX_INLINED_NODES {
+        let nodes_after = added.len().saturating_add(version.nodes().len());
+        if nodes_after > MAX_INLINED_NODES || nodes_after.saturating_add(canvas.nodes().len()) > nodecraft_graph::MAX_NODES {
             block(&mut blocked, owner, "its techniques hold too many nodes to run");
             continue;
         }
         let map = |inner: NodeId| NodeId::from_bytes(derive(id, inner.as_bytes(), 0));
         let mut copies = Vec::with_capacity(version.nodes().len());
+        let mut taken = false;
         for original in version.nodes().values() {
             let mut copy = original.clone();
             copy.id = map(original.id);
@@ -140,10 +151,12 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
                 copy.history.clear();
                 copy.active = None;
             }
-            if canvas.nodes().contains_key(&copy.id) || added.contains_key(&copy.id) {
-                return Err(Error::new(ErrorKind::Conflict, "an inlined node's id is already taken"));
-            }
+            taken |= canvas.nodes().contains_key(&copy.id) || added.contains_key(&copy.id);
             copies.push(copy);
+        }
+        if taken {
+            block(&mut blocked, owner, "an id its technique needs is already taken on this canvas");
+            continue;
         }
         for (exposed, spec) in info.params.iter().zip(&interface.params) {
             if let (Some(value), Some(copy)) = (node.params.get(&spec.name), copies.iter_mut().find(|copy| copy.id == map(exposed.node))) {
@@ -151,7 +164,9 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
             }
         }
         // What feeds each exposed input: wires into the instance's port, in input order.
-        let into_instance = canvas.edges().values().chain(edges.iter()).filter(|edge| edge.to.node == id);
+        // Only a nested copy is fed by inlined wires.
+        let nested = if inner.contains_key(&id) { edges.as_slice() } else { &[] };
+        let into_instance = incoming.get(&id).into_iter().flatten().copied().chain(nested.iter().filter(|edge| edge.to.node == id));
         let mut feeds: BTreeMap<(NodeId, &str), Vec<(u32, Endpoint)>> = BTreeMap::new();
         for edge in into_instance {
             if let Some(index) = interface.inputs.iter().position(|input| input.port == edge.to.port)
@@ -162,6 +177,14 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
         }
         for list in feeds.values_mut() {
             list.sort_by_key(|(order, _)| *order);
+        }
+        // Counted before any is made: a fed input's wires multiply by its feeds.
+        let adding =
+            version.edges().values().map(|edge| feeds.get(&(edge.from.node, edge.from.port.as_str())).map_or(1, Vec::len)).fold(0usize, usize::saturating_add);
+        let edges_after = edges.len().saturating_add(adding);
+        if edges_after > MAX_INLINED_EDGES || edges_after.saturating_add(canvas.edges().len()) > nodecraft_graph::MAX_EDGES {
+            block(&mut blocked, owner, "its techniques hold too many wires to run");
+            continue;
         }
         // The version's wires, those leaving a fed input replaced by one wire per feed; then
         // each input's wires numbered again in order.
@@ -181,6 +204,12 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
             }
         }
         wires.sort_by(|a, b| (&a.0.node, &a.0.port, a.1, a.2).cmp(&(&b.0.node, &b.0.port, b.1, b.2)));
+        let fresh: BTreeSet<[u8; 16]> = wires.iter().map(|wire| wire.4).collect();
+        if fresh.len() != wires.len() || fresh.iter().any(|id| canvas.edges().contains_key(&EdgeId::from_bytes(*id)) || edge_ids.contains(id)) {
+            block(&mut blocked, owner, "an id its technique needs is already taken on this canvas");
+            continue;
+        }
+        edge_ids.extend(fresh);
         let mut previous: Option<Endpoint> = None;
         let mut order = 0u32;
         for (to, _, _, from, edge_id) in wires {

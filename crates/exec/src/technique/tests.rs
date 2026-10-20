@@ -4,7 +4,7 @@ use crate::run::{Run, RunLimits, RunOptions, StepFailure, StepResult};
 use crate::scheduler::RetryPolicy;
 use nodecraft_graph::{Change, Changeset, Port, Project, Technique, TechniqueParam, TechniquePort};
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
-use nodecraft_types::{Modality, ParamControl, ParamSchema, ParamSpec, PortType, ProjectId, TechniqueId, Value};
+use nodecraft_types::{ErrorKind, Modality, ParamControl, ParamSchema, ParamSpec, PortType, ProjectId, TechniqueId, Value};
 
 const TEXT: PortType = PortType { modality: Modality::Text, many: false };
 const LIST: PortType = PortType { modality: Modality::Text, many: true };
@@ -252,4 +252,113 @@ fn techniques_nest() {
     let (finished, failed) = drive(&project, &kinds, &plan, None);
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(outputs(&finished), vec![(NodeId::from_bytes([12; 16]), vec!["FOX!!".to_owned()])]);
+}
+
+/// Gives `items` from nothing, or what its many input is fed.
+struct Items(NodeDescriptor);
+impl NodeKind for Items {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("items").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value: Value::List(Vec::new()) }])
+    }
+}
+
+#[test]
+fn a_technique_whose_wires_multiply_past_the_cap_blocks_only_its_node() {
+    let (mut project, mut kinds) = project(Some("fox"), "");
+    let items = NodeDescriptor {
+        id: "test.items".into(),
+        label: "Items".into(),
+        category: Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: LIST }],
+        outputs: vec![Port { name: "out".into(), port_type: LIST }],
+        params: ParamSchema { params: Vec::new() },
+        quick_add: None,
+    };
+    kinds.register(Box::new(Items(items))).unwrap();
+    let id = |tag: u8, n: usize| {
+        let mut bytes = [tag; 16];
+        bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
+        bytes
+    };
+    // A version whose many input feeds 150 nodes, placed with 70 wires into that input: inlining
+    // would add 150 × 70 wires.
+    // Each of them feeds the one output.
+    let (input, collect) = (NodeId::from_bytes([90; 16]), NodeId::from_bytes([95; 16]));
+    let mut nodes = vec![node(&kinds, input, "test.items", ""), node(&kinds, collect, "test.items", "")];
+    let mut edges = Vec::new();
+    for n in 0..150 {
+        let to = NodeId::from_bytes(id(91, n));
+        nodes.push(node(&kinds, to, "test.items", ""));
+        edges.push(Edge {
+            id: EdgeId::from_bytes(id(92, n)),
+            from: Endpoint { node: input, port: "out".into() },
+            to: Endpoint { node: to, port: "in".into() },
+            order: 0,
+        });
+        let order = u32::try_from(n).unwrap();
+        edges.push(Edge {
+            id: EdgeId::from_bytes(id(96, n)),
+            from: Endpoint { node: to, port: "out".into() },
+            to: Endpoint { node: collect, port: "in".into() },
+            order,
+        });
+    }
+    let wide = Technique {
+        id: TechniqueId::from_bytes([9; 16]),
+        version: 1,
+        name: "Wide".into(),
+        description: String::new(),
+        category: String::new(),
+        tags: Vec::new(),
+        inputs: vec![port("Items", input, "out", LIST)],
+        outputs: vec![port("All", collect, "out", LIST)],
+        params: Vec::new(),
+        source: None,
+        retired: false,
+    };
+    let version = Canvas::technique(CanvasId::from_bytes([5; 16]), "Wide v1", wide, nodes, edges).unwrap();
+    let interface = technique::interface_of(&version, &kinds).unwrap();
+    let placed_id = NodeId::from_bytes([13; 16]);
+    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(placed_id, interface.config().unwrap(), &Default::default()).unwrap();
+    let mut changes = vec![Change::AddCanvas { canvas: version }, Change::AddNode { canvas: C, node: placed }];
+    for n in 0..70 {
+        let from = NodeId::from_bytes(id(93, n));
+        changes.push(Change::AddNode { canvas: C, node: node(&kinds, from, "source.text", "a") });
+        let edge = Edge {
+            id: EdgeId::from_bytes(id(94, n)),
+            from: Endpoint { node: from, port: "out".into() },
+            to: Endpoint { node: placed_id, port: "items".into() },
+            order: u32::try_from(n).unwrap(),
+        };
+        changes.push(Change::Connect { canvas: C, edge });
+    }
+    Changeset::new(changes).apply(&mut project).unwrap();
+
+    let Planned::Blocked(blockers) = planned(&project, &kinds, &[placed_id]).unwrap() else { panic!("10 500 wires can't be inlined") };
+    assert_eq!(blockers.iter().map(|b| b.node).collect::<Vec<_>>(), vec![placed_id]);
+    assert!(blockers.first().unwrap().message(project.canvases().get(&C).unwrap()).contains("too many wires"));
+    // The other technique node on the canvas still runs.
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    assert_eq!(plan.steps.last().map(|step| step.node), Some(T));
+}
+
+#[test]
+fn a_cancelled_inner_job_reports_its_reason_as_it_is_under_its_owner() {
+    let (project, kinds) = project(Some("fox"), "");
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let inner = plan.inner.keys().next().copied().unwrap();
+    let expanded = expand(project.canvases(), project.canvases().get(&C).unwrap(), &kinds).unwrap();
+    let options = RunOptions { id: [9; 16], first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER };
+    let (mut run, first) = Run::start(&plan, C, &expanded.canvas, &kinds, options).unwrap();
+    assert_eq!((run.owner(inner), run.owner(T)), (T, T));
+    let job = first.jobs.first().unwrap().id;
+    assert_eq!(run.resume_recipe(&kinds, job), None, "an inlined step's result is never recorded on its own");
+    let progress = run.job_cancelled(&kinds, job, "cancelled");
+    assert_eq!(progress.failed, vec![StepFailure { node: T, reason: "cancelled".into() }], "the host still sees a cancellation");
 }

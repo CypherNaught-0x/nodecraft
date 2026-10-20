@@ -7,7 +7,7 @@ use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use crate::technique_cmds::derive;
 use nodecraft_graph::{Canvas, Change, Changeset, Edge, Endpoint, Node, Position, Technique};
 use nodecraft_nodes::technique::{self, Interface};
-use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId, ParamSchema, ParamValues};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, GenerationId, NodeId, ParamSchema, ParamValues};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -94,7 +94,11 @@ fn upgrade(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     upgraded.title = node.title.clone();
     upgraded.pos = node.pos;
     upgraded.history = node.history.clone();
-    upgraded.active = node.active;
+    // A result is shown through the node's outputs: once they change, none of it fits, so it
+    // stays in the history but isn't the node's current result.
+    let same_outputs =
+        upgraded.outputs.len() == node.outputs.len() && upgraded.outputs.iter().zip(&node.outputs).all(|(a, b)| a.name == b.name && a.port_type == b.port_type);
+    upgraded.active = node.active.filter(|_| same_outputs);
     upgraded.tag = node.tag;
     upgraded.field = node.field;
     // Wires to a port the new version no longer has, or of another type, are taken off.
@@ -180,6 +184,7 @@ fn detach(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let (min_x, min_y) = kept.clone().fold((f32::INFINITY, f32::INFINITY), |(x, y), n| (x.min(n.pos.x), y.min(n.pos.y)));
     let mut changes = vec![Change::RemoveNode { canvas: p.canvas, id: node.id }];
     let mut added = Vec::new();
+    let mut generations = 0usize;
     for original in kept {
         let mut copy = original.clone();
         copy.id = map(original.id)?;
@@ -190,6 +195,17 @@ fn detach(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         copy.pos = moved;
         copy.tag = None;
         copy.field = None;
+        // A generation id is unique across the project, and the version keeps its own.
+        let active = copy.active;
+        copy.active = None;
+        for generation in &mut copy.history {
+            let fresh = GenerationId::from_bytes(derive(p.seed, "detach generation", generations));
+            generations = generations.saturating_add(1);
+            if active == Some(generation.id) {
+                copy.active = Some(fresh);
+            }
+            generation.id = fresh;
+        }
         if canvas.nodes().contains_key(&copy.id) {
             return Err(Error::new(ErrorKind::Conflict, "a detached node's id is already taken; use another seed"));
         }

@@ -27,6 +27,15 @@ fn wire(e: u8, from: NodeId, out: &str, to: NodeId, port: &str) -> Change {
     }
 }
 
+/// `node` with one result in use, as after a run.
+fn ran(mut node: Node) -> Node {
+    let generation =
+        nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([node.id.as_bytes()[0]; 16]), vec![Value::Text("a dog".into())]);
+    node.active = Some(generation.id);
+    node.history.push(generation);
+    node
+}
+
 /// Text 1 ("a cat") → replace 2 (cat → dog), published as V1 exposing Find and as V2 with its
 /// output renamed and nothing exposed; then text 5 ("my cat") and replace 6 on their own.
 fn session() -> Session {
@@ -35,7 +44,7 @@ fn session() -> Session {
     Changeset::new(vec![
         Change::AddCanvas { canvas: Canvas::new(C, "Canvas") },
         Change::AddNode { canvas: C, node: node(&kinds, 1, "source.text", &[("text", "a cat")]) },
-        Change::AddNode { canvas: C, node: node(&kinds, 2, "text.replace", &[("find", "cat"), ("replacement", "dog")]) },
+        Change::AddNode { canvas: C, node: ran(node(&kinds, 2, "text.replace", &[("find", "cat"), ("replacement", "dog")])) },
         Change::AddNode { canvas: C, node: node(&kinds, 5, "source.text", &[("text", "my cat")]) },
         Change::AddNode { canvas: C, node: node(&kinds, 6, "text.replace", &[]) },
         wire(10, id(1), "out", id(2), "text"),
@@ -133,6 +142,12 @@ fn detaching_puts_the_versions_nodes_in_its_place_wired_as_it_was() {
     assert_eq!(copy.params.get("find"), Some(&Value::Text("my".into())), "the node's value carries over");
     assert_eq!(copy.params.get("replacement"), Some(&Value::Text("dog".into())));
     assert_eq!((copy.pos.x, copy.pos.y), (100.0, 50.0), "laid out where the technique node was");
+    // The version's example comes along under a new id: generation ids are unique in a project.
+    let version = s.document().canvases().get(&V1).unwrap().nodes().values().find(|n| n.kind == "text.replace").unwrap();
+    assert_eq!(copy.history.len(), 1);
+    assert_eq!(copy.history[0].outputs, version.history[0].outputs);
+    assert_ne!(copy.history[0].id, version.history[0].id);
+    assert_eq!(copy.active, Some(copy.history[0].id));
     let wired = |from: NodeId, to: NodeId| canvas.edges().values().any(|edge| edge.from.node == from && edge.to.node == to);
     assert!(wired(id(5), copy.id) && wired(copy.id, id(6)), "{:?}", canvas.edges());
     assert_eq!(canvas.edges().len(), 3);
@@ -153,4 +168,29 @@ fn an_unfed_input_stays_and_a_removed_version_cant_be_detached() {
     s.dispatch("edit.undo", &json!({})).unwrap();
     s.dispatch("technique.remove", &json!({"canvas": V1})).unwrap();
     assert_eq!(s.dispatch("technique.detach", &json!({"canvas": C, "node": PLACED, "seed": id(60)})).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn an_upgrade_that_changes_the_outputs_keeps_the_history_but_not_the_result() {
+    // V1 placed with a result in use.
+    let mut project = session_placed().document().clone();
+    let generation = nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([0x51; 16]), vec![Value::Text("my dog".into())]);
+    let id = generation.id;
+    Changeset::new(vec![
+        Change::AddGeneration { canvas: C, id: PLACED, index: 0, generation },
+        Change::SetActiveGeneration { canvas: C, id: PLACED, generation: Some(id) },
+    ])
+    .apply(&mut project)
+    .unwrap();
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let mut s = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap();
+    // V1 again: the same outputs, so the result still fits.
+    s.dispatch("technique.upgrade", &json!({"canvas": C, "node": PLACED, "version": V1})).unwrap();
+    assert_eq!(placed(&s).unwrap().active, Some(id));
+    // V2 renames its output: the result no longer fits it.
+    s.dispatch("technique.upgrade", &json!({"canvas": C, "node": PLACED, "version": V2})).unwrap();
+    let node = placed(&s).unwrap();
+    assert_eq!((node.active, node.history.len()), (None, 1));
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(placed(&s).unwrap().active, Some(id));
 }

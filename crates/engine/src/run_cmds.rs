@@ -895,6 +895,10 @@ impl AuthorizedRun {
     pub fn resume_recipe(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId) -> Option<nodecraft_exec::run::ResumeRecipe> {
         self.run.resume_recipe(kinds, job)
     }
+    /// The canvas node a step's jobs belong to: its technique node when it is inlined (#94).
+    pub fn owner(&self, node: nodecraft_types::NodeId) -> nodecraft_types::NodeId {
+        self.run.owner(node)
+    }
 }
 
 #[cfg(test)]

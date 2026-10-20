@@ -20,8 +20,10 @@ pub const MAX_HISTORY: usize = 1024;
 pub const MAX_CHANGESET_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PROJECT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_CANVASES: usize = 64;
-pub(crate) const MAX_NODES: usize = 10_000;
-pub(crate) const MAX_EDGES: usize = 50_000;
+/// Most nodes on one canvas.
+pub const MAX_NODES: usize = 10_000;
+/// Most edges on one canvas.
+pub const MAX_EDGES: usize = 50_000;
 pub const MAX_COMMENT_BYTES: usize = 1024 * 1024;
 pub const MAX_REPLY_BYTES: usize = 64 * 1024;
 pub const MAX_COMMENT_REPLIES: usize = 256;

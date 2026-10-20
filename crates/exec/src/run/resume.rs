@@ -38,6 +38,10 @@ impl Run {
     pub fn resume_recipe(&mut self, kinds: &Registry, job: JobId) -> Option<ResumeRecipe> {
         let JobState { step: node, work, .. } = self.jobs.get(&job)?;
         let node = *node;
+        // An inlined step isn't on the canvas: its result is only ever its technique node's.
+        if self.inner.contains_key(&node) {
+            return None;
+        }
         let JobSpec::Generate { provider, instance, model, params, inputs, .. } = work else { return None };
         let settings = JobSettings {
             provider: provider.clone(),

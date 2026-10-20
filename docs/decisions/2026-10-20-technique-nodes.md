@@ -15,7 +15,8 @@
 - **An unrunnable version blocks only its instance.** A version that is missing, removed, or no
   longer matches the interface the node pinned blocks runs of that node (and what it feeds) with
   a message saying to upgrade it; the rest of the canvas still runs. Nesting is capped at 8
-  levels and 2000 inlined nodes per canvas.
+  levels, 2000 inlined nodes and 10 000 inlined wires per canvas (a fed input's wires
+  multiply by what feeds it); a node past a cap, or whose inlined ids collide, is blocked alone.
 - **Inner nodes get their own provider routes.** Routes are chosen per node, so a host routing a
   run also routes the inlined ids (`expand(...).inner`), which are deterministic for a given
   instance.
@@ -23,7 +24,7 @@
   same technique, in either direction. A parameter is kept when the new version exposes one of
   that name whose schema accepts the value; otherwise it takes the new default. A wire stays when
   its port still exists with the same type; the others come off. Title, position, history and
-  tags stay. The response lists what was dropped, so a caller can say so.
+  tags stay; the result in use stays only while the outputs are unchanged. The response lists what was dropped, so a caller can say so.
 - **Detaching copies the pinned version back.** `technique.detach` replaces the node with copies
   of its version's nodes, laid out at the node's position, with fresh ids derived from a seed.
   An input node something feeds is replaced by what feeds it; an unfed input node stays, with its

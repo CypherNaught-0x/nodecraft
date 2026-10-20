@@ -143,6 +143,8 @@ pub struct Run {
     inner: BTreeMap<NodeId, NodeId>,
     /// Nodes whose failure has been reported.
     reported: BTreeSet<NodeId>,
+    /// Why jobs were cancelled, passed out as it is so the host still knows a cancellation.
+    cancel_reason: Option<String>,
     /// Outputs of finished steps, in `node.outputs` order.
     produced: BTreeMap<NodeId, Vec<Value>>,
     open_steps: usize,
@@ -318,6 +320,7 @@ impl Run {
             jobs: BTreeMap::new(),
             inner,
             reported: BTreeSet::new(),
+            cancel_reason: None,
             produced: BTreeMap::new(),
             open_steps,
             next_job: options.first_job,
@@ -367,6 +370,12 @@ impl Run {
         GenerationId::from_bytes(bytes)
     }
 
+    /// The node a step's results and failures belong to: its technique node when it is inlined,
+    /// otherwise itself.
+    pub fn owner(&self, node: NodeId) -> NodeId {
+        self.inner.get(&node).copied().unwrap_or(node)
+    }
+
     fn title(&self, node: NodeId) -> String {
         self.canvas.nodes().get(&node).map_or_else(|| node.to_string(), |n| if n.title.is_empty() { n.kind.clone() } else { n.title.clone() })
     }
@@ -410,11 +419,12 @@ impl Run {
         progress.finished.retain(|result| !self.inner.contains_key(&result.node));
         let failed = std::mem::take(&mut progress.failed);
         for failure in failed {
-            let node = self.inner.get(&failure.node).copied().unwrap_or(failure.node);
+            let node = self.owner(failure.node);
             if !self.reported.insert(node) {
                 continue;
             }
-            let reason = if node == failure.node { failure.reason } else { format!("“{}”: {}", self.title(failure.node), failure.reason) };
+            let cancelled = self.cancel_reason.as_ref() == Some(&failure.reason);
+            let reason = if node == failure.node || cancelled { failure.reason } else { format!("“{}”: {}", self.title(failure.node), failure.reason) };
             progress.failed.push(StepFailure { node, reason });
         }
         progress
@@ -443,6 +453,7 @@ impl Run {
     /// A job was cancelled, `reason` saying why: like [`Run::job_failed`], but its item is
     /// recorded as cancelled rather than failed.
     pub fn job_cancelled(&mut self, kinds: &Registry, job: JobId, reason: &str) -> Progress {
+        self.cancel_reason = Some(reason.to_owned());
         self.job_ended(kinds, job, Missing::Cancelled, reason)
     }
 
