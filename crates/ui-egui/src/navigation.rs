@@ -120,7 +120,7 @@ fn instance_info<'a>(
     let Ok(kind) = session.kinds().get(&node.kind) else {
         return placeholder();
     };
-    if node.kind == nodecraft_nodes::generation::KIND {
+    if nodecraft_nodes::generation::is_generation(&node.kind) {
         // The model-owned conditions and current definition binding are the same
         // authority used by painting and marquee admission, including placeholders.
         let Some(admitted) = crate::app::admission::admit_uncached(session, node) else { return placeholder() };

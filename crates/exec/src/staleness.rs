@@ -442,7 +442,7 @@ impl InputHasher {
                         match kind.validate_instance(node, false) {
                             Err(rejected) => Err(rejected),
                             Ok(resolved) => {
-                                if node.kind == nodecraft_nodes::generation::KIND {
+                                if nodecraft_nodes::generation::is_generation(&node.kind) {
                                     let contract = kind.instance_contract(node)?;
                                     w.generation_contract(&contract, &mut self.meter)?;
                                 }

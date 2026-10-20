@@ -1,5 +1,6 @@
-//! Catalog-neutral production image generation. Engine compiles the validated catalog into
-//! these immutable definitions; this L2 module never depends on catalog or a provider.
+//! Catalog-neutral production generation: image (`generation.image`) and text
+//! (`generation.text`, #84) cards over the same contract. Engine compiles the validated catalog
+//! into these immutable definitions; this L2 module never depends on catalog or a provider.
 use crate::{
     Category, GenerateInput, GenerateOutput, InputContract, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx, PortCount,
     descriptor::invalid,
@@ -15,9 +16,24 @@ use std::{
     sync::Arc,
 };
 pub const KIND: &str = "generation.image";
+/// A text generation card: an instruction in, a model's answer out (#84).
+pub const TEXT_KIND: &str = "generation.text";
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
 const MAX_PROMPTS: usize = 1024;
+
+/// Whether `kind` is one of the catalog-backed generation kinds.
+pub fn is_generation(kind: &str) -> bool {
+    kind == KIND || kind == TEXT_KIND
+}
+/// The generation kind whose cards make `output`, if there is one.
+pub fn kind_for(output: Modality) -> Option<&'static str> {
+    match output {
+        Modality::Image => Some(KIND),
+        Modality::Text => Some(TEXT_KIND),
+        _ => None,
+    }
+}
 
 /// Original provider role cardinality; wire-to-prompt composition is a separate operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +64,8 @@ struct Definition {
 }
 #[derive(Clone)]
 pub struct GenerationKind {
+    output: Modality,
+    id: &'static str,
     base: NodeDescriptor,
     snapshot: [u8; 32],
     definitions: Arc<BTreeMap<String, Definition>>,
@@ -76,24 +94,47 @@ fn local_schema(model: Option<&str>) -> ParamSchema {
         ],
     }
 }
-fn base() -> NodeDescriptor {
+fn base(id: &'static str, output: Modality) -> NodeDescriptor {
     NodeDescriptor {
-        id: KIND.into(),
-        label: "Generate image".into(),
+        id: id.into(),
+        label: if output == Modality::Text { "Generate text" } else { "Generate image" }.into(),
         category: Category::Generation,
         inputs: vec![Port { name: PROMPT.into(), port_type: PortType { modality: Modality::Text, many: true } }],
-        outputs: vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Image, many: true } }],
+        // One answer per text run; an image run can make several.
+        outputs: vec![Port { name: "out".into(), port_type: PortType { modality: output, many: output != Modality::Text } }],
         params: local_schema(None),
         quick_add: None,
     }
 }
-fn unavailable() -> Error {
-    Error::new(ErrorKind::Unsupported, "selected image model is unavailable; choose a supported catalog model")
+/// What a kind's messages call its output, so image wording stays exactly as it was.
+fn noun(output: Modality) -> &'static str {
+    if output == Modality::Text { "text" } else { "image" }
+}
+fn said(kind: ErrorKind, output: Modality, message: &str) -> Error {
+    Error::new(kind, message.replace("{noun}", noun(output)))
+}
+fn bad(output: Modality, message: &str) -> Error {
+    said(ErrorKind::InvalidInput, output, message)
 }
 impl GenerationKind {
-    /// Takes ownership of already-admitted neutral definitions. The engine bounds aggregate
-    /// retained definition bytes before constructing these owners.
+    /// Image generation. Takes ownership of already-admitted neutral definitions. The engine
+    /// bounds aggregate retained definition bytes before constructing these owners.
     pub fn new(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        Self::making(Modality::Image, models, snapshot)
+    }
+    /// Text generation over the same rules: each model's modes here all answer in text.
+    pub fn text(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        Self::making(Modality::Text, models, snapshot)
+    }
+    /// What this kind's cards make.
+    pub fn output(&self) -> Modality {
+        self.output
+    }
+    fn unavailable(&self) -> Error {
+        said(ErrorKind::Unsupported, self.output, "selected {noun} model is unavailable; choose a supported catalog model")
+    }
+    fn making(output: Modality, models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        let id = kind_for(output).ok_or_else(|| Error::new(ErrorKind::Unsupported, "generation of this modality is not supported"))?;
         if models.len() > 4096 {
             return Err(invalid("too many generation models"));
         }
@@ -110,25 +151,25 @@ impl GenerationKind {
                 || model.modes.is_empty()
                 || model.modes.len() > 32
             {
-                return Err(invalid("invalid image model definition"));
+                return Err(bad(output, "invalid {noun} model definition"));
             }
             if model.parameters.schema.params.iter().any(|p| p.name == MODEL || p.name == PROMPT || p.control == ParamControl::Model) {
                 return Err(invalid("model settings collide with node-owned model or prompt controls"));
             }
             let local = local_schema(Some(&model.id));
             ParamSchema::validate_parts(&[&local, &model.parameters.schema])?;
-            let mut descriptor = base();
+            let mut descriptor = base(id, output);
             descriptor.params = local;
             descriptor.params.params.extend(model.parameters.schema.params.iter().cloned());
             let mut roles: BTreeMap<String, Modality> = [(PROMPT.into(), Modality::Text)].into();
             for mode in &model.modes {
                 if mode.inputs.len() > 16 {
-                    return Err(invalid("too many image input roles"));
+                    return Err(bad(output, "too many {noun} input roles"));
                 }
                 let mut seen = BTreeSet::new();
                 for input in &mode.inputs {
                     if !crate::descriptor::identifier(&input.role) || input.max == 0 || input.min > input.max || !seen.insert(input.role.as_str()) {
-                        return Err(invalid("unsupported or ambiguous image input role"));
+                        return Err(bad(output, "unsupported or ambiguous {noun} input role"));
                     }
                     if let Some(prior) = roles.insert(input.role.clone(), input.modality)
                         && prior != input.modality
@@ -143,7 +184,7 @@ impl GenerationKind {
                 }
             }
             let mut contract = NodeContract::derive(&descriptor);
-            contract.params = Contract::from_schema(KIND, ParamOwner::Node, local_schema(Some(&model.id)));
+            contract.params = Contract::from_schema(id, ParamOwner::Node, local_schema(Some(&model.id)));
             contract.owned_groups.push(model.parameters.clone());
             contract.inputs = descriptor
                 .inputs
@@ -168,15 +209,19 @@ impl GenerationKind {
                 .collect();
             descriptor.validate()?;
             contract.validate(&descriptor)?;
-            let id = model.id.clone();
-            if definitions.insert(id, Definition { model, descriptor, contract }).is_some() {
-                return Err(invalid("duplicate image model"));
+            let model_id = model.id.clone();
+            if definitions.insert(model_id, Definition { model, descriptor, contract }).is_some() {
+                return Err(bad(output, "duplicate {noun} model"));
             }
         }
-        Ok(Self { base: base(), snapshot, definitions: Arc::new(definitions) })
+        Ok(Self { output, id, base: base(id, output), snapshot, definitions: Arc::new(definitions) })
     }
     pub fn model(&self, id: &str) -> Option<&GenerationModel> {
         self.definitions.get(id).map(|d| &d.model)
+    }
+    /// Every model this kind defines, by id.
+    pub fn models(&self) -> impl Iterator<Item = &GenerationModel> {
+        self.definitions.values().map(|d| &d.model)
     }
     /// Borrow immutable destination layout/contracts without constructing a candidate node.
     pub fn model_descriptor(&self, id: &str) -> Option<&NodeDescriptor> {
@@ -187,9 +232,9 @@ impl GenerationKind {
     }
     fn definition(&self, node: &Node) -> Result<&Definition, Error> {
         let Some(Value::Text(id)) = node.params.get(MODEL) else {
-            return Err(unavailable());
+            return Err(self.unavailable());
         };
-        self.definitions.get(id).ok_or_else(unavailable)
+        self.definitions.get(id).ok_or_else(|| self.unavailable())
     }
     fn version(node: &Node) -> Result<(), Error> {
         if node.config.get("generation_contract_major").is_some_and(|v| v != &Value::Unsigned(nodecraft_types::Unsigned(1))) {
@@ -201,7 +246,7 @@ impl GenerationKind {
     /// mutation, no inference about incident edges; consumers validate actual wiring separately.
     pub fn prepare_instance(&self, existing: &Node, destination: &str, proposed: &ParamValues) -> Result<Node, Error> {
         existing.validate_payload()?;
-        let definition = self.definitions.get(destination).ok_or_else(unavailable)?;
+        let definition = self.definitions.get(destination).ok_or_else(|| self.unavailable())?;
         definition.model.parameters.resolve(proposed, false)?.submission()?;
         let mut values = proposed.clone();
         values.insert(MODEL.into(), Value::Text(destination.into()));
@@ -241,14 +286,14 @@ impl NodeKind for GenerationKind {
         node.validate_payload()?;
         Self::version(node)?;
         let d = self.definition(node)?;
-        if node.kind != KIND || node.inputs != d.descriptor.inputs || node.outputs != d.descriptor.outputs {
+        if node.kind != self.id || node.inputs != d.descriptor.inputs || node.outputs != d.descriptor.outputs {
             return Err(invalid("generation ports do not match the selected model"));
         }
         // Generation submits through submission() in plan; visible is only its identity.
         d.contract.resolve(&node.params, ready)?.into_identity(ready)
     }
     fn instantiate_instance(&self, id: NodeId, mut config: BTreeMap<String, Value>, supplied: &ParamValues) -> Result<Node, Error> {
-        let mut node = Node::new(id, KIND);
+        let mut node = Node::new(id, self.id);
         // Resolve before copying supplied values; known controls reject lists recursively by type.
         let definition = match supplied.get(MODEL) {
             Some(Value::Text(id)) => self.definitions.get(id),
@@ -280,31 +325,32 @@ impl NodeKind for GenerationKind {
         Ok(node)
     }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
-        inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new("text-to-image").ok()).flatten()
+        let mode = if self.output == Modality::Text { "text-to-text" } else { "text-to-image" };
+        inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         self.validate_instance(ctx.node, true)?;
         let definition = self.definition(ctx.node)?;
         if ctx.inputs.len() > MAX_PROMPTS {
-            return Err(invalid("too many image prompt inputs"));
+            return Err(bad(self.output, "too many {noun} prompt inputs"));
         }
         let mut wires = BTreeMap::new();
         for input in ctx.inputs {
             if input.port != PROMPT || input.port_type.modality != Modality::Text {
-                return Err(Error::new(ErrorKind::Unsupported, "image generation media inputs require a host media resolver"));
+                return Err(said(ErrorKind::Unsupported, self.output, "{noun} generation media inputs require a host media resolver"));
             }
             if !definition.contract.inputs.iter().any(|port| port.port == input.port) {
-                return Err(invalid("image input names an unavailable port"));
+                return Err(bad(self.output, "{noun} input names an unavailable port"));
             }
             let count = wires.entry(input.port.as_str()).or_insert(0usize);
-            *count = count.checked_add(1).ok_or_else(|| invalid("too many image input wires"))?;
+            *count = count.checked_add(1).ok_or_else(|| bad(self.output, "too many {noun} input wires"))?;
         }
         // Count actual connected inputs, not composed text fragments or the local prompt.
         // In particular local text is never a substitute for a required non-inline wire.
-        let mode_id = definition.contract.resolve_mode(&wires, true)?.ok_or_else(|| invalid("image model has no declared input mode"))?;
-        let mode = definition.model.modes.iter().find(|mode| mode.id == *mode_id).ok_or_else(|| invalid("image model mode is unavailable"))?;
+        let mode_id = definition.contract.resolve_mode(&wires, true)?.ok_or_else(|| bad(self.output, "{noun} model has no declared input mode"))?;
+        let mode = definition.model.modes.iter().find(|mode| mode.id == *mode_id).ok_or_else(|| bad(self.output, "{noun} model mode is unavailable"))?;
         if !mode.inputs.iter().all(|r| (r.role == PROMPT && r.modality == Modality::Text && r.min <= 1 && r.max >= 1) || r.min == 0) {
-            return Err(Error::new(ErrorKind::Unsupported, "this image model requires unsupported input roles"));
+            return Err(said(ErrorKind::Unsupported, self.output, "this {noun} model requires unsupported input roles"));
         }
         let prompt_role = mode
             .inputs
@@ -317,7 +363,7 @@ impl NodeKind for GenerationKind {
                 return Err(invalid("too many prompt values"));
             }
             if input.port != PROMPT || input.port_type.modality != Modality::Text {
-                return Err(Error::new(ErrorKind::Unsupported, "image generation media inputs require a host media resolver"));
+                return Err(said(ErrorKind::Unsupported, self.output, "{noun} generation media inputs require a host media resolver"));
             }
             match &input.value {
                 Value::Text(text) => {
@@ -329,31 +375,31 @@ impl NodeKind for GenerationKind {
                             return Err(invalid("too many prompt values"));
                         }
                         let Value::Text(text) = value else {
-                            return Err(invalid("image prompts must contain text"));
+                            return Err(bad(self.output, "{noun} prompts must contain text"));
                         };
                         texts.push(ConnectedText { order: u32::try_from(texts.len()).map_err(|_| invalid("too many prompt values"))?, tie: [0; 16], text });
                     }
                 }
-                _ => return Err(invalid("image prompts must contain text")),
+                _ => return Err(bad(self.output, "{noun} prompts must contain text")),
             }
         }
         let local = match ctx.node.params.get(PROMPT) {
             Some(Value::Text(text)) => text.as_str(),
             None => "",
-            _ => return Err(invalid("image prompt must be text")),
+            _ => return Err(bad(self.output, "{noun} prompt must be text")),
         };
         let prompt = compose_text(TextPrecedence::ConnectedReplaces, prompt_role.inline.then_some(local), &texts, "\n")?;
         if prompt.trim().is_empty() {
-            return Err(invalid("image generation needs a prompt"));
+            return Err(bad(self.output, "{noun} generation needs a prompt"));
         }
         let target = ctx
             .targets
             .get(ctx.node.id, &definition.model.provider)
-            .ok_or_else(|| Error::new(ErrorKind::Unsupported, "image provider route is not configured"))?;
+            .ok_or_else(|| said(ErrorKind::Unsupported, self.output, "{noun} provider route is not configured"))?;
         let params = definition.model.parameters.resolve_selected(&ctx.node.params, true)?.submission()?;
         Ok(vec![JobSpec::Generate {
             node: ctx.node.id,
-            outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Image }],
+            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
             provider: definition.model.provider.clone(),
             instance: target.instance(),
             model: definition.model.remote.clone(),

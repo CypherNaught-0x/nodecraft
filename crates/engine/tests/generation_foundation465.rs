@@ -354,7 +354,7 @@ fn production_shared_wiring_and_candidate_preserve_existing_node_owners() {
     assert_eq!(candidate.pos, existing.pos);
     assert_eq!(candidate.history, existing.history);
     let wiring = f.snapshot.capture_wiring(canvas, N).unwrap();
-    f.snapshot.validate_destination_wiring(&wiring, MODEL, false).unwrap();
+    f.snapshot.validate_destination_wiring(KIND, &wiring, MODEL, false).unwrap();
     f.snapshot.validate_wiring(canvas, &candidate, false).unwrap();
     assert_eq!(f.session.generation_catalog_stamp().unwrap(), f.snapshot.stamp());
     let mut a = blake3::Hasher::new();
@@ -363,7 +363,7 @@ fn production_shared_wiring_and_candidate_preserve_existing_node_owners() {
     let mut b = blake3::Hasher::new();
     next.stamp().bind(&mut b);
     assert_ne!(a.finalize(), b.finalize());
-    assert!(f.snapshot.validate_destination_wiring(&wiring, "unknown-model", false).is_err());
+    assert!(f.snapshot.validate_destination_wiring(KIND, &wiring, "unknown-model", false).is_err());
 }
 
 #[test]
@@ -389,8 +389,8 @@ fn producer_reset_never_stores_hidden_defaults_or_overrides_and_keep_retains_exp
 #[test]
 fn builtin_real_image_models_share_only_verified_image_count_meaning() {
     let snapshot = GenerationCatalog::builtin().unwrap();
-    let a = snapshot.model("openai-images.flare").unwrap();
-    let b = snapshot.model("openai-images.sunburst").unwrap();
+    let a = snapshot.model(KIND, "openai-images.flare").unwrap();
+    let b = snapshot.model(KIND, "openai-images.sunburst").unwrap();
     assert_eq!(Contract::shared_params(&[&a.parameters, &b.parameters]), ["n"]);
     let n = a.parameters.rule("n").unwrap();
     assert_eq!(n.unit, nodecraft_types::Unit::Count);

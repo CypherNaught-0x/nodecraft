@@ -16,7 +16,7 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
     let enabled: Option<BTreeSet<String>>;
     let visible: BTreeSet<String>;
     let mut roles = crate::card::Roles::default();
-    if node.kind == nodecraft_nodes::generation::KIND {
+    if nodecraft_nodes::generation::is_generation(&node.kind) {
         let catalog = session.generation_catalog().ok()?;
         let kind = session.kinds().get(&node.kind).ok()?;
         catalog.validate_definition_binding(kind).ok()?;

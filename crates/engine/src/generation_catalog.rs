@@ -1,11 +1,12 @@
-//! Paired immutable catalog/production-generation definitions (#465).
+//! Paired immutable catalog/production-generation definitions (#465): one generation kind per
+//! output the catalog's modes make (image, and text since #84), each looked up by node kind.
 use crate::{Session, commands::Resources, run_cmds::RunCatalog};
 use nodecraft_catalog::Catalog;
 use nodecraft_exec::admission::measure::{add, contract, mul, schema};
 use nodecraft_graph::Node;
 use nodecraft_nodes::{
     NodeContract, NodeKind,
-    generation::{GenerationKind, GenerationMode, GenerationModel, GenerationRole, KIND, MODEL},
+    generation::{GenerationKind, GenerationMode, GenerationModel, GenerationRole, MODEL, is_generation, kind_for},
 };
 use nodecraft_types::{Contract, Error, ErrorKind, Modality, ParamOwner, ParamValues};
 use std::sync::Arc;
@@ -17,8 +18,10 @@ const LIMIT: usize = nodecraft_exec::admission::MAX_WITNESS_BYTES;
 pub struct GenerationCatalog(Arc<Snapshot>);
 struct Snapshot {
     catalog: RunCatalog,
-    kind: GenerationKind,
+    kinds: Vec<GenerationKind>,
 }
+/// The outputs that get a generation kind, in registration order.
+const OUTPUTS: [Modality; 2] = [Modality::Image, Modality::Text];
 #[derive(Clone)]
 pub struct GenerationCatalogStamp(RunCatalog);
 impl GenerationCatalogStamp {
@@ -45,28 +48,38 @@ impl GenerationCatalog {
         Self::new(RunCatalog::new(Catalog::builtin()?)?)
     }
     pub fn new(catalog: RunCatalog) -> Result<Self, Error> {
+        let identity = catalog.definition_identity();
+        // A model with modes for both outputs is defined, and charged, once per kind.
+        let mut charge = 0usize;
+        let mut kinds = Vec::new();
+        for output in OUTPUTS {
+            let models = Self::admit(&catalog, output, &mut charge)?;
+            kinds.push(if output == Modality::Text { GenerationKind::text(models, identity)? } else { GenerationKind::new(models, identity)? });
+        }
+        Ok(Self(Arc::new(Snapshot { catalog, kinds })))
+    }
+    fn admit(catalog: &RunCatalog, output: Modality, charge: &mut usize) -> Result<Vec<GenerationModel>, Error> {
         // Four simultaneous schema owners (neutral model, instance layout, model contract,
         // validation/constructor copy) plus fixed per-model/mode/role shells. The existing
         // catalog owner is caller-owned; no deep copy precedes this aggregate reservation.
-        let mut charge = 0usize;
-        for m in catalog.catalog().models().filter(|m| m.modes.iter().any(|mode| mode.output == Modality::Image)) {
+        for m in catalog.catalog().models().filter(|m| m.modes.iter().any(|mode| mode.output == output)) {
             // Admit validation/index scratch before model.validate allocates its indexes.
-            charge = add(charge, add(64 * 1024, nodecraft_exec::admission::measure::scratch(&m.params)?)?)?;
-            if charge > LIMIT {
+            *charge = add(*charge, add(64 * 1024, nodecraft_exec::admission::measure::scratch(&m.params)?)?)?;
+            if *charge > LIMIT {
                 return Err(Error::new(ErrorKind::Budget, "generation definitions exceed the 64 MiB logical metadata limit"));
             }
             m.validate()?;
-            charge = add(charge, add(m.id.len(), add(m.provider.len(), m.provider_model.len())?)?)?;
-            charge = add(charge, mul(4, schema(&m.params)?)?)?;
+            *charge = add(*charge, add(m.id.len(), add(m.provider.len(), m.provider_model.len())?)?)?;
+            *charge = add(*charge, mul(4, schema(&m.params)?)?)?;
             if let Some(c) = &m.parameter_contract {
-                charge = add(charge, mul(3, contract(c)?)?)?;
+                *charge = add(*charge, mul(3, contract(c)?)?)?;
             }
             let mut ports = std::collections::BTreeSet::from(["prompt"]);
-            for mode in m.modes.iter().filter(|mode| mode.output == Modality::Image) {
+            for mode in m.modes.iter().filter(|mode| mode.output == output) {
                 for role in &mode.inputs {
                     ports.insert(role.role.as_str());
                     if ports.len() > 256 {
-                        return Err(Error::new(ErrorKind::Unsupported, "image model has too many distinct input roles"));
+                        return Err(Error::new(ErrorKind::Unsupported, "generation model has too many distinct input roles"));
                     }
                 }
             }
@@ -74,11 +87,11 @@ impl GenerationCatalog {
             // Each declared mode lists the FULL union of ports, including explicit zeroes
             // for omitted roles. Charge this cross-product before creating ModeContract rows.
             let mode_ports = mul(m.modes.len(), add(mul(ports.len(), 256)?, names)?)?;
-            charge = add(charge, mul(3, mode_ports)?)?;
+            *charge = add(*charge, mul(3, mode_ports)?)?;
             for mode in &m.modes {
-                charge = add(charge, add(1024, add(mode.id.len(), mul(mode.inputs.len(), 1024)?)?)?)?;
+                *charge = add(*charge, add(1024, add(mode.id.len(), mul(mode.inputs.len(), 1024)?)?)?)?;
             }
-            if charge > LIMIT {
+            if *charge > LIMIT {
                 return Err(Error::new(ErrorKind::Budget, "generation definitions exceed the 64 MiB logical metadata limit"));
             }
         }
@@ -87,7 +100,7 @@ impl GenerationCatalog {
             let modes: Vec<_> = m
                 .modes
                 .iter()
-                .filter(|mode| mode.output == Modality::Image)
+                .filter(|mode| mode.output == output)
                 .map(|mode| {
                     Ok(GenerationMode {
                         id: nodecraft_nodes::ModeId::new(mode.id.clone())?,
@@ -116,8 +129,11 @@ impl GenerationCatalog {
                 modes,
             });
         }
-        let identity = catalog.definition_identity();
-        Ok(Self(Arc::new(Snapshot { catalog, kind: GenerationKind::new(models, identity)? })))
+        Ok(models)
+    }
+    /// The generation kind a node of `kind` belongs to.
+    fn kind(&self, kind: &str) -> Result<&GenerationKind, Error> {
+        self.0.kinds.iter().find(|k| kind_for(k.output()) == Some(kind)).ok_or_else(|| Error::new(ErrorKind::Unsupported, "not a catalog generation kind"))
     }
     /// Current paired resource. Commands retain stamp(), then recheck this pair and every
     /// targeted installed kind before publishing, even when Session revision is unchanged.
@@ -129,7 +145,7 @@ impl GenerationCatalog {
         Ok(snapshot)
     }
     pub fn validate_instance_binding(&self, kind: &dyn NodeKind, node: &Node) -> Result<(), Error> {
-        if node.kind != KIND {
+        if !is_generation(&node.kind) {
             return Ok(());
         }
         node.validate_payload()?;
@@ -151,19 +167,26 @@ impl GenerationCatalog {
     pub fn stamp(&self) -> GenerationCatalogStamp {
         GenerationCatalogStamp(self.run_catalog())
     }
-    pub fn model(&self, id: &str) -> Option<&GenerationModel> {
-        self.0.kind.model(id)
+    /// Model `id` as a card of `kind` sees it; None when that kind has no such model.
+    pub fn model(&self, kind: &str, id: &str) -> Option<&GenerationModel> {
+        self.kind(kind).ok()?.model(id)
+    }
+    /// Every model a card of `kind` can select, by id.
+    pub fn models(&self, kind: &str) -> impl Iterator<Item = &GenerationModel> {
+        self.kind(kind).ok().into_iter().flat_map(GenerationKind::models)
     }
     pub fn registry(&self) -> Result<nodecraft_nodes::Registry, Error> {
         let mut kinds = nodecraft_nodes::Registry::builtins()?;
-        kinds.register(Box::new(self.0.kind.clone()))?;
+        for kind in &self.0.kinds {
+            kinds.register(Box::new(kind.clone()))?;
+        }
         Ok(kinds)
     }
     pub fn is_model_selector(kind: &str, name: &str) -> bool {
-        kind == KIND && name == MODEL
+        is_generation(kind) && name == MODEL
     }
     pub fn prepare_instance(&self, existing: &Node, destination: &str, values: &ParamValues) -> Result<Node, Error> {
-        self.0.kind.prepare_instance(existing, destination, values)
+        self.kind(&existing.kind)?.prepare_instance(existing, destination, values)
     }
     /// Capture only bounded incident port metadata once per target, borrowing the live canvas.
     /// This value is ephemeral; UI controllers retain stamp/IDs instead of this borrow.
@@ -171,20 +194,21 @@ impl GenerationCatalog {
         GenerationWiring::capture(canvas, id)
     }
     /// Borrow destination metadata for picker filtering; no Node/params/history copies.
-    pub fn validate_destination_wiring(&self, wiring: &GenerationWiring<'_>, destination: &str, ready: bool) -> Result<(), Error> {
-        let descriptor = self.0.kind.model_descriptor(destination).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model is unavailable"))?;
-        let contract =
-            self.0.kind.model_contract(destination).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model contract is unavailable"))?;
+    pub fn validate_destination_wiring(&self, kind: &str, wiring: &GenerationWiring<'_>, destination: &str, ready: bool) -> Result<(), Error> {
+        let kind = self.kind(kind)?;
+        let descriptor = kind.model_descriptor(destination).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model is unavailable"))?;
+        let contract = kind.model_contract(destination).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model contract is unavailable"))?;
         wiring.validate(descriptor, contract, ready)
     }
     pub fn validate_wiring(&self, canvas: &nodecraft_graph::Canvas, candidate: &Node, ready: bool) -> Result<(), Error> {
-        self.0.kind.validate_instance(candidate, ready)?;
-        let contract = self.0.kind.instance_contract(candidate)?;
-        let descriptor = self.0.kind.resolve_instance(candidate)?;
+        let kind = self.kind(&candidate.kind)?;
+        kind.validate_instance(candidate, ready)?;
+        let contract = kind.instance_contract(candidate)?;
+        let descriptor = kind.resolve_instance(candidate)?;
         GenerationWiring::capture(canvas, candidate.id)?.validate(&descriptor, &contract, ready)
     }
     pub fn instance_contract(&self, node: &Node) -> Result<NodeContract, Error> {
-        self.0.kind.instance_contract(node)
+        self.kind(&node.kind)?.instance_contract(node)
     }
     pub(crate) fn install(&self, session: &mut Session) {
         session.swap_resource(Some(self.clone()));
@@ -207,11 +231,11 @@ pub(crate) fn validate_plan(
     let mut incoming: Option<Vec<&nodecraft_graph::Edge>> = None;
     for id in nodes {
         let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "planned node is missing"))?;
-        if node.kind != KIND {
+        if !is_generation(&node.kind) {
             continue;
         }
         let catalog = GenerationCatalog::current(resources)?;
-        catalog.validate_instance_binding(kinds.get(KIND)?, node)?;
+        catalog.validate_instance_binding(kinds.get(&node.kind)?, node)?;
         if incoming.is_none() {
             // One borrowed index for this admission phase, not one full edge scan per node.
             // Reserve before allocating. Counts use <=256 borrowed port-name entries (32 KiB);
@@ -251,7 +275,12 @@ pub(crate) fn validate_plan(
             Some(nodecraft_types::Value::Text(id)) => id,
             _ => return Err(Error::new(ErrorKind::InvalidInput, "generation model selection is missing")),
         };
-        let contract = catalog.0.kind.model_contract(model).ok_or_else(|| Error::new(ErrorKind::Unsupported, "selected image model is unavailable"))?;
+        let contract = catalog.kind(&node.kind)?.model_contract(model).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                if node.kind == nodecraft_nodes::generation::TEXT_KIND { "selected text model is unavailable" } else { "selected image model is unavailable" },
+            )
+        })?;
         contract.resolve_mode(&wires, true)?;
     }
     Ok(())

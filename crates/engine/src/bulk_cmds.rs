@@ -63,7 +63,7 @@ fn prepare(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         }
         let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "bulk target does not exist"))?;
         let kind = c.kinds.get(&node.kind)?;
-        let generation = if node.kind == nodecraft_nodes::generation::KIND {
+        let generation = if nodecraft_nodes::generation::is_generation(&node.kind) {
             let snapshot = crate::generation_catalog::GenerationCatalog::current(c.resources)?;
             snapshot.validate_instance_binding(kind, node)?;
             Some(snapshot)

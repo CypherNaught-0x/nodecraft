@@ -159,7 +159,7 @@ pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> 
 }
 fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
     let kind = session.kinds().get(&node.kind).ok()?;
-    let catalog = if node.kind == nodecraft_nodes::generation::KIND {
+    let catalog = if nodecraft_nodes::generation::is_generation(&node.kind) {
         let binding = session.generation_catalog().and_then(|catalog| {
             catalog.validate_definition_binding(kind)?;
             Ok(catalog.stamp())
