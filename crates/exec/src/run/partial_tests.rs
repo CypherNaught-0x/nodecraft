@@ -72,7 +72,7 @@ fn a_failed_item_keeps_the_others_and_running_again_runs_only_it() {
     let fanout = step.fanout.as_ref().unwrap();
     assert_eq!(fanout.jobs, vec![0, 1]);
     assert_eq!(step.jobs.as_ref().unwrap().len(), 1);
-    assert_eq!(fanout.resume.as_ref().map(|r| r.generation), Some(partial.generation.id));
+    assert_eq!(fanout.resume.as_ref().and_then(|r| r.generation), Some(partial.generation.id));
     let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts([0xcd; 16], 1, RunLimits::default())).unwrap();
     let (finished, failed, jobs) = drive(&mut run, &kinds, first, |_| None);
     assert!(failed.is_empty(), "{failed:?}");

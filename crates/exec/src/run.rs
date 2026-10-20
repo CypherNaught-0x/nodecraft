@@ -114,6 +114,9 @@ struct StepState {
     /// For a fanned step (#480): the items that won't finish in this run, why, and the first
     /// error.
     missing: BTreeMap<usize, (Missing, String)>,
+    /// For a fanned step inlined from a technique (#536): the items its result lacks, and why.
+    /// The steps after it, inside the same technique, leave those items out.
+    gaps: BTreeMap<usize, (Missing, String)>,
     /// Steps that come after this one.
     dependents: Vec<NodeId>,
 }
@@ -304,7 +307,15 @@ impl Run {
             }
             steps.insert(
                 step.node,
-                StepState { step, status: Status::Waiting(waiting), jobs: Vec::new(), job_items: Vec::new(), missing: BTreeMap::new(), dependents: Vec::new() },
+                StepState {
+                    step,
+                    status: Status::Waiting(waiting),
+                    jobs: Vec::new(),
+                    job_items: Vec::new(),
+                    missing: BTreeMap::new(),
+                    gaps: BTreeMap::new(),
+                    dependents: Vec::new(),
+                },
             );
         }
         let hasher = InputHasher::new(&canvas, kinds, MAX_QUERY_BYTES)?;
@@ -629,10 +640,12 @@ impl Run {
             Some(fanout) => fanout.cells.iter().map(Vec::as_slice).collect(),
             None => vec![state.step.inputs.as_slice()],
         };
+        let (skip, gapped) = self.left_out(node, &cells)?;
+        let running = || cells.iter().zip(&skip).filter(|(_, skip)| !**skip).map(|(inputs, _)| inputs);
         let mut run_bytes = self.run_bytes;
         // Sources are immutable throughout this synchronous call. Validate the complete shape
         // and budget using borrowed slices before copying any accepted prefix of a failing step.
-        for inputs in &cells {
+        for inputs in running() {
             let mut step_bytes = 0usize;
             for input in *inputs {
                 let mut count = 0usize;
@@ -654,7 +667,7 @@ impl Run {
         if self.admission.is_some() {
             use crate::admission::measure::{add, mul, values};
             let mut charge = 0usize;
-            for inputs in &cells {
+            for inputs in running() {
                 charge = add(charge, mul(inputs.len(), std::mem::size_of::<InputValue>()).map_err(|e| e.message)?).map_err(|e| e.message)?;
                 for input in *inputs {
                     charge = add(charge, input.port.len()).map_err(|e| e.message)?;
@@ -681,7 +694,11 @@ impl Run {
         let fanned = state.step.fanout.is_some();
         let mut jobs = Vec::new();
         let mut counts = Vec::with_capacity(if fanned { cells.len() } else { 0 });
-        for planned in &cells {
+        for (planned, skip) in cells.iter().zip(&skip) {
+            if *skip {
+                counts.push(0);
+                continue;
+            }
             let mut inputs = Vec::with_capacity(planned.len());
             for input in *planned {
                 let mut values = Vec::new();
@@ -710,7 +727,40 @@ impl Run {
                 return Err(format!("it would run more than {MAX_STEP_JOBS} jobs"));
             }
         }
+        if let Some(state) = self.steps.get_mut(&node) {
+            state.missing.extend(gapped);
+        }
         Ok((jobs, counts))
+    }
+
+    /// The cells of a deferred step that plan nothing (#536): those its resume leaves to its
+    /// technique node's last result, and those reading an item an upstream step inside the
+    /// technique lacks, which it lacks too (returned with why). `Err` when it reads such a
+    /// step's result as a whole.
+    #[allow(clippy::type_complexity)]
+    fn left_out(&self, node: NodeId, cells: &[&[crate::planner::PlannedInput]]) -> Result<(Vec<bool>, BTreeMap<usize, (Missing, String)>), String> {
+        let resume = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref()).and_then(|f| f.resume.as_ref());
+        let mut skip = Vec::with_capacity(cells.len());
+        let mut gapped = BTreeMap::new();
+        for (cell, inputs) in cells.iter().enumerate() {
+            let mut left = resume.is_some_and(|r| !r.runs(cell));
+            for source in inputs.iter().flat_map(|input| &input.from) {
+                match source {
+                    InputSource::Step { node: up, .. } if self.steps.get(up).is_some_and(|s| !s.gaps.is_empty()) => {
+                        return Err(format!("skipped: “{}” didn't produce a result for every item", self.title(*up)));
+                    }
+                    InputSource::Item { node: up, index, .. } if !left => {
+                        if let Some(gap) = self.steps.get(up).and_then(|s| s.gaps.get(index)) {
+                            gapped.insert(cell, gap.clone());
+                            left = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            skip.push(left);
+        }
+        Ok((skip, gapped))
     }
 
     /// The planner's logical value size, but with scratch space bounded by depth, not list
@@ -798,18 +848,32 @@ impl Run {
             Ok(result) => result,
             Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
-        if !missing.is_empty() {
+        let gaps = self.gaps(node, &missing);
+        if !gaps.is_empty() && self.passes_items_on(node) {
+            // Inside a technique the items it has carry on (#536): its technique node records
+            // what they make as a partial result.
+            self.produced.insert(node, result.generation.outputs.clone());
+            if let Some(state) = self.steps.get_mut(&node) {
+                state.gaps = gaps;
+            }
+            return self.done(node, Progress { finished: vec![result], ..Progress::default() });
+        }
+        if !gaps.is_empty() {
             // A partial result is kept, but what comes after it needs every item.
-            let reason = if missing.values().all(|(why, _)| *why == Missing::Cancelled) {
-                first_reason(&missing)
+            let reason = if gaps.values().all(|(why, _)| *why == Missing::Cancelled) {
+                first_reason(&gaps)
             } else {
-                format!("{} of {items} items didn't finish: {}", missing.len(), first_reason(&missing))
+                format!("{} of {items} items didn't finish: {}", gaps.len(), first_reason(&gaps))
             };
             let mut progress = self.fail_with(node, reason, "didn't produce a result for every item");
             progress.finished.insert(0, result);
             return (progress, Vec::new());
         }
-        let progress = Progress { finished: vec![result], ..Progress::default() };
+        self.done(node, Progress { finished: vec![result], ..Progress::default() })
+    }
+
+    /// Marks `node` done: the steps that makes ready, with `progress`.
+    fn done(&mut self, node: NodeId, progress: Progress) -> (Progress, Vec<NodeId>) {
         let mut ready = Vec::new();
         let dependents = self.steps.get_mut(&node).map(|state| {
             state.status = Status::Done;
@@ -831,6 +895,38 @@ impl Run {
         (progress, ready)
     }
 
+    /// The items `node`'s result lacks: those `missing`, and those a step inlined from a
+    /// technique left to its technique node's last result (#536). A step for an inlined node
+    /// prefixes the reason with the node, as its technique node reports it.
+    fn gaps(&self, node: NodeId, missing: &BTreeMap<usize, (Missing, String)>) -> BTreeMap<usize, (Missing, String)> {
+        let inner = self.inner.contains_key(&node);
+        let mut gaps: BTreeMap<usize, (Missing, String)> = missing
+            .iter()
+            .map(|(item, (why, reason))| (*item, (*why, if inner { format!("“{}”: {reason}", self.title(node)) } else { reason.clone() })))
+            .collect();
+        let fanout = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref());
+        if let Some(fanout) = fanout
+            && let Some(resume) = fanout.resume.as_ref().filter(|r| r.generation.is_none())
+        {
+            for item in (0..fanout.items.len()).filter(|item| !resume.runs(*item)) {
+                gaps.entry(item).or_insert_with(|| (Missing::Cancelled, "its technique node keeps this item from its last result".into()));
+            }
+        }
+        gaps
+    }
+
+    /// Whether the steps after `node` can leave out the items its result lacks (#536): it is
+    /// inlined from a technique, and each of them is the same technique's, fanned out over the
+    /// same items and planned from this run's outputs.
+    fn passes_items_on(&self, node: NodeId) -> bool {
+        let (Some(owner), Some(state)) = (self.inner.get(&node), self.steps.get(&node)) else { return false };
+        let Some(fanout) = &state.step.fanout else { return false };
+        state.dependents.iter().all(|next| {
+            let ours = *next == *owner || self.inner.get(next) == Some(owner);
+            ours && self.steps.get(next).is_some_and(|s| s.step.jobs.is_none() && s.step.fanout.as_ref().is_some_and(|f| f.items == fanout.items))
+        })
+    }
+
     /// Assembles a step's outputs and stamps its input hash. A fanned step (#92) assembles each
     /// item as a step of its own, and each output becomes a list with one value per item.
     /// Items in `missing` (#480) get an empty list on every output; a step completing a partial
@@ -844,8 +940,8 @@ impl Run {
             }
             None => (Vec::new(), Vec::new(), None, None),
         };
-        let kept = match &resume {
-            Some(resume) => Some(target.history.iter().find(|g| g.id == resume.generation).ok_or("the partial result it completes is gone")?),
+        let kept = match resume.as_ref().and_then(|r| r.generation) {
+            Some(generation) => Some(target.history.iter().find(|g| g.id == generation).ok_or("the partial result it completes is gone")?),
             None => None,
         };
         let cells = items.as_ref().map_or(1, Vec::len);
@@ -873,6 +969,12 @@ impl Run {
         let mut assembled = Vec::with_capacity(cells);
         for (cell, per_port) in per_cell.into_iter().enumerate() {
             if missing.contains_key(&cell) {
+                settings.get_mut(cell).map(Vec::clear);
+                assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
+                continue;
+            }
+            if resume.as_ref().is_some_and(|r| r.generation.is_none() && !r.runs(cell)) {
+                // Inside a technique (#536): its technique node keeps this item.
                 settings.get_mut(cell).map(Vec::clear);
                 assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
                 continue;

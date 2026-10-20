@@ -88,6 +88,13 @@ pub struct Fanout {
     pub resume: Option<crate::partial::Resume>,
 }
 
+impl Fanout {
+    /// How many of its items run: all of them, or only those its resume plans.
+    pub fn running(&self) -> usize {
+        self.resume.as_ref().map_or(self.items.len(), |resume| resume.missing.len())
+    }
+}
+
 /// A plan that can run: steps in dependency order. Its price is `cost::quote` (#76), the one
 /// place runs are priced.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -306,6 +313,7 @@ pub fn plan_expanded(
     }
     crate::partial::resume_partials(canvas, kinds, &mut steps);
     let inner = steps.iter().filter_map(|step| Some((step.node, *expanded.inner.get(&step.node)?))).collect();
+    crate::partial::resume_techniques(canvas, kinds, &mut steps, &inner);
     Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }))
 }
 

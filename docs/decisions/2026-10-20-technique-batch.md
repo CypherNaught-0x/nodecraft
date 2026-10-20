@@ -20,6 +20,10 @@
   refused too (inner nodes other than inputs always run again, and inputs never carry item
   tags, so this only guards hand-made files).
 
-Not yet: when some items of a fanned technique fail, the instance records nothing, so the paid
-items that finished are not kept and a re-run pays for them again (#536). A fanned Generate
-card keeps them as a partial result (#480).
+When some items of a fanned technique fail (#536), the technique node keeps a partial result,
+as a fanned Generate card does (#480): an item that fails inside the technique is carried past
+the inner steps that read it, the items that finished become the node's result, and the missing
+ones are listed. A re-run with unchanged inputs runs only the missing items through the fanned
+inner steps and keeps the rest. An unfanned inner step (one that reads the whole batch) runs
+again in full, and a resume is not attempted when the inner graph is wired so that items
+cannot be told apart; the run then starts afresh.

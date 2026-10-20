@@ -19,7 +19,7 @@ use nodecraft_exec::{
 };
 use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Project};
 use nodecraft_nodes::generation::TEXT_KIND;
-use nodecraft_providers::mock::MockProvider;
+use nodecraft_providers::mock::{MockModel, MockOutput, MockProvider};
 use nodecraft_types::{CanvasId, EdgeId, NodeId, ProjectId, TechniqueId, Value};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -83,7 +83,10 @@ struct Fixture {
 /// Source → writer on C, published as a technique (Subject in, Answer out), placed on C again and
 /// fed by its own source asking about the moon.
 fn fixture() -> Fixture {
-    let mock = MockProvider::standard();
+    fixture_with(MockProvider::standard())
+}
+
+fn fixture_with(mock: MockProvider) -> Fixture {
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([41; 16]), "Technique run").unwrap();
@@ -237,4 +240,78 @@ fn a_batch_into_a_technique_node_runs_it_once_per_item() {
         assert!(text.starts_with(&format!("mock-text: {subject} #")), "{texts:?}");
     }
     assert!(node(&f.session, WRITER).history.is_empty());
+}
+
+/// A batch of `items` (one per line) into the technique node, in place of the moon.
+fn batch_into_placed(f: &mut Fixture, items: &str) -> NodeId {
+    let batch = NodeId::from_bytes([13; 16]);
+    f.session.dispatch("edge.disconnect", &json!({"canvas": C, "id": EdgeId::from_bytes([9; 16])})).unwrap();
+    f.session.dispatch("node.create", &json!({"canvas": C, "id": batch, "kind": nodecraft_nodes::batch::ID, "pos": {"x": 0, "y": 300}})).unwrap();
+    f.session.dispatch("node.param_set", &json!({"canvas": C, "id": batch, "name": "text", "value": {"type": "text", "value": items}})).unwrap();
+    let edge = json!({"id": EdgeId::from_bytes([22; 16]), "from": {"node": batch, "port": "item"}, "to": {"node": PLACED, "port": "subject"}, "order": 0});
+    f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    batch
+}
+
+fn pump_until(f: &mut Fixture, what: &str, done: impl Fn(&Fixture) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done(f) {
+        f.host.pump(&mut f.session);
+        assert!(Instant::now() < deadline, "{what}: {:?}", f.host.jobs());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Starts the quoted run of `request`, accepting the quote as it is; returns the quoted micros.
+fn start_quoted(f: &mut Fixture, request: &serde_json::Value) -> serde_json::Value {
+    let q = f.session.dispatch("run.quote", request).unwrap();
+    assert_eq!(q["allowed"], true, "{q}");
+    let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = request.clone();
+    start["accept"] = json!({"token": q["token"], "partial": false, "unpriced_jobs": 0, "amounts": amounts});
+    f.session.dispatch("run.start", &start).unwrap();
+    q["totals"]["USD"]["micros"].clone()
+}
+
+/// One item of a batch into a technique node that ends early leaves the technique node a
+/// partial result with the other items' answers, tagged per item; running it again quotes and
+/// sends only the missing item's call (#536).
+#[test]
+fn an_item_of_a_fanned_technique_that_ends_early_is_the_only_one_run_again() {
+    let mut slow = MockModel::new(MockOutput::Text);
+    slow.polls = 20;
+    let mut f = fixture_with(MockProvider::new("mock", [("mock-text".to_owned(), slow)]));
+    let batch = batch_into_placed(&mut f, "a fox\nan owl\na hare");
+    let request = json!({"canvas": C, "mode": "with_upstream", "nodes": [PLACED]});
+    assert_eq!(start_quoted(&mut f, &request), json!(30_000));
+    pump_until(&mut f, "every item reached the provider", |f| f.mock.requests().len() == 3);
+    let first = f.host.jobs().into_iter().find(|v| !v.state.is_final()).unwrap();
+    f.host.cancel(first.key).unwrap();
+    let notices = drive(&mut f);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node, .. } if *node == PLACED)), "the missing item is reported: {notices:?}");
+    let placed = node(&f.session, PLACED);
+    let partial = placed.history.last().cloned().unwrap();
+    assert!(partial.is_partial(), "{partial:?}");
+    let missing = partial.incomplete.as_ref().unwrap().missing.clone();
+    assert_eq!(missing.len(), 1, "{partial:?}");
+    assert_eq!(partial.items.len(), 3);
+    assert!(partial.items.iter().all(|tag| tag.len() == 1 && tag[0].batch == batch), "tagged per item: {:?}", partial.items);
+    let Value::List(answers) = &partial.outputs[0] else { panic!("{partial:?}") };
+    let gap = usize::try_from(missing[0].item).unwrap();
+    for (n, answer) in answers.iter().enumerate() {
+        assert_eq!(n == gap, *answer == Value::List(Vec::new()), "only the missing item is empty: {answers:?}");
+    }
+
+    let sent = f.mock.requests().len();
+    assert_eq!(start_quoted(&mut f, &request), json!(10_000), "only the missing item is quoted");
+    let notices = drive(&mut f);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    assert_eq!(f.mock.requests().len(), sent + 1, "the finished items are never sent again");
+    let whole = node(&f.session, PLACED).history.last().cloned().unwrap();
+    assert!(!whole.is_partial(), "{whole:?}");
+    let Value::List(answers) = &whole.outputs[0] else { panic!("{whole:?}") };
+    let texts: Vec<&str> = answers.iter().map(|a| if let Value::Text(t) = a { t.as_str() } else { panic!("{a:?}") }).collect();
+    for (text, subject) in texts.iter().zip(["a fox", "an owl", "a hare"]) {
+        assert!(text.starts_with(&format!("mock-text: {subject} #")), "{texts:?}");
+    }
 }

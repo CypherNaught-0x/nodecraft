@@ -483,3 +483,90 @@ fn a_batch_inside_a_version_still_blocks_its_technique_node() {
     assert_eq!(blockers.iter().map(|b| b.node).collect::<Vec<_>>(), vec![placed_id]);
     assert!(blockers.first().unwrap().message(project.canvases().get(&C).unwrap()).contains("batch inside"), "{blockers:?}");
 }
+
+/// Runs `plan` like [`drive`], failing the jobs whose text is `fail`; also returns the jobs run.
+fn drive_failing(project: &Project, kinds: &Registry, plan: &RunPlan, fail: &str) -> (Vec<StepResult>, Vec<StepFailure>, Vec<JobSpec>) {
+    let expanded = expand(project.canvases(), project.canvases().get(&C).unwrap(), kinds).unwrap();
+    let options = RunOptions { id: [9; 16], first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER };
+    let (mut run, first) = Run::start(plan, C, &expanded.canvas, kinds, options).unwrap();
+    let (mut finished, mut failed, mut queue, mut ran) = (first.finished, first.failed, first.jobs, Vec::new());
+    while let Some(job) = queue.pop() {
+        let Some(work) = run.work(job.id).cloned() else { panic!("no work for {job:?}") };
+        let JobSpec::Source { output, value, .. } = work.clone() else { panic!("only source jobs here") };
+        let progress =
+            if value == Value::Text(fail.into()) { run.job_failed(kinds, job.id, "it said no") } else { run.job_done(kinds, job.id, vec![(output, value)]) };
+        ran.push(work);
+        queue.extend(progress.jobs);
+        finished.extend(progress.finished);
+        failed.extend(progress.failed);
+    }
+    assert!(run.is_finished());
+    (finished, failed, ran)
+}
+
+/// An item failing inside a technique fanned out by a batch leaves the technique node a partial
+/// result with the items that finished (#536); running it again runs only the missing item.
+#[test]
+fn a_failed_item_inside_a_fanned_technique_is_kept_out_and_the_only_one_run_again() {
+    let (mut project, kinds) = project(None, "!");
+    let changes = vec![
+        Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, "fox\nowl") },
+        Change::Connect { canvas: C, edge: edge(41, (BATCH, "item"), (T, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed, _) = drive_failing(&project, &kinds, &plan, "OWL!");
+    let [partial] = finished.as_slice() else { panic!("only the technique node records: {finished:?}") };
+    assert_eq!(partial.node, T);
+    let fox = Value::List(["f", "o", "x"].map(|c| Value::Text(c.into())).to_vec());
+    assert_eq!(
+        partial.generation.outputs,
+        vec![Value::List(vec![Value::Text("FOX!".into()), Value::List(Vec::new())]), Value::List(vec![fox, Value::List(Vec::new())])]
+    );
+    let missing = &partial.generation.incomplete.as_ref().unwrap().missing;
+    assert_eq!(missing, &vec![nodecraft_graph::MissingItem { item: 1, why: nodecraft_graph::Missing::Failed }]);
+    assert_eq!(partial.generation.items.len(), 2);
+    let [failure] = failed.as_slice() else { panic!("reported once, on the technique node: {failed:?}") };
+    assert_eq!(failure.node, T);
+    assert!(failure.reason.starts_with("1 of 2 items didn't finish: “") && failure.reason.ends_with("”: it said no"), "names the inner node: {failure:?}");
+    let node = project.canvases().get(&C).unwrap().nodes().get(&T).unwrap().clone();
+    Changeset::new(crate::run::record_changes(C, &node, partial.generation.clone()).unwrap()).apply(&mut project).unwrap();
+
+    // Again: the inlined Shout plans only the owl, and the fox is copied from the partial result.
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let shout = plan.steps.iter().find(|s| plan.inner.contains_key(&s.node) && s.kind == "test.shout").unwrap();
+    assert_eq!(shout.fanout.as_ref().map(|f| f.jobs.clone()), Some(vec![0, 4]), "{shout:?}");
+    let owner = plan.steps.iter().find(|s| s.node == T).unwrap();
+    assert_eq!(owner.fanout.as_ref().and_then(|f| f.resume.as_ref()).and_then(|r| r.generation), Some(partial.generation.id));
+    let (finished, failed, ran) = drive_failing(&project, &kinds, &plan, "");
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(!ran.iter().any(|job| matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("FOX!".into()))), "the fox doesn't run again: {ran:?}");
+    let [whole] = finished.as_slice() else { panic!("{finished:?}") };
+    assert!(whole.generation.incomplete.is_none(), "{whole:?}");
+    assert_eq!(outputs(&finished), vec![(T, vec!["FOX!+OWL!".to_owned(), "f+o+x+o+w+l".to_owned()])]);
+}
+
+/// When every item fails inside it, the technique node fails as a whole and records nothing.
+#[test]
+fn every_item_failing_inside_a_fanned_technique_fails_its_node() {
+    let (mut project, kinds) = project(None, "!");
+    let changes = vec![
+        Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, "fox\nowl") },
+        Change::Connect { canvas: C, edge: edge(41, (BATCH, "item"), (T, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let expanded = expand(project.canvases(), project.canvases().get(&C).unwrap(), &kinds).unwrap();
+    let options = RunOptions { id: [9; 16], first_job: 1, limits: RunLimits::default(), retry: RetryPolicy::NEVER };
+    let (mut run, first) = Run::start(&plan, C, &expanded.canvas, &kinds, options).unwrap();
+    let (mut finished, mut failed, mut queue) = (first.finished, first.failed, first.jobs);
+    while let Some(job) = queue.pop() {
+        let progress = run.job_failed(&kinds, job.id, "it said no");
+        queue.extend(progress.jobs);
+        finished.extend(progress.finished);
+        failed.extend(progress.failed);
+    }
+    assert!(run.is_finished());
+    assert!(finished.is_empty(), "nothing finished, nothing is recorded: {finished:?}");
+    assert_eq!(failed.iter().map(|f| f.node).collect::<Vec<_>>(), vec![T], "{failed:?}");
+}
