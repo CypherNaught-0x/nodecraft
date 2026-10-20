@@ -120,6 +120,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "perf.clear",
     "perf.report",
     "usage.ownership",
+    "usage.unsettled",
     "run.reuse",
     "node.cache_set",
     "node.shader_set",
@@ -134,7 +135,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// canonicalization is not filesystem authorization. Engine/native callers retain their existing
 /// file access. `run.record` writes the results of a run the host executed: an agent must not
 /// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
-/// charges against their own provider records (#325). `plugins.*` changes read package files and
+/// charges against their own provider records (#325), and `usage.resolve_charge` what those records
+/// show a reconciled charge cost (#332). `plugins.*` changes read package files and
 /// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
     // The library is shared by every project and outside undo, so only a person changes it.
@@ -155,6 +157,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "file.cancel",
     "run.record",
     "usage.reconcile_ownership",
+    "usage.resolve_charge",
     "canvas.auto_format",
     "comment.compose",
     "comment.open",

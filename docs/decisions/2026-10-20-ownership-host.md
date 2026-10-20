@@ -6,7 +6,8 @@
   survives a restart along with the charges.
 - **Save first, then keep.** The decision is applied to a copy of the log. The copy is saved to
   the journal under the journal lock, in the same order the write-ahead uses, and only then
-  replaces the live log. If the save fails (full disk, a broken journal), the live log and the
+  applied to the live log in place. The live log is never replaced: running jobs hold
+  reservations tied to its identity. If the save fails (full disk, a broken journal), the live log and the
   saved file stay as they were, the person sees why, and the token they reviewed still holds for
   another try. An in-memory decision that a crash could later undo would be worse: someone could
   act on it in the meantime.

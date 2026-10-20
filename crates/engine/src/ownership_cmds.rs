@@ -36,9 +36,9 @@ pub const OWNERSHIP_SERVICE: &str = "usage.reconcile_ownership";
 pub const MAX_GROUPS_PER_PAGE: usize = 200;
 /// Most charges one `usage.ownership` group page lists.
 pub const MAX_CHARGES_PER_PAGE: usize = 500;
-const MAX_PAGE_JSON_BYTES: usize = 512 * 1024;
+pub(crate) const MAX_PAGE_JSON_BYTES: usize = 512 * 1024;
 
-fn invalid(message: &str) -> Error {
+pub(crate) fn invalid(message: &str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
 
@@ -84,11 +84,11 @@ struct DecisionParams {
     dry_run: bool,
 }
 
-fn hex(bytes: &[u8; 32]) -> String {
+pub(crate) fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn unhex(text: &str) -> Option<[u8; 32]> {
+pub(crate) fn unhex(text: &str) -> Option<[u8; 32]> {
     if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return None;
     }
@@ -142,7 +142,7 @@ pub fn reconcile(log: &mut UsageLog, request: &Value, at_ms: u64) -> Result<Valu
     Ok(record_json(&record))
 }
 
-fn money(m: Money) -> Value {
+pub(crate) fn money(m: Money) -> Value {
     json!({"currency": String::from(m.currency), "micros": m.micros, "text": format_money(m)})
 }
 
@@ -186,7 +186,7 @@ fn summary_json(session: &str, currency: Currency, charges: usize, evidence: &no
     json!({"session": session, "currency": String::from(currency), "charges_total": charges, "original_open": money(evidence.original_open)})
 }
 
-fn status(charge: Charge) -> &'static str {
+pub(crate) fn status(charge: Charge) -> &'static str {
     match charge {
         Charge::Actual => "actual",
         Charge::Estimate => "estimate",
@@ -195,7 +195,7 @@ fn status(charge: Charge) -> &'static str {
 }
 
 /// Adds items until `limit` or the byte budget is reached. Returns the next offset, if any.
-fn fill(
+pub(crate) fn fill(
     out: &mut Vec<Value>,
     items: impl Iterator<Item = Value>,
     offset: usize,

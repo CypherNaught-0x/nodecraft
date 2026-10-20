@@ -23,9 +23,11 @@ mod ownership;
 use ownership::Ownership;
 pub use ownership::{ChargeOwnership, LegacyGroupEvidence, QuarantineLocation, QuarantinedCharge};
 mod reconcile;
+mod resolve;
 pub use reconcile::{
     Holder, MAX_RECONCILE_EXCEPTIONS, MAX_STAGE_CHARGES, OwnershipDecision, OwnershipGroup, OwnershipPlan, OwnershipReconciliation, ReconciledCharge,
 };
+pub use resolve::{ChargeResolution, Resolution, ResolutionDecision, ResolvableCharge};
 
 /// Why a step has no price yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -455,7 +457,7 @@ impl Eq for UsageLog {}
 #[serde(deny_unknown_fields)]
 pub struct UsageLogFile {
     /// Explicit ownership contract: 0 legacy input, 1 established, 2 immutable quarantine,
-    /// 3 quarantine with confirmed reconciliations (#325).
+    /// 3 quarantine with confirmed reconciliations (#325), 4 those with resolved charges (#332).
     #[serde(default)]
     pub open_session_ownership: u8,
     #[serde(default)]
@@ -470,6 +472,8 @@ pub struct UsageLogFile {
     pub legacy_groups: Vec<LegacyGroupEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ownership_reconciliations: Vec<OwnershipReconciliation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub charge_resolutions: Vec<ChargeResolution>,
     pub entries: Vec<UsageEntry>,
     pub project: Totals,
     #[serde(default)]
@@ -837,8 +841,22 @@ impl UsageLog {
         self.release_identity(target.adapter(), target.instance(), idempotency_key)
     }
     fn release_identity(&mut self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, idempotency_key: &str) -> Result<(), Error> {
+        self.release_open(provider, instance, idempotency_key, false)
+    }
+    /// Releases an open charge a person confirmed the provider never billed, even an unresolved
+    /// one (#332).
+    fn release_confirmed(&mut self, provider: &str, idempotency_key: &str) -> Result<(), Error> {
+        self.release_open(provider, None, idempotency_key, true)
+    }
+    fn release_open(
+        &mut self,
+        provider: &str,
+        instance: Option<nodecraft_types::ProviderInstanceId>,
+        idempotency_key: &str,
+        confirmed: bool,
+    ) -> Result<(), Error> {
         let (location, entry) = self.open_entry(provider, instance, idempotency_key)?;
-        if entry.status != Charge::Estimate {
+        if !confirmed && entry.status != Charge::Estimate {
             return Err(Error::new(ErrorKind::Conflict, "only an estimate can be released; this charge may have been billed"));
         }
         let mut project = self.project.clone();
@@ -1157,7 +1175,9 @@ impl From<UsageLog> for UsageLogFile {
         let sessions = log.merged_sessions();
         Self {
             provider_identity_version: log.provider_identity_version,
-            open_session_ownership: if !log.ownership.records.is_empty() {
+            open_session_ownership: if !log.ownership.resolutions.is_empty() {
+                4
+            } else if !log.ownership.records.is_empty() {
                 3
             } else if log.ownership.uncertain.is_empty() {
                 1
@@ -1169,6 +1189,7 @@ impl From<UsageLog> for UsageLogFile {
             quarantined: log.ownership.quarantined.into_values().collect(),
             legacy_groups: log.ownership.groups.into_values().flat_map(|g| g.into_values()).collect(),
             ownership_reconciliations: log.ownership.records,
+            charge_resolutions: log.ownership.resolutions,
             entries,
             project,
             sessions,

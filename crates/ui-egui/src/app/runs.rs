@@ -195,6 +195,7 @@ impl Runs {
         let host = RunHost::new(runtime, budget);
         host.register(services)?;
         host.register_ownership(services)?;
+        host.register_resolution(services)?;
         Ok(Self {
             host,
             setup: ProviderSetup::default(),

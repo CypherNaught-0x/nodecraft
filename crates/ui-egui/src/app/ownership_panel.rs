@@ -4,6 +4,11 @@
 //! a page at a time. The person picks the total that holds them (marking any that belong to the
 //! other), previews the outcome with a dry run, and only then can confirm it. Confirming
 //! dispatches `usage.reconcile_ownership`, which only a person may run; it settles nothing.
+//!
+//! A reconciled charge no run is left to settle is listed below the groups (#332, from
+//! `usage.unsettled`). The person states what their provider's records show, the billed amount
+//! or that it was never billed, previews the totals it leaves, and confirms
+//! `usage.resolve_charge`, which is also a person's alone.
 use super::*;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -43,12 +48,28 @@ struct Group {
     refused: Option<String>,
 }
 
+/// One reconciled open charge being resolved.
+struct Resolving {
+    /// Its `usage.unsettled` row, with the token the decision carries.
+    charge: Value,
+    /// Billed (at `amount`), or never billed.
+    billed: bool,
+    /// The billed amount as typed, in the charge's currency.
+    amount: String,
+    /// The dry run of the decision as it stands; any change clears it.
+    preview: Option<Value>,
+    refused: Option<String>,
+}
+
 /// The open panel.
 #[derive(Default)]
 pub(super) struct OwnershipReview {
     /// The `usage.ownership` listing of groups.
     groups: Value,
+    /// The first `usage.unsettled` page.
+    unsettled: Value,
     group: Option<Group>,
+    resolving: Option<Resolving>,
 }
 
 /// What a click asked for, applied after the panel is drawn.
@@ -60,6 +81,11 @@ enum Action {
     Toggle(String, String),
     Preview,
     Confirm,
+    Resolve(usize),
+    Billed(bool),
+    Amount(String),
+    ResolvePreview,
+    ResolveConfirm,
 }
 
 fn text<'a>(value: &'a Value, pointer: &str) -> &'a str {
@@ -73,6 +99,23 @@ fn count(value: &Value, pointer: &str) -> u64 {
 /// "1 charge", "2 charges".
 fn charges(n: u64) -> String {
     if n == 1 { "1 charge".into() } else { format!("{n} charges") }
+}
+
+/// Micros as a decimal amount: 7 -> "0.000007".
+fn decimal(micros: u64) -> String {
+    format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
+}
+
+/// A typed decimal amount as micros, at most six decimals; `None` for anything else.
+fn micros(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    if (whole.is_empty() && fraction.is_empty()) || fraction.len() > 6 || !whole.bytes().chain(fraction.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+    let fraction: u64 = if fraction.is_empty() { 0 } else { format!("{fraction:0<6}").parse().ok()? };
+    whole.checked_mul(1_000_000)?.checked_add(fraction)
 }
 
 /// A session id short enough for a heading.
@@ -89,16 +132,38 @@ impl Group {
     }
 }
 
+impl Resolving {
+    fn decision(&self, dry_run: bool) -> Result<Value, String> {
+        let c = &self.charge;
+        let mut decision = json!({"provider": text(c, "/provider"), "key": text(c, "/key"), "token": text(c, "/token"), "dry_run": dry_run});
+        if self.billed {
+            let micros = micros(&self.amount).ok_or("Enter the billed amount as a number, with at most six decimals")?;
+            decision["outcome"] = json!("settled");
+            decision["currency"] = json!(text(c, "/amount/currency"));
+            decision["micros"] = json!(micros);
+        } else {
+            decision["outcome"] = json!("released");
+        }
+        Ok(decision)
+    }
+}
+
 impl NodeCraftApp {
-    /// Opens the review on the list of groups.
+    /// Opens the review on the list of groups and the reconciled charges still open.
     pub(super) fn open_ownership_review(&mut self) {
-        match self.session.dispatch("usage.ownership", &json!({})) {
-            Ok(groups) => {
+        match self.ownership_listings() {
+            Ok((groups, unsettled)) => {
                 self.notice = None;
-                self.ownership = Some(OwnershipReview { groups, group: None });
+                self.ownership = Some(OwnershipReview { groups, unsettled, group: None, resolving: None });
             }
             Err(error) => self.notice = Some(error.message),
         }
+    }
+
+    fn ownership_listings(&mut self) -> Result<(Value, Value), Error> {
+        let groups = self.session.dispatch("usage.ownership", &json!({}))?;
+        let unsettled = self.session.dispatch("usage.unsettled", &json!({"limit": PAGE}))?;
+        Ok((groups, unsettled))
     }
 
     fn load_group(&mut self, session: String, currency: String, offset: usize) -> Result<Group, Error> {
@@ -122,9 +187,13 @@ impl NodeCraftApp {
             .frame(frame)
             .show(ctx, |ui| {
                 ui.set_max_width((3.0 * t.card_width).min(self.viewport.width().max(0.0)));
-                match &review.group {
-                    None => groups(ui, &review.groups, t, &mut action),
-                    Some(group) => group_view(ui, group, t, &mut action),
+                match (&review.group, &review.resolving) {
+                    (Some(group), _) => group_view(ui, group, t, &mut action),
+                    (None, Some(resolving)) => resolve_view(ui, resolving, t, &mut action),
+                    (None, None) => {
+                        groups(ui, &review.groups, t, &mut action);
+                        unsettled(ui, &review.unsettled, t, &mut action);
+                    }
                 }
             });
         if !open {
@@ -143,7 +212,10 @@ impl NodeCraftApp {
                 Ok(group) => review.group = Some(group),
                 Err(error) => self.notice = Some(error.message),
             },
-            Action::Back => review.group = None,
+            Action::Back => {
+                review.group = None;
+                review.resolving = None;
+            }
             Action::Page(offset) => {
                 if let Some(group) = review.group.take() {
                     match self.load_group(group.session.clone(), group.currency.clone(), offset) {
@@ -200,8 +272,8 @@ impl NodeCraftApp {
                                 charges(count(&record, "/charges")),
                                 short(&group.session)
                             ));
-                            match self.session.dispatch("usage.ownership", &json!({})) {
-                                Ok(groups) => review.groups = groups,
+                            match self.ownership_listings() {
+                                Ok((groups, unsettled)) => (review.groups, review.unsettled) = (groups, unsettled),
                                 Err(error) => self.notice = Some(error.message),
                             }
                         }
@@ -209,6 +281,58 @@ impl NodeCraftApp {
                             group.preview = None;
                             group.refused = Some(error.message);
                             review.group = Some(group);
+                        }
+                    }
+                }
+            }
+            Action::Resolve(index) => {
+                if let Some(charge) = review.unsettled.get("charges").and_then(|rows| rows.get(index)) {
+                    let amount = decimal(count(charge, "/amount/micros"));
+                    review.resolving = Some(Resolving { charge: charge.clone(), billed: true, amount, preview: None, refused: None });
+                }
+            }
+            Action::Billed(billed) => {
+                if let Some(resolving) = &mut review.resolving {
+                    resolving.billed = billed;
+                    resolving.preview = None;
+                }
+            }
+            Action::Amount(amount) => {
+                if let Some(resolving) = &mut review.resolving {
+                    resolving.amount = amount;
+                    resolving.preview = None;
+                }
+            }
+            Action::ResolvePreview => {
+                if let Some(resolving) = &mut review.resolving {
+                    let preview = resolving.decision(true).and_then(|d| self.session.dispatch("usage.resolve_charge", &d).map_err(|e| e.message));
+                    (resolving.preview, resolving.refused) = match preview {
+                        Ok(preview) => (Some(preview), None),
+                        Err(refused) => (None, Some(refused)),
+                    };
+                }
+            }
+            Action::ResolveConfirm => {
+                if let Some(mut resolving) = review.resolving.take() {
+                    let confirmed = resolving.decision(false).and_then(|d| self.session.dispatch("usage.resolve_charge", &d).map_err(|e| e.message));
+                    match confirmed {
+                        Ok(record) => {
+                            if let Some(runs) = &self.runs {
+                                runs.sync_usage(&mut self.session);
+                            }
+                            self.notice = Some(match text(&record, "/outcome") {
+                                "settled" => format!("Settled the charge {} at {}.", text(&record, "/key"), text(&record, "/cost/text")),
+                                _ => format!("Released the charge {}; it no longer counts toward any total.", text(&record, "/key")),
+                            });
+                            match self.ownership_listings() {
+                                Ok((groups, unsettled)) => (review.groups, review.unsettled) = (groups, unsettled),
+                                Err(error) => self.notice = Some(error.message),
+                            }
+                        }
+                        Err(refused) => {
+                            resolving.preview = None;
+                            resolving.refused = Some(refused);
+                            review.resolving = Some(resolving);
                         }
                     }
                 }
@@ -227,7 +351,7 @@ fn groups(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option<Ac
             1 => " (1 decision recorded)".into(),
             n => format!(" ({n} decisions recorded)"),
         };
-        ui.label(egui::RichText::new(format!("No charges are waiting for review{done}.")).color(t.text_muted));
+        ui.label(egui::RichText::new(format!("No quarantined charges are waiting for review{done}.")).color(t.text_muted));
         return;
     }
     ui.label(
@@ -251,6 +375,104 @@ fn groups(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option<Ac
     if listing.get("next_offset").is_some_and(|next| !next.is_null()) {
         ui.label(egui::RichText::new(format!("{} groups in all; review these first.", count(listing, "/total"))).color(t.text_muted));
     }
+}
+
+fn unsettled(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option<Action>) {
+    let rows = listing.get("charges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    if rows.is_empty() {
+        return;
+    }
+    ui.add_space(t.control_gap * 2.0);
+    ui.heading("Reconciled charges still open");
+    ui.label(
+        "No run is left to settle these. Check each one against your provider's billing records, then record the \
+         amount it billed, or that it never billed it.",
+    );
+    egui::ScrollArea::vertical().id_salt("unsettled_scroll").max_height(t.minimap_height * 2.0).show(ui, |ui| {
+        egui::Grid::new("unsettled_charges").num_columns(4).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
+            for (index, charge) in rows.iter().enumerate() {
+                ui.label(format!("{} · {}", text(charge, "/provider"), text(charge, "/model"))).on_hover_text(format!(
+                    "Session {}, node {}, recorded at {} ms since 1970",
+                    short(text(charge, "/session")),
+                    text(charge, "/node"),
+                    count(charge, "/at_ms")
+                ));
+                ui.label(format!("{} {}", text(charge, "/amount/text"), text(charge, "/status")));
+                ui.label(egui::RichText::new(text(charge, "/key")).color(t.text_muted))
+                    .on_hover_text("The charge's idempotency key, as your provider's records show it");
+                if ui.button("Resolve").clicked() {
+                    *action = Some(Action::Resolve(index));
+                }
+                ui.end_row();
+            }
+        });
+    });
+    if listing.get("next_offset").is_some_and(|next| !next.is_null()) {
+        ui.label(egui::RichText::new(format!("{} charges in all; resolve these first.", count(listing, "/total"))).color(t.text_muted));
+    }
+}
+
+fn resolve_view(ui: &mut egui::Ui, resolving: &Resolving, t: &Tokens, action: &mut Option<Action>) {
+    let c = &resolving.charge;
+    if ui.button("All charges").clicked() {
+        *action = Some(Action::Back);
+    }
+    ui.heading(format!("{} · {}", text(c, "/provider"), text(c, "/model")));
+    egui::Grid::new("resolve_charge").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
+        for (label, value) in [
+            ("Idempotency key", text(c, "/key").to_owned()),
+            ("Session", short(text(c, "/session"))),
+            ("Open amount", format!("{} ({})", text(c, "/amount/text"), text(c, "/status"))),
+        ] {
+            ui.label(label);
+            ui.label(value);
+            ui.end_row();
+        }
+    });
+    ui.add_space(t.control_gap);
+    ui.label("Your provider's records show it:");
+    ui.horizontal(|ui| {
+        for (billed, label) in [(true, "Billed"), (false, "Never billed")] {
+            if ui.radio(resolving.billed == billed, label).clicked() && resolving.billed != billed {
+                *action = Some(Action::Billed(billed));
+            }
+        }
+    });
+    if resolving.billed {
+        ui.horizontal(|ui| {
+            ui.label(format!("Billed amount ({})", text(c, "/amount/currency")));
+            let mut amount = resolving.amount.clone();
+            if ui.add(egui::TextEdit::singleline(&mut amount).desired_width(t.card_width * 0.5)).changed() {
+                *action = Some(Action::Amount(amount));
+            }
+        });
+    }
+    if let Some(preview) = &resolving.preview {
+        let outcome = match text(preview, "/outcome") {
+            "settled" => format!("Settles at {}", text(preview, "/cost/text")),
+            _ => "Leaves the totals".to_owned(),
+        };
+        ui.label(format!(
+            "{outcome}. Afterwards this session's total is {} and the project's {}.",
+            text(preview, "/session_total/text"),
+            text(preview, "/project_total/text")
+        ));
+    }
+    if let Some(refused) = &resolving.refused {
+        ui.label(egui::RichText::new(refused).color(t.danger));
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Preview").on_hover_text("Check the decision and show the totals it leaves, changing nothing").clicked() {
+            *action = Some(Action::ResolvePreview);
+        }
+        let confirm = ui
+            .add_enabled(resolving.preview.is_some(), egui::Button::new("Confirm"))
+            .on_hover_text("Record this in the usage log")
+            .on_disabled_hover_text("Preview the decision first");
+        if confirm.clicked() {
+            *action = Some(Action::ResolveConfirm);
+        }
+    });
 }
 
 fn group_view(ui: &mut egui::Ui, group: &Group, t: &Tokens, action: &mut Option<Action>) {
