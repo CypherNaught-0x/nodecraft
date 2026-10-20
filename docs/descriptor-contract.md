@@ -112,10 +112,11 @@ default resolves the node's instance contract and keeps the result as `into_reso
 
 - **What is sent** is exactly `submission()`: a hidden or disabled value stays on the node for the
   editor, but no job receives it.
-- **What a result's identity hashes** is the same set, so editing a disabled value never makes a
-  result stale. For derived contracts, parameters that declare `identity: false` are still hashed
-  for now, which can only make a result stale too often, never too rarely; `generation.image`
-  uses `into_identity`, which leaves them out (it submits through `submission()` itself).
+- **What a result's identity hashes** is the same set less the parameters that declare
+  `identity: false` (`ResolvedParams::unhashed`), so editing a disabled value or one outside
+  identity never makes a result stale; the latter is still sent. `generation.image` uses
+  `into_identity`, which leaves them out of its visible set (it submits through `submission()`
+  itself).
 - **What blocks.** An invalid or unknown value is refused even while editing. A missing required
   value or a failed check blocks only a run (`ready`), so paste and migration accept a state a
   run would refuse. The edit commands (`node.param_set`, bulk edits, model swaps) still refuse
@@ -269,7 +270,6 @@ registration, exposes it through `node.describe`, and plans and runs every kind 
 
 These are tracked on #162 and on the issues that need them:
 
-- leaving `identity: false` parameters out of a result's identity;
 - dynamic, model-scoped option sources;
 - typed nested records and lists;
 - generated UI reading rules (enabled state, reset) and the bulk panel itself (#71);

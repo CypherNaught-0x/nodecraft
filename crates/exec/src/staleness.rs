@@ -463,9 +463,10 @@ impl InputHasher {
                                         self.meter.charge(name.len())?;
                                     }
                                 }
-                                let visible: Vec<_> = resolved.visible_values().collect();
-                                w.len(visible.len());
-                                for (name, value) in visible {
+                                // What is sent, less what the contract declares `identity: false`.
+                                let hashed: Vec<_> = resolved.identity_values().collect();
+                                w.len(hashed.len());
+                                for (name, value) in hashed {
                                     w.param(name, value)?;
                                 }
                                 Ok(w.finish())

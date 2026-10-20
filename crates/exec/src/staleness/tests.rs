@@ -141,6 +141,76 @@ fn hidden_parameters_do_not_count_until_they_show() {
     assert!(stale_of(&p).contains(&id(2)));
 }
 
+/// `Gen` whose `note` parameter declares `identity: false` (#162): it is sent, never hashed.
+struct Quiet(Gen);
+impl NodeKind for Quiet {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn contract(&self, descriptor: &NodeDescriptor) -> nodecraft_nodes::NodeContract {
+        let mut contract = nodecraft_nodes::NodeContract::derive(descriptor);
+        contract.params.rules = descriptor
+            .params
+            .params
+            .iter()
+            .map(|spec| nodecraft_types::ParamRule {
+                affects: nodecraft_types::Affects { identity: spec.name != "note", ..Default::default() },
+                ..nodecraft_types::ParamRule::implied(&spec.name)
+            })
+            .collect();
+        contract
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        self.0.plan(ctx)
+    }
+}
+
+#[test]
+fn parameters_declared_outside_identity_are_sent_but_keep_results_fresh() {
+    let mut kinds = Registry::builtins().unwrap();
+    let text = |name: &str| ParamSpec {
+        name: name.into(),
+        label: name.into(),
+        description: None,
+        control: ParamControl::Text { multiline: false, max_bytes: 1024 },
+        required: false,
+        default: Some(Value::Text("plain".into())),
+        visible_if: None,
+    };
+    let descriptor = NodeDescriptor {
+        id: "test.quiet".into(),
+        label: "Quiet".into(),
+        category: Category::Generation,
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+        params: ParamSchema { params: vec![text("style"), text("note")] },
+        quick_add: None,
+    };
+    kinds.register(Box::new(Quiet(Gen(descriptor)))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([2; 16]), "Quiet").unwrap();
+    let node = kinds.get("test.quiet").unwrap().descriptor().instantiate(id(2), &Default::default()).unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }, Change::AddNode { canvas: C, node }]).apply(&mut p).unwrap();
+    stamp(&mut p, &kinds, 2);
+    let stale_now = |p: &Project| stale(p.canvases().get(&C).unwrap(), &kinds).unwrap();
+
+    set_param(&mut p, 2, "note", "a reminder");
+    assert!(stale_now(&p).is_empty(), "a note outside identity keeps the result fresh");
+    let node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap();
+    let resolved = kinds.get("test.quiet").unwrap().validate_instance(node, true).unwrap();
+    assert_eq!(
+        resolved.visible_values().find(|(name, _)| *name == "note").map(|(_, v)| v.clone()),
+        Some(Value::Text("a reminder".into())),
+        "but it is still sent"
+    );
+    assert_eq!(resolved.identity_values().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["style"]);
+
+    set_param(&mut p, 2, "style", "bold");
+    assert_eq!(stale_now(&p), [id(2)].into_iter().collect(), "an identity parameter still counts");
+}
+
 #[test]
 fn upstream_source_content_and_result_changes_propagate() {
     let mut p = project();
@@ -657,6 +727,7 @@ impl NodeKind for Validated {
         Ok(nodecraft_nodes::ResolvedParams {
             values: [("effective".into(), Value::Text(value))].into_iter().collect(),
             visible: ["effective".into()].into_iter().collect(),
+            unhashed: Default::default(),
         })
     }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
