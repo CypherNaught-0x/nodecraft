@@ -638,3 +638,21 @@ Grid and whole-DAG dependency modes move selected nodes only, with one undo step
 ### Colour tag mutations and filtering
 
 The graph’s compact `SetNodeTags` operation stores only per-node tag IDs and their inverse. Its aggregate inner-assignment limit is independent of the outer changeset operation count, and generated inverses use the same validator. Engine `tag.put`, `node.tag_set` and `tag.remove` own document mutation through Session transactions. Scoped `canvas.tag_filter_*` commands delegate view state to the live host; headless persistent edits remain available. See [color-tags.md](color-tags.md) for strict command schemas, version3 persisted color metadata, filter/jump semantics and resource bounds.
+
+## Batch Generate sheets (#163)
+
+A sheet is a canvas whose `kind` is `sheet` (`graph::CanvasKind`). Format v1 can't represent
+that field, so it refuses to read or write a sheet. Engine `sheet_cmds` treats the sheet's
+Generate cards as its rows, listed top to bottom by position. The commands are:
+
+- `sheet.create`, `sheet.list` and `sheet.rows` create sheets and read them.
+- `sheet.rows_add`, `sheet.rows_duplicate`, `sheet.rows_remove` and `sheet.row_move` edit the
+  rows. Each is one changeset, and it moves the rows back into one column.
+- `sheet.reference_wire` and `sheet.reference_unwire` wire a source node into rows. A node wired
+  into every row is a shared reference.
+
+Commands that add nodes or wires take one `seed` and derive every new id from it with blake3, so
+replays are deterministic. Cells are card parameters, so bulk edits use
+`node.params_set_bulk`, and a run of rows uses `run.quote` and `run.start`. The row commands
+refuse to grow a sheet past 1000 rows (`MAX_ROWS`) and add at most 100 at a time. See
+[the decision](decisions/2026-10-20-batch-sheets.md).

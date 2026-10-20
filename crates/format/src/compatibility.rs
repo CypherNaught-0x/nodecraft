@@ -25,6 +25,9 @@ fn project_data(project: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn canvas_data(canvas: &Value) -> Result<(), Error> {
+    if canvas.get("kind").is_some() {
+        return Err(unsupported());
+    }
     if let Some(nodes) = canvas.get("nodes").and_then(Value::as_object) {
         for item in nodes.values() {
             node(item)?;
@@ -248,7 +251,8 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
         }
     }
     for canvas in project.canvases().values() {
-        if !canvas.comments().is_empty() {
+        // Sheets (#163) would open as a plain canvas in version 1.
+        if !canvas.comments().is_empty() || !canvas.kind().is_canvas() {
             return Err(unsupported());
         }
         for node in canvas.nodes().values() {
@@ -363,6 +367,20 @@ mod tests {
         assert!(validate(raw.as_bytes()).is_ok(), "genuine old bytes remain valid even though current typed serialization emits v2 defaults");
         let recovered = crate::journal::recover(include_bytes!("../tests/fixtures/v1/comments-v1.ncrj")).unwrap();
         assert!(project(&recovered.snapshot.project).is_err());
+    }
+
+    #[test]
+    fn a_sheet_is_never_written_or_read_as_version_1() {
+        let mut sheet = Project::new(ProjectId::from_bytes([4; 16]), "Sheets").unwrap();
+        Change::AddCanvas { canvas: Canvas::sheet(CanvasId::from_bytes([1; 16]), "Rows") }.apply(&mut sheet).unwrap();
+        assert!(project(&sheet).is_err(), "a sheet would open as a plain canvas");
+        let json = serde_json::to_vec(&serde_json::json!({ "project": sheet })).unwrap();
+        assert!(validate(&json).is_err());
+        // A plain canvas stays version-1 compatible: its kind isn't written.
+        let mut plain = Project::new(ProjectId::from_bytes([4; 16]), "Plain").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(CanvasId::from_bytes([1; 16]), "C") }.apply(&mut plain).unwrap();
+        assert!(project(&plain).is_ok());
+        assert!(!serde_json::to_string(&plain).unwrap().contains("\"kind\""));
     }
 }
 

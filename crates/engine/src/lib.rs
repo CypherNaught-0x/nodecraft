@@ -50,6 +50,7 @@ pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod shader_cmds;
+pub mod sheet_cmds;
 pub mod split;
 pub mod stale_cmds;
 pub mod tag_cmds;
