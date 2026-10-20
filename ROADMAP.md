@@ -19,7 +19,7 @@ an agent can actually do today.
 | 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 17/30 |
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92) | 0/16 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ⬜ not started | 0/6 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102) | 1/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar only | 1/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | ⬜ not started | 0/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
@@ -41,6 +41,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   colour tags with a bounded highlight filter (#67), shared parameter editing with explicit Mixed
   values and atomic undo across compatible selected nodes (#71), and an API keys panel backed by
   the OS keychain. Shared model changes show per-target migration results before applying (#157).
+  A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
+  outpaint generation card from a prompt (#102).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -71,7 +73,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   enables yet (#411); the `source.video` and `source.audio` kinds carry metadata, but there is no
   playback UI (#105, #106), no video actions (#108) and no video generation.
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
-  batch, Techniques, app mode, library, Layer/Timeline/Mask editors, Elements, 3D, PDF,
+  batch, Techniques, app mode, library, Layer/Timeline editors, Elements, 3D, PDF,
   collaboration, installing updates (the desktop app only says when a newer release is out,
   #123; installing is #540), and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
