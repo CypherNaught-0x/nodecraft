@@ -282,7 +282,8 @@ fn generation_shared_admission_charges_enabled_names_within_the_existing_cache_b
     let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
     let admitted = admission::admit(&app.session, node, None).unwrap();
     let names =
-        admitted.visible.iter().chain(admitted.enabled.iter().flatten()).fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
+        admitted.visible.iter().chain(admitted.enabled.iter().flatten()).fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)))
+            + admitted.roles.bytes();
     assert!(admitted.bytes.checked_add(names).unwrap() <= MAX_SCHEMA_CACHE_BYTES);
     let mut cache = SchemaCache::default();
     cached_schema(&mut cache, &app.session, node, 1).unwrap();

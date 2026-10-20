@@ -35,6 +35,7 @@ struct CachedSchema {
     descriptor: Arc<nodecraft_nodes::NodeDescriptor>,
     visible: BTreeSet<String>,
     enabled: Option<BTreeSet<String>>,
+    roles: card::Roles,
     catalog: Option<nodecraft_engine::generation_catalog::GenerationCatalogStamp>,
     descriptor_bytes: usize,
     borrowed_identity: Option<usize>,
@@ -60,7 +61,7 @@ impl SchemaCache {
     fn own_bytes(entry: &CachedSchema) -> usize {
         let names = entry.visible.iter().chain(entry.enabled.iter().flatten()).map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
         let owned = if entry.borrowed_identity.is_none() { entry.descriptor_bytes } else { 0 };
-        256usize.saturating_add(names).saturating_add(owned)
+        256usize.saturating_add(names).saturating_add(owned).saturating_add(entry.roles.bytes())
     }
     // Before geometry reads, invalidate only generation entries whose runtime resource/
     // definition binding changed. No document hashing or per-node payload walk in paint.
@@ -179,7 +180,7 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
         }
         return cache.get(&node.id);
     }
-    let admission::Admitted { descriptor, visible, enabled, bytes } = admission::admit(session, node, Some(cache))?;
+    let admission::Admitted { descriptor, visible, enabled, roles, bytes } = admission::admit(session, node, Some(cache))?;
     let (descriptor, borrowed_identity, bytes) = match descriptor {
         Cow::Borrowed(descriptor) => {
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
@@ -195,7 +196,17 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
     };
     cache.insert(
         node.id,
-        CachedSchema { descriptor, visible, enabled, catalog, descriptor_bytes: bytes, borrowed_identity, revision: session.revision(), last_used: clock },
+        CachedSchema {
+            descriptor,
+            visible,
+            enabled,
+            roles,
+            catalog,
+            descriptor_bytes: bytes,
+            borrowed_identity,
+            revision: session.revision(),
+            last_used: clock,
+        },
     );
     while cache.bytes > MAX_SCHEMA_CACHE_BYTES {
         let oldest = cache.entries.iter().filter(|(id, _)| **id != node.id).min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id);
@@ -310,6 +321,7 @@ mod comments;
 mod drop;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
+mod generate;
 mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
@@ -396,6 +408,10 @@ pub struct NodeCraftApp {
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
     model_choice: Option<models::ModelChoice>,
+    /// The price confirmation a card's Generate opened (#83).
+    run_confirm: Option<generate::RunConfirm>,
+    /// The node whose image the toolbar's Expand shows.
+    viewer: Option<NodeId>,
     /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
     model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -674,6 +690,8 @@ impl NodeCraftApp {
             split_shown: None,
             turn_into: None,
             model_choice: None,
+            run_confirm: None,
+            viewer: None,
             model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
@@ -780,6 +798,7 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        model_blocks |= self.run_overlay(ui);
         let bulk_enabled = !model_blocks
             && !file_owns_input
             && !file_menu_owns_input
@@ -1102,6 +1121,7 @@ impl NodeCraftApp {
                             let full = nodecraft_engine::split::image_of(node).and_then(|asset| Some([asset.meta.width?, asset.meta.height?]));
                             (rows, columns, full)
                         }),
+                        roles: schema.map(|cached| &cached.roles),
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -1398,6 +1418,11 @@ impl NodeCraftApp {
         } else {
             self.selection.clear();
         }
+        // Drawn while a popup is open too, so its own aspect menu stays alive; it acts only
+        // when nothing else owns the frame.
+        let toolbar_live = !overlay_blocks && !file_owns_input && !file_menu_owns_input && !recovery_owns_input;
+        intents.extend(self.generation_toolbar(ui, viewport, toolbar_live));
+        self.image_viewer(ui.ctx());
         if let Some(action) = tag_action {
             if let Err(error) = self.apply_tag_action(action) {
                 self.notice = Some(error.message);
@@ -1455,6 +1480,13 @@ impl NodeCraftApp {
                     None => continue,
                 },
                 Intent::Model => continue,
+                // After this pass's edits above it, so a prompt submitted with Cmd+Enter is quoted.
+                Intent::Generate => {
+                    if let Err(error) = self.request_generate(id) {
+                        self.notice = Some(error.message);
+                    }
+                    continue;
+                }
             };
             match self.session.dispatch(command, &params) {
                 Ok(_) => {
@@ -2139,6 +2171,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod generate_tests;
 #[cfg(test)]
 mod generation_tests;
 #[cfg(test)]
