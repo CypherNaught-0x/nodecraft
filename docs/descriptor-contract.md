@@ -6,8 +6,9 @@ means the same thing everywhere and a value that would be refused at run time is
 editing too. This page is the specification. The code is `nodecraft_types::contract` (L0, the
 parameter part) and `nodecraft_nodes::NodeContract` (L2, ports and modes); neither depends on egui.
 
-Version 1.0 covers the shared foundation and the source nodes. Model, action and editor issues
-fill it in for their own parameters; see [What is not in 1.0](#what-is-not-in-10).
+Version 1.0 covers the shared foundation and the source nodes. Version 1.1 adds
+[option sources](#option-sources). Model, action and editor issues fill it in for their own
+parameters; see [What is not in 1.1](#what-is-not-in-11).
 
 ## Versions
 
@@ -50,6 +51,8 @@ A `Contract` wraps the existing `ParamSchema` (controls, bounds, options, litera
   - `affects`: whether the effective value changes the result's identity (staleness and cache
     keys; on by default), the cost quote, the output's shape, or the number of jobs.
   - `meaning`: an optional tag such as `seed` or `aspect_ratio`, used by migration below.
+  - `options` (1.1): the run-time list the value must come from; see
+    [Option sources](#option-sources).
 - **Checks**: cross-field rules (`id`, optional `when`, `require`, a public-safe `message`).
   Whenever `when` holds, `require` must hold too.
 
@@ -95,6 +98,8 @@ with a code, the parameter or check involved, and a message:
 - `unknown_param`: a stored key the contract doesn't know.
 - `required`: an enabled required parameter with no value. Reported only when `ready`.
 - `check`: a cross-field check failed.
+- `not_an_option`: an enabled value is not on its fetched option list. Reported only when
+  `ready`, and refused by an edit only when it sets that parameter.
 
 Hidden and disabled parameters marked `reset` include ones holding an invalid value, so an editor
 can clear the value that blocks running.
@@ -254,6 +259,33 @@ one of:
 The bulk panel (#71) edits only shared fields, and validates each target's new values with that
 target's own contract.
 
+## Option sources
+
+Some allowed values are only known at run time: the checkpoints a ComfyUI server has installed,
+the voices an account owns. A rule's `options: {id, scope?}` names such a list. `id` is a dotted
+lowercase source id (`comfyui.checkpoints`); `scope` names an earlier single-line text, choice
+or model parameter whose value narrows the list (a checkpoint's LoRAs). Only single-line text
+and model parameters take a source.
+
+The host fetches the lists and installs them in the session as `OptionLists`, keyed by the
+contract's namespace, the source id and the scope value. The store is bounded (16,384 values a
+list, 256 lists, 16 MiB of text); a list that breaks the bounds, or has duplicate or empty
+values or blank labels, is refused and the previous list kept.
+
+- **Unknown is not empty.** A list the host has not fetched, could not fetch, or whose scope
+  parameter has no value refuses nothing; the provider checks the value when the job is
+  submitted. Each such parameter's resolution says `options: {source, scope, known: false}`.
+- **A value off a known list is a `not_an_option` issue.** An edit refuses it only when it sets
+  that parameter, so a checkpoint removed from the server never stops the rest of the node
+  being edited, and is fixed by picking another value or clearing it.
+- **Disabled parameters draw from no list**, like every other check on a disabled value.
+
+Planning a run does not consult the lists yet, so a stale value is still submitted and the
+provider refuses it; the edit, bulk-edit, describe and `node.options` paths do. Once planning
+consults them, `not_an_option` blocks the run before anything is charged.
+`node.options {canvas, id, param}` returns a stored node's list for one parameter, as
+`{source, scope, known, options: [{value, label}] | null}`.
+
 ## Surfaces
 
 `node.describe {kind}` returns a kind's contract. `node.describe {canvas, id}` returns a stored
@@ -262,15 +294,16 @@ empty list when it has none). Recorded inputs can be large (up to the node's own
 a caller that only needs the contract should describe the kind. The command is read-only and available to agents, so the CLI and
 MCP see the same fields, conditions and issues as the inspector.
 
-## What is not in 1.0
+## What is not in 1.1
 
 Version 1.0 defines and tests the contract, validates every built-in kind's contract at
 registration, exposes it through `node.describe`, and plans and runs every kind through it (see
-[Running](#running)).
+[Running](#running)). Version 1.1 adds option sources and the store a host fills.
 
 These are tracked on #162 and on the issues that need them:
 
-- dynamic, model-scoped option sources;
+- fetching option lists (ComfyUI `object_info`, provider inventories) and checking them when a
+  run is planned;
 - typed nested records and lists;
 - generated UI reading rules (enabled state, reset) and the bulk panel itself (#71);
 - per-provider parameter inventories.

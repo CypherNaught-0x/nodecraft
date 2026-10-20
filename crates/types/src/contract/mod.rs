@@ -8,13 +8,17 @@ mod admission;
 mod admission469_tests;
 mod condition;
 mod merge;
+mod options;
+#[cfg(test)]
+mod options_tests;
 mod resolve;
 #[cfg(test)]
 mod tests;
 
 pub use condition::{Comparison, Condition};
 pub use merge::{ConnectedText, DropReason, Dropped, Migration, Shared, TextPrecedence, compose_text, overlay, shared_value};
-pub use resolve::{Effective, Issue, IssueCode, ParamState, Resolution};
+pub use options::{MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, NoOptions, OptionKey, OptionLists, OptionLookup, OptionSource};
+pub use resolve::{Effective, Issue, IssueCode, ParamOptions, ParamState, Resolution};
 
 use crate::{Error, ErrorKind, ParamControl, ParamSchema, ParamSpec, schema::invalid};
 use serde::{Deserialize, Serialize};
@@ -37,7 +41,7 @@ pub struct ContractVersion {
 }
 
 impl ContractVersion {
-    pub const CURRENT: Self = Self { major: 1, minor: 0 };
+    pub const CURRENT: Self = Self { major: 1, minor: 1 };
 }
 
 impl Default for ContractVersion {
@@ -150,6 +154,10 @@ pub struct ParamRule {
     /// evidence of a shared meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meaning: Option<String>,
+    /// Since 1.1: the value must come from a list the host fetches at run time. Only single-line
+    /// text and model parameters take one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<OptionSource>,
 }
 
 impl ParamRule {
@@ -163,6 +171,7 @@ impl ParamRule {
             hidden: HiddenPolicy::Keep,
             affects: Affects::default(),
             meaning: None,
+            options: None,
         }
     }
     fn default_policy(&self, spec: &ParamSpec) -> DefaultPolicy {
@@ -296,6 +305,17 @@ fn validate_rule(spec: &ParamSpec, rule: &ParamRule, earlier: &BTreeMap<&str, &P
     }
     for condition in [&rule.visible_when, &rule.enabled_when].into_iter().flatten() {
         condition.validate(earlier, budget)?;
+    }
+    if let Some(source) = &rule.options {
+        if !matches!(spec.control, ParamControl::Text { multiline: false, .. } | ParamControl::Model) || !namespace(&source.id) {
+            return Err(invalid("an option source needs a dotted id on a single-line text or model parameter"));
+        }
+        if let Some(scope) = &source.scope {
+            let controller = earlier.get(scope.as_str()).ok_or_else(|| invalid("an option scope must name an earlier parameter"))?;
+            if !matches!(controller.control, ParamControl::Text { multiline: false, .. } | ParamControl::Choice { .. } | ParamControl::Model) {
+                return Err(invalid("an option scope must be a single-line text, choice or model parameter"));
+            }
+        }
     }
     Ok(())
 }

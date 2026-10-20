@@ -1,7 +1,7 @@
 //! Resolving stored values against a contract: what each parameter's effective value is,
 //! whether it applies, and every problem found, reported together rather than first-only.
 
-use super::{Affects, Contract, DefaultPolicy, HiddenPolicy, condition::Env};
+use super::{Affects, Contract, DefaultPolicy, HiddenPolicy, NoOptions, OptionKey, OptionLookup, condition::Env};
 use crate::{Error, ErrorKind, ParamControl, ParamValues, ResolvedParams, Unsigned, Value, schema::invalid};
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,21 @@ pub struct ParamState {
     /// The stored value should be cleared: it is hidden or disabled under `HiddenPolicy::Reset`.
     pub reset: bool,
     pub affects: Affects,
+    /// The run-time list this parameter's value comes from, when its rule names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<ParamOptions>,
+}
+
+/// Which fetched list an enabled parameter draws from, and whether the host has it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParamOptions {
+    pub source: String,
+    /// The scope parameter's value. Absent for an unscoped source, or while the scope has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// The host has fetched this list. While it has not, any value of the right type is kept
+    /// and the provider checks it when the job is submitted.
+    pub known: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +70,10 @@ pub enum IssueCode {
     Required,
     /// A cross-field check failed.
     Check,
+    /// The value is not on the list the host fetched for it (the checkpoint was removed from
+    /// the server). Dropped when not `ready`, so other fields stay editable; run planning does
+    /// not consult the lists yet.
+    NotAnOption,
 }
 
 /// One structured problem. `message` is public-safe.
@@ -107,7 +126,7 @@ impl Resolution {
 
     fn into_resolved_where(mut self, ready: bool, seeds: bool, keep: impl Fn(&ParamState) -> bool) -> Result<ResolvedParams, Error> {
         if !ready {
-            self.issues.retain(|issue| !matches!(issue.code, IssueCode::Required | IssueCode::Check));
+            self.issues.retain(|issue| !matches!(issue.code, IssueCode::Required | IssueCode::Check | IssueCode::NotAnOption));
         }
         if let Some(issue) = self.issues.first() {
             return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
@@ -181,6 +200,12 @@ impl Contract {
     /// contract or oversized input is an `Err`. With `ready` false (placing an unconfigured
     /// node), missing required values are not reported.
     pub fn resolve(&self, supplied: &ParamValues, ready: bool) -> Result<Resolution, Error> {
+        self.resolve_with(supplied, ready, &NoOptions)
+    }
+
+    /// [`Contract::resolve`] that also checks each enabled value with an option source against
+    /// the list `options` has fetched for it. An unknown list refuses nothing.
+    pub fn resolve_with(&self, supplied: &ParamValues, ready: bool, options: &dyn OptionLookup) -> Result<Resolution, Error> {
         self.validate()?;
         if supplied.len() > crate::schema::MAX_PARAMS {
             return Err(invalid("parameter values exceed count limit"));
@@ -248,8 +273,42 @@ impl Contract {
                     });
                 }
             }
+            let listed = rule.options.as_ref().filter(|_| enabled).map(|source| {
+                let scope = match &source.scope {
+                    Some(scope) => env.get(scope.as_str()).and_then(|value| match value {
+                        Value::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    }),
+                    None => None,
+                };
+                // A scoped list is unknown while its scope has no value.
+                let key = (source.scope.is_none() || scope.is_some()).then_some(OptionKey { owner: &self.namespace, source: &source.id, scope });
+                let known = key.is_some_and(|key| options.known(key));
+                let member = match (key, value.value()) {
+                    (Some(key), Some(Value::Text(text))) if known => options.contains(key, text),
+                    _ => None,
+                };
+                if member == Some(false) {
+                    issues.push(Issue {
+                        code: IssueCode::NotAnOption,
+                        param: Some(spec.name.clone()),
+                        check: None,
+                        message: format!("{} is not one of the available options; refresh the list or pick another", spec.label),
+                    });
+                }
+                ParamOptions { source: source.id.clone(), scope: scope.map(str::to_owned), known }
+            });
             let reset = !enabled && rule.hidden == HiddenPolicy::Reset && supplied.contains_key(&spec.name);
-            params.push(ParamState { name: spec.name.clone(), id: self.param_id(&spec.name), value, visible, enabled, reset, affects: rule.affects });
+            params.push(ParamState {
+                name: spec.name.clone(),
+                id: self.param_id(&spec.name),
+                value,
+                visible,
+                enabled,
+                reset,
+                affects: rule.affects,
+                options: listed,
+            });
         }
         for check in &self.checks {
             if check.when.as_ref().is_none_or(|condition| condition.holds(&env)) && !check.require.holds(&env) {

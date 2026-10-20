@@ -79,8 +79,8 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         }
     }
     if let Some(contract) = generation {
-        let resolution = contract.resolve(&proposed, false)?;
-        if let Some(issue) = resolution.issues.first() {
+        let resolution = contract.resolve_with(&proposed, false, crate::option_cmds::lookup(c.resources))?;
+        if let Some(issue) = crate::option_cmds::refusing(&resolution.issues, p.value.as_ref().map(|_| p.name.as_str())) {
             return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
         }
         if p.value.is_some() && !resolution.get(&p.name).is_some_and(|state| state.enabled) {
@@ -97,6 +97,17 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         return Ok(Effect::Edit { changes: Changeset::new(changes), result: Json::Null, gesture: None });
     }
     descriptor.params.resolve(&proposed, false)?;
+    if p.value.is_some() && c.resources.get::<nodecraft_types::OptionLists>().is_some() {
+        // The contract of the edited node, for kinds whose contract follows their values.
+        let mut next = node.clone();
+        next.params = proposed.clone();
+        let resolution = kind.instance_contract(&next)?.resolve_with(&proposed, false, crate::option_cmds::lookup(c.resources))?;
+        if let Some(issue) =
+            resolution.issues.iter().find(|issue| issue.code == nodecraft_types::IssueCode::NotAnOption && issue.param.as_deref() == Some(p.name.as_str()))
+        {
+            return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
+        }
+    }
     Ok(edit(Change::SetParam { canvas: p.canvas, id: p.id, name: p.name, value: p.value }))
 }
 fn edit(change: Change) -> Effect {

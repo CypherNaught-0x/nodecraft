@@ -1,7 +1,7 @@
 //! Disjoint semantic ownership for dynamic model-backed instances (#465).
 use super::NodeContract;
 use crate::{NodeDescriptor, descriptor::invalid};
-use nodecraft_types::{Contract, Error, IssueCode, ParamControl, ParamOwner, ParamValues, Resolution};
+use nodecraft_types::{Contract, Error, IssueCode, NoOptions, OptionLookup, ParamControl, ParamOwner, ParamValues, Resolution};
 use std::collections::BTreeSet;
 
 impl NodeContract {
@@ -69,8 +69,13 @@ impl NodeContract {
     /// Each shared resolver validates its own values before copying; foreign-owner unknown
     /// reports are removed, genuinely unknown supplied keys are reported exactly once.
     pub fn resolve(&self, values: &ParamValues, ready: bool) -> Result<Resolution, Error> {
+        self.resolve_with(values, ready, &NoOptions)
+    }
+    /// [`NodeContract::resolve`] checking option-sourced values against the host's fetched
+    /// lists ([`Contract::resolve_with`]).
+    pub fn resolve_with(&self, values: &ParamValues, ready: bool, options: &dyn OptionLookup) -> Result<Resolution, Error> {
         if self.owned_groups.is_empty() {
-            return self.params.resolve(values, ready);
+            return self.params.resolve_with(values, ready, options);
         }
         self.validate_groups()?;
         if values.len() > 256 {
@@ -90,13 +95,13 @@ impl NodeContract {
         if text > 1024 * 1024 {
             return Err(invalid("resolved parameters exceed text limit"));
         }
-        let mut result = self.params.resolve(values, ready)?;
+        let mut result = self.params.resolve_with(values, ready, options)?;
         result.issues.retain(|issue| {
             issue.code != IssueCode::UnknownParam
                 || !self.owned_groups.iter().any(|g| g.schema.params.iter().any(|p| issue.param.as_deref() == Some(p.name.as_str())))
         });
         for group in &self.owned_groups {
-            let mut resolution = group.resolve(values, ready)?;
+            let mut resolution = group.resolve_with(values, ready, options)?;
             resolution.issues.retain(|issue| issue.code != IssueCode::UnknownParam);
             result.params.extend(resolution.params);
             result.issues.extend(resolution.issues);

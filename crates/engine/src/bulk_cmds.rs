@@ -115,10 +115,10 @@ fn prepare(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         // removals in the SAME transaction, and admit checks only after resets settle.
         let mut resets = BTreeSet::new();
         for _ in 0..=instance.params.params.len() {
-            let resolution = contract.resolve(&proposed, false)?;
+            let resolution = contract.resolve_with(&proposed, false, crate::option_cmds::lookup(c.resources))?;
             let pending: Vec<_> = resolution.params.iter().filter(|state| state.reset).map(|state| state.name.clone()).collect();
             if pending.is_empty() {
-                if let Some(issue) = resolution.issues.first() {
+                if let Some(issue) = crate::option_cmds::refusing(&resolution.issues, p.value.as_ref().map(|_| p.name.as_str())) {
                     return Err(invalid(&issue.message));
                 }
                 break;
@@ -139,8 +139,8 @@ fn prepare(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
             generation.validate_wiring(canvas, &proposed_node, false)?;
         }
         let final_contract = kind.instance_contract(&proposed_node)?;
-        let final_resolution = final_contract.resolve(&proposed_node.params, false)?;
-        if let Some(issue) = final_resolution.issues.first() {
+        let final_resolution = final_contract.resolve_with(&proposed_node.params, false, crate::option_cmds::lookup(c.resources))?;
+        if let Some(issue) = crate::option_cmds::refusing(&final_resolution.issues, p.value.as_ref().map(|_| p.name.as_str())) {
             return Err(invalid(&issue.message));
         }
         if final_resolution.params.iter().any(|state| state.reset) {

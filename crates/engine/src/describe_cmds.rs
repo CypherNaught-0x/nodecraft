@@ -46,7 +46,7 @@ fn describe(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         Target::Kind(kind) => json!({"contract": c.kinds.contract(kind)?}),
         Target::Node(node) => {
             let contract = c.kinds.get(&node.kind)?.instance_contract(node)?;
-            let resolution = contract.resolve(&node.params, true)?;
+            let resolution = contract.resolve_with(&node.params, true, crate::option_cmds::lookup(c.resources))?;
             // What the active result was made with, when a provider made it.
             let settings = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).map_or(&[][..], |g| g.settings.as_slice());
             json!({"contract": contract, "resolution": resolution, "settings": settings})
