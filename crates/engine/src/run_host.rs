@@ -83,15 +83,18 @@ struct Inbox {
 
 /// Applies a person's decision to the usage log: tried on a copy and saved in the journal
 /// first, then applied to the live log in place, never replaced, since running jobs hold
-/// reservations tied to its identity. A failed save leaves both as they were.
+/// reservations tied to its identity. A failed save leaves both as they were. `guard` refuses
+/// the decision under the journal lock, before anything is tried.
 fn keep_decision(
     shared: &Mutex<Shared>,
     log: &Mutex<UsageLog>,
     at_ms: u64,
+    guard: impl FnOnce(&Shared) -> Result<(), Error>,
     apply: impl Fn(&mut UsageLog, u64) -> Result<serde_json::Value, Error>,
 ) -> Result<serde_json::Value, Error> {
     // The write-ahead's order: the journal, then the log.
     let mut shared = lock(shared);
+    guard(&shared)?;
     let mut live = lock(log);
     let mut next = live.clone();
     apply(&mut next, at_ms)?;
@@ -453,7 +456,7 @@ impl RunHost {
         let log = Arc::clone(&self.budget.log);
         let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
         services.register(OWNERSHIP_SERVICE, move |request| {
-            keep_decision(&shared, &log, wall_clock_ms(), |usage, at_ms| ownership_cmds::reconcile(usage, request, at_ms))
+            keep_decision(&shared, &log, wall_clock_ms(), |_| Ok(()), |usage, at_ms| ownership_cmds::reconcile(usage, request, at_ms))
         })
     }
 
@@ -466,11 +469,14 @@ impl RunHost {
         let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
         services.register(RESOLUTION_SERVICE, move |request| {
             let (provider, key) = resolve_cmds::requested_charge(request)?;
-            let followed = lock(&shared).submitted.iter().any(|s| s.target.adapter() == provider && s.sent_key() == key);
-            if followed {
-                return Err(Error::new(ErrorKind::Conflict, "a saved run still follows this charge; it settles when the run resumes"));
-            }
-            keep_decision(&shared, &log, wall_clock_ms(), |usage, at_ms| resolve_cmds::resolve(usage, request, at_ms))
+            // Checked under the same journal lock the decision is saved under.
+            let unfollowed = |shared: &Shared| {
+                if shared.submitted.iter().any(|s| s.target.adapter() == provider && s.sent_key() == key) {
+                    return Err(Error::new(ErrorKind::Conflict, "a saved run still follows this charge; it settles when the run resumes"));
+                }
+                Ok(())
+            };
+            keep_decision(&shared, &log, wall_clock_ms(), unfollowed, |usage, at_ms| resolve_cmds::resolve(usage, request, at_ms))
         })
     }
 

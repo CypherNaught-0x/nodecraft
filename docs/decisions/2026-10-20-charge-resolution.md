@@ -23,5 +23,12 @@
   a saved run still follows; that run settles it when it resumes. The host now seeds the
   journal's list of followed runs when it opens the journal, so a decision kept before the
   first save no longer drops the parked runs from the saved journal.
+- **Known limits.** Loading doesn't check a resolution against the charge's current state, so a
+  hand-edited file that marks a still-open charge resolved is admitted. The charge then stays
+  open, counted in the totals but no longer offered for a decision: conservative, never
+  under-counted. A reconciled key that a saved run settles and then retries under the same key
+  is listed again, though the host refuses to decide it while that run follows it. The desktop
+  shows the first 50 waiting charges; each decision makes room for the next, and
+  `usage.unsettled` pages through all of them.
 - **Human only.** Agents can list the charges (`usage.unsettled`) but not decide them, as with
   `usage.reconcile_ownership`.
