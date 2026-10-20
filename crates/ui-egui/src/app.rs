@@ -333,6 +333,8 @@ mod navigation;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
+#[cfg(not(target_arch = "wasm32"))]
+mod runs;
 mod search;
 mod split;
 mod stale;
@@ -431,6 +433,9 @@ pub struct NodeCraftApp {
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
+    /// The runs `run.start` hands over, and the providers they use (#409).
+    #[cfg(not(target_arch = "wasm32"))]
+    runs: Option<runs::Runs>,
 }
 impl NodeCraftApp {
     /// Cancel one owner at a time: noodle, input order, marquee, then selection.
@@ -489,6 +494,14 @@ impl NodeCraftApp {
                 None
             }
         };
+        // Without them the app still opens; Generate says why it can't run.
+        let runs = match runs::Runs::new(&mut services) {
+            Ok(runs) => Some(runs),
+            Err(e) => {
+                log::warn!("runs unavailable: {}", e.message);
+                None
+            }
+        };
         // Preserve the existing plugin/trust location. All package I/O, including opening
         // its index, runs on the worker; requests expose retained results through commands.
         let mut plugin_problem = None;
@@ -527,6 +540,10 @@ impl NodeCraftApp {
             app.attach_recovery(journal, kept);
         }
         app.key_results = results;
+        if let Some(runs) = &runs {
+            runs.install(&mut app.session);
+        }
+        app.runs = runs;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.apply_settings(ctx, &settings);
@@ -706,6 +723,8 @@ impl NodeCraftApp {
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            runs: None,
         })
     }
     /// Replace a document session together with scoped view services and all view caches.
@@ -1144,6 +1163,23 @@ impl NodeCraftApp {
                         tag_painter.rect_filled(marker, t.tag_marker_width, t.tag_color(tag.color.as_deref()));
                         ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover())
                             .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(runs) = &self.runs {
+                        let status = if runs.is_running(self.canvas, node.id) {
+                            Some(("Running…", t.accent, None))
+                        } else {
+                            runs.failure(self.canvas, node.id).map(|why| ("Run failed", t.danger, Some(why)))
+                        };
+                        if let Some((label, color, why)) = status {
+                            let pos = r.rect.left_bottom() + Vec2::new(0.0, t.control_gap);
+                            let text = tag_painter.text(pos, egui::Align2::LEFT_TOP, label, egui::FontId::proportional(t.label_size), color);
+                            let hover = ui.interact(self.view.rect_to_screen(viewport.min, text), ui.id().with(("run_status", node.id)), Sense::hover());
+                            hover.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+                            if let Some(why) = why {
+                                hover.on_hover_text(why.to_owned());
+                            }
+                        }
                     }
                     if self.tag_filter.active() {
                         let matches = self.tag_filter.matches(node.id);
@@ -2131,6 +2167,12 @@ impl eframe::App for NodeCraftApp {
             for outcome in others {
                 log::info!("keychain answered request {} for {}", outcome.id, outcome.account);
             }
+            if !changes.is_empty()
+                && let Some(runs) = &mut self.runs
+            {
+                // A key was saved or deleted: adapters read their keys again.
+                runs.forget_adapters();
+            }
             self.save_accounts(changes);
             if self.keys.is_waiting() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -2149,6 +2191,8 @@ impl eframe::App for NodeCraftApp {
                 ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_runs(ctx);
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
     }
@@ -2190,6 +2234,9 @@ mod perf;
 mod plugin_tests;
 #[cfg(test)]
 mod preview_tests;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod runs_tests;
 #[cfg(test)]
 mod split_tests;
 #[cfg(test)]

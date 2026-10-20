@@ -3098,11 +3098,13 @@ dependencies = [
  "nodecraft-nodes",
  "nodecraft-plugin-store",
  "nodecraft-provider-testkit",
+ "nodecraft-providers",
  "nodecraft-testkit",
  "nodecraft-types",
  "rfd",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

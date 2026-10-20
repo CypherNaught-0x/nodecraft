@@ -92,6 +92,14 @@ impl NodeCraftApp {
         if self.run_confirm.is_some() {
             return Ok(());
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(runs) = &mut self.runs {
+            let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
+            if runs.route(&mut self.session, self.canvas, id, &settings)? == super::runs::Route::Waiting {
+                self.notice = Some("Setting up the provider…".into());
+                return Ok(());
+            }
+        }
         let nodes = vec![id];
         let value = self.session.dispatch("run.quote", &json!({"canvas": self.canvas, "mode": "selected", "nodes": nodes}))?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
@@ -106,6 +114,27 @@ impl NodeCraftApp {
             error: None,
         });
         Ok(())
+    }
+
+    /// Pumps the runs once a frame, and quotes a card whose provider just became ready.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn tick_runs(&mut self, ctx: &egui::Context) {
+        let Some(runs) = &mut self.runs else {
+            return;
+        };
+        let tick = runs.tick(&mut self.session, self.canvas);
+        if runs.is_busy() || runs.is_waiting() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if let Some(notice) = tick.notice {
+            self.notice = Some(notice);
+        }
+        if let Some(id) = tick.ready {
+            self.notice = None;
+            if let Err(error) = self.request_generate(id) {
+                self.notice = Some(error.message);
+            }
+        }
     }
 
     /// The open price confirmation. Returns whether it owns this frame's input.

@@ -27,10 +27,15 @@ craft-ui = { workspace = true }
 craft-quit = { workspace = true }
 log = { workspace = true }
 getrandom.workspace = true
+# The run host's runtime types and budgets (#409).
+nodecraft-exec = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native async sheets/portals stay at the UI layer and on its main thread (#407).
 rfd = "=0.17.2"
+# Runs (#409): provider adapters over reqwest, driven on a tokio runtime the app owns.
+nodecraft-providers = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 # Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
@@ -39,7 +44,6 @@ libc = "0.2.190"
 # Generate-from-card tests run a quoted run against the mock provider (#83); never a real one.
 nodecraft-testkit = { workspace = true }
 nodecraft-provider-testkit = { workspace = true }
-nodecraft-exec = { workspace = true }
 nodecraft-catalog.workspace = true
 nodecraft-format.workspace = true
 nodecraft-media = { workspace = true }
