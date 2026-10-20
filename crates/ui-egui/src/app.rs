@@ -324,6 +324,7 @@ mod drop;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
 mod generate;
+mod layer_editor;
 mod layout;
 mod library_view;
 #[cfg(not(target_arch = "wasm32"))]
@@ -433,6 +434,7 @@ pub struct NodeCraftApp {
     viewer: Option<NodeId>,
     /// The mask editor (#102), while open.
     mask_editor: Option<mask_editor::MaskEditor>,
+    layer_editor: Option<layer_editor::LayerEditor>,
     /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
     model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -786,6 +788,7 @@ impl NodeCraftApp {
             run_confirm: None,
             viewer: None,
             mask_editor: None,
+            layer_editor: None,
             model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
@@ -907,6 +910,7 @@ impl NodeCraftApp {
         let mut model_blocks = self.model_overlay(ui);
         model_blocks |= self.run_overlay(ui);
         model_blocks |= self.mask_overlay(ui);
+        model_blocks |= self.layer_overlay(ui);
         if self.on_sheet() {
             self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
@@ -1161,6 +1165,7 @@ impl NodeCraftApp {
         let mut query = None;
         let mut split_request = None;
         let mut mask_request = None;
+        let mut layers_request = None;
         let mut technique_request = None;
         let mut wire_command = None;
         let mut layout_mode = None;
@@ -1169,6 +1174,7 @@ impl NodeCraftApp {
         let mut comment_target = None;
         let mut split_after = None;
         let mut mask_after = None;
+        let mut layers_after = None;
         let mut technique_after = None;
         let mut tag_action = None;
         let mut refresh = None;
@@ -1392,6 +1398,10 @@ impl NodeCraftApp {
                                     }
                                 });
                             }
+                            if node.kind == nodecraft_nodes::layers::ID && ui.button("Edit layers…").clicked() {
+                                layers_request = Some(node.id);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::mask::ID {
                                 if ui.button("Paint mask…").clicked() {
                                     mask_request = Some((node.id, false));
@@ -1570,6 +1580,7 @@ impl NodeCraftApp {
             }
             split_after = split_request;
             mask_after = mask_request;
+            layers_after = layers_request;
             technique_after = technique_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
@@ -1615,6 +1626,9 @@ impl NodeCraftApp {
         }
         if let Some((node, rows, columns)) = split_after {
             self.split_grid(node, rows, columns, t);
+        }
+        if let Some(node) = layers_after {
+            self.open_layer_editor(node);
         }
         match mask_after {
             Some((node, true)) => self.open_mask_editor_for(node),
@@ -2412,6 +2426,8 @@ mod generate_tests;
 mod generation_tests;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod layer_editor_tests;
 #[cfg(test)]
 mod library_view_tests;
 #[cfg(test)]
