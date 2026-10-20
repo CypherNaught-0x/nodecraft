@@ -100,6 +100,9 @@ impl NodeCraftApp {
     /// A frame on a sheet: the table and the floating controls, without the node graph's input.
     pub(super) fn sheet_frame(&mut self, ui: &mut egui::Ui, viewport: Rect, blocked: bool) {
         let t = self.theme.tokens();
+        if !blocked {
+            self.sheet_keys(ui);
+        }
         self.sheet_table(ui, viewport, t, blocked);
         self.show_notices(ui, viewport, t);
         self.text_focused = canvas::text_input_focused(ui.ctx());
@@ -112,6 +115,26 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
+    }
+
+    /// The document keys a sheet keeps: save and open, and undo and redo outside a text field.
+    fn sheet_keys(&mut self, ui: &mut egui::Ui) {
+        let (save_as, save, open) =
+            ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
+        if save || save_as || open {
+            self.notice = self.file_shortcut(ui.ctx(), save, save_as);
+        }
+        if canvas::text_input_focused(ui.ctx()) {
+            return;
+        }
+        let command = ui.input_mut(|input| {
+            self.session.registry().specs().filter(|spec| matches!(spec.id, "edit.undo" | "edit.redo")).find_map(|spec| {
+                spec.shortcut.into_iter().chain(spec.alternate_shortcuts.iter().copied()).any(|shortcut| consume_shortcut(input, shortcut)).then_some(spec.id)
+            })
+        });
+        if let Some(command) = command {
+            self.notice = self.session.dispatch(command, &json!({})).err().map(|error| error.message);
+        }
     }
 
     /// The toggle in the top-right row: "Sheets", which lists the canvases too.

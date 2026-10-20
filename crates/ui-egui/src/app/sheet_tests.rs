@@ -143,8 +143,8 @@ fn the_sheets_panel_makes_a_sheet_opens_it_as_a_table_and_goes_back() {
     assert_eq!(prompts(h.state(), sheet), vec![String::new()]);
     assert!(h.query_by_label("Not run").is_some(), "the row shows it has no result");
 
-    // Undo removes the row as one step, like any edit.
-    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    // The undo key removes the row as one step, like any edit.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert!(prompts(h.state(), sheet).is_empty());
 
