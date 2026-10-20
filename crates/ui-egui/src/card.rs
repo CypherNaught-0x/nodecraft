@@ -126,8 +126,9 @@ pub struct CardView<'a> {
     /// Resolved editability; disabling retains field drafts.
     pub enabled: Option<&'a BTreeSet<String>>,
     pub preview_pos: Option<Position>,
-    /// The node's image, when it has one (#386).
-    pub image: Option<crate::preview::Preview>,
+    /// The node's images, when it has any (#386): one row per batch item of a fanned result
+    /// (#519), else one row; and how many images the result holds, shown or not.
+    pub images: (Vec<Vec<crate::preview::Preview>>, usize),
     /// Rows and columns to draw over the image while a split is being picked (#337), with the
     /// image's full size when known (so lines fall where the split will cut).
     pub grid: Option<(u32, u32, Option<[u32; 2]>)>,
@@ -161,7 +162,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, image, grid, roles, prompt_wired, partial } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, partial } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -287,10 +288,18 @@ pub fn show(
                 intents.push(Intent::History(intent));
             }
         }
-        if let Some(image) = image {
+        if !images.0.is_empty() {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
-            show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, grid, t);
+            let area = area.shrink2(Vec2::new(0.0, t.control_gap));
+            match images.0.as_slice() {
+                [row] if row.len() == 1 && images.1 == 1 => {
+                    if let Some(image) = row.first() {
+                        show_image(&mut ui, area, image, grid, t);
+                    }
+                }
+                rows => gallery(&mut ui, area, rows, images.1, t),
+            }
         }
         if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
@@ -390,10 +399,52 @@ pub fn show(
     Some(CardResponse { response, intents, ports })
 }
 
+/// Several images in `area`, a row each (one per batch item, #519), every tile the same size;
+/// a note says how many more the result holds than fit.
+fn gallery(ui: &mut egui::Ui, area: Rect, rows: &[Vec<crate::preview::Preview>], count: usize, t: &Tokens) {
+    let shown: usize = rows.iter().map(Vec::len).sum();
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let gap = t.control_gap;
+    // Bounded by the gallery's row and column caps, so the casts are exact.
+    let tile = Vec2::new(
+        ((area.width() - gap * (columns - 1) as f32) / columns as f32).max(1.0),
+        ((area.height() - gap * (rows.len().max(1) - 1) as f32) / rows.len().max(1) as f32).max(1.0),
+    );
+    for (r, row) in rows.iter().enumerate() {
+        for (c, image) in row.iter().enumerate() {
+            let min = area.min + Vec2::new(c as f32 * (tile.x + gap), r as f32 * (tile.y + gap));
+            show_image_with(ui, Rect::from_min_size(min, tile), image, None, (r, c), t);
+        }
+    }
+    if count > shown {
+        let more = format!("+{} more", count - shown);
+        let at = area.right_bottom() - Vec2::splat(gap);
+        let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+        let text = painter.layout_no_wrap(more.clone(), FontId::proportional(t.label_size), t.text);
+        let backdrop = egui::Align2::RIGHT_BOTTOM.anchor_size(at, text.size()).expand(gap / 2.0);
+        painter.rect_filled(backdrop, t.card_radius, t.card_fill);
+        painter.galley(backdrop.min + Vec2::splat(gap / 2.0), text, t.text);
+        let response = ui.interact(backdrop, ui.id().with("gallery_more"), Sense::hover());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{} more images", count - shown)));
+    }
+}
+
 /// An image preview fitted in `area`, keeping its aspect; or a placeholder saying why not.
 pub(crate) fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, grid: Option<(u32, u32, Option<[u32; 2]>)>, t: &Tokens) {
+    show_image_with(ui, area, image, grid, (0, 0), t);
+}
+
+/// [`show_image`] for one of several images on a card, told apart by `tile` (row, column).
+fn show_image_with(
+    ui: &mut egui::Ui,
+    area: Rect,
+    image: &crate::preview::Preview,
+    grid: Option<(u32, u32, Option<[u32; 2]>)>,
+    tile: (usize, usize),
+    t: &Tokens,
+) {
     use crate::preview::Preview;
-    let response = ui.interact(area, ui.id().with("image"), Sense::hover());
+    let response = ui.interact(area, ui.id().with("image").with(tile), Sense::hover());
     let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
     match image {
         Preview::Ready { texture, size, source_size } => {

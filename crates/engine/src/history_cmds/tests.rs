@@ -245,3 +245,20 @@ fn extract_picks_a_port_and_a_list_item_and_refuses_what_it_cannot_hold() {
     extract(&mut s, json!({"port": "variants", "item": 1})).unwrap();
     assert_eq!(node(&s, NodeId::from_bytes([7; 16])).params.get("text"), Some(&Value::Text("b".into())));
 }
+
+#[test]
+fn extract_counts_through_the_per_item_lists_of_a_fanned_result() {
+    let asset = |n: u8| {
+        Value::Media(nodecraft_types::AssetRef {
+            hash: nodecraft_types::Blake3::from_bytes([n; 32]),
+            mime: "image/png".parse().unwrap(),
+            meta: Default::default(),
+        })
+    };
+    // Two batch items: the first made two images, the second one (#519).
+    let fanned = |_| vec![Value::List(vec![Value::List(vec![asset(1), asset(2)]), Value::List(vec![asset(3)])])];
+    let mut s = session(1, vec![("out", Modality::Image, true)], fanned);
+    extract(&mut s, json!({"item": 2})).unwrap();
+    assert_eq!(node(&s, NodeId::from_bytes([7; 16])).params.get("asset"), Some(&asset(3)), "the third image, not the second item's list");
+    assert_eq!(extract(&mut s, json!({"item": 3, "node": NodeId::from_bytes([8; 16])})).unwrap_err().kind, ErrorKind::NotFound);
+}

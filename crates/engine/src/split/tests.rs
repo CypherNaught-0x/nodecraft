@@ -140,3 +140,24 @@ fn only_decodable_image_types_can_be_split() {
     asset.mime = "image/svg+xml".parse().unwrap();
     assert!(image_of(&node).is_none(), "SVG isn't offered");
 }
+
+#[test]
+fn a_fanned_result_shows_a_row_of_images_per_item() {
+    let s = session(5, 5);
+    let source = s.document().canvases().get(&C).unwrap().nodes().get(&SOURCE).unwrap().clone();
+    let Some(Value::Media(asset)) = source.params.get("asset").cloned() else { panic!() };
+    let svg = nodecraft_types::AssetRef { mime: "image/svg+xml".parse().unwrap(), ..asset.clone() };
+    let media = |n: usize| Value::List(vec![Value::Media(asset.clone()); n]);
+    let shown = |outputs: Vec<Value>| {
+        let mut node = Node::new(NodeId::from_bytes([60; 16]), "test.gen");
+        node.history.push(nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([61; 16]), outputs));
+        node.active = Some(nodecraft_types::GenerationId::from_bytes([61; 16]));
+        let (rows, count) = image_rows(&node);
+        (rows.iter().map(Vec::len).collect::<Vec<_>>(), count)
+    };
+    assert_eq!(shown(vec![media(3)]), (vec![3], 3), "one run's images make one row");
+    assert_eq!(shown(vec![Value::List(vec![media(2), media(0), media(1)])]), (vec![2, 1], 3), "a row per item; an empty item shows none");
+    assert_eq!(shown(vec![Value::List(vec![media(9); 9])]), (vec![GALLERY_COLUMNS; GALLERY_ROWS], 81), "capped, but counted");
+    assert_eq!(shown(vec![Value::Text("x".into()), Value::List(vec![Value::Media(svg), Value::Media(asset)])]), (vec![1], 1));
+    assert_eq!(shown(vec![Value::Text("x".into())]), (vec![], 0));
+}

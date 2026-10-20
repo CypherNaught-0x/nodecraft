@@ -51,7 +51,7 @@ pub fn preview(generation: &Generation, t: &Tokens) -> String {
             (Some(w), Some(h)) => format!("{} {w}×{h}", asset.mime.essence()),
             _ => asset.mime.essence().to_owned(),
         },
-        Some(Value::List(items)) => format!("{} items", items.len()),
+        Some(Value::List(items)) => format!("{} items", nodecraft_engine::history_cmds::list_items(items).count()),
         Some(_) => "A value".to_owned(),
         None => "No output".to_owned(),
     };
@@ -72,7 +72,7 @@ fn clip(text: &str, chars: usize) -> String {
 pub const MAX_EXTRACT_ITEMS: usize = 12;
 
 /// What the Extract menu offers for a result: each output, or each item of a list output (up to
-/// [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
+/// [`MAX_EXTRACT_ITEMS`], a batch-fanned result's media counted one by one), labelled for the menu.
 pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
     let mut targets = Vec::new();
     // Only what a source node can hold (text, image, video, audio).
@@ -80,8 +80,9 @@ pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Opt
     for (port, value) in node.outputs.iter().zip(&generation.outputs).filter(|(port, _)| extractable(port)) {
         match value {
             Value::List(items) => {
-                for item in 0..items.len().min(MAX_EXTRACT_ITEMS) {
-                    targets.push((format!("{}: item {} of {}", port.name, item + 1, items.len()), Some(port.name.clone()), Some(item)));
+                let count = nodecraft_engine::history_cmds::list_items(items).count();
+                for item in 0..count.min(MAX_EXTRACT_ITEMS) {
+                    targets.push((format!("{}: item {} of {}", port.name, item + 1, count), Some(port.name.clone()), Some(item)));
                 }
             }
             _ => targets.push((port.name.clone(), Some(port.name.clone()), None)),
@@ -274,6 +275,12 @@ mod tests {
         node.outputs.push(Port { name: "mesh".into(), port_type: PortType { modality: Modality::Mesh, many: false } });
         let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), Value::List(vec![]), Value::Text("m".into())]));
         assert_eq!(targets.len(), 1, "an empty list and a mesh output offer nothing");
+        // A batch-fanned result offers its values one by one, not each item's list (#519).
+        let texts = |t: &[&str]| t.iter().map(|t| Value::Text((*t).into())).collect::<Vec<_>>();
+        let fanned = Value::List(vec![Value::List(texts(&["a", "b"])), Value::List(texts(&["c"]))]);
+        let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), fanned.clone(), Value::Text("m".into())]));
+        assert_eq!(targets.last(), Some(&("takes: item 3 of 3".into(), Some("takes".into()), Some(2))));
+        assert_eq!(preview(&result(vec![fanned]), &crate::theme::DARK), "3 items");
     }
 
     #[test]
