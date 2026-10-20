@@ -41,7 +41,7 @@ pub struct ContractVersion {
 }
 
 impl ContractVersion {
-    pub const CURRENT: Self = Self { major: 1, minor: 1 };
+    pub const CURRENT: Self = Self { major: 1, minor: 2 };
 }
 
 impl Default for ContractVersion {

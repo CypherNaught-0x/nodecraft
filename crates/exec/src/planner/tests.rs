@@ -26,6 +26,27 @@ impl NodeKind for Relay {
     }
 }
 
+/// A relay whose list input runs once per batch item (#515), like a generation's prompt.
+struct Fanning(Relay);
+impl NodeKind for Fanning {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn contract(&self, descriptor: &NodeDescriptor) -> nodecraft_nodes::NodeContract {
+        let mut contract = nodecraft_nodes::NodeContract::derive(descriptor);
+        for input in &mut contract.inputs {
+            input.fans_out = true;
+        }
+        contract
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        self.0.plan(ctx)
+    }
+}
+
 fn kinds() -> Registry {
     let mut kinds = Registry::builtins().unwrap();
     let relay = NodeDescriptor {
@@ -38,6 +59,7 @@ fn kinds() -> Registry {
         quick_add: None,
     };
     kinds.register(Box::new(Relay(relay.clone()))).unwrap();
+    kinds.register(Box::new(Fanning(Relay(NodeDescriptor { id: "test.fanning".into(), label: "Fanning".into(), ..relay.clone() })))).unwrap();
     // A relay with a required prompt, like a generator.
     let prompt = nodecraft_types::ParamSpec {
         name: "prompt".into(),
@@ -674,6 +696,40 @@ fn a_list_input_collects_every_item() {
 }
 
 #[test]
+fn a_fanning_list_input_runs_once_per_item_with_its_other_wires() {
+    // 3 (text) and 1 (batch) both feed 2's list input, in that order: each item takes the
+    // batch's place, after the text.
+    let p = wired(vec![batch(1, "a\nb", "cross"), of_kind(2, "test.fanning", None), text(3, "intro")], &[(3, "out", 2, "in"), (1, "item", 2, "in")]);
+    let plan = ready(plan_of(&p, &[2]));
+    let step = plan.steps.first().unwrap();
+    let fanout = step.fanout.as_ref().unwrap();
+    assert_eq!(fanout.jobs, vec![1, 1]);
+    let sources: Vec<_> = fanout.cells.iter().map(|cell| cell.first().unwrap().from.clone()).collect();
+    let value = |t: &str| InputSource::Value(Value::Text(t.into()));
+    assert_eq!(sources, vec![vec![value("intro"), value("a")], vec![value("intro"), value("b")]]);
+
+    // A result the batch fans out in this run fans it too, item by item.
+    let p = wired(vec![batch(1, "a\nb", "cross"), single(4), of_kind(2, "test.fanning", None)], &[(1, "item", 4, "in"), (4, "out", 2, "in")]);
+    let plan = ready(plan_of(&p, &[4, 2]));
+    let last = plan.steps.iter().find(|s| s.node == id(2)).unwrap();
+    let cells = &last.fanout.as_ref().unwrap().cells;
+    for (index, cell) in cells.iter().enumerate() {
+        assert_eq!(cell.first().unwrap().from, vec![InputSource::Item { node: id(4), port: "out".into(), index }]);
+    }
+    assert_eq!(cells.len(), 2);
+
+    // Two batches into one fanning input combine as two fanned inputs do: every pair, in wire
+    // order.
+    let p = wired(vec![batch(1, "a\nb", "cross"), batch(3, "x\ny", "cross"), of_kind(2, "test.fanning", None)], &[(1, "item", 2, "in"), (3, "item", 2, "in")]);
+    let plan = ready(plan_of(&p, &[2]));
+    let fanout = plan.steps.first().unwrap().fanout.as_ref().unwrap();
+    let sources: Vec<_> = fanout.cells.iter().map(|cell| cell.first().unwrap().from.clone()).collect();
+    assert_eq!(sources.len(), 4);
+    assert_eq!(sources.first().unwrap(), &vec![value("a"), value("x")]);
+    assert_eq!(sources.last().unwrap(), &vec![value("b"), value("y")]);
+}
+
+#[test]
 fn two_batches_pair_by_cross_or_zip() {
     let pair = |a: &str, b: &str, pa: &str, pb: &str| {
         let pair = of_kind(3, "test.pair", None);
@@ -763,6 +819,19 @@ fn an_existing_fanned_result_fans_its_consumers_out() {
     let step = plan.steps.first().unwrap();
     assert_eq!(fanned_values(step), vec![texts(&["A"]), texts(&["B"])]);
     assert_eq!(step.fanout.as_ref().unwrap().items, items, "consumers keep their source items");
+
+    // A fanning list input fans out over the stored result too, before a text wired after it.
+    let node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    let p = wired(
+        vec![batch(1, "a\nb", "cross"), node, of_kind(4, "test.fanning", None), text(5, "outro")],
+        &[(1, "item", 2, "in"), (2, "out", 4, "in"), (5, "out", 4, "in")],
+    );
+    let plan = ready(plan_of(&p, &[4]));
+    let step = plan.steps.first().unwrap();
+    let value = |t: &str| InputSource::Value(Value::Text(t.into()));
+    let sources: Vec<_> = step.fanout.as_ref().unwrap().cells.iter().map(|cell| cell.first().unwrap().from.clone()).collect();
+    assert_eq!(sources, vec![vec![value("A"), value("outro")], vec![value("B"), value("outro")]]);
+    assert_eq!(step.fanout.as_ref().unwrap().items, items);
 }
 
 #[test]
