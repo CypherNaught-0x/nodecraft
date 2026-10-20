@@ -621,3 +621,36 @@ fn a_batch_into_a_generate_card_runs_once_per_prompt() {
     assert!(fox.contains("Describe the sea\na fox") && owl.contains("Describe the sea\nan owl"), "{fox} / {owl}");
     assert_eq!(f.mock.requests().len(), 2);
 }
+
+/// One prompt of a batch that ends early leaves a partial result with the other prompt's answer;
+/// running the card again quotes and sends only the missing prompt (#480, #515).
+#[test]
+fn a_batch_item_that_ends_early_is_the_only_one_run_again() {
+    let mut slow = MockModel::new(MockOutput::Text);
+    slow.polls = 20;
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), slow)]));
+    let batch = NodeId::from_bytes([13; 16]);
+    add(&mut f, batch, nodecraft_nodes::batch::ID, 0);
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":batch,"name":"text","value":{"type":"text","value":"a fox\nan owl"}})).unwrap();
+    let edge = json!({"id": EdgeId::from_bytes([22; 16]), "from": {"node": batch, "port": "item"}, "to": {"node": WRITER, "port": "prompt"}, "order": 1});
+    f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    let request = json!({"canvas":C,"mode":"selected","nodes":[SOURCE, WRITER]});
+    start_request(&mut f, request.clone());
+    pump_until(&mut f, "both prompts reached the provider", |f| f.mock.requests().len() == 2);
+    let first = f.host.jobs().into_iter().find(|v| v.node == WRITER && !v.state.is_final()).unwrap();
+    f.host.cancel(first.key).unwrap();
+    drive(&mut f);
+    let partial = history(&f.session).last().cloned().unwrap();
+    assert!(partial.is_partial(), "{partial:?}");
+    assert_eq!(partial.incomplete.as_ref().map(|i| i.missing.len()), Some(1));
+    let q = f.session.dispatch("run.quote", &request).unwrap();
+    assert_eq!(q["totals"]["USD"]["micros"], 10_000, "only the missing prompt is quoted: {q}");
+    start_request(&mut f, request);
+    let notices = drive(&mut f);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    let whole = history(&f.session).last().cloned().unwrap();
+    assert!(!whole.is_partial(), "{whole:?}");
+    let Value::List(texts) = &whole.outputs[0] else { panic!("{whole:?}") };
+    assert_eq!(texts.len(), 2);
+    assert_eq!(f.mock.requests().len(), 3, "the finished prompt is never sent again");
+}
