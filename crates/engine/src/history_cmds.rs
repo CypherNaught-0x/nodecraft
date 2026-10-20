@@ -172,7 +172,9 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let output = generation.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the result has no value for that output"))?;
     let value = match (output, p.item) {
-        (Value::List(items), Some(item)) => list_items(items).nth(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?,
+        (Value::List(items), Some(item)) => {
+            list_items(items, !generation.items.is_empty()).nth(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?
+        }
         (Value::List(_), None) => return Err(invalid("that output is a list: choose an item to extract")),
         (_, Some(_)) => return Err(invalid("that output is a single value, not a list")),
         (value, None) => value,
@@ -186,11 +188,11 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     Ok(Effect::Edit { changes, result: json!({"id": p.node}), gesture: None })
 }
 
-/// The values a list output offers one by one: its items, with a list per batch item (a fanned
-/// media result, #519) opened so its media count individually.
-pub fn list_items(items: &[Value]) -> impl Iterator<Item = &Value> {
-    items.iter().flat_map(|item| match item {
-        Value::List(inner) => inner.iter(),
+/// The values a list output offers one by one: its items, with a list per batch item opened when
+/// a batch `fanned` the result (a fanned media result, #519), so its media count individually.
+pub fn list_items(items: &[Value], fanned: bool) -> impl Iterator<Item = &Value> {
+    items.iter().flat_map(move |item| match item {
+        Value::List(inner) if fanned => inner.iter(),
         single => std::slice::from_ref(single).iter(),
     })
 }

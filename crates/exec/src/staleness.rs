@@ -721,10 +721,21 @@ impl InputHasher {
         if let Some(known) = self.fanned.get(&id) {
             return Ok(*known);
         }
-        let mut stack = vec![(id, false)];
+        // A node is pushed once to expand it, then again with its upstream to decide it.
+        let mut stack: Vec<(NodeId, Option<Vec<NodeId>>)> = vec![(id, None)];
         let mut seen = BTreeSet::new();
-        while let Some((at, expanded)) = stack.pop() {
+        while let Some((at, upstream)) = stack.pop() {
             if self.fanned.contains_key(&at) {
+                continue;
+            }
+            if let Some(upstream) = upstream {
+                // Provisional on a cycle: a node there sees itself as not fanned (the planner
+                // refuses cycles, so no run depends on it).
+                let fans = upstream.iter().any(|from| self.fanned.get(from).copied().unwrap_or(false));
+                self.fanned.insert(at, fans);
+                continue;
+            }
+            if !seen.insert(at) {
                 continue;
             }
             let Some(node) = canvas.nodes().get(&at) else {
@@ -738,18 +749,10 @@ impl InputHasher {
             let fans_out = fans_out_ports(kinds, node);
             let carries = |port: &str| fans_out.contains(port) || node.inputs.iter().any(|p| p.name == port && !p.port_type.many);
             let upstream: Vec<NodeId> = self.feeds.get(&at).into_iter().flatten().filter(|(port, ..)| carries(port)).map(|(_, _, from, _)| *from).collect();
-            if expanded {
-                // A node on a cycle sees itself as not fanned (the planner refuses cycles).
-                let fans = upstream.iter().any(|from| self.fanned.get(from).copied().unwrap_or(false));
-                self.fanned.insert(at, fans);
-                continue;
-            }
-            if !seen.insert(at) {
-                continue;
-            }
             self.meter.charge(VALUE_COST.saturating_mul(upstream.len().saturating_add(1)))?;
-            stack.push((at, true));
-            stack.extend(upstream.into_iter().filter(|from| !seen.contains(from)).map(|from| (from, false)));
+            let next: Vec<(NodeId, Option<Vec<NodeId>>)> = upstream.iter().filter(|from| !seen.contains(*from)).map(|from| (*from, None)).collect();
+            stack.push((at, Some(upstream)));
+            stack.extend(next);
         }
         Ok(self.fanned.get(&id).copied().unwrap_or(false))
     }

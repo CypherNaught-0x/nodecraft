@@ -298,6 +298,12 @@ pub fn show(
                         show_image(&mut ui, area, image, grid, t);
                     }
                 }
+                // Picking a split shows the image it cuts, with its grid.
+                rows if grid.is_some() => {
+                    if let Some(image) = rows.first().and_then(|row| row.first()) {
+                        show_image(&mut ui, area, image, grid, t);
+                    }
+                }
                 rows => gallery(&mut ui, area, rows, images.1, t),
             }
         }

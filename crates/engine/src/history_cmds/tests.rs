@@ -257,7 +257,17 @@ fn extract_counts_through_the_per_item_lists_of_a_fanned_result() {
     };
     // Two batch items: the first made two images, the second one (#519).
     let fanned = |_| vec![Value::List(vec![Value::List(vec![asset(1), asset(2)]), Value::List(vec![asset(3)])])];
-    let mut s = session(1, vec![("out", Modality::Image, true)], fanned);
+    // Not fanned by a batch, the same list keeps its values whole.
+    let mut plain = session(1, vec![("out", Modality::Image, true)], fanned);
+    assert_eq!(extract(&mut plain, json!({"item": 2})).unwrap_err().kind, ErrorKind::NotFound);
+    let mut project = plain.document().clone();
+    let mut fanned_node = node(&plain, N).clone();
+    let key = |n: u8| nodecraft_graph::ItemKey { batch: NodeId::from_bytes([30; 16]), item: nodecraft_types::ItemId::from_bytes([n; 16]) };
+    if let Some(result) = fanned_node.history.first_mut() {
+        result.items = vec![vec![key(1)], vec![key(2)]];
+    }
+    Change::SetNode { canvas: C, node: fanned_node }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
     extract(&mut s, json!({"item": 2})).unwrap();
     assert_eq!(node(&s, NodeId::from_bytes([7; 16])).params.get("asset"), Some(&asset(3)), "the third image, not the second item's list");
     assert_eq!(extract(&mut s, json!({"item": 3, "node": NodeId::from_bytes([8; 16])})).unwrap_err().kind, ErrorKind::NotFound);

@@ -51,7 +51,7 @@ pub fn preview(generation: &Generation, t: &Tokens) -> String {
             (Some(w), Some(h)) => format!("{} {w}×{h}", asset.mime.essence()),
             _ => asset.mime.essence().to_owned(),
         },
-        Some(Value::List(items)) => format!("{} items", nodecraft_engine::history_cmds::list_items(items).count()),
+        Some(Value::List(items)) => format!("{} items", nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).count()),
         Some(_) => "A value".to_owned(),
         None => "No output".to_owned(),
     };
@@ -80,7 +80,7 @@ pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Opt
     for (port, value) in node.outputs.iter().zip(&generation.outputs).filter(|(port, _)| extractable(port)) {
         match value {
             Value::List(items) => {
-                let count = nodecraft_engine::history_cmds::list_items(items).count();
+                let count = nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).count();
                 for item in 0..count.min(MAX_EXTRACT_ITEMS) {
                     targets.push((format!("{}: item {} of {}", port.name, item + 1, count), Some(port.name.clone()), Some(item)));
                 }
@@ -278,9 +278,13 @@ mod tests {
         // A batch-fanned result offers its values one by one, not each item's list (#519).
         let texts = |t: &[&str]| t.iter().map(|t| Value::Text((*t).into())).collect::<Vec<_>>();
         let fanned = Value::List(vec![Value::List(texts(&["a", "b"])), Value::List(texts(&["c"]))]);
-        let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), fanned.clone(), Value::Text("m".into())]));
+        let key = |n: u8| nodecraft_graph::ItemKey { batch: NodeId::from_bytes([30; 16]), item: nodecraft_types::ItemId::from_bytes([n; 16]) };
+        let by_items = |outputs: Vec<Value>| Generation { items: vec![vec![key(1)], vec![key(2)]], ..result(outputs) };
+        let targets = extract_targets(&node, &by_items(vec![Value::Text("c".into()), fanned.clone(), Value::Text("m".into())]));
         assert_eq!(targets.last(), Some(&("takes: item 3 of 3".into(), Some("takes".into()), Some(2))));
-        assert_eq!(preview(&result(vec![fanned]), &crate::theme::DARK), "3 items");
+        assert_eq!(preview(&by_items(vec![fanned.clone()]), &crate::theme::DARK), "3 items");
+        // A list of lists no batch made is two values.
+        assert_eq!(preview(&result(vec![fanned]), &crate::theme::DARK), "2 items");
     }
 
     #[test]

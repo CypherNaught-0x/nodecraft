@@ -47,10 +47,11 @@ pub fn image_rows(node: &Node) -> (Vec<Vec<&AssetRef>>, usize) {
     let Some(result) = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)) else {
         return (Vec::new(), 0);
     };
+    let fanned = !result.items.is_empty();
     for value in &result.outputs {
         let rows: Vec<&[Value]> = match value {
-            Value::List(items) if items.iter().any(|item| matches!(item, Value::List(_))) => {
-                items.iter().filter_map(|item| if let Value::List(inner) = item { Some(inner.as_slice()) } else { None }).collect()
+            Value::List(items) if fanned => {
+                items.iter().map(|item| if let Value::List(inner) = item { inner.as_slice() } else { std::slice::from_ref(item) }).collect()
             }
             Value::List(items) => vec![items.as_slice()],
             single => vec![std::slice::from_ref(single)],
@@ -65,9 +66,21 @@ pub fn image_rows(node: &Node) -> (Vec<Vec<&AssetRef>>, usize) {
 }
 
 /// The image a node shows first, if it can be split: a Source image's asset, else the first
-/// image of its active result (inside a list too), of a type NodeCraft decodes.
+/// image of its active result (inside a list too), of a type NodeCraft decodes: the first of
+/// [`image_rows`], found without walking the rest (cards ask for it every frame).
 pub fn image_of(node: &Node) -> Option<&AssetRef> {
-    image_rows(node).0.first()?.first().copied()
+    if node.kind == "source.image" {
+        return node.params.get("asset").and_then(image);
+    }
+    let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    let fanned = !result.items.is_empty();
+    result.outputs.iter().find_map(|value| match value {
+        Value::List(items) => items.iter().find_map(|item| match item {
+            Value::List(inner) if fanned => inner.iter().find_map(image),
+            single => image(single),
+        }),
+        single => image(single),
+    })
 }
 
 /// Where tile `index` of `count` starts along a side `length` long: edges are spread evenly, so

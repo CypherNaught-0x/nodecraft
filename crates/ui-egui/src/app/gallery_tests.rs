@@ -38,7 +38,10 @@ fn a_fanned_image_result_shows_each_items_images_in_a_row() {
     // The first prompt made two images, the second one.
     let made = nodecraft_types::GenerationId::from_bytes([45; 16]);
     let per_item = Value::List(vec![Value::List(images[..2].to_vec()), Value::List(images[2..].to_vec())]);
-    node.history.push(nodecraft_graph::Generation::new(made, vec![per_item]));
+    let mut result = nodecraft_graph::Generation::new(made, vec![per_item]);
+    let key = |n: u8| nodecraft_graph::ItemKey { batch: NodeId::from_bytes([48; 16]), item: nodecraft_types::ItemId::from_bytes([n; 16]) };
+    result.items = vec![vec![key(1)], vec![key(2)]];
+    node.history.push(result);
     node.active = Some(made);
     Change::AddNode { canvas, node }.apply(&mut project).unwrap();
     let mut session = Session::new(project).unwrap();
