@@ -680,6 +680,7 @@ commands refuse to run one, so a published version never changes. Engine `techni
   jobs) without editing anything.
 - `technique.publish` copies that subgraph into a new technique canvas as version N+1, with
   ids derived from a seed, in one undoable change.
-- `technique.list`, `technique.show` and `technique.remove` read and remove versions.
+- `technique.list` and `technique.show` read versions; `technique.remove` retires one, leaving a
+  stub that keeps its version number taken.
 
 See [the decision](decisions/2026-10-20-techniques.md).

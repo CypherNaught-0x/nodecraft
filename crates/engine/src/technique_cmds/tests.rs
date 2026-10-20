@@ -1,8 +1,8 @@
 use super::MAX_TECHNIQUE_JOBS;
 use crate::{Session, commands::Registry};
-use nodecraft_graph::{Canvas, CanvasKind, Change, Changeset, Edge, Endpoint, Node, Port, Project};
+use nodecraft_graph::{Canvas, CanvasKind, Change, Changeset, Edge, Endpoint, Generation, ItemKey, Node, Port, Project};
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, ParamControl, ParamSchema, ParamSpec, PlanCtx};
-use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, PortType, ProjectId, TechniqueId, Value};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, GenerationId, ItemId, Modality, NodeId, PortType, ProjectId, TechniqueId, Value};
 use serde_json::{Value as Json, json};
 use std::collections::BTreeSet;
 
@@ -107,6 +107,15 @@ fn session() -> Session {
     Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap()
 }
 
+/// The fixture with `extra` changes applied on top.
+fn session_with(extra: Vec<Change>) -> Session {
+    let mut s = session();
+    let mut project = s.document().clone();
+    Changeset::new(extra).apply(&mut project).unwrap();
+    s = Session::with_registries(project, Registry::builtins().unwrap(), kinds()).unwrap();
+    s
+}
+
 fn ports(nodes: &[u8]) -> Json {
     nodes.iter().map(|n| json!({"node": id(*n)})).collect()
 }
@@ -148,11 +157,20 @@ fn a_check_reports_what_keeps_a_selection_from_publishing() {
     assert!(problems(&check(&mut s, &[2], &[3]))[0].contains("has incoming wires"));
     assert!(problems(&check(&mut s, &[5], &[3]))[0].contains("doesn't feed any output"));
     assert!(problems(&check(&mut s, &[1], &[1]))[0].contains("both an input and an output"));
-    // Malformed requests are errors, not problems.
-    let missing = s.dispatch("technique.check", &json!({"canvas": C, "outputs": [{"node": id(99)}]}));
-    assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
-    let port = s.dispatch("technique.check", &json!({"canvas": C, "outputs": [{"node": id(3), "port": "nope"}]}));
-    assert_eq!(port.unwrap_err().kind, ErrorKind::InvalidInput);
+    // A selection naming what isn't there is a problem too; check and publish refuse the same.
+    let missing = s.dispatch("technique.check", &json!({"canvas": C, "outputs": [{"node": id(99)}]})).unwrap();
+    assert!(problems(&missing)[0].contains("is not on this canvas"), "{missing}");
+    let port = s.dispatch("technique.check", &json!({"canvas": C, "outputs": [{"node": id(3), "port": "nope"}]})).unwrap();
+    assert!(problems(&port)[0].contains("no such output"), "{port}");
+    let twice = check(&mut s, &[], &[3, 3]);
+    assert!(problems(&twice)[0].contains("Two ports are called"), "{twice}");
+    let blank = s.dispatch("technique.check", &json!({"canvas": C, "name": " ", "outputs": ports(&[3])})).unwrap();
+    assert_eq!(problems(&blank), vec!["Give the technique a name.".to_owned()]);
+    for outputs in [json!([{"node": id(99)}]), json!([{"node": id(3), "port": "nope"}]), ports(&[3, 3])] {
+        let mut publish = publish_params(V1, 40);
+        (publish["inputs"], publish["params"], publish["outputs"]) = (json!([]), json!([]), outputs);
+        assert_eq!(s.dispatch("technique.publish", &publish).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
     let many = s.dispatch("technique.check", &json!({"canvas": C, "outputs": ports(&[3; 65])}));
     assert_eq!(many.unwrap_err().kind, ErrorKind::Overflow);
 }
@@ -213,6 +231,14 @@ fn publishing_freezes_a_copy_and_republishing_adds_the_next_version() {
     let removed = s.dispatch("technique.remove", &json!({"canvas": V1})).unwrap();
     assert_eq!(removed["version"], json!(1));
     assert!(s.dispatch("technique.list", &json!({})).unwrap()["techniques"].as_array().unwrap().is_empty());
+    // What's left keeps the number taken: it can't be removed twice, and the next version is 2.
+    let stub = s.dispatch("technique.show", &json!({"canvas": V1})).unwrap();
+    assert_eq!((stub["retired"].clone(), stub["version"].clone(), stub["nodes"].clone()), (json!(true), json!(1), json!([])));
+    assert_eq!(s.dispatch("technique.remove", &json!({"canvas": V1})).unwrap_err().kind, ErrorKind::Conflict);
+    assert_eq!(check(&mut s, &[1], &[3])["version"], json!(1), "a check without a technique id starts a new one");
+    let checked = s.dispatch("technique.check", &json!({"canvas": C, "technique": T, "outputs": ports(&[3])})).unwrap();
+    assert_eq!(checked["version"], json!(2));
+    assert_eq!(s.dispatch("technique.publish", &publish_params(V2, 41)).unwrap()["version"], json!(2), "a removed number isn't reused");
     assert_eq!(s.dispatch("technique.remove", &json!({"canvas": C})).unwrap_err().kind, ErrorKind::InvalidInput, "only published versions are removed");
 }
 
@@ -237,4 +263,93 @@ fn publish_refuses_bad_parameters_and_taken_ids() {
     // A technique isn't published from another technique or a sheet.
     let from = json!({"canvas": V1, "published": V2, "seed": id(42), "technique": T, "name": "Again", "outputs": []});
     assert_eq!(s.dispatch("technique.publish", &from).unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn a_check_reports_what_the_planner_blocks() {
+    let kinds = kinds();
+    let mut gone = write(&kinds, 20);
+    gone.kind = "test.gone".into();
+    let mut s = session_with(vec![Change::AddNode { canvas: C, node: gone }, Change::AddNode { canvas: C, node: write(&kinds, 21) }, wire(14, 20, "out", 21)]);
+    let checked = check(&mut s, &[], &[21]);
+    assert_eq!(checked["ok"], json!(false));
+    assert!(problems(&checked)[0].contains("isn't available"), "{checked}");
+    assert_eq!(checked["jobs"], Json::Null);
+}
+
+#[test]
+fn duplicate_parameter_names_are_refused_alike_by_check_and_publish() {
+    let mut s = session();
+    let params = json!([{"node": id(2), "param": "style"}, {"node": id(3), "param": "style"}]);
+    let checked = s.dispatch("technique.check", &json!({"canvas": C, "outputs": ports(&[3]), "params": params})).unwrap();
+    assert_eq!(checked["ok"], json!(false), "both are labelled Style");
+    let mut publish = publish_params(V1, 40);
+    publish["params"] = params;
+    assert_eq!(s.dispatch("technique.publish", &publish).unwrap_err().kind, ErrorKind::InvalidInput);
+    // Named apart, they're fine.
+    let named = json!([{"node": id(2), "param": "style"}, {"node": id(3), "param": "style", "name": "Final style"}]);
+    assert_eq!(s.dispatch("technique.check", &json!({"canvas": C, "outputs": ports(&[3]), "params": named})).unwrap()["ok"], json!(true));
+}
+
+#[test]
+fn removing_a_version_undoes_and_redoes_whole() {
+    let mut s = session();
+    s.dispatch("technique.publish", &publish_params(V1, 40)).unwrap();
+    let published = s.document().canvases().get(&V1).unwrap().clone();
+    s.dispatch("technique.remove", &json!({"canvas": V1})).unwrap();
+    assert!(s.document().canvases().get(&V1).unwrap().nodes().is_empty());
+    s.dispatch("edit.undo", &Json::Null).unwrap();
+    assert_eq!(s.document().canvases().get(&V1).unwrap(), &published);
+    s.dispatch("edit.redo", &Json::Null).unwrap();
+    assert_eq!(s.dispatch("technique.show", &json!({"canvas": V1})).unwrap()["retired"], json!(true));
+    // Undoing past the publish takes the stub away too.
+    s.dispatch("edit.undo", &Json::Null).unwrap();
+    s.dispatch("edit.undo", &Json::Null).unwrap();
+    assert!(!s.document().canvases().contains_key(&V1));
+    s.dispatch("edit.redo", &Json::Null).unwrap();
+    assert_eq!(s.document().canvases().get(&V1).unwrap(), &published);
+}
+
+#[test]
+fn published_and_retired_versions_round_trip_through_a_project_file() {
+    let mut s = session();
+    s.dispatch("technique.publish", &publish_params(V1, 40)).unwrap();
+    s.dispatch("technique.publish", &publish_params(V2, 41)).unwrap();
+    s.dispatch("technique.remove", &json!({"canvas": V1})).unwrap();
+    let snapshot = nodecraft_format::Snapshot { project: s.document().clone(), assets: Default::default(), epoch: 0 };
+    let decoded = nodecraft_format::decode(&nodecraft_format::encode(&snapshot).unwrap()).unwrap();
+    assert_eq!(decoded.project, snapshot.project);
+    let mut reopened = Session::with_registries(decoded.project, Registry::builtins().unwrap(), kinds()).unwrap();
+    let third = publish_params(CanvasId::from_bytes([0x73; 16]), 42);
+    assert_eq!(reopened.dispatch("technique.publish", &third).unwrap()["version"], json!(3));
+}
+
+#[test]
+fn an_example_a_batch_fanned_out_stays_behind() {
+    let kinds = kinds();
+    let mut plain = write(&kinds, 2);
+    let mut fanned = write(&kinds, 7);
+    plain.history = vec![Generation::new(GenerationId::from_bytes([0x21; 16]), vec![Value::Text("kept".into())])];
+    plain.active = Some(GenerationId::from_bytes([0x21; 16]));
+    let mut generation = Generation::new(GenerationId::from_bytes([0x22; 16]), vec![Value::List(vec![Value::Text("one item".into())])]);
+    generation.items = vec![vec![ItemKey { batch: id(6), item: ItemId::from_bytes([0x23; 16]) }]];
+    fanned.history = vec![generation];
+    fanned.active = Some(GenerationId::from_bytes([0x22; 16]));
+    let mut s = session_with(vec![
+        Change::RemoveNode { canvas: C, id: id(2) },
+        Change::RemoveNode { canvas: C, id: id(7) },
+        Change::AddNode { canvas: C, node: plain },
+        Change::AddNode { canvas: C, node: fanned },
+        wire(10, 1, "out", 2),
+        wire(11, 2, "out", 3),
+        wire(12, 6, "item", 7),
+        wire(13, 7, "out", 8),
+    ]);
+    s.dispatch("technique.publish", &publish_params(V1, 40)).unwrap();
+    let examples: Vec<usize> = s.document().canvases().get(&V1).unwrap().nodes().values().map(|node| node.history.len()).collect();
+    assert_eq!(examples.iter().sum::<usize>(), 1, "the plain result comes along");
+    let fan = json!({"canvas": C, "published": V2, "seed": id(41), "technique": T, "name": "Fan", "outputs": ports(&[7])});
+    s.dispatch("technique.publish", &fan).unwrap();
+    let copied = s.document().canvases().get(&V2).unwrap();
+    assert!(copied.nodes().values().all(|node| node.history.is_empty() && node.active.is_none()), "the fanned result names the source's items");
 }

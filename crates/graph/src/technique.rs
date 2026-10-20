@@ -2,8 +2,9 @@
 //! (`docs/decisions/2026-10-20-techniques.md`). The canvas holds a copy of the traced subgraph;
 //! its [`Technique`] names the nodes that take the technique's inputs and give its outputs. A
 //! published version is never edited: every change to its canvas is refused, so a new version is
-//! a new canvas, and removing or re-adding a whole version stays undoable.
-use std::collections::BTreeSet;
+//! a new canvas. Removing a version leaves a retired stub of it in its place, so its number is
+//! never given to different content; restoring it (undo) stays possible.
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use nodecraft_types::{CanvasId, Error, NodeId, PortType, TechniqueId};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,9 @@ pub struct Technique {
     /// The canvas it was published from, if it still exists; informational only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<CanvasId>,
+    /// A removed version: its canvas is empty and it exposes nothing, but it keeps its number.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 /// One exposed input or output: a node of the published canvas and one of its output ports.
@@ -97,6 +101,14 @@ impl Canvas {
     pub fn technique_info(&self) -> Option<&Technique> {
         self.technique.as_ref()
     }
+
+    /// The retired stub that replaces this technique version when it is removed: same id,
+    /// title, technique and version, nothing inside.
+    pub fn retired_technique(&self) -> Result<Self, Error> {
+        let info = self.technique.as_ref().filter(|info| !info.retired).ok_or_else(|| invalid("only a published technique version can be retired"))?;
+        let stub = Technique { inputs: Vec::new(), outputs: Vec::new(), params: Vec::new(), retired: true, ..info.clone() };
+        Self::technique(self.id, self.title.clone(), stub, Vec::new(), Vec::new())
+    }
 }
 
 fn name(value: &str, what: &str) -> Result<(), Error> {
@@ -117,19 +129,43 @@ fn port(canvas: &Canvas, port: &TechniquePort) -> Result<(), Error> {
     }
 }
 
-fn ports(canvas: &Canvas, ports: &[TechniquePort]) -> Result<(), Error> {
+/// Inputs and outputs share one namespace, and a node is an input or an output, not both.
+fn ports<'a>(canvas: &Canvas, ports: &'a [TechniquePort], names: &mut BTreeSet<&'a str>, ends: &mut BTreeSet<NodeId>) -> Result<(), Error> {
     if ports.len() > MAX_TECHNIQUE_PORTS {
         return Err(invalid("technique exposes too many ports"));
     }
-    let mut names = BTreeSet::new();
-    let mut ends = BTreeSet::new();
+    let mut own = BTreeSet::new();
     for item in ports {
         port(canvas, item)?;
-        if !names.insert(item.name.as_str()) || !ends.insert((item.node, item.port.as_str())) {
+        if !names.insert(item.name.as_str()) {
+            return Err(invalid("two of a technique's ports have the same name"));
+        }
+        if !own.insert((item.node, item.port.as_str())) {
             return Err(invalid("a technique exposes a port twice"));
         }
+        if ends.contains(&item.node) {
+            return Err(invalid("a technique node can't be both an input and an output"));
+        }
     }
+    ends.extend(own.into_iter().map(|(node, _)| node));
     Ok(())
+}
+
+/// The nodes `outputs` are made from: everything upstream of them, them included. The walk
+/// keeps a seen-set, so a cyclic canvas ends too.
+pub fn upstream_of(canvas: &Canvas, outputs: impl IntoIterator<Item = NodeId>) -> BTreeSet<NodeId> {
+    let mut into: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for edge in canvas.edges.values() {
+        into.entry(edge.to.node).or_default().push(edge.from.node);
+    }
+    let mut seen = BTreeSet::new();
+    let mut queue: VecDeque<NodeId> = outputs.into_iter().collect();
+    while let Some(id) = queue.pop_front() {
+        if seen.insert(id) {
+            queue.extend(into.get(&id).into_iter().flatten().filter(|up| !seen.contains(up)));
+        }
+    }
+    seen
 }
 
 impl Technique {
@@ -144,14 +180,27 @@ impl Technique {
         if self.tags.len() > MAX_TECHNIQUE_TAGS || self.tags.iter().any(|tag| tag.trim().is_empty() || tag.len() > MAX_TAG_BYTES) {
             return Err(invalid("a technique has at most 32 tags of 1 to 64 bytes"));
         }
+        if self.retired {
+            return if canvas.nodes.is_empty() && canvas.edges.is_empty() && self.inputs.is_empty() && self.outputs.is_empty() && self.params.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid("a retired technique version holds nothing"))
+            };
+        }
         if canvas.nodes.len() > MAX_TECHNIQUE_NODES {
             return Err(invalid("technique exceeds its node limit"));
         }
         if self.outputs.is_empty() {
             return Err(invalid("a technique gives at least one output"));
         }
-        ports(canvas, &self.inputs)?;
-        ports(canvas, &self.outputs)?;
+        let mut names = BTreeSet::new();
+        let mut ends = BTreeSet::new();
+        ports(canvas, &self.inputs, &mut names, &mut ends)?;
+        ports(canvas, &self.outputs, &mut names, &mut ends)?;
+        // A version holds what its outputs are made from and nothing else.
+        if upstream_of(canvas, self.outputs.iter().map(|output| output.node)).len() != canvas.nodes.len() {
+            return Err(invalid("a technique node doesn't feed any output"));
+        }
         let fed: BTreeSet<NodeId> = canvas.edges.values().map(|edge| edge.to.node).collect();
         if self.inputs.iter().any(|input| fed.contains(&input.node)) {
             return Err(invalid("a technique input has incoming wires"));
@@ -164,7 +213,7 @@ impl Technique {
         for param in &self.params {
             name(&param.name, "parameter")?;
             text(&param.description, MAX_TECHNIQUE_DESCRIPTION_BYTES)?;
-            text(&param.param, MAX_TECHNIQUE_NAME_BYTES)?;
+            name(&param.param, "parameter's node parameter")?;
             if !canvas.nodes.contains_key(&param.node) {
                 return Err(invalid("a technique parameter's node is missing"));
             }
@@ -209,6 +258,7 @@ mod tests {
             outputs: vec![port(2, "caption")],
             params: vec![TechniqueParam { name: "Style".into(), description: String::new(), node: NodeId::from_bytes([2; 16]), param: "text".into() }],
             source: None,
+            retired: false,
         }
     }
 
@@ -263,6 +313,22 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_version_keeps_its_number_and_nothing_else() {
+        let mut project = Project::new(ProjectId::from_bytes([0; 16]), "P").unwrap();
+        let canvas = version(7, 0, 1);
+        let stub = canvas.retired_technique().unwrap();
+        assert!(stub.nodes().is_empty() && stub.edges().is_empty());
+        let info = stub.technique_info().unwrap();
+        assert!(info.retired && info.outputs.is_empty() && info.params.is_empty());
+        assert_eq!((info.id, info.version, stub.title()), (TechniqueId::from_bytes([9; 16]), 1, "Caption v1"));
+        assert!(stub.retired_technique().is_err(), "retired once");
+        assert!(Canvas::new(CanvasId::from_bytes([1; 16]), "Plain").retired_technique().is_err());
+        Change::AddCanvas { canvas: stub }.apply(&mut project).unwrap();
+        // Its number stays taken.
+        assert!(Change::AddCanvas { canvas: version(8, 10, 1) }.apply(&mut project).is_err());
+    }
+
+    #[test]
     fn each_version_of_a_technique_is_published_once() {
         let mut project = Project::new(ProjectId::from_bytes([0; 16]), "P").unwrap();
         Change::AddCanvas { canvas: version(7, 0, 1) }.apply(&mut project).unwrap();
@@ -292,12 +358,17 @@ mod tests {
             Box::new(|t| t.tags = vec![String::new()]),
             Box::new(|t| t.tags = vec!["t".into(); 33]),
             Box::new(|t| t.description = "d".repeat(4097)),
+            Box::new(|t| t.inputs[0].name = "caption".into()),
+            Box::new(|t| t.params[0].param = String::new()),
+            Box::new(|t| t.retired = true),
         ];
         for (n, case) in cases.iter().enumerate() {
             let mut bad = info(1);
             case(&mut bad);
             assert!(make(bad, vec![wire()]).is_err(), "case {n} was accepted");
         }
+        // Unwired, the input feeds no output: a version holds only what its outputs are made from.
+        assert!(make(info(1), vec![]).is_err());
         // A plain canvas can't carry a technique, nor a technique canvas go without one.
         let mut plain: serde_json::Value = serde_json::to_value(make(info(1), vec![wire()]).unwrap()).unwrap();
         plain["kind"] = "canvas".into();
