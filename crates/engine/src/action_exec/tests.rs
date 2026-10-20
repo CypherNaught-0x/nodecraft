@@ -278,7 +278,7 @@ fn an_overlay_plans_with_both_of_its_inputs_in_port_order() {
     let kind = kinds.get("image.overlay").unwrap();
     let node = kind.instantiate_instance(NodeId::from_bytes([1; 16]), Default::default(), &Default::default()).unwrap();
     let t = PortType { modality: Modality::Image, many: false };
-    let input = |port: &str, n: u8| InputValue { port: port.into(), port_type: t, value: Value::Text(format!("{n}")) };
+    let input = |port: &str, n: u8| InputValue { port: port.into(), port_type: t, value: Value::Text(format!("{n}")), origins: vec![] };
     // Connected in the "wrong" order: planning still puts the base image first.
     let jobs =
         kind.plan(&PlanCtx { node: &node, inputs: &[input("overlay", 2), input("image", 1)], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap();

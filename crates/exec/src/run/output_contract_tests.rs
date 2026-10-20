@@ -152,6 +152,7 @@ fn deferred_materialisation_checks_routes_before_dispatch() {
         port: "in".into(),
         port_type: PortType { modality: Modality::Text, many: false },
         from: vec![InputSource::Step { node: UP, port: "out".into(), list: false }],
+        origins: vec![UP],
     }];
     let source = JobSpec::Source { node: UP, output: "out".into(), value: Value::Text("prompt".into()) };
     let plan = RunPlan { steps: vec![step(UP, "source.text", Some(vec![source])), deferred], edges: vec![(UP, TARGET)], inner: Default::default() };
@@ -233,6 +234,7 @@ fn deferred_materialisation_rejects_foreign_owner_before_dispatch() {
         port: "in".into(),
         port_type: PortType { modality: Modality::Text, many: false },
         from: vec![InputSource::Step { node: UP, port: "out".into(), list: false }],
+        origins: vec![UP],
     }];
     let source = JobSpec::Source { node: UP, output: "out".into(), value: Value::Text("prompt".into()) };
     let plan = RunPlan { steps: vec![step(UP, "source.text", Some(vec![source])), deferred], edges: vec![(UP, TARGET)], inner: Default::default() };

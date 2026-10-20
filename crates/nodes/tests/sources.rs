@@ -81,7 +81,7 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
                 assert_eq!(action.inputs.first().map(|p| p.port_type.modality), Some(input), "{id}");
             }
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
-            let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()) }];
+            let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()), origins: vec![] }];
             assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
         }
     }

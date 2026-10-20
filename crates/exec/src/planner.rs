@@ -57,6 +57,8 @@ pub struct PlannedInput {
     pub port: String,
     pub port_type: PortType,
     pub from: Vec<InputSource>,
+    /// The upstream node behind each entry of `from` (past any router), in the same order.
+    pub origins: Vec<NodeId>,
 }
 
 /// One node to run.
@@ -565,6 +567,7 @@ impl<'a> Graph<'a> {
             // A list input that collects every item of a batch into one run.
             let collects = port.port_type.many && !fans_out.contains(&port.name);
             let mut from = Vec::with_capacity(feeds.len().min(MAX_LIST_ITEMS));
+            let mut origins = Vec::with_capacity(from.capacity());
             // A fanned wire holds its place in `from` with a stand-in that each item replaces.
             let mut fan = |from: &mut Vec<InputSource>, tags: Vec<ItemTag>, source: FannedFrom| {
                 fanned.push(Fanned { input: inputs.len(), slot: from.len(), tags, from: source });
@@ -660,6 +663,7 @@ impl<'a> Graph<'a> {
                         }
                     }
                 }
+                origins.resize(from.len(), *up);
                 // A single input takes one value; through a router it could receive several.
                 if !port.port_type.many && from.len() > 1 {
                     blockers.push(blocker(
@@ -675,7 +679,7 @@ impl<'a> Graph<'a> {
                     break;
                 }
             }
-            inputs.push(PlannedInput { port: port.name.clone(), port_type: port.port_type, from });
+            inputs.push(PlannedInput { port: port.name.clone(), port_type: port.port_type, from, origins });
         }
         let connected: Vec<PortType> = inputs.iter().map(|input| input.port_type).collect();
         let mode = match kind.instance_mode(node, &connected) {
@@ -720,7 +724,8 @@ impl<'a> Graph<'a> {
                         vec![InputSource::Value(Value::List(Vec::new()))]
                     }
                 };
-                inputs.push(PlannedInput { port: format!("{}{}", technique::OUTPUT_PREFIX, collect.output), port_type, from });
+                let origins = vec![collect.node; from.len()];
+                inputs.push(PlannedInput { port: format!("{}{}", technique::OUTPUT_PREFIX, collect.output), port_type, from, origins });
             }
         }
         let plan_jobs = |inputs: &[PlannedInput]| -> Result<Option<Vec<JobSpec>>, Vec<Blocker>> {
@@ -970,7 +975,8 @@ fn known_inputs(inputs: &[PlannedInput]) -> Option<Vec<InputValue>> {
                 InputSource::Step { .. } | InputSource::Item { .. } => None,
             });
             let value = if input.port_type.many { Value::List(values.collect::<Option<Vec<_>>>()?) } else { values.next()?? };
-            Some(InputValue { port: input.port.clone(), port_type: input.port_type, value })
+            let origins = if input.port_type.many { input.origins.clone() } else { input.origins.iter().take(1).copied().collect() };
+            Some(InputValue { port: input.port.clone(), port_type: input.port_type, value, origins })
         })
         .collect()
 }

@@ -33,6 +33,7 @@ fn non_inline_required_prompt_must_not_run_from_local_text_only() {
         port: "prompt".into(),
         port_type: nodecraft_types::PortType { modality: Modality::Text, many: false },
         value: Value::Text("actual connected text".into()),
+        origins: vec![],
     }];
     let jobs = kind.plan(&PlanCtx { node: &node, inputs: &connected, targets: &targets }).unwrap();
     let nodecraft_nodes::JobSpec::Generate { inputs, .. } = &jobs[0] else { panic!() };
@@ -41,6 +42,7 @@ fn non_inline_required_prompt_must_not_run_from_local_text_only() {
         port: "prompt".into(),
         port_type: nodecraft_types::PortType { modality: Modality::Text, many: true },
         value: Value::List(vec![]),
+        origins: vec![],
     }];
     assert!(kind.plan(&PlanCtx { node: &node, inputs: &empty, targets: &targets }).is_err(), "empty wired data must not fall back to disallowed local text");
 }

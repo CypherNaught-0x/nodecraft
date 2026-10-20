@@ -316,6 +316,7 @@ fn deferred_input_copies_and_jobs_keep_the_same_transferred_ledger() {
         port: "in".into(),
         port_type: PortType { modality: Modality::Text, many: false },
         from: vec![InputSource::Step { node: id(2), port: "out".into(), list: false }],
+        origins: vec![id(2)],
     }];
     plan.steps.insert(
         0,

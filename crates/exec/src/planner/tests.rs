@@ -306,8 +306,10 @@ fn list_inputs_keep_noodle_order() {
     let canvas = p.canvases().get(&C).unwrap();
     let plan = ready(plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[3]), &BTreeSet::new()).unwrap());
     // Edge (2 → 3) has order 0 and (1 → 3) order 1.
-    let from = &plan.steps.first().unwrap().inputs.first().unwrap().from;
-    assert_eq!(from, &vec![InputSource::Value(Value::Text("b".into())), InputSource::Value(Value::Text("a".into()))]);
+    let input = plan.steps.first().unwrap().inputs.first().unwrap();
+    assert_eq!(input.from, vec![InputSource::Value(Value::Text("b".into())), InputSource::Value(Value::Text("a".into()))]);
+    // Each value remembers its upstream node (#101).
+    assert_eq!(input.origins, vec![id(2), id(1)]);
 }
 
 /// A random DAG over up to 10 nodes: each is a text source or a relay (with or without a
@@ -423,6 +425,8 @@ fn list_outputs_splice_into_list_inputs_and_single_inputs_pass_one_value() {
     let step = |n: u8| plan.steps.iter().find(|s| s.node == id(n)).unwrap();
     let text = |t: &str| InputSource::Value(Value::Text(t.into()));
     assert_eq!(step(4).inputs.first().unwrap().from, vec![text("a"), text("b"), text("c")]);
+    // A spliced list keeps one origin per item.
+    assert_eq!(step(4).inputs.first().unwrap().origins, vec![id(2), id(2), id(3)]);
     // The single input of 5 reaches `plan` as one value, not a list.
     let jobs = step(5).jobs.clone().unwrap();
     assert_eq!(jobs, vec![JobSpec::Source { node: id(5), output: "out".into(), value: Value::List(vec![Value::Text("x".into())]) }]);
