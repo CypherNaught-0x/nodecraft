@@ -1,0 +1,75 @@
+# `tools/eyecandy` — the README artwork generator
+
+**Nothing here runs automatically.** It is not a workspace member (`crates/*`, `apps/*` and
+`xtask` are the members, and `xtask` never looks at `tools/`), no build script or CI job invokes
+it, and no product crate depends on it. Regenerating the gallery is a deliberate act by a
+maintainer who then reviews and commits the pixels.
+
+It exists so the pictures in [`README.md`](../../README.md) are the app rather than a drawing of
+the app: each image is one frame of `NodeCraftApp::show`, rendered offscreen by the same
+`egui_kittest` wgpu path that the kittest snapshot tests use (`without_display_handle`, so no
+window, no display server).
+
+## Run it
+
+```sh
+# from the repository root; writes into assets/readme/
+cargo run --manifest-path tools/eyecandy/Cargo.toml --release -- --shots all
+
+cargo run --manifest-path tools/eyecandy/Cargo.toml -- --list           # what the shots are
+cargo run --manifest-path tools/eyecandy/Cargo.toml -- --shots hero,tags # a subset
+cargo run --manifest-path tools/eyecandy/Cargo.toml -- --out /tmp/art --scale 3 --max-width 3200
+```
+
+That first command, with its defaults, is what produced the frames in
+[`assets/readme`](../../assets/readme); if you re-run it, look at every image before you commit it.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--shots all` | `all` | comma-separated shot names, or `all` |
+| `--out DIR` | `assets/readme` | where the PNGs go, found by walking up from the working directory so a stale binary cannot write into a different checkout |
+| `--scale N` | `2.0` | pixels per point, 0.25 to 4: 2× supersampling, so text is crisp |
+| `--max-width N` | `2200` | Lanczos-downscale wider frames to this; at least 320, and about twice what GitHub renders a README image at |
+
+It needs a working wgpu adapter, and it is `egui_kittest`'s own setup that picks one
+(`egui_kittest::wgpu::default_wgpu_setup`: software adapters first, then Metal or Vulkan). The tool
+does not choose or configure adapters and has no fallback of its own: with no adapter at all, the
+harness cannot build its renderer and the process aborts inside `render()` — so run it wherever the
+kittest snapshot tests run. It never draws a substitute picture.
+
+## What the pictures are made of
+
+| File | Role |
+|---|---|
+| `src/art.rs` | Three procedural plates (dawn, aurora, bloom), painted in code: value noise, fbm, tonemap. No third-party image, no provider call. |
+| `src/scene.rs` | Builds the showcase document **through engine commands only** — `node.create`, `node.add`, `node.param_set`, `node.title`, `edge.connect`, `tag.put`, `node.tag_set`, `comment.create`, `comment.reply` — plus `engine::import::import_files` for the image card, which is the same path an OS file drop takes. Ids are deterministic. |
+| `src/shots.rs` | The cameras and panels, and the render pass. Frame one is spent letting the app centre itself; then the camera is set from card rects (`card::world_rect`) or an art-directed world rect. |
+| `src/main.rs` | Argument parsing and the shot loop. |
+
+Three properties are worth keeping if you edit this:
+
+- **No invented results.** The graded, softened and cropped previews are what the app's live
+  action pass (#88) computed from the imported plate, on its own worker thread. `settle()` waits
+  for those results and for the preview decode instead of guessing a delay, and says so on stderr
+  when they do not land.
+- **Cards have a minimum zoom.** Below `card::BODY_MIN_ZOOM` the shell paints a card as an
+  outline: no controls, no preview. Any shot that is supposed to show content prints a warning if
+  its camera is under that. `check_composition` then names any framed card the frame edge cuts or
+  the navigation overlay covers, counts the context cards the edge crops, and the camera pans framed
+  cards clear of the overlay using `navigation::layout` before it is called.
+- **The tool is a consumer of the public API.** It touches `NodeCraftApp`'s public fields and
+  `pub` helpers (`theme::apply`, `CanvasView::fit`, `card::world_rect`) and nothing private, so it
+  can be dropped or moved without the product noticing.
+
+## House rules
+
+- Keep the manifest standalone (`[workspace]` in it) and keep it out of the root workspace and
+  `xtask/src/layers.rs`. It uses egui/eframe/wgpu, which only `ui-egui` and the apps may use, and
+  it is not shipped code.
+- Keep `#![forbid(unsafe_code)]` and the deny lints in `Cargo.toml`: same no-panic rules as the
+  product, because a broken render should print a reason, not abort.
+- After editing, `cargo clippy --manifest-path tools/eyecandy/Cargo.toml --all-targets -- -D warnings`
+  should stay clean.
+- Re-run all shots after any change to card, noodle, panel or theme layout, look at every image,
+  and commit the ones you actually reviewed. See
+  [`docs/decisions/2026-10-20-readme-artwork-is-rendered-not-screenshotted.md`](../../docs/decisions/2026-10-20-readme-artwork-is-rendered-not-screenshotted.md).

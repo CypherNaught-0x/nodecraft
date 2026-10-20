@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app-icon/hicolor/512x512/apps/io.github.cyphernaught0x.nodecraft.png" width="96" height="96" alt="The NodeCraft app icon: a grey branch linking two outlined cards to one solid green card, on a dark rounded tile.">
+</p>
+
 <h1 align="center">NodeCraft</h1>
 
 <p align="center">
@@ -11,6 +15,10 @@
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
   <img alt="Status: M1 finishing, M3 wiring" src="https://img.shields.io/badge/status-M1%20finishing%20%C2%B7%20M3%20wiring-d69e2e?style=flat-square">
+</p>
+
+<p align="center">
+  <img src="assets/readme/hero.png" width="100%" alt="A NodeCraft canvas: a chain of four text cards above and a chain of four image cards below, joined by gold and blue bezier noodles on a dark dot grid; two cards carry comment badges, and zoom controls sit bottom right.">
 </p>
 
 ---
@@ -38,6 +46,89 @@
 - **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
   you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
   dispatching the same 66 commands the UI uses.
+
+## The canvas, frame by frame
+
+Every frame below is one rendered frame of the real app — `NodeCraftApp::show`, drawn offscreen by
+the same `egui_kittest` wgpu path the snapshot tests use, committed by an opt-in tool
+([`tools/eyecandy`](tools/eyecandy/README.md)). It is the same document seen from different
+distances. The cards were placed by engine commands, the plate came in through the same import path
+a file drop takes,
+and the graded, softened and cropped thumbnails are local deterministic actions the app recomputed
+for itself. What is *not* in them: a model call. Provider wiring is the milestone in progress.
+
+### A card is generated from its node's parameter schema
+
+![A single Colour grade card: a decoded image preview above four sliders — brightness, contrast, saturation, warmth — under its zoom-scaled uppercase title.](assets/readme/detail-grade.png)
+
+`image.grade` declares four numbers, so the shell draws four sliders. Nothing in the card body was
+laid out by hand: node kinds declare ports and a schema, and the card, the inspector and the MCP
+schema are all generated from that.
+
+### Local actions recompute while you edit
+
+![Four cards in a row — Plate 01, Colour grade, Soften, Poster 16:9 — each showing a progressively changed sunset preview, joined by blue noodles.](assets/readme/detail-chain.png)
+
+Grade, then soften, then crop to 16:9. Each card shows the result its upstream card produced, and
+the pass that computed them runs on the app's own worker
+([#88](../../issues/88)): move a slider and the next frame recomputes.
+
+### Quick-add: double-click empty canvas, type, create
+
+![The quick-add palette open over the canvas with "grade" typed in, offering Color grade.](assets/readme/palette.png)
+
+The palette is searchable, filters as you type, and puts creation one key away. Every entry is a
+node kind, and the CLI and the MCP server create the same card with the same `node.create` command.
+
+### Tags, and a filter that highlights what matches
+
+![The tag filter panel open with Copy and Look checked; matching cards on the canvas carry a bright ring.](assets/readme/tags.png)
+
+Named colour tags per canvas, a bounded highlight filter, and a small colour marker on every
+tagged card.
+
+### Discussions pinned to the card they are about
+
+![The discussions panel open beside a Colour grade card, with a reply, while a numbered pin marks the card on the canvas.](assets/readme/comments.png)
+
+Comments live on the canvas, anchor to a card, move with it, and thread.
+
+### Six modalities, six wire colours
+
+![Two wired pairs — video source into video router, audio source into audio router — carried by purple and orange noodles, with the 3D and document routers waiting beside them.](assets/readme/modality.png)
+
+Text, image, video, audio, 3D and document each own a colour, so a noodle tells you what it carries
+before you hover it. Here the video pair is purple and the audio pair orange; the 3D and document
+routers carry green and grey ports and have nothing upstream to take yet — the app has no source
+card for either. A router carries one modality per instance and adds no step and no cost: the run
+planner resolves it away.
+
+### One set of theme tokens, both palettes
+
+![The same document — text chain above, image chain below — rendered in the light theme.](assets/readme/light.png)
+
+Dark and light come from one token table in `crates/ui-egui/src/theme.rs`: widgets ask for a
+role — `panel_fill`, `wire_image` — never a colour.
+
+<details>
+<summary>Three more frames of the same document</summary>
+
+![Closeup of a card edge: port rings, an output handle, and a numbered order badge where two noodles join a list input.](assets/readme/detail-ports.png)
+
+Order on a list input is data, not layout: drag a badge and the order in the document changes.
+
+![A note card with a short creative brief, above the text card that carries the prompt.](assets/readme/notes.png)
+
+Notes are cards too, so the brief travels with the work it describes.
+
+![The whole document in one window: dot grid, top bar, cards with previews, minimap and zoom badge.](assets/readme/chrome.png)
+
+The shell around the canvas: a minimap with zoom-to-fit and zoom-to-selection, a zoom badge, and a
+top bar of the same commands the shortcuts and the palette drive. Notices — what went wrong, or why
+a key did nothing — are painted into the bottom-left corner, and only when there is something to
+report, so an honest frame has none in it.
+
+</details>
 
 ## What it will do
 
