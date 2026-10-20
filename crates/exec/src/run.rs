@@ -865,7 +865,9 @@ impl crate::driver::JobRunner for SourceRunner {
     }
 }
 
+mod resume;
 mod seed;
+pub use resume::{RecipePort, ResumeRecipe};
 #[cfg(test)]
 mod tests;
 

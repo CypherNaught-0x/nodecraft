@@ -2894,6 +2894,7 @@ name = "nodecraft-engine"
 version = "0.2.0-rc.1"
 dependencies = [
  "blake3",
+ "craft-atomic",
  "craft-settings",
  "futures",
  "getrandom 0.3.4",

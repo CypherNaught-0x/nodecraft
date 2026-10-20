@@ -159,6 +159,10 @@ impl NodeCraftApp {
         let Some(runs) = &mut self.runs else {
             return;
         };
+        if runs.has_waiting() {
+            let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
+            runs.resume_waiting(&self.session, &settings);
+        }
         let tick = runs.tick(&mut self.session, self.canvas);
         if runs.is_busy() || runs.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));

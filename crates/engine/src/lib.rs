@@ -44,6 +44,7 @@ pub mod run_ceiling;
 pub mod run_cmds;
 pub mod run_host;
 pub mod run_jobs;
+pub mod run_journal;
 pub mod save_runner;
 pub mod secrets;
 pub mod session;

@@ -24,25 +24,39 @@
 //! Every queued job is also followed as a [`JobView`] ([`RunHost::jobs`]) for the queue panel,
 //! and can be cancelled on its own ([`RunHost::cancel`]); see [`crate::run_jobs`].
 //!
-//! Not yet: the usage log and submitted handles aren't saved, so a run cut short by quitting is
-//! not resumed and its open reservations are lost with the process; and media is read on the UI
-//! thread when a job is queued.
+//! With a journal ([`RunHost::open_journal`], #508) the usage log and the handle of every paid
+//! job the provider accepted are saved at the end of each pump that changed them. After a
+//! restart the saved jobs are followed again ([`RunHost::resume`]), polled and never sent again;
+//! each one's charge settles when it ends, and a finished one is recorded on its card when its
+//! step was its alone. A reservation left open with no handle (its submit may or may not have
+//! reached the provider) is charged as unresolved. Quitting with a journal suspends what is
+//! running rather than cancelling it ([`RunHost::shut_down`]).
+//!
+//! Not yet: media is read on the UI thread when a job is queued.
 use crate::Session;
 use crate::action_exec::LocalActions;
 use crate::commands::Services;
 use crate::generate;
-use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner};
+use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent};
+use crate::provider_routing::RegisteredProvider;
 use crate::run_cmds::{AuthorizedRun, BudgetState, PreparedRun, UsageSnapshot};
 use crate::run_jobs::{JobKey, JobState, JobView, MAX_RECENT, Reports, RunJobs};
-use nodecraft_exec::cost::Budgets;
+use crate::run_journal::{JOURNAL_VERSION, Journal, JournalStore, Submitted};
+use nodecraft_exec::cost::{Budgets, Charge, UsageLog};
 use nodecraft_exec::driver::{CancelToken, Handle, JobRunner, Runtime, TaskFuture, driver};
 use nodecraft_exec::run::{Progress, RunOptions, SourceRunner, StepResult, take_outputs};
 use nodecraft_exec::scheduler::{CancelScope, Event, JobId, Outcome, RetryPolicy, Scheduler, Start};
 use nodecraft_nodes::JobSpec;
-use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
+use nodecraft_providers::{JobHandle, RunUpdate};
+use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
+
+mod resume;
+
+/// How long after a failed journal save the next one is tried.
+const SAVE_RETRY_MS: u64 = 5_000;
 
 /// The reason a cancelled step's job fails with; reported as [`RunNotice::Cancelled`].
 const CANCELLED: &str = "cancelled";
@@ -80,6 +94,9 @@ pub enum RunNotice {
     Unaccounted { canvas: CanvasId, node: NodeId, reason: String },
     /// Every step of a run has finished or failed.
     Finished { canvas: CanvasId },
+    /// The run journal couldn't be read or saved, so what is running may not be followed again
+    /// after a restart. Raised once until a save succeeds again.
+    Unsaved { reason: String },
 }
 
 /// What the driver and the runner report, waiting for `pump`. Bounded by the run's jobs, which
@@ -92,6 +109,8 @@ struct Mailbox {
     rejected: Vec<(JobId, String)>,
     /// The provider's latest progress report for each job.
     reports: Reports,
+    /// Handles the provider issued: (job, scheduler key, generation, handle).
+    submitted: Vec<(JobId, String, u32, JobHandle)>,
     /// The driver returned: every job is finished and the handle is gone.
     ended: bool,
 }
@@ -125,6 +144,12 @@ struct Active {
     cancelled: bool,
     /// What the queue panel shows of its jobs.
     jobs: RunJobs,
+    /// What each queued model job is saved as once the provider accepts it, less its handle.
+    templates: BTreeMap<JobId, Submitted>,
+    /// Model jobs the provider accepted and that haven't ended, as saved.
+    journal: BTreeMap<JobId, Submitted>,
+    /// `journal` changed since the last save.
+    journal_changed: bool,
 }
 
 /// See the module docs.
@@ -141,6 +166,20 @@ pub struct RunHost {
     next_run: u64,
     /// Jobs that ended, oldest first, at most [`MAX_RECENT`].
     recent: VecDeque<JobView>,
+    /// Where the journal is saved; `None` saves nothing.
+    store: Option<Box<dyn JournalStore>>,
+    /// Restored jobs waiting for their provider, or for their project to be open.
+    parked: Vec<Submitted>,
+    /// Restored jobs whose provider couldn't be reached this session; followed next launch.
+    kept: Vec<Submitted>,
+    /// Restored jobs being followed.
+    resumes: resume::Resumes,
+    /// The usage log as last saved.
+    saved_log: Option<UsageLog>,
+    /// The saved journal is out of date.
+    journal_changed: bool,
+    /// When the last save failed, and whether that was reported.
+    save_failed: Option<(u64, bool)>,
 }
 
 impl RunHost {
@@ -156,6 +195,141 @@ impl RunHost {
             held: Vec::new(),
             next_run: 1,
             recent: VecDeque::new(),
+            store: None,
+            parked: Vec::new(),
+            kept: Vec::new(),
+            resumes: resume::Resumes::default(),
+            saved_log: None,
+            journal_changed: false,
+            save_failed: None,
+        }
+    }
+
+    /// Keeps the usage log and submitted jobs in `store` (see the module docs), restoring what it
+    /// holds: its usage log replaces the budget's, an estimate left open without a saved handle
+    /// is charged as unresolved, and its submitted jobs wait for [`Self::resume`]. Call once,
+    /// before [`Self::install`] and the first run. A journal that can't be read is moved aside
+    /// and the error returned; the host then starts a new one in `store`.
+    pub fn open_journal(&mut self, store: Box<dyn JournalStore>) -> Result<(), Error> {
+        let loaded = store.load();
+        let loaded = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let aside = store.set_aside();
+                self.store = Some(store);
+                self.journal_changed = true;
+                return Err(match aside {
+                    Ok(()) => error,
+                    // Saving would replace it; keep it, and save nothing this session.
+                    Err(aside) => {
+                        self.store = None;
+                        Error::new(error.kind, format!("{}; {}", error.message, aside.message))
+                    }
+                });
+            }
+        };
+        self.store = Some(store);
+        let Some(journal) = loaded else { return Ok(()) };
+        let mut log = journal.usage;
+        let handled: BTreeSet<(String, Option<nodecraft_types::ProviderInstanceId>, String)> =
+            journal.submitted.iter().map(|entry| (entry.target.adapter().to_owned(), entry.target.instance(), entry.sent_key())).collect();
+        let orphans: Vec<_> = log
+            .entries()
+            .chain(log.pending())
+            .filter(|entry| entry.status == Charge::Estimate)
+            .filter(|entry| !handled.contains(&(entry.provider.clone(), entry.instance, entry.idempotency_key.clone())))
+            .map(|entry| (entry.provider.clone(), entry.instance, entry.idempotency_key.clone(), entry.cost))
+            .collect();
+        for (provider, instance, key, cost) in orphans {
+            let settled =
+                nodecraft_types::ProviderTarget::new(&provider, instance).and_then(|target| log.settle_target(&target, &key, cost, Charge::Unresolved));
+            // An entry that can't be settled stays an open estimate, which caps still count.
+            let _ = settled;
+        }
+        *lock(&self.budget.log) = log;
+        self.parked = journal.submitted;
+        self.journal_changed = true;
+        Ok(())
+    }
+
+    /// The adapters restored jobs of `project` are waiting for (see [`Self::resume`]).
+    pub fn waiting_adapters(&self, project: ProjectId) -> BTreeSet<String> {
+        self.parked.iter().filter(|entry| entry.project == project).map(|entry| entry.target.adapter().to_owned()).collect()
+    }
+
+    /// Follows the restored jobs of the open project that ran on `binding`'s endpoint. A job that
+    /// can't be followed is reported and its charge settled as unresolved.
+    pub fn resume(&mut self, session: &Session, binding: &RegisteredProvider) {
+        let project = session.document().id();
+        let (ready, waiting): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.parked).into_iter().partition(|entry| entry.project == project && entry.target == *binding.target());
+        self.parked = waiting;
+        for entry in ready {
+            if let Err(refused) = self.resumes.start(entry, binding, &self.runtime, &self.budget) {
+                let (entry, reason) = *refused;
+                settle_unresolved(&self.budget, &entry);
+                self.held.push(RunNotice::Failed {
+                    canvas: entry.canvas,
+                    node: entry.node,
+                    reason: format!("it couldn't be followed after a restart: {reason}"),
+                });
+                self.journal_changed = true;
+            }
+        }
+    }
+
+    /// Whether restored jobs are waiting for [`Self::resume`].
+    pub fn has_waiting(&self) -> bool {
+        !self.parked.is_empty()
+    }
+
+    /// Lets go of the host when the app quits. With a journal, what is running is saved and
+    /// left running at the provider, to be followed next launch; without one, it is cancelled.
+    pub fn shut_down(&mut self) {
+        if self.store.is_some() {
+            self.runs.iter_mut().for_each(note_submitted);
+            self.save(true);
+        } else {
+            self.cancel_all();
+        }
+    }
+
+    /// Saves the journal if it changed (or `force`), no more often than [`SAVE_RETRY_MS`] after a
+    /// failure. Returns a notice the first time a save fails.
+    fn save(&mut self, force: bool) -> Option<RunNotice> {
+        let store = self.store.as_ref()?;
+        let now = self.runtime.now_ms();
+        if !force
+            && let Some((at, _)) = self.save_failed
+            && now.saturating_sub(at) < SAVE_RETRY_MS
+        {
+            return None;
+        }
+        let usage = lock(&self.budget.log).clone();
+        if !force && !self.journal_changed && self.saved_log.as_ref() == Some(&usage) {
+            return None;
+        }
+        let submitted = self
+            .parked
+            .iter()
+            .chain(&self.kept)
+            .chain(self.resumes.live.values().map(|(entry, _)| entry))
+            .chain(self.runs.iter().flat_map(|active| active.journal.values()))
+            .cloned()
+            .collect();
+        let journal = Journal { version: JOURNAL_VERSION, usage, submitted };
+        match store.save(&journal) {
+            Ok(()) => {
+                self.saved_log = Some(journal.usage);
+                self.journal_changed = false;
+                self.save_failed = None;
+                None
+            }
+            Err(error) => {
+                let reported = self.save_failed.is_some_and(|(_, reported)| reported);
+                self.save_failed = Some((now, true));
+                (!reported).then_some(RunNotice::Unsaved { reason: error.message })
+            }
         }
     }
 
@@ -185,18 +359,20 @@ impl RunHost {
 
     /// Whether any run is waiting or running.
     pub fn is_busy(&self) -> bool {
-        !self.runs.is_empty() || !lock(&self.inbox).waiting.is_empty()
+        !self.runs.is_empty() || !self.resumes.live.is_empty() || !lock(&self.inbox).waiting.is_empty()
     }
 
     /// The nodes with work queued or running, for "running" badges.
     pub fn running(&self) -> BTreeSet<(CanvasId, NodeId)> {
-        self.runs.iter().flat_map(|active| active.live.values().map(move |node| (active.canvas, *node))).collect()
+        let resumed = self.resumes.live.values().map(|(entry, _)| (entry.canvas, entry.node));
+        self.runs.iter().flat_map(|active| active.live.values().map(move |node| (active.canvas, *node))).chain(resumed).collect()
     }
 
     /// Every job: those that ended recently (oldest first), then those queued or running, in
     /// the order their runs started.
     pub fn jobs(&self) -> Vec<JobView> {
-        self.recent.iter().cloned().chain(self.runs.iter().flat_map(|active| active.jobs.live.values().cloned())).collect()
+        let resumed = self.resumes.jobs.live.values().cloned();
+        self.recent.iter().cloned().chain(resumed).chain(self.runs.iter().flat_map(|active| active.jobs.live.values().cloned())).collect()
     }
 
     /// Asks one job to stop. A queued job is dropped without being sent; a running one is asked to
@@ -204,6 +380,9 @@ impl RunHost {
     /// fails. Its end arrives through [`Self::pump`].
     pub fn cancel(&mut self, key: JobKey) -> Result<(), Error> {
         let gone = || Error::new(ErrorKind::NotFound, "that job has already ended");
+        if key.run == resume::RESUMED_RUN {
+            return if self.resumes.cancel(key.job) { Ok(()) } else { Err(gone()) };
+        }
         let active = self.runs.iter_mut().find(|active| active.seq == key.run).ok_or_else(gone)?;
         let view = active.jobs.live.get_mut(&key.job).ok_or_else(gone)?;
         if view.cancel_requested {
@@ -232,6 +411,10 @@ impl RunHost {
                 view.cancel_requested = true;
             }
         }
+        let resumed: Vec<JobId> = self.resumes.live.keys().copied().collect();
+        for job in resumed {
+            self.resumes.cancel(job);
+        }
     }
 
     /// Starts accepted runs and absorbs finished work. UI thread; never blocks on a provider.
@@ -246,11 +429,13 @@ impl RunHost {
             }
         }
         let mut settled = false;
+        let mut journal_changed = false;
         let recent = &mut self.recent;
         self.runs.retain_mut(|active| {
             // Read first: everything the driver reported before it returned is then absorbed.
             let ended = lock(&active.mailbox).ended;
             settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget);
+            journal_changed |= std::mem::take(&mut active.journal_changed);
             keep_recent(recent, active.jobs.ended.drain(..));
             if ended {
                 notices.push(RunNotice::Finished { canvas: active.canvas });
@@ -258,8 +443,20 @@ impl RunHost {
             !ended
         });
         lock(&self.inbox).running = self.runs.len();
+        for ended in self.resumes.absorb(session, &self.budget, &mut notices) {
+            settled = true;
+            journal_changed = true;
+            if let resume::Ended::Kept(entry) = ended {
+                self.kept.push(*entry);
+            }
+        }
+        keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
         if settled {
             refresh(session, &self.budget);
+        }
+        self.journal_changed |= journal_changed;
+        if self.journal_changed || settled || !self.runs.is_empty() || !self.resumes.live.is_empty() {
+            notices.extend(self.save(false));
         }
         notices
     }
@@ -279,7 +476,13 @@ impl RunHost {
             Arc::new(move |job, delivery| {
                 lock(&sink).deliveries.insert(job, delivery);
             }),
-            Arc::new(move |job, _, update| lock(&reports).reports.note(job, &update)),
+            Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| {
+                let mut mailbox = lock(&reports);
+                if let RunUpdate::Submitted(handle) = &update {
+                    mailbox.submitted.push((job, sent.base.to_owned(), sent.generation, handle.clone()));
+                }
+                mailbox.reports.note(job, &update);
+            }),
         )
         .with_budget(self.budget.clone());
         let actions = Arc::new(LocalActions::new(session.assets().clone()));
@@ -300,6 +503,9 @@ impl RunHost {
             live: BTreeMap::new(),
             cancelled: false,
             jobs: RunJobs::default(),
+            templates: BTreeMap::new(),
+            journal: BTreeMap::new(),
+            journal_changed: false,
         };
         // Queue before the driver runs, so a job that can't be prepared is never sent.
         let mut started = Vec::new();
@@ -319,6 +525,15 @@ impl RunHost {
         self.runs.push(active);
         Ok(())
     }
+}
+
+/// Charges a restored job that can't be followed as unresolved, at what it was reserved at. A
+/// free job has no charge; one that can't be settled stays an open estimate, which caps count.
+fn settle_unresolved(budget: &JobBudget, entry: &Submitted) {
+    let key = entry.sent_key();
+    let mut log = lock(&budget.log);
+    let Some(cost) = log.charge_target(&entry.target, &key).filter(|charge| charge.status == Charge::Estimate).map(|charge| charge.cost) else { return };
+    let _ = log.settle_target(&entry.target, &key, cost, Charge::Unresolved);
 }
 
 /// Marks the run's driver as returned when dropped: when the task ends, or when a runtime that is
@@ -417,7 +632,8 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
 
 /// Registers one job with the runner that will run it.
 fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::scheduler::JobSpec) -> Result<(), String> {
-    let work = active.run.work(spec.id).ok_or("the job has no work")?;
+    let work = active.run.work(spec.id).ok_or("the job has no work")?.clone();
+    let work = &work;
     let (run, canvas) = (active.seq, active.canvas);
     let view = |node: NodeId| JobView {
         key: JobKey { run, job: spec.id },
@@ -433,16 +649,33 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
         reported_sent: false,
     };
     match work {
-        JobSpec::Generate { node, .. } => {
+        JobSpec::Generate { node, outputs, .. } => {
             let node = *node;
             active.live.insert(spec.id, node);
             active.jobs.live.insert(spec.id, view(node));
             let queued = active.run.queued_job_with_media(spec.id, &spec.idempotency_key, session.assets()).map_err(|e| e.message)?;
+            let price = queued.charged_price();
+            let estimate = price.and_then(|price| price.estimate);
             if let Some(view) = active.jobs.live.get_mut(&spec.id) {
                 view.provider = Some(queued.provider.target().adapter().to_owned());
                 view.model = Some(queued.job.model.clone());
-                view.estimate = queued.charged_price().and_then(|price| price.estimate);
+                view.estimate = estimate;
             }
+            let template = Submitted {
+                project: session.document().id(),
+                canvas,
+                node,
+                target: queued.provider.target().clone(),
+                key: spec.idempotency_key.clone(),
+                generation: 0,
+                handle: JobHandle { remote_id: String::new(), data: serde_json::Value::Null },
+                model: queued.job.model.clone(),
+                estimate,
+                priced: price.is_some(),
+                routes: outputs.clone(),
+                recipe: active.run.resume_recipe(session.kinds(), spec.id),
+            };
+            active.templates.insert(spec.id, template);
             active.runner.provider.register(spec.id, queued);
             active.provider_jobs.insert(spec.id);
         }
@@ -459,6 +692,8 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
 
 /// Absorbs one run's messages; returns whether a paid job settled.
 fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotice>, runtime: &Arc<dyn Runtime>, budget: &JobBudget) -> bool {
+    // Before the events, so a job that ended this frame is dropped from the journal after.
+    note_submitted(active);
     let (events, rejected, reports) = {
         let mut mailbox = lock(&active.mailbox);
         (std::mem::take(&mut mailbox.events), std::mem::take(&mut mailbox.rejected), std::mem::take(&mut mailbox.reports))
@@ -543,6 +778,16 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
     settled
 }
 
+/// Moves the handles the provider issued into the run's journal.
+fn note_submitted(active: &mut Active) {
+    let submitted = std::mem::take(&mut lock(&active.mailbox).submitted);
+    for (job, key, generation, handle) in submitted {
+        let Some(template) = active.templates.get(&job) else { continue };
+        active.journal.insert(job, Submitted { key, generation, handle, ..template.clone() });
+        active.journal_changed = true;
+    }
+}
+
 /// How a finished job ended for the panel: done, or failed when its outputs couldn't be kept.
 fn ended<T>(outputs: &Result<T, String>) -> JobState {
     match outputs {
@@ -568,6 +813,8 @@ fn unaccounted(active: &Active, job: JobId, budget: &JobBudget) -> Option<Result
 /// it may have been billed, released when it provably wasn't); returns whether it was one.
 fn finish(active: &mut Active, job: JobId) -> bool {
     active.live.remove(&job);
+    active.templates.remove(&job);
+    active.journal_changed |= active.journal.remove(&job).is_some();
     lock(&active.runner.local).remove(&job);
     let provider = active.provider_jobs.contains(&job);
     if provider {
