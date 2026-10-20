@@ -11,3 +11,8 @@
 - **Custom hooks opt in.** A kind with its own `validate_instance` builds `ResolvedParams`
   itself; an empty `unhashed` keeps today's behaviour (everything visible is hashed), which can
   only make a result stale too often, never too rarely.
+- **Cached results reuse across it.** With result caching on, a result made before an edit to
+  an `identity: false` parameter is reused afterwards; its recorded job settings still show the
+  value it was made with. No built-in kind or catalog model declares `identity: false` yet.
+- **Supersedes** the bullet of `2026-10-19-contract-run-path.md` saying such parameters remain
+  hashed for derived contracts.

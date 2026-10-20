@@ -116,7 +116,10 @@ impl Resolution {
             && !seeds
             && let Some(seed) = self.params.iter().find(|state| state.enabled && state.value == Effective::RandomSeed)
         {
-            return Err(Error::new(ErrorKind::Unsupported, format!("{} draws a random seed per run, which can't be recorded yet; set a seed", seed.name)));
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("{} draws a random seed per run, which only a catalog generation can do; set a seed", seed.name),
+            ));
         }
         let visible = self.params.iter().filter(|state| state.enabled && keep(state)).map(|state| state.name.clone()).collect();
         let unhashed = self.params.iter().filter(|state| state.enabled && keep(state) && !state.affects.identity).map(|state| state.name.clone()).collect();
