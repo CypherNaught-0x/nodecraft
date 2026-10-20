@@ -567,3 +567,32 @@ fn a_kept_answer_on_an_empty_card_becomes_the_shown_one() {
     f.host.keep_partial(&mut f.session, key).unwrap();
     assert_eq!(active(&f.session), history(&f.session).first().map(|g| g.id));
 }
+
+#[test]
+fn a_failed_answer_keeps_what_streamed_and_can_be_kept() {
+    let mut model = MockModel::new(MockOutput::Text);
+    model.fail = Some(MockFailure::Submit(ErrorKind::UnsupportedInput));
+    let mock = MockProvider::new("mock", [("mock-text".to_owned(), model)]).with_stream("mock-text", ["Half ", "way"]);
+    let mut f = fixture(mock);
+    start(&mut f);
+    let notices = drive(&mut f);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node: WRITER, .. })), "{notices:?}");
+    assert_eq!(partial(&f).as_deref(), Some("Half way"), "a failed job keeps what streamed");
+    let key = job(&f.host, WRITER).key;
+    f.host.keep_partial(&mut f.session, key).unwrap();
+    assert!(matches!(&history(&f.session)[0].outputs[0], Value::Text(t) if t == "Half way"));
+}
+
+#[test]
+fn a_discarded_answer_is_gone_and_records_nothing() {
+    let mut f = fixture(streaming(&["Half"], u32::MAX));
+    start(&mut f);
+    pump_until(&mut f, "the stream arrives", |f| partial(f).is_some());
+    let key = job(&f.host, WRITER).key;
+    f.host.cancel_all();
+    drive(&mut f);
+    f.host.discard_partial(key);
+    assert_eq!(partial(&f), None);
+    assert!(f.host.keep_partial(&mut f.session, key).is_err(), "nothing is left to keep");
+    assert!(history(&f.session).is_empty());
+}

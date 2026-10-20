@@ -58,6 +58,8 @@ pub struct Sent<'a> {
     pub base: &'a str,
     pub target: &'a nodecraft_types::ProviderTarget,
     pub generation: u32,
+    /// The scheduler's attempt, 1 for the first: what a streamed piece of text belongs to.
+    pub attempt: u32,
 }
 
 /// Start of every error for a job the budgets refused; such jobs are never retried.
@@ -1035,7 +1037,7 @@ impl JobRunner for ProviderRunner {
                             r.maybe_billed = true;
                         }
                     }
-                    on_update(job_id, Sent { key: &key, base: &start.idempotency_key, generation, target: &provider_id }, update);
+                    on_update(job_id, Sent { key: &key, base: &start.idempotency_key, generation, target: &provider_id, attempt: start.attempt }, update);
                 };
                 if handle.is_none()
                     && queued.charged_price().is_some()

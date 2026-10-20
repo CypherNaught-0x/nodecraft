@@ -306,6 +306,28 @@ async fn actual_llm_provider_local_build_and_post_response_errors_use_evidence()
         assert!(f.uncertain);
     }
 }
+#[cfg(all(feature = "llm", feature = "http", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn a_streamed_answer_that_breaks_after_its_200_header_may_be_billed() {
+    use crate::llm::{Dialect, Endpoint, LlmClient};
+    let mut request = job();
+    request.inputs = vec![crate::JobInput::Text { role: "user".into(), text: "public".into() }];
+    // The body promises more than it sends before the connection closes.
+    let piece = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n";
+    let mut broken =
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", piece.len() + 1000).into_bytes();
+    broken.extend_from_slice(piece);
+    let (url, seen, task) = served(vec![broken]);
+    let endpoint = Endpoint { id: "fixture".into(), dialect: Dialect::OpenAi, base_url: url, key: None };
+    let p = LlmClient::new(endpoint, Arc::new(crate::ReqwestHttp::new().unwrap()));
+    let mut updates = Vec::new();
+    let limits = RunLimits { stream_text: true, ..RunLimits::default() };
+    let f = crate::run_to_completion(&p, &request, &Never, &Instant, limits, |u| updates.push(u)).await.unwrap_err();
+    task.join().unwrap();
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert!(f.uncertain, "the request was answered, so it may be billed: {f:?}");
+    assert!(updates.contains(&crate::RunUpdate::Text("Hel".into())), "{updates:?}");
+}
 #[test]
 fn request_poison_and_unknown_browser_stage_fail_closed() {
     let c = SubmitContext::new();

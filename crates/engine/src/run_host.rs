@@ -543,7 +543,7 @@ impl RunHost {
                 if let RunUpdate::Submitted(handle) = &update {
                     mailbox.submitted.push((job, sent.base.to_owned(), sent.generation, handle.clone()));
                 }
-                mailbox.reports.note(job, &update);
+                mailbox.reports.note(job, sent.attempt, &update);
             }),
         )
         .with_budget(self.budget.clone())
@@ -608,13 +608,29 @@ impl Drop for Ended {
     }
 }
 
-/// Adds jobs that ended to `recent`, dropping the oldest past [`MAX_RECENT`].
+/// Most bytes of stopped text answers kept across the recent jobs, waiting for Keep (#504).
+const MAX_KEPT_PARTIALS: usize = 4 * nodecraft_providers::MAX_STREAMED_TEXT;
+
+/// Adds jobs that ended to `recent`, dropping the oldest past [`MAX_RECENT`]. A card shows only
+/// its newest job's stopped answer, so older ones of that node are dropped, and the oldest go
+/// once they add up to more than [`MAX_KEPT_PARTIALS`].
 fn keep_recent(recent: &mut VecDeque<JobView>, ended: impl Iterator<Item = JobView>) {
     for view in ended {
         if recent.len() >= MAX_RECENT {
             recent.pop_front();
         }
+        if view.partial.is_some() {
+            recent.iter_mut().filter(|old| old.canvas == view.canvas && old.node == view.node).for_each(|old| old.partial = None);
+        }
         recent.push_back(view);
+    }
+    let mut kept = 0usize;
+    for view in recent.iter_mut().rev() {
+        let len = view.partial.as_ref().map_or(0, |text| text.len());
+        kept = kept.saturating_add(len);
+        if kept > MAX_KEPT_PARTIALS {
+            view.partial = None;
+        }
     }
 }
 
@@ -711,6 +727,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
         cancel_refused: false,
         reported_sent: false,
         partial: None,
+        partial_attempt: 0,
     };
     match work {
         JobSpec::Generate { node, outputs, .. } => {

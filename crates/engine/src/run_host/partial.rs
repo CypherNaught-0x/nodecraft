@@ -37,3 +37,47 @@ impl RunHost {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{MAX_KEPT_PARTIALS, keep_recent};
+    use crate::run_jobs::{JobKey, JobState, JobView};
+    use nodecraft_exec::scheduler::JobId;
+    use nodecraft_types::{CanvasId, NodeId};
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    fn stopped(job: u64, node: u8, text: &str) -> JobView {
+        JobView {
+            key: JobKey { run: 1, job: JobId(job) },
+            canvas: CanvasId::from_bytes([1; 16]),
+            node: NodeId::from_bytes([node; 16]),
+            provider: Some("mock".into()),
+            model: Some("m".into()),
+            estimate: None,
+            state: JobState::Cancelled,
+            sent: true,
+            cancel_requested: false,
+            cancel_refused: false,
+            reported_sent: true,
+            partial: Some(Arc::new(text.to_owned())),
+            partial_attempt: 1,
+        }
+    }
+
+    #[test]
+    fn only_the_newest_stopped_answer_of_a_node_is_kept_and_all_of_them_within_a_budget() {
+        let mut recent = VecDeque::new();
+        keep_recent(&mut recent, [stopped(1, 1, "old"), stopped(2, 2, "other")].into_iter());
+        keep_recent(&mut recent, std::iter::once(stopped(3, 1, "new")));
+        let kept: Vec<_> = recent.iter().map(|v| v.partial.as_deref().map(String::as_str)).collect();
+        assert_eq!(kept, [None, Some("other"), Some("new")]);
+
+        let big = "x".repeat(nodecraft_providers::MAX_STREAMED_TEXT);
+        let many = MAX_KEPT_PARTIALS / big.len() + 2;
+        keep_recent(&mut recent, (0..many).map(|n| stopped(10 + n as u64, 10 + n as u8, &big)));
+        let total: usize = recent.iter().filter_map(|v| v.partial.as_ref()).map(|t| t.len()).sum();
+        assert!(total <= MAX_KEPT_PARTIALS, "{total}");
+        assert!(recent.back().is_some_and(|v| v.partial.is_some()), "the newest are kept");
+    }
+}

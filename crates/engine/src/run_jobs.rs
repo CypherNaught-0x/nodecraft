@@ -80,6 +80,8 @@ pub struct JobView {
     /// recorded. Dropped when the job finishes; a cancelled or failed job keeps it, to be kept
     /// on its card if the person asks ([`crate::run_host::RunHost::keep_partial`]).
     pub partial: Option<Arc<String>>,
+    /// The attempt `partial` streamed from; text from an earlier attempt is dropped.
+    pub(crate) partial_attempt: u32,
 }
 
 impl JobView {
@@ -173,8 +175,9 @@ pub(crate) struct Report {
     /// A poll failed after the latest progress and is being retried.
     reconnecting: bool,
     cancel_refused: bool,
-    /// Text streamed since the last pump.
+    /// Text streamed since the last pump, by attempt `text_attempt`.
     text: String,
+    text_attempt: u32,
 }
 
 enum Latest {
@@ -183,7 +186,8 @@ enum Latest {
 }
 
 impl Reports {
-    pub(crate) fn note(&mut self, job: JobId, update: &RunUpdate) {
+    /// Notes `update` from `attempt` of `job` (1 for the first).
+    pub(crate) fn note(&mut self, job: JobId, attempt: u32, update: &RunUpdate) {
         let report = self.0.entry(job).or_default();
         match update {
             RunUpdate::Submitted(_) => report.sent = true,
@@ -206,7 +210,14 @@ impl Reports {
             }
             RunUpdate::Text(piece) => {
                 report.sent = true;
-                append(&mut report.text, piece);
+                // A later attempt answers afresh; a late piece of an earlier one is dropped.
+                if attempt > report.text_attempt {
+                    report.text.clear();
+                    report.text_attempt = attempt;
+                }
+                if attempt == report.text_attempt {
+                    append(&mut report.text, piece);
+                }
             }
         }
     }
@@ -231,7 +242,15 @@ impl RunJobs {
             view.cancel_refused |= report.cancel_refused;
             if !report.text.is_empty() {
                 let text = std::mem::take(&mut report.text);
-                append(Arc::make_mut(view.partial.get_or_insert_default()), &text);
+                // The scheduler's retry events may come in the same pump as the new attempt's
+                // text, before or after it: the attempt decides, not the order.
+                if report.text_attempt > view.partial_attempt {
+                    view.partial = None;
+                    view.partial_attempt = report.text_attempt;
+                }
+                if report.text_attempt == view.partial_attempt {
+                    append(Arc::make_mut(view.partial.get_or_insert_default()), &text);
+                }
             }
             let JobState::Running { waiting, position, fraction, message, reconnecting, .. } = &mut view.state else { continue };
             match &report.latest {
@@ -266,8 +285,10 @@ impl RunJobs {
     pub(crate) fn retrying(&mut self, job: JobId, next_attempt: u32, reason: &str) {
         if let Some(view) = self.live.get_mut(&job) {
             view.state = JobState::Retrying { next_attempt, reason: bounded(reason) };
-            // The next attempt answers afresh.
-            view.partial = None;
+            // The next attempt answers afresh, unless its text already arrived this pump.
+            if view.partial_attempt < next_attempt {
+                view.partial = None;
+            }
         }
     }
 
@@ -334,6 +355,7 @@ mod tests {
             cancel_refused: false,
             reported_sent: false,
             partial: None,
+            partial_attempt: 0,
         }
     }
 
@@ -361,8 +383,8 @@ mod tests {
     fn hostile_progress_is_bounded() {
         let mut reports = Reports::default();
         let long = "é".repeat(10_000);
-        reports.note(JobId(1), &RunUpdate::Progress(JobProgress::Running { fraction: Some(f32::NAN), message: Some(long), partial: None }));
-        reports.note(JobId(2), &RunUpdate::Progress(JobProgress::Running { fraction: Some(7.0), message: None, partial: None }));
+        reports.note(JobId(1), 1, &RunUpdate::Progress(JobProgress::Running { fraction: Some(f32::NAN), message: Some(long), partial: None }));
+        reports.note(JobId(2), 1, &RunUpdate::Progress(JobProgress::Running { fraction: Some(7.0), message: None, partial: None }));
         let mut jobs = RunJobs::default();
         for id in [1, 2] {
             let mut v = view(JobState::Running { attempt: 1, waiting: false, position: None, fraction: None, message: None, reconnecting: false });
@@ -383,7 +405,7 @@ mod tests {
         jobs.live.insert(JobId(7), view(JobState::Queued));
         jobs.end(JobId(7), JobState::Done);
         let mut late = Reports::default();
-        late.note(JobId(7), &RunUpdate::Progress(JobProgress::Running { fraction: Some(0.5), message: None, partial: None }));
+        late.note(JobId(7), 1, &RunUpdate::Progress(JobProgress::Running { fraction: Some(0.5), message: None, partial: None }));
         jobs.absorb_reports(&mut late);
         assert!(jobs.live.is_empty());
         jobs.end(JobId(7), JobState::Cancelled);
@@ -397,8 +419,8 @@ mod tests {
         let mut jobs = RunJobs::default();
         jobs.live.insert(JobId(1), view(running()));
         let mut reports = Reports::default();
-        reports.note(JobId(1), &RunUpdate::Text("Hel".into()));
-        reports.note(JobId(1), &RunUpdate::Text("lo".into()));
+        reports.note(JobId(1), 1, &RunUpdate::Text("Hel".into()));
+        reports.note(JobId(1), 1, &RunUpdate::Text("lo".into()));
         // The host absorbs the same reports before and after the events.
         jobs.absorb_reports(&mut reports);
         jobs.absorb_reports(&mut reports);
@@ -407,15 +429,39 @@ mod tests {
         jobs.retrying(JobId(1), 2, "timeout");
         assert_eq!(jobs.live[&JobId(1)].partial, None, "the next attempt answers afresh");
         jobs.started(JobId(1), 2);
-        reports.note(JobId(1), &RunUpdate::Text("x".repeat(nodecraft_providers::MAX_STREAMED_TEXT + 10)));
+        reports.note(JobId(1), 2, &RunUpdate::Text("x".repeat(nodecraft_providers::MAX_STREAMED_TEXT + 10)));
         jobs.absorb_reports(&mut reports);
         assert_eq!(jobs.live[&JobId(1)].partial.as_ref().map(|t| t.len()), Some(nodecraft_providers::MAX_STREAMED_TEXT), "capped");
         jobs.end(JobId(1), JobState::Cancelled);
         assert!(jobs.ended[0].partial.is_some(), "a cancelled job keeps what streamed");
         jobs.live.insert(JobId(2), view(running()));
-        reports.note(JobId(2), &RunUpdate::Text("done".into()));
+        reports.note(JobId(2), 1, &RunUpdate::Text("done".into()));
         jobs.absorb_reports(&mut reports);
         jobs.end(JobId(2), JobState::Done);
         assert_eq!(jobs.ended[1].partial, None, "a finished one shows its recorded answer");
+    }
+
+    #[test]
+    fn a_retry_in_the_same_pump_as_the_next_attempts_text_keeps_that_text() {
+        let running = |attempt| JobState::Running { attempt, waiting: false, position: None, fraction: None, message: None, reconnecting: false };
+        let mut jobs = RunJobs::default();
+        jobs.live.insert(JobId(1), view(running(1)));
+        let mut reports = Reports::default();
+        // One snapshot: attempt 1's text, then (in the events) Retrying and Started(2), and
+        // attempt 2's first piece, and a late piece of attempt 1.
+        reports.note(JobId(1), 1, &RunUpdate::Text("old".into()));
+        reports.note(JobId(1), 2, &RunUpdate::Text("Hel".into()));
+        reports.note(JobId(1), 1, &RunUpdate::Text("late".into()));
+        jobs.absorb_reports(&mut reports);
+        jobs.retrying(JobId(1), 2, "timeout");
+        jobs.started(JobId(1), 2);
+        jobs.absorb_reports(&mut reports);
+        reports.note(JobId(1), 2, &RunUpdate::Text("lo".into()));
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].partial.as_deref().map(String::as_str), Some("Hello"));
+        // A late piece of the earlier attempt in a later pump is dropped too.
+        reports.note(JobId(1), 1, &RunUpdate::Text("late".into()));
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].partial.as_deref().map(String::as_str), Some("Hello"));
     }
 }

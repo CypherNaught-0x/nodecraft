@@ -5,7 +5,7 @@
 use super::{RunNotice, lock};
 use crate::Session;
 use crate::generate;
-use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, JobPrice, ProviderRunner, QueuedJob};
+use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, JobPrice, ProviderRunner, QueuedJob, Sent};
 use crate::provider_routing::RegisteredProvider;
 use crate::run_jobs::{JobKey, JobState, JobView, Reports, RunJobs};
 use crate::run_journal::Submitted;
@@ -71,7 +71,7 @@ impl Resumes {
                 Arc::new(move |job, delivery| {
                     lock(&deliveries).deliveries.insert(job, delivery);
                 }),
-                Arc::new(move |job, _, update: RunUpdate| lock(&reports).reports.note(job, &update)),
+                Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| lock(&reports).reports.note(job, sent.attempt, &update)),
             )
             .with_budget(budget.clone()),
         );
@@ -115,6 +115,7 @@ impl Resumes {
             cancel_refused: false,
             reported_sent: true,
             partial: None,
+            partial_attempt: 0,
         };
         self.jobs.live.insert(id, view);
         self.jobs.started(id, 1);
