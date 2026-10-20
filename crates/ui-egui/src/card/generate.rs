@@ -75,8 +75,36 @@ pub(crate) fn has_composer(node: &Node, descriptor: &NodeDescriptor) -> bool {
         && descriptor.params.params.iter().any(|spec| spec.name == PROMPT && matches!(spec.control, ParamControl::Text { .. }))
 }
 
+/// The answer a text card shows (#84): the first text its active generation made.
+pub fn answer_of(node: &Node) -> Option<&str> {
+    if node.kind != nodecraft_nodes::generation::TEXT_KIND {
+        return None;
+    }
+    let active = node.active?;
+    node.history.iter().find(|g| g.id == active)?.outputs.iter().find_map(|value| match value {
+        Value::Text(text) => Some(text.as_str()),
+        _ => None,
+    })
+}
+
+/// Draws a text card's answer in `area`: selectable, and scrolled when longer than the area.
+pub(super) fn answer(ui: &mut egui::Ui, area: Rect, text: &str, t: &Tokens) {
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt("answer").max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
+    child.set_clip_rect(area.intersect(ui.clip_rect()));
+    egui::Frame::new().fill(t.prompt_fill).corner_radius(t.card_radius / 2).inner_margin(t.control_gap).show(&mut child, |ui| {
+        let width = ui.available_width();
+        egui::ScrollArea::vertical().id_salt("answer").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(width);
+            ui.add(egui::Label::new(egui::RichText::new(text).color(t.text)).selectable(true).wrap());
+        });
+    });
+}
+
 pub(super) struct Composer<'a> {
     pub node: &'a Node,
+    /// A wire feeds the prompt port: connected text replaces the prompt, so it is locked and its
+    /// draft kept for when the wire goes.
+    pub wired: bool,
     pub descriptor: &'a NodeDescriptor,
     pub roles: Option<&'a Roles>,
     pub visible: Option<&'a BTreeSet<String>>,
@@ -86,7 +114,7 @@ pub(super) struct Composer<'a> {
 /// Draws the composer at the top of `area` and returns the space left under it. The prompt and
 /// the count drawn here are left out of the card's parameter list.
 pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor: &mut EditorState, intents: &mut Vec<Intent>, t: &Tokens) -> Rect {
-    let Composer { node, descriptor, roles, visible, enabled } = composer;
+    let Composer { node, wired, descriptor, roles, visible, enabled } = composer;
     let shown = |name: &str| visible.is_some_and(|names| names.contains(name));
     let editable = |name: &str| enabled.is_none_or(|names| names.contains(name));
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("composer").max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -100,14 +128,16 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 // Last frame's focus: a submit in this frame is the field's own key press.
                 let focused = editor.text.get(PROMPT).is_some_and(|draft| draft.was_focused);
                 let run = focused && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-                let changed = if editable(PROMPT) {
+                let open = editable(PROMPT) && !wired;
+                let changed = if open {
                     control(ui, &spec.control, value, PROMPT, editor, label.id, t)
                 } else {
                     ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, PROMPT, editor, label.id, t)).inner
                 };
-                if editable(PROMPT)
-                    && let Some(value) = changed
-                {
+                if wired {
+                    ui.label(egui::RichText::new("Connected text replaces this prompt; it is kept for when you disconnect.").color(t.text_muted));
+                }
+                if open && let Some(value) = changed {
                     intents.push(Intent::Parameter { name: PROMPT.into(), value });
                 }
                 if run {

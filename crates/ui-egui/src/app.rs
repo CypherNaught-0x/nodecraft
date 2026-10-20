@@ -1075,6 +1075,8 @@ impl NodeCraftApp {
             // Selected cards draw last, on top.
             let selected = self.selection.clone();
             self.painted.clear();
+            let prompt_wired: BTreeSet<NodeId> =
+                canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1122,6 +1124,7 @@ impl NodeCraftApp {
                             (rows, columns, full)
                         }),
                         roles: schema.map(|cached| &cached.roles),
+                        prompt_wired: prompt_wired.contains(&node.id),
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -2189,6 +2192,8 @@ mod preview_tests;
 mod split_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_card_tests;
 
 #[cfg(test)]
 mod marquee_tests;
