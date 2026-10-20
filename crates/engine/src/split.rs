@@ -24,7 +24,7 @@ fn invalid(message: impl Into<String>) -> Error {
 /// Image types a split can decode.
 const SPLITTABLE: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"];
 
-fn image(value: &Value) -> Option<&AssetRef> {
+pub(crate) fn image(value: &Value) -> Option<&AssetRef> {
     match value {
         Value::Media(asset) if SPLITTABLE.contains(&asset.mime.essence()) => Some(asset),
         _ => None,

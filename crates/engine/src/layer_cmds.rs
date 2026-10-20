@@ -8,7 +8,7 @@ use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_actions::layers::{self, Content, Frame, Layer, Layers};
 use nodecraft_graph::{Change, Changeset, Node};
 use nodecraft_nodes::layers::{CONFIG, ID, INPUT};
-use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value};
+use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
 
@@ -43,6 +43,31 @@ pub fn sources(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Vec<Stri
     let canvas = c.document.canvases().get(&canvas).ok_or_else(|| not_found("canvas"))?;
     let incoming = nodecraft_exec::routing::incoming(canvas, c.kinds)?;
     Ok(incoming.feeds.get(&id).into_iter().flatten().filter(|(port, ..)| *port == INPUT).map(|(_, _, from, _)| from.to_string()).collect())
+}
+
+/// The image each wired input shows now, in input order, with the node it comes from: a source
+/// image's asset, or the first image of the upstream node's active result on the wired port.
+/// None until that node has a result. For previews; a run resolves its inputs itself.
+pub fn inputs(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Vec<(String, Option<AssetRef>)>, Error> {
+    let canvas = c.document.canvases().get(&canvas).ok_or_else(|| not_found("canvas"))?;
+    let incoming = nodecraft_exec::routing::incoming(canvas, c.kinds)?;
+    let feeds = incoming.feeds.get(&id).into_iter().flatten().filter(|(port, ..)| *port == INPUT);
+    Ok(feeds.map(|(_, _, from, from_port)| (from.to_string(), canvas.nodes().get(from).and_then(|node| shown(node, from_port)).cloned())).collect())
+}
+
+fn shown<'a>(node: &'a Node, port: &str) -> Option<&'a AssetRef> {
+    if node.kind == "source.image" {
+        return crate::split::image_of(node);
+    }
+    let index = node.outputs.iter().position(|p| p.name == port)?;
+    let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    match result.outputs.get(index)? {
+        Value::List(items) => items.iter().find_map(|item| match item {
+            Value::List(inner) => inner.iter().find_map(crate::split::image),
+            single => crate::split::image(single),
+        }),
+        single => crate::split::image(single),
+    }
 }
 
 /// Every layer the node shows, stored and automatic, bottom first.
@@ -81,7 +106,8 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let frame = frame(c, node)?;
     let layers = listed(c, p.canvas, node)?;
     let layers = serde_json::to_value(&layers.layers).map_err(|_| invalid("the layers can't be listed"))?;
-    Ok(Effect::None { result: json!({"width": frame.width, "height": frame.height, "layers": layers}) })
+    let inputs: Vec<Json> = inputs(c, p.canvas, p.id)?.into_iter().map(|(origin, image)| json!({"origin": origin, "image": image})).collect();
+    Ok(Effect::None { result: json!({"width": frame.width, "height": frame.height, "layers": layers, "inputs": inputs}) })
 }
 
 #[derive(Deserialize)]
@@ -415,7 +441,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas, id: Layer Editor NodeId} -> {width, height, layers}; the node's frame size and every layer, bottom first: the stored ones and an automatic one for each wired image no stored layer names (content kind \"source\", fitted to the frame). x and y are the layer's centre in frame pixels; rotation is in degrees, clockwise.",
+            params_doc: "{canvas, id: Layer Editor NodeId} -> {width, height, layers, inputs}; the node's frame size and every layer, bottom first: the stored ones and an automatic one for each wired image no stored layer names (content kind \"source\", fitted to the frame). x and y are the layer's centre in frame pixels; rotation is in degrees, clockwise. inputs lists each wired image in input order as {origin, image}: the node it comes from and the image it shows now (null until that node has a result); a source layer shows the nth input from its origin.",
             enabled: always,
             run: list,
         },

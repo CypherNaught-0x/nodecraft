@@ -46,6 +46,9 @@ fn each_wired_image_is_listed_as_a_fitted_layer_until_it_is_stored() {
     let mut s = session();
     let (a, b) = (layers::auto_id(&A.to_string(), 0), layers::auto_id(&B.to_string(), 0));
     assert_eq!(ids(&mut s), [a.clone(), b.clone()]);
+    // Each input names its origin; an empty source shows no image yet.
+    let listed = s.dispatch("layers.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap();
+    assert_eq!(listed["inputs"], json!([{"origin": A.to_string(), "image": null}, {"origin": B.to_string(), "image": null}]));
     let first = list(&mut s).remove(0);
     assert_eq!(first["content"], json!({"kind": "source", "origin": A.to_string(), "nth": 0, "fit": true}));
     assert_eq!((&first["x"], &first["width"]), (&json!(200.0), &json!(400.0)));
