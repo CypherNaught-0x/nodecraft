@@ -7,6 +7,7 @@ use nodecraft_engine::Session;
 use nodecraft_format::{AssetStore, NativeStorage, Snapshot};
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::json;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -40,8 +41,7 @@ pub struct StorageSetup {
     pub open: Option<PathBuf>,
 }
 
-/// Most kept journals; past this, older work is still kept but no new copy is made (and storage
-/// keeps working).
+/// Canonical safety-copy slots. Exhaustion refuses replacement of the live journal.
 pub const MAX_KEPT: u32 = 99;
 
 /// Whether the journal at `recovery` holds work worth keeping: edits after its checkpoint, or
@@ -85,7 +85,21 @@ pub fn location_file(journal: &Path) -> PathBuf {
 
 /// The project file recorded beside `journal`, if any.
 pub fn recorded_location(journal: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(location_file(journal)).ok()?;
+    let file = std::fs::File::open(location_file(journal)).ok()?;
+    if file.metadata().ok()?.len() > MAX_LOCATION_FILE_BYTES as u64 {
+        return None;
+    }
+    bounded_location(file)
+}
+
+fn bounded_location(reader: impl Read) -> Option<PathBuf> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(MAX_LOCATION_FILE_BYTES + 1).ok()?;
+    reader.take((MAX_LOCATION_FILE_BYTES + 1) as u64).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > MAX_LOCATION_FILE_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
     let text = text.trim_end_matches('\n');
     (!text.is_empty() && text.len() <= MAX_LOCATION_BYTES).then(|| PathBuf::from(text))
 }
@@ -100,6 +114,9 @@ pub fn record_location(journal: &Path, location: Option<&Path>) -> std::io::Resu
             _ => Ok(()),
         };
     };
+    if location.len() > MAX_LOCATION_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "project location record exceeds its byte limit"));
+    }
     let mut aside = file.clone().into_os_string();
     aside.push(".new");
     std::fs::write(&aside, location)?;
@@ -108,25 +125,24 @@ pub fn record_location(journal: &Path, location: Option<&Path>) -> std::io::Resu
 
 /// Longest project path recorded beside a journal.
 const MAX_LOCATION_BYTES: usize = 4096;
+const MAX_LOCATION_FILE_BYTES: usize = MAX_LOCATION_BYTES + 1;
 
-/// The journals kept beside `recovery`, oldest first.
+/// Canonical kept copies, ordered by slot number (not a proof of chronology).
+/// Unknown names are untouched. At most MAX_KEPT paths and metadata probes are retained.
 pub fn kept_journals(recovery: &Path) -> Vec<PathBuf> {
     let Some(name) = recovery.file_name().and_then(|n| n.to_str()) else {
         return Vec::new();
     };
-    let prefix = format!("{name}.unrecovered-");
-    let Ok(entries) = recovery.parent().map_or_else(|| std::fs::read_dir("."), std::fs::read_dir) else {
-        return Vec::new();
-    };
-    let mut kept: Vec<(u32, PathBuf)> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let n = entry.file_name().to_str()?.strip_prefix(&prefix)?.parse::<u32>().ok()?;
-            Some((n, entry.path()))
+    (1..=MAX_KEPT)
+        .filter_map(|n| {
+            let path = recovery.with_file_name(format!("{name}.unrecovered-{n}"));
+            match std::fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                // An uncertain or nonregular name is not free or implicitly deletable.
+                _ => Some(path),
+            }
         })
-        .collect();
-    kept.sort();
-    kept.into_iter().map(|(_, path)| path).collect()
+        .collect()
 }
 
 /// Copies a journal holding work at `recovery` to a fresh `<name>.unrecovered-<n>` beside it,
@@ -139,7 +155,12 @@ fn keep_unrecovered(recovery: &std::path::Path, storage: &NativeStorage) -> Resu
     let name = recovery.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "session.journal".into());
     for n in 1..=MAX_KEPT {
         let kept = recovery.with_file_name(format!("{name}.unrecovered-{n}"));
-        if !kept.exists() {
+        let available = match std::fs::symlink_metadata(&kept) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Ok(_) => false,
+            Err(error) => return Err(unreadable(error)),
+        };
+        if available {
             std::fs::copy(recovery, &kept).map_err(unreadable)?;
             // On disk before the original is checkpointed over.
             // Windows flushes only files opened for writing.
@@ -154,8 +175,10 @@ fn keep_unrecovered(recovery: &std::path::Path, storage: &NativeStorage) -> Resu
             return Ok(Some(kept));
         }
     }
-    log::warn!("{MAX_KEPT} unrecovered journals are already kept; not keeping another");
-    Ok(None)
+    Err(Error::new(
+        ErrorKind::Conflict,
+        "all recovery safety-copy slots are occupied, so this session's journal was not replaced and earlier work is untouched; move or delete old session.journal.unrecovered-* copies in the recovery folder, then restart",
+    ))
 }
 
 impl NodeCraftApp {

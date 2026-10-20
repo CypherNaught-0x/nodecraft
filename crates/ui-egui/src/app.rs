@@ -375,7 +375,7 @@ pub struct NodeCraftApp {
     live: live::Live,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
-    recovered: Option<recovery::RecoveryOffer>,
+    recovered: Option<recovery::RecoveredWork>,
     /// This session's recovery journal, beside which the open project file is recorded.
     #[cfg(not(target_arch = "wasm32"))]
     recovery_journal: Option<std::path::PathBuf>,
@@ -732,6 +732,10 @@ impl NodeCraftApp {
         // frozen even after the menu closes, so one keypress creates one node (#267).
         let turn_into_owned_input = self.turn_into.is_some();
         #[cfg(not(target_arch = "wasm32"))]
+        let recovery_owns_input = self.recovery.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let recovery_owns_input = false;
+        #[cfg(not(target_arch = "wasm32"))]
         {
             self.poll_save(ui.ctx());
             let t = *self.theme.tokens();
@@ -998,7 +1002,7 @@ impl NodeCraftApp {
             || file_menu_owns_input
             || drop_blocks;
         // Any popup owns canvas gestures, but its own card controls must still deliver edits.
-        let canvas_blocks = overlay_blocks || popup_owned || file_owns_input || file_menu_owns_input;
+        let canvas_blocks = overlay_blocks || popup_owned || file_owns_input || file_menu_owns_input || recovery_owns_input;
         let shift = ui.input(|i| i.modifiers.shift);
         let background = ui.interact(viewport, ui.id().with("canvas"), Sense::click_and_drag());
         if !canvas_blocks

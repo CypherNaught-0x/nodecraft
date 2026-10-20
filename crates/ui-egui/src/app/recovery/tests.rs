@@ -120,12 +120,25 @@ fn recovered_work_not_yet_saved_survives_a_quit_and_is_offered_again() {
     h.get_by_label("Recover").click();
     h.run();
     assert!(has_added(&h) && h.state().session.document().canvases().values().any(|c| c.nodes().len() > 1));
-    // Discarding it later takes the older copy too.
+    // Resolving one selected copy does not prove any other snapshot is subsumed.
     drop(h);
     let mut h = launch(&dir, None);
+    let selected = h.state().recovery.as_ref().unwrap().kept.clone();
+    let others: Vec<_> = storage::kept_journals(&dir.journal())
+        .into_iter()
+        .filter(|path| path != &selected)
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    assert!(!others.is_empty());
     h.get_by_label("Start from last save").click();
     h.run();
-    assert_eq!(dir.kept_files(), 0);
+    assert!(!selected.exists());
+    for (path, bytes) in others {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 }
 
 #[test]
@@ -139,7 +152,7 @@ fn start_from_last_save_opens_that_file_and_says_so() {
     let status = h.state().session.file_status();
     assert!(!status.dirty);
     assert_eq!(status.location, Some(StorageLocation::Path(dir.project())), "the last save is open");
-    assert_eq!(h.state().notice.as_deref(), Some("Started from the last save; the unsaved changes were discarded."));
+    assert_eq!(h.state().notice.as_deref(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
     assert_eq!(dir.kept_files(), 0, "discarded on the person's word");
     assert!(!asked(&h));
     // An untitled project's work is simply discarded.
@@ -149,7 +162,7 @@ fn start_from_last_save_opens_that_file_and_says_so() {
     h.get_by_label("Start from last save").click();
     h.run();
     assert!(!has_added(&h));
-    assert_eq!(h.state().notice.as_deref(), Some("The unsaved work was discarded."));
+    assert_eq!(h.state().notice.as_deref(), Some("The selected unsaved recovery copy was discarded."));
 }
 
 #[test]
@@ -182,7 +195,7 @@ fn a_damaged_journal_offers_what_replays_and_an_unreadable_one_is_kept() {
     std::fs::write(dir.journal(), &bytes).unwrap();
     let mut h = launch(&dir, None);
     assert!(asked(&h));
-    assert!(h.query_by_label_contains("can't be recovered").is_some(), "says what is lost");
+    h.get_by_label("Recovery stopped at an incomplete or damaged record. Only complete changes before that point are included.");
     h.get_by_label("Recover").click();
     h.run();
     assert!(has_added(&h), "the whole frames before the damage are recovered");
@@ -286,4 +299,394 @@ fn native_offer_keeps_private_asset_ranges_after_its_reader_and_source_are_gone(
     let reference = nodecraft_types::AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: Default::default() };
     let lease = found.snapshot.assets.open_verified(&reference, &Default::default(), &Default::default()).unwrap();
     assert_eq!(lease.read_small(1024, &Default::default()).unwrap(), expected);
+}
+
+/// Two unrelated crashes share the desktop's one app-global journal folder.
+fn mixed_project_crashes(dir: &Scratch) -> (PathBuf, Vec<u8>, nodecraft_graph::Project) {
+    use nodecraft_graph::{Canvas, Change, Project};
+    use nodecraft_types::{CanvasId, ProjectId};
+    let mut other = Project::new(ProjectId::from_bytes([99; 16]), "Public project B").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(CanvasId::from_bytes([1; 16]), "Canvas B") }.apply(&mut other).unwrap();
+    let b = dir.0.join("b.ncraft");
+    std::fs::write(&b, nodecraft_format::encode(&Snapshot { project: other, assets: Default::default(), epoch: 0 }).unwrap()).unwrap();
+    crash(dir, true);
+    let mut h = launch(dir, None);
+    assert!(asked(&h));
+    let a_copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let a_bytes = std::fs::read(&a_copy).unwrap();
+    // The control/MCP path dispatches directly against Session, even with the UI offer pending.
+    h.state_mut().session.dispatch("file.open", &json!({"location":b.to_str().unwrap(),"discard_dirty":true})).unwrap();
+    add_node(&mut h);
+    let expected_b = h.state().session.document().clone();
+    assert_eq!(expected_b.id(), ProjectId::from_bytes([99; 16]));
+    drop(h); // B crashes; A's earlier kept copy has never been recovered or discarded.
+    (a_copy, a_bytes, expected_b)
+}
+
+#[test]
+fn resolving_project_b_recover_and_save_keeps_project_a_exact_copy() {
+    let dir = Scratch::new("cross-project-save-450");
+    let (a_copy, a_bytes, expected_b) = mixed_project_crashes(&dir);
+    let mut h = launch(&dir, None);
+    assert_eq!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project, expected_b);
+    let selected = h.state().recovery.as_ref().unwrap().kept.clone();
+    h.get_by_label("Recover").click();
+    h.run();
+    h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
+    h.run();
+    assert!(a_copy.exists(), "A's never-recovered work must survive saving B");
+    assert_eq!(std::fs::read(&a_copy).unwrap(), a_bytes);
+    assert!(!selected.exists(), "the explicitly recovered and saved copy can be removed");
+    h.state_mut().close_storage();
+    drop(h);
+    let h = launch(&dir, None);
+    assert_eq!(h.state().recovery.as_ref().unwrap().kept, a_copy);
+    assert_ne!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project, expected_b);
+}
+
+#[test]
+fn resolving_project_b_start_last_save_keeps_project_a_exact_copy() {
+    let dir = Scratch::new("cross-project-discard-450");
+    let (a_copy, a_bytes, expected_b) = mixed_project_crashes(&dir);
+    let mut h = launch(&dir, None);
+    assert_eq!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project, expected_b);
+    let selected = h.state().recovery.as_ref().unwrap().kept.clone();
+    h.get_by_label("Start from last save").click();
+    h.run();
+    assert!(a_copy.exists(), "discarding B does not discard A");
+    assert_eq!(std::fs::read(&a_copy).unwrap(), a_bytes);
+    assert!(!selected.exists());
+    assert_eq!(h.state().session.document().id(), expected_b.id());
+    assert!(!has_added(&h), "B's saved state is opened");
+}
+
+#[test]
+fn recovered_unsaved_copy_survives_programmatic_discard_open_of_same_file() {
+    let dir = Scratch::new("discard-open-450");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    h.get_by_label("Recover").click();
+    h.run();
+    assert!(has_added(&h));
+    h.state_mut().session.dispatch("file.open", &json!({"location":dir.project().to_str().unwrap(),"discard_dirty":true})).unwrap();
+    h.run();
+    assert!(!has_added(&h));
+    assert!(copy.exists(), "clean named state is not proof of saving recovered work");
+    assert_eq!(std::fs::read(copy).unwrap(), bytes);
+}
+
+#[test]
+fn recovery_modal_owns_command_wheel_zoom() {
+    let dir = Scratch::new("modal-zoom-450");
+    crash(&dir, false);
+    let mut h = launch(&dir, None);
+    let view = h.state().view;
+    let doc = h.state().session.document().clone();
+    h.input_mut().events.extend([
+        egui::Event::PointerMoved(egui::pos2(80.0, 120.0)),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: egui::vec2(0.0, -40.0),
+            modifiers: egui::Modifiers::COMMAND,
+        },
+    ]);
+    h.step();
+    assert!(asked(&h));
+    assert_eq!(h.state().view, view, "derived zoom belongs to the recovery prompt");
+    assert_eq!(h.state().session.document(), &doc);
+}
+
+#[test]
+fn full_kept_slots_refuse_before_replacing_the_newest_live_journal() {
+    let dir = Scratch::new("full-slots-450");
+    crash(&dir, true);
+    let live = std::fs::read(dir.journal()).unwrap();
+    for n in 1..=storage::MAX_KEPT {
+        std::fs::write(dir.0.join(format!("session.journal.unrecovered-{n}")), format!("old retained {n}")).unwrap();
+    }
+    let result = NodeCraftApp::storage_session(StorageSetup { recovery: dir.journal(), open: None });
+    let error = result.err().expect("full retention must not silently checkpoint over the newest work");
+    assert!(error.message.contains("recovery folder") && error.message.contains("unrecovered"), "the refusal says how to free a slot: {}", error.message);
+    assert_eq!(std::fs::read(dir.journal()).unwrap(), live);
+    for n in 1..=storage::MAX_KEPT {
+        assert_eq!(std::fs::read_to_string(dir.0.join(format!("session.journal.unrecovered-{n}"))).unwrap(), format!("old retained {n}"));
+    }
+}
+
+#[test]
+fn incomplete_header_payload_and_checksum_damage_share_truthful_warning_and_prefix() {
+    use nodecraft_format::journal::RecoveryDamageReason;
+    for (kind, reason) in
+        [Some(RecoveryDamageReason::IncompleteHeader), Some(RecoveryDamageReason::IncompletePayload), Some(RecoveryDamageReason::ChecksumMismatch), None]
+            .into_iter()
+            .enumerate()
+    {
+        let dir = Scratch::new(&format!("damage-wording-{kind}-450"));
+        let mut h = launch(&dir, None);
+        add_node(&mut h);
+        let prefix = std::fs::metadata(dir.journal()).unwrap().len() as usize;
+        let canvas = h.state().canvas;
+        let second = nodecraft_types::NodeId::from_bytes([81; 16]);
+        h.state_mut().session.dispatch("node.create", &json!({"canvas":canvas,"id":second,"kind":"source.text","pos":{"x":0.0,"y":400.0}})).unwrap();
+        drop(h);
+        let mut bytes = std::fs::read(dir.journal()).unwrap();
+        match kind {
+            0 => bytes.truncate(prefix + 7),
+            1 => bytes.truncate(bytes.len() - 1),
+            2 => *bytes.last_mut().unwrap() ^= 1,
+            _ => {}
+        }
+        std::fs::write(dir.journal(), bytes).unwrap();
+        // Read the damage before the offer pins its native context/lock.
+        let replay = storage::replay_kept(&dir.journal()).unwrap();
+        assert_eq!(replay.damage.map(|damage| damage.reason), reason);
+        drop(replay);
+        let mut h = launch(&dir, None);
+        let warning = h.query_by_label("Recovery stopped at an incomplete or damaged record. Only complete changes before that point are included.");
+        assert_eq!(warning.is_some(), reason.is_some());
+        assert!(h.query_by_label_contains("The very last change").is_none());
+        h.get_by_label("Recover").click();
+        h.run();
+        assert!(has_added(&h), "complete prefix survives {kind}");
+        assert_eq!(h.state().session.document().canvases().values().any(|canvas| canvas.nodes().contains_key(&second)), reason.is_none());
+    }
+}
+
+#[test]
+#[ignore = "manual public-safe #450 evidence; requires NODECRAFT_REVIEW_EVIDENCE and NODECRAFT_450_EXPECT_RETAINED"]
+fn render_recovery_safety450_evidence() {
+    let folder = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    let dir = Scratch::new("damage-evidence-450");
+    crash(&dir, false);
+    let mut bytes = std::fs::read(dir.journal()).unwrap();
+    bytes.extend_from_slice(b"partial");
+    std::fs::write(dir.journal(), bytes).unwrap();
+    let mut h = launch(&dir, None);
+    h.render().unwrap().save(folder.join("incomplete-record.png")).unwrap();
+    drop(h);
+    let dir = Scratch::new("failed-open-evidence-450");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let selected = h.state().recovery.as_ref().unwrap().kept.clone();
+    std::fs::remove_file(dir.project()).unwrap();
+    h.get_by_label("Start from last save").click();
+    h.run();
+    let retained = std::env::var("NODECRAFT_450_EXPECT_RETAINED").unwrap() == "1";
+    assert_eq!(selected.exists(), retained);
+    h.render().unwrap().save(folder.join("failed-last-save.png")).unwrap();
+    println!("Actual failed last-save open: selected safety copy retained={retained}");
+}
+
+#[test]
+fn same_uuid_and_path_divergent_copies_are_not_implicit_ancestors() {
+    let dir = Scratch::new("same-uuid-fork-450");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let older = h.state().recovery.as_ref().unwrap().kept.clone();
+    let original = std::fs::read(&older).unwrap();
+    let old_project = h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project.clone();
+    h.state_mut().session.dispatch("file.open", &json!({"location":dir.project().to_str().unwrap(),"discard_dirty":true})).unwrap();
+    let canvas = h.state().canvas;
+    h.state_mut()
+        .session
+        .dispatch("node.create", &json!({"canvas":canvas,"id":nodecraft_types::NodeId::from_bytes([81;16]),"kind":"source.text","pos":{"x":0,"y":0}}))
+        .unwrap();
+    h.run();
+    drop(h);
+    let mut h = launch(&dir, None);
+    let selected = h.state().recovery.as_ref().unwrap().kept.clone();
+    let fork = h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project.clone();
+    assert_eq!(fork.id(), old_project.id());
+    assert_ne!(fork, old_project);
+    assert_eq!(storage::recorded_location(&older), storage::recorded_location(&selected));
+    h.get_by_label("Recover").click();
+    h.run();
+    h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
+    h.run();
+    assert_eq!(std::fs::read(older).unwrap(), original);
+    assert!(!selected.exists());
+}
+
+#[test]
+fn multiple_same_uuid_open_save_calls_between_frames_do_not_save_the_recovered_document() {
+    let dir = Scratch::new("many-open-save-450");
+    crash(&dir, true);
+    let other = dir.0.join("same-uuid-other.ncraft");
+    std::fs::copy(dir.project(), &other).unwrap();
+    let mut h = launch(&dir, None);
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    h.get_by_label("Recover").click();
+    h.run();
+    for path in [&other, &dir.project()] {
+        h.state_mut().session.dispatch("file.open", &json!({"location":path.to_str().unwrap(),"discard_dirty":true})).unwrap();
+        h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
+    }
+    h.run();
+    assert_eq!(std::fs::read(copy).unwrap(), bytes);
+    assert!(h.state().recovered.is_none(), "detached tracking keeps the disk copy");
+}
+
+#[test]
+fn recovered_replacement_and_save_as_between_frames_keeps_the_original_copy() {
+    let dir = Scratch::new("recover-replacement-450");
+    crash(&dir, false);
+    let mut h = launch(&dir, None);
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    h.get_by_label("Recover").click();
+    h.run();
+    let mut replacement = Snapshot { project: h.state().session.document().clone(), assets: h.state().session.assets().clone(), epoch: 0 };
+    nodecraft_graph::Change::SetProjectTitle { title: "Different adopted work".into() }.apply(&mut replacement.project).unwrap();
+    h.state_mut().session.recover(replacement, None).unwrap();
+    h.state_mut().session.dispatch("file.save_as", &json!({"location":dir.project().to_str().unwrap()})).unwrap();
+    h.run();
+    assert_eq!(std::fs::read(copy).unwrap(), bytes);
+}
+
+#[test]
+fn failed_last_save_open_keeps_the_exact_selected_copy() {
+    let dir = Scratch::new("failed-open-450");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    let doc = h.state().session.document().clone();
+    std::fs::remove_file(dir.project()).unwrap();
+    h.get_by_label("Start from last save").click();
+    h.run();
+    assert_eq!(std::fs::read(copy).unwrap(), bytes);
+    assert_eq!(h.state().session.document(), &doc);
+    assert!(h.state().notice.as_ref().unwrap().contains("kept"));
+}
+
+#[test]
+fn pending_offer_never_overwrites_an_intervening_unsaved_recovery() {
+    let dir = Scratch::new("pending-adoption-450");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    let mut replacement = Snapshot { project: h.state().session.document().clone(), assets: h.state().session.assets().clone(), epoch: 0 };
+    nodecraft_graph::Change::SetProjectTitle { title: "Intervening unsaved work".into() }.apply(&mut replacement.project).unwrap();
+    let expected = replacement.project.clone();
+    h.state_mut().session.recover(replacement, None).unwrap();
+    h.get_by_label("Start from last save").click();
+    h.run();
+    assert_eq!(h.state().session.document(), &expected);
+    assert_eq!(std::fs::read(copy).unwrap(), bytes);
+}
+
+#[test]
+fn modal_navigation_inputs_and_choice_frame_do_not_leak_to_the_canvas() {
+    for (kind, event) in [
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: egui::vec2(0.0, -40.0),
+            modifiers: egui::Modifiers::NONE,
+        },
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: egui::vec2(0.0, -40.0),
+            modifiers: egui::Modifiers::COMMAND,
+        },
+        egui::Event::Zoom(1.2),
+        egui::Event::Key { key: egui::Key::Plus, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = Scratch::new(&format!("modal-input-{kind}-450"));
+        crash(&dir, false);
+        let mut h = launch(&dir, None);
+        let view = h.state().view;
+        let document = h.state().session.document().clone();
+        h.input_mut().events.extend([egui::Event::PointerMoved(egui::pos2(80.0, 120.0)), event]);
+        h.step();
+        assert_eq!(h.state().view, view, "pending input {kind}");
+        assert_eq!(h.state().session.document(), &document);
+        // The harness queues one genuine pointer event per frame, including hover before
+        // press, just as its other modal-button regressions do. Do not settle idle frames.
+        h.get_by_label("Recover").click();
+        h.step();
+        assert!(h.state().recovery.is_none(), "choice input {kind}");
+        assert_eq!(h.state().view.zoom, view.zoom);
+        let settled = h.state().view;
+        for _ in 0..12 {
+            h.step();
+            assert_eq!(h.state().view, settled, "no deferred modal wheel input {kind}");
+        }
+        let revision = h.state().session.revision();
+        h.input_mut().events.extend([egui::Event::PointerMoved(egui::pos2(80.0, 120.0)), egui::Event::Zoom(1.1)]);
+        h.step();
+        assert!(h.state().view.zoom > settled.zoom, "fresh navigation resumes");
+        assert_eq!(h.state().session.revision(), revision);
+    }
+}
+
+#[test]
+fn native_streaming_offer_above_classic_asset_cap_recovers_and_saves_without_resident_fallback() {
+    use nodecraft_format::{
+        ArchivePlan, AssetStore, CheckpointPlan, NativeStorage, ProjectStorage,
+        asset_source::{AssetRange, MemorySource},
+    };
+    use nodecraft_graph::{Canvas, Change, Node, Project};
+    use nodecraft_types::{AssetRef, CanvasId, NodeId, ProjectId, Value};
+    use std::sync::Arc;
+    let dir = Scratch::new("native-large-450");
+    let cancel = Default::default();
+    let metrics = Default::default();
+    let length = nodecraft_format::MAX_ASSET_BYTES + 1;
+    let mut native = NativeStorage::new(dir.journal()).unwrap();
+    let mut assets = AssetStore::with_context(native.asset_context().unwrap());
+    let source = AssetRange::new(Arc::new(MemorySource::new(Arc::from(vec![b'x'; length]))), 0, length as u64).unwrap();
+    let hash = assets.import_stream(&source, &cancel, &metrics).unwrap();
+    let reference = AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: Default::default() };
+    let mut project = Project::new(ProjectId::from_bytes([97; 16]), "Public native recovery").unwrap();
+    let canvas = CanvasId::from_bytes([1; 16]);
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+    let mut node = Node::new(NodeId::from_bytes([96; 16]), "unknown.public.kind");
+    node.config.insert("content".into(), Value::Media(reference.clone()));
+    Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+    let snapshot = Snapshot { project: project.clone(), assets, epoch: 0 };
+    let archive = ArchivePlan::prepare(&snapshot, native.capability(), &cancel, &metrics).unwrap();
+    let checkpoint = CheckpointPlan::new(archive).unwrap();
+    native.checkpoint_plan(&checkpoint, &cancel, &metrics).unwrap();
+    let change = nodecraft_graph::Changeset::new(vec![Change::SetProjectTitle { title: "Public unsaved native recovery".into() }]);
+    let admitted = nodecraft_format::journal::AdmittedReplay::new(change.clone(), &snapshot.assets).unwrap();
+    let recorded = nodecraft_format::RecordedAssets::new(checkpoint.asset_lengths()).unwrap();
+    let (frame, _) = admitted.into_plan(checkpoint.identity(), 1, &recorded, native.capability(), &cancel, &metrics).unwrap();
+    native.append_plan(&frame, &cancel, &metrics).unwrap();
+    native.flush().unwrap();
+    change.apply(&mut project).unwrap();
+    drop((native, snapshot, checkpoint, frame));
+    let mut h = launch(&dir, None);
+    assert!(asked(&h));
+    assert!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.assets.get(&hash).is_none());
+    h.get_by_label("Recover").click();
+    h.run();
+    assert_eq!(h.state().session.document(), &project);
+    let lease = h.state().session.assets().open_verified(&reference, &cancel, &metrics).unwrap();
+    assert_eq!(lease.byte_len(), length as u64);
+    let mut first = [0; 16];
+    std::io::Read::read_exact(&mut lease.reader(metrics.clone()), &mut first).unwrap();
+    assert_eq!(first, [b'x'; 16]);
+    drop(lease);
+    h.state_mut().session.dispatch("file.save_as", &json!({"location":dir.project().to_str().unwrap()})).unwrap();
+    h.run();
+    assert_eq!(dir.kept_files(), 0);
+    h.state_mut().close_storage();
+    drop(h);
+    let mut reopened = NativeStorage::new(dir.0.join("separate-recovery")).unwrap();
+    let (loaded, _, _) = reopened.prepare_open_snapshot(&StorageLocation::Path(dir.project()), &cancel, &metrics).unwrap().into_parts();
+    assert_eq!(loaded.project, project);
+    assert!(loaded.assets.get(&hash).is_none());
+    let lease = loaded.assets.open_verified(&reference, &cancel, &metrics).unwrap();
+    assert_eq!(lease.byte_len(), length as u64);
 }

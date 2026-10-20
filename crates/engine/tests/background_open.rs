@@ -321,3 +321,26 @@ fn on_native_storage_a_cancelled_save_or_open_leaves_the_files_and_the_journal_a
     assert_eq!(session.poll_file().unwrap().unwrap()["saved"], true);
     assert!(next.exists());
 }
+
+/// Recovery ownership (#450): the lineage changes when an open's document is adopted, not when
+/// it is dispatched, so a cancelled or failed open leaves the current document's copy owned.
+#[test]
+fn a_background_open_replaces_the_lineage_only_when_it_publishes() {
+    let gate = Arc::new(Gate::default());
+    let (mut session, _) = setup(gate.clone());
+    let lineage = session.document_lineage();
+    assert!(session.has_saved_document(&lineage), "setup saved this document");
+    background_open(&mut session);
+    session.dispatch("file.cancel", &json!({})).unwrap();
+    gate.release();
+    assert!(session.poll_file().unwrap().is_err());
+    assert!(session.is_current_document(&lineage) && session.has_saved_document(&lineage), "a cancelled open adopts nothing");
+
+    background_open(&mut session);
+    assert!(session.is_current_document(&lineage), "still reading");
+    gate.release();
+    assert_eq!(session.poll_file().unwrap().unwrap()["opened"], true);
+    assert!(!session.is_current_document(&lineage));
+    let opened = session.document_lineage();
+    assert!(!session.has_saved_document(&opened), "opening a file is not saving this document");
+}

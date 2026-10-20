@@ -201,3 +201,45 @@ fn file_picker_actions_are_discoverable_for_an_untitled_project() {
         assert!(entries.iter().any(|entry| entry.target == crate::palette::Target::Command(id)), "missing {id}");
     }
 }
+
+#[test]
+fn location_sidecar_reads_are_capped_before_and_after_metadata() {
+    use std::io::Read;
+    let dir = Scratch::new("location-cap-450");
+    let journal = dir.0.join("journal");
+    let path = location_file(&journal);
+    std::fs::write(&path, vec![b'a'; MAX_LOCATION_BYTES]).unwrap();
+    assert_eq!(recorded_location(&journal).unwrap().to_str().unwrap().len(), MAX_LOCATION_BYTES);
+    std::fs::write(&path, vec![b'a'; MAX_LOCATION_FILE_BYTES + 1]).unwrap();
+    assert!(recorded_location(&journal).is_none());
+    std::fs::write(&path, [0xff]).unwrap();
+    assert!(recorded_location(&journal).is_none());
+    std::fs::write(&path, "public-λ.ncraft\n").unwrap();
+    assert_eq!(recorded_location(&journal), Some(PathBuf::from("public-λ.ncraft")));
+    struct Growing {
+        supplied: usize,
+    }
+    impl Read for Growing {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            out.fill(b'a');
+            self.supplied += out.len();
+            Ok(out.len())
+        }
+    }
+    let mut growth = Growing { supplied: 0 };
+    assert!(bounded_location(&mut growth).is_none());
+    assert_eq!(growth.supplied, MAX_LOCATION_FILE_BYTES + 1);
+    assert!(bounded_location(std::io::Cursor::new(vec![b'\n'; MAX_LOCATION_FILE_BYTES + 100])).is_none());
+}
+#[test]
+fn kept_inventory_is_canonical_bounded_and_does_not_claim_chronology() {
+    let dir = Scratch::new("inventory-450");
+    let journal = dir.0.join("session.journal");
+    for n in 1..=MAX_KEPT + 10 {
+        std::fs::write(dir.0.join(format!("session.journal.unrecovered-{n}")), b"retained").unwrap();
+    }
+    let kept = kept_journals(&journal);
+    assert_eq!(kept.len(), MAX_KEPT as usize);
+    assert!(kept.iter().all(|path| path.file_name().unwrap().to_str().unwrap().rsplit('-').next().unwrap().parse::<u32>().unwrap() <= MAX_KEPT));
+    assert!(dir.0.join("session.journal.unrecovered-100").exists(), "unknown slots remain untouched");
+}

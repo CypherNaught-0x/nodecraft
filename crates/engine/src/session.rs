@@ -33,6 +33,8 @@ pub const MAX_EVENTS: usize = 256;
 
 mod imports;
 pub use imports::PreparedImports;
+mod file_lifecycle;
+pub use file_lifecycle::DocumentLineage;
 
 /// Notification log entry. Each consumer keeps its own revision cursor and reads the current
 /// document after a notification. A lagging consumer receives a resync error, not partial history.
@@ -144,6 +146,7 @@ fn opening() -> Error {
 /// Abort-only targets (including the default wasm target) still rely on fallible validation.
 pub struct Session {
     view_identity: std::sync::Arc<()>,
+    file_lifecycle: file_lifecycle::FileLifecycle,
     routing: crate::provider_routing::RoutingAuthority,
     document: Project,
     registry: Registry,
@@ -200,6 +203,7 @@ impl Session {
     ) -> Self {
         Self {
             view_identity: std::sync::Arc::new(()),
+            file_lifecycle: file_lifecycle::FileLifecycle::new(),
             document,
             registry,
             kinds,
@@ -390,10 +394,15 @@ impl Session {
         self.redo = History::default();
         self.gesture = None;
         self.state = pending.revision;
+        // Adoption, not dispatch, replaces the lineage: a background open may still fail.
+        self.file_lifecycle.replaced(Arc::clone(&pending.identity));
         self.publish(pending.revision, "file.open", pending.next, pending.identity);
         serde_json::json!({"opened":true,"read_only":self.file_status().read_only})
     }
+    /// A save's successful completion, inline or settled from the background (#450): only now
+    /// may the host treat this document's recovery copy as superseded.
     fn saved(&mut self, pending: PendingSave) {
+        self.file_lifecycle.saved();
         self.assets.retain(&pending.roots);
         self.admission_identity = Arc::new(());
         self.execution.advance(pending.next);
@@ -432,13 +441,26 @@ impl Session {
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
         self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
     }
+    /// Host observation of this adopted document; not inferred from ids, paths or revisions.
+    pub fn document_lineage(&self) -> DocumentLineage {
+        self.file_lifecycle.current()
+    }
+    pub fn is_current_document(&self, lineage: &DocumentLineage) -> bool {
+        self.file_lifecycle.is_current(lineage)
+    }
+    /// True only after this document's destination was successfully saved. A later failed
+    /// recovery checkpoint does not undo that save. Replacing the document invalidates it.
+    pub fn has_saved_document(&self, lineage: &DocumentLineage) -> bool {
+        self.file_lifecycle.has_saved(lineage)
+    }
     pub fn status_revision(&self) -> u64 {
         self.status_revision
     }
     /// Host lifecycle boundary (#408): replaces the document with work recovered from an earlier
     /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
     /// session's file, or untitled), history starts fresh, and the change is published like an
-    /// open (`file.recover`). Refused once this session has edits of its own: they'd be lost.
+    /// open (`file.recover`, a synthetic lifecycle event id, not a registered command).
+    /// Refused once this session has edits of its own: they'd be lost.
     pub fn recover(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
         self.settle_for_edit()?;
         if self.can_undo() || self.can_redo() {
@@ -466,6 +488,7 @@ impl Session {
         self.redo = History::default();
         self.gesture = None;
         self.state = revision;
+        self.file_lifecycle.replaced(Arc::clone(&identity));
         self.publish(revision, "file.recover", next, identity);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
