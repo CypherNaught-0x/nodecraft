@@ -151,19 +151,23 @@ impl NodeCraftApp {
             }
             if let Some(error) = &confirm.error {
                 ui.colored_label(t.danger, error);
+                // The host may have taken the run before it failed, so the same price is never
+                // offered again from here; generating again quotes afresh.
+                ui.label("The run may have started. Check its results before generating again.");
             }
             ui.horizontal(|ui| {
-                if stale {
+                let failed = confirm.error.is_some();
+                if stale && !failed {
                     requote = ui.button("Quote again").clicked();
-                } else if quote.allowed {
-                    let label = if quote.totals.is_empty() { "Generate".to_owned() } else { format!("Generate for {}", quote.price()) };
+                } else if quote.allowed && !failed {
+                    let label = if quote.totals.is_empty() { "Generate now".to_owned() } else { format!("Generate for {}", quote.price()) };
                     start = ui.add_enabled(quote.acceptable(confirm.partial), egui::Button::new(label)).clicked();
                 }
-                close |= ui.button("Cancel").clicked();
+                close |= ui.button(if failed { "Close" } else { "Cancel" }).clicked();
             });
         });
         close |= modal.should_close();
-        if start && !stale {
+        if start && !stale && confirm.error.is_none() {
             let quote = &confirm.quote;
             let mut accept = json!({"token": quote.token, "amounts": quote.amounts});
             if !quote.complete {
@@ -215,6 +219,10 @@ impl NodeCraftApp {
         }
         let t = self.theme.tokens();
         let screen = self.view.rect_to_screen(viewport.min, rect);
+        // Painted includes the cull margin; a card out of view gets no floating toolbar.
+        if !screen.intersects(viewport) {
+            return intents;
+        }
         let above = card::outer_insets(t, self.view.zoom, false).1 * self.view.zoom + t.toolbar_gap + t.toolbar_height;
         let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
         let shown = |name: &str| cached.visible.contains(name);
@@ -224,7 +232,7 @@ impl NodeCraftApp {
             ui.add_enabled_ui(interactive, |ui| {
                 egui::Frame::new()
                     .fill(t.panel_fill)
-                    .stroke(egui::Stroke::new(1.0, t.panel_stroke))
+                    .stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke))
                     .corner_radius(t.panel_radius)
                     .inner_margin(t.control_gap)
                     .show(ui, |ui| {
@@ -234,7 +242,10 @@ impl NodeCraftApp {
                                 Some(Value::Text(id)) => line(id),
                                 _ => "Choose model".into(),
                             };
-                            let short: String = model.chars().take(MAX_MODEL_CHARS).collect();
+                            let mut short: String = model.chars().take(MAX_MODEL_CHARS).collect();
+                            if model.chars().nth(MAX_MODEL_CHARS).is_some() {
+                                short.push('…');
+                            }
                             let r = ui
                                 .add_enabled(editable(nodecraft_nodes::generation::MODEL), egui::Button::new(&short))
                                 .on_hover_text(format!("Model: {model}. Click to change it."));

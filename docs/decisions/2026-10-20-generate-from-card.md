@@ -18,6 +18,10 @@
   The counter and prompt are drawn in the composer and left out of the card's parameter list.
 - **Composer below the image.** The prompt sits under the result rather than over it, so it never
   hides the image and keeps the card's existing layout and culling.
-- **Not yet.** Text-to-image/image-to-image modes with ordered references, strength, prompt
-  assistance, identity references and Download are follow-ups; the desktop app still installs no
-  run host, so Generate there reports the engine's error until that lands (#409, #301).
+- **A failed start is not retried from the same price.** If `run.start` fails, the host may
+  already have taken the run, so the dialog shows the error and offers only *Close*; generating
+  again quotes afresh and asks again.
+- **Not yet (#500).** Image-to-image modes with ordered and identity references, strength, prompt
+  assistance, Download, counts that are a discrete choice, marking outputs stale on edit (#211)
+  and model-switch/mode kittests are follow-ups; the desktop app still installs no run host, so
+  Generate there reports the engine's error until that lands (#409, #301).

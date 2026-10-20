@@ -41,6 +41,12 @@ default = { type = "text", value = "1:1" }
 "#;
 
 fn scene(model: &str) -> (Harness<'static, NodeCraftApp>, Runs) {
+    scene_with(model, false)
+}
+
+/// `failing`: the host takes the run and then reports an error, as a host that lost its
+/// connection after submitting would.
+fn scene_with(model: &str, failing: bool) -> (Harness<'static, NodeCraftApp>, Runs) {
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -67,7 +73,7 @@ fn scene(model: &str) -> (Harness<'static, NodeCraftApp>, Runs) {
     services
         .register_run_host(move |run| {
             sink.lock().unwrap().push(run);
-            Ok(json!({"accepted": true}))
+            if failing { Err(Error::new(ErrorKind::Internal, "the run host lost its connection")) } else { Ok(json!({"accepted": true})) }
         })
         .unwrap();
     let mut routing = ProviderRouting::new();
@@ -148,7 +154,23 @@ fn enter_on_the_card_generates_and_f2_still_renames() {
     h.key_press(egui::Key::Enter);
     h.run();
     assert_eq!(node(h.state()).title, "Square");
+    assert!(h.state().run_confirm.is_none(), "the Enter that commits a rename does not generate");
     assert!(runs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_failed_start_never_offers_the_same_price_again() {
+    let (mut h, runs) = scene_with("mock-square", true);
+    press(&mut h, Role::Button, "Generate");
+    let accept = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
+    press(&mut h, Role::Button, &accept);
+    assert_eq!(runs.lock().unwrap().len(), 1, "the host took the run before it failed");
+    assert!(h.query_by_label_contains("lost its connection").is_some(), "the error shows in the dialog");
+    assert!(h.query_by_label_contains("may have started").is_some());
+    assert!(h.query_by_label_contains("Generate for").is_none(), "a second click can't start a second paid run");
+    press(&mut h, Role::Button, "Close");
+    assert!(h.state().run_confirm.is_none());
+    assert_eq!(runs.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -168,7 +190,7 @@ fn cmd_enter_in_the_prompt_saves_it_and_quotes_the_edited_prompt() {
 }
 
 #[test]
-fn without_a_run_host_generate_reports_why_instead_of_spending() {
+fn without_run_resources_generate_reports_why_instead_of_spending() {
     let mut project = Project::new(ProjectId::from_bytes([84; 16]), "No host").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
     let mut card = nodecraft_graph::Node::new(N, nodecraft_nodes::generation::KIND);
