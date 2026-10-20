@@ -365,7 +365,7 @@ fn too_many_jobs_are_refused_and_a_step_with_none_finishes_at_once() {
 }
 
 /// Text in, text out, through `n` jobs that each emit a piece: lets a test fail one of several.
-struct Pieces(NodeDescriptor);
+pub(super) struct Pieces(pub(super) NodeDescriptor);
 impl NodeKind for Pieces {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.0

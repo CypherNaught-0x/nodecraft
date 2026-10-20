@@ -127,3 +127,82 @@ fn a_partial_result_with_other_inputs_now_runs_in_full_and_none_finished_fails_t
     assert!(finished.is_empty());
     assert_eq!(failed.iter().map(|f| f.reason.as_str()).collect::<Vec<_>>(), ["provider said no"]);
 }
+
+#[test]
+fn an_item_with_several_jobs_fails_alone_and_its_late_siblings_are_ignored() {
+    // A batch of two into a kind that plans three jobs per item.
+    let mut kinds = kinds();
+    let pieces = nodecraft_nodes::NodeDescriptor {
+        id: "test.pieces".into(),
+        label: "Pieces".into(),
+        category: nodecraft_nodes::Category::Generation,
+        inputs: vec![nodecraft_graph::Port {
+            name: "in".into(),
+            port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false },
+        }],
+        outputs: vec![nodecraft_graph::Port {
+            name: "items".into(),
+            port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: true },
+        }],
+        params: Default::default(),
+        quick_add: None,
+    };
+    kinds.register(Box::new(super::tests::Pieces(pieces))).unwrap();
+    let mut p = batched();
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    node.kind = "test.pieces".into();
+    node.outputs =
+        vec![nodecraft_graph::Port { name: "items".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: true } }];
+    let out = p.canvases().get(&C).unwrap().edges().values().filter(|e| e.from.node == id(2)).map(|e| e.id).collect::<Vec<_>>();
+    let mut changes: Vec<Change> = out.into_iter().map(|id| Change::Disconnect { canvas: C, id }).collect();
+    changes.push(Change::SetNode { canvas: C, node });
+    Changeset::new(changes).apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let crate::planner::Planned::Ready(plan) =
+        crate::planner::plan(canvas, &kinds, &crate::planner::RunMode::Selected, &[id(2)].into_iter().collect(), &Default::default()).unwrap()
+    else {
+        panic!("blocked")
+    };
+    let (mut run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let ids: Vec<JobId> = first.jobs.iter().map(|j| j.id).collect();
+    assert_eq!(ids.len(), 6);
+    let done = |n: &str| vec![("items".to_owned(), text(n))];
+    assert_eq!(run.job_done(&kinds, ids[0], done("0")), Progress::default());
+    // Item 0's second job fails: only its own unfinished sibling is cancelled.
+    let progress = run.job_failed(&kinds, ids[1], "provider said no");
+    assert_eq!(progress.cancel, vec![ids[2]]);
+    assert!(progress.failed.is_empty() && progress.finished.is_empty(), "item 1 is still running");
+    // The cancelled sibling's late report changes nothing.
+    assert_eq!(run.job_done(&kinds, ids[2], done("2")), Progress::default());
+    let mut last = Progress::default();
+    for (n, job) in ids[3..].iter().enumerate() {
+        last = run.job_done(&kinds, *job, done(&n.to_string()));
+    }
+    assert!(run.is_finished());
+    let [result] = last.finished.as_slice() else { panic!("{last:?}") };
+    let incomplete = result.generation.incomplete.as_ref().unwrap();
+    assert_eq!(incomplete.missing, vec![MissingItem { item: 0, why: Missing::Failed }]);
+    assert_eq!(result.generation.outputs, vec![Value::List(vec![Value::List(Vec::new()), Value::List(vec![text("0"), text("1"), text("2")])])]);
+    assert_eq!(last.failed.iter().map(|f| f.reason.as_str()).collect::<Vec<_>>(), ["1 of 2 items didn't finish: provider said no"]);
+}
+
+#[test]
+fn a_resumed_item_that_fails_again_keeps_the_finished_ones() {
+    let mut p = batched();
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, _, _) = drive(&mut run, &kinds, first, |t| (t == "OWL").then_some(false));
+    record(&mut p, &finished);
+    let first = finished.first().unwrap().generation.clone();
+
+    let plan = plan_of(&p, &[2]);
+    let (mut run, start) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts([0xcd; 16], 1, RunLimits::default())).unwrap();
+    let (finished, failed, jobs) = drive(&mut run, &kinds, start, |t| (t == "OWL").then_some(false));
+    assert_eq!(jobs.len(), 1, "only the owl ran");
+    assert_eq!(failed.iter().map(|f| f.reason.as_str()).collect::<Vec<_>>(), ["1 of 2 items didn't finish: provider said no"]);
+    let again = &finished.first().unwrap().generation;
+    assert_ne!(again.id, first.id);
+    assert_eq!((&again.outputs, &again.items, &again.incomplete), (&first.outputs, &first.items, &first.incomplete), "the fox is kept as it was");
+    assert_eq!(again.settings, first.settings);
+}

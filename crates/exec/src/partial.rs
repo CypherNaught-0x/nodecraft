@@ -25,7 +25,8 @@ pub struct Resume {
 impl Resume {
     /// Whether item `index` is one this run plans.
     pub fn runs(&self, index: usize) -> bool {
-        self.missing.iter().any(|m| usize::try_from(m.item).is_ok_and(|item| item == index))
+        // Validation keeps `missing` sorted and unique.
+        u32::try_from(index).is_ok_and(|index| self.missing.binary_search_by_key(&index, |m| m.item).is_ok())
     }
 }
 

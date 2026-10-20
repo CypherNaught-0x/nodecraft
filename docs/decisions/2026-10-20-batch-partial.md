@@ -22,7 +22,15 @@
   avoid a double charge, but what a provider holds under them is the outcome we are retrying: a
   failed job answers with its failure and a provider-side cancel with `Cancelled`, so the retry
   could never succeed. Not resubmitting the finished items is what saves the money. An item whose
-  job ended with its billing uncertain (a lost reply) also runs again under a new key;
-  recovering such an item under its old key is a possible follow-up.
+  job may have been billed also runs again under a new key, so it can be charged twice: one
+  whose reply was lost (an uncertain failure after retries), and one the provider finished whose
+  outputs then failed here (a download or validation error). Recovering those under their old
+  keys is #517.
+- **Inputs made in the same run run in full.** A step resumes only when its inputs are known at
+  planning time. Re-running an upstream node together with the partial one runs every item, even
+  when the upstream turns out unchanged; comparing hashes once the inputs are made is tracked as
+  #518.
+- **A re-run that is itself cut short replaces the active result** with its own partial, which
+  still carries the items kept from before, so nothing already paid for is lost.
 - **Order in the run host.** A step's finished result is recorded before its failure is reported,
   so the card ends showing the failure badge over the partial result rather than clearing it.

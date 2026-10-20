@@ -54,8 +54,8 @@ pub struct Generation {
     /// recorded before settings were kept, or one whose settings were too large to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<JobSettings>,
-    /// A fanned result some of whose items have no value (#480): which, and what their re-runs
-    /// are keyed by. `None` for a complete result. A partial result never stands in for a
+    /// A fanned result some of whose items have no value (#480): which, and why each is
+    /// missing. `None` for a complete result. A partial result never stands in for a
     /// complete one: it is stale, and nothing downstream reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incomplete: Option<Incomplete>,
