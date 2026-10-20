@@ -61,7 +61,9 @@ struct Style<'a> {
 
 fn style(layer: &Layer) -> Result<Style<'_>, ImageError> {
     match &layer.content {
-        Content::Text { text, font, size, line_spacing, tracking, align, .. } => Ok(Style { text, font, size: *size, line_spacing: *line_spacing, tracking: *tracking, align: *align }),
+        Content::Text { text, font, size, line_spacing, tracking, align, .. } => {
+            Ok(Style { text, font, size: *size, line_spacing: *line_spacing, tracking: *tracking, align: *align })
+        }
         _ => Err(bad("text layer")),
     }
 }

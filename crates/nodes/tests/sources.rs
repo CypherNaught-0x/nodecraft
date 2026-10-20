@@ -108,6 +108,8 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
             }
             // A technique node (#94) needs the version it pins, and runs only once that is inlined.
             "structure.technique" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
+            // The layer editor (#101) draws text and shapes with nothing connected.
+            "image.layers" => assert!(matches!(result.unwrap().as_slice(), [JobSpec::Action { inputs, .. }] if inputs.is_empty())),
             // Action kinds (#410) need a connected input before they can be planned.
             id if descriptor.category == nodecraft_nodes::Category::Action => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "{id}"),
             id => panic!("add an explicit default-planning contract for builtin {id}"),

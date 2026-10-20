@@ -76,8 +76,13 @@ pub enum Content {
     /// The `nth` image connected from node `origin`, as stored in the node. Planning resolves it
     /// to `Image`, so a source keeps its layer when wires are reordered.
     Source { origin: String, nth: u32 },
-    /// The `input`th image handed to `composite`.
-    Image { input: u32 },
+    /// The `input`th image handed to `composite`. With `fit`, the image keeps its proportions
+    /// and is centred in the box at the largest size that fits; otherwise it fills the box.
+    Image {
+        input: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        fit: bool,
+    },
     Text {
         text: String,
         #[serde(default = "builtin_font")]
@@ -191,6 +196,111 @@ impl Layers {
     pub fn get(&self, id: &str) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
     }
+
+    /// Which of `count` inputs a visible layer shows: the only ones `composite` needs decoded.
+    pub fn shown(&self, count: usize) -> Vec<bool> {
+        let mut shown = vec![false; count];
+        for layer in self.layers.iter().filter(|l| l.visible && l.opacity > 0.0) {
+            if let Content::Image { input, .. } = layer.content
+                && let Some(slot) = shown.get_mut(input as usize)
+            {
+                *slot = true;
+            }
+        }
+        shown
+    }
+
+    /// The layers to draw, given the node each connected image came from (`sources`, in input
+    /// order; an unknown origin is empty). A stored `Source` layer takes the image it names and
+    /// becomes an `Image` layer; one whose image is no longer connected is left out. Each
+    /// connected image no stored layer names gets an automatic layer on top, fitted to the
+    /// frame (see `auto_layer`).
+    pub fn resolve(&self, sources: &[String], frame: Frame) -> Result<Self, ImageError> {
+        let keys = source_keys(sources);
+        let mut used = vec![false; sources.len()];
+        let mut layers = Vec::new();
+        for layer in &self.layers {
+            let content = match &layer.content {
+                Content::Source { origin, nth } => {
+                    let Some(input) = keys.iter().position(|(o, n)| o == origin && n == nth) else { continue };
+                    if let Some(slot) = used.get_mut(input) {
+                        *slot = true;
+                    }
+                    Content::Image { input: input as u32, fit: false }
+                }
+                other => other.clone(),
+            };
+            layers.push(Layer { content, ..layer.clone() });
+        }
+        for (input, (origin, nth)) in keys.iter().enumerate() {
+            if !used.get(input).copied().unwrap_or(true) {
+                let mut auto = auto_layer(origin, *nth, input, frame);
+                auto.content = Content::Image { input: input as u32, fit: true };
+                layers.push(auto);
+            }
+        }
+        let resolved = Self { layers };
+        resolved.check()?;
+        Ok(resolved)
+    }
+
+    /// The stored layers plus an automatic `Source` layer for each connected image none of them
+    /// names: what the editor lists. Storing an automatic layer keeps it where it is.
+    pub fn with_sources(&self, sources: &[String], frame: Frame) -> Self {
+        let mut layers = self.layers.clone();
+        for (input, (origin, nth)) in source_keys(sources).into_iter().enumerate() {
+            let named = self.layers.iter().any(|l| matches!(&l.content, Content::Source { origin: o, nth: n } if *o == origin && *n == nth));
+            if !named && layers.len() < MAX_LAYERS {
+                layers.push(auto_layer(&origin, nth, input, frame));
+            }
+        }
+        Self { layers }
+    }
+}
+
+/// Each source's (origin, nth image from that origin). Unknown origins count as distinct.
+fn source_keys(sources: &[String]) -> Vec<(String, u32)> {
+    let mut seen: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    sources
+        .iter()
+        .enumerate()
+        .map(|(input, origin)| {
+            if origin.is_empty() || !valid_id(origin) {
+                return (format!("input{input}"), 0);
+            }
+            let nth = seen.entry(origin.as_str()).or_insert(0);
+            let key = (origin.clone(), *nth);
+            *nth = nth.saturating_add(1);
+            key
+        })
+        .collect()
+}
+
+/// The layer id an image from `origin` gets until it is stored: stable while that wire stays.
+pub fn auto_id(origin: &str, nth: u32) -> String {
+    let id = format!("{origin}-{nth}");
+    if valid_id(&id) { id } else { format!("img-{nth}") }
+}
+
+/// The automatic layer for the `nth` image from `origin` (input `input`): the whole frame, the
+/// image fitted inside it.
+pub fn auto_layer(origin: &str, nth: u32, input: usize, frame: Frame) -> Layer {
+    let (w, h) = (f64::from(frame.width), f64::from(frame.height));
+    Layer {
+        id: auto_id(origin, nth),
+        name: format!("Image {}", input.saturating_add(1)),
+        visible: true,
+        locked: false,
+        opacity: 1.0,
+        x: w / 2.0,
+        y: h / 2.0,
+        width: w,
+        height: h,
+        rotation: 0.0,
+        flip_x: false,
+        flip_y: false,
+        content: Content::Source { origin: origin.into(), nth },
+    }
 }
 
 /// Whether `id` can name a layer.
@@ -279,9 +389,10 @@ impl Frame {
 }
 
 /// Draws visible `layers` into `frame`, scaled by `scale` (1 for a run, less for a preview).
-/// `images` are the planned image inputs, which `Content::Image` layers index; a layer whose
-/// image is missing is an error, since planning drops unbound ones.
-pub fn composite(frame: Frame, layers: &Layers, images: &[Raster], scale: f64, limits: ImageLimits) -> Result<Raster, ImageError> {
+/// `images` are the planned image inputs, which `Content::Image` layers index; `None` is one the
+/// caller didn't decode because no visible layer shows it (`Layers::shown`). A visible layer
+/// whose image is missing is an error, since resolving drops unbound ones.
+pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], scale: f64, limits: ImageLimits) -> Result<Raster, ImageError> {
     limits.validate()?;
     layers.check()?;
     let (w, h) = frame.output_size(scale, limits)?;
@@ -299,11 +410,11 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Raster], scale: f64, l
     for layer in &visible {
         work = work.saturating_add(out_bytes / 4);
         match &layer.content {
-            Content::Image { input } => {
+            Content::Image { input, .. } => {
                 let slot = used.get_mut(*input as usize).ok_or(bad("image layer"))?;
                 if !*slot {
                     *slot = true;
-                    let image = images.get(*input as usize).ok_or(bad("image layer"))?;
+                    let image = images.get(*input as usize).and_then(Option::as_ref).ok_or(bad("image layer"))?;
                     let bytes = u64::from(image.width()) * u64::from(image.height()) * 4;
                     working = working.saturating_add(bytes);
                     work = work.saturating_add(bytes / 4);
@@ -324,7 +435,10 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Raster], scale: f64, l
     let mut pixmaps = Vec::new();
     pixmaps.try_reserve_exact(images.len()).map_err(|_| ImageError::Allocation)?;
     for (image, used) in images.iter().zip(&used) {
-        pixmaps.push(if *used { Some(std::sync::Arc::new(premultiplied(image)?)) } else { None });
+        pixmaps.push(match image {
+            Some(image) if *used => Some(std::sync::Arc::new(premultiplied(image)?)),
+            _ => None,
+        });
     }
 
     // The baseline SIMD level renders the same pixels on every machine.
@@ -338,10 +452,16 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Raster], scale: f64, l
     for layer in visible {
         let at = view * layer.transform();
         match &layer.content {
-            Content::Image { input } => {
+            Content::Image { input, fit } => {
                 let pixmap = pixmaps.get(*input as usize).and_then(Option::as_ref).ok_or(bad("image layer"))?;
                 let (iw, ih) = (f64::from(pixmap.width()), f64::from(pixmap.height()));
-                ctx.set_transform(at * Affine::scale_non_uniform(layer.width / iw, layer.height / ih));
+                let place = if *fit {
+                    let s = (layer.width / iw).min(layer.height / ih);
+                    Affine::translate(((layer.width - iw * s) / 2.0, (layer.height - ih * s) / 2.0)) * Affine::scale(s)
+                } else {
+                    Affine::scale_non_uniform(layer.width / iw, layer.height / ih)
+                };
+                ctx.set_transform(at * place);
                 ctx.set_paint(vello_cpu::Image {
                     image: vello_cpu::ImageSource::Pixmap(pixmap.clone()),
                     sampler: ImageSampler { x_extend: Extend::Pad, y_extend: Extend::Pad, quality: ImageQuality::Medium, alpha: layer.opacity as f32 },

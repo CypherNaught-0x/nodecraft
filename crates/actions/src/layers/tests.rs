@@ -8,7 +8,21 @@ fn frame(width: u32, height: u32, background: [u8; 4]) -> Frame {
 }
 
 fn layer(id: &str, x: f64, y: f64, width: f64, height: f64, content: Content) -> Layer {
-    Layer { id: id.into(), name: id.into(), visible: true, locked: false, opacity: 1.0, x, y, width, height, rotation: 0.0, flip_x: false, flip_y: false, content }
+    Layer {
+        id: id.into(),
+        name: id.into(),
+        visible: true,
+        locked: false,
+        opacity: 1.0,
+        x,
+        y,
+        width,
+        height,
+        rotation: 0.0,
+        flip_x: false,
+        flip_y: false,
+        content,
+    }
 }
 
 fn rect(fill: &str) -> Content {
@@ -40,12 +54,14 @@ fn halves(w: u32, h: u32) -> Raster {
 }
 
 fn draw(frame: Frame, layers: Vec<Layer>, images: &[Raster]) -> Raster {
-    composite(frame, &Layers { layers }, images, 1.0, ImageLimits::default()).unwrap()
+    let images: Vec<Option<Raster>> = images.iter().cloned().map(Some).collect();
+    composite(frame, &Layers { layers }, &images, 1.0, ImageLimits::default()).unwrap()
 }
 
 #[test]
 fn layers_stack_bottom_first_and_hidden_ones_are_skipped() {
-    let out = draw(frame(200, 100, WHITE), vec![layer("a", 50.0, 50.0, 100.0, 100.0, rect("#ff0000")), layer("b", 100.0, 50.0, 100.0, 100.0, rect("#0000ff"))], &[]);
+    let out =
+        draw(frame(200, 100, WHITE), vec![layer("a", 50.0, 50.0, 100.0, 100.0, rect("#ff0000")), layer("b", 100.0, 50.0, 100.0, 100.0, rect("#0000ff"))], &[]);
     assert_eq!((out.width(), out.height()), (200, 100));
     assert_eq!(at(&out, 20, 50), [255, 0, 0, 255]);
     assert_eq!(at(&out, 75, 50), [0, 0, 255, 255]);
@@ -60,7 +76,14 @@ fn layers_stack_bottom_first_and_hidden_ones_are_skipped() {
 
 #[test]
 fn opacity_blends_and_outlines_over_fills_do_not_double_up() {
-    let mut half = layer("a", 50.0, 50.0, 100.0, 100.0, Content::Shape { shape: ShapeKind::Rectangle, fill: Some("#000000".into()), stroke: Some("#000000".into()), stroke_width: 10.0 });
+    let mut half = layer(
+        "a",
+        50.0,
+        50.0,
+        100.0,
+        100.0,
+        Content::Shape { shape: ShapeKind::Rectangle, fill: Some("#000000".into()), stroke: Some("#000000".into()), stroke_width: 10.0 },
+    );
     half.opacity = 0.5;
     let out = draw(frame(100, 100, WHITE), vec![half], &[]);
     let middle = at(&out, 50, 50)[0];
@@ -73,7 +96,7 @@ fn opacity_blends_and_outlines_over_fills_do_not_double_up() {
 fn images_fill_their_box_and_turn_and_mirror_with_it() {
     let image = halves(10, 10);
     let place = |rotation: f64, flip_x: bool| {
-        let mut l = layer("img", 100.0, 100.0, 100.0, 100.0, Content::Image { input: 0 });
+        let mut l = layer("img", 100.0, 100.0, 100.0, 100.0, Content::Image { input: 0, fit: false });
         l.rotation = rotation;
         l.flip_x = flip_x;
         draw(frame(200, 200, CLEAR), vec![l], std::slice::from_ref(&image))
@@ -94,7 +117,15 @@ fn images_fill_their_box_and_turn_and_mirror_with_it() {
 #[test]
 fn shapes_are_rectangles_ellipses_and_triangles() {
     let shape = |shape| Content::Shape { shape, fill: Some("#000000".into()), stroke: None, stroke_width: 0.0 };
-    let out = draw(frame(300, 100, WHITE), vec![layer("r", 50.0, 50.0, 100.0, 100.0, shape(ShapeKind::Rectangle)), layer("e", 150.0, 50.0, 100.0, 100.0, shape(ShapeKind::Ellipse)), layer("t", 250.0, 50.0, 100.0, 100.0, shape(ShapeKind::Triangle))], &[]);
+    let out = draw(
+        frame(300, 100, WHITE),
+        vec![
+            layer("r", 50.0, 50.0, 100.0, 100.0, shape(ShapeKind::Rectangle)),
+            layer("e", 150.0, 50.0, 100.0, 100.0, shape(ShapeKind::Ellipse)),
+            layer("t", 250.0, 50.0, 100.0, 100.0, shape(ShapeKind::Triangle)),
+        ],
+        &[],
+    );
     // Corners: the rectangle covers them, the ellipse and triangle don't.
     assert_eq!(at(&out, 3, 3), [0, 0, 0, 255]);
     assert_eq!(at(&out, 103, 3), WHITE);
@@ -181,7 +212,7 @@ fn frames_images_and_work_are_bounded() {
     assert_eq!(composite(frame(4097, 100, WHITE), &layers, &[], 1.0, ImageLimits::default()).unwrap_err(), ImageError::Dimensions);
     assert!(composite(frame(100, 100, WHITE), &layers, &[], 2.0, ImageLimits::default()).is_err());
     assert!(composite(frame(100, 100, WHITE), &layers, &[], f64::NAN, ImageLimits::default()).is_err());
-    let missing = Layers { layers: vec![layer("a", 0.0, 0.0, 10.0, 10.0, Content::Image { input: 3 })] };
+    let missing = Layers { layers: vec![layer("a", 0.0, 0.0, 10.0, 10.0, Content::Image { input: 3, fit: false })] };
     assert_eq!(composite(frame(100, 100, WHITE), &missing, &[], 1.0, ImageLimits::default()).unwrap_err(), ImageError::Parameter("image layer"));
     let unresolved = Layers { layers: vec![layer("a", 0.0, 0.0, 10.0, 10.0, Content::Source { origin: "n".into(), nth: 0 })] };
     assert!(composite(frame(100, 100, WHITE), &unresolved, &[], 1.0, ImageLimits::default()).is_err());
@@ -196,9 +227,60 @@ fn frames_images_and_work_are_bounded() {
 fn layers_far_off_the_frame_and_extreme_values_draw_nothing_and_do_not_panic() {
     let mut far = layer("a", MAX_COORD, -MAX_COORD, MAX_COORD, MAX_COORD, rect("#000000"));
     far.rotation = 3600.0;
-    let mut thin = layer("b", 50.0, 50.0, f64::MIN_POSITIVE, MAX_COORD, Content::Shape { shape: ShapeKind::Triangle, fill: Some("#000000".into()), stroke: Some("#ff0000".into()), stroke_width: MAX_STROKE });
+    let mut thin = layer(
+        "b",
+        50.0,
+        50.0,
+        f64::MIN_POSITIVE,
+        MAX_COORD,
+        Content::Shape { shape: ShapeKind::Triangle, fill: Some("#000000".into()), stroke: Some("#ff0000".into()), stroke_width: MAX_STROKE },
+    );
     thin.flip_y = true;
     let empty_text = layer("c", 50.0, 50.0, 10.0, 10.0, text("", 12.0, Align::Center));
-    let out = draw(frame(100, 100, WHITE), vec![far, thin, empty_text, layer("d", 50.0, 50.0, 10.0, 10.0, text("\u{200d}\u{0301}🙂\r\n\t", MAX_TEXT_SIZE, Align::Right))], &[]);
+    let out = draw(
+        frame(100, 100, WHITE),
+        vec![far, thin, empty_text, layer("d", 50.0, 50.0, 10.0, 10.0, text("\u{200d}\u{0301}🙂\r\n\t", MAX_TEXT_SIZE, Align::Right))],
+        &[],
+    );
     assert_eq!((out.width(), out.height()), (100, 100));
+}
+
+#[test]
+fn stored_sources_follow_their_image_and_new_images_get_fitted_layers_on_top() {
+    let f = frame(200, 100, CLEAR);
+    let source = |id: &str, origin: &str, nth: u32| layer(id, 50.0, 50.0, 20.0, 20.0, Content::Source { origin: origin.into(), nth });
+    let stored = Layers { layers: vec![source("b-layer", "b", 0), rect_layer("shape"), source("gone", "z", 0), source("a2", "a", 1)] };
+    // Wires reordered: b's image is now input 0, a's second image input 2.
+    let sources = ["b".to_owned(), "a".to_owned(), "a".to_owned(), String::new()];
+    let resolved = stored.resolve(&sources, f).unwrap();
+    let ids: Vec<&str> = resolved.layers.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(ids, ["b-layer", "shape", "a2", "a-0", "input3-0"]);
+    let content: Vec<&Content> = resolved.layers.iter().map(|l| &l.content).collect();
+    assert_eq!(content[0], &Content::Image { input: 0, fit: false });
+    assert_eq!(content[2], &Content::Image { input: 2, fit: false });
+    assert_eq!(content[3], &Content::Image { input: 1, fit: true });
+    assert_eq!(content[4], &Content::Image { input: 3, fit: true });
+    let auto = &resolved.layers[3];
+    assert_eq!((auto.x, auto.y, auto.width, auto.height), (100.0, 50.0, 200.0, 100.0));
+    // What the editor lists: the stored layers as they are, plus the automatic ones.
+    let listed = stored.with_sources(&sources, f);
+    assert_eq!(listed.layers.len(), 6);
+    assert_eq!(listed.layers[4].content, Content::Source { origin: "a".into(), nth: 0 });
+    assert_eq!(listed.layers[4].id, auto_id("a", 0));
+}
+
+fn rect_layer(id: &str) -> Layer {
+    layer(id, 10.0, 10.0, 5.0, 5.0, rect("#000000"))
+}
+
+#[test]
+fn a_fitted_image_keeps_its_proportions() {
+    let mut l = layer("img", 100.0, 50.0, 200.0, 100.0, Content::Image { input: 0, fit: true });
+    l.name = "fit".into();
+    let out = draw(frame(200, 100, CLEAR), vec![l], &[halves(10, 10)]);
+    // A square image in a 2:1 box: centred, 100 px wide, clear either side.
+    assert_eq!(at(&out, 30, 50), CLEAR);
+    assert_eq!(at(&out, 70, 50), [255, 0, 0, 255]);
+    assert_eq!(at(&out, 130, 50), [0, 0, 255, 255]);
+    assert_eq!(at(&out, 170, 50), CLEAR);
 }

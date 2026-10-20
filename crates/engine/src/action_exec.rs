@@ -287,6 +287,7 @@ impl LocalActions {
     }
 }
 
+pub(crate) mod layers;
 mod shader_state;
 
 impl LocalActions {
@@ -339,6 +340,9 @@ impl ActionExecutor for LocalActions {
         }
         if action == nodecraft_nodes::mask::ID || action == "image.expand" {
             return self.mask(action, params, inputs);
+        }
+        if action == nodecraft_nodes::layers::ID {
+            return self.layers(params, inputs);
         }
         if action.starts_with("image.") {
             return self.image(action, params, inputs);

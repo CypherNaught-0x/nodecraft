@@ -97,6 +97,7 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.flip",
         "image.grade",
         "image.key",
+        "image.layers",
         "image.mask",
         "image.overlay",
         "image.replace_color",
@@ -117,7 +118,11 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     let mut text_many = ids(PortType { modality: Modality::Text, many: true });
     text_many.sort();
     assert_eq!(text_many, [nodecraft_nodes::batch::ID, router::ID, "text.concat", "text.template"], "only list inputs take a list");
-    assert_eq!(ids(PortType { modality: Modality::Image, many: true }), [nodecraft_nodes::batch::ID, router::ID]);
+    assert_eq!(
+        ids(PortType { modality: Modality::Image, many: true }),
+        [nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID],
+        "the Layer Editor takes a list of images"
+    );
     for modality in [Modality::Video, Modality::Audio] {
         assert_eq!(ids(PortType { modality, many: false }), [nodecraft_nodes::batch::ID, router::ID], "{modality:?}");
         assert_eq!(ids(PortType { modality, many: true }), [nodecraft_nodes::batch::ID, router::ID], "a router takes a list too");
