@@ -106,7 +106,8 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     // The history strip sits under the parameters and is never squeezed out by them; an image
     // preview sits above them.
     let preview = if nodecraft_engine::split::image_of(node).is_some() { t.card_preview_height } else { 0.0 };
-    let height = params + preview + history::rows(node) as f32 * t.control_row_height;
+    let answer = if generate::answer_of(node).is_some() { t.card_preview_height } else { 0.0 };
+    let height = params + preview + answer + history::rows(node) as f32 * t.control_row_height;
     Vec2::new(t.card_width, height)
 }
 pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
@@ -126,6 +127,8 @@ pub struct CardView<'a> {
     pub grid: Option<(u32, u32, Option<[u32; 2]>)>,
     /// The parameters a generation card's composer draws itself (#83).
     pub roles: Option<&'a Roles>,
+    /// A wire feeds the card's prompt port (#84).
+    pub prompt_wired: bool,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -150,7 +153,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, image, grid, roles } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, image, grid, roles, prompt_wired } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -281,8 +284,20 @@ pub fn show(
             inner = rest;
             show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, grid, t);
         }
+        if let Some(text) = generate::answer_of(node) {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), text, t);
+        }
         if let Some(d) = composer {
-            inner = generate::show(&mut ui, inner, generate::Composer { node, descriptor: d, roles, visible, enabled }, editor, &mut intents, t);
+            inner = generate::show(
+                &mut ui,
+                inner,
+                generate::Composer { node, wired: prompt_wired, descriptor: d, roles, visible, enabled },
+                editor,
+                &mut intents,
+                t,
+            );
         }
         let own = |name: &str| composer.is_some() && (name == nodecraft_nodes::generation::PROMPT || roles.and_then(|r| r.count.as_deref()) == Some(name));
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));

@@ -47,7 +47,7 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         return Err(Error::new(ErrorKind::Unsupported, "use node.model_preview then node.set_model to change this model"));
     }
     let kind = c.kinds.get(&node.kind)?;
-    let generation = if node.kind == nodecraft_nodes::generation::KIND {
+    let generation = if nodecraft_nodes::generation::is_generation(&node.kind) {
         let catalog = crate::generation_catalog::GenerationCatalog::current(c.resources)?;
         catalog.validate_instance_binding(kind, node)?;
         let contract = kind.instance_contract(node)?;

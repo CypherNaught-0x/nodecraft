@@ -46,7 +46,8 @@ impl Snapshot {
         let graph = session.document().canvases().get(&canvas).ok_or_else(|| invalid("The selected canvas is unavailable."))?;
         let selected = ids.iter().map(|id| graph.nodes().get(id).ok_or_else(|| invalid("A selected node is unavailable."))).collect::<Result<Vec<_>, _>>()?;
         nodecraft_engine::bulk_cmds::check_selection_payload(selected.iter().copied())?;
-        let catalog = if selected.iter().any(|node| node.kind == nodecraft_nodes::generation::KIND) { Some(session.generation_catalog_stamp()?) } else { None };
+        let catalog =
+            if selected.iter().any(|node| nodecraft_nodes::generation::is_generation(&node.kind)) { Some(session.generation_catalog_stamp()?) } else { None };
         let mut descriptors = Vec::with_capacity(ids.len());
         let mut contracts = Vec::with_capacity(ids.len());
         let mut nodes = Vec::with_capacity(ids.len());
@@ -55,16 +56,16 @@ impl Snapshot {
         let mut model_repair_only = false;
         for node in selected {
             let kind = session.kinds().get(&node.kind)?;
-            if node.kind == nodecraft_nodes::generation::KIND {
+            if nodecraft_nodes::generation::is_generation(&node.kind) {
                 session.generation_catalog()?.validate_instance_binding(kind, node)?;
             }
             // Resolve first: future versions and invalid payloads remain refused. A saved
             // unavailable generation model can retain its former ports; only the common
             // explicit model repair action may operate on that opaque source layout.
             let instance = kind.resolve_instance(node)?;
-            let unavailable = if node.kind == nodecraft_nodes::generation::KIND {
+            let unavailable = if nodecraft_nodes::generation::is_generation(&node.kind) {
                 match node.params.get(nodecraft_nodes::generation::MODEL) {
-                    Some(value @ Value::Text(model)) if session.generation_catalog()?.model(model).is_none() => {
+                    Some(value @ Value::Text(model)) if session.generation_catalog()?.model(&node.kind, model).is_none() => {
                         nodecraft_types::ParamControl::Model.validate_value(value)?;
                         true
                     }
@@ -170,7 +171,7 @@ impl Refusal {
             .document()
             .canvases()
             .get(&canvas)
-            .is_some_and(|graph| ids.iter().any(|id| graph.nodes().get(id).is_some_and(|node| node.kind == nodecraft_nodes::generation::KIND)));
+            .is_some_and(|graph| ids.iter().any(|id| graph.nodes().get(id).is_some_and(|node| nodecraft_nodes::generation::is_generation(&node.kind))));
         (needs, if needs { session.generation_catalog_stamp().ok() } else { None })
     }
     fn new(session: &Session, canvas: CanvasId, ids: &BTreeSet<NodeId>) -> Self {
@@ -257,7 +258,7 @@ impl Panel {
                                         let label = ui.label(&spec.label);
                                         if let Some(description) = &spec.description { label.clone().on_hover_text(description); }
                                         if matches!(spec.control, nodecraft_types::ParamControl::Model) {
-                                            if snapshot.descriptor.id == nodecraft_nodes::generation::KIND && spec.name == nodecraft_nodes::generation::MODEL {
+                                            if nodecraft_nodes::generation::is_generation(&snapshot.descriptor.id) && spec.name == nodecraft_nodes::generation::MODEL {
                                                 match shared {
                                                     SharedValue::Mixed => { ui.label("Mixed models"); }
                                                     SharedValue::Uniform(Some(Value::Text(model))) => { ui.label(model); }

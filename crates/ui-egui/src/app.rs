@@ -67,6 +67,8 @@ impl SchemaCache {
     // definition binding changed. No document hashing or per-node payload walk in paint.
     fn refresh_generation(&mut self, session: &Session) {
         let current = session.generation_catalog().ok().and_then(|catalog| {
+            // Every generation kind is installed from one snapshot, so the image kind (always
+            // present) stands for all of them.
             catalog.validate_definition_binding(session.kinds().get(nodecraft_nodes::generation::KIND).ok()?).ok()?;
             Some(catalog.stamp())
         });
@@ -159,7 +161,7 @@ pub(crate) fn descriptor_bytes(descriptor: &nodecraft_nodes::NodeDescriptor) -> 
 }
 fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodecraft_graph::Node, clock: u64) -> Option<&'a CachedSchema> {
     let kind = session.kinds().get(&node.kind).ok()?;
-    let catalog = if node.kind == nodecraft_nodes::generation::KIND {
+    let catalog = if nodecraft_nodes::generation::is_generation(&node.kind) {
         let binding = session.generation_catalog().and_then(|catalog| {
             catalog.validate_definition_binding(kind)?;
             Ok(catalog.stamp())
@@ -1075,6 +1077,8 @@ impl NodeCraftApp {
             // Selected cards draw last, on top.
             let selected = self.selection.clone();
             self.painted.clear();
+            let prompt_wired: BTreeSet<NodeId> =
+                canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1122,6 +1126,7 @@ impl NodeCraftApp {
                             (rows, columns, full)
                         }),
                         roles: schema.map(|cached| &cached.roles),
+                        prompt_wired: prompt_wired.contains(&node.id),
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -2189,6 +2194,8 @@ mod preview_tests;
 mod split_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_card_tests;
 
 #[cfg(test)]
 mod marquee_tests;

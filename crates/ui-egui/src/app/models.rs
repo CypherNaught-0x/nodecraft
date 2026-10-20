@@ -65,10 +65,14 @@ impl NodeCraftApp {
         // Captures own port/count slots only, borrowing payload-free Port metadata. Admit the
         // entire temporary capture before allocating it; it is gone before the first paint.
         let mut capture_bytes = exact_ids.len().checked_mul(std::mem::size_of::<GenerationWiring<'_>>()).ok_or_else(allocation)?;
+        let mut kind = None;
         for id in &exact_ids {
             let node = live.nodes().get(id).ok_or_else(|| invalid("selected model node is unavailable"))?;
-            if node.kind != nodecraft_nodes::generation::KIND {
+            if !nodecraft_nodes::generation::is_generation(&node.kind) {
                 return Err(Error::new(ErrorKind::Unsupported, "this selection contains a node without a model-swap contract"));
+            }
+            if *kind.get_or_insert(node.kind.as_str()) != node.kind {
+                return Err(Error::new(ErrorKind::Unsupported, "choose a model for image and text cards separately"));
             }
             snapshot.validate_instance_binding(self.session.kinds().get(&node.kind)?, node)?;
             capture_bytes = capture_bytes
@@ -83,9 +87,10 @@ impl NodeCraftApp {
         for id in &exact_ids {
             captures.push(snapshot.capture_wiring(live, *id)?);
         }
+        let kind = kind.ok_or_else(|| invalid("selected model node is unavailable"))?;
         let picker = ModelPicker::for_targets(snapshot.run_catalog().catalog(), |model| {
             for wiring in &captures {
-                snapshot.validate_destination_wiring(wiring, &model.id, true).map_err(|e| e.message)?;
+                snapshot.validate_destination_wiring(kind, wiring, &model.id, true).map_err(|e| e.message)?;
             }
             Ok(())
         })?;

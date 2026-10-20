@@ -1,7 +1,7 @@
 //! One source-aware preparation for single and bulk model choices. No services or paid work.
 use crate::{commands::Context, generation_catalog::GenerationCatalog};
 use nodecraft_graph::{Change, Changeset, MAX_CHANGES, Node};
-use nodecraft_nodes::generation::{KIND, MODEL, PROMPT};
+use nodecraft_nodes::generation::{MODEL, PROMPT, is_generation};
 use nodecraft_types::{CanvasId, DropReason, Error, ErrorKind, NodeId, ParamValues, Value};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -103,10 +103,15 @@ pub fn binding(c: &Context<'_>, selection: &Selection) -> Result<String, Error> 
     let ids = ids(selection)?;
     let catalog = GenerationCatalog::current(c.resources)?;
     let canvas = c.document.canvases().get(&selection.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    let mut kind = None;
     for id in &ids {
         let node = canvas.nodes().get(id).ok_or_else(|| Error::new(ErrorKind::NotFound, "selected node does not exist"))?;
-        if node.kind != KIND {
+        if !is_generation(&node.kind) {
             return Err(Error::new(ErrorKind::Unsupported, "this node has no supported model-swap contract"));
+        }
+        // One destination model serves one kind: image and text cards never swap together.
+        if *kind.get_or_insert(node.kind.as_str()) != node.kind {
+            return Err(Error::new(ErrorKind::Unsupported, "a model swap applies to cards of one generation kind"));
         }
         catalog.validate_instance_binding(c.kinds.get(&node.kind)?, node)?;
     }
@@ -158,9 +163,15 @@ pub fn prepare(c: &Context<'_>, selection: &Selection) -> Result<PreparedSwap, E
     let token = binding(c, selection)?;
     let ids = ids(selection)?;
     let catalog = GenerationCatalog::current(c.resources)?;
-    let destination = catalog.model(&selection.model).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model is unavailable"))?;
-    destination.parameters.validate()?;
     let canvas = c.document.canvases().get(&selection.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    // binding() checked that every target shares this kind.
+    let kind = ids
+        .first()
+        .and_then(|id| canvas.nodes().get(id))
+        .map(|node| node.kind.as_str())
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "selected node does not exist"))?;
+    let destination = catalog.model(kind, &selection.model).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model is unavailable"))?;
+    destination.parameters.validate()?;
     let limit = crate::session::MAX_HISTORY_BYTES;
     // A serialized destination contract conservatively includes every possible default.
     // Every declared role is counted, even when several modes share the same port.
@@ -178,7 +189,7 @@ pub fn prepare(c: &Context<'_>, selection: &Selection) -> Result<PreparedSwap, E
         node.validate_payload()?;
         selected_model(node)?;
         let wiring = catalog.capture_wiring(canvas, *id)?;
-        catalog.validate_destination_wiring(&wiring, &selection.model, true)?;
+        catalog.validate_destination_wiring(kind, &wiring, &selection.model, true)?;
         // Original plus an overestimate of replacement: old fields/history/config remain
         // intact, while destination defaults/ports may all be additional. No source Vec or
         // Value is copied merely to find that the whole selection cannot fit.
@@ -204,7 +215,7 @@ pub fn prepare(c: &Context<'_>, selection: &Selection) -> Result<PreparedSwap, E
     for id in ids {
         let node = canvas.nodes().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "selected node does not exist"))?;
         let previous = selected_model(node)?;
-        let source = previous.and_then(|id| catalog.model(id));
+        let source = previous.and_then(|id| catalog.model(kind, id));
         let model_values: ParamValues = node
             .params
             .iter()
@@ -231,7 +242,7 @@ pub fn prepare(c: &Context<'_>, selection: &Selection) -> Result<PreparedSwap, E
         }
         let candidate = catalog.prepare_instance(node, &selection.model, &proposed)?;
         catalog.validate_wiring(canvas, &candidate, false)?;
-        // All image definitions have the same `out: Image,many` output. Thus every selected
+        // All definitions of one kind share one `out` port type. Thus every selected
         // candidate's incoming checks see unchanged opposite outputs, even in a bulk swap.
         // A future varying-output kind must validate a complete candidate endpoint overlay.
         let defaults = destination

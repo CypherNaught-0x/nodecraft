@@ -35,6 +35,12 @@ Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), ca
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per
 additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally. The composer's submit button is 28
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide.
+A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
+composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
+card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
+label's own row, so the card keeps its size), and its hover text explains that nonempty connected
+text is used instead; the typed prompt is kept and comes back when the wire is removed. A
+generation kind other than images is offered only when the catalog has a model for it.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.
