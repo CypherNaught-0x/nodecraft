@@ -19,7 +19,7 @@ an agent can actually do today.
 | 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 17/30 |
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92) | 0/16 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101) | 2/6 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar only | 1/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | ⬜ not started | 0/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
@@ -44,7 +44,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
   outpaint generation card from a prompt (#102).
   A Layer Editor card composites its wired images with text and shape layers into one frame;
-  its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101).
+  its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101). Elements turn
+  selected images into a named, reusable subject that prompts mention as `#name`, with a
+  generated reference sheet (#104).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
