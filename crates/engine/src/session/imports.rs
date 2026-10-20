@@ -122,7 +122,10 @@ impl Session {
             }
             validate_json(params)?;
             let spec = *self.registry.get(command)?;
-            let context: Context<'_> = self.context(Phase::Dispatch);
+            let mut context: Context<'_> = self.context(Phase::Dispatch);
+            // Clipboard reference admission must see this exact opaque candidate, not
+            // the pre-import live map. No candidate is published until the Edit commits.
+            context.assets = &prepared.assets;
             (spec.enabled)(&context, params)?;
             let effect = (spec.run)(&context, params)?;
             if !matches!(effect, Effect::Edit { .. }) {

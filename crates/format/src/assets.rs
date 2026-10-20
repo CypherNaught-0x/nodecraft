@@ -14,6 +14,15 @@ pub const MAX_TOTAL_ASSET_BYTES: usize = 48 * 1024 * 1024;
 pub use crate::asset_store::AssetStore;
 
 impl AssetStore {
+    /// Authenticate destination content and supported reference metadata through an immutable
+    /// lease. Indexed bytes remain streamed; unknown signatures and advisory metadata keep
+    /// the existing format policy. A project UUID is never content authority.
+    pub fn validate_reference(&self, asset: &nodecraft_types::AssetRef) -> Result<(), Error> {
+        #[cfg(any(test, feature = "validation-metrics"))]
+        crate::validation_metrics::record(|metrics| metrics.reference_checks = metrics.reference_checks.saturating_add(1));
+        self.open_verified(asset, &crate::asset_source::TransferCancel::default(), &crate::asset_source::StreamMetrics::default()).map(|_| ())
+    }
+
     fn validate_value_assets(&self, value: &Value) -> Result<(), Error> {
         match value {
             Value::Media(asset) => {
@@ -395,5 +404,28 @@ mod tests {
         let final_changes = Changeset::new(vec![Change::SetNode { canvas, node: Node::new(id, "source.text") }]);
         final_changes.apply(&mut project).unwrap();
         assert!(assets.validate_changed_assets(&project, &changes).is_ok());
+    }
+    #[test]
+    fn borrowed_reference_policy_checks_presence_known_mime_and_image_dimensions() {
+        let mut store = AssetStore::default();
+        let png = nodecraft_media::encode_png(1, 1, &[20, 40, 60, 255], &nodecraft_media::Limits::default()).unwrap();
+        let hash = store.insert(&png).unwrap();
+        let mut reference = AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta { width: Some(1), height: Some(1), ..Default::default() } };
+        store.validate_reference(&reference).unwrap();
+        reference.meta.width = Some(2);
+        assert!(store.validate_reference(&reference).is_err());
+        reference.meta.width = Some(1);
+        reference.mime = "text/plain".parse().unwrap();
+        assert!(store.validate_reference(&reference).is_err());
+        reference.hash = Blake3::from_bytes([9; 32]);
+        assert!(store.validate_reference(&reference).is_err());
+        let unknown = store.insert(&[0xff, 0, 0xfe, 0, 0xfd]).unwrap();
+        let reference = AssetRef {
+            hash: unknown,
+            mime: "application/x-test".parse().unwrap(),
+            meta: MediaMeta { duration_ms: Some(123), sample_rate: Some(48000), ..Default::default() },
+        };
+        assert!(nodecraft_media::sniff(store.get(&unknown).unwrap()).is_none());
+        store.validate_reference(&reference).unwrap();
     }
 }
