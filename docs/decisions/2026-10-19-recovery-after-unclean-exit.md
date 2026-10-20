@@ -1,5 +1,9 @@
 ## 2026-10-19 · Recovery after an unclean exit is offered, never applied silently (#408)
 
+The copy-deletion, last-save and input details below are superseded by
+[Recovery copy ownership and actual save witnesses](2026-10-19-recovery-copy-ownership.md) (#450).
+The original rationale is retained as history.
+
 When the desktop app starts and the recovery journal from the last session holds work that was
 never closed cleanly, `storage` keeps it aside as `<journal>.unrecovered-<n>` and the shell asks
 **Recover unsaved work?** before the canvas takes any input.
