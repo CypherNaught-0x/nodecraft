@@ -35,7 +35,9 @@ same structure with the values inverted.
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per
 additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally. The composer's submit button is 28
-points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide.
+points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide. A sheet's table has 32-wide checkbox and number columns and
+120-wide model, references, result, status and button columns, the prompt taking the rest; the
+Sheets panel lists canvases 320 high, with a 250-wide title field.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the

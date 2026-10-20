@@ -167,7 +167,7 @@ impl NodeCraftApp {
             self.notice = Some("Saving and opening are unavailable in this window.".into());
             return;
         }
-        if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() {
+        if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
             return;
         }
@@ -216,8 +216,8 @@ impl NodeCraftApp {
         }
     }
     fn after_file_open(&mut self) {
-        if let Some(canvas) = self.session.document().canvases().keys().next() {
-            self.canvas = *canvas;
+        if let Some(canvas) = super::sheet_view::home_canvas(self.session.document()) {
+            self.canvas = canvas;
         }
         self.selection.clear();
         self.editors.clear();
@@ -495,7 +495,7 @@ impl NodeCraftApp {
             && self.files.pending.is_none()
             && !self.file_busy(ui.ctx())
         {
-            if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() {
+            if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
                 self.notice = Some("Finish or discard the current field edits before opening a project.".into());
             } else {
                 self.choose_open(path, Stamp::capture(self));

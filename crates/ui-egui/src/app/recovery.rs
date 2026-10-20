@@ -282,8 +282,8 @@ impl NodeCraftApp {
     /// The document was replaced wholesale: show its first canvas, with nothing selected. (At
     /// startup the rest of the view state is still at rest.)
     fn after_document_replaced(&mut self) {
-        if let Some(first) = self.session.document().canvases().keys().next() {
-            self.canvas = *first;
+        if let Some(first) = super::sheet_view::home_canvas(self.session.document()) {
+            self.canvas = first;
         }
         self.selection.clear();
         self.editors.clear();

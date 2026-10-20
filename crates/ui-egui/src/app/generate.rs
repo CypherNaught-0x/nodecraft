@@ -49,6 +49,19 @@ pub(super) struct RunConfirm {
     error: Option<String>,
 }
 
+#[cfg(test)]
+impl RunConfirm {
+    /// The nodes this confirmation would run, in order.
+    pub(super) fn nodes(&self) -> &[NodeId] {
+        &self.nodes
+    }
+
+    /// Whether it warns that unsaved edits are not part of the run.
+    pub(super) fn drafts(&self) -> bool {
+        self.drafts
+    }
+}
+
 /// What the confirmation shows and `run.start` needs, read from a `run.quote` result.
 #[derive(Debug, PartialEq)]
 struct Quote {
@@ -130,6 +143,14 @@ impl NodeCraftApp {
 
     /// Quote a run from card `id` and ask before starting it.
     pub(super) fn request_run(&mut self, id: NodeId, kind: RunKind) -> Result<(), Error> {
+        self.request_runs(vec![id], kind)
+    }
+
+    /// Quote one run of the cards `nodes` together and ask before starting it.
+    pub(super) fn request_runs(&mut self, nodes: Vec<NodeId>, kind: RunKind) -> Result<(), Error> {
+        if nodes.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidInput, "nothing to run"));
+        }
         if self.run_confirm.is_some() {
             return Ok(());
         }
@@ -141,15 +162,15 @@ impl NodeCraftApp {
             let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
             let stale = self.stale_badges.as_ref().map(|badges| &badges.nodes).cloned().unwrap_or_default();
             if let Some(runs) = &mut self.runs
-                && runs.route(&mut self.session, self.canvas, id, kind, &stale, &settings)? == super::runs::Route::Waiting
+                && runs.route(&mut self.session, self.canvas, &nodes, kind, &stale, &settings)? == super::runs::Route::Waiting
             {
                 self.notice = Some(super::runs::SETTING_UP.into());
                 return Ok(());
             }
         }
-        let nodes = vec![id];
         let value = self.session.dispatch("run.quote", &json!({"canvas": self.canvas, "mode": kind.mode(), "nodes": nodes}))?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
+        let drafts = nodes.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted) || self.sheet_draft_pending(*id));
         self.run_confirm = Some(RunConfirm {
             session: self.session.view_identity(),
             canvas: self.canvas,
@@ -157,7 +178,7 @@ impl NodeCraftApp {
             nodes,
             revision: self.session.revision(),
             quote,
-            drafts: self.editors.get(&id).is_some_and(EditorState::has_uncommitted),
+            drafts,
             partial: false,
             error: None,
         });
@@ -187,8 +208,8 @@ impl NodeCraftApp {
             self.notice = Some(notice);
         }
         // Quoted last: if it can't be, that is the newest thing to say.
-        if let Some((id, kind)) = tick.ready
-            && let Err(error) = self.request_run(id, kind)
+        if let Some((nodes, kind)) = tick.ready
+            && let Err(error) = self.request_runs(nodes, kind)
         {
             self.notice = Some(error.message);
         }
@@ -272,8 +293,8 @@ impl NodeCraftApp {
                 Err(error) => confirm.error = Some(error.message),
             }
         }
-        if requote && let Some(&id) = confirm.nodes.first() {
-            if let Err(error) = self.request_run(id, confirm.kind) {
+        if requote {
+            if let Err(error) = self.request_runs(confirm.nodes, confirm.kind) {
                 self.notice = Some(error.message);
             }
             return true;

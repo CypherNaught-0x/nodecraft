@@ -117,7 +117,7 @@ pub(super) enum Route {
 #[derive(Clone)]
 struct Waiting {
     canvas: CanvasId,
-    node: NodeId,
+    nodes: Vec<NodeId>,
     kind: RunKind,
     /// Adapters asked for and not yet answered.
     pending: BTreeSet<String>,
@@ -128,7 +128,7 @@ struct Waiting {
 #[derive(Default)]
 pub(super) struct Tick {
     /// A run whose providers are now set up, to quote again.
-    pub ready: Option<(NodeId, RunKind)>,
+    pub ready: Option<(Vec<NodeId>, RunKind)>,
     /// A card stopped waiting for its provider without being quoted (it's on another canvas).
     pub abandoned: bool,
     /// Something to tell the person: a run that couldn't start or a provider that can't run.
@@ -254,22 +254,22 @@ impl Runs {
         self.host.install(session);
     }
 
-    /// Routes the cards a run of `id` will run (the card alone, or with its stale or unrun
+    /// Routes the cards a run of `ids` will run (the cards alone, or with their stale or unrun
     /// upstream for a refresh; `stale` is the canvas's stale set) to their providers when those
     /// are set up, or asks for them to be.
     pub(super) fn route(
         &mut self,
         session: &mut Session,
         canvas: CanvasId,
-        id: NodeId,
+        ids: &[NodeId],
         kind: RunKind,
         stale: &BTreeSet<NodeId>,
         settings: &ProviderSettings,
     ) -> Result<Route, Error> {
         let adapters = adapters_of(session, canvas);
         let reached = match kind {
-            RunKind::Generate => BTreeSet::from([id]),
-            RunKind::Refresh => with_upstream(session, canvas, id, stale),
+            RunKind::Generate => ids.iter().copied().collect(),
+            RunKind::Refresh => with_upstream(session, canvas, ids, stale),
         };
         let needed: BTreeSet<String> = reached.iter().filter_map(|node| adapters.get(node).cloned()).collect();
         let mut pending = BTreeSet::new();
@@ -293,7 +293,7 @@ impl Runs {
             return Err(Error::new(ErrorKind::Unsupported, unready.join(" ")));
         }
         if !pending.is_empty() {
-            self.waiting = Some(Waiting { canvas, node: id, kind, pending, settings: settings.clone() });
+            self.waiting = Some(Waiting { canvas, nodes: ids.to_vec(), kind, pending, settings: settings.clone() });
             return Ok(Route::Waiting);
         }
         // Every card whose provider is ready, so a run of more than these cards reaches its
@@ -361,7 +361,7 @@ impl Runs {
                 && waiting.pending.is_empty()
             {
                 if waiting.canvas == canvas {
-                    tick.ready = Some((waiting.node, waiting.kind));
+                    tick.ready = Some((std::mem::take(&mut waiting.nodes), waiting.kind));
                 } else {
                     tick.abandoned = true;
                 }
@@ -490,9 +490,9 @@ impl Drop for Runs {
     }
 }
 
-/// `id` and every node upstream of it on `canvas` that a `with_upstream` run would run too.
-fn with_upstream(session: &Session, canvas: CanvasId, id: NodeId, stale: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
-    let mut seen = BTreeSet::from([id]);
+/// `ids` and every node upstream of them on `canvas` that a `with_upstream` run would run too.
+fn with_upstream(session: &Session, canvas: CanvasId, ids: &[NodeId], stale: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+    let mut seen: BTreeSet<NodeId> = ids.iter().copied().collect();
     let Some(canvas) = session.document().canvases().get(&canvas) else {
         return seen;
     };
@@ -501,7 +501,7 @@ fn with_upstream(session: &Session, canvas: CanvasId, id: NodeId, stale: &BTreeS
         inputs.entry(edge.to.node).or_default().push(edge.from.node);
     }
     // The graph may have cycles: the seen-set ends the walk.
-    let mut next = vec![id];
+    let mut next = ids.to_vec();
     while let Some(node) = next.pop() {
         for from in inputs.get(&node).into_iter().flatten() {
             // As the planner walks: a card with a current result is not run, and stops the walk.
