@@ -338,6 +338,7 @@ mod recovery;
 #[cfg(not(target_arch = "wasm32"))]
 mod runs;
 mod search;
+mod sheet_view;
 mod split;
 mod stale;
 mod stale_badges;
@@ -444,6 +445,8 @@ pub struct NodeCraftApp {
     /// The queue panel is open (#82).
     #[cfg(not(target_arch = "wasm32"))]
     queue_open: bool,
+    /// The sheets panel and the open sheet's table (#163).
+    sheet: sheet_view::SheetView,
 }
 impl NodeCraftApp {
     /// Cancel one owner at a time: noodle, input order, marquee, then selection.
@@ -742,6 +745,7 @@ impl NodeCraftApp {
             runs: None,
             #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
+            sheet: sheet_view::SheetView::default(),
         })
     }
     /// Replace a document session together with scoped view services and all view caches.
@@ -837,6 +841,11 @@ impl NodeCraftApp {
         }
         let mut model_blocks = self.model_overlay(ui);
         model_blocks |= self.run_overlay(ui);
+        if self.on_sheet() {
+            self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
+            ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
+            return;
+        }
         let bulk_enabled = !model_blocks
             && !file_owns_input
             && !file_menu_owns_input
@@ -1660,6 +1669,7 @@ impl NodeCraftApp {
         self.save_accounts(changes);
         #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
+        self.sheets_panel(ui.ctx(), t);
         // Floating UI must lay out before final quick-add admission, including a Window's first
         // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
         // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
@@ -1784,6 +1794,7 @@ impl NodeCraftApp {
             .show(ui.ctx(), |ui| {
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        self.sheets_button(ui, t);
                         #[cfg(not(target_arch = "wasm32"))]
                         if let Some(label) = self.queue_label()
                             && ui
@@ -2296,6 +2307,9 @@ mod preview_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod runs_tests;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod sheet_tests;
 #[cfg(test)]
 mod split_tests;
 #[cfg(test)]

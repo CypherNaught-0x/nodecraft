@@ -656,3 +656,11 @@ replays are deterministic. Cells are card parameters, so bulk edits use
 `node.params_set_bulk`, and a run of rows uses `run.quote` and `run.start`. The row commands
 refuse to grow a sheet past 1000 rows (`MAX_ROWS`) and add at most 100 at a time. See
 [the decision](decisions/2026-10-20-batch-sheets.md).
+
+In the desktop shell (`ui-egui` `app/sheet_view.rs`), the "Sheets" panel switches between the
+project's canvases and creates sheets. When the open canvas is a sheet, the shell draws it as a
+table in place of the node graph. Each row has an editable prompt, which is committed with
+`node.param_set` when the field loses focus, plus its model, references, result, live run status,
+and buttons to move and run it. The toolbar adds, duplicates, removes and runs rows. Running
+rows, whether selected, one or all, quotes them together in one price confirmation, the same one
+Generate uses (`request_runs`).
