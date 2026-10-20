@@ -114,6 +114,7 @@ impl Resumes {
             cancel_requested: false,
             cancel_refused: false,
             reported_sent: true,
+            partial: None,
         };
         self.jobs.live.insert(id, view);
         self.jobs.started(id, 1);
@@ -155,11 +156,11 @@ impl Resumes {
     /// Absorbs what the restored jobs reported: records finished ones, settles every one that
     /// ended. Returns how each ended.
     pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, notices: &mut Vec<RunNotice>) -> Vec<Ended> {
-        let (outcomes, reports) = {
+        let (outcomes, mut reports) = {
             let mut mailbox = lock(&self.mailbox);
             (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports))
         };
-        self.jobs.absorb_reports(&reports);
+        self.jobs.absorb_reports(&mut reports);
         let mut ended = Vec::new();
         for (id, outcome) in outcomes {
             let Some((entry, _)) = self.live.remove(&id) else { continue };
@@ -232,7 +233,7 @@ impl Resumes {
                 }
             }
         }
-        self.jobs.absorb_reports(&reports);
+        self.jobs.absorb_reports(&mut reports);
         ended
     }
 }

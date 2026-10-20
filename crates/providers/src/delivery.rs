@@ -1,6 +1,6 @@
 //! Audited delivery evidence. Opaque contexts are supplied by the runner, never callers.
 //! This is an audited adapter contract, not a sandbox for arbitrary Rust side effects.
-use crate::http::{Http, HttpRequest, HttpResponse};
+use crate::http::{ChunkSink, Http, HttpRequest, HttpResponse};
 use crate::{BoxFuture, ProviderError};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -22,6 +22,21 @@ struct Operation {
 /// ```
 pub struct SubmitContext {
     state: Arc<Mutex<Operation>>,
+    /// Text streamed so far and not yet reported, when the runner asked for it (#504).
+    text: Option<Mutex<Streamed>>,
+}
+
+/// Most bytes of streamed text one submit reports; the rest of a longer answer arrives only with
+/// the result.
+pub const MAX_STREAMED_TEXT: usize = 256 * 1024;
+/// Most bytes of text one report carries.
+pub const MAX_TEXT_DELTA: usize = 64 * 1024;
+
+#[derive(Default)]
+struct Streamed {
+    pending: String,
+    /// Bytes taken so far, pending included.
+    total: usize,
 }
 /// A request-local scope; it cannot be promoted into a whole-operation assertion by callers.
 pub struct RequestContext {
@@ -72,7 +87,41 @@ pub(crate) struct SubmitNotAccepted;
 
 impl SubmitContext {
     pub(crate) fn new() -> Self {
-        Self { state: Arc::default() }
+        Self { state: Arc::default(), text: None }
+    }
+    /// A context that collects a text answer as it streams, for [`Self::take_text`].
+    pub(crate) fn streaming_text() -> Self {
+        Self { state: Arc::default(), text: Some(Mutex::default()) }
+    }
+    /// Whether the runner wants text as it streams.
+    pub(crate) fn wants_text(&self) -> bool {
+        self.text.is_some()
+    }
+    /// Keeps a piece of streamed text, up to [`MAX_STREAMED_TEXT`] in all.
+    pub(crate) fn push_text(&self, piece: &str) {
+        let Some(text) = &self.text else { return };
+        let mut text = text.lock().unwrap_or_else(PoisonError::into_inner);
+        let room = MAX_STREAMED_TEXT.saturating_sub(text.total);
+        let piece = piece.get(..floor_char_boundary(piece, room)).unwrap_or_default();
+        text.total = text.total.saturating_add(piece.len());
+        text.pending.push_str(piece);
+    }
+    /// The text streamed since the last call, in pieces of at most [`MAX_TEXT_DELTA`] bytes.
+    pub(crate) fn take_text(&self) -> Vec<String> {
+        let Some(text) = &self.text else { return Vec::new() };
+        let mut pending = std::mem::take(&mut text.lock().unwrap_or_else(PoisonError::into_inner).pending);
+        let mut pieces = Vec::new();
+        while !pending.is_empty() {
+            let mut end = floor_char_boundary(&pending, MAX_TEXT_DELTA);
+            if end == 0 {
+                // A char wider than the delta can't happen (chars are at most 4 bytes); take one.
+                end = pending.chars().next().map_or(pending.len(), char::len_utf8);
+            }
+            let rest = pending.split_off(end);
+            pieces.push(pending);
+            pending = rest;
+        }
+        pieces
     }
     pub(crate) fn arm(&self) {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -108,6 +157,33 @@ impl SubmitContext {
         })
     }
 }
+impl SubmitContext {
+    /// [`Self::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
+    pub(crate) fn send_streaming<'a>(
+        &'a self,
+        http: &'a dyn Http,
+        request: HttpRequest,
+        on_chunk: &'a mut ChunkSink<'a>,
+    ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        let child = Child::new(Arc::clone(&self.state));
+        let Some(child) = child else {
+            return Box::pin(async { Err(crate::ProviderError::new(crate::ErrorKind::Network, "submission evidence scope is closed")) });
+        };
+        Box::pin(async move {
+            let result = http.send_streaming_with_delivery(request, on_chunk, &child.context).await;
+            child.finish(result)
+        })
+    }
+}
+
+/// The largest char boundary in `text` at or below `at`.
+fn floor_char_boundary(text: &str, at: usize) -> usize {
+    if at >= text.len() {
+        return text.len();
+    }
+    (0..=at).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0)
+}
+
 fn taint(root: &Arc<Mutex<Operation>>) {
     let mut s = root.lock().unwrap_or_else(PoisonError::into_inner);
     if !s.closed {

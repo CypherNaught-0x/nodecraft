@@ -395,3 +395,25 @@ fn loopback_fixture_terminates_on_empty_and_partial_header_eof() {
         assert_eq!(count.load(Ordering::SeqCst), 0, "an incomplete request was not observed as complete");
     }
 }
+
+#[test]
+fn streamed_text_is_bounded_and_split_at_char_boundaries() {
+    let plain = SubmitContext::new();
+    plain.push_text("ignored");
+    assert!(!plain.wants_text() && plain.take_text().is_empty(), "text is kept only when asked for");
+    let context = SubmitContext::streaming_text();
+    // A three-byte char straddles both the delta size and the total cap.
+    let piece = "é€".repeat(MAX_TEXT_DELTA / 5 + 1);
+    let mut pushed = 0;
+    while pushed <= MAX_STREAMED_TEXT {
+        context.push_text(&piece);
+        pushed += piece.len();
+    }
+    let pieces = context.take_text();
+    assert!(pieces.iter().all(|p| !p.is_empty() && p.len() <= MAX_TEXT_DELTA));
+    let total: usize = pieces.iter().map(String::len).sum();
+    assert!(total <= MAX_STREAMED_TEXT && total > MAX_STREAMED_TEXT - 4, "{total}");
+    context.push_text(&"x".repeat(8));
+    let more: usize = context.take_text().iter().map(String::len).sum();
+    assert_eq!(total + more, MAX_STREAMED_TEXT, "nothing is kept past the cap");
+}

@@ -23,11 +23,14 @@ pub struct RunLimits {
     pub max_poll_interval_ms: u64,
     /// Consecutive transient poll failures tolerated (each retried after backoff).
     pub max_poll_errors: u32,
+    /// Ask providers that answer in text to stream it, reported as [`RunUpdate::Text`] (#504).
+    /// Off by default: only a host that shows the answer as it arrives needs it.
+    pub stream_text: bool,
 }
 
 impl Default for RunLimits {
     fn default() -> Self {
-        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5 }
+        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5, stream_text: false }
     }
 }
 
@@ -42,6 +45,10 @@ pub enum RunUpdate {
     /// The job was cancelled, but the provider refused to stop it or didn't confirm it did (the
     /// reason). It may still run and be billed, so it is followed to the end like any other job.
     CancelRefused(String),
+    /// The next piece of a text answer as it streams (with [`RunLimits::stream_text`]), at most
+    /// [`crate::MAX_TEXT_DELTA`] bytes, and [`crate::MAX_STREAMED_TEXT`] over the whole submit.
+    /// The pieces are for showing; the whole answer still arrives as the result.
+    Text(String),
 }
 
 /// A failed run. When `handle` is set the job reached the provider (and may be billed, or still
@@ -100,8 +107,24 @@ pub async fn run_to_completion(
     if cancel.is_cancelled() {
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
-    let context = crate::SubmitContext::new();
-    let submitted = race(provider.submit_with_delivery(job, &context), cancel).await;
+    let context = if limits.stream_text { crate::SubmitContext::streaming_text() } else { crate::SubmitContext::new() };
+    let submitted = {
+        let mut submit = provider.submit_with_delivery(job, &context);
+        let on_update = &mut on_update;
+        // Each time the submit makes progress, report the text it streamed meanwhile.
+        let streamed = futures::future::poll_fn(|cx| {
+            let polled = submit.as_mut().poll(cx);
+            for piece in context.take_text() {
+                on_update(RunUpdate::Text(piece));
+            }
+            polled
+        });
+        race(streamed, cancel).await
+    };
+    // What streamed just before a cancel won the race.
+    for piece in context.take_text() {
+        on_update(RunUpdate::Text(piece));
+    }
     let handle = match submitted {
         // Cancelled while submitting: we can't know whether the provider accepted it.
         None => return Err(RunFailure::submit_failed(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"), false)),

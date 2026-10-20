@@ -428,6 +428,43 @@ impl Runs {
         })
     }
 
+    /// A text card's answer still streaming in, or left by its last job when that was cancelled
+    /// or failed (#504), with why it stopped.
+    pub(super) fn partial(&self, canvas: CanvasId, node: NodeId) -> Option<crate::card::generate::Partial<'_>> {
+        let view = self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node)?;
+        let text = view.partial.as_deref().filter(|text| !text.is_empty())?;
+        let stopped = match &view.state {
+            JobState::Done => return None,
+            JobState::Cancelled => Some("Stopped before it finished"),
+            JobState::Failed { .. } => Some("Failed before it finished"),
+            _ => None,
+        };
+        Some(crate::card::generate::Partial { text, stopped })
+    }
+
+    /// Records the partial answer a card's last job left, without changing the answer it shows.
+    pub(super) fn keep_partial(&mut self, session: &mut Session, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
+        let key = self.ended_partial(canvas, node)?;
+        let kept = self.host.keep_partial(session, key);
+        self.jobs = self.host.jobs();
+        kept
+    }
+
+    /// Lets go of the partial answer a card's last job left.
+    pub(super) fn discard_partial(&mut self, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
+        let key = self.ended_partial(canvas, node)?;
+        self.host.discard_partial(key);
+        self.jobs = self.host.jobs();
+        Ok(())
+    }
+
+    fn ended_partial(&self, canvas: CanvasId, node: NodeId) -> Result<JobKey, Error> {
+        let view = self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node && view.partial.is_some());
+        view.filter(|view| matches!(view.state, JobState::Cancelled | JobState::Failed { .. }))
+            .map(|view| view.key)
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, "that partial answer is no longer kept"))
+    }
+
     /// Whether anything is in progress, so the next frame comes without input.
     pub(super) fn is_busy(&self) -> bool {
         self.host.is_busy() || !self.asked.is_empty()

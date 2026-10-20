@@ -1165,6 +1165,10 @@ impl NodeCraftApp {
                         }),
                         roles: schema.map(|cached| &cached.roles),
                         prompt_wired: prompt_wired.contains(&node.id),
+                        #[cfg(not(target_arch = "wasm32"))]
+                        partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
+                        #[cfg(target_arch = "wasm32")]
+                        partial: None,
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -1548,6 +1552,10 @@ impl NodeCraftApp {
                     None => continue,
                 },
                 Intent::Model => continue,
+                Intent::KeepPartial | Intent::DiscardPartial => {
+                    self.partial_intent(id, matches!(intent, Intent::KeepPartial));
+                    continue;
+                }
                 // After this pass's edits above it, so a prompt submitted with Cmd+Enter is quoted.
                 Intent::Generate => {
                     if let Err(error) = self.request_generate(id) {
@@ -2290,6 +2298,9 @@ mod preview_tests;
 mod runs_tests;
 #[cfg(test)]
 mod split_tests;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod stream_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -117,6 +117,17 @@ impl NodeCraftApp {
         self.request_run(id, RunKind::Generate)
     }
 
+    /// Keeps or discards the partial answer a cancelled or failed run left on text card `id` (#504).
+    pub(super) fn partial_intent(&mut self, id: NodeId, keep: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(runs) = &mut self.runs {
+            let done = if keep { runs.keep_partial(&mut self.session, self.canvas, id) } else { runs.discard_partial(self.canvas, id) };
+            self.notice = done.err().map(|error| error.message);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (id, keep);
+    }
+
     /// Quote a run from card `id` and ask before starting it.
     pub(super) fn request_run(&mut self, id: NodeId, kind: RunKind) -> Result<(), Error> {
         if self.run_confirm.is_some() {

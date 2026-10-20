@@ -13,7 +13,8 @@
 //!   cumulative ceiling (see [`crate::run_ceiling`]), so deferred fan-out and retries can't
 //!   reserve more, or admit more unknown-price jobs, than was accepted.
 //! - `run.record` (host only): records a run's results, one generation per node, as one undo
-//!   step.
+//!   step. A result marked `keep` (a partial answer kept by hand) doesn't replace the node's
+//!   active result.
 //! - `usage.export_csv` (read-only): spreadsheet-safe CSV pages, at most 2,000 rows and
 //!   768 KiB of encoded JSON including the envelope. Continue at the returned actual row offset.
 //!
@@ -28,7 +29,7 @@ use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_catalog::Catalog;
 use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money};
 use nodecraft_exec::planner::{Planned, RunMode, plan_with_targets};
-use nodecraft_exec::run::record_changes;
+use nodecraft_exec::run::{keep_changes, record_changes};
 use nodecraft_graph::{Changeset, Generation};
 use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, Money, NodeId};
 use serde::Deserialize;
@@ -558,6 +559,9 @@ fn enabled_start(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 struct RecordResult {
     node: NodeId,
     generation: Generation,
+    /// Kept by hand, like a partial answer (#504): it doesn't replace the node's active result.
+    #[serde(default)]
+    keep: bool,
 }
 
 #[derive(Deserialize)]
@@ -580,7 +584,7 @@ fn run_record(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
             return Err(invalid("a node is recorded twice"));
         }
         let node = canvas.nodes().get(&result.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a recorded node is not on the canvas"))?;
-        changes.extend(record_changes(p.canvas, node, result.generation)?);
+        changes.extend(if result.keep { keep_changes(p.canvas, node, result.generation)? } else { record_changes(p.canvas, node, result.generation)? });
     }
     Ok(Effect::Edit { changes: Changeset::new(changes), result: json!({"recorded": seen.len()}), gesture: None })
 }
@@ -699,7 +703,8 @@ fn record_schema() -> Value {
             "canvas": {"type": "string", "format": "uuid"},
             "results": {"type": "array", "minItems": 1, "maxItems": MAX_RESULTS, "items": {"type": "object", "additionalProperties": false,
                 "required": ["node", "generation"], "properties": {"node": {"type": "string", "format": "uuid"}, "generation": {"type": "object",
-                    "required": ["id"], "properties": {"id": {"type": "string", "format": "uuid"}, "outputs": {"type": "array"}, "input_hash": {"type": "string"}}}}}}}})
+                    "required": ["id"], "properties": {"id": {"type": "string", "format": "uuid"}, "outputs": {"type": "array"}, "input_hash": {"type": "string"}}},
+                    "keep": {"type": "boolean"}}}}}})
 }
 
 fn export_schema() -> Value {
@@ -735,7 +740,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: record_schema,
-            params_doc: "{canvas, results: [{node: NodeId, generation: graph::Generation}]}; records each result as the node's new active generation, all in one undo step. For the host that ran the jobs.",
+            params_doc: "{canvas, results: [{node: NodeId, generation: graph::Generation, keep?: bool}]}; records each result as the node's new active generation, all in one undo step. A `keep` result (a partial answer kept by hand) joins the history without replacing the active generation, and becomes it only when there is none. For the host that ran the jobs.",
             enabled: enabled_record,
             run: run_record,
         },

@@ -192,6 +192,17 @@ pub fn record_changes(canvas: CanvasId, node: &Node, mut generation: Generation)
     }
 }
 
+/// [`record_changes`] for a result kept by hand, such as a partial answer (#504): it joins the
+/// node's history, but becomes the active result only when the node has none, so it never
+/// replaces one.
+pub fn keep_changes(canvas: CanvasId, node: &Node, generation: Generation) -> Result<Vec<Change>, Error> {
+    let mut changes = record_changes(canvas, node, generation)?;
+    if node.active.is_some() {
+        changes.retain(|change| !matches!(change, Change::SetActiveGeneration { .. }));
+    }
+    Ok(changes)
+}
+
 /// Drops part of a result's settings so it can fit (#162): first its jobs' inputs, which can
 /// be large and are often wired from elsewhere, so the parameters, drawn seeds among them,
 /// survive; then the settings altogether. False once there is nothing left to drop.

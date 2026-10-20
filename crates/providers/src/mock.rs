@@ -76,13 +76,15 @@ pub struct MockProvider {
     id: String,
     models: Arc<BTreeMap<String, MockModel>>,
     scripts: Arc<scripts::Scripts>,
+    /// Pieces a model streams before its answer, when the runner asks for streamed text.
+    streams: Arc<BTreeMap<String, Vec<String>>>,
     state: Arc<Mutex<State>>,
 }
 
 impl MockProvider {
     /// A mock provider called `id` with `models` (model id → behaviour).
     pub fn new(id: impl Into<String>, models: impl IntoIterator<Item = (String, MockModel)>) -> Self {
-        Self { id: id.into(), models: Arc::new(models.into_iter().collect()), scripts: Arc::default(), state: Arc::default() }
+        Self { id: id.into(), models: Arc::new(models.into_iter().collect()), scripts: Arc::default(), streams: Arc::default(), state: Arc::default() }
     }
 
     /// The default mock provider (`mock`): `mock-text` and `mock-image`, `mock-video`,
@@ -93,6 +95,14 @@ impl MockProvider {
             [("mock-text", MockOutput::Text), ("mock-image", MockOutput::Image), ("mock-video", MockOutput::Video), ("mock-audio", MockOutput::Audio)]
                 .map(|(id, output)| (id.to_owned(), MockModel::new(output))),
         )
+    }
+
+    /// Makes `model` stream `pieces`, one per poll of its submit, when the runner asks for
+    /// streamed text (#504). Its answer is unchanged.
+    #[must_use]
+    pub fn with_stream(mut self, model: impl Into<String>, pieces: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Arc::make_mut(&mut self.streams).insert(model.into(), pieces.into_iter().map(Into::into).collect());
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -182,6 +192,18 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
 impl Provider for MockProvider {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        context.unknown();
+        let pieces = if context.wants_text() { self.streams.get(&job.model).cloned().unwrap_or_default() } else { Vec::new() };
+        Box::pin(async move {
+            for piece in pieces {
+                context.push_text(&piece);
+                yield_once().await;
+            }
+            self.submit(job).await
+        })
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
@@ -329,6 +351,20 @@ impl Provider for MockProvider {
     fn poll_interval_ms(&self, _: &JobProgress) -> u64 {
         0
     }
+}
+
+/// Pending once, so the runner reports what was streamed so far.
+async fn yield_once() {
+    let mut yielded = false;
+    futures::future::poll_fn(|cx| {
+        if yielded {
+            return std::task::Poll::Ready(());
+        }
+        yielded = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+    .await;
 }
 
 #[cfg(test)]
