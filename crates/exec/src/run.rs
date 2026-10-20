@@ -20,7 +20,7 @@ use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
 use nodecraft_graph::{Canvas, Change, Generation, Incomplete, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Missing, MissingItem, Node};
 use nodecraft_nodes::{InputValue, JobSpec, PlanCtx, Registry};
 use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Most jobs one step may plan.
@@ -138,6 +138,11 @@ pub struct Run {
     hasher: InputHasher,
     steps: BTreeMap<NodeId, StepState>,
     jobs: BTreeMap<JobId, JobState>,
+    /// Steps inlined from techniques (#94), with the technique node each runs for; their
+    /// results stay inside the run, and a failure is reported once, as its technique node's.
+    inner: BTreeMap<NodeId, NodeId>,
+    /// Nodes whose failure has been reported.
+    reported: BTreeSet<NodeId>,
     /// Outputs of finished steps, in `node.outputs` order.
     produced: BTreeMap<NodeId, Vec<Value>>,
     open_steps: usize,
@@ -276,6 +281,10 @@ impl Run {
     ) -> Result<(Self, Progress), Error> {
         let mut steps: BTreeMap<NodeId, StepState> = BTreeMap::new();
         let ready: Vec<NodeId> = plan.steps.iter().filter(|s| s.after.is_empty()).map(|s| s.node).collect();
+        let inner = plan.inner;
+        if inner.iter().any(|(id, owner)| !plan.steps.iter().any(|s| s.node == *id) || !canvas.nodes().contains_key(owner)) {
+            return Err(invalid("an inlined step doesn't match the plan"));
+        }
         for step in plan.steps {
             if canvas.nodes().get(&step.node).is_none() {
                 return Err(invalid("a planned node is not on the canvas"));
@@ -307,6 +316,8 @@ impl Run {
             hasher,
             steps,
             jobs: BTreeMap::new(),
+            inner,
+            reported: BTreeSet::new(),
             produced: BTreeMap::new(),
             open_steps,
             next_job: options.first_job,
@@ -319,6 +330,7 @@ impl Run {
             retry: options.retry,
         };
         let progress = run.start_ready(kinds, ready);
+        let progress = run.outward(progress);
         Ok((run, progress))
     }
 
@@ -362,6 +374,12 @@ impl Run {
     /// A job finished with `outputs` (`(output port, value)`, in order). Late or repeated reports
     /// change nothing.
     pub fn job_done(&mut self, kinds: &Registry, job: JobId, outputs: Vec<(String, Value)>) -> Progress {
+        let progress = self.job_finished(kinds, job, outputs);
+        self.outward(progress)
+    }
+
+    /// What the run's own steps did, before [`Run::outward`].
+    fn job_finished(&mut self, kinds: &Registry, job: JobId, outputs: Vec<(String, Value)>) -> Progress {
         let Some(state) = self.jobs.get_mut(&job) else { return Progress::default() };
         if state.done {
             return Progress::default();
@@ -379,6 +397,26 @@ impl Run {
         }
         let (mut progress, ready) = self.finish(kinds, node);
         progress.absorb(self.start_ready(kinds, ready));
+        progress
+    }
+
+    /// Progress as the host sees it: results of steps inlined from techniques stay inside the
+    /// run, and their failure is their technique node's, reported once, before the technique
+    /// node's own ("skipped") failure would be.
+    fn outward(&mut self, mut progress: Progress) -> Progress {
+        if self.inner.is_empty() {
+            return progress;
+        }
+        progress.finished.retain(|result| !self.inner.contains_key(&result.node));
+        let failed = std::mem::take(&mut progress.failed);
+        for failure in failed {
+            let node = self.inner.get(&failure.node).copied().unwrap_or(failure.node);
+            if !self.reported.insert(node) {
+                continue;
+            }
+            let reason = if node == failure.node { failure.reason } else { format!("“{}”: {}", self.title(failure.node), failure.reason) };
+            progress.failed.push(StepFailure { node, reason });
+        }
         progress
     }
 
@@ -409,6 +447,12 @@ impl Run {
     }
 
     fn job_ended(&mut self, kinds: &Registry, job: JobId, why: Missing, error: &str) -> Progress {
+        let progress = self.job_stopped(kinds, job, why, error);
+        self.outward(progress)
+    }
+
+    /// What the run's own steps did, before [`Run::outward`].
+    fn job_stopped(&mut self, kinds: &Registry, job: JobId, why: Missing, error: &str) -> Progress {
         let Some(state) = self.jobs.get_mut(&job) else { return Progress::default() };
         if state.done {
             return Progress::default();

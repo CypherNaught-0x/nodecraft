@@ -266,11 +266,13 @@ impl Runs {
         stale: &BTreeSet<NodeId>,
         settings: &ProviderSettings,
     ) -> Result<Route, Error> {
-        let adapters = adapters_of(session, canvas);
-        let reached = match kind {
+        let (adapters, inner) = adapters_of(session, canvas);
+        let mut reached: BTreeSet<NodeId> = match kind {
             RunKind::Generate => ids.iter().copied().collect(),
             RunKind::Refresh => with_upstream(session, canvas, ids, stale),
         };
+        // A technique node runs the nodes inlined for it.
+        reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
         let needed: BTreeSet<String> = reached.iter().filter_map(|node| adapters.get(node).cloned()).collect();
         let mut pending = BTreeSet::new();
         let mut unready = Vec::new();
@@ -519,18 +521,26 @@ fn has_result(node: &nodecraft_graph::Node) -> bool {
     node.active.is_some_and(|active| node.history.iter().any(|generation| generation.id == active))
 }
 
-/// The adapter each card with a catalog model on `canvas` runs on.
-fn adapters_of(session: &Session, canvas: CanvasId) -> BTreeMap<NodeId, String> {
+/// The adapter each card with a catalog model on `canvas` runs on, and the technique node each
+/// inlined one runs for.
+fn adapters_of(session: &Session, canvas: CanvasId) -> (BTreeMap<NodeId, String>, BTreeMap<NodeId, NodeId>) {
     let (Some(canvas), Ok(catalog)) = (session.document().canvases().get(&canvas), session.generation_catalog()) else {
-        return BTreeMap::new();
+        return Default::default();
     };
     let catalog = catalog.run_catalog();
-    canvas
+    // Routes are per node, so the nodes a run inlines for its technique nodes (#94) need theirs;
+    // their ids are derived, the same for the run as here. A canvas that can't be inlined runs
+    // only its own nodes.
+    let expanded = nodecraft_exec::technique::expand(session.document().canvases(), canvas, session.kinds())
+        .unwrap_or_else(|_| nodecraft_exec::technique::Expanded::plain(canvas));
+    let adapters = expanded
+        .canvas
         .nodes()
         .iter()
         .filter_map(|(id, node)| match node.params.get(nodecraft_nodes::generation::MODEL) {
             Some(nodecraft_types::Value::Text(model)) => catalog.catalog().get(model).map(|descriptor| (*id, descriptor.provider.clone())),
             _ => None,
         })
-        .collect()
+        .collect();
+    (adapters, expanded.inner)
 }

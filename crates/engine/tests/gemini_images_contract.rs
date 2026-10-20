@@ -82,6 +82,7 @@ fn assemble(done: &Completed, text: bool, many: bool) -> nodecraft_exec::run::Pr
             fanout: None,
         }],
         edges: vec![],
+        inner: Default::default(),
     };
     let mut targets = TargetSelection::empty();
     targets.insert(nid, &ProviderTarget::default_instance("gemini-images").unwrap()).unwrap();

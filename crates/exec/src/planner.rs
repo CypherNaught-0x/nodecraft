@@ -10,10 +10,13 @@
 //! Routers (#72) and batches (#92) are resolved here, before inputs are gathered: a router into
 //! its sources, a batch into its items. A node with a single input fed by a batch, or a list
 //! input its contract marks as fanning out (a generation's prompt, #515), is planned once per
-//! item ([`Fanout`], combined by [`crate::fanout`]); techniques (#94) will be inlined here too.
+//! item ([`Fanout`], combined by [`crate::fanout`]). Technique nodes (#94) are inlined first
+//! ([`crate::technique`]): their copied nodes run as steps of the run, before the technique
+//! node's own step gives their results back.
 
+use crate::technique::{Collect, Expanded};
 use nodecraft_graph::{Canvas, ItemTag, Node};
-use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch};
+use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch, technique};
 use nodecraft_types::{Error, ErrorKind, FieldId, NodeId, PortType, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,11 +88,14 @@ pub struct Fanout {
 
 /// A plan that can run: steps in dependency order. Its price is `cost::quote` (#76), the one
 /// place runs are priced.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunPlan {
     pub steps: Vec<Step>,
     /// Dependencies between steps, `(before, after)`.
     pub edges: Vec<(NodeId, NodeId)>,
+    /// Steps for nodes inlined from techniques (#94), each with the technique node on the real
+    /// canvas it runs for. Their results are never recorded; a failure fails that node.
+    pub inner: BTreeMap<NodeId, NodeId>,
 }
 
 /// Static target-selection failures; never contains provider or native hook text.
@@ -183,7 +189,8 @@ pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTree
     plan_with_targets(canvas, kinds, mode, requested, stale, &nodecraft_types::EMPTY_TARGET_SELECTION)
 }
 
-/// Plan with the immutable endpoint view supplied before any kind hook.
+/// Plan with the immutable endpoint view supplied before any kind hook, on a canvas whose
+/// technique nodes are already inlined (or that has none).
 pub fn plan_with_targets(
     canvas: &Canvas,
     kinds: &Registry,
@@ -192,10 +199,24 @@ pub fn plan_with_targets(
     stale: &BTreeSet<NodeId>,
     targets: &nodecraft_types::TargetSelection,
 ) -> Result<Planned, Error> {
-    let graph = Graph::new(canvas, kinds, targets)?;
+    plan_expanded(&Expanded::plain(canvas), kinds, mode, requested, stale, targets)
+}
+
+/// Plan on a canvas with its technique nodes inlined ([`crate::technique::expand`]). `stale`
+/// holds nodes of the real canvas; inlined nodes have no results of their own, so they run.
+pub fn plan_expanded(
+    expanded: &Expanded<'_>,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<Planned, Error> {
+    let canvas: &Canvas = &expanded.canvas;
+    let graph = Graph::new(canvas, kinds, targets, &expanded.collects)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
-            if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id)) {
+            if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id) || expanded.inner.contains_key(id)) {
                 return Err(Error::new(ErrorKind::NotFound, format!("node {missing} is not on this canvas")));
             }
             if requested.is_empty() {
@@ -206,6 +227,7 @@ pub fn plan_with_targets(
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
     };
+    let run = graph.with_inlined(run, stale, &expanded.inner);
     // Routers and batches never run: they are resolved into their consumers' inputs.
     let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
     let requested_only_routers = matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(resolved_away);
@@ -216,11 +238,16 @@ pub fn plan_with_targets(
     let order = graph.order(&run)?;
     let mut steps = Vec::with_capacity(order.len());
     let mut edges = BTreeSet::new();
-    let mut blockers: Vec<Blocker> = Vec::new();
+    // A technique node that can't be inlined blocks only the runs it is in.
+    let mut blockers: Vec<Blocker> = expanded.blockers.iter().filter(|b| run.contains(&b.node)).cloned().collect();
+    let not_inlined: BTreeSet<NodeId> = expanded.blockers.iter().map(|b| b.node).collect();
     let mut state = State::default();
     for id in order {
         if blockers.len() >= MAX_BLOCKERS {
             break;
+        }
+        if not_inlined.contains(&id) {
+            continue;
         }
         match graph.step(id, &run, &mut state) {
             Ok(step) => {
@@ -241,10 +268,23 @@ pub fn plan_with_targets(
         }
     }
     if !blockers.is_empty() {
-        return Ok(Planned::Blocked(blockers));
+        return Ok(Planned::Blocked(blockers.into_iter().map(|blocker| owned(blocker, expanded)).collect()));
     }
     crate::partial::resume_partials(canvas, kinds, &mut steps);
-    Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect() }))
+    let inner = steps.iter().filter_map(|step| Some((step.node, *expanded.inner.get(&step.node)?))).collect();
+    Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }))
+}
+
+/// A blocker as the real canvas shows it: one inside a technique is its technique node's.
+fn owned(blocker: Blocker, expanded: &Expanded<'_>) -> Blocker {
+    if expanded.inner.contains_key(&blocker.node) {
+        let message = blocker.message(&expanded.canvas);
+        return Blocker { node: expanded.owner(blocker.node), port: None, upstream: None, reason: Reason::Invalid(format!("inside its technique: {message}")) };
+    }
+    match blocker.upstream {
+        Some(up) if expanded.inner.contains_key(&up) => Blocker { upstream: None, ..blocker },
+        _ => blocker,
+    }
 }
 
 /// Values already resolved for an upstream `(node, output port)`, with whether that output is a
@@ -297,10 +337,17 @@ struct Graph<'a> {
     /// How each batch pairs with others (#92); one whose setting is invalid is blocked when
     /// its items are resolved.
     pairing: BTreeMap<NodeId, batch::Pairing>,
+    /// Where each inlined technique node's outputs come from (#94).
+    collects: &'a BTreeMap<NodeId, Vec<Collect>>,
 }
 
 impl<'a> Graph<'a> {
-    fn new(canvas: &'a Canvas, kinds: &'a Registry, targets: &'a nodecraft_types::TargetSelection) -> Result<Self, Error> {
+    fn new(
+        canvas: &'a Canvas,
+        kinds: &'a Registry,
+        targets: &'a nodecraft_types::TargetSelection,
+        collects: &'a BTreeMap<NodeId, Vec<Collect>>,
+    ) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
         let mut routing = crate::routing::incoming(canvas, kinds)?;
         let into = std::mem::take(&mut routing.feeds)
@@ -308,11 +355,20 @@ impl<'a> Graph<'a> {
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
         let pairing = canvas.nodes().values().filter(|n| n.kind == batch::ID).filter_map(|n| Some((n.id, batch::pairing(n).ok()?))).collect();
-        Ok(Self { canvas, kinds, targets, into, routing, pairing })
+        Ok(Self { canvas, kinds, targets, into, routing, pairing, collects })
     }
 
+    /// What `id` is made from: its inputs' nodes and, for a technique node, the inlined nodes
+    /// its outputs come from.
     fn upstream(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        self.into.get(&id).into_iter().flatten().map(|(_, from, _, _)| *from)
+        let collects = self.collects.get(&id).into_iter().flatten().map(|collect| collect.node);
+        self.into.get(&id).into_iter().flatten().map(|(_, from, _, _)| *from).chain(collects)
+    }
+
+    /// Whether `node`, upstream of the run, runs too rather than giving its result as is.
+    fn needs_run(&self, node: &Node, stale: &BTreeSet<NodeId>) -> bool {
+        // A batch collects existing results only (#92), so the walk stops there.
+        !self.is_source(node) && node.kind != batch::ID && (stale.contains(&node.id) || usable_outputs(node).is_none())
     }
 
     fn is_source(&self, node: &Node) -> bool {
@@ -328,9 +384,23 @@ impl<'a> Graph<'a> {
         while let Some(id) = stack.pop() {
             for up in self.upstream(id) {
                 let Some(node) = self.canvas.nodes().get(&up) else { continue };
-                // A batch collects existing results only (#92), so the walk stops there.
-                let needs_run = !self.is_source(node) && node.kind != batch::ID && (stale.contains(&up) || usable_outputs(node).is_none());
-                if needs_run && run.insert(up) {
+                if self.needs_run(node, stale) && run.insert(up) {
+                    stack.push(up);
+                }
+            }
+        }
+        run
+    }
+
+    /// `run` plus the inlined nodes its technique nodes need, whatever the mode: a technique
+    /// node's step is only its copied nodes' results given back. The walk stays inside the
+    /// techniques; what feeds them is planned as for any node.
+    fn with_inlined(&self, mut run: BTreeSet<NodeId>, stale: &BTreeSet<NodeId>, inner: &BTreeMap<NodeId, NodeId>) -> BTreeSet<NodeId> {
+        let mut stack: Vec<NodeId> = run.iter().copied().filter(|id| self.collects.contains_key(id)).collect();
+        while let Some(id) = stack.pop() {
+            for up in self.upstream(id) {
+                let Some(node) = self.canvas.nodes().get(&up).filter(|_| inner.contains_key(&up)) else { continue };
+                if self.needs_run(node, stale) && run.insert(up) {
                     stack.push(up);
                 }
             }
@@ -551,6 +621,19 @@ impl<'a> Graph<'a> {
         let (Some(mode), true) = (mode, blockers.is_empty()) else {
             return Err(blockers);
         };
+        if let Some(collects) = self.collects.get(&id) {
+            let unsupported = |upstream: Option<NodeId>| vec![blocker(None, upstream, Reason::Invalid("batches into techniques aren't supported yet".into()))];
+            if !fanned.is_empty() {
+                return Err(unsupported(None));
+            }
+            for collect in collects {
+                let (from, port_type) = self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| match reason {
+                    Some(reason) => vec![blocker(None, Some(upstream), reason)],
+                    None => unsupported(Some(upstream)),
+                })?;
+                inputs.push(PlannedInput { port: format!("{}{}", technique::OUTPUT_PREFIX, collect.output), port_type, from });
+            }
+        }
         let plan_jobs = |inputs: &[PlannedInput]| -> Result<Option<Vec<JobSpec>>, Vec<Blocker>> {
             let Some(values) = known_inputs(inputs) else { return Ok(None) };
             let jobs = kind
@@ -622,6 +705,38 @@ impl<'a> Graph<'a> {
             }
         }
         Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs: Vec::new(), jobs, fanout: Some(Fanout { items, cells, jobs: counts, resume: None }) })
+    }
+
+    /// Where one output of a technique node comes from: the inlined node's step in this run, or
+    /// its result as is. `Err` names the node, with `None` for a batch fanning it out.
+    fn collect(
+        &self,
+        collect: &Collect,
+        run: &BTreeSet<NodeId>,
+        state: &mut State,
+        bytes: &mut usize,
+        after: &mut BTreeSet<NodeId>,
+    ) -> Result<(Vec<InputSource>, PortType), (NodeId, Option<Reason>)> {
+        let inner = self.canvas.nodes().get(&collect.node).ok_or((collect.node, Some(Reason::NoResult)))?;
+        let port_type = inner.outputs.iter().find(|p| p.name == collect.port).map(|p| p.port_type).ok_or((collect.node, Some(Reason::NoResult)))?;
+        if run.contains(&collect.node) && !self.is_source(inner) {
+            if state.fanned.contains_key(&collect.node) {
+                return Err((collect.node, None));
+            }
+            after.insert(collect.node);
+            return Ok((vec![InputSource::Step { node: collect.node, port: collect.port.clone(), list: port_type.many }], port_type));
+        }
+        let (value, _, items) = self.resolve(collect.node, &collect.port).map_err(|reason| (collect.node, Some(reason)))?;
+        if !items.is_empty() {
+            return Err((collect.node, None));
+        }
+        if !self.charge(bytes, &mut state.plan_bytes, value_bytes(&value)) {
+            return Err((collect.node, Some(Reason::Invalid(over_budget(*bytes).into()))));
+        }
+        Ok(match value {
+            Value::List(values) if port_type.many => (values.into_iter().map(InputSource::Value).collect(), port_type),
+            value => (vec![InputSource::Value(value)], port_type),
+        })
     }
 
     /// Adds `size` known input bytes to the step's and the plan's totals; `false` when either

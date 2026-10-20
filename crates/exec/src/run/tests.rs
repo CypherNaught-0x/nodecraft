@@ -500,7 +500,7 @@ fn malformed_plans_are_refused_and_an_empty_run_is_finished_at_once() {
     for bad in [reversed, selfish, twice] {
         assert!(Run::start(&bad, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).is_err());
     }
-    let (run, first) = Run::start(&RunPlan { steps: vec![], edges: vec![] }, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (run, first) = Run::start(&RunPlan::default(), C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
     assert!(run.is_finished() && first == Progress::default());
 }
 

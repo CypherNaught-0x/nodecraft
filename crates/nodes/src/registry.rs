@@ -20,6 +20,7 @@ impl Registry {
         registry.register(Box::new(crate::router::kind()))?;
         registry.register(Box::new(crate::batch::kind()))?;
         registry.register(Box::new(crate::note::kind()))?;
+        registry.register(Box::new(crate::technique::kind()))?;
         for kind in crate::action::kinds()? {
             registry.register(Box::new(kind))?;
         }

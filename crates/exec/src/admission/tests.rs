@@ -102,6 +102,7 @@ fn plan(jobs: Option<Vec<JobSpec>>) -> RunPlan {
             fanout: None,
         }],
         edges: vec![],
+        inner: Default::default(),
     }
 }
 fn options() -> RunOptions {
@@ -377,7 +378,7 @@ fn independent_review275_work_roots_must_fit_even_empty_plan() {
     let mut limits = AdmissionLimits::default();
     limits.work.run_bytes = 0;
     limits.work.step_bytes = 0;
-    let result = admit_run(RunPlan { steps: vec![], edges: vec![] }, C, canvas, &kinds, &Catalog::default(), limits);
+    let result = admit_run(RunPlan::default(), C, canvas, &kinds, &Catalog::default(), limits);
     println!("empty admitted with zero work budget: {}", result.is_ok());
     assert!(result.is_err(), "RunPlan/Usage retained roots require nonzero logical work ownership");
 }
@@ -392,7 +393,7 @@ fn empty_root_work_boundary_is_global_exact_and_transferred() {
         limits.work.step_bytes = 0;
         QUOTE_COPIES.with(|n| n.set(0));
         CANONICAL_COPIES.with(|n| n.set(0));
-        let result = admit_run(RunPlan { steps: vec![], edges: vec![] }, C, canvas.clone(), &kinds, &Catalog::default(), limits);
+        let result = admit_run(RunPlan::default(), C, canvas.clone(), &kinds, &Catalog::default(), limits);
         if limit < roots {
             assert!(result.is_err());
             assert_eq!(QUOTE_COPIES.with(|n| n.get()), 0);
@@ -401,7 +402,7 @@ fn empty_root_work_boundary_is_global_exact_and_transferred() {
             let (a, _) = result.unwrap();
             assert_eq!(a.usage.bytes, roots);
             assert!(a.usage.steps.is_empty());
-            let (too_tight, _) = admit_run(RunPlan { steps: vec![], edges: vec![] }, C, canvas.clone(), &kinds, &Catalog::default(), limits).unwrap();
+            let (too_tight, _) = admit_run(RunPlan::default(), C, canvas.clone(), &kinds, &Catalog::default(), limits).unwrap();
             let mut opt = options();
             opt.limits.run_bytes = roots - 1;
             assert!(Run::start_admitted(too_tight, &kinds, opt).is_err());

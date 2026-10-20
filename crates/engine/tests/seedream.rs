@@ -294,6 +294,7 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
             fanout: None,
         }],
         edges: vec![],
+        inner: Default::default(),
     };
     let options = RunOptions { id: [4; 16], first_job: 1, limits: ExecutionLimits::default(), retry: RetryPolicy::NEVER };
     let canvas = project.canvases().get(&c).unwrap();
