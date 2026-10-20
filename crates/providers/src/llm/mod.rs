@@ -708,7 +708,12 @@ pub fn chat_request(job: &ProviderJob) -> Result<ChatRequest, ProviderError> {
             }
             JobInput::Text { role, text } if role == "assistant" => (Role::Assistant, Part::Text(text.clone())),
             JobInput::Text { text, .. } => (Role::User, Part::Text(text.clone())),
-            JobInput::Media { mime, bytes, .. } => (Role::User, Part::Image { mime: mime.clone(), bytes: bytes.clone() }),
+            JobInput::Media { mime, bytes, .. } if mime.starts_with("image/") => (Role::User, Part::Image { mime: mime.clone(), bytes: bytes.clone() }),
+            // Chat models here read images only; audio, video, meshes and documents aren't sent
+            // as if they were one.
+            JobInput::Media { role, mime, .. } => {
+                return Err(ProviderError::new(ErrorKind::UnsupportedInput, format!("chat models can't take {mime} media (input {role}); only images")));
+            }
         };
         // Consecutive inputs of one role make one message.
         match messages.last_mut() {
@@ -892,6 +897,14 @@ pub(crate) mod tests {
         assert_eq!(r.messages[0].parts.len(), 2);
         assert_eq!(r.max_tokens, None, "a non-integer max_tokens is left to the endpoint");
         assert_eq!(r.temperature, Some(9.0), "range errors are reported at send time, per dialect");
+        // Media other than images is refused, not sent as if it were an image (#502).
+        for mime in ["audio/wav", "video/mp4", "application/pdf", "model/gltf-binary"] {
+            let mut audio = job.clone();
+            audio.inputs.push(JobInput::Media { role: "clip".into(), mime: mime.into(), bytes: Arc::from(&b"x"[..]) });
+            let refused = chat_request(&audio).unwrap_err();
+            assert_eq!(refused.kind, ErrorKind::UnsupportedInput);
+            assert!(refused.message.contains(mime), "{}", refused.message);
+        }
     }
 
     #[test]

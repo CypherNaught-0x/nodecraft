@@ -291,10 +291,10 @@ fn an_empty_prompt_is_refused_before_any_provider_work() {
 }
 
 #[test]
-fn a_wired_image_is_refused_before_paid_submission() {
+fn an_empty_image_source_is_refused_before_paid_submission() {
     let mut f = fixture(None, true);
     assert!(writer(&f.session).inputs.iter().any(|port| port.name == "image"), "the image-to-text mode declares an image port");
-    // Media reaches a text model only once the host resolves it; until then the quote blocks.
+    // The wired source holds no image yet, so the quote blocks (a real image runs: #502).
     let q = f.session.dispatch("run.quote", &request()).unwrap();
     assert_eq!(q["allowed"], false, "{q}");
     assert!(q["steps"].as_array().is_some_and(Vec::is_empty), "{q}");

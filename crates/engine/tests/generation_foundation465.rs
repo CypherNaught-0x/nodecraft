@@ -563,7 +563,10 @@ fn production_connected_prompt_order_and_media_refusal_are_pure_before_submit() 
             meta: Default::default(),
         }),
     }];
-    assert_eq!(kind.plan(&nodecraft_nodes::PlanCtx { node, inputs: &media, targets: &targets }).unwrap_err().kind, nodecraft_types::ErrorKind::Unsupported);
+    // This model declares no image role (#502), so the wire reaches a port the card doesn't have.
+    let refused = kind.plan(&nodecraft_nodes::PlanCtx { node, inputs: &media, targets: &targets }).unwrap_err();
+    assert_eq!(refused.kind, nodecraft_types::ErrorKind::InvalidInput);
+    assert!(refused.message.contains("unavailable port"), "{refused}");
     assert_eq!(f.http.calls.load(Ordering::SeqCst), 0);
 }
 

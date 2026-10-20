@@ -203,14 +203,7 @@ impl ParamControl {
                 !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_whitespace) && !text.chars().any(char::is_control)
             }
             (Self::Seed { max }, Value::Unsigned(number)) => max.is_none_or(|max| *number <= max),
-            (Self::Asset { modality }, Value::Media(asset)) => match modality {
-                Modality::Text => asset.mime.essence().starts_with("text/"),
-                Modality::Image => asset.mime.essence().starts_with("image/"),
-                Modality::Video => asset.mime.essence().starts_with("video/"),
-                Modality::Audio => asset.mime.essence().starts_with("audio/"),
-                Modality::Mesh => asset.mime.essence().starts_with("model/"),
-                Modality::Document => asset.mime.essence() == "application/pdf",
-            },
+            (Self::Asset { modality }, Value::Media(asset)) => modality.accepts_mime(asset.mime.essence()),
             _ => false,
         };
         if valid { Ok(()) } else { Err(invalid("parameter value does not match its control type or bounds")) }

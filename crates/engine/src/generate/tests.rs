@@ -116,7 +116,7 @@ fn param(value: Value) -> JobSpec {
 fn no_request_copy(job: &JobSpec, limits: Limits) {
     let original = job.clone();
     let mut conversion = Conversion::default();
-    assert!(request_with_limits(job, "k", limits, &mut conversion).is_err());
+    assert!(request_with_limits(job, "k", limits, None, &mut conversion).is_err());
     assert_eq!(conversion, Conversion::default(), "refused request copied a prefix");
     assert_eq!(job, &original);
 }
@@ -139,25 +139,25 @@ fn request_exact_representation_and_text_boundaries_copy_only_after_admission() 
     let job = param(Value::Text("b".into()));
     // Contract: provider/model/key 3*40, name40, Value128, text40 =328 upper-bound bytes.
     let mut conversion = Conversion::default();
-    let (_, got) = request_with_limits(&job, "k", Limits { request: 328, text: 1, ..Limits::default() }, &mut conversion).unwrap();
+    let (_, got) = request_with_limits(&job, "k", Limits { request: 328, text: 1, ..Limits::default() }, None, &mut conversion).unwrap();
     assert_eq!(got.params, serde_json::from_value::<Map<String, Json>>(serde_json::json!({"a":"b"})).unwrap());
     assert_eq!(conversion.json_nodes, 1);
     assert!(conversion.strings > 0 && conversion.text_bytes > 0);
     no_request_copy(&job, Limits { request: 327, ..Limits::default() });
     no_request_copy(&job, Limits { text: 0, ..Limits::default() });
     let unicode = param(Value::Text("é".into()));
-    assert!(request_with_limits(&unicode, "k", Limits { text: 2, ..Limits::default() }, &mut Conversion::default()).is_ok());
+    assert!(request_with_limits(&unicode, "k", Limits { text: 2, ..Limits::default() }, None, &mut Conversion::default()).is_ok());
     no_request_copy(&unicode, Limits { text: 1, ..Limits::default() });
 }
 
 #[test]
 fn request_counts_all_roots_containers_depth_and_repeated_roles() {
     let nested = param(Value::List(vec![Value::List(vec![Value::Text("x".into())])]));
-    assert!(request_with_limits(&nested, "k", Limits { depth: 2, items: 3, ..Limits::default() }, &mut Conversion::default()).is_ok());
+    assert!(request_with_limits(&nested, "k", Limits { depth: 2, items: 3, ..Limits::default() }, None, &mut Conversion::default()).is_ok());
     no_request_copy(&nested, Limits { depth: 1, ..Limits::default() });
     no_request_copy(&nested, Limits { items: 2, ..Limits::default() });
     let empty = param(Value::List(vec![Value::List(vec![]), Value::List(vec![])]));
-    assert!(request_with_limits(&empty, "k", Limits { items: 3, ..Limits::default() }, &mut Conversion::default()).is_ok());
+    assert!(request_with_limits(&empty, "k", Limits { items: 3, ..Limits::default() }, None, &mut Conversion::default()).is_ok());
     no_request_copy(&empty, Limits { items: 2, ..Limits::default() });
     let mut roots = param(Value::Bool(false));
     if let JobSpec::Generate { inputs, .. } = &mut roots {
@@ -166,7 +166,7 @@ fn request_counts_all_roots_containers_depth_and_repeated_roles() {
     no_request_copy(&roots, Limits { items: 1, ..Limits::default() });
     let input = |role: &str| bare(vec![GenerateInput { role: role.into(), value: Value::List(vec![Value::Text("x".into()); 3]) }]);
     let mut conversion = Conversion::default();
-    let (_, got) = request_with_limits(&input("r"), "k", Limits { request: 1200, ..Limits::default() }, &mut conversion).unwrap();
+    let (_, got) = request_with_limits(&input("r"), "k", Limits { request: 1200, ..Limits::default() }, None, &mut conversion).unwrap();
     assert_eq!(got.inputs.len(), 3);
     assert_eq!(conversion.input_records, 3);
     no_request_copy(&input("longrole"), Limits { request: 1200, ..Limits::default() });
@@ -192,7 +192,7 @@ fn request_metadata_and_late_unsupported_values_never_copy_prefixes() {
     }
     let job = param(Value::Bool(true));
     let mut conversion = Conversion::default();
-    assert!(request_with_limits(&job, &"k".repeat(200), Limits { request: 1000, ..Limits::default() }, &mut conversion).is_err());
+    assert!(request_with_limits(&job, &"k".repeat(200), Limits { request: 1000, ..Limits::default() }, None, &mut conversion).is_err());
     assert_eq!(conversion, Conversion::default());
     let asset = Value::Media(AssetRef { hash: Blake3::from_bytes([2; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() });
     let mut job = param(Value::Text("prefix".into()));

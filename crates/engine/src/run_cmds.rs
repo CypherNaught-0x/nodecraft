@@ -780,8 +780,27 @@ impl AuthorizedRun {
             .map(|(_, b)| b)
             .ok_or_else(|| invalid("job has no provider binding"))
     }
-    /// Convert admitted work using its captured binding, without another registry lookup.
+    /// Convert admitted work using its captured binding, without another registry lookup. Work
+    /// with media inputs is refused; see [`Self::queued_job_with_media`].
     pub fn queued_job(&self, id: nodecraft_exec::scheduler::JobId, key: &str) -> Result<crate::jobs::QueuedJob, Error> {
+        self.queued(id, key, None)
+    }
+    /// [`Self::queued_job`], reading the job's media inputs from `media` (#502), normally the
+    /// session's asset store.
+    pub fn queued_job_with_media(
+        &self,
+        id: nodecraft_exec::scheduler::JobId,
+        key: &str,
+        media: &dyn crate::generate::MediaSource,
+    ) -> Result<crate::jobs::QueuedJob, Error> {
+        self.queued(id, key, Some(media))
+    }
+    fn queued(
+        &self,
+        id: nodecraft_exec::scheduler::JobId,
+        key: &str,
+        media: Option<&dyn crate::generate::MediaSource>,
+    ) -> Result<crate::jobs::QueuedJob, Error> {
         let binding = self.binding(id)?;
         let work = self.run.work(id).ok_or_else(|| invalid("job is unavailable"))?;
         let nodecraft_nodes::JobSpec::Generate { node, .. } = work else { return Err(invalid("job is not generated work")) };
@@ -808,7 +827,10 @@ impl AuthorizedRun {
                 Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten(), ceiling: Some(self.ceiling.clone()) })
             }
         };
-        let (_, job) = crate::generate::provider_job(work, key)?;
+        let (_, job) = match media {
+            Some(media) => crate::generate::provider_job_with_media(work, key, media)?,
+            None => crate::generate::provider_job(work, key)?,
+        };
         Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, bound: Some(price.clone()), price })
     }
     /// The run's accepted amount and what it has reserved against it, in micros.

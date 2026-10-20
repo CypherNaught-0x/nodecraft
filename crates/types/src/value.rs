@@ -13,6 +13,20 @@ pub enum Modality {
     Document,
 }
 
+impl Modality {
+    /// Whether an asset of this MIME essence (`image/png`) carries this modality.
+    pub fn accepts_mime(self, essence: &str) -> bool {
+        match self {
+            Self::Text => essence.starts_with("text/"),
+            Self::Image => essence.starts_with("image/"),
+            Self::Video => essence.starts_with("video/"),
+            Self::Audio => essence.starts_with("audio/"),
+            Self::Mesh => essence.starts_with("model/"),
+            Self::Document => essence == "application/pdf",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PortType {
     pub modality: Modality,
