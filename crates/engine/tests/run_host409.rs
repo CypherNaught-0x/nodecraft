@@ -250,9 +250,8 @@ fn cancelling_a_run_mid_poll_ends_it_and_settles_the_job() {
         assert!(Instant::now() < deadline, "the job was never submitted");
         std::thread::sleep(Duration::from_millis(1));
     }
-    // The source's end was reported before the model job started; absorb it.
-    f.host.pump(&mut f.session);
-    assert_eq!(f.host.running().into_iter().collect::<Vec<_>>(), [(C, WRITER)], "the finished source isn't running");
+    // The source's end may still be on its way from the driver; wait until it is absorbed.
+    pump_until(&mut f, "the finished source isn't running", |f| f.host.running().into_iter().collect::<Vec<_>>() == [(C, WRITER)]);
     f.host.cancel_all();
     let notices = drive(&mut f);
     assert!(notices.contains(&RunNotice::Cancelled { canvas: C, node: WRITER }), "{notices:?}");
