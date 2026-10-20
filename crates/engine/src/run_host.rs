@@ -40,8 +40,17 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// Most runs the host holds at once; `run.start` beyond it is refused.
+/// Most runs the host holds at once, waiting or running; `run.start` beyond it is refused.
 pub const MAX_RUNS: usize = 8;
+
+/// Accepted runs not yet authorized, and how many are running. A waiting run is bound to the
+/// document revision it was quoted at, so it must start on the next pump, before that pump records
+/// anything: the bound counts running runs too, so nothing accepted ever waits behind one.
+#[derive(Default)]
+struct Inbox {
+    waiting: VecDeque<PreparedRun>,
+    running: usize,
+}
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -105,7 +114,7 @@ struct Active {
 
 /// See the module docs.
 pub struct RunHost {
-    inbox: Arc<Mutex<VecDeque<PreparedRun>>>,
+    inbox: Arc<Mutex<Inbox>>,
     runs: Vec<Active>,
     runtime: Arc<dyn Runtime>,
     budget: JobBudget,
@@ -140,10 +149,10 @@ impl RunHost {
         let inbox = Arc::clone(&self.inbox);
         services.register_run_host(move |prepared| {
             let mut inbox = lock(&inbox);
-            if inbox.len() >= MAX_RUNS {
-                return Err(Error::new(ErrorKind::Busy, "too many runs are waiting to start; try again when one finishes"));
+            if inbox.waiting.len().saturating_add(inbox.running) >= MAX_RUNS {
+                return Err(Error::new(ErrorKind::Busy, "too many runs are in progress; try again when one finishes"));
             }
-            inbox.push_back(prepared);
+            inbox.waiting.push_back(prepared);
             Ok(json!({"accepted": true}))
         })
     }
@@ -155,7 +164,7 @@ impl RunHost {
 
     /// Whether any run is waiting or running.
     pub fn is_busy(&self) -> bool {
-        !self.runs.is_empty() || !lock(&self.inbox).is_empty()
+        !self.runs.is_empty() || !lock(&self.inbox).waiting.is_empty()
     }
 
     /// The nodes with work queued or running, for "running" badges.
@@ -167,7 +176,7 @@ impl RunHost {
     /// are asked to cancel, and nothing they unlock is sent. A job that finishes anyway is still
     /// recorded. The notices arrive through [`Self::pump`].
     pub fn cancel_all(&mut self) {
-        let waiting = std::mem::take(&mut *lock(&self.inbox));
+        let waiting = std::mem::take(&mut lock(&self.inbox).waiting);
         self.held.extend(waiting.into_iter().map(|_| RunNotice::Refused { reason: "cancelled before it started".into() }));
         for active in &mut self.runs {
             stop(active);
@@ -177,9 +186,9 @@ impl RunHost {
     /// Starts accepted runs and absorbs finished work. UI thread; never blocks on a provider.
     pub fn pump(&mut self, session: &mut Session) -> Vec<RunNotice> {
         let mut notices = std::mem::take(&mut self.held);
-        // Runs past the bound wait in the inbox; `run.start` already said they were accepted.
-        while self.runs.len() < MAX_RUNS {
-            let next = lock(&self.inbox).pop_front();
+        // Every accepted run starts now, before this pump records anything (see `Inbox`).
+        loop {
+            let next = lock(&self.inbox).waiting.pop_front();
             let Some(prepared) = next else { break };
             if let Err(error) = self.start(session, prepared, &mut notices) {
                 notices.push(RunNotice::Refused { reason: error.message });
@@ -195,6 +204,7 @@ impl RunHost {
             }
             !ended
         });
+        lock(&self.inbox).running = self.runs.len();
         if settled {
             refresh(session, &self.budget);
         }

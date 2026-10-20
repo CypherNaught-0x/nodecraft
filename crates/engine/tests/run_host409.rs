@@ -293,21 +293,31 @@ fn chained_actions_read_what_the_previous_action_made() {
     assert!(f.mock.requests().is_empty(), "actions are local");
 }
 
+/// A waiting run is bound to the revision it was quoted at, so it can't wait behind a running
+/// one: the first record would make it stale. Running runs count toward the bound instead.
 #[test]
-fn accepted_runs_past_the_in_flight_bound_wait_instead_of_being_dropped() {
-    let mut f = fixture(MockProvider::standard());
+fn running_runs_count_toward_the_bound_so_nothing_accepted_goes_stale() {
+    let mut slow = MockModel::new(MockOutput::Text);
+    slow.polls = 3;
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), slow)]));
     for _ in 0..MAX_RUNS {
         start(&mut f);
     }
-    // These start; the next batch waits in the inbox behind them.
     let mut notices = f.host.pump(&mut f.session);
-    for _ in 0..MAX_RUNS {
-        start(&mut f);
-    }
+    assert!(f.host.is_busy());
+    let q = f.session.dispatch("run.quote", &request()).unwrap();
+    let mut extra = request();
+    extra["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
+    let refused = f.session.dispatch("run.start", &extra).unwrap_err();
+    assert!(refused.message.contains("too many runs"), "{}", refused.message);
+    notices.extend(drive(&mut f));
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Refused { .. } | RunNotice::Failed { .. })), "{notices:?}");
+    // Finished runs free their slots.
+    start(&mut f);
     notices.extend(drive(&mut f));
     assert!(!notices.iter().any(|n| matches!(n, RunNotice::Refused { .. })), "{notices:?}");
     let recorded = notices.iter().filter(|n| matches!(n, RunNotice::Recorded { node, .. } if *node == WRITER)).count();
-    assert_eq!(recorded, 2 * MAX_RUNS);
+    assert_eq!(recorded, MAX_RUNS + 1);
 }
 
 #[test]
