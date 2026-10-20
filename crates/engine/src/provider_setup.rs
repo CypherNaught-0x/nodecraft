@@ -95,6 +95,33 @@ fn adapter_error(error: nodecraft_providers::ProviderError) -> Readiness {
     Readiness::Failed(error.message)
 }
 
+/// The ComfyUI adapter from `[providers] comfyui_url`, the install salt and the server's optional
+/// bearer token. Runs and option fetches (#529) both build it here, so they read the settings alike.
+pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
+    let url = env.settings.comfyui_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
+    let Some(url) = url else {
+        return Err(Readiness::NotSetUp("add the ComfyUI server's address in settings ([providers] comfyui_url)".into()));
+    };
+    if env.settings.install_salt.trim().is_empty() {
+        return Err(Readiness::NotSetUp("the install salt isn't set ([providers] install_salt), and the settings can't be saved to make one".into()));
+    }
+    let authority = url.split_once("://").map_or(url, |(_, rest)| rest).split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(Readiness::NotSetUp("remove the user name and password from the ComfyUI address; store a token in API keys instead".into()));
+    }
+    // A key stored for the server is its bearer token. It's optional (a local server needs
+    // none), so a keychain that can't be opened or was refused means no token, not no
+    // ComfyUI.
+    let account = Account::server("comfyui", url).map_err(|_| Readiness::NotSetUp("the ComfyUI address isn't a server URL".into()))?;
+    let stored = match env.keys.get(&account) {
+        Ok(key) => key,
+        Err(SecretError::Unavailable(_) | SecretError::Denied(_)) => None,
+        Err(error) => return Err(read_key_error(error)),
+    };
+    let auth = stored.map(|key| ("Authorization".to_owned(), format!("Bearer {}", key.expose())));
+    nodecraft_providers::comfyui::ComfyProvider::new(url, auth, &env.settings.install_salt, env.http.clone(), env.now_ms.clone()).map_err(adapter_error)
+}
+
 /// The host's maker: the adapter for `adapter`, built from its key and settings.
 pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
     let provider: Arc<dyn Provider> = match adapter {
@@ -103,33 +130,7 @@ pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readi
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
-        "comfyui" => {
-            let url = env.settings.comfyui_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
-            let Some(url) = url else {
-                return Err(Readiness::NotSetUp("add the ComfyUI server's address in settings ([providers] comfyui_url)".into()));
-            };
-            if env.settings.install_salt.trim().is_empty() {
-                return Err(Readiness::NotSetUp("the install salt isn't set ([providers] install_salt), and the settings can't be saved to make one".into()));
-            }
-            let authority = url.split_once("://").map_or(url, |(_, rest)| rest).split('/').next().unwrap_or("");
-            if authority.contains('@') {
-                return Err(Readiness::NotSetUp("remove the user name and password from the ComfyUI address; store a token in API keys instead".into()));
-            }
-            // A key stored for the server is its bearer token. It's optional (a local server needs
-            // none), so a keychain that can't be opened or was refused means no token, not no
-            // ComfyUI.
-            let account = Account::server("comfyui", url).map_err(|_| Readiness::NotSetUp("the ComfyUI address isn't a server URL".into()))?;
-            let stored = match env.keys.get(&account) {
-                Ok(key) => key,
-                Err(SecretError::Unavailable(_) | SecretError::Denied(_)) => None,
-                Err(error) => return Err(read_key_error(error)),
-            };
-            let auth = stored.map(|key| ("Authorization".to_owned(), format!("Bearer {}", key.expose())));
-            Arc::new(
-                nodecraft_providers::comfyui::ComfyProvider::new(url, auth, &env.settings.install_salt, env.http.clone(), env.now_ms.clone())
-                    .map_err(adapter_error)?,
-            )
-        }
+        "comfyui" => Arc::new(comfyui(env)?),
         _ => return Err(Readiness::NotSetUp("NodeCraft can't run this provider's models yet".into())),
     };
     if provider.id() != adapter {

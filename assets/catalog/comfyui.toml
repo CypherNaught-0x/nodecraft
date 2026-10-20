@@ -64,6 +64,12 @@ output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 
 [[model.params.params]]
+name = "checkpoint"
+label = "Checkpoint"
+description = "The checkpoint file on the server; Refresh option lists fetches what it has."
+control = { type = "text", multiline = false, max_bytes = 512 }
+
+[[model.params.params]]
 name = "steps"
 label = "Steps"
 control = { type = "unsigned", min = "1", max = "80" }
@@ -76,6 +82,40 @@ control = { type = "slider", min = 1.0, max = 15.0, step = 0.5 }
 default = { type = "number", value = 7.0 }
 
 [[model.params.params]]
+name = "seed"
+label = "Seed"
+control = { type = "seed" }
+
+# The checkpoint comes from the server's installed list (#529): a value it doesn't have is
+# refused once the list has been fetched.
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "comfyui.sdxl"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "checkpoint"
+options = { id = "comfyui.checkpoints" }
+
+[[model.parameter_contract.schema.params]]
+name = "checkpoint"
+label = "Checkpoint"
+description = "The checkpoint file on the server; Refresh option lists fetches what it has."
+control = { type = "text", multiline = false, max_bytes = 512 }
+
+[[model.parameter_contract.schema.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "80" }
+default = { type = "unsigned", value = "30" }
+
+[[model.parameter_contract.schema.params]]
+name = "cfg"
+label = "Guidance"
+control = { type = "slider", min = 1.0, max = 15.0, step = 0.5 }
+default = { type = "number", value = 7.0 }
+
+[[model.parameter_contract.schema.params]]
 name = "seed"
 label = "Seed"
 control = { type = "seed" }

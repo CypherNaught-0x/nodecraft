@@ -9,9 +9,7 @@ use nodecraft_engine::{
 };
 use nodecraft_graph::{Canvas, Change, Project};
 use nodecraft_nodes::generation::KIND;
-use nodecraft_types::{
-    CanvasId, Choice, Contract, Error, NodeId, OptionKey, OptionLists, OptionSource, ParamControl, ParamOwner, ParamRule, ParamSpec, ProjectId, Value,
-};
+use nodecraft_types::{CanvasId, Choice, Contract, Error, NodeId, OptionKey, OptionLists, OptionSource, ParamOwner, ParamRule, ProjectId, Value};
 use serde_json::json;
 
 const C: CanvasId = CanvasId::from_bytes([31; 16]);
@@ -32,18 +30,8 @@ fn lists(values: &[&str]) -> OptionLists {
 fn session(fetched: &[&str]) -> Session {
     let mut model = Catalog::builtin().unwrap().get("comfyui.sdxl").unwrap().clone();
     model.id = MODEL.into();
-    model.params.params.insert(
-        0,
-        ParamSpec {
-            name: "checkpoint".into(),
-            label: "Checkpoint".into(),
-            description: None,
-            control: ParamControl::Text { multiline: false, max_bytes: 512 },
-            required: false,
-            default: None,
-            visible_if: None,
-        },
-    );
+    // The built-in SDXL row takes a checkpoint (#529); add a LoRA narrowed by it.
+    assert_eq!(model.params.params[0].name, "checkpoint");
     let mut lora = model.params.params[0].clone();
     lora.name = "lora".into();
     lora.label = "LoRA".into();
