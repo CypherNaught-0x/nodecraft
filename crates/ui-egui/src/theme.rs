@@ -38,6 +38,8 @@ pub struct Tokens {
     pub accent: Color32,
     /// Translucent fill of the box-select rectangle (outlined with `accent`).
     pub marquee_fill: Color32,
+    /// The painted area in the mask editor (#102), at full mask strength.
+    pub mask_overlay: Color32,
     /// Errors and failed states in chrome (not the accent, which reads as a highlight).
     pub danger: Color32,
     /// The badge on a card whose result no longer matches its inputs (its text is `card_fill`).
@@ -149,6 +151,7 @@ pub const DARK: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
+    mask_overlay: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x99),
     danger: Color32::from_rgb(0xf0, 0x6a, 0x5f),
     stale: Color32::from_rgb(0xe0, 0xa8, 0x3a),
     wire_text: Color32::from_rgb(0xd9, 0xb4, 0x5a),
@@ -247,6 +250,7 @@ pub const LIGHT: Tokens = Tokens {
     handle_glyph: Color32::from_rgb(0x18, 0x18, 0x1b),
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
+    mask_overlay: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x99),
     danger: Color32::from_rgb(0xc4, 0x37, 0x2b),
     stale: Color32::from_rgb(0x8a, 0x58, 0x00),
     wire_text: Color32::from_rgb(0x9a, 0x74, 0x14),

@@ -328,6 +328,7 @@ mod layout;
 mod library_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
+mod mask_editor;
 mod metrics;
 mod models;
 mod navigation;
@@ -430,6 +431,8 @@ pub struct NodeCraftApp {
     run_confirm: Option<generate::RunConfirm>,
     /// The node whose image the toolbar's Expand shows.
     viewer: Option<NodeId>,
+    /// The mask editor (#102), while open.
+    mask_editor: Option<mask_editor::MaskEditor>,
     /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
     model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -782,6 +785,7 @@ impl NodeCraftApp {
             model_choice: None,
             run_confirm: None,
             viewer: None,
+            mask_editor: None,
             model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
@@ -902,6 +906,7 @@ impl NodeCraftApp {
         }
         let mut model_blocks = self.model_overlay(ui);
         model_blocks |= self.run_overlay(ui);
+        model_blocks |= self.mask_overlay(ui);
         if self.on_sheet() {
             self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
@@ -1155,6 +1160,7 @@ impl NodeCraftApp {
         let mut pan = Vec2::ZERO;
         let mut query = None;
         let mut split_request = None;
+        let mut mask_request = None;
         let mut technique_request = None;
         let mut wire_command = None;
         let mut layout_mode = None;
@@ -1162,6 +1168,7 @@ impl NodeCraftApp {
         let layout_context_ready = self.layout_base_available(ui.ctx());
         let mut comment_target = None;
         let mut split_after = None;
+        let mut mask_after = None;
         let mut technique_after = None;
         let mut tag_action = None;
         let mut refresh = None;
@@ -1385,6 +1392,18 @@ impl NodeCraftApp {
                                     }
                                 });
                             }
+                            if node.kind == nodecraft_nodes::mask::ID {
+                                if ui.button("Paint mask…").clicked() {
+                                    mask_request = Some((node.id, false));
+                                    ui.close();
+                                }
+                            } else if nodecraft_engine::split::image_of(node).is_some() && mask_editor::image_output(node).is_some() {
+                                let r = ui.button("Inpaint or expand…").on_hover_text("Paint where the image should change, or widen its canvas");
+                                if r.clicked() {
+                                    mask_request = Some((node.id, true));
+                                    ui.close();
+                                }
+                            }
                             if let Some(action) = technique_menu::menu(ui, self.session.document(), node) {
                                 technique_request = Some(action);
                             }
@@ -1550,6 +1569,7 @@ impl NodeCraftApp {
                 None => {}
             }
             split_after = split_request;
+            mask_after = mask_request;
             technique_after = technique_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
@@ -1595,6 +1615,11 @@ impl NodeCraftApp {
         }
         if let Some((node, rows, columns)) = split_after {
             self.split_grid(node, rows, columns, t);
+        }
+        match mask_after {
+            Some((node, true)) => self.open_mask_editor_for(node),
+            Some((node, false)) => self.mask_editor = Some(mask_editor::MaskEditor::new(self.canvas, node)),
+            None => {}
         }
         if let Some(action) = technique_after {
             self.technique_action(action);
@@ -2389,6 +2414,8 @@ mod generation_tests;
 mod history_tests;
 #[cfg(test)]
 mod library_view_tests;
+#[cfg(test)]
+mod mask_editor_tests;
 #[cfg(test)]
 mod order_tests;
 #[cfg(test)]

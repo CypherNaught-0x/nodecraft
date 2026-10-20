@@ -11,7 +11,12 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 fn defaults(kinds: &Registry, id: &str) -> ParamValues {
     let kind = kinds.get(id).unwrap();
     let node = kind.instantiate_instance(NodeId::from_bytes([1; 16]), Default::default(), &Default::default()).unwrap();
-    kind.validate_instance(&node, true).unwrap().into_visible_values()
+    let mut params = kind.validate_instance(&node, true).unwrap().into_visible_values();
+    // The mask's strokes travel as a hidden parameter, added when the run is planned.
+    if id == nodecraft_nodes::mask::ID {
+        params.insert(nodecraft_nodes::mask::SPEC_PARAM.into(), Value::Text(nodecraft_nodes::mask::stored(&node).unwrap().into()));
+    }
+    params
 }
 
 #[test]
@@ -35,7 +40,7 @@ fn every_action_kind_runs_with_its_defaults() {
         }
         ran += 1;
     }
-    assert_eq!(ran, 17);
+    assert_eq!(ran, 19);
     // Every new image is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());

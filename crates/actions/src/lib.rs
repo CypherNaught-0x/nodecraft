@@ -8,5 +8,7 @@
 pub mod expr;
 /// Bounded deterministic CPU image operations.
 pub mod image;
+/// Brush masks and canvas expansion for inpainting and outpainting (#102).
+pub mod mask;
 /// Bounded deterministic CPU text operations; no document mutation.
 pub mod text;

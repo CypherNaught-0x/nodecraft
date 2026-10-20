@@ -28,6 +28,7 @@ pub mod layout_cmds;
 pub mod library;
 pub mod library_cmds;
 pub mod live_actions;
+pub mod mask_cmds;
 pub mod model_cmds;
 pub mod model_swap;
 pub mod navigation_cmds;

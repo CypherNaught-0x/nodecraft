@@ -124,6 +124,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.reuse",
     "node.cache_set",
     "node.shader_set",
+    // Masks only add and wire cards; the edit card runs (and is quoted) through run.start.
+    "node.mask_set",
+    "mask.create",
+    "mask.margins_set",
+    "mask.edit",
     "plugins.list",
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",

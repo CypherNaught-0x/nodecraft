@@ -25,6 +25,7 @@ same structure with the values inverted.
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
 | `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
+| `mask_overlay` | `#4cc38a` at 60% | `#1f9d63` at 60% | the painted area in the mask editor, scaled by mask strength |
 | `duplicate_offset` | 40 world points | 40 world points | duplicate displacement on both axes, independent of zoom |
 | `danger` | `#f06a5f` | `#c4372b` | errors and failed states in chrome |
 | `stale` | `#e0a83a` | `#8a5800` | the badge on a card whose result no longer matches its inputs; its text is `card_fill` |

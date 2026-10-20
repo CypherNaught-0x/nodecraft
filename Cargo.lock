@@ -3090,6 +3090,7 @@ dependencies = [
  "getrandom 0.3.4",
  "libc",
  "log",
+ "nodecraft-actions",
  "nodecraft-catalog",
  "nodecraft-engine",
  "nodecraft-exec",

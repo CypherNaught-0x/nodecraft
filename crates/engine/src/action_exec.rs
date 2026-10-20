@@ -267,6 +267,26 @@ fn decode_limits() -> nodecraft_media::Limits {
     }
 }
 
+impl LocalActions {
+    /// A brush mask over its image, or an image on an expanded canvas (#102).
+    fn mask(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        use nodecraft_actions::mask::{self, Margins, MaskOptions, Strokes};
+        let source = self.raster(inputs.first())?;
+        let out = if action == "image.expand" {
+            let side = |name| whole(params, name).and_then(|v| u32::try_from(v).map_err(|_| format!("the {name} margin is too large")));
+            let margins = Margins { left: side("left")?, top: side("top")?, right: side("right")?, bottom: side("bottom")? };
+            mask::expand(&source, margins, ImageLimits::default())
+        } else {
+            let Some(Value::Text(json)) = params.get(nodecraft_nodes::mask::SPEC_PARAM) else { return Err("the mask is missing".into()) };
+            let strokes = Strokes::parse(json).map_err(|e| format!("the mask can't be read: {e}"))?;
+            let options = MaskOptions { transparent: flag(params, "transparent")?, invert: flag(params, "invert")? };
+            mask::render(&strokes, options, &source, ImageLimits::default())
+        }
+        .map_err(|e| format!("{action} failed: {e}"))?;
+        self.stage(&out)
+    }
+}
+
 mod shader_state;
 
 impl LocalActions {
@@ -316,6 +336,9 @@ impl ActionExecutor for LocalActions {
     fn execute(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
         if action == nodecraft_nodes::shader::ID {
             return self.shader(params, inputs);
+        }
+        if action == nodecraft_nodes::mask::ID || action == "image.expand" {
+            return self.mask(action, params, inputs);
         }
         if action.starts_with("image.") {
             return self.image(action, params, inputs);
