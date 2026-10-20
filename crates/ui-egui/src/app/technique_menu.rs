@@ -14,6 +14,8 @@ pub(super) enum TechniqueAction {
     Edit(CanvasId),
     Upgrade(NodeId, CanvasId),
     Detach(NodeId),
+    /// Open the node as a form (#95).
+    App(NodeId),
 }
 
 /// What the menu offers for one technique node.
@@ -52,6 +54,9 @@ pub(super) fn menu(ui: &mut egui::Ui, project: &Project, node: &Node) -> Option<
     let mut action = None;
     ui.separator();
     ui.label(format!("Technique · v{}", offer.version));
+    if ui.button("Open as app").on_hover_text("Fill its inputs, set it up and run it from a simple form").clicked() {
+        action = Some(TechniqueAction::App(node.id));
+    }
     let view = ui.add_enabled(offer.view.is_some(), egui::Button::new("View workflow"));
     if let Some(canvas) = offer.view
         && view.on_hover_text("Open the version this node runs; it is read-only").clicked()
@@ -85,6 +90,10 @@ impl NodeCraftApp {
         let result = match action {
             TechniqueAction::View(open) | TechniqueAction::Edit(open) => {
                 self.open_canvas(open);
+                Ok(())
+            }
+            TechniqueAction::App(node) => {
+                self.open_app_mode(node);
                 Ok(())
             }
             TechniqueAction::Upgrade(node, version) => {
