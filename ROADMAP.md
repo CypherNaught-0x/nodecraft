@@ -54,18 +54,14 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
 
 The honest list, because "it's in the repo" and "you can use it" are different claims:
 
-- **The app cannot generate.** Nothing constructs a provider adapter or supplies the run host
-  resources, so `run.quote`/`run.start` report *unsupported*, there is no Run button, and no
-  `Category::Generation` node kind is registered outside the testkit (#409, #362; #83, #84). Five
-  adapters (LLM endpoints, OpenAI Images, Replicate, ComfyUI and Seedream) have tested library
-  integrations, with catalog definitions available to engine callers.
-- **The app cannot save or open.** `.ncraft` archives, content-addressed assets, atomic writes and
-  crash recovery all exist, but no host configures project storage for a session, so `file.*`
-  reports *unsupported* (#406). There is also no file picker (#407) and no recovery prompt
-  (#408).
-- **Actions do not run.** 13 image operations exist in CPU and WGSL form and 4 text operations in
-  CPU form plus the bounded expression language (#165), but no action node kind reaches them
-  (#410) and nothing recomputes live (#88). Cards do render image previews now (#386).
+- **The app cannot generate.** Image generation cards (`generation.image`, #465) can be placed,
+  configured and swapped between catalog models (#157), but nothing constructs a provider adapter
+  or installs the run host, so `run.start` reports *unsupported* (#409, #362). Five adapters (LLM
+  endpoints, OpenAI Images, Replicate, ComfyUI and Seedream) have tested library integrations,
+  with catalog definitions available to engine callers.
+- **Actions are partly live.** The 13 image and 4 text operations are node kinds (#410) and
+  recompute on a worker after each edit, joining that edit's undo step (#433). Reduced-resolution
+  previews while a slider drags, and recompute in the browser build, are still open (#88).
 - **The in-canvas agent is a 5-line stub.** `crates/agent` has no code; the MCP server and control
   channel are what external agents use today.
 - **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
@@ -84,9 +80,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The open pull requests say what is in flight; the near-term order that makes the engine usable is:
 
-1. **Wire the app to storage** — session storage (#406), a file picker (#407) and a recovery
-   prompt (#408), so save, open and crash recovery work in `cargo run -p nodecraft` (#147 lazy
-   assets and #193 persistence versioning feed the same path).
+1. ~~**Wire the app to storage**~~ — done: session storage (#406), open/save dialogs (#407) and
+   the recovery prompt (#408), so save, open and crash recovery work in `cargo run -p nodecraft`.
 2. **Wire a run host** — construct adapters from the catalog (#409), register the `run.start`
    service and the host resources (#362), and put a Run button on the card (#211, #201, #157).
 3. **First generation node kinds** — image/text generation kinds so there is something to run
