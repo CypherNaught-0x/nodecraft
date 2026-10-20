@@ -155,6 +155,30 @@ mod tests {
     }
 
     #[test]
+    fn all_lists_every_kind() {
+        // Exhaustive, so a new kind fails to compile here until it is numbered and added to ALL.
+        let position = |kind: ErrorKind| match kind {
+            ErrorKind::BlockedContent => 0,
+            ErrorKind::UnsupportedInput => 1,
+            ErrorKind::Busy => 2,
+            ErrorKind::RateLimited => 3,
+            ErrorKind::Timeout => 4,
+            ErrorKind::Budget => 5,
+            ErrorKind::Auth => 6,
+            ErrorKind::Network => 7,
+            ErrorKind::Server => 8,
+            ErrorKind::Malformed => 9,
+            ErrorKind::NotFound => 10,
+            ErrorKind::Cancelled => 11,
+            ErrorKind::JobFailed => 12,
+            ErrorKind::Expired => 13,
+        };
+        for (i, kind) in ErrorKind::ALL.into_iter().enumerate() {
+            assert_eq!(position(kind), i, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn status_mapping_and_transience() {
         let k = |s| ProviderError::from_status(s, b"").kind;
         assert_eq!(k(401), ErrorKind::Auth);
