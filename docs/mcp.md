@@ -92,6 +92,11 @@ catalog's models name (the checkpoints the ComfyUI server in settings has, #529)
 `node.options` for one parameter's list. Only a host with a fetch service runs it: through the
 bridge to the desktop app it works, while the standalone CLI reports it unavailable.
 
+**Updates:** `app.check_updates` asks the desktop app to read NodeCraft's releases from GitHub
+and returns `{pending: id}`; `app.update_status` then reports this build's version and whether a
+newer release is on the update channel in settings (#123). Nothing is downloaded or installed.
+The standalone CLI and the browser build report the check unavailable.
+
 **Limits:** messages are at most 4 MiB. The engine accepts at most 1 MiB of decoded command parameters, and clients may escape non-ASCII text.
 A longer line is skipped with an error reply instead of being buffered. Messages must be UTF-8
 JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.

@@ -84,6 +84,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.options",
     "options.refresh",
     "options.status",
+    "app.check_updates",
+    "app.update_status",
     "history.select",
     "history.previous",
     "history.next",

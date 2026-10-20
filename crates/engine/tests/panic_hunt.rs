@@ -348,6 +348,8 @@ fn template(id: &str) -> (Session, Value) {
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.options" => json!({"canvas":canvas(),"id":node_id(1),"param":"text"}),
         "options.refresh" | "options.status" => json!({}),
+        // The updates service isn't registered here: the check must be refused cleanly.
+        "app.check_updates" | "app.update_status" => json!({}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
@@ -516,6 +518,8 @@ fn typed_template_panic_hunt() {
                             | "node.options"
                             | "options.refresh"
                             | "options.status"
+                            | "app.check_updates"
+                            | "app.update_status"
                             | "node.model_preview"
                             | "canvas.search_open"
                             | "canvas.search_query"

@@ -349,6 +349,8 @@ mod stale_badges;
 pub mod storage;
 mod tags;
 mod technique_menu;
+#[cfg(not(target_arch = "wasm32"))]
+mod updates;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -449,6 +451,9 @@ pub struct NodeCraftApp {
     /// Fetches the option lists `options.refresh` asks for (#529).
     #[cfg(not(target_arch = "wasm32"))]
     option_fetch: Option<option_fetch::OptionFetcher>,
+    /// Checks for a newer release (#123).
+    #[cfg(not(target_arch = "wasm32"))]
+    updates: Option<updates::UpdateChecker>,
     /// The queue panel is open (#82).
     #[cfg(not(target_arch = "wasm32"))]
     queue_open: bool,
@@ -529,6 +534,13 @@ impl NodeCraftApp {
                 None
             }
         };
+        let updates = match updates::UpdateChecker::new(&mut services) {
+            Ok(checker) => Some(checker),
+            Err(e) => {
+                log::warn!("updates can't be checked: {}", e.message);
+                None
+            }
+        };
         // Preserve the existing plugin/trust location. All package I/O, including opening
         // its index, runs on the worker; requests expose retained results through commands.
         let mut plugin_problem = None;
@@ -587,6 +599,8 @@ impl NodeCraftApp {
         if let Err(error) = nodecraft_engine::library::install(&mut app.session, library) {
             log::warn!("technique library unavailable: {}", error.message);
         }
+        app.updates = updates;
+        app.check_updates_at_startup(&settings.updates);
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.apply_settings(ctx, &settings);
@@ -779,6 +793,8 @@ impl NodeCraftApp {
             runs: None,
             #[cfg(not(target_arch = "wasm32"))]
             option_fetch: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            updates: None,
             #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
             sheet: sheet_view::SheetView::default(),
@@ -1712,6 +1728,8 @@ impl NodeCraftApp {
         }
         // All document-changing frame effects precede the last-check stamp test and paint.
         self.show_notices(ui, viewport, t);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.show_update_banner(ui, t);
         self.navigation.finish_frame(ui.ctx());
         self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());
@@ -2323,6 +2341,8 @@ impl eframe::App for NodeCraftApp {
         self.tick_runs(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_option_fetch(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_updates(ctx);
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
     }

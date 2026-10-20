@@ -36,6 +36,24 @@ pub struct NodeCraftSettings {
     pub keys: KeySettings,
     pub providers: ProviderSettings,
     pub projects: ProjectSettings,
+    pub updates: UpdateSettings,
+}
+
+/// Checking for a newer release (#123). Only notifies: nothing is downloaded or installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Check once when the app starts. `app.check_updates` checks whenever it's asked.
+    pub check: bool,
+    pub channel: crate::update_check::UpdateChannel,
+    /// The release the person dismissed; it isn't offered again, a newer one is.
+    pub dismissed: Option<String>,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { check: true, channel: crate::update_check::UpdateChannel::Stable, dismissed: None }
+    }
 }
 
 /// How to reach the providers that need more than a key (#409). Keys stay in the keychain.
