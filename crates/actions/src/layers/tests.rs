@@ -306,6 +306,11 @@ fn a_layer_renders_alone_upright_with_room_around_its_box() {
     let (out, pad) = render_layer(&words, 1.0, limits).unwrap();
     assert_eq!(pad, 16.0);
     assert!(out.pixels().as_chunks::<4>().0.iter().any(|p| p[3] > 0), "some ink");
+    // Text wider than its box draws past it in the output, so the preview holds all of it.
+    let long = layer("t", 0.0, 0.0, 10.0, 20.0, text("a long line of words", 16.0, Align::Left));
+    let (tw, _) = text_size(&long).unwrap();
+    let (_, pad) = render_layer(&long, 1.0, limits).unwrap();
+    assert!(10.0 + pad >= tw, "pad {pad} holds text {tw} wide");
     // Images aren't drawn here, and nothing huge is allocated.
     assert!(render_layer(&layer("i", 0.0, 0.0, 10.0, 10.0, Content::Image { input: 0, fit: false }), 1.0, limits).is_err());
     assert_eq!(render_layer(&layer("big", 0.0, 0.0, 90_000.0, 90_000.0, rect("#000000")), 1.0, limits).unwrap_err(), ImageError::Dimensions);

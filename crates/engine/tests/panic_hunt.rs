@@ -154,6 +154,16 @@ fn template(id: &str) -> (Session, Value) {
         .apply(&mut document)
         .unwrap();
     }
+    if id.starts_with("layers.") || id == "node.layers_set" {
+        // A Layer Editor (node 9) holding a text layer `t1` (not yet for `layers.add`), so the
+        // valid templates reach the layer code rather than the kind check.
+        let mut editor = nodecraft_nodes::layers::kind().descriptor().instantiate(node_id(9), &std::collections::BTreeMap::new()).unwrap();
+        if id != "layers.add" {
+            let stored = json!({"layers": [{"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}]});
+            editor.config.insert(nodecraft_nodes::layers::CONFIG.into(), nodecraft_types::Value::Text(stored.to_string()));
+        }
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: editor }.apply(&mut document).unwrap();
+    }
     let root = nodecraft_types::CommentId::from_bytes([10; 16]);
     let reply = nodecraft_types::CommentId::from_bytes([11; 16]);
     if id.starts_with("comment.") {
@@ -438,17 +448,17 @@ fn template(id: &str) -> (Session, Value) {
         "mask.margins_set" => json!({"canvas":canvas(),"id":node_id(1),"margins":{"left":0,"top":0,"right":64,"bottom":0}}),
         "mask.edit" => json!({"canvas":canvas(),"mask":node_id(1),"id":node_id(7),
             "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2},"prompt":"a door"}),
-        "layers.list" => json!({"canvas":canvas(),"id":node_id(1)}),
+        "layers.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "node.layers_set" => {
-            json!({"canvas":canvas(),"id":node_id(1),"layers":[{"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}]})
+            json!({"canvas":canvas(),"id":node_id(9),"layers":[{"id":"t1","name":"Title","x":60,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}]})
         }
         "layers.add" => {
-            json!({"canvas":canvas(),"id":node_id(1),"layer":{"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}})
+            json!({"canvas":canvas(),"id":node_id(9),"layer":{"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}}})
         }
-        "layers.update" => json!({"canvas":canvas(),"id":node_id(1),"layer":"t1","set":{"x":10,"content":{"text":"Hello"}}}),
-        "layers.remove" => json!({"canvas":canvas(),"id":node_id(1),"layer":"t1"}),
-        "layers.reorder" => json!({"canvas":canvas(),"id":node_id(1),"layer":"t1","index":0}),
-        "layers.align" => json!({"canvas":canvas(),"id":node_id(1),"layers":["t1"],"to":"center"}),
+        "layers.update" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","set":{"x":10,"content":{"text":"Hello"}}}),
+        "layers.remove" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1"}),
+        "layers.reorder" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","index":0}),
+        "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
@@ -521,10 +531,13 @@ fn typed_template_panic_hunt() {
             let events = session.events_since(0).unwrap();
             let history = (session.can_undo(), session.can_redo());
             let result = session.dispatch(id, &params);
+            if (id.starts_with("layers.") || id == "node.layers_set") && params == valid {
+                assert!(result.is_ok(), "the valid {id} template reaches the layer code: {result:?}");
+            }
             match result {
                 Err(error) => {
                     assert_ne!(error.kind, ErrorKind::Internal, "{id}");
-                    assert!(!error.message.contains("secret-do-not-echo"));
+                    assert!(!error.message.contains("secret-do-not-echo"), "{id}: {}", error.message);
                     assert_eq!(session.document(), &before);
                     assert_eq!(session.revision(), revision);
                     assert_eq!(session.events_since(0).unwrap(), events);

@@ -32,6 +32,9 @@ pub(super) struct LayerEditor {
     textures: HashMap<String, Rendered>,
     /// A field being typed or dragged, applied when it lets go: (field key, text).
     draft: Option<(String, String)>,
+    /// A field had focus last frame: egui drops it on Escape before the frame runs, so this is
+    /// how Escape knows to discard the draft rather than apply it.
+    typing: bool,
     /// Frame pixels to screen points, and where the frame's corner is, as last drawn; text
     /// renders at this scale.
     pub(super) scale: f64,
@@ -40,7 +43,18 @@ pub(super) struct LayerEditor {
 
 impl LayerEditor {
     pub(super) fn new(canvas: CanvasId, node: NodeId) -> Self {
-        Self { canvas, node, selected: Vec::new(), drag: None, listing: None, textures: HashMap::new(), draft: None, scale: 1.0, origin: Pos2::ZERO }
+        Self {
+            canvas,
+            node,
+            selected: Vec::new(),
+            drag: None,
+            listing: None,
+            textures: HashMap::new(),
+            draft: None,
+            typing: false,
+            scale: 1.0,
+            origin: Pos2::ZERO,
+        }
     }
 }
 
@@ -367,7 +381,12 @@ fn number(
         _ => value,
     };
     let label = ui.label(label);
-    let r = ui.add(egui::DragValue::new(&mut v).range(range).speed(speed).max_decimals(decimals)).labelled_by(label.id);
+    // Only what the person changes is clamped: a stored value outside the range is left alone.
+    let field = egui::DragValue::new(&mut v).range(range).clamp_existing_to_range(false).speed(speed).max_decimals(decimals);
+    let r = ui.add(field).labelled_by(label.id);
+    if !ui.is_enabled() {
+        return None;
+    }
     let apply = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
     if (r.dragged() || r.has_focus()) && !apply {
         *draft = Some((key.into(), v.to_string()));
@@ -466,6 +485,10 @@ impl NodeCraftApp {
         };
         let t = *self.theme.tokens();
         let ctx = ui.ctx().clone();
+        // Escape in a field abandons what was typed, and does nothing else.
+        if editor.typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            editor.draft = None;
+        }
         let edge = (ctx.content_rect().size().max_elem() * ctx.pixels_per_point()).min(2048.0);
 
         // What each layer shows: previews for images, a rendering for text and shapes.
@@ -550,6 +573,7 @@ impl NodeCraftApp {
             ui.allocate_rect(body, Sense::hover());
         });
         close |= keys(ui, &mut editor, &listing, &mut commands);
+        editor.typing = crate::canvas::text_input_focused(&ctx);
         editor.listing = Some((revision, listing));
         for (command, params) in commands {
             if !self.layer_dispatch(command, &params) {
@@ -737,11 +761,13 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
     };
     if !chosen.is_empty() {
         ui.label(egui::RichText::new("Align").color(t.text_muted));
+        // The layers the panel shows, which is the selection unless a held edit says otherwise.
+        let ids: Vec<&str> = chosen.iter().map(|l| l.id.as_str()).collect();
         ui.horizontal_wrapped(|ui| {
             for (to, label) in ALIGN {
                 let hint = if chosen.len() == 1 { "Against the frame" } else { "Against the selection" };
                 if ui.button(label).on_hover_text(hint).clicked() {
-                    commands.push(("layers.align", json!({"canvas": editor.canvas, "id": editor.node, "layers": editor.selected, "to": to})));
+                    commands.push(("layers.align", json!({"canvas": editor.canvas, "id": editor.node, "layers": ids, "to": to})));
                 }
             }
         });

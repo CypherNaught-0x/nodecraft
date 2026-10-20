@@ -18,6 +18,7 @@ pub use text::{BUILTIN_FONT, text_size};
 
 /// Most layers one node holds.
 pub const MAX_LAYERS: usize = 64;
+const TOO_MANY: &str = "layer count: a Layer Editor holds at most 64 layers, so delete layers or disconnect images";
 /// Longest stored layer list, encoded.
 pub const MAX_ENCODED_BYTES: usize = 256 * 1024;
 /// Longest text one layer holds, in bytes.
@@ -186,7 +187,7 @@ impl Layers {
 
     pub fn check(&self) -> Result<(), ImageError> {
         if self.layers.len() > MAX_LAYERS {
-            return Err(bad("layers"));
+            return Err(bad(TOO_MANY));
         }
         let mut ids = std::collections::BTreeSet::new();
         for layer in &self.layers {
@@ -237,9 +238,11 @@ impl Layers {
             };
             layers.push(Layer { content, ..layer.clone() });
         }
+        let mut ids = self.auto_ids(&keys);
         for (input, (origin, nth)) in keys.iter().enumerate() {
             if !used.get(input).copied().unwrap_or(true) {
-                layers.push(Layer { content: Content::Image { input: input as u32, fit: true }, ..auto_layer(origin, *nth, input, frame) });
+                let id = ids.next().unwrap_or_default();
+                layers.push(Layer { id, content: Content::Image { input: input as u32, fit: true }, ..auto_layer(origin, *nth, input, frame) });
             }
         }
         let resolved = Self { layers };
@@ -249,15 +252,47 @@ impl Layers {
 
     /// The stored layers plus an automatic `Source` layer for each connected image none of them
     /// names: what the editor lists. Storing an automatic layer keeps it where it is.
+    /// The list can pass `MAX_LAYERS`: storing or drawing it then says so.
     pub fn with_sources(&self, sources: &[String], frame: Frame) -> Self {
+        let keys = source_keys(sources);
+        let mut ids = self.auto_ids(&keys);
         let mut layers = self.layers.clone();
-        for (input, (origin, nth)) in source_keys(sources).into_iter().enumerate() {
-            let named = self.layers.iter().any(|l| matches!(&l.content, Content::Source { origin: o, nth: n, .. } if *o == origin && *n == nth));
-            if !named && layers.len() < MAX_LAYERS {
-                layers.push(auto_layer(&origin, nth, input, frame));
+        for (input, (origin, nth)) in keys.iter().enumerate() {
+            if !self.names(origin, *nth) {
+                let id = ids.next().unwrap_or_default();
+                layers.push(Layer { id, ..auto_layer(origin, *nth, input, frame) });
             }
         }
         Self { layers }
+    }
+
+    /// Whether a stored layer shows the `nth` image from `origin`.
+    fn names(&self, origin: &str, nth: u32) -> bool {
+        self.layers.iter().any(|l| matches!(&l.content, Content::Source { origin: o, nth: n, .. } if o == origin && *n == nth))
+    }
+
+    /// The ids of the automatic layers, in input order: `auto_id`, or a free variant of it when
+    /// a stored layer already has that id.
+    fn auto_ids(&self, keys: &[(String, u32)]) -> std::vec::IntoIter<String> {
+        let mut taken: std::collections::BTreeSet<String> = self.layers.iter().map(|l| l.id.clone()).collect();
+        let mut ids = Vec::new();
+        for (origin, nth) in keys.iter().filter(|(origin, nth)| !self.names(origin, *nth)) {
+            let base = auto_id(origin, *nth);
+            let mut id = base.clone();
+            let mut n = 2u32;
+            while taken.contains(&id) || !valid_id(&id) {
+                id = format!("{}-{n}", base.get(..MAX_ID_BYTES.saturating_sub(12)).unwrap_or("img"));
+                n = n.saturating_add(1);
+            }
+            taken.insert(id.clone());
+            ids.push(id);
+        }
+        ids.into_iter()
+    }
+
+    /// Whether `layer` shows an image that is wired in now.
+    pub fn is_wired(layer: &Layer, sources: &[String]) -> bool {
+        matches!(&layer.content, Content::Source { origin, nth, .. } if source_keys(sources).iter().any(|(o, n)| o == origin && n == nth))
     }
 }
 
@@ -547,7 +582,11 @@ pub fn render_layer(layer: &Layer, scale: f64, limits: ImageLimits) -> Result<(R
     layer.check()?;
     within(scale, 1.0 / 64.0, 8.0, "scale")?;
     let pad = match &layer.content {
-        Content::Text { size, .. } => *size,
+        // Text can run past its box, and the output draws it there, so the preview pads to hold it.
+        Content::Text { size, .. } => {
+            let (tw, th) = text::text_size(layer)?;
+            size + (tw - layer.width).max(th - layer.height).max(0.0)
+        }
         Content::Shape { stroke_width, .. } => stroke_width / 2.0 + 1.0,
         Content::Image { .. } | Content::Source { .. } => return Err(bad("vector layer")),
     };

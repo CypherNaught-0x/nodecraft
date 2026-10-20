@@ -37,36 +37,56 @@ pub fn frame(c: &Context<'_>, node: &Node) -> Result<Frame, Error> {
     crate::action_exec::layers::frame(&values).map_err(|e| Error::new(ErrorKind::InvalidInput, e))
 }
 
-/// The node each image wired into a Layer Editor node comes from, in input order, as a run
-/// plans them (routers resolved). An upstream node that makes several images counts once here.
+/// The node each image wired into a Layer Editor node comes from, in input order, one entry per
+/// image as a run plans them (routers resolved; see `inputs`).
 pub fn sources(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Vec<String>, Error> {
-    let canvas = c.document.canvases().get(&canvas).ok_or_else(|| not_found("canvas"))?;
-    let incoming = nodecraft_exec::routing::incoming(canvas, c.kinds)?;
-    Ok(incoming.feeds.get(&id).into_iter().flatten().filter(|(port, ..)| *port == INPUT).map(|(_, _, from, _)| from.to_string()).collect())
+    Ok(inputs(c, canvas, id)?.into_iter().map(|(origin, _)| origin).collect())
 }
 
-/// The image each wired input shows now, in input order, with the node it comes from: a source
-/// image's asset, or the first image of the upstream node's active result on the wired port.
-/// None until that node has a result. For previews; a run resolves its inputs itself.
+/// Most images the editor lists from its wires; a run refuses more than `MAX_LAYERS` anyway.
+const MAX_INPUTS: usize = 4 * layers::MAX_LAYERS;
+
+/// The images wired in now, in input order, each with the node it comes from: a source image's
+/// asset, or each image of the upstream node's active result on the wired port, so a wire that
+/// carries a list gives one entry per item, as a run does. A node with no result yet counts as
+/// one image, None. For previews and layer identity; a run resolves its inputs itself.
 pub fn inputs(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Vec<(String, Option<AssetRef>)>, Error> {
     let canvas = c.document.canvases().get(&canvas).ok_or_else(|| not_found("canvas"))?;
     let incoming = nodecraft_exec::routing::incoming(canvas, c.kinds)?;
     let feeds = incoming.feeds.get(&id).into_iter().flatten().filter(|(port, ..)| *port == INPUT);
-    Ok(feeds.map(|(_, _, from, from_port)| (from.to_string(), canvas.nodes().get(from).and_then(|node| shown(node, from_port)).cloned())).collect())
+    let mut out = Vec::new();
+    for (_, _, from, from_port) in feeds {
+        let images = canvas.nodes().get(from).map(|node| shown(node, from_port)).unwrap_or_else(|| vec![None]);
+        out.extend(images.into_iter().map(|image| (from.to_string(), image.cloned())));
+        if out.len() > MAX_INPUTS {
+            out.truncate(MAX_INPUTS);
+            break;
+        }
+    }
+    Ok(out)
 }
 
-fn shown<'a>(node: &'a Node, port: &str) -> Option<&'a AssetRef> {
+/// The images `node` sends on `port` now, one per value a run receives: each item of a list (a
+/// batch's per-item lists flattened, as the planner collects them), and one None without a result.
+fn shown<'a>(node: &'a Node, port: &str) -> Vec<Option<&'a AssetRef>> {
     if node.kind == "source.image" {
-        return crate::split::image_of(node);
+        return vec![crate::split::image_of(node)];
     }
-    let index = node.outputs.iter().position(|p| p.name == port)?;
-    let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
-    match result.outputs.get(index)? {
-        Value::List(items) => items.iter().find_map(|item| match item {
-            Value::List(inner) => inner.iter().find_map(crate::split::image),
-            single => crate::split::image(single),
-        }),
-        single => crate::split::image(single),
+    let result = node.outputs.iter().position(|p| p.name == port).and_then(|index| Some((node.history.iter().find(|g| Some(g.id) == node.active)?, index)));
+    let Some(value) = result.and_then(|(result, index)| result.outputs.get(index).map(|v| (v, !result.items.is_empty()))) else {
+        return vec![None];
+    };
+    match value {
+        (Value::List(items), fanned) => items
+            .iter()
+            .flat_map(|item| match item {
+                Value::List(inner) if fanned => inner.iter().collect::<Vec<_>>(),
+                single => vec![single],
+            })
+            .take(MAX_INPUTS.saturating_add(1))
+            .map(crate::split::image)
+            .collect(),
+        (single, _) => vec![crate::split::image(single)],
     }
 }
 
@@ -86,7 +106,7 @@ fn store(canvas: CanvasId, node: &Node, layers: Layers) -> Result<Effect, Error>
 }
 
 fn index_of(layers: &Layers, id: &str) -> Result<usize, Error> {
-    layers.layers.iter().position(|l| l.id == id).ok_or_else(|| not_found(&format!("layer {id:?}")))
+    layers.layers.iter().position(|l| l.id == id).ok_or_else(|| not_found("layer"))
 }
 
 fn always(_: &Context<'_>, _: &Json) -> Result<(), Error> {
@@ -143,7 +163,7 @@ fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let mut layers = listed(c, p.canvas, node)?;
     if layers.get(&p.layer.id).is_some() {
-        return Err(Error::new(ErrorKind::Conflict, format!("layer {:?} already exists", p.layer.id)));
+        return Err(Error::new(ErrorKind::Conflict, "a layer with that id already exists"));
     }
     let id = p.layer.id.clone();
     layers.layers.push(p.layer);
@@ -199,7 +219,7 @@ fn update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             }
         }
     }
-    let changed: Layer = serde_json::from_value(merged).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the change isn't valid: {e}")))?;
+    let changed: Layer = serde_json::from_value(merged).map_err(|_| invalid("the change isn't valid: a field is unknown or has the wrong type or value"))?;
     if let Some(slot) = layers.layers.get_mut(at) {
         *slot = changed;
     }
@@ -220,9 +240,7 @@ fn remove(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let (sources, frame) = (sources(c, p.canvas, node.id)?, frame(c, node)?);
     let mut layers = stored(node)?.with_sources(&sources, frame);
     let at = index_of(&layers, &p.layer)?;
-    // Resolving keeps only the image layers whose image is wired in.
-    let wired = layers.resolve(&sources, frame).map_err(unusable)?.get(&p.layer).is_some();
-    if wired && layers.layers.get(at).is_some_and(|l| matches!(l.content, Content::Source { .. })) {
+    if layers.layers.get(at).is_some_and(|l| Layers::is_wired(l, &sources)) {
         return Err(invalid("an image's layer stays while the image is wired in: hide it, or disconnect the image"));
     }
     layers.layers.remove(at);

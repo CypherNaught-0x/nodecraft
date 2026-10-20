@@ -1,7 +1,7 @@
 ## 2026-10-20 · The Layer Editor stores layers on its node and composites locally (#101)
 
 - **Layers live in the node's config.** `image.layers` keeps its layers as one JSON document
-  under `config.layers`, changed only through `node.layers_set` and the `layers.*` commands, so
+  under `config["nodecraft.layers"]`, changed only through `node.layers_set` and the `layers.*` commands, so
   every edit is one invertible changeset. Width, height, background and transparency are
   ordinary parameters (#162).
 - **Wired images are layers by identity, not by position.** Each wired image is listed as an

@@ -184,3 +184,71 @@ fn only_a_layer_editor_has_layers_and_bad_layers_are_refused() {
     let mut s = Session::new(project).unwrap();
     assert!(s.dispatch("layers.list", &json!({"canvas": CANVAS, "id": EDITOR})).is_err());
 }
+
+#[test]
+fn a_wire_carrying_several_images_lists_a_layer_for_each_like_a_run() {
+    let mut s = session();
+    const BLUR: NodeId = NodeId::from_bytes([6; 16]);
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": BLUR, "kind": "image.blur", "pos": {"x": 0, "y": 300}})).unwrap();
+    let edge = json!({"id": EdgeId::from_bytes([3; 16]), "from": {"node": BLUR, "port": "out"}, "to": {"node": EDITOR, "port": INPUT}, "order": 3});
+    s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    // Without a result the node counts as one image.
+    let blur = |nth: u32| layers::auto_id(&BLUR.to_string(), nth);
+    assert_eq!(ids(&mut s).last(), Some(&blur(0)));
+    let asset =
+        |n: u8| nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([n; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+    let generation = nodecraft_graph::Generation {
+        id: nodecraft_types::GenerationId::from_bytes([9; 16]),
+        outputs: vec![Value::List(vec![Value::Media(asset(1)), Value::Media(asset(2)), Value::Media(asset(3))])],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
+    let mut project = s.document().clone();
+    Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();
+    Change::SetActiveGeneration { canvas: CANVAS, id: BLUR, generation: Some(nodecraft_types::GenerationId::from_bytes([9; 16])) }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
+    let listed = ids(&mut s);
+    assert_eq!(listed.get(2..), Some([blur(0), blur(1), blur(2)].as_slice()), "{listed:?}");
+    let inputs = s.dispatch("layers.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap()["inputs"].clone();
+    let images: Vec<Json> = inputs.as_array().unwrap().iter().map(|i| i["image"]["hash"].clone()).collect();
+    assert_eq!(images.get(2..).map(<[Json]>::len), Some(3));
+    assert_eq!(images.get(3), Some(&serde_json::to_value(asset(2).hash).unwrap()), "the second item's own image");
+}
+
+#[test]
+fn a_stored_id_that_clashes_with_an_automatic_one_gets_a_free_id() {
+    let mut s = session();
+    let a = layers::auto_id(&A.to_string(), 0);
+    let mut clash = title();
+    clash["id"] = json!(a.clone());
+    s.dispatch("layers.add", &json!({"canvas": CANVAS, "id": EDITOR, "layer": clash})).unwrap_err();
+    // Stored directly, the text takes the id and the image layer gets another.
+    s.dispatch("node.layers_set", &json!({"canvas": CANVAS, "id": EDITOR, "layers": [clash]})).unwrap();
+    let listed = ids(&mut s);
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert_eq!(listed.iter().collect::<std::collections::BTreeSet<_>>().len(), 3, "unique: {listed:?}");
+    // Editing still works.
+    let mut hide = on(listed.get(1).unwrap());
+    hide["set"] = json!({"visible": false});
+    s.dispatch("layers.update", &hide).unwrap();
+    assert_eq!(ids(&mut s), listed);
+}
+
+#[test]
+fn over_the_layer_cap_a_stored_layer_can_still_be_removed() {
+    let mut s = session();
+    let shapes: Vec<Json> = (0..layers::MAX_LAYERS - 1)
+        .map(|n| json!({"id": format!("s{n}"), "name": "S", "x": 10, "y": 10, "width": 5, "height": 5, "content": {"kind": "shape", "shape": "rectangle", "fill": "#000000"}}))
+        .collect();
+    s.dispatch("node.layers_set", &json!({"canvas": CANVAS, "id": EDITOR, "layers": shapes})).unwrap();
+    // 63 stored and two wired images: 65 listed, and an edit that keeps them all says why.
+    assert_eq!(ids(&mut s).len(), layers::MAX_LAYERS + 1);
+    let mut hide = on("s0");
+    hide["set"] = json!({"visible": false});
+    let refused = s.dispatch("layers.update", &hide).unwrap_err();
+    assert!(refused.message.contains("at most 64 layers"), "{refused:?}");
+    s.dispatch("layers.remove", &on("s0")).unwrap();
+    assert_eq!(ids(&mut s).len(), layers::MAX_LAYERS);
+}

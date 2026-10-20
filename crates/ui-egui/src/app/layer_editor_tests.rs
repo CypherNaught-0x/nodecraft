@@ -28,7 +28,15 @@ fn with_editor(h: &mut Harness<'static, NodeCraftApp>) {
     }
     let edge = json!({"id": EdgeId::from_bytes([53; 16]), "from": {"node": IMAGE, "port": "out"}, "to": {"node": EDITOR, "port": nodecraft_nodes::layers::INPUT}, "order": 1});
     session.dispatch("edge.connect", &json!({"canvas": canvas, "edge": edge})).unwrap();
-    h.run();
+    // The worker decodes the picture off the frame; its arrival mid-click would eat the click.
+    for _ in 0..200 {
+        h.run();
+        if h.query_by_label("Image 16×8").is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the picture never decoded");
 }
 
 /// Opens the editor from the Layer Editor card's menu.
@@ -205,6 +213,21 @@ fn fields_change_the_selected_layer_and_the_frame() {
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(editor_node(&h).params.get("width"), Some(&Value::Unsigned(nodecraft_types::Unsigned(800))), "{:?}", h.state().notice);
+}
+
+#[test]
+fn escape_in_a_field_discards_the_edit_and_keeps_the_selection() {
+    let mut h = opened();
+    add_text(&mut h);
+    h.get_by_role_and_label(egui::accesskit::Role::MultilineTextInput, "Text").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::MultilineTextInput, "Text").type_text(" gone");
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(matches!(&layer(&h, "text-1").content, Content::Text { text, .. } if text == "Text"), "{:?}", layer(&h, "text-1"));
+    let editor = h.state().layer_editor.as_ref().unwrap();
+    assert_eq!(editor.selected, ["text-1"], "Escape only left the field");
 }
 
 use nodecraft_actions::layers::{Content, Layer};
