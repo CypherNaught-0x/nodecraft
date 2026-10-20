@@ -100,6 +100,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.cache_set",
     "node.shader_set",
     "plugins.list",
+    // Retained result reads/acknowledgements never read files or change installed packages.
+    "plugins.result",
+    "plugins.forget",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands

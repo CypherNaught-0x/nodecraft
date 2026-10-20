@@ -34,8 +34,21 @@ pub const MAX_OBJECTS: usize = 256;
 /// Most bytes of package archives kept.
 pub const MAX_STORE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Owns a backend's transaction lock until dropped. Memory backends need no external lock.
+/// Native backends must open a separate handle and keep the same lock inode for every actor.
+pub trait StoreLock {}
+impl StoreLock for () {}
+#[cfg(not(target_arch = "wasm32"))]
+impl StoreLock for std::fs::File {}
+
 /// Where the store keeps its index and archives (a platform service).
 pub trait StoreBackend {
+    /// Excludes other cooperating readers/writers through verification, comparison and publish.
+    /// Low-level backend methods must be called under this guard when shared externally.
+    /// Native guards are not reentrant: do not call public Store methods while holding one.
+    fn transaction(&self) -> Result<Box<dyn StoreLock>, Error> {
+        Ok(Box::new(()))
+    }
     /// The index, or `None` before the first write.
     fn read_index(&self) -> Result<Option<Vec<u8>>, Error>;
     /// Replaces the index atomically: afterwards either the old or the new index is read.
@@ -142,6 +155,7 @@ impl<B: StoreBackend> Store<B> {
     /// Opens the store over `backend`, reading its index (an unreadable index is an error, never
     /// a silent empty store).
     pub fn open(mut backend: B) -> Result<Self, Error> {
+        let _transaction = backend.transaction()?;
         let seen = backend.read_index()?;
         let index = match &seen {
             Some(bytes) => decode_index(bytes)?,
@@ -170,17 +184,26 @@ impl<B: StoreBackend> Store<B> {
         &self.backend
     }
 
-    /// Writes `next` and makes it the state, or changes nothing.
-    fn commit(&mut self, next: Index) -> Result<(), Error> {
+    /// Checks cached decisions against the current index under the caller's transaction guard.
+    /// Refresh completely before returning Conflict, and before any operation-specific effects.
+    fn ensure_current(&mut self) -> Result<(), Error> {
         let current = self.backend.read_index()?;
         if current != self.seen {
-            // Another NodeCraft changed the store: take its state, refuse this change.
-            if let Some(bytes) = &current {
-                self.index = decode_index(bytes)?;
-            }
+            let index = match &current {
+                Some(bytes) => decode_index(bytes)?,
+                None => Index::default(),
+            };
+            self.index = index;
             self.seen = current;
             return Err(conflict("the plugin store was changed by another NodeCraft window; try again"));
         }
+        Ok(())
+    }
+
+    /// Writes `next` and makes it the state, or changes nothing.
+    fn commit(&mut self, next: Index) -> Result<(), Error> {
+        // Keep this final check as well: custom backends must honor transaction exclusion.
+        self.ensure_current()?;
         let bytes = encode_index(&next)?.into_bytes();
         self.backend.write_index(&bytes)?;
         self.index = next;
@@ -228,6 +251,7 @@ impl<B: StoreBackend> Store<B> {
     /// Re-reads the index if another NodeCraft changed it since this store last read or wrote
     /// it, so every request starts from the store's current state.
     pub fn refresh(&mut self) -> Result<(), Error> {
+        let _transaction = self.backend.transaction()?;
         let current = self.backend.read_index()?;
         if current != self.seen {
             self.index = match &current {
@@ -281,6 +305,8 @@ impl<B: StoreBackend> Store<B> {
     /// Verifies `bytes` and installs the package disabled; with `dry_run`, only reports.
     /// A package already installed is updated with [`Store::update`] instead.
     pub fn import(&mut self, bytes: &[u8], trust: &TrustStore, dry_run: bool) -> Result<ImportReport, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let Incoming { package, provenance, write, size } = self.incoming(bytes, trust)?;
         if self.index.active.contains_key(&package.manifest.package_id) {
             return Err(conflict("that package is already installed; update it instead"));
@@ -304,6 +330,8 @@ impl<B: StoreBackend> Store<B> {
     /// rollback. Disable the package first; its dependents keep their exact locks, so they
     /// can't be enabled against the new digest until they are updated too.
     pub fn update(&mut self, bytes: &[u8], trust: &TrustStore, dry_run: bool) -> Result<ImportReport, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let Incoming { package, provenance, write, size } = self.incoming(bytes, trust)?;
         let Some((current, state)) = self.index.active.get(&package.manifest.package_id).copied() else {
             return Err(not_installed());
@@ -331,6 +359,8 @@ impl<B: StoreBackend> Store<B> {
 
     /// Makes a kept digest of an installed (disabled) package active again.
     pub fn rollback(&mut self, package: &PackageId, digest: &PackageDigest) -> Result<(), Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let Some((_, state)) = self.index.active.get(package).copied() else {
             return Err(not_installed());
         };
@@ -347,6 +377,7 @@ impl<B: StoreBackend> Store<B> {
 
     /// Reads and re-verifies the active package `package`.
     pub fn load(&self, package: &PackageId) -> Result<Package, Error> {
+        let _transaction = self.backend.transaction()?;
         let (digest, _) = self.index.active.get(package).ok_or_else(not_installed)?;
         self.load_digest(digest)
     }
@@ -364,6 +395,8 @@ impl<B: StoreBackend> Store<B> {
     /// (`taken`: the host's own IDs; installed packages' IDs are checked too). Entries bound to a
     /// host implementation outside `bindings` stay off.
     pub fn enable(&mut self, package: &PackageId, trust: &TrustStore, taken: &BTreeSet<String>, bindings: &BTreeSet<HostId>) -> Result<EnableReport, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let Some((digest, state)) = self.index.active.get(package).copied() else {
             return Err(not_installed());
         };
@@ -406,6 +439,8 @@ impl<B: StoreBackend> Store<B> {
 
     /// Disables `package`; refused while an enabled package depends on it.
     pub fn disable(&mut self, package: &PackageId) -> Result<(), Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let Some((digest, state)) = self.index.active.get(package).copied() else {
             return Err(not_installed());
         };
@@ -436,6 +471,8 @@ impl<B: StoreBackend> Store<B> {
     /// Uninstalls a disabled `package`. Its kept digests that `referenced` names (projects still
     /// use them) or that installed packages lock stay in the store; the rest are dropped.
     pub fn uninstall(&mut self, package: &PackageId, referenced: &BTreeSet<PackageDigest>) -> Result<UninstallReport, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let Some((_, state)) = self.index.active.get(package).copied() else {
             return Err(not_installed());
         };
@@ -466,6 +503,8 @@ impl<B: StoreBackend> Store<B> {
     /// Drops every kept digest that isn't active, referenced by projects (`referenced`) or locked
     /// by an installed package: old versions kept for rollback. Returns what was dropped.
     pub fn prune(&mut self, referenced: &BTreeSet<PackageDigest>) -> Result<Vec<PackageDigest>, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
         let locked = self.locked()?;
         let active: BTreeSet<PackageDigest> = self.index.active.values().map(|(d, _)| *d).collect();
         let mut next = self.index.clone();
