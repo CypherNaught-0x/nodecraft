@@ -315,6 +315,47 @@ fn wrong_identity_hostile_handle_and_late_corrupt_output_never_publish_completed
     assert_eq!(counts()[1], 1);
     assert_eq!(counts()[6], 0);
 }
+/// JSON values as the lexer counts them: every scalar, array and object is one.
+fn json_values(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Object(o) => 1 + o.values().map(json_values).sum::<usize>(),
+        serde_json::Value::Array(a) => 1 + a.iter().map(json_values).sum::<usize>(),
+        _ => 1,
+    }
+}
+/// A value holding exactly `n` JSON values, in arrays of at most 64 items.
+fn filler(n: usize) -> serde_json::Value {
+    let mut left = n - 1;
+    let mut chunks = vec![];
+    while left > 0 {
+        let items = (left - 1).min(64);
+        chunks.push(serde_json::Value::Array(vec![serde_json::Value::Null; items]));
+        left -= items + 1;
+    }
+    serde_json::Value::Array(chunks)
+}
+#[test]
+fn echoed_input_values_have_their_own_budget() {
+    let r = Record { model: Model::Image, requested: 1 };
+    let parse = |v: &serde_json::Value| {
+        let body = bytes(serde_json::to_vec(v).unwrap());
+        response::parse(&body, r, Limits::HARD).map(|_| ()).map_err(|e| e.to_string())
+    };
+    let rejects = |v: &serde_json::Value, cap: &str| parse(v).is_err_and(|e| e.contains(cap));
+    // `rest` values outside the echoed input, `echo` values inside it (its object included).
+    let with = |rest: usize, echo: usize| {
+        let mut v = full_prediction();
+        let input = json_values(&v["input"]);
+        v["pad"] = filler(rest - (json_values(&v) - input));
+        v["input"]["extra"] = filler(echo - input);
+        assert_eq!(json_values(&v), rest + echo, "the fixture holds exactly the values it names");
+        v
+    };
+    // The rest of the reply holds its full 256 values beside a full 256-value echo.
+    assert!(parse(&with(256, 256)).is_ok());
+    assert!(rejects(&with(257, 256), "Replicate JSON value count exceeds 256"), "the non-input budget is still 256");
+    assert!(rejects(&with(256, 257), "echoed input value count exceeds 256"), "the echo has its own 256-value cap");
+}
 #[test]
 fn structural_and_encoded_string_bounds_apply_before_typed_unescape() {
     let r = Record { model: Model::Text, requested: 1 };

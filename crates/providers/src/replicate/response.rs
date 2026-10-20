@@ -33,6 +33,7 @@ struct Lex<'a> {
     fields: usize,
     input_fields: usize,
     values: usize,
+    input_values: usize,
     metadata: usize,
     input_bytes: usize,
     output_bytes: usize,
@@ -109,9 +110,18 @@ impl Lex<'_> {
         if depth > 16 {
             return Err(malformed("Replicate JSON depth exceeds 16"));
         }
-        self.values += 1;
-        if self.values > 256 {
-            return Err(malformed("Replicate JSON value count exceeds 256"));
+        // The echoed input is a copy of our own bounded request, so it gets its own value
+        // budget: a long echo never crowds out the status, output and metrics it accompanies.
+        if region == Region::Input {
+            self.input_values += 1;
+            if self.input_values > 256 {
+                return Err(malformed("Replicate echoed input value count exceeds 256"));
+            }
+        } else {
+            self.values += 1;
+            if self.values > 256 {
+                return Err(malformed("Replicate JSON value count exceeds 256"));
+            }
         }
         self.ws();
         match self.b() {
@@ -242,6 +252,7 @@ fn preflight(bytes: &[u8], record: Record, l: Limits) -> Result<&str, ProviderEr
         fields: 0,
         input_fields: 0,
         values: 0,
+        input_values: 0,
         metadata: 0,
         input_bytes: 0,
         output_bytes: 0,

@@ -214,9 +214,10 @@ Inputs use local data URIs only: PNG/JPEG/WebP file bytes before base64 are capp
 claimed MIME and aggregate geometry is checked before sequential codec validation. Images are capped
 at 4096 per edge, 16,777,216 pixels each and 32,000,000 aggregate; codec allocation allowance is
 128 MiB. The complete encoded request is admitted before URI construction. API replies are capped at
-2 MiB, 64 non-input object fields plus 32 fields in the ignored root input subtree, 256 aggregate
-values and depth 16. A borrowed lexical pass separately budgets the
-ignored root input echo, complete output, 256 KiB of other encoded string metadata, and 64 KiB of
+2 MiB, 64 non-input object fields plus 32 fields in the ignored root input subtree, 256 values
+outside that subtree plus 256 inside it, and depth 16. The echo should be a copy of our own bounded
+request and is still capped, so a long echo never crowds out the status, output and metrics it
+accompanies. A borrowed lexical pass separately budgets the ignored root input echo, complete output, 256 KiB of other encoded string metadata, and 64 KiB of
 framing/scalars/whitespace. Root input/output regions are exclusive; duplicate root regions are refused.
 Before decoding, encoding or submitting, a conservative count reserves the input echo together with the
 maximum admitted output and the other response regions. It allows ASCII-escaped Unicode and escaped
