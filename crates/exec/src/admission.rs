@@ -96,6 +96,14 @@ impl AdmittedRunPlan {
     pub fn planned_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.plan.steps.iter().map(|s| s.node)
     }
+    /// The canvas the run is admitted against: the real one, with any technique nodes inlined.
+    pub fn canvas(&self) -> &Canvas {
+        &self.canvas
+    }
+    /// Whether `node` was inlined from a technique, so it is on the admitted canvas only.
+    pub fn is_inlined(&self, node: NodeId) -> bool {
+        self.plan.inner.contains_key(&node)
+    }
     /// Borrow precisely the selected model targets, including implicit defaults.
     pub fn selected_targets(&self) -> impl Iterator<Item = (NodeId, &str, Option<nodecraft_types::ProviderInstanceId>)> {
         self.witness.steps.iter().flat_map(move |(node, allowed)| {

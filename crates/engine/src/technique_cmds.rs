@@ -10,7 +10,7 @@
 //! Removing a version retires it: an empty stub keeps its number, so a version number never
 //! names two different graphs.
 use crate::commands::{CommandSpec, Context, Effect, Phase, invalid, params};
-use nodecraft_exec::planner::{Planned, RunMode, plan_with_targets};
+use nodecraft_exec::planner::{Planned, RunMode, plan_expanded};
 use nodecraft_graph::{
     Canvas, CanvasKind, Change, Changeset, Edge, Endpoint, MAX_TECHNIQUE_NODES, MAX_TECHNIQUE_PORTS, Node, Technique, TechniqueParam, TechniquePort,
     upstream_of,
@@ -162,7 +162,7 @@ fn job_count(steps: &[nodecraft_exec::planner::Step]) -> Option<usize> {
 }
 
 /// A new id for the `n`th node, wire or result a publish makes from `seed`.
-fn derive(seed: NodeId, what: &str, n: usize) -> [u8; 16] {
+pub(crate) fn derive(seed: NodeId, what: &str, n: usize) -> [u8; 16] {
     let mut hash = blake3::Hasher::new_derive_key("nodecraft technique ids 2026-10-20");
     hash.update(seed.as_bytes());
     hash.update(what.as_bytes());
@@ -258,7 +258,10 @@ fn build(c: &Context<'_>, draft: &Draft<'_>, published: CanvasId, seed: NodeId) 
     // A run of the technique makes every result afresh, so plan as if each traced node were stale.
     let mut jobs = None;
     if problems.is_empty() {
-        match plan_with_targets(canvas, c.kinds, &RunMode::WithUpstream, &given, &nodes, c.routing.routing.targets()) {
+        // Techniques inside the selection run their own versions' nodes.
+        let planned = nodecraft_exec::technique::expand(c.document.canvases(), canvas, c.kinds)
+            .and_then(|expanded| plan_expanded(&expanded, c.kinds, &RunMode::WithUpstream, &given, &nodes, c.routing.routing.targets()));
+        match planned {
             Ok(Planned::Ready(plan)) => match job_count(&plan.steps) {
                 Some(count) if count <= MAX_TECHNIQUE_JOBS => jobs = Some(count),
                 _ => problems.push(format!("One run would make more than {MAX_TECHNIQUE_JOBS} jobs; make its batches smaller.")),

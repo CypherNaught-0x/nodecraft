@@ -16,6 +16,7 @@ mod registry;
 pub mod router;
 pub mod shader;
 mod source;
+pub mod technique;
 pub mod text;
 pub mod video;
 

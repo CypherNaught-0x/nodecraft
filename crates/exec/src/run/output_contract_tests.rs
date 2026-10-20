@@ -96,7 +96,7 @@ fn start_manual(project: &Project, kinds: &Registry, jobs: Vec<JobSpec>) -> (Run
     {
         let catalog = crate::admission::tests::free_catalog("fixture", "fixture", "fixture");
         let (admitted, _) = crate::admission::admit_default_fixture(
-            RunPlan { steps: vec![step(TARGET, "test.output_contract", Some(jobs))], edges: vec![] },
+            RunPlan { steps: vec![step(TARGET, "test.output_contract", Some(jobs))], edges: vec![], inner: Default::default() },
             C,
             canvas.clone(),
             kinds,
@@ -107,7 +107,7 @@ fn start_manual(project: &Project, kinds: &Registry, jobs: Vec<JobSpec>) -> (Run
         return Run::start_admitted(admitted, kinds, options()).unwrap();
     }
     Run::start(
-        &RunPlan { steps: vec![step(TARGET, "test.output_contract", Some(jobs))], edges: vec![] },
+        &RunPlan { steps: vec![step(TARGET, "test.output_contract", Some(jobs))], edges: vec![], inner: Default::default() },
         C,
         project.canvases().get(&C).unwrap(),
         kinds,
@@ -154,7 +154,7 @@ fn deferred_materialisation_checks_routes_before_dispatch() {
         from: vec![InputSource::Step { node: UP, port: "out".into(), list: false }],
     }];
     let source = JobSpec::Source { node: UP, output: "out".into(), value: Value::Text("prompt".into()) };
-    let plan = RunPlan { steps: vec![step(UP, "source.text", Some(vec![source])), deferred], edges: vec![(UP, TARGET)] };
+    let plan = RunPlan { steps: vec![step(UP, "source.text", Some(vec![source])), deferred], edges: vec![(UP, TARGET)], inner: Default::default() };
     let (mut run, first) = Run::start(&plan, C, project.canvases().get(&C).unwrap(), &kinds, options()).unwrap();
     assert_eq!(first.jobs.len(), 1);
     let progress = run.job_done(&kinds, first.jobs[0].id, vec![("out".into(), Value::Text("prompt".into()))]);
@@ -235,7 +235,7 @@ fn deferred_materialisation_rejects_foreign_owner_before_dispatch() {
         from: vec![InputSource::Step { node: UP, port: "out".into(), list: false }],
     }];
     let source = JobSpec::Source { node: UP, output: "out".into(), value: Value::Text("prompt".into()) };
-    let plan = RunPlan { steps: vec![step(UP, "source.text", Some(vec![source])), deferred], edges: vec![(UP, TARGET)] };
+    let plan = RunPlan { steps: vec![step(UP, "source.text", Some(vec![source])), deferred], edges: vec![(UP, TARGET)], inner: Default::default() };
     let (mut run, first) = Run::start(&plan, C, project.canvases().get(&C).unwrap(), &kinds, options()).unwrap();
     assert_eq!(first.jobs.len(), 1);
     let progress = run.job_done(&kinds, first.jobs[0].id, vec![("out".into(), Value::Text("prompt".into()))]);

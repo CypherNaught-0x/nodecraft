@@ -28,7 +28,7 @@
 use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_catalog::Catalog;
 use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money};
-use nodecraft_exec::planner::{Planned, RunMode, plan_with_targets};
+use nodecraft_exec::planner::{Planned, RunMode, plan_expanded};
 use nodecraft_exec::run::{keep_changes, record_changes};
 use nodecraft_graph::{Changeset, Generation};
 use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, Money, NodeId};
@@ -184,7 +184,9 @@ fn unpriced_reason(why: &Unpriced) -> String {
     }
 }
 
-fn step_json(step: &StepQuote) -> Value {
+/// A quoted step, named by the node on the real canvas it runs for: a node inlined from a technique
+/// is priced on the technique node.
+fn step_json(step: &StepQuote, node: NodeId) -> Value {
     let (price, reason) = match step.total() {
         Ok(Some(total)) => (money(total), Value::Null),
         Ok(None) => (Value::Null, Value::Null),
@@ -192,7 +194,7 @@ fn step_json(step: &StepQuote) -> Value {
     };
     // StepQuote.models contains validated catalog identities, independent of which
     // later control supplied the final unpriced reason.
-    json!({"node": step.node, "jobs": step.jobs_known.then_some(step.jobs), "models": step.models, "price": price, "unpriced": reason})
+    json!({"node": node, "jobs": step.jobs_known.then_some(step.jobs), "models": step.models, "price": price, "unpriced": reason})
 }
 
 /// A request priced against a document: the response `run.quote` returns, and what `run.start`
@@ -328,7 +330,9 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
     // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, kinds)? } else { BTreeSet::new() };
-    let run_plan = match plan_with_targets(canvas, kinds, &mode, &requested, &stale, targets)? {
+    // Technique nodes run their versions' nodes, inlined for planning, quoting and admission.
+    let expanded = nodecraft_exec::technique::expand(document.canvases(), canvas, kinds)?;
+    let run_plan = match plan_expanded(&expanded, kinds, &mode, &requested, &stale, targets)? {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
             // Admission diagnostics never copy native hook messages, node titles or
@@ -338,6 +342,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
+    let canvas = &*expanded.canvas;
     crate::generation_catalog::validate_plan(resources, kinds, canvas, run_plan.steps.iter().map(|s| s.node))?;
     let scratch_headroom = request_scratch(p)?;
     let priced = match nodecraft_exec::admission::quote_with_scratch(
@@ -365,16 +370,19 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     for m in priced.totals.values() {
         totals_json.insert(String::from(m.currency), money(*m));
     }
-    let estimated: Vec<NodeId> = priced.estimated().collect();
+    let owned =
+        |nodes: &mut dyn Iterator<Item = NodeId>| nodes.map(|id| expanded.owner(id)).collect::<BTreeSet<_>>().into_iter().take(MAX_LISTED).collect::<Vec<_>>();
+    let estimated = owned(&mut priced.estimated());
+    let provisional = owned(&mut admission.provisional.iter().copied());
     let response = json!({
-        "steps": priced.steps.iter().take(MAX_LISTED).map(step_json).collect::<Vec<_>>(),
+        "steps": priced.steps.iter().take(MAX_LISTED).map(|step| step_json(step, expanded.owner(step.node))).collect::<Vec<_>>(),
         "steps_total": priced.steps.len(),
         "totals": Value::Object(totals_json),
         "complete": priced.is_complete(),
         "allowed": admission.allowed(),
         "blocks": admission.blocks.iter().take(MAX_LISTED).map(|b| b.message()).collect::<Vec<_>>(),
-        "provisional": admission.provisional.iter().take(MAX_LISTED).collect::<Vec<_>>(),
-        "estimated": estimated.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+        "provisional": provisional,
+        "estimated": estimated,
         "token": token,
     });
     Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token })
@@ -505,7 +513,11 @@ pub(crate) fn authorize(
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
     let canvas = c.document.canvases().get(&prepared.run.canvas).ok_or_else(|| invalid("canvas does not exist"))?;
-    crate::generation_catalog::validate_plan(c.resources, c.kinds, canvas, prepared.admitted.planned_nodes())?;
+    // Nodes inlined from a technique are only on the admitted copy; the rest are checked again
+    // against the document.
+    let admitted = &prepared.admitted;
+    crate::generation_catalog::validate_plan(c.resources, c.kinds, canvas, admitted.planned_nodes().filter(|id| !admitted.is_inlined(*id)))?;
+    crate::generation_catalog::validate_plan(c.resources, c.kinds, admitted.canvas(), admitted.planned_nodes().filter(|id| admitted.is_inlined(*id)))?;
     accept_quote(c, &prepared.quote, &prepared.accept)?;
     let ceiling = crate::run_ceiling::RunCeiling::new(accepted_limits(&prepared.accept)?, prepared.accept.unpriced_jobs.unwrap_or(0));
     let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
@@ -526,24 +538,32 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         return Err(invalid("the run changed since quotation; quote again"));
     }
     let canvas = run_canvas(c.document, run.canvas)?;
+    let expanded = nodecraft_exec::technique::expand(c.document.canvases(), canvas, c.kinds)?;
     // Preflight ALL snapshot ownership before the single snapshot clone.
-    nodecraft_exec::admission::measure::canvas(canvas)?;
+    nodecraft_exec::admission::measure::canvas(&expanded.canvas)?;
     let mode = mode_of(&run)?;
     let requested = run.nodes.iter().copied().collect();
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
-    let plan = match plan_with_targets(canvas, c.kinds, &mode, &requested, &stale, c.routing.routing.targets())? {
+    let plan = match plan_expanded(&expanded, c.kinds, &mode, &requested, &stale, c.routing.routing.targets())? {
         Planned::Ready(plan) => plan,
         Planned::Blocked(blockers) => return Err(invalid(blocked_reasons(&blockers).join("; "))),
     };
-    crate::generation_catalog::validate_plan(c.resources, c.kinds, canvas, plan.steps.iter().map(|s| s.node))?;
+    crate::generation_catalog::validate_plan(c.resources, c.kinds, &expanded.canvas, plan.steps.iter().map(|s| s.node))?;
     #[cfg(test)]
     PREPARED_COPIES.with(|n| n.set(n.get() + 1));
     let mut limits = nodecraft_exec::admission::AdmissionLimits::default();
     let temporary = nodecraft_exec::admission::measure::add(metadata, request_scratch(&run)?)?;
     limits.scratch_bytes = limits.scratch_bytes.checked_sub(temporary).ok_or_else(|| invalid("run request metadata exceeds scratch limit"))?;
-    let (mut admitted, quote) =
-        nodecraft_exec::admission::admit_run_with_targets(plan, run.canvas, canvas.clone(), c.kinds, catalog.catalog(), limits, c.routing.routing.targets())
-            .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
+    let (mut admitted, quote) = nodecraft_exec::admission::admit_run_with_targets(
+        plan,
+        run.canvas,
+        expanded.canvas.into_owned(),
+        c.kinds,
+        catalog.catalog(),
+        limits,
+        c.routing.routing.targets(),
+    )
+    .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
     // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
     admitted.reserve_metadata(metadata)?;
@@ -874,6 +894,10 @@ impl AuthorizedRun {
     /// [`nodecraft_exec::run::ResumeRecipe`].
     pub fn resume_recipe(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId) -> Option<nodecraft_exec::run::ResumeRecipe> {
         self.run.resume_recipe(kinds, job)
+    }
+    /// The canvas node a step's jobs belong to: its technique node when it is inlined (#94).
+    pub fn owner(&self, node: nodecraft_types::NodeId) -> nodecraft_types::NodeId {
+        self.run.owner(node)
     }
 }
 

@@ -733,7 +733,8 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
     };
     match work {
         JobSpec::Generate { node, outputs, .. } => {
-            let node = *node;
+            // An inlined step's jobs show, and report, as its technique node's (#94).
+            let node = active.run.owner(*node);
             active.live.insert(spec.id, node);
             active.jobs.live.insert(spec.id, view(node));
             let queued = active.run.queued_job_with_media(spec.id, &spec.idempotency_key, session.assets()).map_err(|e| e.message)?;
@@ -764,7 +765,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
             active.provider_jobs.insert(spec.id);
         }
         JobSpec::Source { node, .. } | JobSpec::Action { node, .. } => {
-            let node = *node;
+            let node = active.run.owner(*node);
             active.live.insert(spec.id, node);
             active.jobs.live.insert(spec.id, view(node));
             active.runner.sources.register(spec.id, work.clone());

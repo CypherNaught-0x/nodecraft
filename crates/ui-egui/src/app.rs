@@ -345,6 +345,7 @@ mod stale_badges;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 mod tags;
+mod technique_menu;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -1095,12 +1096,14 @@ impl NodeCraftApp {
         let mut pan = Vec2::ZERO;
         let mut query = None;
         let mut split_request = None;
+        let mut technique_request = None;
         let mut wire_command = None;
         let mut layout_mode = None;
         // The owning context menu may invoke layout; unrelated popups have no such route.
         let layout_context_ready = self.layout_base_available(ui.ctx());
         let mut comment_target = None;
         let mut split_after = None;
+        let mut technique_after = None;
         let mut tag_action = None;
         let mut refresh = None;
         self.refresh_stale_badges();
@@ -1323,6 +1326,9 @@ impl NodeCraftApp {
                                     }
                                 });
                             }
+                            if let Some(action) = technique_menu::menu(ui, self.session.document(), node) {
+                                technique_request = Some(action);
+                            }
                         });
                     }
                     if !canvas_blocks && r.drag_started_by(egui::PointerButton::Primary) {
@@ -1485,6 +1491,7 @@ impl NodeCraftApp {
                 None => {}
             }
             split_after = split_request;
+            technique_after = technique_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -1529,6 +1536,9 @@ impl NodeCraftApp {
         }
         if let Some((node, rows, columns)) = split_after {
             self.split_grid(node, rows, columns, t);
+        }
+        if let Some(action) = technique_after {
+            self.technique_action(action);
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
@@ -2327,6 +2337,8 @@ mod split_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod stream_tests;
+#[cfg(test)]
+mod technique_menu_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

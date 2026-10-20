@@ -1003,6 +1003,7 @@ fn price_step(node: &Node, kinds: &Registry, catalog: &Catalog) -> (Vec<String>,
             fanout: None,
         }],
         edges: vec![],
+        inner: Default::default(),
     };
     let quote = quote(&plan, project.canvases().get(&C).unwrap(), kinds, catalog).unwrap();
     let step = quote.steps.into_iter().next().unwrap();

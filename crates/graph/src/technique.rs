@@ -97,6 +97,24 @@ impl Canvas {
         Ok(canvas)
     }
 
+    /// This canvas with `nodes` and `edges` added, checked as a whole: the working copy a run
+    /// plans once its technique nodes are inlined (#94). It is never stored.
+    pub fn inlined(&self, nodes: Vec<Node>, edges: Vec<Edge>) -> Result<Self, Error> {
+        let mut canvas = self.clone();
+        for node in nodes {
+            if canvas.nodes.insert(node.id, node).is_some() {
+                return Err(invalid("an inlined node's id is already taken"));
+            }
+        }
+        for edge in edges {
+            if canvas.edges.insert(edge.id, edge).is_some() {
+                return Err(invalid("an inlined edge's id is already taken"));
+            }
+        }
+        canvas.validate()?;
+        Ok(canvas)
+    }
+
     /// What this canvas publishes, if it is a technique version.
     pub fn technique_info(&self) -> Option<&Technique> {
         self.technique.as_ref()
