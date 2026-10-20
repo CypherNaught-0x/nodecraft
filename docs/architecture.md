@@ -316,6 +316,14 @@ Phase B's verifier and local store are `plugin-store`; data packages install dis
 nothing in them executes. The engine's `plugins.*` commands reach the store through the host's
 `plugins.store` service; the desktop app keeps it in `<settings>/plugins/store` with the trust file
 `<settings>/plugins/trust.json`, and refuses any package ID the app itself registers.
+The native app initializes and accesses the store on a dedicated bounded worker, not its egui
+thread. Every lifecycle request returns `{pending: string}`; `plugins.result` reads a retained
+queued/running/completed/failed envelope, and `plugins.forget` explicitly releases a terminal
+slot. There are 16 total outstanding slots, including completed results, so clients must
+acknowledge results before admitting unlimited further work. Synchronous hosts keep their direct
+result contract. Native store operations hold a nonblocking, cooperative `.lock` file guard
+through verification, index comparison/publication and cleanup. See the
+[worker, locking and placement decision](decisions/2026-10-19-plugin-store-worker.md).
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
 ## CPU text actions

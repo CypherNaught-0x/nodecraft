@@ -1,7 +1,9 @@
 //! `plugins.*` commands (#172): list, import, update, enable, disable, roll back, uninstall and
 //! prune data packages in the local store. They change no document and add no undo step; the
 //! host's `plugins` service ([`register_plugin_service`]) owns the store and the trust file.
-//! Nothing in a package runs, and nothing here opens a dialog.
+//! Native desktop admission returns `{pending: string}` immediately. Poll `plugins.result`, then
+//! explicitly acknowledge terminal results with `plugins.forget`. Synchronous hosts retain the
+//! direct result contract. Nothing in a package runs, and nothing here opens a dialog.
 //!
 //! Projects don't yet record which package digests they use (#172 part 3), so uninstall and
 //! prune keep only what installed packages lock.
@@ -18,6 +20,14 @@ use std::path::PathBuf;
 
 /// The host-service capability the `plugins.*` commands use.
 pub const PLUGIN_SERVICE: &str = "plugins.store";
+/// Retained asynchronous results; separate from package operations.
+pub const RESULT_SERVICE: &str = "plugins.results";
+/// A worker nonce plus a checked decimal sequence.
+pub const MAX_PENDING_ID: usize = 53;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod worker;
+#[cfg(not(target_arch = "wasm32"))]
+pub use worker::{PluginWorker, register_plugin_worker};
 /// Largest trust file read.
 const MAX_TRUST_BYTES: u64 = 256 * 1024;
 
@@ -31,6 +41,40 @@ fn package_schema() -> Value {
 
 fn none_schema() -> Value {
     object(&[], json!({}))
+}
+
+fn pending_schema() -> Value {
+    object(
+        &["pending"],
+        json!({"pending":{"type":"string","minLength":1,"maxLength":MAX_PENDING_ID,"description":"Opaque ID returned by this host's plugin worker."}}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingParams {
+    pending: String,
+}
+
+fn results_enabled(c: &Context<'_>, _: &Value) -> Result<(), Error> {
+    if c.services.contains(RESULT_SERVICE) { Ok(()) } else { Err(Error::new(ErrorKind::Unsupported, "this host answers plugin operations synchronously")) }
+}
+
+fn pending_op(op: &'static str, p: &Value) -> Result<Effect, Error> {
+    // Inspect before DeserializeOwned can copy a caller's oversized string.
+    if p.get("pending").and_then(Value::as_str).is_none_or(|id| id.is_empty() || id.len() > MAX_PENDING_ID) {
+        return Err(Error::new(ErrorKind::InvalidInput, "invalid plugin pending ID"));
+    }
+    let p: PendingParams = params(p)?;
+    Ok(Effect::Service { capability: RESULT_SERVICE, request: json!({"op":op,"pending":p.pending}) })
+}
+
+fn result(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    pending_op("result", p)
+}
+
+fn forget(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    pending_op("forget", p)
 }
 
 fn file_schema() -> Value {
@@ -144,58 +188,85 @@ pub fn specs() -> Vec<CommandSpec> {
         enabled,
         run,
     };
-    vec![
+    let mut specs = vec![
         spec(
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest]}]}.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest]}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
             "plugins.import",
             "Import plugin package",
             file_schema,
-            "{location: string, dry_run?: bool}; verifies a .ncraft-plugin data package and installs it disabled (dry_run: only reports). Returns {package_id, version, digest, provenance, signed_by, license, notices, registrations, dry_run}. Never opens a dialog.",
+            "{location: string, dry_run?: bool}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
             import,
         ),
         spec(
             "plugins.update",
             "Update plugin package",
             file_schema,
-            "{location: string, dry_run?: bool}; installs a new version of a disabled package, disabled, keeping the old one for rollback. Returns the import report with `replaced`.",
+            "{location: string, dry_run?: bool}; installs a disabled package version, keeping the previous digest for rollback. Direct result: import report with replaced. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             update,
         ),
         spec(
             "plugins.enable",
             "Enable plugin package",
             package_only_schema,
-            "{package_id}; checks its signature, exact dependency locks and IDs, then publishes all its registrations or none. Returns {registered: [id], unbound: [id]}.",
+            "{package_id}; checks signature, locks and IDs before publishing registrations. Direct result: {registered: [id], unbound: [id]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             enable,
         ),
         spec(
             "plugins.disable",
             "Disable plugin package",
             package_only_schema,
-            "{package_id}; refused while an enabled package depends on it. Returns {disabled: true}.",
+            "{package_id}; refuses enabled dependents. Direct result: {disabled: true}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             disable,
         ),
         spec(
             "plugins.rollback",
             "Roll back plugin package",
             rollback_schema,
-            "{package_id, digest}; makes a kept version of a disabled package active again. Returns {rolled_back: true}.",
+            "{package_id, digest}; activates a kept disabled version. Direct result: {rolled_back: true}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             rollback,
         ),
         spec(
             "plugins.uninstall",
             "Uninstall plugin package",
             package_only_schema,
-            "{package_id}; removes a disabled package, keeping versions installed packages lock. Returns {removed: [digest], kept: [digest], dependents: [package_id]}. Projects are never edited.",
+            "{package_id}; removes a disabled package, retaining locked digests. Direct result: {removed: [digest], kept: [digest], dependents: [package_id]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No project edit.",
             uninstall,
         ),
-        spec("plugins.prune", "Prune old plugin versions", none_schema, "{}; drops kept versions nothing uses. Returns {removed: [digest]}.", prune),
-    ]
+        spec(
+            "plugins.prune",
+            "Prune old plugin versions",
+            none_schema,
+            "{}; removes unused kept versions. Direct result: {removed: [digest]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            prune,
+        ),
+    ];
+    specs.push(CommandSpec {
+        id: "plugins.result",
+        label: "Read plugin operation result",
+        shortcut: None,
+        alternate_shortcuts: &[],
+        input_schema: pending_schema,
+        params_doc: "{pending: string}; reads a retained queued/running/completed/failed envelope without consuming it. Terminal results/errors stay until plugins.forget or oldest-terminal eviction at host capacity. Evicted IDs return NotFound. Pending IDs belong to this host.",
+        enabled: results_enabled,
+        run: result,
+    });
+    specs.push(CommandSpec {
+        id: "plugins.forget",
+        label: "Acknowledge plugin operation result",
+        shortcut: None,
+        alternate_shortcuts: &[],
+        input_schema: pending_schema,
+        params_doc: "{pending: string}; releases only a completed/failed host result, returning {forgotten: true}. Does not cancel work, change packages or edit a document.",
+        enabled: results_enabled,
+        run: forget,
+    });
+    specs
 }
 
 /// What the host's `plugins` service needs besides the store.

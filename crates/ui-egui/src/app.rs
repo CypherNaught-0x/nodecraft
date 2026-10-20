@@ -472,8 +472,8 @@ impl NodeCraftApp {
                 None
             }
         };
-        // Plugin data packages (#172) live in the settings folder; without one the plugin.*
-        // commands are unsupported, and a store that can't open is logged, not fatal.
+        // Preserve the existing plugin/trust location. All package I/O, including opening
+        // its index, runs on the worker; requests expose retained results through commands.
         let mut plugin_problem = None;
         if let Some(dir) = store.dir().map(|d| d.join("plugins"))
             && let Err(error) = Self::register_plugins(&mut services, dir)
@@ -540,11 +540,12 @@ impl NodeCraftApp {
     /// package may take an ID the app registers; no host implementation is bindable yet.
     #[cfg(not(target_arch = "wasm32"))]
     fn register_plugins(services: &mut nodecraft_engine::commands::Services, dir: std::path::PathBuf) -> Result<(), Error> {
-        use nodecraft_engine::plugin_cmds::{PluginHost, register_plugin_service};
+        use nodecraft_engine::plugin_cmds::{PluginHost, PluginWorker, register_plugin_worker};
         let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
         taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
-        let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?)?;
-        register_plugin_service(services, store, PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() })
+        let host = PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() };
+        let worker = PluginWorker::spawn(move || nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?), host)?;
+        register_plugin_worker(services, worker)
     }
 
     /// The headless app with these host services on its session (the keychain, for one).
@@ -2119,6 +2120,8 @@ mod history_tests;
 mod order_tests;
 #[cfg(test)]
 mod perf;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod plugin_tests;
 #[cfg(test)]
 mod preview_tests;
 #[cfg(test)]

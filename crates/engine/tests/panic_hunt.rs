@@ -1,5 +1,7 @@
 use nodecraft_nodes::NodeKind;
 mod common;
+#[path = "panic_hunt/plugins.rs"]
+mod plugins;
 
 use nodecraft_engine::Session;
 use nodecraft_types::ErrorKind;
@@ -10,6 +12,18 @@ use serde_json::{Value, json};
 fn panic_hunt() {
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
+    plugins::register(&mut session);
+    // The generic corpus also reaches actual result-service parameter/identity checks.
+    let mut result_services = nodecraft_engine::commands::Services::default();
+    let worker = nodecraft_engine::plugin_cmds::PluginWorker::spawn(
+        || nodecraft_plugin_store::Store::open(nodecraft_plugin_store::MemoryBackend::default()),
+        nodecraft_engine::plugin_cmds::PluginHost { trust: None, taken: Default::default(), bindings: Default::default() },
+    )
+    .unwrap();
+    // Use a separate worker-backed Session below for its two result commands; lifecycle requests
+    // keep the real synchronous memory store and private file acquisition fixture.
+    nodecraft_engine::plugin_cmds::register_plugin_worker(&mut result_services, worker).unwrap();
+    let mut results = Session::new(original.clone()).unwrap().with_services(result_services);
     let ids: Vec<_> = session.registry().specs().map(|spec| spec.id).collect();
     let mut deep = Value::Null;
     for _ in 0..128 {
@@ -75,6 +89,7 @@ fn panic_hunt() {
     corpus.push(json!({"canvas":common::canvas(),"ids":vec![common::node_id(1);257],"revision":0,"name":"text","value":null}));
     corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(1)],"revision":0,"name":"text","value":null}));
     for id in ids {
+        let session = if matches!(id, "plugins.result" | "plugins.forget") { &mut results } else { &mut session };
         for params in &corpus {
             let before = session.document().clone();
             let revision = session.revision();
@@ -230,6 +245,9 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::tag_filter_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    let plugin_old =
+        if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
+    let pending = if matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register_results(&mut session)) } else { None };
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "tag.put" => json!({"canvas":canvas(),"tag":{"id":nodecraft_types::TagId::from_bytes([9;16]),"title":"After","color":"blue"}}),
@@ -324,11 +342,12 @@ fn template(id: &str) -> (Session, Value) {
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
         "file.cancel" => json!({}),
-        // The plugins service isn't registered here either.
+        // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
         "plugins.enable" | "plugins.disable" | "plugins.uninstall" => json!({"package_id":"io.example.palette"}),
-        "plugins.rollback" => json!({"package_id":"io.example.palette","digest":format!("blake3:{}", "0".repeat(64))}),
+        "plugins.rollback" => json!({"package_id":"io.example.palette","digest":plugin_old.unwrap()}),
+        "plugins.result" | "plugins.forget" => json!({"pending":pending.unwrap()}),
         "run.reuse" => json!({"canvas":canvas()}),
         "node.shader_set" => json!({"canvas":canvas(),"id":node_id(1),"source":"fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }"}),
         "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
@@ -392,6 +411,9 @@ fn typed_template_panic_hunt() {
             }
             if id == "node.set_model" && params.get("preview_binding") == valid.get("preview_binding") {
                 params["preview_binding"] = fresh["preview_binding"].clone();
+            }
+            if matches!(id, "plugins.result" | "plugins.forget") && params.get("pending") == valid.get("pending") {
+                params["pending"] = fresh["pending"].clone();
             }
             let before = session.document().clone();
             let revision = session.revision();
@@ -502,5 +524,42 @@ fn model_templates_reach_the_production_kind_and_current_preview_binding() {
         } else {
             assert_ne!(session.document(), &before);
         }
+    }
+}
+
+#[test]
+fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
+    for id in [
+        "plugins.list",
+        "plugins.import",
+        "plugins.update",
+        "plugins.enable",
+        "plugins.disable",
+        "plugins.rollback",
+        "plugins.uninstall",
+        "plugins.prune",
+        "plugins.result",
+        "plugins.forget",
+    ] {
+        let (mut session, params) = template(id);
+        let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo());
+        let result = session.dispatch(id, &params).unwrap();
+        if id == "plugins.list" {
+            assert_eq!(result["packages"][0]["version"], "1.1.0");
+        }
+        if id == "plugins.import" {
+            assert_eq!(result["package_id"], "io.example.other");
+            assert_eq!(session.dispatch(id, &json!({"location":"malformed"})).unwrap_err().kind, ErrorKind::InvalidInput);
+        }
+        if id == "plugins.enable" {
+            assert_eq!(result["registered"], json!(["plugin.io.example.palette.warm"]));
+        }
+        if id == "plugins.result" {
+            assert_eq!(result["status"], "completed");
+        }
+        if id == "plugins.forget" {
+            assert_eq!(result["forgotten"], true);
+        }
+        assert_eq!((session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo()), before, "{id}");
     }
 }
