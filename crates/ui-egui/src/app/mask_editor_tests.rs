@@ -194,3 +194,26 @@ fn mask102_visual() {
         h.render().unwrap().save(dir.join(name)).unwrap();
     }
 }
+
+#[test]
+fn typing_a_margin_keeps_the_painted_stroke_over_the_same_pixels() {
+    let mut h = opened();
+    stroke(&mut h, Vec2::new(0.25, 0.5), Vec2::new(0.5, 0.5));
+    let before = strokes(&h).strokes[0].points.clone();
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Right").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Right").type_text("16");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let expand = of_kind(&h, "image.expand").unwrap();
+    assert_eq!(nodecraft_engine::mask_cmds::margins(&expand).right, 16, "{:?}", h.state().notice);
+    // 16 wide becomes 32: every point is half as far across, and stays at the same height.
+    let after = strokes(&h).strokes[0].points.clone();
+    for (old, new) in before.iter().zip(&after) {
+        assert!((new[0] - old[0] / 2.0).abs() < 1e-9 && (new[1] - old[1]).abs() < 1e-9, "{old:?} → {new:?}");
+    }
+    // One undo puts both back.
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(nodecraft_engine::mask_cmds::margins(&of_kind(&h, "image.expand").unwrap()).right, 0);
+    assert_eq!(strokes(&h).strokes[0].points, before);
+}

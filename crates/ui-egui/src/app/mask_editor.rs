@@ -8,7 +8,7 @@ use nodecraft_actions::image::{ImageLimits, Raster};
 use nodecraft_actions::mask::{self, MaskOptions, Stroke, Strokes};
 use nodecraft_engine::mask_cmds;
 use nodecraft_graph::{Canvas, Endpoint, Node};
-use nodecraft_types::{AssetRef, CanvasId, Modality, NodeId, Unsigned, Value};
+use nodecraft_types::{AssetRef, CanvasId, Modality, NodeId, Value};
 use serde_json::json;
 
 const SIDES: [&str; 4] = ["left", "top", "right", "bottom"];
@@ -17,9 +17,6 @@ const SIDE_LABELS: [&str; 4] = ["Left", "Top", "Right", "Bottom"];
 const OVERLAY_EDGE: u32 = 384;
 /// Brush sizes offered, as a fraction of the longer side.
 const BRUSH: std::ops::RangeInclusive<f64> = 0.005..=0.5;
-/// How far right of a card the cards it adds go, in world points.
-const BESIDE: f32 = 360.0;
-
 pub(super) struct MaskEditor {
     canvas: CanvasId,
     pub(super) mask: NodeId,
@@ -33,17 +30,32 @@ pub(super) struct MaskEditor {
     pub(super) prompt: String,
     model: Option<String>,
     pub(super) overlay: Option<(OverlayKey, egui::TextureHandle)>,
+    /// Why the last stroke wasn't kept.
+    warning: Option<String>,
 }
 
 impl MaskEditor {
     pub(super) fn new(canvas: CanvasId, mask: NodeId) -> Self {
-        Self { canvas, mask, erase: false, size: 0.08, hardness: 0.7, stroke: None, margins: None, prompt: String::new(), model: None, overlay: None }
+        Self {
+            canvas,
+            mask,
+            erase: false,
+            size: 0.08,
+            hardness: 0.7,
+            stroke: None,
+            margins: None,
+            prompt: String::new(),
+            model: None,
+            overlay: None,
+            warning: None,
+        }
     }
 }
 
 #[derive(PartialEq)]
 pub(super) struct OverlayKey {
-    strokes: String,
+    /// A hash of the stored strokes.
+    strokes: u64,
     options: MaskOptions,
     size: [u32; 2],
     image: [u32; 4],
@@ -53,6 +65,8 @@ pub(super) struct OverlayKey {
 /// What the editor works on, read from the document each frame.
 struct Target {
     strokes: Strokes,
+    /// A hash of the stored strokes, to notice when they change.
+    stamp: u64,
     options: MaskOptions,
     /// The Expand card feeding the mask, if any, and its margins (left, top, right, bottom).
     expand: Option<NodeId>,
@@ -74,6 +88,12 @@ fn input<'a>(canvas: &'a Canvas, node: NodeId, port: &str) -> Option<&'a Node> {
 fn target(canvas: &Canvas, id: NodeId) -> Option<Target> {
     let node = canvas.nodes().get(&id).filter(|n| n.kind == nodecraft_nodes::mask::ID)?;
     let strokes = mask_cmds::strokes(node).ok()?;
+    let stamp = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        nodecraft_nodes::mask::stored(node).ok()?.hash(&mut hasher);
+        hasher.finish()
+    };
     let options = MaskOptions { transparent: flag(node, "transparent"), invert: flag(node, "invert") };
     let upstream = input(canvas, id, "image");
     let (expand, margins, image) = match upstream {
@@ -87,7 +107,7 @@ fn target(canvas: &Canvas, id: NodeId) -> Option<Target> {
         Some(n) => (None, [0; 4], nodecraft_engine::split::image_of(n).cloned()),
         None => (None, [0; 4], None),
     };
-    Some(Target { strokes, options, expand, margins, image, pos: node.pos })
+    Some(Target { strokes, stamp, options, expand, margins, image, pos: node.pos })
 }
 
 /// The first output of `node` that carries one image, to paint a mask over.
@@ -146,7 +166,7 @@ impl NodeCraftApp {
             self.notice = Some("Couldn't allocate node ids; try again.".into());
             return;
         };
-        let pos = json!({"x": source.pos.x + BESIDE, "y": source.pos.y});
+        let pos = mask_cmds::beside(source.pos, 1.0);
         let params =
             json!({"canvas": self.canvas, "from": Endpoint { node, port: port.into() }, "expand": expand, "mask": mask, "edges": [first, second], "pos": pos});
         match self.session.dispatch("mask.create", &params) {
@@ -235,13 +255,10 @@ impl NodeCraftApp {
                         apply |= r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
                         held |= r.dragged() || r.has_focus();
                     }
-                    if apply {
-                        for ((side, value), was) in SIDES.iter().zip(margins).zip(target.margins) {
-                            if value != was {
-                                let value = param_json(Value::Unsigned(Unsigned(u64::from(value))));
-                                commands.push(("node.param_set", json!({"canvas": canvas, "id": expand, "name": side, "value": value})));
-                            }
-                        }
+                    if apply && margins != target.margins {
+                        let [left, top, right, bottom] = margins;
+                        let margins = json!({"left": left, "top": top, "right": right, "bottom": bottom});
+                        commands.push(("mask.margins_set", json!({"canvas": canvas, "id": expand, "margins": margins})));
                     }
                     editor.margins = (held && !apply).then_some(margins);
                 });
@@ -252,6 +269,9 @@ impl NodeCraftApp {
                 None => {
                     ui.label("Run the image card first: the mask is painted over its result.");
                 }
+            }
+            if let Some(warning) = &editor.warning {
+                ui.label(egui::RichText::new(warning).color(t.danger));
             }
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut editor.prompt).hint_text("Describe the change").desired_width(t.viewer_width * 0.5));
@@ -300,7 +320,7 @@ impl NodeCraftApp {
             return false;
         };
         let model = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());
-        let params = json!({"canvas": editor.canvas, "mask": editor.mask, "id": id, "edges": [first, second], "pos": {"x": at.x + BESIDE, "y": at.y}, "prompt": editor.prompt.trim(), "model": model});
+        let params = json!({"canvas": editor.canvas, "mask": editor.mask, "id": id, "edges": [first, second], "pos": mask_cmds::beside(at, 1.0), "prompt": editor.prompt.trim(), "model": model});
         let created = self.mask_dispatch("mask.edit", &params);
         if created {
             self.selection.only(id);
@@ -345,7 +365,7 @@ fn paint_area(
     let shrink = (f64::from(OVERLAY_EDGE) / frame_w.max(frame_h)).min(1.0);
     let px = |v: f64| ((v * shrink).round() as u32).max(1);
     let key = OverlayKey {
-        strokes: target.strokes.encode().unwrap_or_default(),
+        strokes: target.stamp,
         options: target.options,
         size: [px(frame_w), px(frame_h)],
         image: [f64::from(left), f64::from(top), f64::from(left) + f64::from(w), f64::from(top) + f64::from(h)].map(|v| (v * shrink).round() as u32),
@@ -381,9 +401,16 @@ fn paint_area(
         && !stroke.points.is_empty()
         && target.strokes.strokes.len() < mask::MAX_STROKES
     {
-        let mut strokes = target.strokes.strokes.clone();
-        strokes.push(stroke);
-        commands.push(("node.mask_set", json!({"canvas": editor.canvas, "id": editor.mask, "strokes": strokes})));
+        let mut strokes = target.strokes.clone();
+        strokes.strokes.push(stroke);
+        // Refused here rather than when the mask runs: the action has the same budget.
+        let full = |v: f64| v.min(f64::from(u32::MAX)) as u32;
+        if mask::work(&strokes, full(frame_w), full(frame_h)) > nodecraft_actions::image::ImageLimits::default().work {
+            editor.warning = Some("That stroke would make the mask too slow to render. Use a smaller brush, or clear some strokes.".into());
+        } else {
+            editor.warning = None;
+            commands.push(("node.mask_set", json!({"canvas": editor.canvas, "id": editor.mask, "strokes": strokes.strokes})));
+        }
     }
 
     // The stroke in progress, and the brush under the pointer.

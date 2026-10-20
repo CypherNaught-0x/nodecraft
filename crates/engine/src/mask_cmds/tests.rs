@@ -1,5 +1,6 @@
 use super::*;
 use crate::Session;
+use nodecraft_graph::Position;
 use nodecraft_types::{CanvasId, ProjectId};
 
 const CANVAS: CanvasId = CanvasId::from_bytes([1; 16]);
@@ -134,4 +135,77 @@ fn the_mask_and_expand_actions_render_through_the_host() {
     assert_eq!((out.meta.width, out.meta.height), (Some(10), Some(4)));
     params.insert(nodecraft_nodes::mask::SPEC_PARAM.into(), Value::Text("{".into()));
     assert!(actions.execute(ID, &params, &[source]).unwrap_err().contains("mask can't be read"));
+}
+
+/// A mask over an imported 100×50 image (so its size is known), with one stroke at the centre.
+fn painted() -> Session {
+    let mut s = session();
+    let png = nodecraft_media::encode_png(100, 50, &[90u8; 100 * 50 * 4], &nodecraft_media::Limits::default()).unwrap();
+    let picture = NodeId::from_bytes([7; 16]);
+    let incoming = [crate::import::Incoming { name: "pic.png", bytes: &png }];
+    crate::import::import_files(&mut s, CANVAS, Position { x: 0.0, y: 300.0 }, 300.0, &incoming, &[picture]).unwrap();
+    let create = json!({"canvas": CANVAS, "from": {"node": picture, "port": "out"}, "expand": EXPANDED, "mask": MASK, "edges": [edge(1), edge(2)], "pos": {"x": 400, "y": 0}});
+    s.dispatch("mask.create", &create).unwrap();
+    let stroke = json!([{"size": 0.2, "hardness": 1.0, "points": [[0.5, 0.5]]}]);
+    s.dispatch("node.mask_set", &json!({"canvas": CANVAS, "id": MASK, "strokes": stroke})).unwrap();
+    s
+}
+
+fn margins_json(left: u32, right: u32) -> Json {
+    json!({"canvas": CANVAS, "id": EXPANDED, "margins": {"left": left, "top": 0, "right": right, "bottom": 0}})
+}
+
+fn only_stroke(s: &Session) -> Stroke {
+    strokes(&node(s, MASK)).unwrap().strokes.into_iter().next().unwrap()
+}
+
+#[test]
+fn new_margins_move_painted_strokes_to_keep_them_over_the_same_pixels() {
+    let mut s = painted();
+    // 100×50 → 200×50: the centre is now a quarter across, and the brush keeps its 20 px.
+    assert_eq!(s.dispatch("mask.margins_set", &margins_json(0, 100)).unwrap(), json!({"changed": true}));
+    let moved = only_stroke(&s);
+    assert!((moved.points[0][0] - 0.25).abs() < 1e-9 && (moved.points[0][1] - 0.5).abs() < 1e-9, "{moved:?}");
+    assert!((moved.size - 0.1).abs() < 1e-9, "{moved:?}");
+    assert_eq!(margins(&node(&s, EXPANDED)), Margins { right: 100, ..Margins::default() });
+    // The margin moves to the left: the image (and the stroke) moves right.
+    s.dispatch("mask.margins_set", &margins_json(100, 0)).unwrap();
+    assert!((only_stroke(&s).points[0][0] - 0.75).abs() < 1e-9);
+    assert_eq!(s.dispatch("mask.margins_set", &margins_json(100, 0)).unwrap(), json!({"changed": false}));
+    // One undo step puts both the margins and the strokes back.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!((only_stroke(&s).points[0][0] - 0.25).abs() < 1e-9);
+    assert_eq!(margins(&node(&s, EXPANDED)).right, 100);
+
+    let before = s.document().clone();
+    assert!(s.dispatch("mask.margins_set", &margins_json(4097, 0)).is_err());
+    assert!(
+        s.dispatch("mask.margins_set", &json!({"canvas": CANVAS, "id": MASK, "margins": {"left": 1, "top": 0, "right": 0, "bottom": 0}})).is_err(),
+        "only Expand nodes"
+    );
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn margins_refuse_to_guess_where_strokes_go_without_the_image_size() {
+    let mut s = created();
+    // Nothing painted: the margins change on their own.
+    s.dispatch("mask.margins_set", &margins_json(0, 64)).unwrap();
+    s.dispatch("node.mask_set", &json!({"canvas": CANVAS, "id": MASK, "strokes": serde_json::from_str::<Json>(STROKE).unwrap()})).unwrap();
+    let before = s.document().clone();
+    let error = s.dispatch("mask.margins_set", &margins_json(0, 128)).unwrap_err();
+    assert!(error.message.contains("run the image first"), "{}", error.message);
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn an_inverted_mask_marks_everything_and_an_erased_one_marks_nothing() {
+    let mut s = created();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": MASK, "name": "invert", "value": {"type": "bool", "value": true}})).unwrap();
+    assert!(s.dispatch("mask.edit", &edit("a new sky", None)).is_ok());
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    let erased = json!([{"size": 0.1, "hardness": 1.0, "points": [[0.5, 0.5]]}, {"size": 0.3, "hardness": 1.0, "erase": true, "points": [[0.5, 0.5]]}]);
+    s.dispatch("node.mask_set", &json!({"canvas": CANVAS, "id": MASK, "strokes": erased})).unwrap();
+    assert!(s.dispatch("mask.edit", &edit("a door", None)).unwrap_err().message.contains("paint the area"));
 }

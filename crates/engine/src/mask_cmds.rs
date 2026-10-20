@@ -1,15 +1,17 @@
 //! Inpainting and outpainting (#102). `mask.create` puts an Expand canvas and a Mask node behind
 //! an image (the mask editor paints on the expanded image), `node.mask_set` stores the painted
 //! strokes as one undo step, and `mask.edit` wires the image and its mask into a new generation
-//! card of a model that takes a mask. Nothing here runs: the new card runs (and is costed) like
-//! any other.
+//! card of a model that takes a mask. `mask.margins_set` changes the expanded canvas and moves the
+//! strokes of the masks painted over it, so they keep covering the same part of the image.
+//! Nothing here runs: the new card runs (and is costed) like any other.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use crate::generation_catalog::GenerationCatalog;
-use nodecraft_actions::mask::{MAX_STROKES, Stroke, Strokes};
+use nodecraft_actions::image::{ImageLimits, Raster};
+use nodecraft_actions::mask::{self, MAX_MARGIN, MAX_STROKES, MIN_SIZE, Margins, MaskOptions, Stroke, Strokes};
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Node, Position};
 use nodecraft_nodes::generation::{KIND, MODEL, PROMPT};
 use nodecraft_nodes::mask::{CONFIG, ID};
-use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId, ParamValues, Value};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId, ParamValues, Unsigned, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use std::collections::BTreeMap;
@@ -34,7 +36,7 @@ fn check_pos(pos: Position) -> Result<(), Error> {
 }
 
 /// `pos` moved `steps` cards right, kept on the canvas.
-fn beside(pos: Position, steps: f32) -> Position {
+pub fn beside(pos: Position, steps: f32) -> Position {
     Position { x: (pos.x + STEP * steps).clamp(-MAX_COORDINATE, MAX_COORDINATE), y: pos.y }
 }
 
@@ -52,6 +54,55 @@ pub fn strokes(node: &Node) -> Result<Strokes, Error> {
 /// mask.
 pub fn inpaint_models(catalog: &GenerationCatalog) -> Vec<String> {
     catalog.models(KIND).filter(|m| m.modes.iter().any(|mode| mode.inputs.iter().any(|r| r.role == "mask"))).map(|m| m.id.clone()).collect()
+}
+
+/// The margins an Expand canvas node adds, each at most [`MAX_MARGIN`].
+pub fn margins(node: &Node) -> Margins {
+    let side = |name: &str| match node.params.get(name) {
+        Some(Value::Unsigned(v)) => u32::try_from(v.0).unwrap_or(MAX_MARGIN).min(MAX_MARGIN),
+        _ => 0,
+    };
+    Margins { left: side("left"), top: side("top"), right: side("right"), bottom: side("bottom") }
+}
+
+/// `strokes` painted over a `size` image expanded by `from`, moved to cover the same part of the
+/// image once it is expanded by `to` instead. The brush keeps its size in image pixels.
+pub fn remap(strokes: &Strokes, size: (u32, u32), from: Margins, to: Margins) -> Strokes {
+    let (w, h) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
+    let frame = |m: Margins| (w + f64::from(m.left) + f64::from(m.right), h + f64::from(m.top) + f64::from(m.bottom));
+    let (old, new) = (frame(from), frame(to));
+    let axis = |v: f64, old: f64, before: u32, after: u32, new: f64| ((v * old - f64::from(before) + f64::from(after)) / new).clamp(-1.0, 2.0);
+    let scale = old.0.max(old.1) / new.0.max(new.1);
+    let strokes = strokes
+        .strokes
+        .iter()
+        .map(|s| Stroke {
+            size: (s.size * scale).clamp(MIN_SIZE, 1.0),
+            hardness: s.hardness,
+            erase: s.erase,
+            points: s.points.iter().map(|[x, y]| [axis(*x, old.0, from.left, to.left, new.0), axis(*y, old.1, from.top, to.top, new.1)]).collect(),
+        })
+        .collect();
+    Strokes { strokes }
+}
+
+/// Whether `mask` marks anything for a model to change, given whether its image has margins.
+fn marks(mask: &Node, margins: bool) -> Result<bool, Error> {
+    let flag = |name: &str| matches!(mask.params.get(name), Some(Value::Bool(true)));
+    if flag("invert") || (flag("transparent") && margins) {
+        return Ok(true);
+    }
+    let strokes = strokes(mask)?;
+    if !strokes.paints() {
+        return Ok(false);
+    }
+    // Erasing can take back everything painted: render small and look.
+    const SIDE: u32 = 64;
+    let limits = ImageLimits::default();
+    let unreadable = |e| Error::new(ErrorKind::InvalidInput, format!("the node's mask can't be read: {e}"));
+    let blank = Raster::new(SIDE, SIDE, [0, 0, 0, 255].repeat((SIDE * SIDE) as usize), limits).map_err(unreadable)?;
+    let rendered = mask::render(&strokes, MaskOptions::default(), &blank, limits).map_err(unreadable)?;
+    Ok(rendered.pixels().as_chunks::<4>().0.iter().any(|[.., alpha]| *alpha < 255))
 }
 
 fn always(_: &Context<'_>, _: &Json) -> Result<(), Error> {
@@ -155,12 +206,10 @@ fn edit(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         .find(|e| e.to.node == p.mask && e.to.port == "image")
         .map(|e| e.from.clone())
         .ok_or_else(|| invalid("connect an image to the mask first"))?;
-    // Something must be marked: a painted stroke, or the margins an expanded canvas adds.
-    let transparent = matches!(mask.params.get("transparent"), Some(Value::Bool(true)));
-    let margins = canvas.nodes().get(&image.node).is_some_and(|n| {
-        n.kind == EXPAND && ["left", "top", "right", "bottom"].iter().any(|side| matches!(n.params.get(*side), Some(Value::Unsigned(v)) if v.0 > 0))
-    });
-    if !strokes(mask)?.paints() && !(transparent && margins) {
+    // Something must be marked: a painted stroke, the margins an expanded canvas adds, or
+    // everything (inverted).
+    let margins = canvas.nodes().get(&image.node).is_some_and(|n| n.kind == EXPAND && !margins(n).is_empty());
+    if !marks(mask, margins)? {
         return Err(invalid("paint the area to change first, or expand the canvas"));
     }
     let models = c.resources.get::<GenerationCatalog>().map(inpaint_models).unwrap_or_default();
@@ -185,6 +234,60 @@ fn edit(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     ]);
     c.preview_changes(&changes)?;
     Ok(Effect::Edit { changes, result: json!({"id": p.id}), gesture: None })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarginsParams {
+    canvas: CanvasId,
+    /// The Expand canvas node.
+    id: NodeId,
+    margins: Margins,
+}
+
+fn margins_set(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
+    let p: MarginsParams = params(value)?;
+    let m = p.margins;
+    if [m.left, m.top, m.right, m.bottom].iter().any(|side| *side > MAX_MARGIN) {
+        return Err(invalid("a margin is at most 4096 pixels"));
+    }
+    let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| not_found("canvas"))?;
+    let expand = canvas.nodes().get(&p.id).ok_or_else(|| not_found("document entity"))?;
+    if expand.kind != EXPAND {
+        return Err(invalid("only an Expand canvas node has margins"));
+    }
+    let from = margins(expand);
+    if from == m {
+        return Ok(Effect::None { result: json!({"changed": false}) });
+    }
+    let mut changed = expand.clone();
+    for (side, v) in [("left", m.left), ("top", m.top), ("right", m.right), ("bottom", m.bottom)] {
+        changed.params.insert(side.into(), Value::Unsigned(Unsigned(u64::from(v))));
+    }
+    let mut changes = vec![Change::SetNode { canvas: p.canvas, node: changed }];
+    // The masks painted over this canvas keep covering the same part of the image.
+    let size = canvas
+        .edges()
+        .values()
+        .find(|e| e.to.node == p.id && e.to.port == "image")
+        .and_then(|e| canvas.nodes().get(&e.from.node))
+        .and_then(crate::split::image_of)
+        .and_then(|asset| Some((asset.meta.width?, asset.meta.height?)));
+    let fed = canvas.edges().values().filter(|e| e.from.node == p.id && e.to.port == "image").filter_map(|e| canvas.nodes().get(&e.to.node));
+    for mask in fed.filter(|n| n.kind == ID) {
+        let painted = strokes(mask)?;
+        if painted.strokes.is_empty() {
+            continue;
+        }
+        let size = size.ok_or_else(|| invalid("run the image first: a painted mask can't be moved to new margins without the image's size"))?;
+        let json = remap(&painted, size, from, m).encode().map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the mask isn't valid: {e}")))?;
+        let mut moved = mask.clone();
+        moved.config.insert(CONFIG.into(), Value::Text(json));
+        changes.push(Change::SetNode { canvas: p.canvas, node: moved });
+    }
+    let changes = Changeset::new(changes);
+    c.preview_changes(&changes)?;
+    Ok(Effect::Edit { changes, result: json!({"changed": true}), gesture: None })
 }
 
 fn enabled_create(c: &Context<'_>, value: &Json) -> Result<(), Error> {
@@ -222,6 +325,14 @@ fn create_schema() -> Json {
             "from": {"type": "object", "required": ["node", "port"], "additionalProperties": false, "properties": {"node": uuid(), "port": {"type": "string", "maxLength": 256}}}}})
 }
 
+fn margins_schema() -> Json {
+    let side = json!({"type": "integer", "minimum": 0, "maximum": MAX_MARGIN});
+    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": ["canvas", "id", "margins"],
+        "properties": {"canvas": uuid(), "id": uuid(),
+            "margins": {"type": "object", "additionalProperties": false, "required": ["left", "top", "right", "bottom"],
+                "properties": {"left": side, "top": side, "right": side, "bottom": side}}}})
+}
+
 fn edit_schema() -> Json {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": ["canvas", "mask", "id", "edges", "pos", "prompt"],
         "properties": {"canvas": uuid(), "mask": uuid(), "id": uuid(), "pos": pos(),
@@ -248,9 +359,19 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: create_schema,
-            params_doc: "{canvas, from: {node, port}, expand: new NodeId, mask: new NodeId, edges: [new EdgeId, new EdgeId], pos: {x, y}} -> {expand, mask}; adds an Expand canvas node taking the image output `from` and a Mask node over the expanded image (its transparent margins masked), as one undo step. Paint with node.mask_set, add margins with node.param_set on the Expand node (left/top/right/bottom pixels), then mask.edit. The caller supplies the new ids.",
+            params_doc: "{canvas, from: {node, port}, expand: new NodeId, mask: new NodeId, edges: [new EdgeId, new EdgeId], pos: {x, y}} -> {expand, mask}; adds an Expand canvas node taking the image output `from` and a Mask node over the expanded image (its transparent margins masked), as one undo step. Paint with node.mask_set, add margins with mask.margins_set (node.param_set on the Expand node doesn't move painted strokes), then mask.edit. The caller supplies the new ids.",
             enabled: enabled_create,
             run: create,
+        },
+        CommandSpec {
+            id: "mask.margins_set",
+            label: "Expand canvas",
+            shortcut: None,
+            alternate_shortcuts: &[],
+            input_schema: margins_schema,
+            params_doc: "{canvas, id: Expand canvas NodeId, margins: {left, top, right, bottom}} -> {changed}; sets the pixels an Expand canvas node adds on each side (0 to 4096) and moves the strokes of the masks painted over it so they cover the same part of the image, as one undo step. A painted mask needs its image's size: run the image first.",
+            enabled: always,
+            run: margins_set,
         },
         CommandSpec {
             id: "mask.edit",
