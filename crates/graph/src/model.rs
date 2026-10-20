@@ -371,6 +371,35 @@ impl Canvas {
         }
     }
 
+    /// Whether `self` and `other` differ at most in where things are and how they are grouped:
+    /// node positions and fields, and the canvas's fields and comments. Nothing a run plans or
+    /// reads differs, so work derived from one canvas holds for the other (#549). Every other
+    /// field counts; a new one does too until it is listed here as layout.
+    pub fn same_but_layout(&self, other: &Canvas) -> bool {
+        let Canvas { id, title, kind, nodes, edges, fields: _, comments: _, tags, technique } = self;
+        let same_node = |a: &Node, b: &Node| {
+            let Node { id, kind, title, pos: _, params, config, inputs, outputs, history, active, tag, field: _ } = a;
+            *id == b.id
+                && *kind == b.kind
+                && *title == b.title
+                && *params == b.params
+                && *config == b.config
+                && *inputs == b.inputs
+                && *outputs == b.outputs
+                && *history == b.history
+                && *active == b.active
+                && *tag == b.tag
+        };
+        *id == other.id
+            && *title == other.title
+            && *kind == other.kind
+            && *edges == other.edges
+            && *tags == other.tags
+            && *technique == other.technique
+            && nodes.len() == other.nodes.len()
+            && nodes.iter().zip(&other.nodes).all(|((a_id, a), (b_id, b))| a_id == b_id && same_node(a, b))
+    }
+
     /// An empty Batch Generate sheet (#163).
     pub fn sheet(id: CanvasId, title: impl Into<String>) -> Self {
         Self { kind: CanvasKind::Sheet, ..Self::new(id, title) }

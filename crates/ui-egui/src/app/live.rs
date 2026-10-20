@@ -19,6 +19,9 @@ pub(super) struct Live {
     /// again) until their inputs or settings change.
     failed: BTreeMap<NodeId, nodecraft_types::Blake3>,
     kinds: Option<Arc<nodecraft_nodes::Registry>>,
+    /// The canvas as it was when there was nothing to recompute: moving its nodes changes the
+    /// revision but not that (#549).
+    settled: Option<live_actions::Settled>,
 }
 
 impl NodeCraftApp {
@@ -29,6 +32,7 @@ impl NodeCraftApp {
             match receiver.try_recv() {
                 Ok(Ok(outcome)) => {
                     self.live.running = None;
+                    self.live.settled = None;
                     self.live_failures(&outcome.failed);
                     if let Err(error) = live_actions::apply(&mut self.session, outcome) {
                         log::warn!("live result not recorded: {}", error.message);
@@ -48,9 +52,16 @@ impl NodeCraftApp {
             return;
         }
         self.live.checked = Some(now);
+        if self.live.settled.as_ref().is_some_and(|settled| settled.holds(&self.session, self.canvas)) {
+            return;
+        }
+        self.live.settled = None;
         let job = match live_actions::pending(&self.session, self.canvas, &self.live.failed) {
             Ok(Some(job)) => job,
-            Ok(None) => return,
+            Ok(None) => {
+                self.live.settled = live_actions::Settled::now(&self.session, self.canvas);
+                return;
+            }
             Err(error) => {
                 log::warn!("live recompute can't plan: {}", error.message);
                 return;

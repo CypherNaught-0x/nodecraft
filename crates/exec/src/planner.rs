@@ -319,6 +319,53 @@ pub fn plan_expanded(
     Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }))
 }
 
+/// The `requested` nodes that would each plan [`Planned::Ready`] on their own with
+/// [`RunMode::WithUpstream`] (as [`plan`] plans), every step of that plan passing `accept`.
+///
+/// One graph and one walk answer for all of them, where planning each alone rebuilds the graph
+/// per node and costs `O(nodes²)` on every edit (#549). When every requested node needs a run
+/// itself (it is stale or has no result, as live recompute asks), their runs together are the
+/// union of their runs alone; a blocked or refused step fails everything after it in the run.
+/// The answer is the same as planning each alone or stricter, never looser:
+/// - a batch refuses to collect from a node in the run, so a node behind a batch whose stale
+///   source another requested node reruns waits for that rerun (alone it would read the old
+///   result; together the two could never plan at all);
+/// - the steps share the plan-wide input budget, so near it fewer nodes pass;
+/// - a requested node that doesn't need a run joins the others' runs, where alone they would read
+///   its result, so they pass only if it does.
+///
+/// Routers and batches never pass: they have nothing to run.
+pub fn ready_alone(
+    canvas: &Canvas,
+    kinds: &Registry,
+    requested: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    accept: &dyn Fn(&Step) -> bool,
+) -> Result<BTreeSet<NodeId>, Error> {
+    let expanded = Expanded::plain(canvas);
+    let canvas: &Canvas = &expanded.canvas;
+    let graph = Graph::new(canvas, kinds, &nodecraft_types::EMPTY_TARGET_SELECTION, &expanded.collects, &expanded.inner, &nodecraft_types::NoOptions)?;
+    let requested: BTreeSet<NodeId> = requested.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
+    let run: BTreeSet<NodeId> =
+        graph.with_upstream(&requested, stale).into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id)).collect();
+    let mut state = State::default();
+    let mut passed = BTreeSet::new();
+    // Dependency order: a step's `after` has been decided by the time it is reached.
+    for id in graph.order(&run)? {
+        if state.plan_bytes > MAX_PLAN_INPUT_BYTES {
+            break;
+        }
+        let Ok(step) = graph.step(id, &run, &mut state) else { continue };
+        if let Some(fanout) = &step.fanout {
+            state.fanned.insert(id, fanout.items.clone());
+        }
+        if accept(&step) && step.after.iter().all(|before| passed.contains(before)) {
+            passed.insert(id);
+        }
+    }
+    Ok(passed.intersection(&requested).copied().collect())
+}
+
 /// A blocker as the real canvas shows it: one inside a technique is its technique node's.
 fn owned(blocker: Blocker, expanded: &Expanded<'_>) -> Blocker {
     if expanded.inner.contains_key(&blocker.node) {
