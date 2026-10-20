@@ -9,6 +9,8 @@ pub const COUNT: &str = "generated_image_count";
 /// The meaning tag of a model's output aspect ratio.
 pub const ASPECT: &str = "aspect_ratio";
 const MAX_RATIO_DIGITS: usize = 5;
+/// Shown beside a wired prompt's label.
+pub(crate) const WIRED: &str = "from connected text";
 
 /// The parameters a generation card gives their own controls, found by meaning tag in the
 /// node's contract rather than by name, so a model's `n` and another's `num_images` both count.
@@ -123,7 +125,14 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
         ui.set_width(ui.available_width());
         if let Some(spec) = descriptor.params.params.iter().find(|spec| spec.name == PROMPT).filter(|spec| shown(&spec.name)) {
             ui.push_id(PROMPT, |ui| {
-                let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
+                // The note shares the label's row, so a wired card is no taller than any other.
+                let label = if wired {
+                    ui.label(egui::RichText::new(format!("{} · {WIRED}", spec.label)).color(t.text_muted)).on_hover_text(
+                        "A wire feeds this prompt: its text, when not empty, is used instead of what you typed. Your prompt is kept for when you disconnect.",
+                    )
+                } else {
+                    ui.label(egui::RichText::new(&spec.label).color(t.text_muted))
+                };
                 let value = node.params.get(PROMPT).or(spec.default.as_ref());
                 // Last frame's focus: a submit in this frame is the field's own key press.
                 let focused = editor.text.get(PROMPT).is_some_and(|draft| draft.was_focused);
@@ -134,9 +143,6 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 } else {
                     ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, PROMPT, editor, label.id, t)).inner
                 };
-                if wired {
-                    ui.label(egui::RichText::new("Connected text replaces this prompt; it is kept for when you disconnect.").color(t.text_muted));
-                }
                 if open && let Some(value) = changed {
                     intents.push(Intent::Parameter { name: PROMPT.into(), value });
                 }

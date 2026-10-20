@@ -67,6 +67,8 @@ impl SchemaCache {
     // definition binding changed. No document hashing or per-node payload walk in paint.
     fn refresh_generation(&mut self, session: &Session) {
         let current = session.generation_catalog().ok().and_then(|catalog| {
+            // Every generation kind is installed from one snapshot, so the image kind (always
+            // present) stands for all of them.
             catalog.validate_definition_binding(session.kinds().get(nodecraft_nodes::generation::KIND).ok()?).ok()?;
             Some(catalog.stamp())
         });

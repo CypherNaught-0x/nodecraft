@@ -109,14 +109,29 @@ fn a_text_card_shows_its_active_answer_above_the_composer() {
 #[test]
 fn a_wired_prompt_is_locked_and_keeps_its_draft() {
     let h = scene(false, true);
-    assert!(h.query_by_label_contains("Connected text replaces this prompt").is_some(), "the card says why its prompt is locked");
-    let field = h.get_by_role_and_label(Role::TextInput, "Prompt");
+    let wired = format!("Prompt · {}", crate::card::generate::WIRED);
+    let field = h.get_by_role_and_label(Role::TextInput, &wired);
     assert!(field.accesskit_node().is_disabled(), "connected text owns the prompt");
     assert_eq!(card(h.state()).params.get("prompt"), Some(&Value::Text("A haiku about rain".into())), "the draft is kept");
+    let t = h.state().theme.tokens();
+    let plain = scene(false, false);
+    assert_eq!(card::world_size(card(h.state()), None, t), card::world_size(card(plain.state()), None, t), "the note takes no extra room");
 
-    let h = scene(false, false);
-    assert!(h.query_by_label_contains("Connected text replaces this prompt").is_none());
-    assert!(!h.get_by_role_and_label(Role::TextInput, "Prompt").accesskit_node().is_disabled(), "an unwired prompt is editable");
+    assert!(plain.query_by_label_contains(crate::card::generate::WIRED).is_none());
+    assert!(!plain.get_by_role_and_label(Role::TextInput, "Prompt").accesskit_node().is_disabled(), "an unwired prompt is editable");
+}
+
+#[test]
+fn only_the_active_generation_answers() {
+    let mut node = app(true, false).session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().clone();
+    assert_eq!(crate::card::generate::answer_of(&node), Some(ANSWER));
+    let other = nodecraft_types::GenerationId::from_bytes([90; 16]);
+    node.history.push(Generation::new(other, vec![Value::Text("Snow".into())]));
+    assert_eq!(crate::card::generate::answer_of(&node), Some(ANSWER), "a newer result shows only once it is active");
+    node.active = Some(other);
+    assert_eq!(crate::card::generate::answer_of(&node), Some("Snow"));
+    node.active = None;
+    assert_eq!(crate::card::generate::answer_of(&node), None, "history without an active result shows no answer");
 }
 
 #[test]

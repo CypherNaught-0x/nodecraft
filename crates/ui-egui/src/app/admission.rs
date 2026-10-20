@@ -54,6 +54,8 @@ pub(crate) fn admit_uncached<'a>(session: &'a Session, node: &Node) -> Option<Ad
 /// Existing runtime identity only; no retained catalog/descriptor owner or document scan.
 pub(crate) fn definition_snapshot(session: &Session) -> Option<[u8; 32]> {
     let catalog = session.generation_catalog().ok()?;
+    // Every generation kind is installed from one snapshot, so the image kind (always present)
+    // stands for all of them.
     let kind = session.kinds().get(nodecraft_nodes::generation::KIND).ok()?;
     catalog.validate_definition_binding(kind).ok()?;
     kind.definition_snapshot()

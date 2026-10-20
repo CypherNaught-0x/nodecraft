@@ -37,8 +37,10 @@ additional schema row (720 maximum); control gaps are 6 points. Longer bodies sc
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
-card's prompt the prompt is shown disabled with a note that the connected text replaces it; the
-typed prompt is kept and comes back when the wire is removed.
+card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
+label's own row, so the card keeps its size), and its hover text explains that nonempty connected
+text is used instead; the typed prompt is kept and comes back when the wire is removed. A
+generation kind other than images is offered only when the catalog has a model for it.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.

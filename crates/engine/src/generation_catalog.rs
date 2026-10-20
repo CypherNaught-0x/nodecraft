@@ -54,7 +54,13 @@ impl GenerationCatalog {
         let mut kinds = Vec::new();
         for output in OUTPUTS {
             let models = Self::admit(&catalog, output, &mut charge)?;
-            kinds.push(if output == Modality::Text { GenerationKind::text(models, identity)? } else { GenerationKind::new(models, identity)? });
+            // The image kind is always offered; another kind only once the catalog has a model
+            // for it, so the palette never adds a card with nothing to choose (#84).
+            if output == Modality::Image {
+                kinds.push(GenerationKind::new(models, identity)?);
+            } else if !models.is_empty() {
+                kinds.push(GenerationKind::text(models, identity)?);
+            }
         }
         Ok(Self(Arc::new(Snapshot { catalog, kinds })))
     }

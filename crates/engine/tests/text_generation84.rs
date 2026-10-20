@@ -322,3 +322,12 @@ fn a_model_swap_never_mixes_image_and_text_cards() {
     session.dispatch("node.model_preview", &json!({"canvas":C,"nodes":[WRITER],"model":"fixture.editor"})).unwrap();
     assert!(session.dispatch("node.model_preview", &json!({"canvas":C,"nodes":[WRITER],"model":"fixture.painter"})).is_err());
 }
+
+#[test]
+fn builtin_text_models_are_offered_on_a_text_card() {
+    let snapshot = GenerationCatalog::builtin().unwrap();
+    let kinds = snapshot.registry().unwrap();
+    assert!(kinds.get(KIND).is_ok());
+    let text: Vec<_> = snapshot.models(TEXT_KIND).map(|m| m.id.clone()).collect();
+    assert_eq!(kinds.get(TEXT_KIND).is_ok(), !text.is_empty(), "a text card exists exactly when it has a model to choose");
+}
