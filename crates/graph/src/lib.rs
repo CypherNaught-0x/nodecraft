@@ -7,12 +7,17 @@
 mod changes;
 pub mod layout;
 mod model;
+mod technique;
 mod validate;
 
 pub use changes::{Change, Changeset, NodeFieldAssignment, NodePosition, NodeTagAssignment, StagedChanges};
 pub use model::{
     Canvas, CanvasKind, Comment, CommentPin, CommentReply, Edge, Endpoint, Field, FieldRect, Generation, Incomplete, ItemKey, ItemTag, JobInput, JobSettings,
     Missing, MissingItem, Node, Port, Position, Project, Tag,
+};
+pub use technique::{
+    MAX_TECHNIQUE_DESCRIPTION_BYTES, MAX_TECHNIQUE_NAME_BYTES, MAX_TECHNIQUE_NODES, MAX_TECHNIQUE_PORTS, MAX_TECHNIQUE_TAGS, Technique, TechniqueParam,
+    TechniquePort, upstream_of,
 };
 pub use validate::{
     MAX_CHANGES, MAX_CHANGESET_BYTES, MAX_COMMENT_BYTES, MAX_COMMENT_REPLIES, MAX_HISTORY, MAX_ITEM_AXES, MAX_NODE_BYTES, MAX_PROJECT_BYTES, MAX_REPLY_BYTES,

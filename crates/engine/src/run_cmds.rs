@@ -305,6 +305,16 @@ fn admission_reason(error: &Error) -> &'static str {
     }
 }
 
+/// The canvas a run is on. A published technique version is frozen, so a run's results couldn't
+/// be recorded there: it is refused before anything is quoted or charged.
+fn run_canvas(document: &nodecraft_graph::Project, id: nodecraft_types::CanvasId) -> Result<&nodecraft_graph::Canvas, Error> {
+    let canvas = document.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    if canvas.kind() == nodecraft_graph::CanvasKind::Technique {
+        return Err(Error::new(ErrorKind::Unsupported, "a published technique version can't be run in place"));
+    }
+    Ok(canvas)
+}
+
 fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error> {
     let document = c.document;
     let kinds = c.kinds;
@@ -313,7 +323,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let budget = c.resources.require::<BudgetState>()?;
     let targets = c.routing.routing.targets();
     let resources = c.resources;
-    let canvas = document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    let canvas = run_canvas(document, p.canvas)?;
     let mode = mode_of(p)?;
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
     // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
@@ -388,7 +398,7 @@ fn run_quote(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 fn enabled_quote(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     check_requested(value)?;
     let p: RunParams = params(value)?;
-    c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    run_canvas(c.document, p.canvas)?;
     c.resources.require::<RunCatalog>()?;
     c.resources.require::<BudgetState>()?;
     mode_of(&p).map(|_| ())
@@ -515,7 +525,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if token != accept.token {
         return Err(invalid("the run changed since quotation; quote again"));
     }
-    let canvas = c.document.canvases().get(&run.canvas).ok_or_else(|| invalid("canvas does not exist"))?;
+    let canvas = run_canvas(c.document, run.canvas)?;
     // Preflight ALL snapshot ownership before the single snapshot clone.
     nodecraft_exec::admission::measure::canvas(canvas)?;
     let mode = mode_of(&run)?;
@@ -545,7 +555,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 fn enabled_start(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     check_requested(value)?;
     let (run, _) = params::<StartParams>(value)?.split();
-    c.document.canvases().get(&run.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+    run_canvas(c.document, run.canvas)?;
     c.resources.require::<RunCatalog>()?;
     c.resources.require::<BudgetState>()?;
     if !c.services.contains_run_host() {

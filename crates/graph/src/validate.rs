@@ -278,11 +278,17 @@ impl Project {
         let mut tags = BTreeSet::new();
         let mut comments = BTreeSet::new();
         let mut generations = BTreeSet::new();
+        let mut versions = BTreeSet::new();
         for (id, canvas) in &self.canvases {
             if *id != canvas.id {
                 return Err(invalid("canvas map key does not match its id"));
             }
             canvas.validate()?;
+            if let Some(technique) = &canvas.technique
+                && !versions.insert((technique.id, technique.version))
+            {
+                return Err(invalid("duplicate technique version"));
+            }
             for node in canvas.nodes.values() {
                 if !nodes.insert(node.id) {
                     return Err(invalid("duplicate node id across canvases"));
@@ -333,6 +339,11 @@ impl Canvas {
             || self.comments.len() > MAX_NODES
         {
             return Err(invalid("canvas exceeds entity limits"));
+        }
+        match (&self.technique, self.kind) {
+            (Some(technique), crate::CanvasKind::Technique) => technique.validate(self)?,
+            (None, crate::CanvasKind::Technique) | (Some(_), _) => return Err(invalid("only a technique canvas describes a technique")),
+            (None, _) => {}
         }
         for (id, field) in &self.fields {
             if *id != field.id {

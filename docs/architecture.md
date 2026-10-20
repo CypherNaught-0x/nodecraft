@@ -667,3 +667,20 @@ Generate uses (`request_runs`). A prompt still being typed is committed before t
 open keys act, and when a dialog takes the input; a project opens on its first plain canvas
 (`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
 out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
+
+## Techniques (#93)
+
+A published Technique version is a canvas whose `kind` is `technique`; its metadata
+(`graph::Technique`: id, version, name, ports, exposed parameters) lives on the canvas and is
+validated with it. The graph refuses every content change to a technique canvas, and the run
+commands refuse to run one, so a published version never changes. Engine `technique_cmds`:
+
+- `technique.check` traces the subgraph feeding the chosen outputs and reports problems
+  (unknown or mistyped ports, wired inputs, planner blockers, more than 500 nodes or 1000
+  jobs) without editing anything.
+- `technique.publish` copies that subgraph into a new technique canvas as version N+1, with
+  ids derived from a seed, in one undoable change.
+- `technique.list` and `technique.show` read versions; `technique.remove` retires one, leaving a
+  stub that keeps its version number taken.
+
+See [the decision](decisions/2026-10-20-techniques.md).

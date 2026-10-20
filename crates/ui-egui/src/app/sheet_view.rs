@@ -80,9 +80,11 @@ struct Columns {
 }
 
 /// The canvas a project opens on: its first plain canvas, or its first sheet if it has no other.
+/// A published technique is never opened as a working canvas.
 pub(super) fn home_canvas(project: &Project) -> Option<CanvasId> {
     let canvases = project.canvases();
-    canvases.values().find(|canvas| canvas.kind() != nodecraft_graph::CanvasKind::Sheet).or_else(|| canvases.values().next()).map(|canvas| canvas.id())
+    let first = |kind| canvases.values().find(|canvas| canvas.kind() == kind);
+    first(nodecraft_graph::CanvasKind::Canvas).or_else(|| first(nodecraft_graph::CanvasKind::Sheet)).map(|canvas| canvas.id())
 }
 
 /// What a click asked for, applied after the frame is drawn.
@@ -227,6 +229,7 @@ impl NodeCraftApp {
             .document()
             .canvases()
             .values()
+            .filter(|canvas| canvas.kind() != nodecraft_graph::CanvasKind::Technique)
             .map(|canvas| {
                 let sheet = canvas.kind() == nodecraft_graph::CanvasKind::Sheet;
                 let title = if canvas.title().trim().is_empty() { if sheet { "Untitled sheet" } else { "Canvas" }.to_owned() } else { line(canvas.title()) };

@@ -191,6 +191,7 @@ impl Registry {
             .chain(crate::keys_cmds::specs())
             .chain(crate::stale_cmds::specs())
             .chain(crate::sheet_cmds::specs())
+            .chain(crate::technique_cmds::specs())
             .chain(crate::describe_cmds::specs())
             .chain(crate::option_cmds::specs())
             .chain(crate::navigation_cmds::specs())

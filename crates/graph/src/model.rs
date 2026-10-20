@@ -317,13 +317,15 @@ impl Comment {
 }
 
 /// What a canvas is for (#163). A sheet is a Batch Generate table: its Generate nodes are its
-/// rows, in position order, and it opens as a table rather than as a node graph.
+/// rows, in position order, and it opens as a table rather than as a node graph. A technique is
+/// a published Technique version (#93): frozen, and described by its canvas's `Technique`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasKind {
     #[default]
     Canvas,
     Sheet,
+    Technique,
 }
 
 impl CanvasKind {
@@ -349,6 +351,9 @@ pub struct Canvas {
     pub(crate) comments: BTreeMap<CommentId, Comment>,
     #[serde(default)]
     pub(crate) tags: BTreeMap<TagId, Tag>,
+    /// What a technique canvas publishes; present exactly when the kind is technique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) technique: Option<crate::Technique>,
 }
 
 impl Canvas {
@@ -362,6 +367,7 @@ impl Canvas {
             fields: BTreeMap::new(),
             comments: BTreeMap::new(),
             tags: BTreeMap::new(),
+            technique: None,
         }
     }
 
