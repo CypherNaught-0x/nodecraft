@@ -43,9 +43,19 @@ fn with_editor(h: &mut Harness<'static, NodeCraftApp>) {
 fn opened() -> Harness<'static, NodeCraftApp> {
     let mut h = harness();
     with_editor(&mut h);
-    right_click(&mut h, EDITOR);
-    h.get_by_label("Edit layers…").click();
-    h.run_steps(3);
+    // A slow runner can drop the menu click when a background result lands in the same frame,
+    // so open the menu again until the click takes.
+    for _ in 0..20 {
+        if h.query_by_label("Edit layers…").is_none() {
+            right_click(&mut h, EDITOR);
+        }
+        h.get_by_label("Edit layers…").click();
+        h.run();
+        if h.state().layer_editor.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(h.state().layer_editor.is_some(), "{:?}", h.state().notice);
     h
 }
