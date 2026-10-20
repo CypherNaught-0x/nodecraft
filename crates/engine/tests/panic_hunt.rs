@@ -369,11 +369,13 @@ fn template(id: &str) -> (Session, Value) {
         "perf.stop" => json!({}),
         "usage.ownership" => json!({"session":"a","currency":"USD","offset":0,"limit":1}),
         "usage.reconcile_ownership" => {
-            // A real token for the fixture's group, so mutations reach the holder and exception checks.
+            // A real token for the fixture's group, so mutations reach the holder and exception
+            // checks. Not a dry run, so the host service's path is hunted too; mutating
+            // `dry_run` to true hunts the preview.
             let legacy: nodecraft_exec::cost::UsageLog =
                 serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
             let token: String = legacy.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
-            json!({"session":"a","currency":"USD","token":token,"holder":"earlier","except":[{"provider":"t","key":"old"}],"only":[{"provider":"t","key":"old"}],"dry_run":true})
+            json!({"session":"a","currency":"USD","token":token,"holder":"earlier","except":[{"provider":"t","key":"old"}],"only":[{"provider":"t","key":"old"}],"dry_run":false})
         }
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),

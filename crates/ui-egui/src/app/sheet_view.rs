@@ -185,6 +185,8 @@ impl NodeCraftApp {
         self.save_accounts(changes);
         #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.ownership_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
     }
 

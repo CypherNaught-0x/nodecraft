@@ -194,6 +194,7 @@ impl Runs {
         };
         let host = RunHost::new(runtime, budget);
         host.register(services)?;
+        host.register_ownership(services)?;
         Ok(Self {
             host,
             setup: ProviderSetup::default(),
@@ -252,6 +253,12 @@ impl Runs {
     /// Puts the budget resources in place, before the first quote.
     pub(super) fn install(&self, session: &mut Session) {
         self.host.install(session);
+    }
+
+    /// Refreshes the usage snapshot after a charge-ownership decision, so the review panel reads
+    /// the log as it now is.
+    pub(super) fn sync_usage(&self, session: &mut Session) {
+        self.host.sync_usage(session);
     }
 
     /// Routes the cards a run of `ids` will run (the cards alone, or with their stale or unrun

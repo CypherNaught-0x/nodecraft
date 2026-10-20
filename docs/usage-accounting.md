@@ -37,6 +37,13 @@ group's named floor shrinks by it while the rest is quarantined), and the staged
 the still-quarantined ones equal the open amount at import, each charge once; see
 [the decision](decisions/2026-10-18-ownership-reconciliation.md).
 
+In the desktop app, "Review quarantined charges" in the palette opens a panel for this (#362).
+It lists the groups, shows one group's evidence, totals and charges, and requires a preview
+before Confirm is enabled. The run host applies a confirmed decision to a copy of the usage log
+and saves the copy in the run journal before the live log takes it. A failed save therefore
+leaves both unchanged, and the same review can be confirmed again. See
+[the decision](decisions/2026-10-20-ownership-host.md).
+
 Unknown-price jobs reserve metadata capacity before invoking the provider. A non-cloneable
 permit captures a live ledger identity, exact provider/key, metadata and one serial. Its
 lifetime owns the admitted slot; ordinary mutations cannot steal it. Dropping a permit only
