@@ -185,3 +185,48 @@ fn a_version_holding_media_stays_in_its_project() {
     version = Canvas::technique(V1, version.title(), info, nodes, version.edges().values().cloned().collect()).unwrap();
     assert_eq!(library::entry(&version).unwrap_err().kind, ErrorKind::Unsupported);
 }
+
+#[test]
+fn a_placed_version_keeps_its_inputs_examples_and_inlines_in_its_new_project() {
+    let store = MemoryLibrary::default();
+    let mut a = publishing(&store);
+    // The input's example, as after a run, with the settings it was made with.
+    let mut input = a.document().canvases()[&V1].nodes().values().find(|node| node.kind == "source.text").unwrap().clone();
+    let generation = nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([0x33; 16]), vec![Value::Text("a cat".into())]);
+    input.active = Some(generation.id);
+    input.history.push(generation);
+    let mut version = a.document().canvases()[&V1].clone();
+    let info = version.technique_info().unwrap().clone();
+    let nodes = version.nodes().values().map(|node| if node.id == input.id { input.clone() } else { node.clone() }).collect();
+    version = Canvas::technique(V1, version.title(), info, nodes, version.edges().values().cloned().collect()).unwrap();
+    let kept = library::entry(&version).unwrap();
+    let examples: Vec<_> = kept.nodes().values().filter(|node| !node.history.is_empty()).map(|node| node.id).collect();
+    assert_eq!(examples, vec![input.id], "only the input keeps its example");
+    assert!(kept.nodes()[&input.id].history.iter().all(|g| g.settings.is_empty()));
+    assert_eq!(kept.nodes()[&input.id].active, Some(nodecraft_types::GenerationId::from_bytes([0x33; 16])));
+
+    a.dispatch("library.add", &json!({"canvas": V1})).unwrap();
+    let mut b = empty(&store);
+    b.dispatch("library.list", &json!({})).unwrap();
+    b.dispatch("library.place", &place(1)).unwrap();
+    let document = b.document();
+    let canvas = &document.canvases()[&C];
+    let expanded = nodecraft_exec::technique::expand(document.canvases(), canvas, b.kinds()).unwrap();
+    assert!(expanded.blockers.is_empty(), "{:?}", expanded.blockers);
+    assert_eq!(expanded.inner.values().filter(|owner| **owner == PLACED).count(), 2, "both of the version's nodes inline");
+}
+
+#[test]
+fn a_version_running_other_techniques_stays_in_its_project() {
+    let store = MemoryLibrary::default();
+    let mut a = publishing(&store);
+    // V1 placed on the canvas, and the canvas published again as a technique that runs it.
+    a.dispatch("technique.place", &json!({"canvas": C, "version": V1, "id": PLACED, "pos": {"x": 0.0, "y": 0.0}})).unwrap();
+    let outer = CanvasId::from_bytes([0x73; 16]);
+    let publish = json!({"canvas": C, "published": outer, "seed": id(42), "technique": TechniqueId::from_bytes([0x7f; 16]), "name": "Outer",
+        "outputs": [{"node": PLACED, "name": "Swapped"}]});
+    a.dispatch("technique.publish", &publish).unwrap();
+    let error = a.dispatch("library.add", &json!({"canvas": outer})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported, "{}", error.message);
+    assert!(store.saved().is_none_or(|library| library.versions().count() == 0));
+}

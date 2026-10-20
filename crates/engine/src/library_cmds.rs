@@ -125,8 +125,9 @@ fn place(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             }
             let copy = copied(&kept, p.copy)?;
             let taken: BTreeSet<NodeId> = canvases.values().flat_map(|canvas| canvas.nodes().keys().copied()).chain([p.id]).collect();
-            if copy.nodes().keys().any(|id| taken.contains(id)) {
-                return Err(Error::new(ErrorKind::Conflict, "a copied node's id is already taken; use another copy id"));
+            let wires: BTreeSet<EdgeId> = canvases.values().flat_map(|canvas| canvas.edges().keys().copied()).collect();
+            if copy.nodes().keys().any(|id| taken.contains(id)) || copy.edges().keys().any(|id| wires.contains(id)) {
+                return Err(Error::new(ErrorKind::Conflict, "a copied node or wire id is already taken; use another copy id"));
             }
             changes.push(Change::AddCanvas { canvas: copy.clone() });
             copy
@@ -203,7 +204,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "library.add",
             "Add a technique to the library",
             schema(&["canvas"], json!({"canvas": uuid()})),
-            "{canvas: CanvasId of a published version} -> {added, technique}; keeps a copy of that version in the library, without its example results. `added` is false when the library already has that version. A version holding media can't be added yet.",
+            "{canvas: CanvasId of a published version} -> {added, technique}; keeps a copy of that version in the library, with its inputs' examples but no other results. `added` is false when the library already has that version. A version holding media, or running other techniques, can't be added yet.",
             add,
             enabled
         ),

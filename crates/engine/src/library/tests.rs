@@ -110,3 +110,34 @@ fn a_file_library_survives_and_one_change_at_a_time_holds_it() {
     handle(&again, &shelf, &request("add", &version(1, 2))).unwrap();
     assert_eq!(read(&store).unwrap().versions().count(), 2);
 }
+
+#[test]
+fn a_file_holding_what_adding_refuses_is_refused() {
+    let file = |canvas: Canvas| serde_json::to_vec(&json!({"version": 1, "techniques": [canvas]})).unwrap();
+    let rebuilt = |edit: &dyn Fn(&mut nodecraft_graph::Node, &mut Technique)| {
+        let canvas = version(1, 1);
+        let mut info = canvas.technique_info().unwrap().clone();
+        let mut node = canvas.nodes().values().next().unwrap().clone();
+        edit(&mut node, &mut info);
+        Canvas::technique(canvas.id(), canvas.title(), info, vec![node], Vec::new()).unwrap()
+    };
+    assert!(Library::from_bytes(&file(version(1, 1))).is_ok());
+    let result = nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([5; 16]), vec![Value::Text("hi".into())]);
+    // A result on a node that isn't an input.
+    let ran = rebuilt(&|node, _| {
+        node.active = Some(result.id);
+        node.history.push(result.clone());
+    });
+    assert!(Library::from_bytes(&file(ran)).is_err());
+    let sourced = rebuilt(&|_, info| info.source = Some(CanvasId::from_bytes([9; 16])));
+    assert!(Library::from_bytes(&file(sourced)).is_err());
+    let media = Value::Media(nodecraft_types::AssetRef {
+        hash: nodecraft_types::Blake3::from_bytes([7; 32]),
+        mime: "image/png".parse().unwrap(),
+        meta: Default::default(),
+    });
+    let with_media = rebuilt(&|node, _| {
+        node.params.insert("text".into(), media.clone());
+    });
+    assert_eq!(Library::from_bytes(&file(with_media)).unwrap_err().kind, ErrorKind::Unsupported);
+}

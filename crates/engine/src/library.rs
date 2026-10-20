@@ -3,8 +3,8 @@
 //!
 //! The library is one file of version canvases ([`Library`]) in the host's data folder
 //! ([`FileLibrary`]); the browser keeps it in memory ([`MemoryLibrary`]). The host's `library`
-//! service ([`install`]) reads and writes it, re-reading before every change so two windows or
-//! the CLI never lose each other's additions, and keeps the last copy it read on the session's
+//! service ([`install`]) reads and writes it, re-reading before every change so two windows (or
+//! the app and the CLI) never lose each other's additions, and keeps the last copy it read on the session's
 //! [`Shelf`], which `library.place` reads without touching storage.
 use crate::session::Session;
 use nodecraft_graph::{Canvas, Technique};
@@ -95,9 +95,33 @@ impl Library {
     }
 }
 
-/// `canvas` if it is a published version that isn't removed.
+/// `canvas` if it is a published version that isn't removed and keeps the library's rules (see
+/// [`entry`]), so a file edited by hand or by another build can't bring in what adding refuses.
 fn checked(canvas: Canvas) -> Result<Canvas, Error> {
     let info = canvas.technique_info().filter(|info| !info.retired).ok_or_else(|| invalid("only a published technique version goes in the library"))?;
+    if info.source.is_some() {
+        return Err(invalid("a library version doesn't name the canvas it was published from"));
+    }
+    for node in canvas.nodes().values() {
+        if node.kind == nodecraft_nodes::technique::ID {
+            return Err(nested());
+        }
+        if node.params.values().chain(node.config.values()).any(holds_media) {
+            return Err(media());
+        }
+        let input = info.inputs.iter().any(|input| input.node == node.id);
+        let example = match node.history.as_slice() {
+            [] => node.active.is_none(),
+            [kept] => input && node.active == Some(kept.id) && kept.settings.is_empty(),
+            _ => false,
+        };
+        if !example {
+            return Err(invalid("a library version keeps only its inputs' examples"));
+        }
+        if node.history.iter().flat_map(|kept| &kept.outputs).any(holds_media) {
+            return Err(media());
+        }
+    }
     // Rebuilt through the constructor, which checks the version as a whole.
     Canvas::technique(canvas.id(), canvas.title(), info.clone(), canvas.nodes().values().cloned().collect(), canvas.edges().values().cloned().collect())
 }
@@ -110,23 +134,42 @@ fn holds_media(value: &Value) -> bool {
     }
 }
 
-/// The copy of a project's version that goes in the library: its example results and the canvas
-/// it was published from stay in the project. A version holding media can't go yet: its files
-/// belong to the project.
+fn media() -> Error {
+    Error::new(ErrorKind::Unsupported, "a version holding images, video or other media can't go in the library yet")
+}
+
+fn nested() -> Error {
+    Error::new(ErrorKind::Unsupported, "a version that runs other techniques can't go in the library yet")
+}
+
+/// The copy of a project's version that goes in the library. The canvas it was published from
+/// and its nodes' results stay in the project, except each input's example, which a placed node
+/// uses while nothing feeds that input (without the settings it was made with). A version holding
+/// media can't go yet, as its files belong to the project; nor can one running other techniques,
+/// whose versions would have to come along.
 pub fn entry(canvas: &Canvas) -> Result<Canvas, Error> {
     let info = canvas.technique_info().filter(|info| !info.retired).ok_or_else(|| invalid("that canvas isn't a published technique version"))?;
     let mut nodes = Vec::with_capacity(canvas.nodes().len());
     for node in canvas.nodes().values() {
-        if node.params.values().chain(node.config.values()).any(holds_media) {
-            return Err(Error::new(ErrorKind::Unsupported, "a version holding images, video or other media can't go in the library yet"));
-        }
         let mut node = node.clone();
-        node.history.clear();
-        node.active = None;
+        let example = info
+            .inputs
+            .iter()
+            .any(|input| input.node == node.id)
+            .then(|| node.active.and_then(|active| node.history.iter().find(|g| g.id == active).cloned()))
+            .flatten();
+        node.history = example
+            .map(|mut kept| {
+                kept.settings.clear();
+                kept
+            })
+            .into_iter()
+            .collect();
+        node.active = node.history.first().map(|kept| kept.id);
         nodes.push(node);
     }
     let info = Technique { source: None, ..info.clone() };
-    Canvas::technique(canvas.id(), canvas.title(), info, nodes, canvas.edges().values().cloned().collect())
+    checked(Canvas::technique(canvas.id(), canvas.title(), info, nodes, canvas.edges().values().cloned().collect())?)
 }
 
 /// What the library says about one version.
