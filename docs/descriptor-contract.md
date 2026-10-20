@@ -122,14 +122,24 @@ default resolves the node's instance contract and keeps the result as `into_reso
   any issue. Each blocked node names the first issue.
 - **Disabled values** take no part in checks, but a stored value is always type- and
   bounds-checked, enabled or not.
-- **Random seeds.** A run whose effective seed is `random_seed` is refused as unsupported until the
-  drawn seed can be recorded with its generation; a fixed seed runs.
+- **Random seeds.** A catalog model's seed whose effective setting is `random_seed` is drawn when
+  its step's jobs are handed out, after admission has matched each job to the source's
+  submission: one seed per job, within the seed's `max`, derived from the run id, the node, the
+  job's index within its step and the parameter, so a retried job sends the same seed (and a
+  reused run id repeats them). The drawn seed is recorded with the
+  job's settings. It is not part of the result's identity (the `random_seed` marker is), so a new
+  draw never makes a result stale, and a node that opts into caching reuses a result with
+  whatever seed it was made with. A kind outside the catalog generation path
+  (`into_resolved`) still refuses a ready random seed as unsupported, so such a node is blocked
+  at validation rather than run with an undrawn seed.
 - **What is recorded.** Each result keeps, per provider job and in job order, the settings it was
   submitted with: the provider, which configured instance of it, the provider's model id, the
   parameters exactly as sent (a fixed seed among them), the inputs it was given by role (media
   by reference) and, for a fanned result, the item. Never a credential. The catalog version of
   the model is not recorded yet. A result copied from the cache keeps its settings. Settings too large to keep
-  alongside a result are dropped rather than failing a paid run, as an over-budget input hash is.
+  alongside a result are shed rather than failing a paid run, as an over-budget input hash is:
+  the recorded inputs go first, so a drawn seed survives; only settings that still do not fit
+  are dropped whole, seed included.
 
 A kind that overrides `instance_contract` must override `validate_instance` to match, as
 `generation.image` does.
@@ -259,7 +269,6 @@ registration, exposes it through `node.describe`, and plans and runs every kind 
 
 These are tracked on #162 and on the issues that need them:
 
-- random seeds, drawn per run and recorded with the generation's settings;
 - leaving `identity: false` parameters out of a result's identity;
 - dynamic, model-scoped option sources;
 - typed nested records and lists;

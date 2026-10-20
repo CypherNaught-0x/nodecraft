@@ -166,6 +166,15 @@ impl ModelDescriptor {
         Ok(resolved.values.into_iter().filter(|(k, _)| resolved.visible.contains(*k)).map(|(k, v)| (k.to_owned(), v.clone())).collect())
     }
 
+    /// The seeds a run draws for a job with these parameters, with each one's upper bound (#162).
+    /// Only a semantic contract can default a seed to `random_seed`; a schema-only model draws
+    /// none.
+    pub fn random_seeds(&self, params: &ParamValues, ready: bool) -> Result<Vec<(String, Option<nodecraft_types::Unsigned>)>, Error> {
+        self.validate()?;
+        let Some(contract) = &self.parameter_contract else { return Ok(Vec::new()) };
+        Ok(contract.random_seeds(&contract.resolve_selected(params, ready)?))
+    }
+
     /// The price of one job with these parameters: schema defaults are applied first, so the
     /// quote counts what the run will actually ask for. `None` when the cost depends on usage.
     pub fn quote(&self, params: &ParamValues) -> Result<Option<Money>, Error> {

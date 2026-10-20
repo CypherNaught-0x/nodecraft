@@ -67,6 +67,8 @@ struct Selected {
 struct Allowed {
     id: String,
     expected: ParamValues,
+    /// Seeds the run draws for this submission, with each one's upper bound (#162).
+    seeds: Vec<(String, Option<nodecraft_types::Unsigned>)>,
 }
 pub(crate) struct Witness {
     models: BTreeMap<String, Selected>,
@@ -165,6 +167,23 @@ impl Witness {
             }
         }
         chosen.map(Some).ok_or_else(invalid)
+    }
+    /// The seeds to draw for a normalized `job` of `node`: those of the admitted submission it
+    /// is, which every matching submission must agree on.
+    pub(crate) fn seeds(&self, node: NodeId, job: &JobSpec) -> Result<&[(String, Option<nodecraft_types::Unsigned>)], Error> {
+        let JobSpec::Generate { provider, model, params, .. } = job else { return Ok(&[]) };
+        let mut chosen: Option<&[(String, Option<nodecraft_types::Unsigned>)]> = None;
+        for a in self.steps.get(&node).into_iter().flatten() {
+            let s = self.models.get(&a.id).ok_or_else(invalid)?;
+            if !s.semantic || s.provider != *provider || s.remote != *model || a.expected != *params {
+                continue;
+            }
+            match chosen {
+                Some(prior) if prior != a.seeds.as_slice() => return Err(invalid()),
+                _ => chosen = Some(&a.seeds),
+            }
+        }
+        Ok(chosen.unwrap_or(&[]))
     }
     /// Full vector preflight precedes first canonical map copy.
     pub(crate) fn normalize(&self, node: NodeId, jobs: &mut [JobSpec], usage: &mut Usage) -> Result<(), Error> {
@@ -453,7 +472,9 @@ pub fn admit_run_with_targets(
             // Temporary owned resolution/submission was pre-admitted by resolution_scratch;
             // this pass measures the retained witness BEFORE its later construction.
             let expected = model.effective_params(&s.source.params, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
-            measure::params(&expected)?
+            let seeds = model.random_seeds(&s.source.params, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
+            let seeds = seeds.iter().try_fold(0, |n, (name, _)| add(n, add(name.len(), size_of::<(String, Option<nodecraft_types::Unsigned>)>())?))?;
+            add(measure::params(&expected)?, seeds)?
         } else {
             let expected = model.params.resolve_view(&s.source.params, true, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
             measure::resolved(&expected)?
@@ -500,7 +521,8 @@ pub fn admit_run_with_targets(
             semantic: model.parameter_contract.is_some(),
         });
         let expected = model.effective_params(&s.source.params, true).map_err(safe_error)?;
-        witness.steps.entry(s.node).or_default().push(Allowed { id: model.id.clone(), expected });
+        let seeds = model.random_seeds(&s.source.params, true).map_err(safe_error)?;
+        witness.steps.entry(s.node).or_default().push(Allowed { id: model.id.clone(), expected, seeds });
     }
     for step in &plan.steps {
         usage.reserve(step.node, add(measure::step(step)?, size_of::<(NodeId, usize)>() + measure::LINK)?)?;

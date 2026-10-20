@@ -15,6 +15,6 @@
 - **Format.** The field is omitted when empty, so older files are unchanged, and version 1
   refuses it like input hashes and item tags. An older build that reads a newer file drops
   the field when it saves.
-- **Random seeds stay refused** for now. Admission requires a job's parameters to equal the
-  source's submission exactly, so a drawn seed has to be added after admission, by the run that
-  owns the entropy; that is a separate change, and its seeds will be recorded here.
+- **Random seeds** are drawn after admission (admission requires a job's parameters to equal the
+  source's submission exactly) by the run, and recorded here with the job's other parameters;
+  see `2026-10-20-random-seeds.md`.

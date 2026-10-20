@@ -139,7 +139,8 @@ Its node-owned controls are model and prompt; model-owned controls retain their 
 namespace. Default-registry composition does not install credentials, a scheduler or a paid
 desktop run host. The current production planner supports ordered connected/local text prompts
 and image outputs through the existing authorized engine pipeline. Wired media inputs, unknown
-models, unsupported roles/versions and random-seed realization refuse explicitly. Saved unknown
+models, unsupported roles/versions refuse explicitly; a `random_seed` default is drawn per run
+(see `descriptor-contract.md`). Saved unknown
 model IDs remain unchanged and readable. Model replacement requires the separate #157 migration
 transaction; ordinary parameter editing cannot replace this production selector.
 

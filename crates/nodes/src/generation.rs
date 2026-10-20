@@ -100,9 +100,6 @@ impl GenerationKind {
         let mut definitions = BTreeMap::new();
         for model in models {
             model.parameters.validate()?;
-            if model.parameters.rules.iter().any(|r| r.default == Some(nodecraft_types::DefaultPolicy::RandomSeed)) {
-                return Err(Error::new(ErrorKind::Unsupported, "random-seed generation needs a host that records the realized seed"));
-            }
             if !nodecraft_types::model_namespace(&model.id)
                 || !nodecraft_types::model_namespace(&model.provider)
                 || model.remote.is_empty()

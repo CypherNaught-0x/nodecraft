@@ -2,8 +2,8 @@ use super::*;
 use crate::planner::{Planned, RunMode, plan, value_bytes};
 use nodecraft_graph::{Changeset, Edge, Endpoint, Port, Project};
 use nodecraft_nodes::{Category, ModeId, NodeDescriptor, NodeKind};
-use nodecraft_types::ProjectId;
 use nodecraft_types::{EdgeId, Modality, ParamSchema, PortType};
+use nodecraft_types::{ProjectId, Unsigned};
 use std::collections::BTreeSet;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
@@ -517,6 +517,30 @@ fn recording_a_large_result_drops_old_generations_until_it_fits() {
     assert_eq!(removed.first(), Some(&GenerationId::from_bytes([1; 16])), "oldest first");
     // A result larger than a node can hold can't be recorded at all.
     assert!(record_changes(C, &node, Generation::new(GenerationId::from_bytes([10; 16]), vec![Value::Text("x".repeat(MAX_NODE_BYTES))])).is_err());
+}
+
+#[test]
+fn inputs_are_dropped_before_the_parameters_so_a_drawn_seed_survives() {
+    let job = |n: usize| nodecraft_graph::JobSettings {
+        provider: "mock".into(),
+        instance: None,
+        model: "remote".into(),
+        params: [("seed".into(), Value::Unsigned(Unsigned(42)))].into(),
+        inputs: vec![nodecraft_graph::JobInput { role: "prompt".into(), value: Value::Text(format!("{n}{}", "x".repeat(1_000_000))) }],
+        item: None,
+    };
+    let large = Generation { settings: (0..9).map(job).collect(), ..Generation::new(GenerationId::from_bytes([1; 16]), vec![Value::Text("made".into())]) };
+    let kept = super::recordable(large.clone()).unwrap();
+    assert_eq!(kept.settings.len(), 9);
+    assert!(kept.settings.iter().all(|job| job.inputs.is_empty() && job.params.get("seed") == Some(&Value::Unsigned(Unsigned(42)))));
+    // Beside a large active result, too.
+    let mut node = Node::new(id(1), "test.join");
+    node.history.push(Generation::new(GenerationId::from_bytes([2; 16]), vec![Value::Text("x".repeat(1_000_000))]));
+    node.active = Some(GenerationId::from_bytes([2; 16]));
+    let changes = record_changes(C, &node, Generation { settings: (0..8).map(job).collect(), ..large }).unwrap();
+    let recorded = changes.iter().find_map(|c| if let Change::AddGeneration { generation, .. } = c { Some(generation) } else { None }).unwrap();
+    assert_eq!(recorded.settings.len(), 8);
+    assert!(recorded.settings.iter().all(|job| job.inputs.is_empty() && !job.params.is_empty()));
 }
 
 #[test]

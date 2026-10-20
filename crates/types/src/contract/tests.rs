@@ -132,6 +132,20 @@ fn a_run_never_silently_drops_a_random_seed() {
 }
 
 #[test]
+fn a_generation_identity_admits_a_random_seed_and_names_it_to_draw() {
+    let contract = video();
+    let random = contract.resolve(&values(&[]), true).unwrap();
+    let seeds = contract.random_seeds(&random);
+    assert_eq!(seeds.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["seed"]);
+    let identity = random.clone().into_identity(true).unwrap();
+    assert!(identity.visible.contains("seed") && !identity.values.contains_key("seed"), "the marker is identity, the value is drawn later");
+    assert!(!random.submission().unwrap().contains_key("seed"), "nothing is submitted for it before the draw");
+    // A fixed seed is not drawn.
+    let fixed = contract.resolve(&values(&[("seed", Value::Unsigned(Unsigned(3)))]), true).unwrap();
+    assert!(contract.random_seeds(&fixed).is_empty());
+}
+
+#[test]
 fn a_stored_value_replaces_its_default_in_the_text_budget() {
     let big = "x".repeat(600_000);
     let contract = Contract::from_schema(
