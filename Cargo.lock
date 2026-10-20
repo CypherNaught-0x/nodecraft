@@ -2826,6 +2826,7 @@ dependencies = [
 name = "nodecraft-actions"
 version = "0.2.0-rc.1"
 dependencies = [
+ "harfrust",
  "nodecraft-graph",
  "nodecraft-media",
  "proptest",
@@ -2834,6 +2835,8 @@ dependencies = [
  "regex-syntax",
  "serde",
  "serde_json",
+ "skrifa",
+ "vello_cpu",
 ]
 
 [[package]]

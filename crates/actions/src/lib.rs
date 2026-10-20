@@ -10,5 +10,7 @@ pub mod expr;
 pub mod image;
 /// Brush masks and canvas expansion for inpainting and outpainting (#102).
 pub mod mask;
+/// The layer editor's compositor: image, text and shape layers in one frame (#101).
+pub mod layers;
 /// Bounded deterministic CPU text operations; no document mutation.
 pub mod text;
