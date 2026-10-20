@@ -193,6 +193,7 @@ impl Registry {
             .chain(crate::sheet_cmds::specs())
             .chain(crate::technique_cmds::specs())
             .chain(crate::technique_node_cmds::specs())
+            .chain(crate::library_cmds::specs())
             .chain(crate::describe_cmds::specs())
             .chain(crate::option_cmds::specs())
             .chain(crate::option_fetch::specs())

@@ -262,12 +262,19 @@ fn template(id: &str) -> (Session, Value) {
     // A text source on the canvas, and a published technique version of it.
     let technique_canvas = nodecraft_types::CanvasId::from_bytes([0x61; 16]);
     let technique = nodecraft_types::TechniqueId::from_bytes([0x62; 16]);
-    if id.starts_with("technique.") {
+    if id.starts_with("library.") {
+        nodecraft_engine::library::install(&mut session, Box::new(nodecraft_engine::library::MemoryLibrary::default())).unwrap();
+    }
+    if id.starts_with("technique.") || id.starts_with("library.") {
         let note = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(0x63), &std::collections::BTreeMap::new()).unwrap();
         session.dispatch("node.add", &json!({"canvas":canvas(),"node":note})).unwrap();
         if !matches!(id, "technique.check" | "technique.publish" | "technique.list") {
             let publish = json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]});
             session.dispatch("technique.publish", &publish).unwrap();
+        }
+        if matches!(id, "library.remove" | "library.place") {
+            session.dispatch("library.add", &json!({"canvas":technique_canvas})).unwrap();
+            session.dispatch("library.list", &json!({})).unwrap();
         }
         if matches!(id, "technique.upgrade" | "technique.detach") {
             let place = json!({"canvas":canvas(),"version":technique_canvas,"id":node_id(0x65),"pos":{"x":0,"y":0}});
@@ -330,6 +337,12 @@ fn template(id: &str) -> (Session, Value) {
         "technique.list" => json!({}),
         "technique.show" | "technique.remove" => json!({"canvas":technique_canvas}),
         "technique.place" => json!({"canvas":canvas(),"version":technique_canvas,"id":node_id(0x65),"pos":{"x":0,"y":0}}),
+        "library.list" => json!({}),
+        "library.add" => json!({"canvas":technique_canvas}),
+        "library.remove" => json!({"technique":technique,"version":1}),
+        "library.place" => {
+            json!({"canvas":canvas(),"technique":technique,"version":1,"id":node_id(0x65),"pos":{"x":0,"y":0},"copy":nodecraft_types::CanvasId::from_bytes([0x66; 16])})
+        }
         "technique.upgrade" => json!({"canvas":canvas(),"node":node_id(0x65),"version":technique_canvas}),
         "technique.detach" => json!({"canvas":canvas(),"node":node_id(0x65),"seed":node_id(0x66)}),
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),

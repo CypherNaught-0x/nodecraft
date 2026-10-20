@@ -325,6 +325,7 @@ mod drop;
 mod file_dialogs;
 mod generate;
 mod layout;
+mod library_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
 mod metrics;
@@ -453,6 +454,8 @@ pub struct NodeCraftApp {
     queue_open: bool,
     /// The sheets panel and the open sheet's table (#163).
     sheet: sheet_view::SheetView,
+    /// The Techniques panel (#96).
+    library: library_view::LibraryView,
 }
 impl NodeCraftApp {
     /// Cancel one owner at a time: noodle, input order, marquee, then selection.
@@ -575,6 +578,15 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.option_fetch = option_fetch;
+        // The technique library every project shares (#96), beside the plugins; in memory when
+        // settings aren't kept on disk.
+        let library: Box<dyn nodecraft_engine::library::LibraryStore> = match store.dir() {
+            Some(dir) => Box::new(nodecraft_engine::library::FileLibrary::new(dir.join("library"))),
+            None => Box::new(nodecraft_engine::library::MemoryLibrary::default()),
+        };
+        if let Err(error) = nodecraft_engine::library::install(&mut app.session, library) {
+            log::warn!("technique library unavailable: {}", error.message);
+        }
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.apply_settings(ctx, &settings);
@@ -597,8 +609,16 @@ impl NodeCraftApp {
         theme::apply(ctx, self.theme);
     }
 
+    /// The app with no host services but a technique library kept in memory.
     pub fn headless() -> Result<Self, Error> {
-        Self::with_services(nodecraft_engine::commands::Services::default())
+        Self::headless_with_library(Box::new(nodecraft_engine::library::MemoryLibrary::default()))
+    }
+
+    /// [`Self::headless`] keeping its technique library (#96) in `store`.
+    pub fn headless_with_library(store: Box<dyn nodecraft_engine::library::LibraryStore>) -> Result<Self, Error> {
+        let mut app = Self::with_services(nodecraft_engine::commands::Services::default())?;
+        nodecraft_engine::library::install(&mut app.session, store)?;
+        Ok(app)
     }
 
     /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
@@ -762,6 +782,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
             sheet: sheet_view::SheetView::default(),
+            library: library_view::LibraryView::default(),
         })
     }
     /// Replace a document session together with scoped view services and all view caches.
@@ -1705,6 +1726,7 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
+        self.techniques_panel(ui.ctx(), t);
         // Floating UI must lay out before final quick-add admission, including a Window's first
         // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
         // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
@@ -1830,6 +1852,7 @@ impl NodeCraftApp {
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
                         self.sheets_button(ui, t);
+                        self.techniques_button(ui, t);
                         #[cfg(not(target_arch = "wasm32"))]
                         if let Some(label) = self.queue_label()
                             && ui
@@ -2335,6 +2358,8 @@ mod generate_tests;
 mod generation_tests;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod library_view_tests;
 #[cfg(test)]
 mod order_tests;
 #[cfg(test)]
