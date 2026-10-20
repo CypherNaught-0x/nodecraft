@@ -12,6 +12,7 @@ pub mod admission;
 pub mod cost;
 pub mod driver;
 pub mod fanout;
+pub mod mentions;
 pub mod planner;
 pub mod routing;
 pub mod run;

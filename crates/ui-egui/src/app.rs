@@ -321,6 +321,7 @@ pub(crate) mod admission;
 
 mod comments;
 mod drop;
+mod elements;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
 mod generate;
@@ -1166,6 +1167,7 @@ impl NodeCraftApp {
         let mut split_request = None;
         let mut mask_request = None;
         let mut layers_request = None;
+        let mut element_request = false;
         let mut technique_request = None;
         let mut wire_command = None;
         let mut layout_mode = None;
@@ -1175,6 +1177,7 @@ impl NodeCraftApp {
         let mut split_after = None;
         let mut mask_after = None;
         let mut layers_after = None;
+        let mut element_after = false;
         let mut technique_after = None;
         let mut tag_action = None;
         let mut refresh = None;
@@ -1202,6 +1205,7 @@ impl NodeCraftApp {
             self.painted.clear();
             let prompt_wired: BTreeSet<NodeId> =
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
+            let element_names = elements::names(canvas);
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1259,6 +1263,7 @@ impl NodeCraftApp {
                         }),
                         roles: schema.map(|cached| &cached.roles),
                         prompt_wired: prompt_wired.contains(&node.id),
+                        elements: &element_names,
                         #[cfg(not(target_arch = "wasm32"))]
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
                         #[cfg(target_arch = "wasm32")]
@@ -1411,6 +1416,13 @@ impl NodeCraftApp {
                                 let r = ui.button("Inpaint or expand…").on_hover_text("Paint where the image should change, or widen its canvas");
                                 if r.clicked() {
                                     mask_request = Some((node.id, true));
+                                    ui.close();
+                                }
+                            }
+                            if !elements::sources(canvas, self.selection.nodes()).is_empty() {
+                                let r = ui.button("Make Element from selection").on_hover_text("A reusable subject prompts can mention by #name");
+                                if r.clicked() {
+                                    element_request = true;
                                     ui.close();
                                 }
                             }
@@ -1581,6 +1593,7 @@ impl NodeCraftApp {
             split_after = split_request;
             mask_after = mask_request;
             layers_after = layers_request;
+            element_after = element_request;
             technique_after = technique_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
@@ -1634,6 +1647,9 @@ impl NodeCraftApp {
             Some((node, true)) => self.open_mask_editor_for(node),
             Some((node, false)) => self.mask_editor = Some(mask_editor::MaskEditor::new(self.canvas, node)),
             None => {}
+        }
+        if element_after {
+            self.make_element();
         }
         if let Some(action) = technique_after {
             self.technique_action(action);
@@ -2418,6 +2434,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod elements_tests;
 #[cfg(test)]
 mod gallery_tests;
 #[cfg(test)]

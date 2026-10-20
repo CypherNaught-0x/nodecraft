@@ -137,6 +137,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "layers.remove",
     "layers.reorder",
     "layers.align",
+    // Elements only add and wire cards; the sheet card runs (and is quoted) through run.start.
+    "element.create",
+    "element.sheet",
+    "element.list",
     "plugins.list",
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",

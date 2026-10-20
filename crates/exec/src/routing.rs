@@ -3,7 +3,7 @@
 //! inputs through [`incoming`], so a router adds no step, no cost and no hash of its own.
 
 use nodecraft_graph::Canvas;
-use nodecraft_nodes::{Registry, router};
+use nodecraft_nodes::{Registry, element, router};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +31,8 @@ pub struct Incoming<'a> {
     /// port must not hide this failure. Reasons are fixed-size and stored once per router.
     pub invalid: BTreeMap<(NodeId, &'a str), NodeId>,
     pub invalid_routers: BTreeMap<NodeId, &'static str>,
+    /// Consumers whose prompt mentions a name several Elements share (#104).
+    pub ambiguous: BTreeSet<NodeId>,
 }
 
 /// Whether `id` is a router.
@@ -166,7 +168,37 @@ pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>
         }
         resolved.insert(*target, out);
     }
-    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers })
+    // An Element's sheet card that hasn't run yet feeds nothing, so the Element uses its images
+    // and planning it doesn't pull in the paid sheet run (#104).
+    for (target, feeds) in resolved.iter_mut() {
+        if canvas.nodes().get(target).is_some_and(|node| node.kind == element::ID) {
+            feeds.retain(|feed| feed.0 != element::SHEET || canvas.nodes().get(&feed.2).is_some_and(|from| from.active.is_some()));
+            if !feeds.iter().any(|feed| feed.0 == element::SHEET) {
+                wired.remove(&(*target, element::SHEET));
+            }
+        }
+    }
+    // Elements a prompt mentions feed in after the wires (#104), unless a wire (perhaps through
+    // routers) already brings that Element's references.
+    let mentioned = crate::mentions::feeds(canvas, kinds);
+    for (target, feeds) in mentioned.feeds {
+        let out = resolved.entry(target).or_default();
+        for (port, from, from_port) in feeds {
+            if out.iter().any(|feed| feed.2 == from && feed.3 == from_port) {
+                continue;
+            }
+            let in_port = out.iter().filter(|feed| feed.0 == port).count();
+            if in_port >= MAX_FEEDS_PER_PORT {
+                continue;
+            }
+            steps = steps.saturating_add(1);
+            if steps > MAX_RESOLUTION_STEPS {
+                return Err(too_large());
+            }
+            out.push((port, u32::try_from(in_port).unwrap_or(u32::MAX), from, from_port));
+        }
+    }
+    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers, ambiguous: mentioned.ambiguous })
 }
 
 #[cfg(test)]

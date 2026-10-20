@@ -518,6 +518,10 @@ impl<'a> Graph<'a> {
         if let Err(error) = kind.validate_instance(node, true) {
             blockers.push(blocker(None, None, Reason::Invalid(error.message)));
         }
+        if self.routing.ambiguous.contains(&id) {
+            let reason = Reason::Invalid("its prompt mentions a name more than one Element has; rename one of them".into());
+            blockers.push(blocker(Some(crate::mentions::PROMPT), None, reason));
+        }
         // List inputs that run once per item rather than collecting them (#515).
         let fans_out: BTreeSet<String> = match kind.instance_contract(node) {
             Ok(contract) => {

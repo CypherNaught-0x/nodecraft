@@ -151,12 +151,14 @@ pub(super) struct Composer<'a> {
     pub roles: Option<&'a Roles>,
     pub visible: Option<&'a BTreeSet<String>>,
     pub enabled: Option<&'a BTreeSet<String>>,
+    /// How many Elements go by each lowercased name.
+    pub elements: &'a std::collections::BTreeMap<String, usize>,
 }
 
 /// Draws the composer at the top of `area` and returns the space left under it. The prompt and
 /// the count drawn here are left out of the card's parameter list.
 pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor: &mut EditorState, intents: &mut Vec<Intent>, t: &Tokens) -> Rect {
-    let Composer { node, wired, descriptor, roles, visible, enabled } = composer;
+    let Composer { node, wired, descriptor, roles, visible, enabled, elements } = composer;
     let shown = |name: &str| visible.is_some_and(|names| names.contains(name));
     let editable = |name: &str| enabled.is_none_or(|names| names.contains(name));
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("composer").max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -186,6 +188,10 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 if open && let Some(value) = changed {
                     intents.push(Intent::Parameter { name: PROMPT.into(), value });
                 }
+                // A wired prompt replaces the text, so its mentions feed nothing.
+                if let (false, Some(Value::Text(prompt))) = (wired, value) {
+                    mention_hint(ui, prompt, elements, t);
+                }
                 if run {
                     intents.push(Intent::Generate);
                 }
@@ -209,6 +215,31 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
     });
     let used = child.min_rect().bottom() + t.control_gap;
     Rect::from_min_max(Pos2::new(area.left(), used.min(area.bottom())), area.max)
+}
+
+/// The Elements `prompt` mentions, under it: plain for one Element, in the danger colour for a
+/// name more than one Element has (the run is blocked until one is renamed). Tags no Element
+/// goes by (`#ff0000`) stay plain text and aren't listed.
+fn mention_hint(ui: &mut egui::Ui, prompt: &str, elements: &std::collections::BTreeMap<String, usize>, t: &Tokens) {
+    if elements.is_empty() || !prompt.contains('#') {
+        return;
+    }
+    let mut used = Vec::new();
+    let mut shared = Vec::new();
+    for name in nodecraft_nodes::element::mentions(prompt) {
+        match elements.get(&name.to_ascii_lowercase()) {
+            Some(1) => used.push(format!("#{name}")),
+            Some(_) => shared.push(format!("#{name}")),
+            None => {}
+        }
+    }
+    if !used.is_empty() {
+        ui.label(egui::RichText::new(format!("Uses {}", used.join(", "))).small().color(t.text_muted))
+            .on_hover_text("These Elements' reference images go to the model with the prompt");
+    }
+    if !shared.is_empty() {
+        ui.label(egui::RichText::new(format!("{}: more than one Element has this name", shared.join(", "))).small().color(t.danger));
+    }
 }
 
 fn counter(ui: &mut egui::Ui, node: &Node, spec: &nodecraft_types::ParamSpec, editable: bool, intents: &mut Vec<Intent>, t: &Tokens) {

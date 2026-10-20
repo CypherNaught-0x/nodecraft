@@ -27,8 +27,9 @@ fn every_action_kind_runs_with_its_defaults() {
     let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets);
     let mut ran = 0;
-    // The custom shader needs a GPU: its own tests run it.
-    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && d.id != "image.shader") {
+    // The custom shader needs a GPU: its own tests run it. An Element plans source jobs, not an
+    // action.
+    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && d.id != "image.shader" && d.id != nodecraft_nodes::element::ID) {
         let input = if descriptor.id.starts_with("image.") { image.clone() } else { Value::Text("a, b\\nc".into()) };
         let inputs = vec![input; descriptor.inputs.len()];
         let out = actions.execute(&descriptor.id, &defaults(&kinds, &descriptor.id), &inputs).unwrap_or_else(|e| panic!("{}: {e}", descriptor.id));

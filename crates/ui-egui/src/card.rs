@@ -136,6 +136,8 @@ pub struct CardView<'a> {
     pub roles: Option<&'a Roles>,
     /// A wire feeds the card's prompt port (#84).
     pub prompt_wired: bool,
+    /// How many Elements go by each lowercased name, for the prompt's mention hint (#104).
+    pub elements: &'a std::collections::BTreeMap<String, usize>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
 }
@@ -162,7 +164,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, partial } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, partial } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -316,7 +318,7 @@ pub fn show(
             inner = generate::show(
                 &mut ui,
                 inner,
-                generate::Composer { node, wired: prompt_wired, descriptor: d, roles, visible, enabled },
+                generate::Composer { node, wired: prompt_wired, descriptor: d, roles, visible, enabled, elements },
                 editor,
                 &mut intents,
                 t,

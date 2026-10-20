@@ -9,6 +9,7 @@ pub mod audio;
 pub mod batch;
 mod contract;
 mod descriptor;
+pub mod element;
 pub mod generation;
 pub mod image;
 pub mod layers;
