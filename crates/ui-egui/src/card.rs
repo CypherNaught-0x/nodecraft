@@ -59,6 +59,10 @@ pub enum Intent {
     History(HistoryIntent),
     /// Quote a run of this card and ask before starting it (#83).
     Generate,
+    /// Record the answer a cancelled or failed run left on this text card (#504).
+    KeepPartial,
+    /// Let that answer go.
+    DiscardPartial,
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -106,7 +110,9 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     // The history strip sits under the parameters and is never squeezed out by them; an image
     // preview sits above them.
     let preview = if nodecraft_engine::split::image_of(node).is_some() { t.card_preview_height } else { 0.0 };
-    let answer = if generate::answer_of(node).is_some() { t.card_preview_height } else { 0.0 };
+    // A text card always has room for its answer, so the card doesn't jump when one starts
+    // streaming in (#504).
+    let answer = if node.kind == nodecraft_nodes::generation::TEXT_KIND { t.card_preview_height } else { 0.0 };
     let height = params + preview + answer + history::rows(node) as f32 * t.control_row_height;
     Vec2::new(t.card_width, height)
 }
@@ -129,6 +135,8 @@ pub struct CardView<'a> {
     pub roles: Option<&'a Roles>,
     /// A wire feeds the card's prompt port (#84).
     pub prompt_wired: bool,
+    /// A text card's answer still arriving, or cut short (#504).
+    pub partial: Option<generate::Partial<'a>>,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -153,7 +161,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, image, grid, roles, prompt_wired } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, image, grid, roles, prompt_wired, partial } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -284,10 +292,10 @@ pub fn show(
             inner = rest;
             show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, grid, t);
         }
-        if let Some(text) = generate::answer_of(node) {
+        if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
-            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), text, t);
+            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
         }
         if let Some(d) = composer {
             inner = generate::show(

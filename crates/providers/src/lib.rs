@@ -40,7 +40,7 @@ pub mod secrets;
 pub mod seedream;
 mod task;
 
-pub use delivery::{HttpFailure, RequestContext, SubmitContext};
+pub use delivery::{HttpFailure, MAX_STREAMED_TEXT, MAX_TEXT_DELTA, RequestContext, SubmitContext};
 pub use error::{ErrorKind, ProviderError};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;

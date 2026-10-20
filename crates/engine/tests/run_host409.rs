@@ -500,3 +500,99 @@ fn a_cancelled_step_is_reported_as_cancelled_not_failed() {
     assert!(notices.contains(&RunNotice::Cancelled { canvas: C, node: WRITER }), "{notices:?}");
     assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. })), "{notices:?}");
 }
+
+/// A text model that streams `pieces` and then waits at the provider until cancelled.
+fn streaming(pieces: &[&str], polls: u32) -> MockProvider {
+    let mut model = MockModel::new(MockOutput::Text);
+    model.polls = polls;
+    MockProvider::new("mock", [("mock-text".to_owned(), model)]).with_stream("mock-text", pieces.iter().copied())
+}
+
+fn partial(f: &Fixture) -> Option<String> {
+    f.host.jobs().into_iter().rev().find(|view| view.node == WRITER).and_then(|view| view.partial.map(|text| text.as_str().to_owned()))
+}
+
+fn active(s: &Session) -> Option<nodecraft_types::GenerationId> {
+    s.document().canvases().get(&C).unwrap().nodes().get(&WRITER).unwrap().active
+}
+
+#[test]
+fn a_text_answer_streams_into_its_job_and_only_the_finished_answer_is_recorded() {
+    let mut f = fixture(streaming(&["The sea ", "is wide"], 0));
+    start(&mut f);
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+    let history = history(&f.session);
+    assert_eq!(history.len(), 1, "one result, one undo step");
+    assert!(matches!(&history[0].outputs[0], Value::Text(t) if t.starts_with("mock-text: Describe the sea #")), "{history:?}");
+    assert_eq!(partial(&f), None, "a finished job shows its answer, not the stream");
+}
+
+#[test]
+fn a_cancelled_answer_keeps_what_streamed_until_kept_and_never_replaces_the_shown_one() {
+    // A finished answer first, so the card shows something.
+    let mut f = fixture(streaming(&["The sea ", "is wide"], u32::MAX));
+    let shown = nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([9; 16]), vec![Value::Text("Shown".into())]);
+    f.session.dispatch("run.record", &json!({"canvas": C, "results": [{"node": WRITER, "generation": shown}]})).unwrap();
+    start(&mut f);
+    pump_until(&mut f, "the stream arrives", |f| partial(f).as_deref() == Some("The sea is wide"));
+    let key = job(&f.host, WRITER).key;
+    assert_eq!(history(&f.session).len(), 1, "a streaming answer isn't recorded");
+    assert!(f.host.keep_partial(&mut f.session, key).is_err(), "a running job's answer can't be kept yet");
+    f.host.cancel_all();
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Cancelled { canvas: C, node: WRITER }), "{notices:?}");
+    assert_eq!(history(&f.session).len(), 1, "cancelling records nothing by itself");
+    assert_eq!(partial(&f).as_deref(), Some("The sea is wide"), "the cancelled job keeps what streamed");
+
+    f.host.keep_partial(&mut f.session, key).unwrap();
+    let history = history(&f.session);
+    assert_eq!(history.len(), 2);
+    assert!(matches!(&history[1].outputs[0], Value::Text(t) if t == "The sea is wide"), "{history:?}");
+    assert_eq!(active(&f.session), Some(nodecraft_types::GenerationId::from_bytes([9; 16])), "keeping doesn't change the shown answer");
+    assert_eq!(partial(&f), None);
+    assert!(f.host.keep_partial(&mut f.session, key).is_err(), "it is kept once");
+    f.session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(self::history(&f.session).len(), 1, "keeping is one undo step");
+}
+
+#[test]
+fn a_kept_answer_on_an_empty_card_becomes_the_shown_one() {
+    let mut f = fixture(streaming(&["Half"], u32::MAX));
+    start(&mut f);
+    pump_until(&mut f, "the stream arrives", |f| partial(f).is_some());
+    let key = job(&f.host, WRITER).key;
+    f.host.cancel_all();
+    drive(&mut f);
+    f.host.keep_partial(&mut f.session, key).unwrap();
+    assert_eq!(active(&f.session), history(&f.session).first().map(|g| g.id));
+}
+
+#[test]
+fn a_failed_answer_keeps_what_streamed_and_can_be_kept() {
+    let mut model = MockModel::new(MockOutput::Text);
+    model.fail = Some(MockFailure::Submit(ErrorKind::UnsupportedInput));
+    let mock = MockProvider::new("mock", [("mock-text".to_owned(), model)]).with_stream("mock-text", ["Half ", "way"]);
+    let mut f = fixture(mock);
+    start(&mut f);
+    let notices = drive(&mut f);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node: WRITER, .. })), "{notices:?}");
+    assert_eq!(partial(&f).as_deref(), Some("Half way"), "a failed job keeps what streamed");
+    let key = job(&f.host, WRITER).key;
+    f.host.keep_partial(&mut f.session, key).unwrap();
+    assert!(matches!(&history(&f.session)[0].outputs[0], Value::Text(t) if t == "Half way"));
+}
+
+#[test]
+fn a_discarded_answer_is_gone_and_records_nothing() {
+    let mut f = fixture(streaming(&["Half"], u32::MAX));
+    start(&mut f);
+    pump_until(&mut f, "the stream arrives", |f| partial(f).is_some());
+    let key = job(&f.host, WRITER).key;
+    f.host.cancel_all();
+    drive(&mut f);
+    f.host.discard_partial(key);
+    assert_eq!(partial(&f), None);
+    assert!(f.host.keep_partial(&mut f.session, key).is_err(), "nothing is left to keep");
+    assert!(history(&f.session).is_empty());
+}

@@ -306,6 +306,28 @@ async fn actual_llm_provider_local_build_and_post_response_errors_use_evidence()
         assert!(f.uncertain);
     }
 }
+#[cfg(all(feature = "llm", feature = "http", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn a_streamed_answer_that_breaks_after_its_200_header_may_be_billed() {
+    use crate::llm::{Dialect, Endpoint, LlmClient};
+    let mut request = job();
+    request.inputs = vec![crate::JobInput::Text { role: "user".into(), text: "public".into() }];
+    // The body promises more than it sends before the connection closes.
+    let piece = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n";
+    let mut broken =
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", piece.len() + 1000).into_bytes();
+    broken.extend_from_slice(piece);
+    let (url, seen, task) = served(vec![broken]);
+    let endpoint = Endpoint { id: "fixture".into(), dialect: Dialect::OpenAi, base_url: url, key: None };
+    let p = LlmClient::new(endpoint, Arc::new(crate::ReqwestHttp::new().unwrap()));
+    let mut updates = Vec::new();
+    let limits = RunLimits { stream_text: true, ..RunLimits::default() };
+    let f = crate::run_to_completion(&p, &request, &Never, &Instant, limits, |u| updates.push(u)).await.unwrap_err();
+    task.join().unwrap();
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert!(f.uncertain, "the request was answered, so it may be billed: {f:?}");
+    assert!(updates.contains(&crate::RunUpdate::Text("Hel".into())), "{updates:?}");
+}
 #[test]
 fn request_poison_and_unknown_browser_stage_fail_closed() {
     let c = SubmitContext::new();
@@ -394,4 +416,26 @@ fn loopback_fixture_terminates_on_empty_and_partial_header_eof() {
         monitor.join().unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 0, "an incomplete request was not observed as complete");
     }
+}
+
+#[test]
+fn streamed_text_is_bounded_and_split_at_char_boundaries() {
+    let plain = SubmitContext::new();
+    plain.push_text("ignored");
+    assert!(!plain.wants_text() && plain.take_text().is_empty(), "text is kept only when asked for");
+    let context = SubmitContext::streaming_text();
+    // A three-byte char straddles both the delta size and the total cap.
+    let piece = "é€".repeat(MAX_TEXT_DELTA / 5 + 1);
+    let mut pushed = 0;
+    while pushed <= MAX_STREAMED_TEXT {
+        context.push_text(&piece);
+        pushed += piece.len();
+    }
+    let pieces = context.take_text();
+    assert!(pieces.iter().all(|p| !p.is_empty() && p.len() <= MAX_TEXT_DELTA));
+    let total: usize = pieces.iter().map(String::len).sum();
+    assert!(total <= MAX_STREAMED_TEXT && total > MAX_STREAMED_TEXT - 4, "{total}");
+    context.push_text(&"x".repeat(8));
+    let more: usize = context.take_text().iter().map(String::len).sum();
+    assert_eq!(total + more, MAX_STREAMED_TEXT, "nothing is kept past the cap");
 }

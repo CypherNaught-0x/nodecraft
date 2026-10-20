@@ -101,9 +101,11 @@ fn a_text_card_shows_its_active_answer_above_the_composer() {
     let tall = card::world_size(card(h.state()), None, t).y;
     let h = scene(false, false);
     assert!(h.query_by_label(ANSWER).is_none(), "a card with no answer shows none");
+    h.get_by_label(crate::card::generate::NO_ANSWER);
     let t = h.state().theme.tokens();
-    let short = card::world_size(card(h.state()), None, t).y;
-    assert!(tall - short >= t.card_preview_height, "the card makes room for its answer: {tall} {short}");
+    let empty = card::world_size(card(h.state()), None, t).y;
+    // The room is there before the first answer, so the card doesn't jump when one streams in (#504).
+    assert!(tall - empty < t.card_preview_height, "a text card always has room for its answer; only the history strip is added: {tall} {empty}");
 }
 
 #[test]

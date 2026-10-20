@@ -22,7 +22,9 @@
 //! usage log, so the next quote counts what was spent.
 //!
 //! Every queued job is also followed as a [`JobView`] ([`RunHost::jobs`]) for the queue panel,
-//! and can be cancelled on its own ([`RunHost::cancel`]); see [`crate::run_jobs`].
+//! and can be cancelled on its own ([`RunHost::cancel`]); see [`crate::run_jobs`]. A text job's
+//! answer streams into its view as it arrives (#504); what a cancelled or failed one streamed can
+//! be kept on its card ([`RunHost::keep_partial`]).
 //!
 //! With a journal ([`RunHost::open_journal`], #508) the usage log and the handle of every paid
 //! job the provider accepted are saved at the end of each pump that changed them. After a
@@ -53,6 +55,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod partial;
 mod resume;
 
 /// How long after a failed journal save the next one is tried.
@@ -206,7 +209,8 @@ impl RunHost {
             runs: Vec::new(),
             runtime,
             budget,
-            limits: nodecraft_providers::RunLimits::default(),
+            // Text answers stream into their cards as they generate (#504).
+            limits: nodecraft_providers::RunLimits { stream_text: true, ..Default::default() },
             retry: RetryPolicy::default(),
             held: Vec::new(),
             next_run: 1,
@@ -539,7 +543,7 @@ impl RunHost {
                 if let RunUpdate::Submitted(handle) = &update {
                     mailbox.submitted.push((job, sent.base.to_owned(), sent.generation, handle.clone()));
                 }
-                mailbox.reports.note(job, &update);
+                mailbox.reports.note(job, sent.attempt, &update);
             }),
         )
         .with_budget(self.budget.clone())
@@ -604,13 +608,29 @@ impl Drop for Ended {
     }
 }
 
-/// Adds jobs that ended to `recent`, dropping the oldest past [`MAX_RECENT`].
+/// Most bytes of stopped text answers kept across the recent jobs, waiting for Keep (#504).
+const MAX_KEPT_PARTIALS: usize = 4 * nodecraft_providers::MAX_STREAMED_TEXT;
+
+/// Adds jobs that ended to `recent`, dropping the oldest past [`MAX_RECENT`]. A card shows only
+/// its newest job's stopped answer, so older ones of that node are dropped, and the oldest go
+/// once they add up to more than [`MAX_KEPT_PARTIALS`].
 fn keep_recent(recent: &mut VecDeque<JobView>, ended: impl Iterator<Item = JobView>) {
     for view in ended {
         if recent.len() >= MAX_RECENT {
             recent.pop_front();
         }
+        if view.partial.is_some() {
+            recent.iter_mut().filter(|old| old.canvas == view.canvas && old.node == view.node).for_each(|old| old.partial = None);
+        }
         recent.push_back(view);
+    }
+    let mut kept = 0usize;
+    for view in recent.iter_mut().rev() {
+        let len = view.partial.as_ref().map_or(0, |text| text.len());
+        kept = kept.saturating_add(len);
+        if kept > MAX_KEPT_PARTIALS {
+            view.partial = None;
+        }
     }
 }
 
@@ -706,6 +726,8 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
         cancel_requested: false,
         cancel_refused: false,
         reported_sent: false,
+        partial: None,
+        partial_attempt: 0,
     };
     match work {
         JobSpec::Generate { node, outputs, .. } => {
@@ -754,13 +776,13 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
 fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotice>, runtime: &Arc<dyn Runtime>, budget: &JobBudget) -> bool {
     // Before the events, so a job that ended this frame is dropped from the journal after.
     note_submitted(active);
-    let (events, rejected, reports) = {
+    let (events, rejected, mut reports) = {
         let mut mailbox = lock(&active.mailbox);
         (std::mem::take(&mut mailbox.events), std::mem::take(&mut mailbox.rejected), std::mem::take(&mut mailbox.reports))
     };
     // Before the events, so a job cancelled this frame knows whether the provider had it; again
     // after, so a job that started this frame shows its progress.
-    active.jobs.absorb_reports(&reports);
+    active.jobs.absorb_reports(&mut reports);
     let mut settled = false;
     for (job, reason) in rejected {
         active.jobs.end(job, JobState::Failed { reason: reason.clone(), cause: None });
@@ -830,7 +852,7 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
         };
         advance(session, active, progress, notices, runtime);
     }
-    active.jobs.absorb_reports(&reports);
+    active.jobs.absorb_reports(&mut reports);
     if active.run.is_finished() {
         // Dropping the last handle lets the driver drain and return.
         active.handle = None;

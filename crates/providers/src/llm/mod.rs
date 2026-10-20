@@ -16,6 +16,8 @@ mod anthropic;
 mod openai;
 pub mod sse;
 #[cfg(test)]
+mod stream_tests;
+#[cfg(test)]
 mod turns_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
@@ -536,6 +538,16 @@ impl LlmClient {
 
     /// Sends the request and streams the reply: `on_text` gets each piece as it arrives.
     pub async fn chat_stream(&self, req: &ChatRequest, on_text: &mut (dyn FnMut(&str) + Send)) -> Result<ChatResponse, ProviderError> {
+        self.streamed(req, on_text, None).await
+    }
+
+    /// [`Self::chat_stream`], sent through `context` when there is one, so its delivery is tracked.
+    async fn streamed(
+        &self,
+        req: &ChatRequest,
+        on_text: &mut (dyn FnMut(&str) + Send),
+        context: Option<&crate::SubmitContext>,
+    ) -> Result<ChatResponse, ProviderError> {
         let request = self.request(req, true)?;
         let mut parser = sse::SseParser::new();
         let mut state = StreamState::default();
@@ -559,7 +571,10 @@ impl LlmClient {
             }
             Ok(())
         };
-        let head = self.http.send_streaming(request, &mut sink).await;
+        let head = match context {
+            Some(context) => context.send_streaming(self.http.as_ref(), request, &mut sink).await,
+            None => self.http.send_streaming(request, &mut sink).await,
+        };
         // A server may close right after the last event without a blank line.
         if failure.is_none() && head.as_ref().is_ok_and(|h| h.is_success()) {
             for last in parser.finish() {
@@ -746,9 +761,14 @@ impl Provider for LlmClient {
         // This constructor is pure; all effects of this single-request path are tracked below.
         context.arm();
         Box::pin(async move {
-            let request = self.request(&chat_request(job)?, false)?;
-            let response = context.send(self.http.as_ref(), request).await?;
-            let reply = self.chat_response(response)?;
+            let reply = if context.wants_text() {
+                // The answer streams in, each piece reported to the runner as it arrives (#504).
+                self.streamed(&chat_request(job)?, &mut |piece| context.push_text(piece), Some(context)).await?
+            } else {
+                let request = self.request(&chat_request(job)?, false)?;
+                let response = context.send(self.http.as_ref(), request).await?;
+                self.chat_response(response)?
+            };
             Ok(Submission::Finished(Completed { outputs: vec![Output::Text(reply.text)], usage: reply.usage }))
         })
     }

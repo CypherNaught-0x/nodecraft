@@ -89,16 +89,56 @@ pub fn answer_of(node: &Node) -> Option<&str> {
     })
 }
 
-/// Draws a text card's answer in `area`: selectable, and scrolled when longer than the area.
-pub(super) fn answer(ui: &mut egui::Ui, area: Rect, text: &str, t: &Tokens) {
+/// What a text card shows of an answer that is still arriving or was cut short (#504). It is
+/// view state: only a finished answer is recorded, unless the person keeps a cut-short one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Partial<'a> {
+    pub text: &'a str,
+    /// Why it stopped, once it has; it can then be kept or discarded.
+    pub stopped: Option<&'a str>,
+}
+
+/// Shown in a text card's answer area before it has an answer.
+pub const NO_ANSWER: &str = "The answer appears here as it is written.";
+/// Records a cut-short answer on the card.
+pub const KEEP: &str = "Keep";
+/// Lets a cut-short answer go.
+pub const DISCARD: &str = "Discard";
+
+/// Draws a text card's answer area in `area`: the answer streaming in, or one cut short with
+/// what can be done with it, or the active answer, or a placeholder. Text is selectable, and
+/// scrolled when longer than the area; a streaming answer follows its end.
+pub(super) fn answer(ui: &mut egui::Ui, area: Rect, active: Option<&str>, partial: Option<Partial<'_>>, intents: &mut Vec<Intent>, t: &Tokens) {
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("answer").max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
     child.set_clip_rect(area.intersect(ui.clip_rect()));
     egui::Frame::new().fill(t.prompt_fill).corner_radius(t.card_radius / 2).inner_margin(t.control_gap).show(&mut child, |ui| {
         let width = ui.available_width();
-        egui::ScrollArea::vertical().id_salt("answer").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_width(width);
-            ui.add(egui::Label::new(egui::RichText::new(text).color(t.text)).selectable(true).wrap());
-        });
+        if let Some(Partial { stopped: Some(why), .. }) = partial {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(why).color(t.text_muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(DISCARD).on_hover_text("Let this partial answer go").clicked() {
+                        intents.push(Intent::DiscardPartial);
+                    }
+                    if ui.button(KEEP).on_hover_text("Add this partial answer to the card's results").clicked() {
+                        intents.push(Intent::KeepPartial);
+                    }
+                });
+            });
+        }
+        let (text, color) = match (partial, active) {
+            (Some(partial), _) => (partial.text, if partial.stopped.is_some() { t.text_muted } else { t.text }),
+            (None, Some(active)) => (active, t.text),
+            (None, None) => (NO_ANSWER, t.text_muted),
+        };
+        let streaming = partial.is_some_and(|partial| partial.stopped.is_none());
+        egui::ScrollArea::vertical().id_salt("answer").max_height(ui.available_height()).auto_shrink([false, false]).stick_to_bottom(streaming).show(
+            ui,
+            |ui| {
+                ui.set_width(width);
+                ui.add(egui::Label::new(egui::RichText::new(text).color(color)).selectable(true).wrap());
+            },
+        );
     });
 }
 

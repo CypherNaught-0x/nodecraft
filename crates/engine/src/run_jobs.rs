@@ -14,6 +14,7 @@ use nodecraft_exec::scheduler::JobId;
 use nodecraft_providers::{ErrorKind as Cause, JobProgress, RunUpdate};
 use nodecraft_types::{CanvasId, Money, NodeId};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Most recently ended jobs kept for the panel; older ones are dropped first.
 pub const MAX_RECENT: usize = 64;
@@ -74,6 +75,13 @@ pub struct JobView {
     pub cancel_refused: bool,
     /// The provider itself reported the job (submitted, queued or running), so it was sent.
     pub(crate) reported_sent: bool,
+    /// The text answer so far, while it streams (#504), at most
+    /// [`nodecraft_providers::MAX_STREAMED_TEXT`] bytes. View state: only the finished answer is
+    /// recorded. Dropped when the job finishes; a cancelled or failed job keeps it, to be kept
+    /// on its card if the person asks ([`crate::run_host::RunHost::keep_partial`]).
+    pub partial: Option<Arc<String>>,
+    /// The attempt `partial` streamed from; text from an earlier attempt is dropped.
+    pub(crate) partial_attempt: u32,
 }
 
 impl JobView {
@@ -167,6 +175,9 @@ pub(crate) struct Report {
     /// A poll failed after the latest progress and is being retried.
     reconnecting: bool,
     cancel_refused: bool,
+    /// Text streamed since the last pump, by attempt `text_attempt`.
+    text: String,
+    text_attempt: u32,
 }
 
 enum Latest {
@@ -175,7 +186,8 @@ enum Latest {
 }
 
 impl Reports {
-    pub(crate) fn note(&mut self, job: JobId, update: &RunUpdate) {
+    /// Notes `update` from `attempt` of `job` (1 for the first).
+    pub(crate) fn note(&mut self, job: JobId, attempt: u32, update: &RunUpdate) {
         let report = self.0.entry(job).or_default();
         match update {
             RunUpdate::Submitted(_) => report.sent = true,
@@ -196,6 +208,17 @@ impl Reports {
                 report.sent = true;
                 report.cancel_refused = true;
             }
+            RunUpdate::Text(piece) => {
+                report.sent = true;
+                // A later attempt answers afresh; a late piece of an earlier one is dropped.
+                if attempt > report.text_attempt {
+                    report.text.clear();
+                    report.text_attempt = attempt;
+                }
+                if attempt == report.text_attempt {
+                    append(&mut report.text, piece);
+                }
+            }
         }
     }
 }
@@ -209,13 +232,26 @@ pub(crate) struct RunJobs {
 }
 
 impl RunJobs {
-    /// Folds the provider's latest reports into the live jobs.
-    pub(crate) fn absorb_reports(&mut self, reports: &Reports) {
-        for (job, report) in &reports.0 {
+    /// Folds the provider's latest reports into the live jobs. The text they streamed is taken,
+    /// so absorbing the same reports again doesn't repeat it.
+    pub(crate) fn absorb_reports(&mut self, reports: &mut Reports) {
+        for (job, report) in &mut reports.0 {
             let Some(view) = self.live.get_mut(job) else { continue };
             view.sent |= report.sent;
             view.reported_sent |= report.sent;
             view.cancel_refused |= report.cancel_refused;
+            if !report.text.is_empty() {
+                let text = std::mem::take(&mut report.text);
+                // The scheduler's retry events may come in the same pump as the new attempt's
+                // text, before or after it: the attempt decides, not the order.
+                if report.text_attempt > view.partial_attempt {
+                    view.partial = None;
+                    view.partial_attempt = report.text_attempt;
+                }
+                if report.text_attempt == view.partial_attempt {
+                    append(Arc::make_mut(view.partial.get_or_insert_default()), &text);
+                }
+            }
             let JobState::Running { waiting, position, fraction, message, reconnecting, .. } = &mut view.state else { continue };
             match &report.latest {
                 Some(Latest::Waiting(at)) => {
@@ -249,6 +285,10 @@ impl RunJobs {
     pub(crate) fn retrying(&mut self, job: JobId, next_attempt: u32, reason: &str) {
         if let Some(view) = self.live.get_mut(&job) {
             view.state = JobState::Retrying { next_attempt, reason: bounded(reason) };
+            // The next attempt answers afresh, unless its text already arrived this pump.
+            if view.partial_attempt < next_attempt {
+                view.partial = None;
+            }
         }
     }
 
@@ -270,8 +310,22 @@ impl RunJobs {
             }
             other => other,
         };
+        // A finished answer is recorded whole; what streamed of it is no longer needed.
+        if view.state == JobState::Done {
+            view.partial = None;
+        }
         self.ended.push(view);
     }
+}
+
+/// Appends `piece` to `text`, up to [`nodecraft_providers::MAX_STREAMED_TEXT`] bytes.
+fn append(text: &mut String, piece: &str) {
+    let room = nodecraft_providers::MAX_STREAMED_TEXT.saturating_sub(text.len());
+    let mut end = room.min(piece.len());
+    while !piece.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text.push_str(piece.get(..end).unwrap_or_default());
 }
 
 /// `text` cut to [`MAX_TEXT`] characters.
@@ -300,6 +354,8 @@ mod tests {
             cancel_requested: false,
             cancel_refused: false,
             reported_sent: false,
+            partial: None,
+            partial_attempt: 0,
         }
     }
 
@@ -327,15 +383,15 @@ mod tests {
     fn hostile_progress_is_bounded() {
         let mut reports = Reports::default();
         let long = "é".repeat(10_000);
-        reports.note(JobId(1), &RunUpdate::Progress(JobProgress::Running { fraction: Some(f32::NAN), message: Some(long), partial: None }));
-        reports.note(JobId(2), &RunUpdate::Progress(JobProgress::Running { fraction: Some(7.0), message: None, partial: None }));
+        reports.note(JobId(1), 1, &RunUpdate::Progress(JobProgress::Running { fraction: Some(f32::NAN), message: Some(long), partial: None }));
+        reports.note(JobId(2), 1, &RunUpdate::Progress(JobProgress::Running { fraction: Some(7.0), message: None, partial: None }));
         let mut jobs = RunJobs::default();
         for id in [1, 2] {
             let mut v = view(JobState::Running { attempt: 1, waiting: false, position: None, fraction: None, message: None, reconnecting: false });
             v.key.job = JobId(id);
             jobs.live.insert(JobId(id), v);
         }
-        jobs.absorb_reports(&reports);
+        jobs.absorb_reports(&mut reports);
         let JobState::Running { fraction, message, .. } = &jobs.live[&JobId(1)].state else { panic!() };
         assert_eq!(*fraction, None);
         assert_eq!(message.as_ref().unwrap().chars().count(), MAX_TEXT + 1);
@@ -349,11 +405,63 @@ mod tests {
         jobs.live.insert(JobId(7), view(JobState::Queued));
         jobs.end(JobId(7), JobState::Done);
         let mut late = Reports::default();
-        late.note(JobId(7), &RunUpdate::Progress(JobProgress::Running { fraction: Some(0.5), message: None, partial: None }));
-        jobs.absorb_reports(&late);
+        late.note(JobId(7), 1, &RunUpdate::Progress(JobProgress::Running { fraction: Some(0.5), message: None, partial: None }));
+        jobs.absorb_reports(&mut late);
         assert!(jobs.live.is_empty());
         jobs.end(JobId(7), JobState::Cancelled);
         assert_eq!(jobs.ended.len(), 1, "a second end is ignored");
         assert_eq!(jobs.ended[0].state, JobState::Done);
+    }
+
+    #[test]
+    fn streamed_text_is_shown_once_reset_on_retry_and_dropped_when_done() {
+        let running = || JobState::Running { attempt: 1, waiting: false, position: None, fraction: None, message: None, reconnecting: false };
+        let mut jobs = RunJobs::default();
+        jobs.live.insert(JobId(1), view(running()));
+        let mut reports = Reports::default();
+        reports.note(JobId(1), 1, &RunUpdate::Text("Hel".into()));
+        reports.note(JobId(1), 1, &RunUpdate::Text("lo".into()));
+        // The host absorbs the same reports before and after the events.
+        jobs.absorb_reports(&mut reports);
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].partial.as_deref().map(String::as_str), Some("Hello"));
+        assert!(jobs.live[&JobId(1)].sent);
+        jobs.retrying(JobId(1), 2, "timeout");
+        assert_eq!(jobs.live[&JobId(1)].partial, None, "the next attempt answers afresh");
+        jobs.started(JobId(1), 2);
+        reports.note(JobId(1), 2, &RunUpdate::Text("x".repeat(nodecraft_providers::MAX_STREAMED_TEXT + 10)));
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].partial.as_ref().map(|t| t.len()), Some(nodecraft_providers::MAX_STREAMED_TEXT), "capped");
+        jobs.end(JobId(1), JobState::Cancelled);
+        assert!(jobs.ended[0].partial.is_some(), "a cancelled job keeps what streamed");
+        jobs.live.insert(JobId(2), view(running()));
+        reports.note(JobId(2), 1, &RunUpdate::Text("done".into()));
+        jobs.absorb_reports(&mut reports);
+        jobs.end(JobId(2), JobState::Done);
+        assert_eq!(jobs.ended[1].partial, None, "a finished one shows its recorded answer");
+    }
+
+    #[test]
+    fn a_retry_in_the_same_pump_as_the_next_attempts_text_keeps_that_text() {
+        let running = |attempt| JobState::Running { attempt, waiting: false, position: None, fraction: None, message: None, reconnecting: false };
+        let mut jobs = RunJobs::default();
+        jobs.live.insert(JobId(1), view(running(1)));
+        let mut reports = Reports::default();
+        // One snapshot: attempt 1's text, then (in the events) Retrying and Started(2), and
+        // attempt 2's first piece, and a late piece of attempt 1.
+        reports.note(JobId(1), 1, &RunUpdate::Text("old".into()));
+        reports.note(JobId(1), 2, &RunUpdate::Text("Hel".into()));
+        reports.note(JobId(1), 1, &RunUpdate::Text("late".into()));
+        jobs.absorb_reports(&mut reports);
+        jobs.retrying(JobId(1), 2, "timeout");
+        jobs.started(JobId(1), 2);
+        jobs.absorb_reports(&mut reports);
+        reports.note(JobId(1), 2, &RunUpdate::Text("lo".into()));
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].partial.as_deref().map(String::as_str), Some("Hello"));
+        // A late piece of the earlier attempt in a later pump is dropped too.
+        reports.note(JobId(1), 1, &RunUpdate::Text("late".into()));
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].partial.as_deref().map(String::as_str), Some("Hello"));
     }
 }
