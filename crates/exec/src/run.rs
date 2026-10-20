@@ -17,7 +17,7 @@
 use crate::planner::{InputSource, MAX_LIST_ITEMS, MAX_PLAN_INPUT_BYTES, MAX_STEP_INPUT_BYTES, RunPlan, Step};
 use crate::scheduler::{self, JobId, Lane, Outcome, RetryPolicy, Start};
 use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
-use nodecraft_graph::{Canvas, Change, Generation, MAX_HISTORY, MAX_NODE_BYTES, Node};
+use nodecraft_graph::{Canvas, Change, Generation, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Node};
 use nodecraft_nodes::{InputValue, JobSpec, PlanCtx, Registry};
 use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
 use std::collections::BTreeMap;
@@ -180,8 +180,19 @@ const NODE_SLACK: usize = 64 * 1024;
 /// The changes that record `generation` on `node` and make it active: one undo step. Give it the
 /// live node right before applying them. To make room, the oldest inactive generations are
 /// dropped: below [`MAX_HISTORY`] entries, and until the node fits its size limit. `Err` when the
-/// result can't be recorded even then.
-pub fn record_changes(canvas: CanvasId, node: &Node, generation: Generation) -> Result<Vec<Change>, Error> {
+/// result can't be recorded even then. A result that fits only without its settings is
+/// recorded without them, rather than losing a paid result.
+pub fn record_changes(canvas: CanvasId, node: &Node, mut generation: Generation) -> Result<Vec<Change>, Error> {
+    match fit(canvas, node, generation.clone()) {
+        Err(_) if !generation.settings.is_empty() => {
+            generation.settings.clear();
+            fit(canvas, node, generation)
+        }
+        fitted => fitted,
+    }
+}
+
+fn fit(canvas: CanvasId, node: &Node, generation: Generation) -> Result<Vec<Change>, Error> {
     generation.validate().map_err(|e| invalid(format!("the result can't be recorded: {}", e.message)))?;
     let mut bytes = json_bytes(node).saturating_add(json_bytes(&generation)).saturating_add(NODE_SLACK);
     let mut len = node.history.len();
@@ -675,9 +686,15 @@ impl Run {
         };
         let cells = items.as_ref().map_or(1, Vec::len);
         let mut per_cell: Vec<Vec<Vec<Value>>> = vec![vec![Vec::new(); target.outputs.len()]; cells];
+        let mut settings = Vec::new();
         for (n, job) in job_ids.into_iter().enumerate() {
             let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
             let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
+            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, .. }) = self.jobs.get(&job) {
+                let item = if items.is_some() { Some(u32::try_from(cell).map_err(|_| "a job's item is out of range")?) } else { None };
+                let inputs = inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect();
+                settings.push(JobSettings { provider: provider.clone(), instance: *instance, model: model.clone(), params: params.clone(), inputs, item });
+            }
             let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
             for (port, value) in outputs {
                 let index = target.outputs.iter().position(|p| p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
@@ -721,11 +738,21 @@ impl Run {
         // What it was made from: the planned canvas, with this run's upstream outputs. An
         // over-budget hash is recorded as unknown rather than failing a paid result.
         let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
-        let generation = Generation { id: self.generation_id(node), outputs, input_hash, items: items.unwrap_or_default() };
-        generation.validate().map_err(|e| format!("its result can't be recorded: {}", e.message))?;
+        let generation = Generation { id: self.generation_id(node), outputs, input_hash, items: items.unwrap_or_default(), settings };
+        let generation = recordable(generation)?;
         self.produced.insert(node, generation.outputs.clone());
         Ok(StepResult { node, generation })
     }
+}
+
+/// A result as it can be recorded. Settings too large to keep alongside it are dropped, like
+/// an over-budget input hash, rather than failing a paid result.
+fn recordable(mut generation: Generation) -> Result<Generation, String> {
+    if !generation.settings.is_empty() && generation.validate().is_err() {
+        generation.settings.clear();
+    }
+    generation.validate().map_err(|e| format!("its result can't be recorded: {}", e.message))?;
+    Ok(generation)
 }
 
 /// The item each job is for, from how many jobs each item has; empty when not fanned.

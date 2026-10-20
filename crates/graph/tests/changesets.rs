@@ -125,7 +125,13 @@ fn all_edit_types_and_annotation_stubs_are_reversible() {
     let mut replacement = node(1);
     replacement.field = Some(field.id);
     replacement.tag = Some(tag.id);
-    let generation = Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![Value::Text("result".into())], input_hash: None, items: Vec::new() };
+    let generation = Generation {
+        id: GenerationId::from_bytes([1; 16]),
+        outputs: vec![Value::Text("result".into())],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+    };
     replacement.active = Some(generation.id);
     replacement.history.push(generation);
     let mut rerouted = edge(1, 1, 3);
@@ -327,7 +333,7 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
                 canvas,
                 id,
                 index: usize::from(other - 1),
-                generation: Generation { id: generation, outputs: vec![Value::Text(text)], input_hash: None, items: Vec::new() },
+                generation: Generation { id: generation, outputs: vec![Value::Text(text)], input_hash: None, items: Vec::new(), settings: Vec::new() },
             },
             13 => Change::RemoveGeneration { canvas, id, generation },
             14 => Change::SetActiveGeneration { canvas, id, generation: Some(generation) },
@@ -393,6 +399,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             outputs: vec![Value::Text("old".repeat(10_000))],
             input_hash: None,
             items: Vec::new(),
+            settings: Vec::new(),
         });
     }
     item.active = Some(GenerationId::from_bytes([2; 16]));
@@ -402,7 +409,13 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
         canvas: canvas(),
         id: node_id(1),
         index: 1,
-        generation: Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![Value::Text("new".into())], input_hash: None, items: Vec::new() },
+        generation: Generation {
+            id: GenerationId::from_bytes([4; 16]),
+            outputs: vec![Value::Text("new".into())],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+        },
     };
     let undo = added.apply(&mut project).unwrap();
     assert!(serde_json::to_string(&undo).unwrap().len() < 300);
@@ -423,13 +436,13 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             canvas: canvas(),
             id: node_id(2),
             index: 0,
-            generation: Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![], input_hash: None, items: Vec::new() },
+            generation: Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![], input_hash: None, items: Vec::new(), settings: Vec::new() },
         },
         Change::AddGeneration {
             canvas: canvas(),
             id: node_id(1),
             index: usize::MAX,
-            generation: Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![], input_hash: None, items: Vec::new() },
+            generation: Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![], input_hash: None, items: Vec::new(), settings: Vec::new() },
         },
     ] {
         assert!(change.apply(&mut project).is_err());
@@ -506,6 +519,7 @@ fn aggregate_parameters_and_history_are_bounded_together() {
         outputs: vec![Value::Text("x".repeat(1024 * 1024)); 4],
         input_hash: None,
         items: Vec::new(),
+        settings: Vec::new(),
     });
     assert!(Change::SetNode { canvas: canvas(), node: item }.apply(&mut project).is_err());
     assert_eq!(project, before);

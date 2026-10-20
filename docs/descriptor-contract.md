@@ -124,6 +124,12 @@ default resolves the node's instance contract and keeps the result as `into_reso
   bounds-checked, enabled or not.
 - **Random seeds.** A run whose effective seed is `random_seed` is refused as unsupported until the
   drawn seed can be recorded with its generation; a fixed seed runs.
+- **What is recorded.** Each result keeps, per provider job and in job order, the settings it was
+  submitted with: the provider, which configured instance of it, the provider's model id, the
+  parameters exactly as sent (a fixed seed among them), the inputs it was given by role (media
+  by reference) and, for a fanned result, the item. Never a credential. The catalog version of
+  the model is not recorded yet. A result copied from the cache keeps its settings. Settings too large to keep
+  alongside a result are dropped rather than failing a paid run, as an over-budget input hash is.
 
 A kind that overrides `instance_contract` must override `validate_instance` to match, as
 `generation.image` does.
@@ -240,8 +246,10 @@ target's own contract.
 ## Surfaces
 
 `node.describe {kind}` returns a kind's contract. `node.describe {canvas, id}` returns a stored
-node's instance contract and its resolution. The command is read-only and available to agents,
-so the CLI and MCP see the same fields, conditions and issues as the inspector.
+node's instance contract, its resolution and the settings its active result was made with (an
+empty list when it has none). Recorded inputs can be large (up to the node's own size limit), so
+a caller that only needs the contract should describe the kind. The command is read-only and available to agents, so the CLI and
+MCP see the same fields, conditions and issues as the inspector.
 
 ## What is not in 1.0
 
@@ -251,7 +259,7 @@ registration, exposes it through `node.describe`, and plans and runs every kind 
 
 These are tracked on #162 and on the issues that need them:
 
-- persisting a generation's effective settings snapshot, and with it random seeds;
+- random seeds, drawn per run and recorded with the generation's settings;
 - leaving `identity: false` parameters out of a result's identity;
 - dynamic, model-scoped option sources;
 - typed nested records and lists;

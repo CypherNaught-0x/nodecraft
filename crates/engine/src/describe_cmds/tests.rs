@@ -34,6 +34,7 @@ fn describes_a_kind_and_a_stored_node_without_editing() {
     assert_eq!(resolution["params"][0]["value"], json!({"source": "unset"}));
     let codes: Vec<_> = resolution["issues"].as_array().unwrap().iter().map(|issue| issue["code"].clone()).collect();
     assert_eq!(codes, [json!("unknown_param"), json!("required")], "an agent sees why the node cannot run yet");
+    assert_eq!(stored["settings"], json!([]), "no result, no settings");
 
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), revision);
@@ -57,4 +58,29 @@ fn bad_targets_are_errors_not_panics() {
         assert_eq!(session.enabled("node.describe", &params).unwrap_err().kind, kind, "{params}");
         assert_eq!(session.dispatch("node.describe", &params).unwrap_err().kind, kind, "{params}");
     }
+}
+
+#[test]
+fn describes_the_settings_the_active_result_was_made_with() {
+    let (session, canvas, node) = session();
+    let job = |model: &str| nodecraft_graph::JobSettings {
+        provider: "mock".into(),
+        instance: None,
+        model: model.into(),
+        params: [("seed".into(), nodecraft_types::Value::Unsigned(nodecraft_types::Unsigned(7)))].into(),
+        inputs: Vec::new(),
+        item: None,
+    };
+    let result = |n: u8, model: &str| nodecraft_graph::Generation {
+        settings: vec![job(model)],
+        ..nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([n; 16]), vec![])
+    };
+    let mut project = session.document().clone();
+    let mut stored = project.canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().clone();
+    stored.history = vec![result(1, "old"), result(2, "new")];
+    stored.active = Some(nodecraft_types::GenerationId::from_bytes([1; 16]));
+    Change::SetNode { canvas, node: stored }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    let described = session.dispatch("node.describe", &json!({"canvas": canvas, "id": node})).unwrap();
+    assert_eq!(described["settings"], json!([{"provider": "mock", "model": "old", "params": {"seed": {"type": "unsigned", "value": "7"}}}]));
 }

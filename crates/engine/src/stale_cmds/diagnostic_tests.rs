@@ -77,6 +77,7 @@ fn fixture_reason(router: bool, reason: &str) -> (Session, Arc<AtomicUsize>) {
             outputs: vec![Value::Text("result".into())],
             input_hash: Some(Blake3::from_bytes([0; 32])),
             items: Vec::new(),
+            settings: Vec::new(),
         });
         consumer.active = Some(g);
         changes.extend([

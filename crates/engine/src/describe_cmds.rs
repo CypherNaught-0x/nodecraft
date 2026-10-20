@@ -1,5 +1,6 @@
 //! `node.describe` (#162): a node kind's descriptor contract, or a stored node's contract with
-//! its resolved parameters, so the CLI, MCP and agents see what the inspector sees. Read-only.
+//! its resolved parameters and the settings its active result was made with, so the CLI, MCP and
+//! agents see what the inspector sees. Read-only.
 use crate::commands::{CommandSpec, Context, Effect, Phase, params};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde::Deserialize;
@@ -46,7 +47,9 @@ fn describe(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         Target::Node(node) => {
             let contract = c.kinds.get(&node.kind)?.instance_contract(node)?;
             let resolution = contract.resolve(&node.params, true)?;
-            json!({"contract": contract, "resolution": resolution})
+            // What the active result was made with, when a provider made it.
+            let settings = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).map_or(&[][..], |g| g.settings.as_slice());
+            json!({"contract": contract, "resolution": resolution, "settings": settings})
         }
     };
     Ok(Effect::None { result })
@@ -70,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: describe_schema,
-        params_doc: "{kind: string} | {canvas: CanvasId, id: NodeId} -> {contract, resolution?}; the descriptor contract (ports with roles and wire bounds, modes, parameters with rules and checks; docs/descriptor-contract.md) of a kind, or of a stored node plus its resolved parameters (effective value and source, visible, enabled, issues). Read-only.",
+        params_doc: "{kind: string} | {canvas: CanvasId, id: NodeId} -> {contract, resolution?, settings?}; the descriptor contract (ports with roles and wire bounds, modes, parameters with rules and checks; docs/descriptor-contract.md) of a kind, or of a stored node plus its resolved parameters (effective value and source, visible, enabled, issues) and the settings each provider job of its active result was submitted with (provider, instance, model, params, inputs, item; empty when none were recorded; can be as large as the node). Read-only.",
         enabled: enabled_describe,
         run: describe,
     }]

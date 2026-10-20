@@ -185,6 +185,7 @@ fn a_copied_fanned_result_keeps_its_item_tags() {
         outputs: vec![Value::List(vec![Value::Text("a".into()), Value::Text("b".into())])],
         input_hash: Some(hash),
         items: items.clone(),
+        settings: Vec::new(),
     };
     nodecraft_graph::Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();
     let mut n = 50u8;
