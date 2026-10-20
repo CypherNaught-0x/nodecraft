@@ -55,8 +55,7 @@ the same `egui_kittest` wgpu path the snapshot tests use, committed by an opt-in
 distances. The cards were placed by engine commands, the plate came in through the same import path
 a file drop takes,
 and the graded, softened and cropped thumbnails are local deterministic actions the app recomputed
-for itself. What is *not* in them: a model call. Provider wiring is the milestone in progress, and
-the app still does not save files.
+for itself. What is *not* in them: a model call. Provider wiring is the milestone in progress.
 
 ### A card is generated from its node's parameter schema
 

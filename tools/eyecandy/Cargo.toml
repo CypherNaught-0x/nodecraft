@@ -9,7 +9,7 @@ description = "Opt-in offscreen renderer that paints NodeCraft showcase scenes w
 # so `cargo xtask ci` (layers, wasm, clippy, tests) never sees this crate and nothing here can run
 # automatically. Run it on purpose:
 #
-#   cargo run --release --target-dir /tmp/nc-eyecandy --shots all
+#   cargo run --manifest-path tools/eyecandy/Cargo.toml --release -- --shots all
 #
 [workspace]
 

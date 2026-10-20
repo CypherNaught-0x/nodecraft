@@ -9,7 +9,7 @@
 - **The frames are the app, not a picture of the app.** `tools/eyecandy` renders one frame of
   `NodeCraftApp::show` through `egui_kittest`'s headless wgpu (`without_display_handle`), the same
   path the kittest snapshot tests use. Scenes are built only with engine commands — `node.create`,
-  `node.add`, `node.param_set`, `edge.connect`, `tag.put`, `node.tag_set`, `comment.reply` — the
+  `node.add`, `node.param_set`, `node.title`, `edge.connect`, `tag.put`, `node.tag_set`, `comment.create`, `comment.reply` — the
   plate enters through `engine::import::import_files` (the OS file-drop path), and the graded,
   softened and cropped previews in the pictures are the live action pass (#88) recomputing on the
   app's own worker. The app is never asked to pretend: what a card shows is what it had computed.
