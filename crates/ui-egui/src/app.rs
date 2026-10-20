@@ -503,7 +503,7 @@ impl NodeCraftApp {
             }
         };
         // Without them the app still opens; Generate says why it can't run.
-        let runs = match runs::Runs::new(&mut services) {
+        let mut runs = match runs::Runs::new(&mut services) {
             Ok(runs) => Some(runs),
             Err(e) => {
                 log::warn!("runs unavailable: {}", e.message);
@@ -523,6 +523,7 @@ impl NodeCraftApp {
         // open) still opens the window, without project files, and says why.
         let mut problem = None;
         let journal = storage.as_ref().map(|setup| setup.recovery.clone());
+        let runs_journal = journal.as_ref().and_then(|recovery| recovery.parent()).map(|dir| dir.join("runs.json"));
         let stored = storage.and_then(|setup| match Self::storage_session(setup) {
             Ok(stored) => Some(stored),
             Err(error) => {
@@ -532,6 +533,7 @@ impl NodeCraftApp {
             }
         });
         let mut kept = None;
+        let owns_storage = stored.is_some();
         let mut app = match stored {
             Some((session, canvas, unrecovered, open_error)) => {
                 kept = unrecovered;
@@ -548,7 +550,11 @@ impl NodeCraftApp {
             app.attach_recovery(journal, kept);
         }
         app.key_results = results;
-        if let Some(runs) = &runs {
+        if let Some(runs) = &mut runs {
+            // Only a window that owns project storage (and so its folder's lock) keeps runs.
+            if owns_storage && let Some(path) = runs_journal {
+                runs.open_journal(path);
+            }
             runs.install(&mut app.session);
         }
         app.runs = runs;

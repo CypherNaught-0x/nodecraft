@@ -831,7 +831,7 @@ impl AuthorizedRun {
             Some(media) => crate::generate::provider_job_with_media(work, key, media)?,
             None => crate::generate::provider_job(work, key)?,
         };
-        Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, bound: Some(price.clone()), price })
+        Ok(crate::jobs::QueuedJob { provider: binding.clone(), job, bound: Some(price.clone()), price, resume_only: false })
     }
     /// The run's accepted amount and what it has reserved against it, in micros.
     pub fn ceiling(&self, currency: nodecraft_types::Currency) -> (u64, u64) {
@@ -851,6 +851,11 @@ impl AuthorizedRun {
     }
     pub fn job_failed(&mut self, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
         self.run.job_failed(job, reason)
+    }
+    /// What recording `job`'s result needs once this run is gone (#508); see
+    /// [`nodecraft_exec::run::ResumeRecipe`].
+    pub fn resume_recipe(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId) -> Option<nodecraft_exec::run::ResumeRecipe> {
+        self.run.resume_recipe(kinds, job)
     }
 }
 

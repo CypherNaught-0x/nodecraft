@@ -54,6 +54,8 @@ pub type UpdateSink = dyn Fn(JobId, Sent<'_>, RunUpdate) + Send + Sync;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sent<'a> {
     pub key: &'a str,
+    /// The scheduler's key `key` derives from, which a restored handle is keyed by.
+    pub base: &'a str,
     pub target: &'a nodecraft_types::ProviderTarget,
     pub generation: u32,
 }
@@ -78,6 +80,9 @@ pub struct QueuedJob {
     /// The authorized run's admitted price (`Some(None)` for free work), set only by
     /// [`crate::run_cmds::AuthorizedRun::queued_job`].
     pub(crate) bound: Option<Option<JobPrice>>,
+    /// Only resumes from a restored handle, never submits (#508): set for a job restored after
+    /// a restart, which the provider already has.
+    pub(crate) resume_only: bool,
 }
 
 impl QueuedJob {
@@ -85,7 +90,12 @@ impl QueuedJob {
     /// host's statement. Jobs of an authorized run come from
     /// [`crate::run_cmds::AuthorizedRun::queued_job`].
     pub fn new(provider: crate::provider_routing::RegisteredProvider, job: ProviderJob, price: Option<JobPrice>) -> Self {
-        Self { provider, job, price, bound: None }
+        Self { provider, job, price, bound: None, resume_only: false }
+    }
+    /// A job restored after a restart: it runs only by resuming its restored handle, and fails
+    /// rather than submitting again when there is none.
+    pub(crate) fn resume(provider: crate::provider_routing::RegisteredProvider, job: ProviderJob, price: Option<JobPrice>) -> Self {
+        Self { resume_only: true, ..Self::new(provider, job, price) }
     }
     /// The price budgets and the run ceiling use: an authorized run's own admitted price, or
     /// `price` for other work.
@@ -312,7 +322,13 @@ pub struct ProviderRunner {
     on_output: Arc<OutputSink>,
     on_update: Arc<UpdateSink>,
     budget: Option<JobBudget>,
+    write_ahead: Option<Arc<WriteAhead>>,
 }
+
+/// Called before a paid job is first sent, once its estimate is in the usage log: saves what a
+/// restart needs so the charge isn't lost if the process dies mid-submit (#508). An error stops
+/// the job before it is sent, and is its failure reason.
+pub type WriteAhead = dyn Fn() -> Result<(), String> + Send + Sync;
 
 fn lock_log(budget: &JobBudget) -> std::sync::MutexGuard<'_, UsageLog> {
     budget.log.lock().unwrap_or_else(PoisonError::into_inner)
@@ -550,7 +566,13 @@ impl Drop for RunGuard {
 
 impl ProviderRunner {
     pub fn new(runtime: Arc<dyn Runtime>, limits: RunLimits, on_output: Arc<OutputSink>, on_update: Arc<UpdateSink>) -> Self {
-        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None }
+        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None }
+    }
+
+    /// Calls `write_ahead` before each paid job is first sent (see [`WriteAhead`]).
+    pub fn with_write_ahead(mut self, write_ahead: Arc<WriteAhead>) -> Self {
+        self.write_ahead = Some(write_ahead);
+        self
     }
 
     /// Holds paid jobs to `budget` (see the module docs).
@@ -738,6 +760,7 @@ impl JobRunner for ProviderRunner {
         let on_output = Arc::clone(&self.on_output);
         let on_update = Arc::clone(&self.on_update);
         let budget = self.budget.clone();
+        let write_ahead = self.write_ahead.clone();
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
             if start.idempotency_key.is_empty() || start.idempotency_key.len() > 64 || !start.idempotency_key.is_ascii() {
@@ -783,6 +806,12 @@ impl JobRunner for ProviderRunner {
             };
             // Only a handle this job's current provider issued, under the key now sent, resumes.
             let handle = lock().handles.get(&(provider_id.clone(), key.clone())).cloned();
+            if handle.is_none() && queued.resume_only {
+                return Outcome::Failed {
+                    error: "the provider's handle for this job is gone, so it can't be followed without sending it again".into(),
+                    transient: false,
+                };
+            }
             queued.job.idempotency_key = key.clone();
             let signal = TokenSignal(cancel);
             let job_id = start.job;
@@ -1006,8 +1035,20 @@ impl JobRunner for ProviderRunner {
                             r.maybe_billed = true;
                         }
                     }
-                    on_update(job_id, Sent { key: &key, generation, target: &provider_id }, update);
+                    on_update(job_id, Sent { key: &key, base: &start.idempotency_key, generation, target: &provider_id }, update);
                 };
+                if handle.is_none()
+                    && queued.charged_price().is_some()
+                    && let Some(write_ahead) = &write_ahead
+                    && let Err(reason) = write_ahead()
+                {
+                    // Nothing was sent: the estimate is released.
+                    let reserved = lock().take_reserved(job_id, &attempt);
+                    if let (Some(budget), Some(r)) = (&budget, reserved) {
+                        close(budget, &r);
+                    }
+                    return Outcome::Failed { error: reason, transient: false };
+                }
                 let result = match handle {
                     Some(handle) => nodecraft_providers::resume(queued.provider.provider().as_ref(), &handle, &signal, &clock, limits, record).await,
                     None => nodecraft_providers::run_to_completion(queued.provider.provider().as_ref(), &queued.job, &signal, &clock, limits, record).await,
@@ -1319,6 +1360,7 @@ mod tests {
             job,
             price: Some(JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: micros.map(usd), ceiling: None }),
             bound: None,
+            resume_only: false,
         }
     }
 
@@ -1594,6 +1636,21 @@ mod tests {
         assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done, "already paid for");
         assert_eq!(provider.submits.load(Ordering::SeqCst), 0, "resumed, not resubmitted");
         assert_eq!(spent(&budget), 900_000);
+    }
+
+    #[test]
+    fn a_resume_only_job_without_its_handle_fails_rather_than_submitting() {
+        // #508: a job restored after a restart was already sent; with no handle it can't be
+        // followed, and sending it again could bill it twice.
+        let (runner, _budget) = budgeted(None);
+        let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
+        let QueuedJob { provider: binding, job: provider_job, price, .. } = priced(provider.clone(), None);
+        runner.register(JobId(1), QueuedJob::resume(binding, provider_job, price));
+        assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
+        assert_eq!(provider.submits.load(Ordering::SeqCst), 0, "never sent again");
+        runner.restore_handle("flaky", "nodecraft:r:1".into(), JobHandle { remote_id: "x".into(), data: serde_json::Value::Null }).unwrap();
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done, "followed from its handle");
+        assert_eq!(provider.submits.load(Ordering::SeqCst), 0);
     }
 
     #[test]

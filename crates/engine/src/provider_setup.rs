@@ -180,6 +180,11 @@ impl ProviderSetup {
         self.readiness.remove(adapter);
     }
 
+    /// The built `adapter`, when it is ready.
+    pub fn provider(&self, adapter: &str) -> Option<&Arc<dyn Provider>> {
+        self.adapters.get(adapter)
+    }
+
     /// Whether `adapter` can run, and if not why; `None` before it was tried.
     pub fn readiness(&self, adapter: &str) -> Option<&Readiness> {
         self.readiness.get(adapter)

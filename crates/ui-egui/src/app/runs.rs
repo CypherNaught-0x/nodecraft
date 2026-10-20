@@ -6,14 +6,19 @@
 //! the quote waits for the answer ([`Tick::ready`]). Once the adapter is ready, the card is routed
 //! to it and quoted as before. [`Runs::tick`] pumps the host once a frame and keeps what the
 //! cards show: which are running and why the last run of one failed.
+//!
+//! With a run journal ([`Runs::open_journal`], #508) jobs cut off by quitting or a crash are
+//! followed again once their provider is set up ([`Runs::resume_waiting`]), and quitting leaves
+//! running jobs at the provider instead of cancelling them.
 use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
-    provider_routing::ProviderRouting,
+    provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
+    run_journal::FileJournal,
     secrets::KeyringStore,
     settings::ProviderSettings,
 };
@@ -147,6 +152,8 @@ pub(super) struct Runs {
     jobs: Vec<JobView>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     tokio: Option<tokio::runtime::Runtime>,
+    /// Why the run journal couldn't be opened, told on the first frame.
+    journal_problem: Option<String>,
 }
 
 impl Runs {
@@ -198,7 +205,48 @@ impl Runs {
             running: BTreeSet::new(),
             jobs: Vec::new(),
             tokio: Some(tokio),
+            journal_problem: None,
         })
+    }
+
+    /// Keeps runs in the journal at `path` across restarts (see the module docs), restoring
+    /// what it holds. Call before [`Self::install`], and only while this window owns `path`.
+    pub(super) fn open_journal(&mut self, path: std::path::PathBuf) {
+        if let Err(error) = self.host.open_journal(Box::new(FileJournal::at(path))) {
+            log::warn!("run journal: {}", error.message);
+            self.journal_problem = Some(format!("Runs from the last session couldn't be restored: {}", error.message));
+        }
+    }
+
+    /// Follows jobs restored from the journal whose provider is ready, and asks for the
+    /// providers of the others. A provider that can't run leaves its jobs waiting (their charges
+    /// stay counted) until it can, or until the next launch.
+    pub(super) fn resume_waiting(&mut self, session: &Session, settings: &ProviderSettings) {
+        if !self.host.has_waiting() {
+            return;
+        }
+        for adapter in self.host.waiting_adapters(session.document().id()) {
+            match self.setup.readiness(&adapter) {
+                Some(Readiness::Ready) => {
+                    let binding = self.setup.provider(&adapter).map(|provider| RegisteredProvider::default_instance(Arc::clone(provider)));
+                    match binding {
+                        Some(Ok(binding)) => self.host.resume(session, &binding),
+                        Some(Err(error)) => log::warn!("can't resume jobs on {adapter}: {}", error.message),
+                        None => {}
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    // Asked again on a later frame if the thread is busy.
+                    let _ = self.ask(&adapter, settings);
+                }
+            }
+        }
+    }
+
+    /// Whether restored jobs wait for their provider.
+    pub(super) fn has_waiting(&self) -> bool {
+        self.host.has_waiting()
     }
 
     /// Puts the budget resources in place, before the first quote.
@@ -320,7 +368,7 @@ impl Runs {
                 self.waiting = None;
             }
         }
-        let mut notices = Vec::new();
+        let mut notices: Vec<String> = self.journal_problem.take().into_iter().collect();
         for notice in self.host.pump(session) {
             match notice {
                 RunNotice::Started { canvas, nodes } => {
@@ -336,6 +384,7 @@ impl Runs {
                     self.failed.insert((canvas, node), reason);
                 }
                 RunNotice::Refused { reason } => notices.push(format!("The run didn't start: {reason}")),
+                RunNotice::Unsaved { reason } => notices.push(format!("Runs can't be kept for a restart: {reason}")),
                 RunNotice::Finished { .. } => {}
             }
         }
@@ -395,7 +444,8 @@ impl Runs {
 
 impl Drop for Runs {
     fn drop(&mut self) {
-        self.host.cancel_all();
+        // With a journal, running jobs are saved and left at the provider for the next launch.
+        self.host.shut_down();
         // Don't wait on a provider that is slow to answer a cancel: the window is closing.
         if let Some(tokio) = self.tokio.take() {
             tokio.shutdown_background();
