@@ -281,6 +281,7 @@ fn blocked_reasons(blockers: &[nodecraft_exec::planner::Blocker]) -> Vec<String>
             Reason::UnknownKind => ("unknown_kind", "node kind is not installed; install its definition"),
             Reason::UnsupportedInputs => ("unsupported_inputs", "input types are unsupported; check the node connections"),
             Reason::Invalid(_) => ("node_validation", "check node parameters, connections and installed kind"),
+            Reason::NotAnOption => ("not_an_option", "a value is not on the list the host fetched; refresh the list or pick another"),
             Reason::ProviderTarget(TargetReason::MissingSelection) => ("endpoint_missing", "no provider endpoint is selected for this node"),
             Reason::ProviderTarget(TargetReason::Mismatch) => ("endpoint_mismatch", "work does not match the selected provider endpoint"),
         };
@@ -332,7 +333,9 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, kinds)? } else { BTreeSet::new() };
     // Technique nodes run their versions' nodes, inlined for planning, quoting and admission.
     let expanded = nodecraft_exec::technique::expand(document.canvases(), canvas, kinds)?;
-    let run_plan = match plan_expanded(&expanded, kinds, &mode, &requested, &stale, targets)? {
+    // Planning consults the option lists the host has fetched, so a value off a known list is
+    // refused here: before a quote, before admission, before an idempotency key exists.
+    let run_plan = match plan_expanded(&expanded, kinds, &mode, &requested, &stale, targets, crate::option_cmds::lookup(resources))? {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
             // Admission diagnostics never copy native hook messages, node titles or
@@ -544,7 +547,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let mode = mode_of(&run)?;
     let requested = run.nodes.iter().copied().collect();
     let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
-    let plan = match plan_expanded(&expanded, c.kinds, &mode, &requested, &stale, c.routing.routing.targets())? {
+    let plan = match plan_expanded(&expanded, c.kinds, &mode, &requested, &stale, c.routing.routing.targets(), crate::option_cmds::lookup(c.resources))? {
         Planned::Ready(plan) => plan,
         Planned::Blocked(blockers) => return Err(invalid(blocked_reasons(&blockers).join("; "))),
     };

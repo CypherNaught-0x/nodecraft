@@ -259,8 +259,9 @@ fn build(c: &Context<'_>, draft: &Draft<'_>, published: CanvasId, seed: NodeId) 
     let mut jobs = None;
     if problems.is_empty() {
         // Techniques inside the selection run their own versions' nodes.
-        let planned = nodecraft_exec::technique::expand(c.document.canvases(), canvas, c.kinds)
-            .and_then(|expanded| plan_expanded(&expanded, c.kinds, &RunMode::WithUpstream, &given, &nodes, c.routing.routing.targets()));
+        let planned = nodecraft_exec::technique::expand(c.document.canvases(), canvas, c.kinds).and_then(|expanded| {
+            plan_expanded(&expanded, c.kinds, &RunMode::WithUpstream, &given, &nodes, c.routing.routing.targets(), &nodecraft_types::NoOptions)
+        });
         match planned {
             Ok(Planned::Ready(plan)) => match job_count(&plan.steps) {
                 Some(count) if count <= MAX_TECHNIQUE_JOBS => jobs = Some(count),

@@ -125,8 +125,10 @@ default resolves the node's instance contract and keeps the result as `into_reso
   itself).
 - **What blocks.** An invalid or unknown value is refused even while editing. A missing required
   value or a failed check blocks only a run (`ready`), so paste and migration accept a state a
-  run would refuse. The edit commands (`node.param_set`, bulk edits, model swaps) still refuse
-  any issue. Each blocked node names the first issue.
+  run would refuse. So does a value off a list the host has fetched (see
+  [Option sources](#option-sources)); a value whose list is unknown does not. The edit commands
+  (`node.param_set`, bulk edits, model swaps) still refuse any issue. Each blocked node names the
+  first issue.
 - **Disabled values** take no part in checks, but a stored value is always type- and
   bounds-checked, enabled or not.
 - **Random seeds.** A catalog model's seed whose effective setting is `random_seed` is drawn when
@@ -286,9 +288,16 @@ values or blank labels, is refused and the previous list kept.
   being edited, and is fixed by picking another value or clearing it.
 - **Disabled parameters draw from no list**, like every other check on a disabled value.
 
-Planning a run does not consult the lists yet, so a stale value is still submitted and the
-provider refuses it; the edit, bulk-edit, describe and `node.options` paths do. Once planning
-consults them, `not_an_option` blocks the run before anything is charged.
+Planning a run consults the lists the host has installed: `not_an_option` blocks the run before
+anything is admitted, priced or charged, and before an idempotency key exists. What the host has
+not fetched still refuses nothing, so a run is never refused against a list it never refreshed,
+and the provider stays the authority when the job is submitted. Planning asks the same resolver the
+other paths ask, `resolve_with`: with `ready` set, as `node.describe` does, while the edit,
+bulk-edit and `node.options` paths ask it unset, which is why the same value refuses an edit only
+when it sets that parameter. A disabled parameter therefore draws from no list and a scoped list
+is narrowed by its scope value in exactly one place. Work that names no list is planned and
+admitted by the rules it already had, and a blocked run names the code rather than the parameter:
+`node.describe` and `node.options` are what say which field to fix.
 `node.options {canvas, id, param}` returns a stored node's list for one parameter, as
 `{source, scope, known, options: [{value, label}] | null}`.
 
@@ -309,8 +318,8 @@ fan-out on list inputs.
 
 These are tracked on #162 and on the issues that need them:
 
-- fetching option lists (ComfyUI `object_info`, provider inventories) and checking them when a
-  run is planned;
+- fetching option lists (ComfyUI `object_info`, provider inventories); what the host has already
+  fetched is checked when a run is planned;
 - typed nested records and lists;
 - generated UI reading rules (enabled state, reset) and the bulk panel itself (#71);
 - per-provider parameter inventories.
