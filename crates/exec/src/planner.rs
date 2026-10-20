@@ -325,12 +325,16 @@ pub fn plan_expanded(
 /// One graph and one walk answer for all of them, where planning each alone rebuilds the graph
 /// per node and costs `O(nodes²)` on every edit (#549). When every requested node needs a run
 /// itself (it is stale or has no result, as live recompute asks), their runs together are the
-/// union of their runs alone, and a step comes out the same in either; a blocked or refused step
-/// fails everything after it in the run. A requested node that already has a fresh result joins
-/// the others' runs here where alone they would read its result, so only what it fails fails
-/// with it. The steps share the plan-wide input budget, so near that
-/// budget fewer nodes may pass than would alone, never more. Routers and batches never pass: they
-/// have nothing to run.
+/// union of their runs alone; a blocked or refused step fails everything after it in the run.
+/// The answer is the same as planning each alone or stricter, never looser:
+/// - a batch refuses to collect from a node in the run, so a node behind a batch whose stale
+///   source another requested node reruns waits for that rerun (alone it would read the old
+///   result; together the two could never plan at all);
+/// - the steps share the plan-wide input budget, so near it fewer nodes pass;
+/// - a requested node that doesn't need a run joins the others' runs, where alone they would read
+///   its result, so they pass only if it does.
+///
+/// Routers and batches never pass: they have nothing to run.
 pub fn ready_alone(
     canvas: &Canvas,
     kinds: &Registry,

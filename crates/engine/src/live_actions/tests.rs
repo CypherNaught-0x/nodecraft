@@ -240,3 +240,44 @@ fn a_settled_canvas_stays_settled_through_layout_only() {
         .unwrap();
     assert!(!settled.holds(&s, CANVAS), "a parameter change needs a new look");
 }
+
+#[test]
+fn an_action_behind_a_batch_follows_its_stale_source_a_round_later() {
+    let mut s = session();
+    let (text, split, batch, replace) =
+        (NodeId::from_bytes([50; 16]), NodeId::from_bytes([51; 16]), NodeId::from_bytes([52; 16]), NodeId::from_bytes([53; 16]));
+    for (id, kind) in [(text, "source.text"), (split, "text.split"), (batch, nodecraft_nodes::batch::ID), (replace, "text.replace")] {
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": id, "kind": kind, "pos": {"x": 0, "y": 900}})).unwrap();
+    }
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": text, "name": "text", "value": Value::Text("a,b".into())})).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": replace, "name": "find", "value": Value::Text("a".into())})).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": replace, "name": "replacement", "value": Value::Text("x".into())})).unwrap();
+    for (n, from, out, to, port) in [(54u8, text, "out", split, "text"), (55, split, "out", batch, "in"), (56, batch, "item", replace, "text")] {
+        let edge = nodecraft_types::EdgeId::from_bytes([n; 16]);
+        s.dispatch(
+            "edge.connect",
+            &json!({"canvas": CANVAS, "edge": {"id": edge, "from": {"node": from, "port": out}, "to": {"node": to, "port": port}, "order": 0}}),
+        )
+        .unwrap();
+    }
+    let outputs = |s: &Session| {
+        let node = s.document().canvases().get(&CANVAS).unwrap().nodes().get(&replace).unwrap();
+        node.history.iter().find(|g| Some(g.id) == node.active).map(|g| (g.outputs.clone(), g.items.len()))
+    };
+    let mut rounds = 0;
+    while settle(&mut s) {
+        rounds += 1;
+        assert!(rounds < 8, "settles");
+    }
+    let first = outputs(&s).expect("the replace ran over the batch");
+    // The split goes stale with a result; the batch only collects existing results, so the
+    // replace waits for the split's new one rather than holding it back.
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": text, "name": "text", "value": Value::Text("aa,c".into())})).unwrap();
+    let mut rounds = 0;
+    while settle(&mut s) {
+        rounds += 1;
+        assert!(rounds < 8, "settles");
+    }
+    assert!(rounds >= 1);
+    assert_ne!(outputs(&s), Some(first), "the replace followed the new text");
+}
