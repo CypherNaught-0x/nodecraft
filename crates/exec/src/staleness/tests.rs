@@ -1330,3 +1330,48 @@ fn a_chain_of_batches_deeper_than_the_limit_is_unknown_not_a_stack_overflow() {
     assert!(input_hash(canvas, &kinds, id(2)).is_ok(), "a shallow batch still hashes");
     assert!(stale(canvas, &kinds).unwrap().is_empty());
 }
+
+/// `test.gen` again, its input declared as fanning out over a batch (like a Generate prompt).
+struct FanGen(NodeDescriptor);
+impl NodeKind for FanGen {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn contract(&self, descriptor: &NodeDescriptor) -> nodecraft_nodes::NodeContract {
+        let mut contract = nodecraft_nodes::NodeContract::derive(descriptor);
+        for input in &mut contract.inputs {
+            input.fans_out = true;
+        }
+        contract
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("gen").ok()
+    }
+    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn declaring_a_fan_out_changes_hashes_only_where_a_batch_feeds_it() {
+    let plain = kinds();
+    let mut fanning = Registry::builtins().unwrap();
+    fanning.register(Box::new(FanGen(plain.get("test.gen").unwrap().descriptor().clone()))).unwrap();
+    let mut project = project();
+    let hashes = |project: &Project, kinds: &Registry| [2u8, 3].map(|n| input_hash(project.canvases().get(&C).unwrap(), kinds, id(n)).unwrap());
+    assert_eq!(hashes(&project, &plain), hashes(&project, &fanning), "no batch upstream: the declaration alone stales nothing");
+
+    let mut batch = plain.get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(5), Default::default(), &Default::default()).unwrap();
+    batch.params.insert("text".into(), Value::Text("a\nb".into()));
+    let item = Edge {
+        id: EdgeId::from_bytes([12; 16]),
+        from: Endpoint { node: id(5), port: "item".into() },
+        to: Endpoint { node: id(2), port: "in".into() },
+        order: 1,
+    };
+    Changeset::new(vec![Change::AddNode { canvas: C, node: batch }, Change::Connect { canvas: C, edge: item }]).apply(&mut project).unwrap();
+    let [two, three] = hashes(&project, &plain);
+    let [fanned_two, fanned_three] = hashes(&project, &fanning);
+    assert_ne!(two, fanned_two, "a batch into a fanning input is part of the recipe");
+    assert_ne!(three, fanned_three, "and so is a fanned result reaching the next fanning input");
+}

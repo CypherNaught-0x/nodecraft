@@ -8,7 +8,8 @@
   images is one request with several references.
 - **Text only for now.** Image, video and audio Generate make a list per run, so fanning them
   would give one list per item, which downstream ports, the card and Extract can't read yet. They
-  keep joining a prompt batch until #519 flattens per-item lists.
+  keep joining a prompt batch until #519 flattens per-item lists (since done, see
+  `2026-10-20-media-fanout.md`).
 - **Earlier results don't turn stale.** The staleness recipe doesn't include the fan/collect
   choice, so a text result made by joining a prompt batch before this change still shows fresh.
   Running it again makes one answer per prompt. This one-time change wasn't worth a recipe

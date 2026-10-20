@@ -707,8 +707,8 @@ impl Run {
         let (value, splice) = match source {
             InputSource::Value(value) => (value, false),
             InputSource::Step { node, port, list } => (self.step_output(*node, port)?, *list && many),
-            InputSource::Item { node, port, index } => match self.step_output(*node, port)? {
-                Value::List(values) => (values.get(*index).ok_or_else(|| format!("{} has no result for one of its items", self.title(*node)))?, false),
+            InputSource::Item { node, port, index, list } => match self.step_output(*node, port)? {
+                Value::List(values) => (values.get(*index).ok_or_else(|| format!("{} has no result for one of its items", self.title(*node)))?, *list && many),
                 _ => return Err(format!("{} didn't produce a result per item", self.title(*node))),
             },
         };
