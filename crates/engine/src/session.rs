@@ -100,6 +100,15 @@ struct Prepared {
     assets: AssetStore,
     next_identity: Arc<()>,
 }
+/// Borrowed authority for ordinary staging or Cut's private prospective document.
+struct PreparationSource<'a> {
+    document: &'a Project,
+    revision: u64,
+    state: u64,
+    execution: &'a crate::execution_identity::ExecutionSource,
+    assets: &'a AssetStore,
+    identity: &'a Arc<()>,
+}
 struct SourceStamp {
     identity: Arc<()>,
     revision: u64,
@@ -399,6 +408,9 @@ impl Session {
         self.execution.advance(pending.next);
         self.gesture = None;
     }
+    pub fn validate_asset(&self, asset: &nodecraft_types::AssetRef) -> Result<(), Error> {
+        self.assets.validate_reference(asset)
+    }
     pub fn import_asset(&mut self, bytes: &[u8]) -> Result<nodecraft_types::Blake3, Error> {
         self.settle_for_edit()?;
         self.import_small(bytes)
@@ -585,6 +597,7 @@ impl Session {
 
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
+            assets: &self.assets,
             routing: &self.routing,
             document: &self.document,
             revision: self.revision,
@@ -636,14 +649,89 @@ impl Session {
         }
         result
     }
+    /// Cut's delete is published only after the real registered paste admits its roundtrip.
+    /// Handlers/kinds retain the ordinary trusted-pure description contract; this does not
+    /// sandbox interior-mutating native extensions or acknowledge OS clipboard delivery.
+    pub fn dispatch_clipboard_cut(&mut self, delete: &Value, paste: &Value) -> Result<Value, Error> {
+        let before = self.file_status();
+        let start = self.perf.now();
+        let result = guard(|| self.clipboard_cut_inner(delete, paste));
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        if let Some(start) = start.filter(|_| result.is_ok()) {
+            self.perf.record_since(crate::perf::Metric::Dispatch, start);
+            if let Some(metric) = crate::perf::Metric::of_command("canvas.delete") {
+                self.perf.record_since(metric, start);
+            }
+        }
+        result
+    }
+    fn describe(spec: &crate::commands::CommandSpec, context: &Context<'_>, params: &Value) -> Result<Effect, Error> {
+        guard(|| {
+            validate_input_json(params)?;
+            (spec.enabled)(context, params)?;
+            (spec.run)(context, params)
+        })
+    }
+    fn clipboard_cut_inner(&mut self, delete: &Value, paste: &Value) -> Result<Value, Error> {
+        // Like any edit, a cut first waits for a background save and refuses during an open.
+        self.settle_for_edit()?;
+        let delete_spec = *self.registry.get("canvas.delete")?;
+        let paste_spec = *self.registry.get("canvas.paste")?;
+        validate_input_json(paste)?;
+        let effect = Self::describe(&delete_spec, &self.context(Phase::Dispatch), delete)?;
+        if !matches!(&effect, Effect::Edit { .. }) {
+            return Err(invalid("cut requires a document delete effect"));
+        }
+        let mut stage = None;
+        let prepared = guard(|| self.prepare_observed(effect, Some(&mut stage)));
+        if let Some(stage) = stage {
+            stage.record(&mut self.perf);
+        }
+        let prepared = prepared?;
+        let future_execution = self.execution.prospective(prepared.next_execution_generation);
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let mut stage = None;
+        let hypothetical = guard(|| {
+            let mut context = self.context(Phase::Dispatch);
+            context.document = &prepared.document;
+            context.assets = &prepared.assets;
+            context.revision = revision;
+            context.can_undo = true;
+            context.can_redo = false;
+            context.file.dirty = true;
+            context.execution = &future_execution;
+            let effect = Self::describe(&paste_spec, &context, paste)?;
+            if !matches!(&effect, Effect::Edit { .. }) {
+                return Err(invalid("cut roundtrip requires a document paste effect"));
+            }
+            // No service/file effect is executed. Drop the hypothetical graph/replay before
+            // the real append, retaining the same candidate asset authority throughout.
+            self.prepare_source_observed(
+                effect,
+                PreparationSource {
+                    document: &prepared.document,
+                    revision,
+                    state: prepared.state,
+                    execution: &future_execution,
+                    assets: &prepared.assets,
+                    identity: &prepared.next_identity,
+                },
+                false,
+                Some(&mut stage),
+            )
+            .map(|_| ())
+        });
+        if let Some(stage) = stage {
+            stage.record(&mut self.perf);
+        }
+        hypothetical?;
+        self.commit_prepared(prepared, delete_spec.id)
+    }
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
-        let effect = guard(|| {
-            validate_input_json(params)?;
-            let context = self.context(Phase::Dispatch);
-            (spec.enabled)(&context, params)?;
-            (spec.run)(&context, params)
-        })?;
+        let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;
         let reads = matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::PreparedRun { .. } | Effect::CancelFile);
         // A run would start on the project being replaced, so only pure reads go past an open.
         if matches!(self.pending, Some(PendingFile::Open(_)))
@@ -807,9 +895,9 @@ impl Session {
         }
     }
 
-    fn stage(&self, changes: &Changeset, observation: &mut Option<&mut Option<StageObservation>>) -> Result<StagedChanges, Error> {
+    fn stage(&self, source: &Project, changes: &Changeset, observation: &mut Option<&mut Option<StageObservation>>) -> Result<StagedChanges, Error> {
         let start = observation.as_ref().and_then(|_| self.perf.now());
-        let result = changes.stage_certified(&self.document);
+        let result = changes.stage_certified(source);
         let end = observation.as_ref().and_then(|_| self.perf.now());
         if let (Some(slot), Some(start), Some(end)) = (observation.as_deref_mut(), start, end) {
             *slot = Some(StageObservation { start, end, refused: result.is_err() });
@@ -826,12 +914,12 @@ impl Session {
             MAX_HISTORY_BYTES
         }
     }
-    fn validate_actual_redo(&self, redo: Option<&Changeset>) -> Result<(), Error> {
+    fn validate_actual_redo(&self, redo: Option<&Changeset>, assets: &AssetStore) -> Result<(), Error> {
         if let Some(redo) = redo {
             redo.validate_replay_budget(self.replay_limit().saturating_sub(12))?;
             history_bytes(redo)?;
             if self.persistence.is_some() {
-                nodecraft_format::journal::validate_replay(redo, &self.assets)?;
+                nodecraft_format::journal::validate_replay(redo, assets)?;
             }
         }
         Ok(())
@@ -851,9 +939,31 @@ impl Session {
         effect: Effect,
         assets: &AssetStore,
         imported: bool,
+        observation: Option<&mut Option<StageObservation>>,
+    ) -> Result<Prepared, Error> {
+        self.prepare_source_observed(
+            effect,
+            PreparationSource {
+                document: &self.document,
+                revision: self.revision,
+                state: self.state,
+                execution: &self.execution,
+                assets,
+                identity: &self.admission_identity,
+            },
+            imported,
+            observation,
+        )
+    }
+    fn prepare_source_observed(
+        &self,
+        effect: Effect,
+        source: PreparationSource<'_>,
+        imported: bool,
         mut observation: Option<&mut Option<StageObservation>>,
     ) -> Result<Prepared, Error> {
-        let next_execution_generation = self.execution.next()?;
+        let PreparationSource { document: source, revision, state: source_state, execution, assets, identity } = source;
+        let next_execution_generation = execution.next()?;
         self.context(Phase::Dispatch).editable()?;
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
             Effect::Edit { changes, result, gesture } => {
@@ -862,8 +972,8 @@ impl Session {
                     return Err(invalid("command must return a nonempty changeset"));
                 }
                 let gesture = move_key(&changes, gesture)?;
-                let staged = self.stage(&changes, &mut observation)?;
-                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let staged = self.stage(source, &changes, &mut observation)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref(), assets)?;
                 let (document, inverse) = (staged.document, staged.inverse);
                 // Graph canonical sizing includes the operation array. History stores the full
                 // {"changes": ...} envelope too (12 bytes), including reserved AddNode replay.
@@ -872,7 +982,7 @@ impl Session {
                     document,
                     inverse,
                     changes,
-                    self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?,
+                    revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?,
                     Direction::Edit,
                     gesture,
                     result,
@@ -880,15 +990,15 @@ impl Session {
             }
             Effect::Undo => {
                 let entry = self.undo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to undo"))?;
-                let staged = self.stage(&entry.inverse, &mut observation)?;
-                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let staged = self.stage(source, &entry.inverse, &mut observation)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref(), assets)?;
                 let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Undo, None, Value::Null)
             }
             Effect::Redo => {
                 let entry = self.redo.entries.back().ok_or_else(|| Error::new(ErrorKind::Conflict, "nothing to redo"))?;
-                let staged = self.stage(&entry.inverse, &mut observation)?;
-                self.validate_actual_redo(staged.actual_redo.as_ref())?;
+                let staged = self.stage(source, &entry.inverse, &mut observation)?;
+                self.validate_actual_redo(staged.actual_redo.as_ref(), assets)?;
                 let (document, inverse) = (staged.document, staged.inverse);
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
@@ -929,12 +1039,12 @@ impl Session {
         };
         Ok(Prepared {
             document,
-            inverse: Entry { inverse, bytes, state: self.state },
+            inverse: Entry { inverse, bytes, state: source_state },
             direction,
             gesture,
             result,
             admission,
-            source: SourceStamp { identity: Arc::clone(&self.admission_identity), revision: self.revision },
+            source: SourceStamp { identity: Arc::clone(identity), revision },
             next_execution_generation,
             state,
             assets: assets.clone(),
@@ -1412,3 +1522,6 @@ mod persistence_tests;
 #[cfg(test)]
 #[path = "admission_tests.rs"]
 mod admission_tests;
+
+#[cfg(test)]
+mod clipboard_tests;

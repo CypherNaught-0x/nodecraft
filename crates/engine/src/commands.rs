@@ -92,6 +92,7 @@ pub enum Phase {
 }
 
 pub struct Context<'a> {
+    pub(crate) assets: &'a nodecraft_format::AssetStore,
     pub(crate) routing: &'a crate::provider_routing::RoutingAuthority,
     pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
@@ -108,6 +109,10 @@ pub struct Context<'a> {
     pub perf: &'a crate::perf::Recorder,
 }
 impl Context<'_> {
+    /// Validates against the session's immutable destination bytes, never a project UUID.
+    pub fn validate_asset(&self, asset: &nodecraft_types::AssetRef) -> Result<(), Error> {
+        self.assets.validate_reference(asset)
+    }
     /// Session::enabled/dispatch graph-stage every returned document effect once,
     /// including custom handlers. Handler callbacks only check editability/parameters.
     pub fn editable(&self) -> Result<(), Error> {

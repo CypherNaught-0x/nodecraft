@@ -22,6 +22,9 @@ impl ExecutionSource {
     pub(crate) fn next(&self) -> Result<u64, Error> {
         self.generation.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "execution source generation exhausted; reopen in a new session"))
     }
+    pub(crate) fn prospective(&self, next: u64) -> Self {
+        Self { nonce: self.nonce, generation: next }
+    }
     pub(crate) fn advance(&mut self, next: u64) {
         self.generation = next;
     }
