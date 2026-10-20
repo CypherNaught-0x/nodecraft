@@ -30,6 +30,7 @@ pub mod model_cmds;
 pub mod model_swap;
 pub mod navigation_cmds;
 pub mod node_cmds;
+pub mod option_cmds;
 pub mod order_cmds;
 pub mod ownership_cmds;
 pub mod perf;

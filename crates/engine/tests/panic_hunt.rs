@@ -286,6 +286,7 @@ fn template(id: &str) -> (Session, Value) {
         "edge.reorder" => json!({"canvas":canvas(),"to":{"node":node_id(2),"port":"in"},"edges":[edge().id]}),
         "canvas.stale" => json!({"canvas":canvas()}),
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),
+        "node.options" => json!({"canvas":canvas(),"id":node_id(1),"param":"text"}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
@@ -446,6 +447,7 @@ fn typed_template_panic_hunt() {
                             | "comment.compose"
                             | "canvas.stale"
                             | "node.describe"
+                            | "node.options"
                             | "node.model_preview"
                             | "canvas.search_open"
                             | "canvas.search_query"

@@ -17,7 +17,8 @@ mod value;
 pub use asset::{AssetRef, Blake3, MediaMeta, Mime};
 pub use contract::{
     Affects, Check, Comparison, Condition, ConnectedText, Contract, ContractVersion, DefaultPolicy, DropReason, Dropped, Effective, HiddenPolicy, Issue,
-    IssueCode, Migration, ParamOwner, ParamRule, ParamState, Resolution, Shared, TextPrecedence, Unit, compose_text, model_namespace, overlay, shared_value,
+    IssueCode, MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, Migration, NoOptions, OptionKey, OptionLists, OptionLookup, OptionSource, ParamOptions,
+    ParamOwner, ParamRule, ParamState, Resolution, Shared, TextPrecedence, Unit, compose_text, model_namespace, overlay, shared_value,
 };
 pub use error::{Error, ErrorKind};
 pub use ids::*;

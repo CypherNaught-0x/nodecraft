@@ -62,6 +62,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "edit.redo",
     "canvas.stale",
     "node.describe",
+    "node.options",
     "history.select",
     "history.previous",
     "history.next",
