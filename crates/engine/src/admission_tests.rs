@@ -206,6 +206,7 @@ fn all_forward_asset_roles_fail_before_append_and_do_not_invalidate_a_valid_prep
                     input_hash: None,
                     items: Vec::new(),
                     settings: Vec::new(),
+                    incomplete: None,
                 },
             },
             Change::AddNode { canvas: canvas(), node: node.clone() },

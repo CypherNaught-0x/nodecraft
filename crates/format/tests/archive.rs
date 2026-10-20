@@ -56,6 +56,7 @@ fn assets_deduplicate_validate_hashes_and_cover_nested_generation_history() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        incomplete: None,
     });
     Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
     let bytes = encode(&s).unwrap();
@@ -272,7 +273,14 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
         canvas: CanvasId::from_bytes([1; 16]),
         id: NodeId::from_bytes([2; 16]),
         index: 0,
-        generation: Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None, items: Vec::new(), settings: Vec::new() },
+        generation: Generation {
+            id: GenerationId::from_bytes([3; 16]),
+            outputs: vec![value],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        },
     }]);
     assert!(journal::frame(id, 1, &changes, &assets, &Default::default()).is_err());
     let Change::AddGeneration { mut generation, .. } = changes.changes.into_iter().next().unwrap() else { panic!() };

@@ -206,6 +206,7 @@ mod tests {
                 input_hash: Some(hash),
                 items: Vec::new(),
                 settings: Vec::new(),
+                incomplete: None,
             },
         }
         .apply(&mut project)
@@ -275,7 +276,7 @@ mod tests {
                 canvas,
                 id: node,
                 index: 0,
-                generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new(), settings: Vec::new() },
+                generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new(), settings: Vec::new(), incomplete: None },
             },
             Change::SetActiveGeneration { canvas, id: node, generation: Some(generation) },
         ])

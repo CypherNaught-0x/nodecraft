@@ -1292,6 +1292,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                incomplete: None,
             });
         }
         Change::AddNode { canvas, node }.apply(&mut document).unwrap();
@@ -1302,6 +1303,7 @@ mod tests {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            incomplete: None,
         };
         let changes = Changeset::new(vec![Change::AddGeneration { canvas, id, index: 3, generation }]);
         let prepared = session.prepare(Effect::Edit { changes, result: json!(null), gesture: None }).unwrap();
@@ -1357,6 +1359,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                incomplete: None,
             });
         }
         node.active = Some(GenerationId::from_bytes([5; 16]));
@@ -1387,6 +1390,7 @@ mod tests {
                 mime: "text/plain".parse().unwrap(),
                 meta: Default::default(),
             })])],
+            incomplete: None,
         };
         let changes = Changeset::new(vec![
             Change::AddGeneration { canvas, id, index: 1, generation },

@@ -54,13 +54,48 @@ pub struct Generation {
     /// recorded before settings were kept, or one whose settings were too large to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<JobSettings>,
+    /// A fanned result some of whose items have no value (#480): which, and why each is
+    /// missing. `None` for a complete result. A partial result never stands in for a
+    /// complete one: it is stale, and nothing downstream reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete: Option<Incomplete>,
 }
 
 impl Generation {
     /// A result with no recorded input hash.
     pub fn new(id: GenerationId, outputs: Vec<Value>) -> Self {
-        Self { id, outputs, input_hash: None, items: Vec::new(), settings: Vec::new() }
+        Self { id, outputs, input_hash: None, items: Vec::new(), settings: Vec::new(), incomplete: None }
     }
+
+    /// Whether some of its items have no value.
+    pub fn is_partial(&self) -> bool {
+        self.incomplete.is_some()
+    }
+}
+
+/// The items of a fanned result that have no value (#480). Each output holds an empty list in
+/// their place.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Incomplete {
+    /// By index into the result's `items`, ascending; never all of them.
+    pub missing: Vec<MissingItem>,
+}
+
+/// One item of a partial result that has no value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingItem {
+    pub item: u32,
+    pub why: Missing,
+}
+
+/// Why an item of a partial result has no value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Missing {
+    /// Its job failed.
+    Failed,
+    /// It was stopped, or never started, before it finished.
+    Cancelled,
 }
 
 /// The effective settings one provider job was submitted with: never a credential, only the

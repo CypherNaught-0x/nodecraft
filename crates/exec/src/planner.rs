@@ -77,6 +77,8 @@ pub struct Fanout {
     pub cells: Vec<Vec<PlannedInput>>,
     /// When the step's jobs are known: how many of them belong to each item.
     pub jobs: Vec<usize>,
+    /// Completing the node's partial result (#480): the items it finished have no jobs here.
+    pub resume: Option<crate::partial::Resume>,
 }
 
 /// A plan that can run: steps in dependency order. Its price is `cost::quote` (#76), the one
@@ -239,6 +241,7 @@ pub fn plan_with_targets(
     if !blockers.is_empty() {
         return Ok(Planned::Blocked(blockers));
     }
+    crate::partial::resume_partials(canvas, kinds, &mut steps);
     Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect() }))
 }
 
@@ -598,7 +601,7 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs: Vec::new(), jobs, fanout: Some(Fanout { items, cells, jobs: counts }) })
+        Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs: Vec::new(), jobs, fanout: Some(Fanout { items, cells, jobs: counts, resume: None }) })
     }
 
     /// Adds `size` known input bytes to the step's and the plan's totals; `false` when either
@@ -683,9 +686,10 @@ fn fanned_list(port: &str) -> String {
 /// The active generation when it can be used: results are positional, so one recorded for a
 /// different port layout is not. The upstream walk and resolution share this, so a node whose
 /// result can't be used is re-run rather than waited on.
+/// A partial result (#480) is never used: its node runs again first.
 fn usable_generation(node: &Node) -> Option<&nodecraft_graph::Generation> {
     let active = node.active?;
-    node.history.iter().find(|g| g.id == active).filter(|g| g.outputs.len() == node.outputs.len())
+    node.history.iter().find(|g| g.id == active).filter(|g| g.outputs.len() == node.outputs.len() && !g.is_partial())
 }
 
 #[cfg(test)]

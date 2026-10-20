@@ -854,8 +854,11 @@ impl AuthorizedRun {
     ) -> nodecraft_exec::run::Progress {
         self.run.job_done(kinds, job, outputs)
     }
-    pub fn job_failed(&mut self, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
-        self.run.job_failed(job, reason)
+    pub fn job_failed(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
+        self.run.job_failed(kinds, job, reason)
+    }
+    pub fn job_cancelled(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
+        self.run.job_cancelled(kinds, job, reason)
     }
     /// What recording `job`'s result needs once this run is gone (#508); see
     /// [`nodecraft_exec::run::ResumeRecipe`].

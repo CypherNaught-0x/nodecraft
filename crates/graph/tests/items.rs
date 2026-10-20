@@ -1,5 +1,5 @@
 //! Fanned results (#92): a generation tagged with the batch items it was made from.
-use nodecraft_graph::{Canvas, Change, Changeset, Generation, ItemKey, MAX_ITEM_AXES, Node, Project};
+use nodecraft_graph::{Canvas, Change, Changeset, Generation, Incomplete, ItemKey, MAX_ITEM_AXES, Missing, MissingItem, Node, Project};
 use nodecraft_types::{CanvasId, GenerationId, ItemId, NodeId, ProjectId, Value};
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
@@ -59,4 +59,26 @@ fn malformed_item_tags_are_rejected() {
     assert!(record(fanned(vec![wide], vec![list(1)])).is_err());
     let widest: Vec<ItemKey> = (0..u8::try_from(MAX_ITEM_AXES).unwrap()).map(|b| key(b, 1)).collect();
     assert!(record(fanned(vec![widest], vec![list(1)])).is_ok());
+}
+
+#[test]
+fn a_partial_result_names_some_of_its_items_once_each_in_order() {
+    let partial = |missing: &[u32]| {
+        let items = vec![vec![key(1, 1)], vec![key(1, 2)], vec![key(1, 3)]];
+        let missing = missing.iter().map(|item| MissingItem { item: *item, why: Missing::Failed }).collect();
+        Generation { incomplete: Some(Incomplete { missing }), ..fanned(items, vec![list(3)]) }
+    };
+    let project = record(partial(&[0, 2])).unwrap();
+    let back: Project = serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+    assert_eq!(back, project);
+    assert!(back.canvases().get(&C).unwrap().nodes().get(&N).unwrap().history.first().unwrap().is_partial());
+    // Not none, not all, none out of range, none twice, in order.
+    for bad in [&[][..], &[0, 1, 2], &[3], &[1, 1], &[2, 0]] {
+        assert!(record(partial(bad)).is_err(), "{bad:?}");
+    }
+    // Only a fanned result can be partial, and a complete one writes no field.
+    let plain = Generation::new(GenerationId::from_bytes([4; 16]), vec![Value::Text("x".into())]);
+    assert!(serde_json::to_value(&plain).unwrap().get("incomplete").is_none());
+    let missing = vec![MissingItem { item: 0, why: Missing::Cancelled }];
+    assert!(record(Generation { incomplete: Some(Incomplete { missing }), ..plain }).is_err());
 }

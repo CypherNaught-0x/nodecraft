@@ -102,6 +102,7 @@ fn caller_generation_history_and_invalid_noop_gestures_are_rejected() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        incomplete: None,
     });
     assert!(session.dispatch("node.add", &json!({"canvas":canvas(),"node":candidate})).is_err());
     assert!(session.dispatch("node.move", &move_params(1, 0, "")).is_err());

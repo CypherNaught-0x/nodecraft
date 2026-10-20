@@ -659,6 +659,11 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
     let canvas = active.canvas;
     let mut pending = VecDeque::from([progress]);
     while let Some(progress) = pending.pop_front() {
+        // Results first: a partial one (#480) is recorded, and its step then reports why it is
+        // partial.
+        for result in progress.finished {
+            notices.push(record(session, canvas, result));
+        }
         for failure in progress.failed {
             notices.push(if failure.reason == CANCELLED {
                 RunNotice::Cancelled { canvas, node: failure.node }
@@ -666,12 +671,9 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
                 RunNotice::Failed { canvas, node: failure.node, reason: failure.reason }
             });
         }
-        for result in progress.finished {
-            notices.push(record(session, canvas, result));
-        }
         if active.cancelled {
             for spec in progress.jobs {
-                pending.push_back(active.run.job_failed(spec.id, CANCELLED));
+                pending.push_back(active.run.job_cancelled(session.kinds(), spec.id, CANCELLED));
             }
             continue;
         }
@@ -687,7 +689,7 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
                 Err(reason) => {
                     active.live.remove(&spec.id);
                     active.jobs.end(spec.id, JobState::Failed { reason: reason.clone(), cause: None });
-                    pending.push_back(active.run.job_failed(spec.id, &reason));
+                    pending.push_back(active.run.job_failed(session.kinds(), spec.id, &reason));
                 }
             }
         }
@@ -787,7 +789,7 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
     for (job, reason) in rejected {
         active.jobs.end(job, JobState::Failed { reason: reason.clone(), cause: None });
         settled |= finish(active, job);
-        let progress = active.run.job_failed(job, &reason);
+        let progress = active.run.job_failed(session.kinds(), job, &reason);
         advance(session, active, progress, notices, runtime);
     }
     for event in events {
@@ -798,7 +800,7 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                 active.jobs.end(job, ended(&outputs));
                 match outputs {
                     Ok(outputs) => active.run.job_done(session.kinds(), job, outputs),
-                    Err(reason) => active.run.job_failed(job, &reason),
+                    Err(reason) => active.run.job_failed(session.kinds(), job, &reason),
                 }
             }
             Event::Failed { job, error } => match unaccounted(active, job, budget) {
@@ -814,30 +816,30 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                     }
                     match outputs {
                         Ok(outputs) => active.run.job_done(session.kinds(), job, outputs),
-                        Err(reason) => active.run.job_failed(job, &reason),
+                        Err(reason) => active.run.job_failed(session.kinds(), job, &reason),
                     }
                 }
                 None => {
                     settled |= finish(active, job);
                     active.jobs.end(job, JobState::Failed { reason: error.clone(), cause: None });
-                    active.run.job_failed(job, &error)
+                    active.run.job_failed(session.kinds(), job, &error)
                 }
             },
             Event::Cancelled { job } => {
                 settled |= finish(active, job);
                 active.jobs.end(job, JobState::Cancelled);
-                active.run.job_failed(job, CANCELLED)
+                active.run.job_cancelled(session.kinds(), job, CANCELLED)
             }
             Event::Skipped { job, .. } => {
                 settled |= finish(active, job);
                 if active.cancelled {
                     // Stopped by the run's own cancel, not by a failure.
                     active.jobs.end(job, JobState::Cancelled);
-                    active.run.job_failed(job, CANCELLED)
+                    active.run.job_cancelled(session.kinds(), job, CANCELLED)
                 } else {
                     let reason = "skipped because an earlier job failed";
                     active.jobs.end(job, JobState::Failed { reason: reason.into(), cause: None });
-                    active.run.job_failed(job, reason)
+                    active.run.job_failed(session.kinds(), job, reason)
                 }
             }
             Event::Started { job, attempt } => {

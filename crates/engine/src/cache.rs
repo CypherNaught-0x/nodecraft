@@ -80,7 +80,8 @@ pub fn hits(
                 if index.len() >= MAX_SCANNED {
                     break;
                 }
-                if let Some(hash) = generation.input_hash {
+                // A partial result (#480) is never reused.
+                if let Some(hash) = generation.input_hash.filter(|_| !generation.is_partial()) {
                     index.entry((node.kind.as_str(), hash)).or_insert((node.id, generation));
                 }
             }
@@ -96,10 +97,10 @@ pub fn hits(
             let Ok(Some(current)) = hasher.hash(canvas, kinds, *id, &BTreeMap::new()) else { continue };
             let active = node.active.and_then(|a| node.history.iter().find(|g| g.id == a));
             // Current now; a hit upstream in this round may still make it reusable next round.
-            if active.is_some_and(|g| g.input_hash == Some(current)) {
+            if active.is_some_and(|g| g.input_hash == Some(current) && !g.is_partial()) {
                 continue;
             }
-            if let Some(own) = node.history.iter().find(|g| g.input_hash == Some(current)) {
+            if let Some(own) = node.history.iter().find(|g| g.input_hash == Some(current) && !g.is_partial()) {
                 round.push(Hit::Own { node: *id, generation: own.id });
             } else if let Some((_, other)) = index.get(&(node.kind.as_str(), current)).filter(|(owner, _)| owner != id) {
                 let generation = Generation {
@@ -108,6 +109,7 @@ pub fn hits(
                     input_hash: Some(current),
                     items: other.items.clone(),
                     settings: other.settings.clone(),
+                    incomplete: None,
                 };
                 if nodecraft_exec::run::record_changes(canvas_id, node, generation.clone()).is_ok() {
                     round.push(Hit::Copy { node: *id, generation });
