@@ -236,7 +236,10 @@ impl GenerationKind {
                         return Err(bad(self.output, "{noun} media inputs must be assets"));
                     };
                     if !role.modality.accepts_mime(asset.mime.essence()) {
-                        return Err(bad(self.output, "a {noun} media input has the wrong kind of asset for its role"));
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!("input {} takes {:?} assets, not {}", role.role, role.modality, asset.mime.essence()),
+                        ));
                     }
                     count = count.saturating_add(1);
                     if count > usize::from(role.max) {
@@ -364,7 +367,8 @@ impl NodeKind for GenerationKind {
         inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
     }
     /// Wired media is accepted when one of the model's modes declares a role of every connected
-    /// modality (#502); `plan` then checks roles, counts and asset types by port.
+    /// modality (#502); `plan` then checks roles, counts and asset types by port. The mode named
+    /// here is advisory: `plan` resolves the mode again from asset counts and may pick another.
     fn instance_mode(&self, node: &Node, inputs: &[PortType]) -> Result<Option<ModeId>, Error> {
         self.resolve_instance(node)?;
         if inputs.iter().all(|p| p.modality == Modality::Text) {
@@ -394,12 +398,24 @@ impl NodeKind for GenerationKind {
             {
                 return Err(bad(self.output, "{noun} input names an unavailable port"));
             }
+            // The planner folds a port's wires into one list, so a media role counts its assets.
+            let n = match (&input.value, input.port == PROMPT) {
+                (Value::List(items), false) => items.len(),
+                _ => 1,
+            };
             let count = wires.entry(input.port.as_str()).or_insert(0usize);
-            *count = count.checked_add(1).ok_or_else(|| bad(self.output, "too many {noun} input wires"))?;
+            *count = count.checked_add(n).ok_or_else(|| bad(self.output, "too many {noun} input wires"))?;
         }
         // Count actual connected inputs, not composed text fragments or the local prompt.
         // In particular local text is never a substitute for a required non-inline wire.
-        let mode_id = definition.contract.resolve_mode(&wires, true)?.ok_or_else(|| bad(self.output, "{noun} model has no declared input mode"))?;
+        let mode_id = match definition.contract.resolve_mode(&wires, true) {
+            Ok(mode) => mode.ok_or_else(|| bad(self.output, "{noun} model has no declared input mode"))?,
+            // With one mode, say which role the inputs break rather than that no mode fits.
+            Err(error) => match definition.model.modes.as_slice() {
+                [only] => return Err(self.media(only, ctx.inputs).err().unwrap_or(error)),
+                _ => return Err(error),
+            },
+        };
         let mode = definition.model.modes.iter().find(|mode| mode.id == *mode_id).ok_or_else(|| bad(self.output, "{noun} model mode is unavailable"))?;
         // Media roles are sent as assets (#502); a required text role other than the prompt has
         // no source yet.
