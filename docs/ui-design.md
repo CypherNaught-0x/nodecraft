@@ -27,12 +27,14 @@ same structure with the values inverted.
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 | `duplicate_offset` | 40 world points | 40 world points | duplicate displacement on both axes, independent of zoom |
 | `danger` | `#f06a5f` | `#c4372b` | errors and failed states in chrome |
+| `prompt_fill` | `#1a1a1d` | `#f4f4f5` | a generation card's prompt composer (text ≥ 7:1, labels ≥ 4.5:1 against it) |
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` | `#e07a5a` / `#8fc35a` / `#a0a0a8` | `#b0482a` / `#4f8a1f` / `#6b6b74` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per
-additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally.
+additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally. The composer's submit button is 28
+points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.
@@ -68,6 +70,9 @@ selected border more visible than the resting one, in both themes.
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
+| Enter on a focused generation card, ⌘/Ctrl+Enter in its prompt, or its round arrow button | quote a run of that card (`run.quote`) and show its price, anything blocking it and any unknown part; **Generate for …** starts it (`run.start` with the quote's token and totals), Cancel or Escape starts nothing. An edit after the quote makes it stale: nothing starts until it is quoted again. F2 or double-click still renames a generation card |
+| `−` / `+` beside a generation card's prompt | step the model's image count (the parameter tagged `generated_image_count`) within its range |
+| Select one generation card | a toolbar above it: the model (opens the model picker), the aspect ratio (the choice tagged `aspect_ratio`, or else one whose options are all `W:H`), and Expand once it has an image |
 | Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
 | ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
 

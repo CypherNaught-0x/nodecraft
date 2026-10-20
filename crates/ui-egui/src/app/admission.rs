@@ -5,6 +5,7 @@ pub(crate) struct Admitted<'a> {
     pub descriptor: Cow<'a, nodecraft_nodes::NodeDescriptor>,
     pub visible: BTreeSet<String>,
     pub enabled: Option<BTreeSet<String>>,
+    pub roles: crate::card::Roles,
     pub bytes: usize,
 }
 pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&SchemaCache>) -> Option<Admitted<'a>> {
@@ -14,11 +15,14 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
     }
     let enabled: Option<BTreeSet<String>>;
     let visible: BTreeSet<String>;
+    let mut roles = crate::card::Roles::default();
     if node.kind == nodecraft_nodes::generation::KIND {
         let catalog = session.generation_catalog().ok()?;
         let kind = session.kinds().get(&node.kind).ok()?;
         catalog.validate_definition_binding(kind).ok()?;
-        let resolution = kind.instance_contract(node).ok()?.resolve(&node.params, false).ok()?;
+        let contract = kind.instance_contract(node).ok()?;
+        let resolution = contract.resolve(&node.params, false).ok()?;
+        roles = crate::card::Roles::of(&contract);
         visible = resolution.params.iter().filter(|state| state.visible).map(|state| state.name.clone()).collect();
         enabled = Some(resolution.params.iter().filter(|state| state.enabled).map(|state| state.name.clone()).collect());
     } else {
@@ -31,11 +35,15 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
         Cow::Owned(_) => None,
     };
     let bytes = known.or_else(|| descriptor_bytes(&descriptor))?;
-    let overhead = visible.iter().chain(enabled.iter().flatten()).fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)));
+    let overhead = visible
+        .iter()
+        .chain(enabled.iter().flatten())
+        .fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)))
+        .saturating_add(roles.bytes());
     if bytes.checked_add(overhead)? > MAX_SCHEMA_CACHE_BYTES {
         return None;
     }
-    Some(Admitted { descriptor, visible, enabled, bytes })
+    Some(Admitted { descriptor, visible, enabled, roles, bytes })
 }
 
 /// Navigation needs no view-cache access; keep the cached implementation private to App.

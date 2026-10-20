@@ -116,6 +116,14 @@ pub struct Tokens {
     /// The ring around inputs that accept the noodle being dragged: gap outside the port, width.
     pub drop_ring_gap: f32,
     pub drop_ring_width: f32,
+    /// The prompt composer on a generation card (#83): its fill, and the submit arrow's size.
+    pub prompt_fill: Color32,
+    pub submit_size: f32,
+    /// The toolbar over a selected generation card: its height and gap above the card (screen
+    /// points), and the default width of the image viewer it opens.
+    pub toolbar_height: f32,
+    pub toolbar_gap: f32,
+    pub viewer_width: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -204,6 +212,11 @@ pub const DARK: Tokens = Tokens {
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
+    prompt_fill: Color32::from_rgb(0x1a, 0x1a, 0x1d),
+    submit_size: 28.0,
+    toolbar_height: 32.0,
+    toolbar_gap: 10.0,
+    viewer_width: 720.0,
 };
 
 pub const LIGHT: Tokens = Tokens {
@@ -238,6 +251,7 @@ pub const LIGHT: Tokens = Tokens {
         Color32::from_rgb(109, 63, 161),
         Color32::from_rgb(154, 53, 120),
     ],
+    prompt_fill: Color32::from_rgb(0xf4, 0xf4, 0xf5),
     ..DARK
 };
 
@@ -329,6 +343,8 @@ mod tests {
             assert!(contrast(t.text, t.card_fill) >= 7.0, "{kind:?} body text");
             assert!(contrast(t.text_muted, t.canvas_bg) >= 4.5, "{kind:?} card label");
             assert!(contrast(t.handle_glyph, t.handle_fill) >= 7.0, "{kind:?} handle");
+            assert!(contrast(t.text, t.prompt_fill) >= 7.0, "{kind:?} prompt");
+            assert!(contrast(t.text_muted, t.prompt_fill) >= 4.5, "{kind:?} prompt hint");
         }
     }
 

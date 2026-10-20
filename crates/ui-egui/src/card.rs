@@ -14,6 +14,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
 };
 
+pub(crate) mod generate;
+pub use generate::Roles;
+
 pub const BODY_MIN_ZOOM: f32 = 0.55;
 pub const MIN_TEXT_PX: f32 = 5.0;
 
@@ -48,9 +51,14 @@ struct Draft {
 pub enum Intent {
     Move(Position),
     Title(String),
-    Parameter { name: String, value: Option<Value> },
+    Parameter {
+        name: String,
+        value: Option<Value>,
+    },
     Model,
     History(HistoryIntent),
+    /// Quote a run of this card and ask before starting it (#83).
+    Generate,
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -116,6 +124,8 @@ pub struct CardView<'a> {
     /// Rows and columns to draw over the image while a split is being picked (#337), with the
     /// image's full size when known (so lines fall where the split will cut).
     pub grid: Option<(u32, u32, Option<[u32; 2]>)>,
+    /// The parameters a generation card's composer draws itself (#83).
+    pub roles: Option<&'a Roles>,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -140,7 +150,8 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, image, grid } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, image, grid, roles } = card;
+    let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -238,7 +249,12 @@ pub fn show(
             job.wrap = egui::text::TextWrapping { max_width: label_rect.width(), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
             let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
             ui.painter().with_clip_rect(label_rect.intersect(ui.clip_rect())).galley(label_rect.left_top(), galley, t.text_muted);
-            if r.double_clicked() || (r.has_focus() || response.has_focus()) && ui.input(|i| i.key_pressed(egui::Key::F2) || i.key_pressed(egui::Key::Enter)) {
+            // Enter on a focused generation card generates; elsewhere it renames, as F2 does.
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let focused = r.has_focus() || response.has_focus();
+            if composer.is_some() && focused && enter {
+                intents.push(Intent::Generate);
+            } else if r.double_clicked() || focused && (enter || ui.input(|i| i.key_pressed(egui::Key::F2))) {
                 editor.title = Some(Draft { original: node.title.clone(), text: node.title.clone(), focus: true, was_focused: false });
             }
             r.on_hover_text("Double-click or press F2 to rename. Clear the title to use the prompt.");
@@ -265,6 +281,10 @@ pub fn show(
             inner = rest;
             show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &image, grid, t);
         }
+        if let Some(d) = composer {
+            inner = generate::show(&mut ui, inner, generate::Composer { node, descriptor: d, roles, visible, enabled }, editor, &mut intents, t);
+        }
+        let own = |name: &str| composer.is_some() && (name == nodecraft_nodes::generation::PROMPT || roles.and_then(|r| r.count.as_deref()) == Some(name));
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
@@ -280,7 +300,7 @@ pub fn show(
                 }
                 Some(d) => {
                     for spec in &d.params.params {
-                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) {
+                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
                             continue;
                         }
                         ui.push_id(&spec.name, |ui| {
@@ -348,7 +368,7 @@ pub fn show(
 }
 
 /// An image preview fitted in `area`, keeping its aspect; or a placeholder saying why not.
-fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, grid: Option<(u32, u32, Option<[u32; 2]>)>, t: &Tokens) {
+pub(crate) fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, grid: Option<(u32, u32, Option<[u32; 2]>)>, t: &Tokens) {
     use crate::preview::Preview;
     let response = ui.interact(area, ui.id().with("image"), Sense::hover());
     let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));

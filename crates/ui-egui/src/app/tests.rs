@@ -2104,6 +2104,7 @@ fn last_shared_descriptor_removal_and_replacement_release_accounting() {
         descriptor,
         visible: BTreeSet::new(),
         enabled: None,
+        roles: card::Roles::default(),
         catalog: None,
         borrowed_identity: Some(identity),
         descriptor_bytes,
