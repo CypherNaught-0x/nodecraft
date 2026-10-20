@@ -31,6 +31,8 @@ pub enum MockFailure {
     Poll(ErrorKind),
     /// The provider reports the job itself as failed.
     Job(ErrorKind),
+    /// Asked to cancel, the provider answers with this kind and keeps running the job.
+    Cancel(ErrorKind),
 }
 
 /// How a mock model behaves.
@@ -62,6 +64,8 @@ struct State {
     /// Results of jobs finished at submit, by key: a retry gets the original result.
     finished: BTreeMap<String, Completed>,
     cancelled: Vec<String>,
+    /// Cancels refused ([`MockFailure::Cancel`]).
+    cancel_refused: u32,
     polls: u64,
     scripted: BTreeMap<String, scripts::Progress>,
 }
@@ -108,6 +112,11 @@ impl MockProvider {
     /// Handles the host asked to cancel; their jobs report `Cancelled` from then on.
     pub fn cancelled(&self) -> Vec<String> {
         self.lock().cancelled.clone()
+    }
+
+    /// Cancels it refused ([`MockFailure::Cancel`]).
+    pub fn cancels_refused(&self) -> u32 {
+        self.lock().cancel_refused
     }
 
     /// Polls received.
@@ -301,6 +310,14 @@ impl Provider for MockProvider {
 
     fn cancel<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
         let mut state = self.lock();
+        let refused = state.pending.get(&handle.remote_id).and_then(|(job, _)| self.models.get(&job.model)).and_then(|model| match model.fail {
+            Some(MockFailure::Cancel(kind)) => Some(kind),
+            _ => None,
+        });
+        if let Some(kind) = refused {
+            state.cancel_refused = state.cancel_refused.saturating_add(1);
+            return Box::pin(async move { Err(ProviderError::new(kind, "mock cancel refused")) });
+        }
         let key = state.pending.get(&handle.remote_id).map(|(job, _)| job.idempotency_key.clone());
         if let Some(progress) = key.and_then(|key| state.scripted.get_mut(&key)) {
             progress.terminal = Some(scripts::Terminal::Cancelled);

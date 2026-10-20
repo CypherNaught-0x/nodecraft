@@ -10,6 +10,7 @@ use nodecraft_engine::{
     provider_routing::ProviderRouting,
     run_cmds::RunCatalog,
     run_host::{MAX_RUNS, RunHost, RunNotice},
+    run_jobs::{JobState, JobView},
 };
 use nodecraft_exec::{
     cost::{Budgets, UsageLog},
@@ -249,12 +250,11 @@ fn cancelling_a_run_mid_poll_ends_it_and_settles_the_job() {
         assert!(Instant::now() < deadline, "the job was never submitted");
         std::thread::sleep(Duration::from_millis(1));
     }
-    // The source's end was reported before the model job started; absorb it.
-    f.host.pump(&mut f.session);
-    assert_eq!(f.host.running().into_iter().collect::<Vec<_>>(), [(C, WRITER)], "the finished source isn't running");
+    // The source's end may still be on its way from the driver; wait until it is absorbed.
+    pump_until(&mut f, "the finished source isn't running", |f| f.host.running().into_iter().collect::<Vec<_>>() == [(C, WRITER)]);
     f.host.cancel_all();
     let notices = drive(&mut f);
-    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node, .. } if *node == WRITER)), "{notices:?}");
+    assert!(notices.contains(&RunNotice::Cancelled { canvas: C, node: WRITER }), "{notices:?}");
     assert_eq!(notices.last(), Some(&RunNotice::Finished { canvas: C }));
     assert!(history(&f.session).is_empty());
     // Settled, not left reserved: the next quote is unaffected.
@@ -338,4 +338,165 @@ fn cancelling_drops_runs_that_have_not_started() {
         [RunNotice::Refused { reason: "cancelled before it started".into() }, RunNotice::Refused { reason: "cancelled before it started".into() }]
     );
     assert!(f.mock.requests().is_empty());
+}
+
+// The queue panel's view of jobs (#82).
+
+/// `n` more text cards wired to the source, all routed to the fixture's mock.
+fn more_writers(f: &mut Fixture, n: u8) -> Vec<NodeId> {
+    let mut routing = ProviderRouting::new();
+    let binding = routing.bind_default(Arc::new(f.mock.clone())).unwrap();
+    routing.select(WRITER, "mock", binding.target()).unwrap();
+    let ids: Vec<NodeId> = (0..n).map(|i| NodeId::from_bytes([60 + i; 16])).collect();
+    for (i, id) in ids.iter().enumerate() {
+        add(f, *id, TEXT_KIND, 400 * i as i32);
+        connect(f, 70 + i as u8, SOURCE, *id, "prompt");
+        routing.select(*id, "mock", binding.target()).unwrap();
+    }
+    let preview = f.session.dispatch("node.model_preview", &json!({"canvas":C,"nodes":ids,"model":MODEL})).unwrap();
+    let commit = json!({"canvas":C,"nodes":ids,"model":MODEL,"expected_revision":f.session.revision(),"preview_binding":preview["binding"]});
+    f.session.dispatch("node.set_model", &commit).unwrap();
+    f.session.set_provider_routing(routing).unwrap();
+    ids
+}
+
+fn job(f: &RunHost, node: NodeId) -> JobView {
+    f.jobs().into_iter().rev().find(|view| view.node == node).unwrap()
+}
+
+/// Pumps until `done` holds.
+fn pump_until(f: &mut Fixture, what: &str, done: impl Fn(&Fixture) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done(f) {
+        f.host.pump(&mut f.session);
+        assert!(Instant::now() < deadline, "{what}: {:?}", f.host.jobs());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn the_queue_shows_each_job_with_its_provider_price_and_end() {
+    let mut f = fixture(MockProvider::standard());
+    start(&mut f);
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+    let writer = job(&f.host, WRITER);
+    assert_eq!((writer.provider.as_deref(), writer.model.as_deref()), (Some("mock"), Some("mock-text")));
+    assert_eq!(writer.estimate, Some(Money::new(Currency::USD, 10_000)));
+    assert_eq!(writer.state, JobState::Done);
+    assert!(writer.sent, "the provider had it");
+    let source = job(&f.host, SOURCE);
+    assert_eq!((source.provider, source.state), (None, JobState::Done), "local work has no provider");
+    assert_eq!(f.host.jobs().len(), 2, "one row per job, however many reports it had");
+    f.host.clear_finished();
+    assert!(f.host.jobs().is_empty());
+}
+
+#[test]
+fn a_failed_job_names_its_cause() {
+    let mut failing = MockModel::new(MockOutput::Text);
+    failing.fail = Some(MockFailure::Submit(ErrorKind::Auth));
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), failing)]));
+    start(&mut f);
+    drive(&mut f);
+    let writer = job(&f.host, WRITER);
+    assert!(matches!(&writer.state, JobState::Failed { cause: Some(ErrorKind::Auth), .. }), "{writer:?}");
+    assert_eq!(writer.status(), "Failed: API key");
+    assert!(writer.sent, "a job that started may have reached the provider");
+}
+
+#[test]
+fn cancelling_a_queued_job_drops_it_unsent_and_a_running_one_leaves_its_cost_unresolved() {
+    let mut slow = MockModel::new(MockOutput::Text);
+    slow.polls = u32::MAX;
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), slow)]));
+    // Five cards on one provider: four run (the lane's limit), one waits.
+    let mut cards = more_writers(&mut f, 4);
+    cards.push(WRITER);
+    start_request(&mut f, json!({"canvas":C,"mode":"selected","nodes":[SOURCE, WRITER, cards[0], cards[1], cards[2], cards[3]]}));
+    pump_until(&mut f, "four jobs reached the provider", |f| f.mock.requests().len() == 4 && f.host.jobs().iter().filter(|v| v.sent).count() == 4);
+    let waiting: Vec<JobView> = f.host.jobs().into_iter().filter(|v| v.state == JobState::Queued).collect();
+    assert_eq!(waiting.len(), 1, "{:?}", f.host.jobs());
+    let queued = waiting[0].clone();
+    f.host.cancel(queued.key).unwrap();
+    assert_eq!(job(&f.host, queued.node).status(), "Cancelling…");
+    pump_until(&mut f, "the queued job ended", |f| job(&f.host, queued.node).state.is_final());
+    let ended = job(&f.host, queued.node);
+    assert_eq!((ended.state.clone(), ended.sent, ended.status()), (JobState::Cancelled, false, "Cancelled before it was sent".to_owned()));
+    // A running one: the provider is asked to cancel, and the cost is not shown as refunded.
+    let running = f.host.jobs().into_iter().find(|v| !v.state.is_final() && v.provider.is_some()).unwrap();
+    f.host.cancel(running.key).unwrap();
+    pump_until(&mut f, "the running job ended", |f| job(&f.host, running.node).state.is_final());
+    let ended = job(&f.host, running.node);
+    assert_eq!(ended.state, JobState::Cancelled);
+    assert!(ended.sent && ended.status().contains("cost unresolved"), "{ended:?}");
+    assert_eq!(f.mock.requests().len(), 4, "the cancelled queued job was never sent");
+    assert!(f.host.cancel(running.key).is_err(), "an ended job can't be cancelled again");
+    f.host.cancel_all();
+    let notices = drive(&mut f);
+    assert_eq!(notices.last(), Some(&RunNotice::Finished { canvas: C }));
+    assert!(history(&f.session).is_empty());
+}
+
+#[test]
+fn a_job_that_finishes_before_its_cancel_keeps_its_result() {
+    let mut f = fixture(MockProvider::standard());
+    start(&mut f);
+    pump_until(&mut f, "the model job was queued", |f| f.host.jobs().iter().any(|v| v.node == WRITER));
+    // From here nothing is absorbed until the cancel is in: the model finishes at submit, so its
+    // result is already on its way when the cancel is asked for.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while f.mock.requests().is_empty() {
+        assert!(Instant::now() < deadline, "the job was never sent");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let live = job(&f.host, WRITER);
+    assert!(!live.state.is_final(), "{live:?}");
+    f.host.cancel(live.key).unwrap();
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+    let writer = job(&f.host, WRITER);
+    assert_eq!(writer.state, JobState::Done);
+    assert!(writer.cancel_requested);
+    assert_eq!(writer.status(), "Finished before it could be cancelled");
+    assert_eq!(history(&f.session).len(), 1);
+}
+
+#[test]
+fn a_cancel_the_provider_refuses_keeps_following_the_job_to_its_result() {
+    let mut stubborn = MockModel::new(MockOutput::Text);
+    // About a millisecond a poll: long enough to cancel mid-run, short enough to finish.
+    stubborn.polls = 300;
+    stubborn.fail = Some(MockFailure::Cancel(ErrorKind::Network));
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), stubborn)]));
+    start(&mut f);
+    pump_until(&mut f, "the job is running at the provider", |f| {
+        f.host.jobs().iter().any(|v| v.node == WRITER && matches!(v.state, JobState::Running { fraction: Some(_), .. }))
+    });
+    f.host.cancel(job(&f.host, WRITER).key).unwrap();
+    pump_until(&mut f, "the provider refused", |f| job(&f.host, WRITER).cancel_refused || job(&f.host, WRITER).state.is_final());
+    let refused = job(&f.host, WRITER);
+    if !refused.state.is_final() {
+        assert_eq!(refused.status(), "Cancel refused; still running (may be billed)");
+    }
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "the billed result is kept: {notices:?}");
+    let writer = job(&f.host, WRITER);
+    assert_eq!((writer.state.clone(), writer.cancel_refused), (JobState::Done, true));
+    assert_eq!(writer.status(), "Finished; the provider refused to cancel");
+    assert_eq!(f.mock.cancels_refused(), 1);
+    assert_eq!(history(&f.session).len(), 1);
+}
+
+#[test]
+fn a_cancelled_step_is_reported_as_cancelled_not_failed() {
+    let mut slow = MockModel::new(MockOutput::Text);
+    slow.polls = u32::MAX;
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), slow)]));
+    start(&mut f);
+    pump_until(&mut f, "the job is with the provider", |f| f.host.jobs().iter().any(|v| v.node == WRITER && v.sent));
+    f.host.cancel(job(&f.host, WRITER).key).unwrap();
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Cancelled { canvas: C, node: WRITER }), "{notices:?}");
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. })), "{notices:?}");
 }
