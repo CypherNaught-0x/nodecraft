@@ -107,7 +107,7 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.tint",
     ];
     let mut image_one: Vec<&str> = image_actions.to_vec();
-    image_one.extend([nodecraft_nodes::batch::ID, router::ID]);
+    image_one.extend([nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::element::ID]);
     image_one.sort();
     let mut got = ids(PortType { modality: Modality::Image, many: false });
     got.sort();
@@ -120,8 +120,8 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     assert_eq!(text_many, [nodecraft_nodes::batch::ID, router::ID, "text.concat", "text.template"], "only list inputs take a list");
     assert_eq!(
         ids(PortType { modality: Modality::Image, many: true }),
-        [nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID],
-        "the Layer Editor takes a list of images"
+        [nodecraft_nodes::element::ID, nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID],
+        "an Element and the Layer Editor take a list of images"
     );
     for modality in [Modality::Video, Modality::Audio] {
         assert_eq!(ids(PortType { modality, many: false }), [nodecraft_nodes::batch::ID, router::ID], "{modality:?}");

@@ -16,6 +16,7 @@ pub mod comment_cmds;
 pub mod create_cmds;
 pub mod describe_cmds;
 pub mod edge_cmds;
+pub mod element_cmds;
 mod execution_identity;
 pub mod file_cmds;
 pub mod generate;

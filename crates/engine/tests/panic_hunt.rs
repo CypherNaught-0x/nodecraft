@@ -132,6 +132,17 @@ fn template(id: &str) -> (Session, Value) {
             nodecraft_graph::Change::AddNode { canvas: canvas(), node: source }.apply(&mut document).unwrap();
         }
     }
+    if id.starts_with("element.") {
+        // An image to make the Element from, and for the sheet an Element already made of it.
+        let mut seed = Session::new(document.clone()).unwrap();
+        seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.image","pos":{"x":0,"y":0}})).unwrap();
+        if id != "element.create" {
+            let from = [json!({"node":node_id(5),"port":"out"})];
+            let create = json!({"canvas":canvas(),"id":node_id(6),"name":"hero","from":from,"edges":[nodecraft_types::EdgeId::from_bytes([0x76; 16])],"pos":{"x":1,"y":2}});
+            seed.dispatch("element.create", &create).unwrap();
+        }
+        document = seed.document().clone();
+    }
     if matches!(id, "node.model_preview" | "node.set_model") {
         let seed = Session::new(document.clone()).unwrap();
         let supplied = [
@@ -459,6 +470,11 @@ fn template(id: &str) -> (Session, Value) {
         "layers.remove" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1"}),
         "layers.reorder" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","index":0}),
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
+        "element.create" => json!({"canvas":canvas(),"id":node_id(6),"name":"hero","category":"character","guidelines":"red scarf",
+            "from":[{"node":node_id(5),"port":"out"}],"edges":[nodecraft_types::EdgeId::from_bytes([0x76; 16])],"pos":{"x":1,"y":2}}),
+        "element.sheet" => json!({"canvas":canvas(),"element":node_id(6),"id":node_id(7),
+            "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2}}),
+        "element.list" => json!({"canvas":canvas()}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)
