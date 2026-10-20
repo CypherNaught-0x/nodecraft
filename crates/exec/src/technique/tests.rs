@@ -570,3 +570,129 @@ fn every_item_failing_inside_a_fanned_technique_fails_its_node() {
     assert!(finished.is_empty(), "nothing finished, nothing is recorded: {finished:?}");
     assert_eq!(failed.iter().map(|f| f.node).collect::<Vec<_>>(), vec![T], "{failed:?}");
 }
+
+/// Places a technique with a Words input on `brief` at `T`, fanned out by a batch of `items`.
+fn placed_version(kinds: Registry, brief: NodeId, nodes: Vec<Node>, edges: Vec<Edge>, outputs: Vec<TechniquePort>, items: &str) -> (Project, Registry) {
+    let technique = Technique {
+        id: TechniqueId::from_bytes([12; 16]),
+        version: 1,
+        name: "Inner".into(),
+        description: String::new(),
+        category: String::new(),
+        tags: Vec::new(),
+        inputs: vec![port("Words", brief, "out", TEXT)],
+        outputs,
+        params: Vec::new(),
+        source: None,
+        retired: false,
+    };
+    let version = Canvas::technique(V, "Inner v1", technique, nodes, edges).unwrap();
+    let interface = technique::interface_of(&version, &kinds).unwrap();
+    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(T, interface.config().unwrap(), &Default::default()).unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([4; 16]), "Techniques").unwrap();
+    let changes = vec![
+        Change::AddCanvas { canvas: version },
+        Change::AddCanvas { canvas: Canvas::new(C, "Canvas") },
+        Change::AddNode { canvas: C, node: placed },
+        Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, items) },
+        Change::Connect { canvas: C, edge: edge(41, (BATCH, "item"), (T, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    (project, kinds)
+}
+
+/// Records `result` as `T`'s new result, under an id of its own (every run here has the same).
+fn record(project: &mut Project, result: &StepResult) {
+    let node = project.canvases().get(&C).unwrap().nodes().get(&T).unwrap().clone();
+    let mut generation = result.generation.clone();
+    generation.id = nodecraft_types::GenerationId::from_bytes([u8::try_from(node.history.len()).unwrap().saturating_add(50); 16]);
+    Changeset::new(crate::run::record_changes(C, &node, generation).unwrap()).apply(project).unwrap();
+}
+
+/// An item failing in the first of two fanned inner steps is carried past the second, named
+/// once (#536); a re-run that fails it again keeps the finished items, and the next completes.
+#[test]
+fn an_item_failing_early_in_a_chain_inside_a_technique_is_kept_until_it_finishes() {
+    let kinds = kinds();
+    let (brief, loud, louder) = (NodeId::from_bytes([90; 16]), NodeId::from_bytes([91; 16]), NodeId::from_bytes([92; 16]));
+    let mut first = node(&kinds, loud, "test.shout", "");
+    first.title = "Loud".into();
+    let mut second = node(&kinds, louder, "test.shout", "");
+    second.title = "Louder".into();
+    let nodes = vec![node(&kinds, brief, "source.text", "cat"), first, second];
+    let edges = vec![edge(93, (brief, "out"), (loud, "in"), 0), edge(94, (loud, "out"), (louder, "in"), 0)];
+    let (mut project, kinds) = placed_version(kinds, brief, nodes, edges, vec![port("Shouted", louder, "out", TEXT)], "fox\nowl");
+
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed, ran) = drive_failing(&project, &kinds, &plan, "OWL");
+    let [partial] = finished.as_slice() else { panic!("{finished:?} {failed:?}") };
+    let [failure] = failed.as_slice() else { panic!("{failed:?}") };
+    assert_eq!(failure.reason, "1 of 2 items didn't finish: “Loud”: it said no", "named once, where it failed");
+    assert_eq!(ran.iter().filter(|job| matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("OWL".into()))).count(), 1, "Louder never runs it");
+    record(&mut project, partial);
+
+    // Failing again: the fox is kept, the owl is missing again.
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed, ran) = drive_failing(&project, &kinds, &plan, "OWL");
+    let [again] = finished.as_slice() else { panic!("{finished:?} {failed:?}") };
+    assert!(!ran.iter().any(|job| matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("FOX".into()))), "the fox doesn't run again: {ran:?}");
+    assert_eq!(again.generation.outputs, vec![Value::List(vec![Value::Text("FOX".into()), Value::List(Vec::new())])]);
+    assert_eq!(again.generation.incomplete.as_ref().map(|i| i.missing.len()), Some(1));
+    record(&mut project, again);
+
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed, ran) = drive_failing(&project, &kinds, &plan, "");
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(!ran.iter().any(|job| matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("FOX".into()))), "{ran:?}");
+    assert_eq!(outputs(&finished), vec![(T, vec!["FOX+OWL".to_owned()])]);
+}
+
+/// Text in, with every value of its `all` list after it.
+struct Gather(NodeDescriptor);
+impl NodeKind for Gather {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("gather").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        let of = |port: &str| ctx.inputs.iter().filter(|input| input.port == port).map(|input| text_of(&input.value)).collect::<Vec<_>>().join("+");
+        Ok(vec![JobSpec::Source { node: ctx.node.id, output: "out".into(), value: Value::Text(format!("{}|{}", of("in"), of("all"))) }])
+    }
+}
+
+/// An inner step that reads every item of the one before it can't be resumed item by item: the
+/// technique node runs in full again (#536).
+#[test]
+fn a_technique_whose_items_read_each_other_runs_again_in_full() {
+    let mut kinds = kinds();
+    let gather = NodeDescriptor {
+        id: "test.gather".into(),
+        label: "Gather".into(),
+        category: Category::Action,
+        inputs: vec![Port { name: "in".into(), port_type: TEXT }, Port { name: "all".into(), port_type: LIST }],
+        outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+        params: ParamSchema { params: Vec::new() },
+        quick_add: None,
+    };
+    kinds.register(Box::new(Gather(gather))).unwrap();
+    let (brief, shout, gathered) = (NodeId::from_bytes([95; 16]), NodeId::from_bytes([96; 16]), NodeId::from_bytes([97; 16]));
+    let nodes = vec![node(&kinds, brief, "source.text", "cat"), node(&kinds, shout, "test.shout", ""), node(&kinds, gathered, "test.gather", "")];
+    let edges =
+        vec![edge(98, (brief, "out"), (shout, "in"), 0), edge(99, (shout, "out"), (gathered, "in"), 0), edge(100, (shout, "out"), (gathered, "all"), 0)];
+    let (mut project, kinds) = placed_version(kinds, brief, nodes, edges, vec![port("Gathered", gathered, "out", TEXT)], "fox\nowl");
+
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed, _) = drive_failing(&project, &kinds, &plan, "OWL|FOX+OWL");
+    let [partial] = finished.as_slice() else { panic!("{finished:?} {failed:?}") };
+    assert_eq!(partial.generation.incomplete.as_ref().map(|i| i.missing.len()), Some(1), "{partial:?}");
+    record(&mut project, partial);
+
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    assert!(plan.steps.iter().all(|s| s.fanout.as_ref().is_none_or(|f| f.resume.is_none())), "no resume: {plan:?}");
+    let (finished, failed, ran) = drive_failing(&project, &kinds, &plan, "");
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(ran.iter().any(|job| matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("FOX".into()))), "the fox runs again: {ran:?}");
+    assert_eq!(outputs(&finished), vec![(T, vec!["FOX|FOX+OWL+OWL|FOX+OWL".to_owned()])]);
+}

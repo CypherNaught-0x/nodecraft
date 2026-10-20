@@ -10,7 +10,7 @@
 //! items of the inlined steps fanned over its items ([`resume_techniques`]); the rest are copied
 //! from the technique node's partial result.
 
-use crate::planner::Step;
+use crate::planner::{InputSource, Step};
 use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
 use nodecraft_graph::{Canvas, MissingItem};
 use nodecraft_nodes::Registry;
@@ -55,9 +55,11 @@ pub(crate) fn resume_partials(canvas: &Canvas, kinds: &Registry, steps: &mut [St
 
 /// Plans only the missing items of technique nodes fanned out by a batch whose partial result
 /// was made from the inputs they have now (#536). Each step inlined for one runs only those
-/// items when every inlined step is either fanned over the technique node's items, or runs once
-/// without reading a fanned one (so it runs again in full); and nothing else in the run feeds
-/// them. Anything else runs in full.
+/// items when nothing else in the run feeds them and every inlined step either is fanned over
+/// the technique node's items, each item reading only the same item of the steps before it, or
+/// runs once, for free, without reading a fanned one (so it runs again in full and makes what it
+/// made before). Anything else runs in full: an item that reads other items, or a paid step
+/// shared by every item, would make the missing items from results this run doesn't have.
 pub(crate) fn resume_techniques(canvas: &Canvas, kinds: &Registry, steps: &mut [Step], inner: &BTreeMap<NodeId, NodeId>) {
     let owners: BTreeSet<NodeId> = inner.values().copied().collect();
     let mut hasher = Hashed::default();
@@ -72,8 +74,8 @@ pub(crate) fn resume_techniques(canvas: &Canvas, kinds: &Registry, steps: &mut [
         let fits = steps.iter().filter(|s| group.contains(&s.node)).all(|s| {
             let fed_inside = s.after.iter().all(|before| group.contains(before));
             let aligned = match &s.fanout {
-                Some(f) => f.items == items && s.jobs.as_ref().is_none_or(|_| f.jobs.len() == items.len()),
-                None => !s.after.iter().any(|before| fanned.contains(before)),
+                Some(f) => f.items == items && s.jobs.as_ref().is_none_or(|_| f.jobs.len() == items.len()) && own_items(f, &fanned),
+                None => !s.after.iter().any(|before| fanned.contains(before)) && s.jobs.as_ref().is_some_and(|jobs| jobs.iter().all(free)),
             };
             fed_inside && aligned
         });
@@ -89,6 +91,22 @@ pub(crate) fn resume_techniques(canvas: &Canvas, kinds: &Registry, steps: &mut [
             fanout.resume = Some(resume);
         }
     }
+}
+
+/// Whether each item of `fanout` reads only the same item of the fanned steps in `fanned`.
+fn own_items(fanout: &crate::planner::Fanout, fanned: &BTreeSet<NodeId>) -> bool {
+    fanout.cells.iter().enumerate().all(|(cell, inputs)| {
+        inputs.iter().flat_map(|input| &input.from).all(|source| match source {
+            InputSource::Item { node, index, .. } => !fanned.contains(node) || *index == cell,
+            InputSource::Step { node, .. } => !fanned.contains(node),
+            InputSource::Value(_) => true,
+        })
+    })
+}
+
+/// Whether a job costs nothing and makes the same result each time it runs.
+fn free(job: &nodecraft_nodes::JobSpec) -> bool {
+    !matches!(job, nodecraft_nodes::JobSpec::Generate { .. })
 }
 
 /// Input hashes, made once per plan.

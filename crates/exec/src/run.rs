@@ -117,6 +117,8 @@ struct StepState {
     /// For a fanned step inlined from a technique (#536): the items its result lacks, and why.
     /// The steps after it, inside the same technique, leave those items out.
     gaps: BTreeMap<usize, (Missing, String)>,
+    /// The items of `missing` copied from an earlier step's gaps, whose reason already names it.
+    inherited: BTreeSet<usize>,
     /// Steps that come after this one.
     dependents: Vec<NodeId>,
 }
@@ -314,6 +316,7 @@ impl Run {
                     job_items: Vec::new(),
                     missing: BTreeMap::new(),
                     gaps: BTreeMap::new(),
+                    inherited: BTreeSet::new(),
                     dependents: Vec::new(),
                 },
             );
@@ -728,6 +731,7 @@ impl Run {
             }
         }
         if let Some(state) = self.steps.get_mut(&node) {
+            state.inherited.extend(gapped.keys().copied());
             state.missing.extend(gapped);
         }
         Ok((jobs, counts))
@@ -900,9 +904,11 @@ impl Run {
     /// prefixes the reason with the node, as its technique node reports it.
     fn gaps(&self, node: NodeId, missing: &BTreeMap<usize, (Missing, String)>) -> BTreeMap<usize, (Missing, String)> {
         let inner = self.inner.contains_key(&node);
+        let inherited = self.steps.get(&node).map(|s| &s.inherited);
+        let named = |item: &usize| inner && !inherited.is_some_and(|i| i.contains(item));
         let mut gaps: BTreeMap<usize, (Missing, String)> = missing
             .iter()
-            .map(|(item, (why, reason))| (*item, (*why, if inner { format!("“{}”: {reason}", self.title(node)) } else { reason.clone() })))
+            .map(|(item, (why, reason))| (*item, (*why, if named(item) { format!("“{}”: {reason}", self.title(node)) } else { reason.clone() })))
             .collect();
         let fanout = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref());
         if let Some(fanout) = fanout
