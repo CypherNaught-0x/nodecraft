@@ -322,7 +322,13 @@ pub struct ProviderRunner {
     on_output: Arc<OutputSink>,
     on_update: Arc<UpdateSink>,
     budget: Option<JobBudget>,
+    write_ahead: Option<Arc<WriteAhead>>,
 }
+
+/// Called before a paid job is first sent, once its estimate is in the usage log: saves what a
+/// restart needs so the charge isn't lost if the process dies mid-submit (#508). An error stops
+/// the job before it is sent, and is its failure reason.
+pub type WriteAhead = dyn Fn() -> Result<(), String> + Send + Sync;
 
 fn lock_log(budget: &JobBudget) -> std::sync::MutexGuard<'_, UsageLog> {
     budget.log.lock().unwrap_or_else(PoisonError::into_inner)
@@ -560,7 +566,13 @@ impl Drop for RunGuard {
 
 impl ProviderRunner {
     pub fn new(runtime: Arc<dyn Runtime>, limits: RunLimits, on_output: Arc<OutputSink>, on_update: Arc<UpdateSink>) -> Self {
-        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None }
+        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None }
+    }
+
+    /// Calls `write_ahead` before each paid job is first sent (see [`WriteAhead`]).
+    pub fn with_write_ahead(mut self, write_ahead: Arc<WriteAhead>) -> Self {
+        self.write_ahead = Some(write_ahead);
+        self
     }
 
     /// Holds paid jobs to `budget` (see the module docs).
@@ -748,6 +760,7 @@ impl JobRunner for ProviderRunner {
         let on_output = Arc::clone(&self.on_output);
         let on_update = Arc::clone(&self.on_update);
         let budget = self.budget.clone();
+        let write_ahead = self.write_ahead.clone();
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
             if start.idempotency_key.is_empty() || start.idempotency_key.len() > 64 || !start.idempotency_key.is_ascii() {
@@ -1024,6 +1037,18 @@ impl JobRunner for ProviderRunner {
                     }
                     on_update(job_id, Sent { key: &key, base: &start.idempotency_key, generation, target: &provider_id }, update);
                 };
+                if handle.is_none()
+                    && queued.charged_price().is_some()
+                    && let Some(write_ahead) = &write_ahead
+                    && let Err(reason) = write_ahead()
+                {
+                    // Nothing was sent: the estimate is released.
+                    let reserved = lock().take_reserved(job_id, &attempt);
+                    if let (Some(budget), Some(r)) = (&budget, reserved) {
+                        close(budget, &r);
+                    }
+                    return Outcome::Failed { error: reason, transient: false };
+                }
                 let result = match handle {
                     Some(handle) => nodecraft_providers::resume(queued.provider.provider().as_ref(), &handle, &signal, &clock, limits, record).await,
                     None => nodecraft_providers::run_to_completion(queued.provider.provider().as_ref(), &queued.job, &signal, &clock, limits, record).await,

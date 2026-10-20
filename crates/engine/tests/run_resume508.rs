@@ -310,3 +310,105 @@ fn quitting_with_a_journal_suspends_the_job_instead_of_cancelling_it() {
     let saved = journal.saved().unwrap();
     assert_eq!(saved.submitted.len(), 1, "saved for the next launch even before a pump: {saved:?}");
 }
+
+/// A store that notes whether a save held an open estimate before the provider saw any request.
+#[derive(Clone)]
+struct Spy {
+    inner: MemoryJournal,
+    mock: MockProvider,
+    ahead: Arc<Mutex<bool>>,
+    fail: bool,
+}
+impl JournalStore for Spy {
+    fn load(&self) -> Result<Option<Journal>, nodecraft_types::Error> {
+        self.inner.load()
+    }
+    fn save(&self, journal: &Journal) -> Result<(), nodecraft_types::Error> {
+        if journal.usage.entries().any(|e| e.status == Charge::Estimate) && self.mock.requests().is_empty() {
+            *self.ahead.lock().unwrap() = true;
+        }
+        if self.fail {
+            return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Internal, "the disk is full"));
+        }
+        self.inner.save(journal)
+    }
+}
+
+fn spied(mock: &MockProvider, fail: bool) -> (Fixture, Spy) {
+    let spy = Spy { inner: MemoryJournal::default(), mock: mock.clone(), ahead: Arc::default(), fail };
+    let (mut f, _) = launch(mock, &MemoryJournal::default(), None, 0);
+    f.host = RunHost::new(f.runtime.clone(), f.budget.clone()).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
+    f.host.open_journal(Box::new(spy.clone())).unwrap();
+    let mut services = Services::default();
+    f.host.register(&mut services).unwrap();
+    let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
+    let mut resources = Resources::default();
+    resources.insert(snapshot.clone());
+    resources.insert(snapshot.run_catalog());
+    let kinds = snapshot.registry().unwrap();
+    let mut routing = ProviderRouting::new();
+    let binding = routing.bind_default(Arc::new(mock.clone())).unwrap();
+    routing.select(WRITER, "mock", binding.target()).unwrap();
+    f.session = Session::with_registries(project(&kinds), Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
+    f.session.set_provider_routing(routing).unwrap();
+    f.host.install(&mut f.session);
+    (f, spy)
+}
+
+#[test]
+fn a_paid_jobs_estimate_is_saved_before_it_is_sent() {
+    // Otherwise a crash right after the submit leaves neither a handle nor an estimate, and a
+    // billed job is never counted.
+    let mock = MockProvider::standard();
+    let (mut f, spy) = spied(&mock, false);
+    start(&mut f);
+    pump_until(&mut f, "the job never ended", |f| !f.host.is_busy());
+    assert_eq!(mock.requests().len(), 1);
+    assert!(*spy.ahead.lock().unwrap(), "the estimate was saved before the request");
+}
+
+#[test]
+fn a_paid_job_whose_charge_cant_be_saved_is_not_sent() {
+    let mock = MockProvider::standard();
+    let (mut f, _) = spied(&mock, true);
+    start(&mut f);
+    let notices = pump_until(&mut f, "the job never ended", |f| !f.host.is_busy());
+    assert!(mock.requests().is_empty(), "nothing reached the provider");
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node: WRITER, reason, .. } if reason.contains("wasn't sent"))), "{notices:?}");
+    let open = f.budget.log.lock().unwrap().entries().any(|e| e.status == Charge::Estimate);
+    assert!(!open, "the estimate of a job never sent is released");
+}
+
+#[test]
+fn nothing_is_sent_once_the_host_is_shutting_down() {
+    let mock = MockProvider::standard();
+    let journal = MemoryJournal::default();
+    let (mut f, _) = launch(&mock, &journal, None, 0);
+    start(&mut f);
+    // Quitting saved the journal; a job sent after that save would be lost with the process.
+    f.host.shut_down();
+    pump_until(&mut f, "the job never ended", |f| !f.host.is_busy());
+    assert!(mock.requests().is_empty());
+}
+
+#[test]
+fn a_job_whose_project_never_comes_back_is_eventually_settled() {
+    let mock = slow_mock();
+    let journal = MemoryJournal::default();
+    let (mut first, _) = launch(&mock, &journal, None, 50);
+    start(&mut first);
+    pump_until(&mut first, "the job's handle was never saved", |_| journal.saved().is_some_and(|saved| !saved.submitted.is_empty()));
+    first.runtime.kill();
+    drop(first);
+    let mut saved = journal.saved().unwrap();
+    saved.submitted[0].launches = nodecraft_engine::run_journal::MAX_PARKED_LAUNCHES;
+    journal.save(&saved).unwrap();
+    let (mut second, opened) = launch(&mock, &journal, None, 0);
+    opened.unwrap();
+    assert!(!second.host.has_waiting());
+    let rows: Vec<Charge> = second.budget.log.lock().unwrap().entries().map(|e| e.status).collect();
+    assert_eq!(rows, [Charge::Unresolved], "it may have been billed");
+    let notices = second.host.pump(&mut second.session);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node: WRITER, .. })), "{notices:?}");
+    assert!(journal.saved().unwrap().submitted.is_empty());
+}

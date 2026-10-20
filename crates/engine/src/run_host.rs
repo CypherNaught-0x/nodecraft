@@ -37,11 +37,11 @@ use crate::Session;
 use crate::action_exec::LocalActions;
 use crate::commands::Services;
 use crate::generate;
-use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent};
+use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent, WriteAhead};
 use crate::provider_routing::RegisteredProvider;
 use crate::run_cmds::{AuthorizedRun, BudgetState, PreparedRun, UsageSnapshot};
 use crate::run_jobs::{JobKey, JobState, JobView, MAX_RECENT, Reports, RunJobs};
-use crate::run_journal::{JOURNAL_VERSION, Journal, JournalStore, Submitted};
+use crate::run_journal::{JOURNAL_VERSION, Journal, JournalStore, MAX_PARKED_LAUNCHES, Submitted};
 use nodecraft_exec::cost::{Budgets, Charge, UsageLog};
 use nodecraft_exec::driver::{CancelToken, Handle, JobRunner, Runtime, TaskFuture, driver};
 use nodecraft_exec::run::{Progress, RunOptions, SourceRunner, StepResult, take_outputs};
@@ -57,6 +57,9 @@ mod resume;
 
 /// How long after a failed journal save the next one is tried.
 const SAVE_RETRY_MS: u64 = 5_000;
+/// How often a pump with work in flight compares the usage log with the saved one, for changes
+/// no job's end announced. Ends and new handles are saved at once.
+const SAVE_CHECK_MS: u64 = 2_000;
 
 /// The reason a cancelled step's job fails with; reported as [`RunNotice::Cancelled`].
 const CANCELLED: &str = "cancelled";
@@ -166,8 +169,8 @@ pub struct RunHost {
     next_run: u64,
     /// Jobs that ended, oldest first, at most [`MAX_RECENT`].
     recent: VecDeque<JobView>,
-    /// Where the journal is saved; `None` saves nothing.
-    store: Option<Box<dyn JournalStore>>,
+    /// Where the journal is saved, shared with the runners' write-ahead.
+    journal: Arc<Mutex<Shared>>,
     /// Restored jobs waiting for their provider, or for their project to be open.
     parked: Vec<Submitted>,
     /// Restored jobs whose provider couldn't be reached this session; followed next launch.
@@ -180,6 +183,19 @@ pub struct RunHost {
     journal_changed: bool,
     /// When the last save failed, and whether that was reported.
     save_failed: Option<(u64, bool)>,
+    /// When the usage log was last compared with the saved one.
+    checked_at: u64,
+}
+
+/// The journal's store and the submitted jobs as last saved, for the write-ahead: a runner saves
+/// the usage log with its new estimate before sending a paid job, keeping the jobs already saved.
+#[derive(Default)]
+struct Shared {
+    /// `None` saves nothing.
+    store: Option<Box<dyn JournalStore>>,
+    submitted: Vec<Submitted>,
+    /// The host is shutting down: nothing new is sent.
+    closing: bool,
 }
 
 impl RunHost {
@@ -195,13 +211,14 @@ impl RunHost {
             held: Vec::new(),
             next_run: 1,
             recent: VecDeque::new(),
-            store: None,
+            journal: Arc::default(),
             parked: Vec::new(),
             kept: Vec::new(),
             resumes: resume::Resumes::default(),
             saved_log: None,
             journal_changed: false,
             save_failed: None,
+            checked_at: 0,
         }
     }
 
@@ -216,19 +233,18 @@ impl RunHost {
             Ok(loaded) => loaded,
             Err(error) => {
                 let aside = store.set_aside();
-                self.store = Some(store);
                 self.journal_changed = true;
                 return Err(match aside {
-                    Ok(()) => error,
-                    // Saving would replace it; keep it, and save nothing this session.
-                    Err(aside) => {
-                        self.store = None;
-                        Error::new(error.kind, format!("{}; {}", error.message, aside.message))
+                    Ok(()) => {
+                        lock(&self.journal).store = Some(store);
+                        error
                     }
+                    // Saving would replace it; keep it, and save nothing this session.
+                    Err(aside) => Error::new(error.kind, format!("{}; {}", error.message, aside.message)),
                 });
             }
         };
-        self.store = Some(store);
+        lock(&self.journal).store = Some(store);
         let Some(journal) = loaded else { return Ok(()) };
         let mut log = journal.usage;
         let handled: BTreeSet<(String, Option<nodecraft_types::ProviderInstanceId>, String)> =
@@ -247,7 +263,20 @@ impl RunHost {
             let _ = settled;
         }
         *lock(&self.budget.log) = log;
-        self.parked = journal.submitted;
+        for mut entry in journal.submitted {
+            entry.launches = entry.launches.saturating_add(1);
+            if entry.launches <= MAX_PARKED_LAUNCHES {
+                self.parked.push(entry);
+                continue;
+            }
+            // Its project hasn't been open for many launches: stop holding its estimate open.
+            settle_unresolved(&self.budget, &entry);
+            self.held.push(RunNotice::Failed {
+                canvas: entry.canvas,
+                node: entry.node,
+                reason: "it was given up on after a restart, because its project wasn't opened again; it may have been charged".into(),
+            });
+        }
         self.journal_changed = true;
         Ok(())
     }
@@ -285,8 +314,14 @@ impl RunHost {
 
     /// Lets go of the host when the app quits. With a journal, what is running is saved and
     /// left running at the provider, to be followed next launch; without one, it is cancelled.
+    /// Jobs not yet sent are refused from here on, so none can be sent after the last save.
     pub fn shut_down(&mut self) {
-        if self.store.is_some() {
+        let journaled = {
+            let mut shared = lock(&self.journal);
+            shared.closing = true;
+            shared.store.is_some()
+        };
+        if journaled {
             self.runs.iter_mut().for_each(note_submitted);
             self.save(true);
         } else {
@@ -297,7 +332,8 @@ impl RunHost {
     /// Saves the journal if it changed (or `force`), no more often than [`SAVE_RETRY_MS`] after a
     /// failure. Returns a notice the first time a save fails.
     fn save(&mut self, force: bool) -> Option<RunNotice> {
-        let store = self.store.as_ref()?;
+        let mut shared = lock(&self.journal);
+        let store = shared.store.as_ref()?;
         let now = self.runtime.now_ms();
         if !force
             && let Some((at, _)) = self.save_failed
@@ -309,7 +345,7 @@ impl RunHost {
         if !force && !self.journal_changed && self.saved_log.as_ref() == Some(&usage) {
             return None;
         }
-        let submitted = self
+        let submitted: Vec<Submitted> = self
             .parked
             .iter()
             .chain(&self.kept)
@@ -320,6 +356,7 @@ impl RunHost {
         let journal = Journal { version: JOURNAL_VERSION, usage, submitted };
         match store.save(&journal) {
             Ok(()) => {
+                shared.submitted = journal.submitted;
                 self.saved_log = Some(journal.usage);
                 self.journal_changed = false;
                 self.save_failed = None;
@@ -331,6 +368,22 @@ impl RunHost {
                 (!reported).then_some(RunNotice::Unsaved { reason: error.message })
             }
         }
+    }
+
+    /// The runners' write-ahead: saves the usage log, with the jobs as last saved, before a paid
+    /// job is sent; refuses to send once the host is shutting down.
+    fn write_ahead(&self) -> Arc<WriteAhead> {
+        let shared = Arc::clone(&self.journal);
+        let log = Arc::clone(&self.budget.log);
+        Arc::new(move || {
+            let shared = lock(&shared);
+            if shared.closing {
+                return Err("NodeCraft was quitting, so it wasn't sent".into());
+            }
+            let Some(store) = &shared.store else { return Ok(()) };
+            let journal = Journal { version: JOURNAL_VERSION, usage: lock(&log).clone(), submitted: shared.submitted.clone() };
+            store.save(&journal).map_err(|error| format!("it wasn't sent, because its charge couldn't be saved: {}", error.message))
+        })
     }
 
     /// Retries jobs with `retry` instead of the scheduler's default.
@@ -446,8 +499,10 @@ impl RunHost {
         for ended in self.resumes.absorb(session, &self.budget, &mut notices) {
             settled = true;
             journal_changed = true;
-            if let resume::Ended::Kept(entry) = ended {
-                self.kept.push(*entry);
+            match ended {
+                resume::Ended::Kept(entry) => self.kept.push(*entry),
+                resume::Ended::Parked(entry) => self.parked.push(*entry),
+                resume::Ended::Settled => {}
             }
         }
         keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
@@ -455,7 +510,10 @@ impl RunHost {
             refresh(session, &self.budget);
         }
         self.journal_changed |= journal_changed;
-        if self.journal_changed || settled || !self.runs.is_empty() || !self.resumes.live.is_empty() {
+        let now = self.runtime.now_ms();
+        let check = (!self.runs.is_empty() || !self.resumes.live.is_empty()) && now.saturating_sub(self.checked_at) >= SAVE_CHECK_MS;
+        if self.journal_changed || settled || check {
+            self.checked_at = now;
             notices.extend(self.save(false));
         }
         notices
@@ -484,7 +542,8 @@ impl RunHost {
                 mailbox.reports.note(job, &update);
             }),
         )
-        .with_budget(self.budget.clone());
+        .with_budget(self.budget.clone())
+        .with_write_ahead(self.write_ahead());
         let actions = Arc::new(LocalActions::new(session.assets().clone()));
         let sources = SourceRunner::default().with_actions(actions.clone());
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
@@ -674,6 +733,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
                 priced: price.is_some(),
                 routes: outputs.clone(),
                 recipe: active.run.resume_recipe(session.kinds(), spec.id),
+                launches: 0,
             };
             active.templates.insert(spec.id, template);
             active.runner.provider.register(spec.id, queued);

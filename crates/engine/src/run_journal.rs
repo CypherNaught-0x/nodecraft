@@ -16,10 +16,15 @@ use serde::{Deserialize, Serialize};
 
 /// The journal's format version.
 pub const JOURNAL_VERSION: u32 = 1;
-/// Largest journal file read back; a bigger one is refused rather than loaded.
-pub const MAX_JOURNAL_BYTES: usize = 64 * 1024 * 1024;
+/// Largest journal file read back; a bigger one is refused rather than loaded, and never
+/// written. Room for a usage log at its own bounds (listed text, pending and retired charges)
+/// with every submitted job.
+pub const MAX_JOURNAL_BYTES: usize = 256 * 1024 * 1024;
 /// Most submitted jobs a journal holds; admission bounds what a host runs at once far below it.
 pub const MAX_SUBMITTED: usize = 4096;
+/// Launches a submitted job waits for its project to be open again before it is given up on and
+/// its charge settled as unresolved.
+pub const MAX_PARKED_LAUNCHES: u32 = 30;
 
 /// See the module docs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -56,6 +61,9 @@ pub struct Submitted {
     /// several jobs), which is followed to its end so its charge settles, but not recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<ResumeRecipe>,
+    /// Launches it has waited through without being followed (see [`MAX_PARKED_LAUNCHES`]).
+    #[serde(default)]
+    pub launches: u32,
 }
 
 impl Submitted {
@@ -81,8 +89,16 @@ impl Journal {
         Ok(journal)
     }
 
+    /// The journal as saved, refusing one [`Self::from_bytes`] would refuse.
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        serde_json::to_vec(self).map_err(|e| Error::new(ErrorKind::Internal, format!("the run journal can't be written: {e}")))
+        if self.submitted.len() > MAX_SUBMITTED {
+            return Err(Error::new(ErrorKind::Busy, "too many jobs are waiting to be followed to save them all"));
+        }
+        let bytes = serde_json::to_vec(self).map_err(|e| Error::new(ErrorKind::Internal, format!("the run journal can't be written: {e}")))?;
+        if bytes.len() > MAX_JOURNAL_BYTES {
+            return Err(Error::new(ErrorKind::Busy, "the run journal is too large to save"));
+        }
+        Ok(bytes)
     }
 }
 
@@ -180,6 +196,18 @@ mod tests {
         assert!(Journal::from_bytes(br#"{"version":2,"usage":{}}"#).is_err());
         assert!(Journal::from_bytes(br#"{"version":1,"usage":{},"extra":1}"#).is_err());
         assert!(Journal::from_bytes(&vec![b' '; MAX_JOURNAL_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn a_journal_that_couldnt_be_read_back_is_never_written() {
+        let entry: Submitted = serde_json::from_value(serde_json::json!({
+            "project": ProjectId::from_bytes([1; 16]), "canvas": CanvasId::from_bytes([2; 16]), "node": NodeId::from_bytes([3; 16]),
+            "target": {"adapter": "mock"}, "key": "k", "generation": 0,
+            "handle": {"remote_id": "r"}, "model": "m", "routes": []
+        }))
+        .unwrap();
+        let journal = Journal { version: JOURNAL_VERSION, submitted: vec![entry; MAX_SUBMITTED + 1], ..Journal::default() };
+        assert!(journal.to_bytes().is_err());
     }
 
     #[cfg(not(target_arch = "wasm32"))]

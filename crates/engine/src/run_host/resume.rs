@@ -52,6 +52,9 @@ pub(super) enum Ended {
     Settled,
     /// The provider couldn't be reached: keep it for the next launch.
     Kept(Box<Submitted>),
+    /// It finished while its project was closed: wait for the project, then follow it again to
+    /// record its result. Its charge has settled, so it isn't charged again.
+    Parked(Box<Submitted>),
 }
 
 impl Resumes {
@@ -129,6 +132,8 @@ impl Resumes {
                         wait = wait.saturating_mul(2);
                         start.attempt = start.attempt.saturating_add(1);
                     }
+                    // Cancelled while waiting to try again: stop following it.
+                    Outcome::Failed { transient: true, .. } if cancel.is_cancelled() => break Outcome::Cancelled,
                     outcome => break outcome,
                 }
             };
@@ -166,7 +171,15 @@ impl Resumes {
                     runner.forget(id);
                 }
             };
+            let elsewhere = session.document().id() != entry.project;
             match (outcome, delivery) {
+                (Outcome::Done, Some(_)) if elsewhere => {
+                    forget();
+                    let reason = "it finished while its project was closed; it is recorded when the project is open again".to_owned();
+                    self.jobs.end(id, JobState::Failed { reason: reason.clone(), cause: None });
+                    notices.push(RunNotice::Failed { canvas, node, reason });
+                    ended.push(Ended::Parked(Box::new(entry)));
+                }
                 (Outcome::Done, Some(delivery)) => {
                     forget();
                     let notice = record(session, &entry, &delivery);
