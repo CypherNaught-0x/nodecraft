@@ -202,30 +202,43 @@ impl Runs {
         self.host.install(session);
     }
 
-    /// Routes the cards a run of `id` may reach (the card alone, or with its upstream for a
-    /// refresh) to their providers when those are set up, or asks for them to be.
-    pub(super) fn route(&mut self, session: &mut Session, canvas: CanvasId, id: NodeId, kind: RunKind, settings: &ProviderSettings) -> Result<Route, Error> {
+    /// Routes the cards a run of `id` will run (the card alone, or with its stale or unrun
+    /// upstream for a refresh; `stale` is the canvas's stale set) to their providers when those
+    /// are set up, or asks for them to be.
+    pub(super) fn route(
+        &mut self,
+        session: &mut Session,
+        canvas: CanvasId,
+        id: NodeId,
+        kind: RunKind,
+        stale: &BTreeSet<NodeId>,
+        settings: &ProviderSettings,
+    ) -> Result<Route, Error> {
         let adapters = adapters_of(session, canvas);
         let reached = match kind {
             RunKind::Generate => BTreeSet::from([id]),
-            RunKind::Refresh => with_upstream(session, canvas, id),
+            RunKind::Refresh => with_upstream(session, canvas, id, stale),
         };
         let needed: BTreeSet<String> = reached.iter().filter_map(|node| adapters.get(node).cloned()).collect();
         let mut pending = BTreeSet::new();
+        let mut unready = Vec::new();
         for adapter in needed {
             match self.setup.readiness(&adapter) {
                 Some(Readiness::Ready) => {}
                 Some(other) => {
-                    let message = other.message(&adapter).unwrap_or_default();
+                    unready.push(other.message(&adapter).unwrap_or_default());
                     // Tried afresh next time: the person may add the key or the server meanwhile.
                     self.setup.forget(&adapter);
-                    return Err(Error::new(ErrorKind::Unsupported, message));
                 }
                 None => {
                     self.ask(&adapter, settings)?;
                     pending.insert(adapter);
                 }
             }
+        }
+        // Every provider that can't run is named at once, not one per attempt.
+        if !unready.is_empty() {
+            return Err(Error::new(ErrorKind::Unsupported, unready.join(" ")));
         }
         if !pending.is_empty() {
             self.waiting = Some(Waiting { canvas, node: id, kind, pending, settings: settings.clone() });
@@ -355,8 +368,8 @@ impl Drop for Runs {
     }
 }
 
-/// `id` and every node upstream of it on `canvas`.
-fn with_upstream(session: &Session, canvas: CanvasId, id: NodeId) -> BTreeSet<NodeId> {
+/// `id` and every node upstream of it on `canvas` that a `with_upstream` run would run too.
+fn with_upstream(session: &Session, canvas: CanvasId, id: NodeId, stale: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
     let mut seen = BTreeSet::from([id]);
     let Some(canvas) = session.document().canvases().get(&canvas) else {
         return seen;
@@ -369,12 +382,19 @@ fn with_upstream(session: &Session, canvas: CanvasId, id: NodeId) -> BTreeSet<No
     let mut next = vec![id];
     while let Some(node) = next.pop() {
         for from in inputs.get(&node).into_iter().flatten() {
-            if seen.insert(*from) {
+            // As the planner walks: a card with a current result is not run, and stops the walk.
+            let runs = canvas.nodes().get(from).is_some_and(|up| stale.contains(from) || !has_result(up));
+            if runs && seen.insert(*from) {
                 next.push(*from);
             }
         }
     }
     seen
+}
+
+/// Whether a card has an active result to reuse.
+fn has_result(node: &nodecraft_graph::Node) -> bool {
+    node.active.is_some_and(|active| node.history.iter().any(|generation| generation.id == active))
 }
 
 /// The adapter each card with a catalog model on `canvas` runs on.

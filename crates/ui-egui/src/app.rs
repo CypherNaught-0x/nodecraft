@@ -1187,7 +1187,14 @@ impl NodeCraftApp {
                             }
                         }
                     }
-                    if self.stale_badges.as_ref().is_some_and(|badges| badges.nodes.contains(&node.id))
+                    // A card being refreshed keeps its stale result until the run records, but
+                    // offers no second refresh meanwhile.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, node.id));
+                    #[cfg(target_arch = "wasm32")]
+                    let running = false;
+                    if !running
+                        && self.stale_badges.as_ref().is_some_and(|badges| badges.nodes.contains(&node.id))
                         && stale_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, t)
                         && !canvas_blocks
                     {

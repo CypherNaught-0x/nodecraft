@@ -35,6 +35,20 @@ pricing = { type = "per_call", price = "0.04 USD" }
 id = "text-to-image"
 output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
+id = "other-writer"
+provider = "other"
+provider_model = "other-text"
+label = "Other writer"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.01 USD" }
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 "#;
 
 /// A maker that builds `mock` for the `mock` adapter.
@@ -47,6 +61,11 @@ fn image(model: MockModel) -> MockProvider {
 }
 
 fn scene(make: Make) -> Harness<'static, NodeCraftApp> {
+    scene_with(make, |_, _| {})
+}
+
+/// The scene, with `edit` applied to the project before the session opens it.
+fn scene_with(make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry)) -> Harness<'static, NodeCraftApp> {
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -63,6 +82,7 @@ fn scene(make: Make) -> Harness<'static, NodeCraftApp> {
         .unwrap();
     node.pos = nodecraft_graph::Position { x: 150.0, y: 120.0 };
     Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    edit(&mut project, &kinds);
     let mut resources = Resources::default();
     resources.insert(snapshot.clone());
     resources.insert(snapshot.run_catalog());
@@ -296,6 +316,59 @@ fn an_edited_upstream_text_marks_the_card_stale_and_refresh_runs_with_it() {
     assert!(h.query_by_label(BADGE).is_none());
     let prompts: Vec<String> = mock.requests().iter().map(|request| format!("{request:?}")).collect();
     assert!(prompts.last().is_some_and(|last| last.contains("A blue square")), "{prompts:?}");
+}
+
+#[test]
+fn a_running_card_offers_no_second_refresh() {
+    // The first build answers at once; after the key is replaced, the next one never finishes.
+    let built = Arc::new(Mutex::new(0u32));
+    let count = built.clone();
+    let mut h = scene(Box::new(move |_, _| {
+        let mut count = count.lock().unwrap();
+        *count += 1;
+        let mut model = MockModel::new(MockOutput::Image);
+        if *count > 1 {
+            model.polls = u32::MAX;
+        }
+        Ok(Arc::new(image(model)))
+    }));
+    generated(&mut h);
+    let app = h.state_mut();
+    app.runs.as_mut().unwrap().forget_adapters(&mut app.session).unwrap();
+    app.session.dispatch("node.param_set", &json!({"canvas": C, "id": N, "name": "prompt", "value": Value::Text("A blue square".into())})).unwrap();
+    h.run();
+    press(&mut h, Role::Button, BADGE);
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    refresh_accept(&mut h);
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.is_running(C, N)));
+    assert!(h.query_by_label(BADGE).is_none(), "no second paid refresh while the first runs");
+}
+
+#[test]
+fn a_refresh_needs_no_provider_for_an_upstream_card_with_a_current_result() {
+    // A text card with an answer, on a provider this test never sets up, feeds the prompt.
+    let writer = NodeId::from_bytes([97; 16]);
+    let mut h = scene_with(making(image(MockModel::new(MockOutput::Image))), |project, kinds| {
+        let mut node = kinds
+            .get(nodecraft_nodes::generation::TEXT_KIND)
+            .unwrap()
+            .instantiate_instance(writer, Default::default(), &[("model".into(), Value::Text("other-writer".into()))].into())
+            .unwrap();
+        let answer = nodecraft_types::GenerationId::from_bytes([98; 16]);
+        node.history.push(nodecraft_graph::Generation::new(answer, vec![Value::Text("A red square".into())]));
+        node.active = Some(answer);
+        Change::AddNode { canvas: C, node }.apply(project).unwrap();
+        let edge = nodecraft_graph::Edge {
+            id: EdgeId::from_bytes([99; 16]),
+            from: Endpoint { node: writer, port: "out".into() },
+            to: Endpoint { node: N, port: "prompt".into() },
+            order: 0,
+        };
+        Change::Connect { canvas: C, edge }.apply(project).unwrap();
+    });
+    h.state_mut().request_run(N, super::generate::RunKind::Refresh).unwrap();
+    frames_until(&mut h, |app| app.run_confirm.is_some() || app.notice.as_deref().is_some_and(|n| n != super::runs::SETTING_UP));
+    assert!(h.state().run_confirm.is_some(), "notice: {:?}", h.state().notice);
 }
 
 #[test]

@@ -123,9 +123,15 @@ impl NodeCraftApp {
             return Ok(());
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(runs) = &mut self.runs {
+        if self.runs.is_some() {
+            if kind == RunKind::Refresh {
+                self.refresh_stale_badges();
+            }
             let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
-            if runs.route(&mut self.session, self.canvas, id, kind, &settings)? == super::runs::Route::Waiting {
+            let stale = self.stale_badges.as_ref().map(|badges| &badges.nodes).cloned().unwrap_or_default();
+            if let Some(runs) = &mut self.runs
+                && runs.route(&mut self.session, self.canvas, id, kind, &stale, &settings)? == super::runs::Route::Waiting
+            {
                 self.notice = Some(super::runs::SETTING_UP.into());
                 return Ok(());
             }
