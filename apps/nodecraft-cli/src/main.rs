@@ -81,13 +81,20 @@ fn mcp() -> ExitCode {
     let mut new_id = random_bytes();
     let session = nodecraft_automation::blank_session(ProjectId::from_bytes(new_id()), CanvasId::from_bytes(new_id()));
     let mut services = Services::default();
-    let session = match session.and_then(|s| register_key_service(&mut services, Arc::new(KeyringStore)).map(|()| s)) {
+    let mut session = match session.and_then(|s| register_key_service(&mut services, Arc::new(KeyringStore)).map(|()| s)) {
         Ok(s) => s.with_services(services),
         Err(e) => {
             eprintln!("error: {}", e.message);
             return ExitCode::FAILURE;
         }
     };
+    // The app's technique library (#96), for agents to list and place from. Agents never change
+    // it, so the CLI only reads the file; nothing is created when the app has no library yet.
+    if let Some(dir) = nodecraft_engine::settings::settings_dir()
+        && let Err(e) = nodecraft_engine::library::install(&mut session, Box::new(nodecraft_engine::library::FileLibrary::new(dir.join("library"))))
+    {
+        eprintln!("warning: the technique library is unavailable: {}", e.message);
+    }
     serve_stdio(&mut McpServer::new(session, Box::new(new_id)))
 }
 

@@ -520,7 +520,7 @@ impl NodeCraftApp {
 }
 
 /// `text` on one line, cut to a readable length.
-fn line(text: &str) -> String {
+pub(super) fn line(text: &str) -> String {
     let first = text.lines().next().unwrap_or_default();
     let mut chars = first.chars();
     let mut out: String = chars.by_ref().take(LINE_CHARS).collect();
