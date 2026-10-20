@@ -11,7 +11,7 @@ use crate::commands::{CommandSpec, Context, Effect, Phase, Resources, params};
 use crate::generation_catalog::GenerationCatalog;
 use crate::provider_setup::HostEnv;
 use crate::session::Session;
-use nodecraft_types::{Choice, Error, ErrorKind, MAX_OPTION_LISTS, MAX_OPTIONS, OptionKey, OptionLists};
+use nodecraft_types::{Choice, Error, ErrorKind, MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, OptionKey, OptionLists};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,19 +95,27 @@ pub struct FetchRequest {
     pub sources: Vec<String>,
 }
 
-/// Reads one combo input's choices, refusing a list past [`MAX_OPTIONS`] rather than truncating
-/// it (a truncated list would refuse values the server has).
+/// Reads one combo input's choices, refusing a list past [`MAX_OPTIONS`] values or the store's
+/// [`MAX_OPTION_BYTES`] rather than truncating it (a truncated list would refuse values the server
+/// has). Blank, oversized and repeated values are left out and counted: the store refuses a whole
+/// list for one of them.
 fn values(options: &[String]) -> Listed {
     let mut seen = BTreeSet::new();
     let mut values = Vec::new();
     let mut skipped = 0usize;
+    // As the store counts it: each value is kept as a value and as its label.
+    let mut bytes = 0usize;
     for value in options {
-        if value.is_empty() || value.len() > MAX_VALUE_BYTES || !seen.insert(value.as_str()) {
+        if value.trim().is_empty() || value.len() > MAX_VALUE_BYTES || !seen.insert(value.as_str()) {
             skipped = skipped.saturating_add(1);
             continue;
         }
         if values.len() >= MAX_OPTIONS {
             return Err(format!("the server lists more than {MAX_OPTIONS} values"));
+        }
+        bytes = bytes.saturating_add(value.len().saturating_mul(3));
+        if bytes > MAX_OPTION_BYTES {
+            return Err("the server's list is larger than 16 MiB".into());
         }
         values.push(value.clone());
     }
@@ -145,6 +153,11 @@ fn provider_kind(kind: nodecraft_providers::ErrorKind) -> ErrorKind {
         P::Budget => ErrorKind::Budget,
         P::BlockedContent => ErrorKind::ContentBlocked,
         P::UnsupportedInput => ErrorKind::Unsupported,
+        // A url that isn't a ComfyUI server, or one that answers with an error or a reply too
+        // large or garbled to read: the server's problem, not NodeCraft's.
+        P::NotFound => ErrorKind::NotFound,
+        P::Server => ErrorKind::Network,
+        P::Malformed => ErrorKind::InvalidInput,
         _ => ErrorKind::Internal,
     }
 }
@@ -196,7 +209,15 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
                     report.refused.push(refuse(format!("lists narrowed by another parameter ({scope}) can't be fetched yet")));
                     continue;
                 }
-                let listed = fetched.lists.get(&want.source).cloned().unwrap_or_else(|| Err("NodeCraft doesn't know where to fetch this list".into()));
+                let listed = fetched.lists.get(&want.source).cloned().unwrap_or_else(|| {
+                    // The catalog changed while the fetch ran and now names a list it didn't ask for.
+                    Err(if comfy_source(&want.source).is_some() {
+                        "not part of this fetch; refresh again"
+                    } else {
+                        "NodeCraft doesn't know where to fetch this list"
+                    }
+                    .into())
+                });
                 let Values { values, skipped } = match listed {
                     Ok(values) => values,
                     Err(reason) => {

@@ -34,6 +34,8 @@ pub(super) type Service = Box<dyn FnMut(&serde_json::Value) -> Result<serde_json
 struct Asked {
     next: u64,
     queued: Option<(u64, Vec<String>)>,
+    /// The fetch handed to the thread and not yet answered.
+    running: Option<u64>,
     /// A fetch is queued or running.
     busy: bool,
 }
@@ -106,26 +108,40 @@ impl OptionFetcher {
     /// tell the person about it.
     pub(super) fn tick(&mut self, session: &mut Session, settings: impl FnOnce() -> ProviderSettings) -> Option<String> {
         let queued = self.asked.borrow_mut().queued.take();
-        if let Some((id, sources)) = queued
-            && self.asks.try_send((id, sources, settings())).is_err()
-        {
-            // The thread is gone: say so, and let the next refresh try again.
-            self.asked.borrow_mut().busy = false;
-            let report = option_fetch::finish(session, id, Err(Error::new(ErrorKind::Unsupported, "the option fetch thread stopped")));
-            return Some(notice(&report));
+        if let Some((id, sources)) = queued {
+            if self.asks.try_send((id, sources, settings())).is_err() {
+                // The thread is gone: say so, and let the next refresh try again.
+                return Some(self.stopped(session, id));
+            }
+            self.asked.borrow_mut().running = Some(id);
         }
         let (id, result) = match self.done.try_recv() {
             Ok(done) => done,
             Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => {
-                let busy = std::mem::take(&mut self.asked.borrow_mut().busy);
-                return busy.then(|| "Option lists can't be fetched: the fetch thread stopped.".to_owned());
+                let running = self.asked.borrow_mut().running.take();
+                return running.map(|id| self.stopped(session, id));
             }
         };
-        self.asked.borrow_mut().busy = false;
+        let mut asked = self.asked.borrow_mut();
+        asked.busy = false;
+        asked.running = None;
+        drop(asked);
         let report = option_fetch::finish(session, id, result);
         log::info!("option lists: {} installed, {} refused", report.installed.len(), report.refused.len());
         Some(notice(&report))
+    }
+}
+
+impl OptionFetcher {
+    /// Records fetch `id` as failed because the thread stopped, so `options.status` says so too.
+    fn stopped(&mut self, session: &mut Session, id: u64) -> String {
+        let mut asked = self.asked.borrow_mut();
+        asked.busy = false;
+        asked.running = None;
+        drop(asked);
+        let report = option_fetch::finish(session, id, Err(Error::new(ErrorKind::Unsupported, "the option fetch thread stopped")));
+        notice(&report)
     }
 }
 

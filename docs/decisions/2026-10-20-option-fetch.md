@@ -12,9 +12,9 @@
   I/O; the host fetches through the same `provider_setup::comfyui` the run adapter uses, so the
   two can't read the server's address, salt or token differently. A background refresh policy
   belongs with the servers panel (#9).
-- **Refused whole, never truncated.** A list over the store's 16,384 values is refused with a
-  reason and the previous list kept: a truncated list would refuse values the server has.
-  Empty, oversized and repeated values are dropped and counted instead, since one of them would
+- **Refused whole, never truncated.** A list over the store's 16,384 values or 16 MiB is refused
+  with a reason and the previous list kept: a truncated list would refuse values the server has.
+  Blank, oversized and repeated values are dropped and counted instead, since one of them would
   otherwise lose the whole list.
 - **Once per model.** Lists are keyed by the contract's namespace, so the same checkpoint list is
   installed for every model that names it; past the store's limits the rest are reported as

@@ -7,11 +7,14 @@ fn strings(values: &[&str]) -> Vec<String> {
 #[test]
 fn values_keep_the_server_order_and_skip_what_cant_be_offered() {
     let long = "x".repeat(MAX_VALUE_BYTES + 1);
-    let listed = values(&strings(&["b", "", "a", "b", &long])).unwrap();
-    assert_eq!(listed, Values { values: strings(&["b", "a"]), skipped: 3 });
+    let listed = values(&strings(&["b", "", "a", "b", &long, " \t"])).unwrap();
+    assert_eq!(listed, Values { values: strings(&["b", "a"]), skipped: 4 });
     let many: Vec<String> = (0..=MAX_OPTIONS).map(|i| i.to_string()).collect();
     assert!(values(&many).is_err(), "refused whole, not truncated");
     assert!(values(&many[..MAX_OPTIONS]).is_ok());
+    // Under the count but past the store's bytes: refused with its own reason, not the store's.
+    let wide: Vec<String> = (0..2000).map(|i| format!("{i:0>width$}", width = MAX_VALUE_BYTES)).collect();
+    assert_eq!(values(&wide), Err("the server's list is larger than 16 MiB".into()));
 }
 
 #[test]
