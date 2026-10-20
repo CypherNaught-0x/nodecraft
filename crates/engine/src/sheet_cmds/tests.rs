@@ -191,3 +191,69 @@ fn a_sheet_holds_at_most_max_rows() {
     let full = s.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(12), "prompts": ["one more"]}));
     assert_eq!(full.unwrap_err().kind, ErrorKind::Overflow);
 }
+
+#[test]
+fn a_one_row_sheets_reference_is_its_own_and_doesnt_spread() {
+    let mut s = session();
+    let made = add(&mut s, 10, &["one"]);
+    note(&mut s);
+    s.dispatch("sheet.reference_wire", &json!({"canvas": SHEET, "seed": seed(20), "reference": NOTE, "rows": made})).unwrap();
+    assert_eq!(rows(&mut s)["shared"], json!([]));
+    add(&mut s, 11, &["two"]);
+    let listed = rows(&mut s);
+    assert!(listed["rows"][1]["references"].as_array().unwrap().is_empty(), "{listed}");
+}
+
+#[test]
+fn rows_move_down_and_a_cleared_sheet_starts_again() {
+    let mut s = session();
+    let made = add(&mut s, 10, &["one", "two", "three"]);
+    s.dispatch("sheet.row_move", &json!({"canvas": SHEET, "row": made[0], "index": 2})).unwrap();
+    assert_eq!(prompts(&rows(&mut s)), ["two", "three", "one"]);
+    s.dispatch("sheet.rows_remove", &json!({"canvas": SHEET, "rows": made})).unwrap();
+    assert!(ids(&rows(&mut s)).is_empty());
+    add(&mut s, 11, &["fresh"]);
+    assert_eq!(prompts(&rows(&mut s)), ["fresh"]);
+}
+
+#[test]
+fn kind_only_picks_an_empty_sheets_first_row() {
+    let mut s = session();
+    let text = s.kinds().get(nodecraft_nodes::generation::TEXT_KIND).is_ok();
+    if text {
+        let first = s.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(10), "prompts": ["q"], "kind": "generation.text"})).unwrap();
+        assert!(first["rows"].as_array().is_some_and(|rows| rows.len() == 1));
+        assert_eq!(rows(&mut s)["rows"][0]["kind"], "generation.text");
+    } else {
+        add(&mut s, 10, &["one"]);
+    }
+    let refused = s.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(11), "prompts": ["x"], "kind": "generation.image"}));
+    assert_eq!(refused.unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn a_reused_seed_is_refused_and_changes_nothing() {
+    let mut s = session();
+    let made = add(&mut s, 10, &["one"]);
+    let before = s.document().clone();
+    let revision = s.revision();
+    assert!(s.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(10), "prompts": ["two"]})).is_err());
+    assert!(s.dispatch("sheet.rows_duplicate", &json!({"canvas": SHEET, "seed": seed(10), "rows": made})).is_err());
+    assert_eq!(s.document(), &before);
+    assert_eq!(s.revision(), revision);
+}
+
+#[test]
+fn many_rows_go_in_one_remove() {
+    let mut s = session();
+    let batch: Vec<String> = (0..100).map(|n| format!("row {n}")).collect();
+    let mut all = Vec::new();
+    for n in 0..2u8 {
+        let made = s.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(100 + n), "prompts": batch})).unwrap();
+        all.extend(made["rows"].as_array().unwrap().iter().cloned());
+    }
+    s.dispatch("sheet.rows_remove", &json!({"canvas": SHEET, "rows": all})).unwrap();
+    assert!(ids(&rows(&mut s)).is_empty());
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(ids(&rows(&mut s)).len(), 200, "one undo step");
+}

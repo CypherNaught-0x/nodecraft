@@ -653,6 +653,6 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
 
 Commands that add nodes or wires take one `seed` and derive every new id from it with blake3, so
 replays are deterministic. Cells are card parameters, so bulk edits use
-`node.params_set_bulk`, and a run of rows uses `run.quote` and `run.start`. A sheet holds at most
-1000 rows (`MAX_ROWS`), and one command adds at most 100. See
+`node.params_set_bulk`, and a run of rows uses `run.quote` and `run.start`. The row commands
+refuse to grow a sheet past 1000 rows (`MAX_ROWS`) and add at most 100 at a time. See
 [the decision](decisions/2026-10-20-batch-sheets.md).

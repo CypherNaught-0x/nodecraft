@@ -30,7 +30,8 @@ pub fn rows(canvas: &Canvas) -> Vec<&Node> {
     rows
 }
 
-/// The nodes wired into every row: the sheet's shared references, top to bottom.
+/// The nodes wired into every row: the sheet's shared references, top to bottom. A sheet with
+/// one row has none, so a reference wired into that row alone doesn't spread to new rows.
 pub fn shared(canvas: &Canvas, rows: &[&Node]) -> Vec<NodeId> {
     let row_ids: BTreeSet<NodeId> = rows.iter().map(|row| row.id).collect();
     let mut reaches: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
@@ -39,11 +40,8 @@ pub fn shared(canvas: &Canvas, rows: &[&Node]) -> Vec<NodeId> {
             reaches.entry(edge.from.node).or_default().insert(edge.to.node);
         }
     }
-    let mut shared: Vec<&Node> = reaches
-        .into_iter()
-        .filter(|(_, reached)| !row_ids.is_empty() && reached.len() == row_ids.len())
-        .filter_map(|(id, _)| canvas.nodes().get(&id))
-        .collect();
+    let mut shared: Vec<&Node> =
+        reaches.into_iter().filter(|(_, reached)| row_ids.len() >= 2 && reached.len() == row_ids.len()).filter_map(|(id, _)| canvas.nodes().get(&id)).collect();
     shared.sort_by(|a, b| a.pos.y.total_cmp(&b.pos.y).then(a.id.cmp(&b.id)));
     shared.into_iter().map(|node| node.id).collect()
 }
@@ -63,7 +61,9 @@ fn derive(seed: NodeId, what: &str, n: usize) -> [u8; 16] {
     hash.update(what.as_bytes());
     hash.update(&(n as u64).to_le_bytes());
     let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    if let Some(head) = hash.finalize().as_bytes().first_chunk::<16>() {
+        bytes = *head;
+    }
     bytes
 }
 
@@ -158,10 +158,12 @@ fn describe_rows(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let shared = shared(canvas, &order);
     let stale = nodecraft_exec::staleness::stale_report(canvas, c.kinds).map(|report| report.nodes).unwrap_or_default();
     let shared_set: BTreeSet<NodeId> = shared.iter().copied().collect();
+    let row_ids: BTreeSet<NodeId> = order.iter().map(|row| row.id).collect();
     let rows: Vec<Json> = order
         .iter()
         .map(|row| {
-            let mut wires: Vec<&Edge> = canvas.edges().values().filter(|edge| edge.to.node == row.id).collect();
+            // Wires from other rows are a row feeding a row, not references.
+            let mut wires: Vec<&Edge> = canvas.edges().values().filter(|edge| edge.to.node == row.id && !row_ids.contains(&edge.from.node)).collect();
             wires.sort_by(|a, b| a.to.port.cmp(&b.to.port).then(a.order.cmp(&b.order)).then(a.id.cmp(&b.id)));
             let references: Vec<Json> =
                 wires.iter().map(|edge| json!({"node": edge.from.node, "port": edge.to.port, "shared": shared_set.contains(&edge.from.node)})).collect();
@@ -228,6 +230,9 @@ fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         None => order.len().saturating_sub(1),
     };
     let template = order.get(at).copied();
+    if template.is_some() && p.kind.is_some() {
+        return Err(invalid("`kind` only picks an empty sheet's first row; new rows copy the row they follow"));
+    }
     let base = match template {
         Some(row) => row.clone(),
         None => {
@@ -280,9 +285,9 @@ struct RowsParams {
     rows: Vec<NodeId>,
 }
 
-fn selected(order: &[&Node], ids: &[NodeId]) -> Result<BTreeSet<NodeId>, Error> {
-    if ids.is_empty() || ids.len() > MAX_ADD {
-        return Err(invalid("choose 1 to 100 rows"));
+fn selected(order: &[&Node], ids: &[NodeId], most: usize) -> Result<BTreeSet<NodeId>, Error> {
+    if ids.is_empty() || ids.len() > most {
+        return Err(invalid("too many or no rows chosen"));
     }
     let chosen: BTreeSet<NodeId> = ids.iter().copied().collect();
     if chosen.len() != ids.len() {
@@ -298,7 +303,7 @@ fn duplicate(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: RowsParams = params(value)?;
     let canvas = sheet(c, p.canvas)?;
     let order = rows(canvas);
-    let chosen = selected(&order, &p.rows)?;
+    let chosen = selected(&order, &p.rows, MAX_ADD)?;
     ensure_room(order.len(), chosen.len())?;
     // Each copy follows its row, with its prompt, settings and references.
     let mut changes = Vec::new();
@@ -344,7 +349,7 @@ fn remove(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: RemoveParams = params(value)?;
     let canvas = sheet(c, p.canvas)?;
     let order = rows(canvas);
-    let chosen = selected(&order, &p.rows)?;
+    let chosen = selected(&order, &p.rows, MAX_ROWS)?;
     let mut changes: Vec<Change> = chosen.iter().map(|id| Change::RemoveNode { canvas: p.canvas, id: *id }).collect();
     let kept: Vec<NodeId> = order.iter().map(|row| row.id).filter(|id| !chosen.contains(id)).collect();
     changes.extend(reflow(p.canvas, canvas, &kept));
@@ -431,16 +436,17 @@ fn wire(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         if canvas.edges().values().any(|edge| edge.from.node == reference.id && edge.to.node == row.id) {
             continue;
         }
-        // The first list input of its modality: a reference role, or the prompt for text.
-        let port =
-            row.inputs.iter().find(|port| port.port_type.modality == output.port_type.modality && (port.port_type.many || !output.port_type.many)).ok_or_else(
-                || {
-                    Error::new(
-                        ErrorKind::Unsupported,
-                        format!("{} takes no {:?} input", if row.title.is_empty() { "a row" } else { row.title.as_str() }, output.port_type.modality),
-                    )
-                },
-            )?;
+        // The first free input of its modality: a list input, or a single one nothing feeds yet.
+        let taken =
+            |port: &nodecraft_graph::Port| !port.port_type.many && canvas.edges().values().any(|edge| edge.to.node == row.id && edge.to.port == port.name);
+        let port = row
+            .inputs
+            .iter()
+            .find(|port| port.port_type.modality == output.port_type.modality && (port.port_type.many || !output.port_type.many) && !taken(port))
+            .ok_or_else(|| {
+                let name = if row.title.is_empty() { format!("row {}", row.id) } else { format!("\"{}\"", row.title) };
+                Error::new(ErrorKind::Unsupported, format!("{name} has no free {:?} input", output.port_type.modality))
+            })?;
         let order = canvas
             .edges()
             .values()
@@ -533,7 +539,10 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "sheet.create",
             "New Batch Generate sheet",
-            schema(&["canvas", "title"], json!({"canvas": uuid(), "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE_BYTES}})),
+            schema(
+                &["canvas", "title"],
+                json!({"canvas": uuid(), "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE_BYTES, "description": "1 to 256 bytes of UTF-8, not only spaces"}})
+            ),
             "{canvas: new CanvasId, title} -> {canvas}; an empty Batch Generate sheet. Its rows are Generate cards: edit them with node.params_set, node.params_set_bulk and node.set_model, and run them with run.quote/run.start {nodes: row ids}.",
             create
         ),
@@ -559,7 +568,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 json!({"canvas": uuid(), "seed": uuid(), "after": uuid(), "kind": {"enum": [generation::KIND, generation::TEXT_KIND]},
                     "prompts": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_ADD}})
             ),
-            "{canvas, seed: new UUID, after?: row, prompts: [text], kind?} -> {rows}; one row per prompt after `after` (the last row when absent), copying its model, settings and shared references. `kind` picks an empty sheet's first row: generation.image (default) or generation.text. New ids derive from `seed`.",
+            "{canvas, seed: new UUID, after?: row, prompts: [text], kind?} -> {rows}; one row per prompt after `after` (the last row when absent), copying its model, settings and shared references. `kind` picks an empty sheet's first row: generation.image (default) or generation.text; it is refused once the sheet has rows. New ids derive from `seed`: use a fresh one per command. A one-row sheet has no shared references.",
             add
         ),
         spec!(
@@ -575,14 +584,14 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "sheet.rows_remove",
             "Remove rows",
-            schema(&["canvas", "rows"], json!({"canvas": uuid(), "rows": {"type": "array", "items": uuid(), "minItems": 1, "maxItems": MAX_ADD}})),
+            schema(&["canvas", "rows"], json!({"canvas": uuid(), "rows": rows_list()})),
             "{canvas, rows} -> {removed}; removes rows with their results, as one undo step. References stay on the sheet.",
             remove
         ),
         spec!(
             "sheet.row_move",
             "Move a row",
-            schema(&["canvas", "row", "index"], json!({"canvas": uuid(), "row": uuid(), "index": {"type": "integer", "minimum": 0, "maximum": MAX_ROWS}})),
+            schema(&["canvas", "row", "index"], json!({"canvas": uuid(), "row": uuid(), "index": {"type": "integer", "minimum": 0, "maximum": MAX_ROWS - 1}})),
             "{canvas, row, index} -> {row, index}; moves a row to `index` (0 is the top).",
             move_row
         ),
@@ -590,7 +599,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "sheet.reference_wire",
             "Wire a reference into rows",
             schema(&["canvas", "seed", "reference"], json!({"canvas": uuid(), "seed": uuid(), "reference": uuid(), "rows": rows_list()})),
-            "{canvas, seed: new UUID, reference: NodeId, rows?} -> {rows}; wires a node on the sheet (an image source, say) into each row's first input of its modality, after the row's other wires. Without `rows` it is wired into every row: a shared reference. New wire ids derive from `seed`.",
+            "{canvas, seed: new UUID, reference: NodeId, rows?} -> {rows}; wires a node on the sheet (an image source, say) into each row's first input of its modality, after the row's other wires. Without `rows` it is wired into every row: a shared reference (on a sheet of two or more rows). Single inputs already fed are skipped. New wire ids derive from `seed`: use a fresh one per command.",
             wire
         ),
         spec!(
