@@ -32,6 +32,12 @@ impl LocalActions {
     pub fn take_staged(&self) -> AssetStore {
         std::mem::take(&mut *self.staged.lock().unwrap_or_else(PoisonError::into_inner))
     }
+
+    /// The images staged so far, kept for later actions in the run (a cheap clone: buffers are
+    /// shared). For a host that imports results step by step.
+    pub fn staged(&self) -> AssetStore {
+        self.staged.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
 }
 
 fn number(params: &ParamValues, name: &str) -> Result<f64, String> {

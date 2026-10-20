@@ -20,7 +20,7 @@ use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Project};
 use nodecraft_nodes::generation::TEXT_KIND;
 use nodecraft_providers::ErrorKind;
 use nodecraft_providers::mock::{MockFailure, MockModel, MockOutput, MockProvider};
-use nodecraft_types::{CanvasId, Currency, EdgeId, Money, NodeId, ProjectId, Value};
+use nodecraft_types::{AssetRef, CanvasId, Currency, EdgeId, MediaMeta, Money, NodeId, ProjectId, Value};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -130,10 +130,15 @@ fn request() -> serde_json::Value {
 
 /// Quotes and accepts the run; the host has it in its inbox afterwards.
 fn start(f: &mut Fixture) {
-    let q = f.session.dispatch("run.quote", &request()).unwrap();
+    start_request(f, request());
+}
+
+fn start_request(f: &mut Fixture, request: serde_json::Value) {
+    let q = f.session.dispatch("run.quote", &request).unwrap();
     assert_eq!(q["allowed"], true, "{q}");
-    let mut start = request();
-    start["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
+    let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = request;
+    start["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":amounts});
     f.session.dispatch("run.start", &start).unwrap();
 }
 
@@ -249,4 +254,72 @@ fn cancelling_a_run_mid_poll_ends_it_and_settles_the_job() {
     // Settled, not left reserved: the next quote is unaffected.
     let q = f.session.dispatch("run.quote", &request()).unwrap();
     assert_eq!(q["allowed"], true, "{q}");
+}
+
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let pixels: Vec<u8> = (0..width * height).flat_map(|i| [(i % 251) as u8, 80, 160, 255]).collect();
+    nodecraft_media::encode_png(width, height, &pixels, &nodecraft_media::Limits::default()).unwrap()
+}
+
+fn add(f: &mut Fixture, id: NodeId, kind: &str, x: i32) {
+    f.session.dispatch("node.create", &json!({"canvas": C, "id": id, "kind": kind, "pos": {"x": x, "y": 300}})).unwrap();
+}
+
+fn connect(f: &mut Fixture, id: u8, from: NodeId, to: NodeId, port: &str) {
+    let edge = json!({"id": EdgeId::from_bytes([id; 16]), "from": {"node": from, "port": "out"}, "to": {"node": to, "port": port}, "order": 0});
+    f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+}
+
+#[test]
+fn chained_actions_read_what_the_previous_action_made() {
+    let mut f = fixture(MockProvider::standard());
+    let hash = f.session.import_asset(&png(16, 12)).unwrap();
+    let asset = AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta { width: Some(16), height: Some(12), ..MediaMeta::default() } };
+    let (picture, first, second) = (NodeId::from_bytes([10; 16]), NodeId::from_bytes([11; 16]), NodeId::from_bytes([12; 16]));
+    add(&mut f, picture, "source.image", 0);
+    f.session.dispatch("node.param_set", &json!({"canvas": C, "id": picture, "name": "asset", "value": Value::Media(asset)})).unwrap();
+    add(&mut f, first, "image.blur", 400);
+    add(&mut f, second, "image.blur", 800);
+    connect(&mut f, 20, picture, first, "image");
+    connect(&mut f, 21, first, second, "image");
+    start_request(&mut f, json!({"canvas":C,"mode":"selected","nodes":[picture, first, second]}));
+    let notices = drive(&mut f);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    let node = |id: NodeId| f.session.document().canvases().get(&C).unwrap().nodes().get(&id).unwrap().clone();
+    for id in [first, second] {
+        let Some(Value::Media(out)) = node(id).history.first().and_then(|g| g.outputs.first()).cloned() else { panic!("{id:?} made no image: {notices:?}") };
+        assert!(f.session.assets().contains(&out.hash), "the action's image is in the project");
+    }
+    assert!(f.mock.requests().is_empty(), "actions are local");
+}
+
+#[test]
+fn accepted_runs_past_the_in_flight_bound_wait_instead_of_being_dropped() {
+    let mut f = fixture(MockProvider::standard());
+    for _ in 0..MAX_RUNS {
+        start(&mut f);
+    }
+    // These start; the next batch waits in the inbox behind them.
+    let mut notices = f.host.pump(&mut f.session);
+    for _ in 0..MAX_RUNS {
+        start(&mut f);
+    }
+    notices.extend(drive(&mut f));
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Refused { .. })), "{notices:?}");
+    let recorded = notices.iter().filter(|n| matches!(n, RunNotice::Recorded { node, .. } if *node == WRITER)).count();
+    assert_eq!(recorded, 2 * MAX_RUNS);
+}
+
+#[test]
+fn cancelling_drops_runs_that_have_not_started() {
+    let mut f = fixture(MockProvider::standard());
+    start(&mut f);
+    start(&mut f);
+    f.host.cancel_all();
+    let notices = drive(&mut f);
+    assert_eq!(
+        notices,
+        [RunNotice::Refused { reason: "cancelled before it started".into() }, RunNotice::Refused { reason: "cancelled before it started".into() }]
+    );
+    assert!(f.mock.requests().is_empty());
 }
