@@ -259,6 +259,17 @@ fn template(id: &str) -> (Session, Value) {
     } else {
         Vec::new()
     };
+    // A text source on the canvas, and a published technique version of it.
+    let technique_canvas = nodecraft_types::CanvasId::from_bytes([0x61; 16]);
+    let technique = nodecraft_types::TechniqueId::from_bytes([0x62; 16]);
+    if id.starts_with("technique.") {
+        let note = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(0x63), &std::collections::BTreeMap::new()).unwrap();
+        session.dispatch("node.add", &json!({"canvas":canvas(),"node":note})).unwrap();
+        if matches!(id, "technique.show" | "technique.remove") {
+            let publish = json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]});
+            session.dispatch("technique.publish", &publish).unwrap();
+        }
+    }
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
     let pending = if matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register_results(&mut session)) } else { None };
@@ -308,6 +319,12 @@ fn template(id: &str) -> (Session, Value) {
         "sheet.row_move" => json!({"canvas":sheet,"row":sheet_rows[1],"index":0}),
         "sheet.reference_wire" => json!({"canvas":sheet,"seed":node_id(0x54),"reference":node_id(0x53),"rows":[sheet_rows[1]]}),
         "sheet.reference_unwire" => json!({"canvas":sheet,"reference":node_id(0x53),"rows":[sheet_rows[0]]}),
+        "technique.check" => json!({"canvas":canvas(),"outputs":[{"node":node_id(0x63)}]}),
+        "technique.publish" => {
+            json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]})
+        }
+        "technique.list" => json!({}),
+        "technique.show" | "technique.remove" => json!({"canvas":technique_canvas}),
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.options" => json!({"canvas":canvas(),"id":node_id(1),"param":"text"}),
         "edge.rewire" => {

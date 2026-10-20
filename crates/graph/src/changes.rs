@@ -422,8 +422,14 @@ fn missing() -> Error {
 fn duplicate() -> Error {
     Error::new(ErrorKind::Conflict, "document entity already exists")
 }
+/// Every change to a canvas's contents comes through here, so a published technique version is
+/// refused here; adding or removing a whole version doesn't, and stays undoable.
 fn canvas_mut(project: &mut Project, id: CanvasId) -> Result<&mut Canvas, Error> {
-    project.canvases.get_mut(&id).ok_or_else(missing)
+    let canvas = project.canvases.get_mut(&id).ok_or_else(missing)?;
+    if canvas.kind == crate::CanvasKind::Technique {
+        return Err(Error::new(ErrorKind::Conflict, "a published technique version can't be edited; publish a new version instead"));
+    }
+    Ok(canvas)
 }
 fn node_mut(project: &mut Project, canvas: CanvasId, id: NodeId) -> Result<&mut Node, Error> {
     canvas_mut(project, canvas)?.nodes.get_mut(&id).ok_or_else(missing)

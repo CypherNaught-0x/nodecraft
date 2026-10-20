@@ -55,6 +55,7 @@ pub mod split;
 pub mod stale_cmds;
 pub mod tag_cmds;
 pub mod tag_filter_cmds;
+pub mod technique_cmds;
 pub mod turn_into_cmds;
 
 pub use session::{DocChanged, PreparedImports, Session};
