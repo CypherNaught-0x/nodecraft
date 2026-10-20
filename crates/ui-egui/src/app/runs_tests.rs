@@ -169,8 +169,9 @@ fn a_running_card_says_so_until_its_run_ends() {
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.run_confirm.is_some());
     accept(&mut h);
-    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.is_running(C, N)));
-    h.get_by_label("Running…");
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.card_status(C, N).is_some_and(|s| s.starts_with("Generating "))));
+    // The mock reports its progress: the card shows it.
+    h.get_by_label_contains("Generating ");
 }
 
 #[test]
@@ -182,7 +183,7 @@ fn a_failed_run_is_shown_on_its_card_with_the_reason() {
     frames_until(&mut h, |app| app.run_confirm.is_some());
     accept(&mut h);
     frames_until(&mut h, |app| idle(app) && app.runs.as_ref().is_some_and(|runs| runs.failure(C, N).is_some()));
-    h.get_by_label("Run failed");
+    h.get_by_label("Run failed: input not supported");
     assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("A run failed")), "{:?}", h.state().notice);
     assert!(node(h.state()).history.is_empty());
 }
@@ -407,6 +408,101 @@ fn stale211_visual() {
     generated(&mut h);
     h.state_mut().session.dispatch("node.param_set", &json!({"canvas": C, "id": N, "name": "prompt", "value": Value::Text("A blue square".into())})).unwrap();
     for (theme, name) in [(crate::theme::ThemeKind::Dark, "stale211-dark.png"), (crate::theme::ThemeKind::Light, "stale211-light.png")] {
+        h.state_mut().theme = theme;
+        let mut shot = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
+        crate::theme::apply(&shot.ctx, theme);
+        shot.run();
+        shot.render().unwrap().save(dir.join(name)).unwrap();
+        h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
+    }
+}
+
+// The queue panel (#82).
+
+fn open_queue(h: &mut Harness<'static, NodeCraftApp>) {
+    let label = h
+        .query_all_by_label_contains("Queue")
+        .find(|node| node.accesskit_node().role() == Role::Button)
+        .and_then(|node| node.accesskit_node().label())
+        .unwrap_or_default();
+    press(h, Role::Button, &label);
+    assert!(h.state().queue_open);
+}
+
+#[test]
+fn the_top_right_buttons_do_not_open_search_under_them() {
+    // The keys row was drawn over the search and tag buttons; a click opened search too and
+    // focused an input that was not drawn yet.
+    let mut slow = MockModel::new(MockOutput::Image);
+    slow.polls = u32::MAX;
+    let mut h = scene(making(image(slow)));
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.card_status(C, N).is_some()));
+    press(&mut h, Role::Button, "API keys");
+    assert!(h.state().keys.open);
+    open_queue(&mut h);
+    assert!(!h.state().search.open && !h.state().tag_filter.open);
+}
+
+#[test]
+fn the_queue_lists_a_running_job_and_cancelling_it_leaves_its_cost_unresolved() {
+    let mut slow = MockModel::new(MockOutput::Image);
+    slow.polls = u32::MAX;
+    let mock = image(slow);
+    let mut h = scene(making(mock.clone()));
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.card_status(C, N).is_some_and(|s| s.starts_with("Generating "))));
+    h.get_by_label("Queue (1)");
+    open_queue(&mut h);
+    h.get_by_label("mock · mock-image");
+    h.get_by_label("0.04 USD");
+    press(&mut h, Role::Button, "Cancel");
+    frames_until(&mut h, idle);
+    h.get_by_label("Cancelled after it was sent (cost unresolved)");
+    h.get_by_label("0.04 USD, unresolved");
+    assert!(!mock.cancelled().is_empty(), "the provider was asked to cancel");
+    assert!(node(h.state()).history.is_empty());
+    h.get_by_role_and_label(Role::Button, "Queue");
+    press(&mut h, Role::Button, "Clear finished");
+    h.get_by_label_contains("Nothing has run yet");
+}
+
+#[test]
+fn a_failed_job_names_its_cause_and_retry_quotes_again_first() {
+    let mut refusing = MockModel::new(MockOutput::Image);
+    refusing.fail = Some(MockFailure::Submit(nodecraft_providers::ErrorKind::Auth));
+    let mock = image(refusing);
+    let mut h = scene(making(mock.clone()));
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && app.runs.as_ref().is_some_and(|runs| runs.failure(C, N).is_some()));
+    h.get_by_label("Run failed: API key");
+    open_queue(&mut h);
+    h.get_by_label("Failed: API key");
+    assert_eq!(mock.requests().len(), 1);
+    press(&mut h, Role::Button, "Retry");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(mock.requests().len(), 1, "a retry is quoted first; nothing is sent until it is accepted");
+}
+
+#[test]
+#[ignore = "manual public-safe capture; QUEUE82_RENDER_DIR"]
+fn queue82_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("QUEUE82_RENDER_DIR").unwrap());
+    let mut slow = MockModel::new(MockOutput::Image);
+    slow.polls = u32::MAX;
+    let mut h = scene(making(image(slow)));
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.card_status(C, N).is_some_and(|s| s.starts_with("Generating "))));
+    open_queue(&mut h);
+    for (theme, name) in [(crate::theme::ThemeKind::Dark, "queue82-dark.png"), (crate::theme::ThemeKind::Light, "queue82-light.png")] {
         h.state_mut().theme = theme;
         let mut shot = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
         crate::theme::apply(&shot.ctx, theme);

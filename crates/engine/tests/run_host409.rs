@@ -403,7 +403,7 @@ fn a_failed_job_names_its_cause() {
     let writer = job(&f.host, WRITER);
     assert!(matches!(&writer.state, JobState::Failed { cause: Some(ErrorKind::Auth), .. }), "{writer:?}");
     assert_eq!(writer.status(), "Failed: API key");
-    assert!(!writer.sent, "a refused submit never reached the provider");
+    assert!(writer.sent, "a job that started may have reached the provider");
 }
 
 #[test]

@@ -332,6 +332,8 @@ mod models;
 mod navigation;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
+mod queue_panel;
+#[cfg(not(target_arch = "wasm32"))]
 mod recovery;
 #[cfg(not(target_arch = "wasm32"))]
 mod runs;
@@ -439,6 +441,9 @@ pub struct NodeCraftApp {
     /// The runs `run.start` hands over, and the providers they use (#409).
     #[cfg(not(target_arch = "wasm32"))]
     runs: Option<runs::Runs>,
+    /// The queue panel is open (#82).
+    #[cfg(not(target_arch = "wasm32"))]
+    queue_open: bool,
 }
 impl NodeCraftApp {
     /// Cancel one owner at a time: noodle, input order, marquee, then selection.
@@ -729,6 +734,8 @@ impl NodeCraftApp {
             key_results: None,
             #[cfg(not(target_arch = "wasm32"))]
             runs: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            queue_open: false,
         })
     }
     /// Replace a document session together with scoped view services and all view caches.
@@ -1171,20 +1178,15 @@ impl NodeCraftApp {
                             .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(runs) = &self.runs {
-                        let status = if runs.is_running(self.canvas, node.id) {
-                            Some(("Running…", t.accent, None))
-                        } else {
-                            runs.failure(self.canvas, node.id).map(|why| ("Run failed", t.danger, Some(why)))
-                        };
-                        if let Some((label, color, why)) = status {
-                            let pos = r.rect.left_bottom() + Vec2::new(0.0, t.control_gap);
-                            let text = tag_painter.text(pos, egui::Align2::LEFT_TOP, label, egui::FontId::proportional(t.label_size), color);
-                            let hover = ui.interact(self.view.rect_to_screen(viewport.min, text), ui.id().with(("run_status", node.id)), Sense::hover());
-                            hover.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
-                            if let Some(why) = why {
-                                hover.on_hover_text(why.to_owned());
-                            }
+                    if let Some(runs) = &self.runs
+                        && let Some((label, color, why)) = queue_panel::card_status(runs, self.canvas, node.id, t)
+                    {
+                        let pos = r.rect.left_bottom() + Vec2::new(0.0, t.control_gap);
+                        let text = tag_painter.text(pos, egui::Align2::LEFT_TOP, &label, egui::FontId::proportional(t.label_size), color);
+                        let hover = ui.interact(self.view.rect_to_screen(viewport.min, text), ui.id().with(("run_status", node.id)), Sense::hover());
+                        hover.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
+                        if let Some(why) = why {
+                            hover.on_hover_text(why);
                         }
                     }
                     // A card being refreshed keeps its stale result until the run records, but
@@ -1642,6 +1644,8 @@ impl NodeCraftApp {
         self.file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.queue_panel(ui.ctx(), t);
         // Floating UI must lay out before final quick-add admission, including a Window's first
         // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
         // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
@@ -1756,19 +1760,33 @@ impl NodeCraftApp {
             .stroke(egui::Stroke::new(1.0, t.panel_stroke))
             .corner_radius(t.panel_radius)
             .inner_margin(egui::Margin::symmetric(6, 4));
+        // Left of the search and closed tags controls, which own the top-right corner; overlapping
+        // them, a click here also opened search or the tag filter.
+        let right = if self.tag_filter.open { self.search_rect().min.x } else { self.tag_rect().min.x.min(self.search_rect().min.x) };
         egui::Area::new(ui.id().with("keys_button"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-16.0, 16.0))
+            .anchor(egui::Align2::RIGHT_TOP, Vec2::new(right - viewport.max.x - t.navigation_gap, t.navigation_margin))
             .constrain_to(viewport)
             .show(ui.ctx(), |ui| {
                 frame.show(ui, |ui| {
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
-                        .on_hover_text("Add, check and remove provider keys")
-                        .clicked()
-                    {
-                        self.keys.open = !self.keys.open;
-                    }
+                    ui.horizontal(|ui| {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(label) = self.queue_label()
+                            && ui
+                                .add(egui::Button::new(egui::RichText::new(label).color(t.text_muted)).frame(false))
+                                .on_hover_text("Every job: status, provider, cost, cancel and retry")
+                                .clicked()
+                        {
+                            self.queue_open = !self.queue_open;
+                        }
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
+                            .on_hover_text("Add, check and remove provider keys")
+                            .clicked()
+                        {
+                            self.keys.open = !self.keys.open;
+                        }
+                    });
                 });
             });
     }

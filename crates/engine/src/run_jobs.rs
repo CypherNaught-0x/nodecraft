@@ -4,8 +4,8 @@
 //! progress reports. When a job ends it moves to a short list of recent jobs, so the panel can say
 //! how it ended. Cancelling is a request: the job's end says what happened.
 //!
-//! - **Never sent:** cancelled before it reached the provider. Nothing was charged.
-//! - **Sent:** cancelled after the provider had it. It may still be billed, so the cost stays
+//! - **Never sent:** cancelled before it started. Nothing was charged.
+//! - **Sent:** cancelled after it started, when a request may already be with the provider. It may still be billed, so the cost stays
 //!   unresolved. It is never shown as refunded or free.
 //! - **Too late:** it finished, or failed, before the cancel took effect. The result is kept.
 use nodecraft_exec::scheduler::JobId;
@@ -62,7 +62,8 @@ pub struct JobView {
     /// What the run admitted for it, when it is priced.
     pub estimate: Option<Money>,
     pub state: JobState,
-    /// The provider accepted it, so it may be billed even if it is cancelled or fails.
+    /// A model job that started: it may have reached the provider, so it may be billed even if
+    /// it is cancelled or fails. `false` proves nothing was sent.
     pub sent: bool,
     /// A cancel was asked for and has not yet been answered by the job's end.
     pub cancel_requested: bool,
@@ -204,6 +205,8 @@ impl RunJobs {
     pub(crate) fn started(&mut self, job: JobId, attempt: u32) {
         if let Some(view) = self.live.get_mut(&job) {
             view.state = JobState::Running { attempt, position: None, fraction: None, message: None };
+            // From here a request may be in flight, whether or not the provider says so.
+            view.sent |= view.provider.is_some();
         }
     }
 
@@ -216,8 +219,6 @@ impl RunJobs {
     /// Ends a job, moving it to `ended`. A job that already ended is left as it was.
     pub(crate) fn end(&mut self, job: JobId, state: JobState) {
         let Some(mut view) = self.live.remove(&job) else { return };
-        // A model job that finished was taken by the provider, whether or not it said so first.
-        view.sent |= state == JobState::Done && view.provider.is_some();
         view.state = match state {
             JobState::Failed { reason, cause } => JobState::Failed { cause: cause.or_else(|| cause_of(&reason)), reason: bounded(&reason) },
             other => other,

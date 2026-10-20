@@ -13,6 +13,7 @@ use nodecraft_engine::{
     provider_routing::ProviderRouting,
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{RunHost, RunNotice},
+    run_jobs::{JobKey, JobState, JobView},
     secrets::KeyringStore,
     settings::ProviderSettings,
 };
@@ -142,6 +143,8 @@ pub(super) struct Runs {
     /// Why the last run of a card failed, until it runs again.
     failed: BTreeMap<(CanvasId, NodeId), String>,
     running: BTreeSet<(CanvasId, NodeId)>,
+    /// Every job the host is running or recently ran, for the queue panel.
+    jobs: Vec<JobView>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     tokio: Option<tokio::runtime::Runtime>,
 }
@@ -193,6 +196,7 @@ impl Runs {
             waiting: None,
             failed: BTreeMap::new(),
             running: BTreeSet::new(),
+            jobs: Vec::new(),
             tokio: Some(tokio),
         })
     }
@@ -341,7 +345,37 @@ impl Runs {
             more => format!("{first} (and {more} more)"),
         });
         self.running = self.host.running();
+        self.jobs = self.host.jobs();
         tick
+    }
+
+    /// The queue panel's jobs: recently ended ones first, then those queued or running.
+    pub(super) fn jobs(&self) -> &[JobView] {
+        &self.jobs
+    }
+
+    /// Asks one job to stop; its end shows on the next frames.
+    pub(super) fn cancel(&mut self, key: JobKey) -> Result<(), Error> {
+        self.host.cancel(key)?;
+        self.jobs = self.host.jobs();
+        Ok(())
+    }
+
+    /// Forgets the jobs that ended.
+    pub(super) fn clear_finished(&mut self) {
+        self.host.clear_finished();
+        self.jobs = self.host.jobs();
+    }
+
+    /// A card's status while it has work queued or running: "Queued", "Generating 40%", ….
+    pub(super) fn card_status(&self, canvas: CanvasId, node: NodeId) -> Option<String> {
+        let view = self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node && !view.state.is_final())?;
+        Some(match &view.state {
+            _ if view.cancel_requested => "Cancelling…".into(),
+            JobState::Running { fraction: None, position: None, .. } => "Generating…".into(),
+            JobState::Retrying { .. } => "Retrying…".into(),
+            _ => view.status(),
+        })
     }
 
     /// Whether anything is in progress, so the next frame comes without input.
