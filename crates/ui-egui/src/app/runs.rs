@@ -9,6 +9,7 @@
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
+    provider_routing::ProviderRouting,
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{RunHost, RunNotice},
     secrets::KeyringStore,
@@ -40,10 +41,11 @@ impl Runtime for Tokio {
     }
     fn sleep(&self, ms: u64) -> TaskFuture<()> {
         // Spawned rather than created here, so the timer always belongs to the runtime, whichever
-        // thread asks.
-        let timer = self.handle.spawn(tokio::time::sleep(Duration::from_millis(ms)));
+        // thread asks. A dropped sleep stops its timer too.
+        let timer = Timer(self.handle.spawn(tokio::time::sleep(Duration::from_millis(ms))));
         Box::pin(async move {
-            let _ = timer.await;
+            let mut timer = timer;
+            let _ = (&mut timer.0).await;
         })
     }
     fn now_ms(&self) -> u64 {
@@ -51,28 +53,41 @@ impl Runtime for Tokio {
     }
 }
 
-type Made = (String, Result<Arc<dyn Provider>, Readiness>);
+/// A sleep's timer task, aborted when the sleep is dropped unfinished.
+struct Timer(tokio::task::JoinHandle<()>);
+impl Drop for Timer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The notice while a card waits for its provider.
+pub(super) const SETTING_UP: &str = "Setting up the provider…";
+
+/// An adapter asked for in one key epoch, and what building it gave.
+type Ask = (u64, String, ProviderSettings);
+type Made = (u64, String, Result<Arc<dyn Provider>, Readiness>);
 /// Builds one adapter; the app's reads the keychain ([`provider_setup::make`]), tests pass mocks.
 pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Provider>, Readiness> + Send>;
 
 /// The thread that builds adapters: it reads keys, so an unlock prompt never blocks a frame.
 struct Maker {
-    asks: SyncSender<(String, ProviderSettings)>,
+    asks: SyncSender<Ask>,
     made: Receiver<Made>,
 }
 
 impl Maker {
     fn spawn(make: Make) -> Result<Self, Error> {
-        let (asks, inbox) = sync_channel::<(String, ProviderSettings)>(ASKS);
+        let (asks, inbox) = sync_channel::<Ask>(ASKS);
         let (outbox, made) = sync_channel::<Made>(ASKS);
         std::thread::Builder::new()
             .name("nodecraft-providers".into())
             .spawn(move || {
-                for (adapter, settings) in inbox {
+                for (epoch, adapter, settings) in inbox {
                     // A keychain backend that panics fails this adapter, not the thread.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| make(&adapter, &settings)))
                         .unwrap_or_else(|_| Err(Readiness::Failed("setting it up failed unexpectedly".into())));
-                    if outbox.send((adapter, result)).is_err() {
+                    if outbox.send((epoch, adapter, result)).is_err() {
                         break;
                     }
                 }
@@ -96,6 +111,8 @@ pub(super) enum Route {
 pub(super) struct Tick {
     /// A card whose provider is now set up, to quote again.
     pub ready: Option<NodeId>,
+    /// A card stopped waiting for its provider without being quoted (it's on another canvas).
+    pub abandoned: bool,
     /// Something to tell the person: a run that couldn't start or a provider that can't run.
     pub notice: Option<String>,
 }
@@ -104,10 +121,12 @@ pub(super) struct Runs {
     host: RunHost,
     setup: ProviderSetup,
     maker: Maker,
-    /// Adapters asked for and not yet answered.
+    /// Adapters asked for in this epoch and not yet answered.
     asked: BTreeSet<String>,
-    /// The card waiting for its adapter, with that adapter.
-    waiting: Option<(CanvasId, NodeId, String)>,
+    /// Bumped when a key changes: adapters asked for before then are built with the old key.
+    epoch: u64,
+    /// The card waiting for its adapter, with that adapter and the settings it was asked with.
+    waiting: Option<(CanvasId, NodeId, String, ProviderSettings)>,
     /// Why the last run of a card failed, until it runs again.
     failed: BTreeMap<(CanvasId, NodeId), String>,
     running: BTreeSet<(CanvasId, NodeId)>,
@@ -158,6 +177,7 @@ impl Runs {
             setup: ProviderSetup::default(),
             maker,
             asked: BTreeSet::new(),
+            epoch: 0,
             waiting: None,
             failed: BTreeMap::new(),
             running: BTreeSet::new(),
@@ -191,18 +211,25 @@ impl Runs {
                 Err(Error::new(ErrorKind::Unsupported, message))
             }
             None => {
-                if !self.asked.contains(&adapter) {
-                    match self.maker.asks.try_send((adapter.clone(), settings.clone())) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => return Err(Error::new(ErrorKind::Busy, "providers are still being set up; try again")),
-                        Err(TrySendError::Disconnected(_)) => return Err(Error::new(ErrorKind::Internal, "the provider thread has stopped")),
-                    }
-                    self.asked.insert(adapter.clone());
-                }
-                self.waiting = Some((canvas, id, adapter));
+                self.ask(&adapter, settings)?;
+                self.waiting = Some((canvas, id, adapter, settings.clone()));
                 Ok(Route::Waiting)
             }
         }
+    }
+
+    /// Asks the provider thread for `adapter`, unless it already was in this epoch.
+    fn ask(&mut self, adapter: &str, settings: &ProviderSettings) -> Result<(), Error> {
+        if self.asked.contains(adapter) {
+            return Ok(());
+        }
+        match self.maker.asks.try_send((self.epoch, adapter.to_owned(), settings.clone())) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(Error::new(ErrorKind::Busy, "providers are still being set up; try again")),
+            Err(TrySendError::Disconnected(_)) => return Err(Error::new(ErrorKind::Internal, "the provider thread has stopped")),
+        }
+        self.asked.insert(adapter.to_owned());
+        Ok(())
     }
 
     /// Whether a card is waiting for its provider.
@@ -211,29 +238,49 @@ impl Runs {
     }
 
     /// Forgets every adapter, so the next run reads keys again (after one was saved or deleted).
-    pub(super) fn forget_adapters(&mut self) {
+    /// The session's routing goes too, so nothing quotes or starts on an adapter holding the old
+    /// key, and one still being built with it is dropped when it arrives. A card waiting for its
+    /// provider is asked for again.
+    pub(super) fn forget_adapters(&mut self, session: &mut Session) -> Result<(), Error> {
         let adapters: Vec<String> = self.setup.adapters().map(|(adapter, _)| adapter.to_owned()).collect();
         for adapter in adapters {
             self.setup.forget(&adapter);
         }
+        self.epoch = self.epoch.wrapping_add(1);
+        self.asked.clear();
+        session.set_provider_routing(ProviderRouting::default())?;
+        if let Some((_, _, adapter, settings)) = self.waiting.clone()
+            && let Err(error) = self.ask(&adapter, &settings)
+        {
+            self.waiting = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// One frame: takes built adapters and pumps the host.
     pub(super) fn tick(&mut self, session: &mut Session, canvas: CanvasId) -> Tick {
         let mut tick = Tick::default();
-        for (adapter, result) in self.maker.made.try_iter() {
+        let made: Vec<Made> = self.maker.made.try_iter().collect();
+        for (epoch, adapter, result) in made {
+            if epoch != self.epoch {
+                continue;
+            }
             self.asked.remove(&adapter);
             self.setup.forget(&adapter);
             self.setup.ensure(&adapter, |_| result);
-            if let Some((on, node, wanted)) = &self.waiting
+            if let Some((on, node, wanted, _)) = &self.waiting
                 && *wanted == adapter
             {
                 if *on == canvas {
                     tick.ready = Some(*node);
+                } else {
+                    tick.abandoned = true;
                 }
                 self.waiting = None;
             }
         }
+        let mut notices = Vec::new();
         for notice in self.host.pump(session) {
             match notice {
                 RunNotice::Started { canvas, nodes } => {
@@ -245,13 +292,18 @@ impl Runs {
                     self.failed.remove(&(canvas, node));
                 }
                 RunNotice::Failed { canvas, node, reason } | RunNotice::Unaccounted { canvas, node, reason } => {
-                    tick.notice = Some(format!("A run failed: {reason}"));
+                    notices.push(format!("A run failed: {reason}"));
                     self.failed.insert((canvas, node), reason);
                 }
-                RunNotice::Refused { reason } => tick.notice = Some(format!("The run didn't start: {reason}")),
+                RunNotice::Refused { reason } => notices.push(format!("The run didn't start: {reason}")),
                 RunNotice::Finished { .. } => {}
             }
         }
+        // The first says why; the rest are on their cards.
+        tick.notice = notices.first().map(|first| match notices.len().saturating_sub(1) {
+            0 => first.clone(),
+            more => format!("{first} (and {more} more)"),
+        });
         self.running = self.host.running();
         tick
     }

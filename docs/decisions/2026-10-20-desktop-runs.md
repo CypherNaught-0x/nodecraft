@@ -16,7 +16,9 @@
 - **A provider that can't run is asked again next time.** A missing key, or a server that
   isn't set up, shows its message and is forgotten. The next Generate reads the keychain afresh,
   so adding the key in Settings is enough. Saving or deleting any key forgets every built
-  adapter for the same reason.
+  adapter and clears the session's provider routing, so no surface (the control channel or the
+  agent included) can quote or start on the old key. An adapter still being built with the old
+  key is dropped when it arrives, and a card waiting for it is asked for again.
 - **Cards show what their run is doing.** "Running…" while the host has the card's job, and
   "Run failed" (the reason on hover) until the card runs again. A refused start or a failure
   also shows in the notice.

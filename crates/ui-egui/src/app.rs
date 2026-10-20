@@ -2171,7 +2171,9 @@ impl eframe::App for NodeCraftApp {
                 && let Some(runs) = &mut self.runs
             {
                 // A key was saved or deleted: adapters read their keys again.
-                runs.forget_adapters();
+                if let Err(error) = runs.forget_adapters(&mut self.session) {
+                    self.notice = Some(error.message);
+                }
             }
             self.save_accounts(changes);
             if self.keys.is_waiting() {

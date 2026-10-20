@@ -128,7 +128,7 @@ fn generate_sets_up_the_provider_first_then_quotes_and_records_the_run() {
     }));
     press(&mut h, Role::Button, "Generate");
     assert!(h.state().run_confirm.is_none(), "no quote before the provider is set up");
-    assert_eq!(h.state().notice.as_deref(), Some("Setting up the provider…"));
+    assert_eq!(h.state().notice.as_deref(), Some(super::runs::SETTING_UP));
     frames_until(&mut h, |_| true);
     assert!(h.state().run_confirm.is_none());
     open.send(()).unwrap();
@@ -176,14 +176,62 @@ fn a_provider_without_its_key_says_what_to_do_and_asks_again_next_time() {
         Err(Readiness::NeedsKey { account: "mock".into() })
     }));
     press(&mut h, Role::Button, "Generate");
-    frames_until(&mut h, |app| app.notice.as_deref() != Some("Setting up the provider…"));
+    frames_until(&mut h, |app| app.notice.as_deref() != Some(super::runs::SETTING_UP));
     let notice = h.state().notice.clone().unwrap_or_default();
     assert!(notice.contains("needs an API key"), "{notice}");
     assert!(h.state().run_confirm.is_none(), "nothing is quoted for a provider that can't run");
     // The person adds the key; the next Generate reads it again rather than remembering the miss.
     press(&mut h, Role::Button, "Generate");
-    frames_until(&mut h, |app| app.notice.as_deref() != Some("Setting up the provider…"));
+    frames_until(&mut h, |app| app.notice.as_deref() != Some(super::runs::SETTING_UP));
     assert_eq!(*asked.lock().unwrap(), 2);
+}
+
+/// A maker that answers once per message on the returned gate, counting what it built.
+fn gated(mock: MockProvider) -> (Make, std::sync::mpsc::Sender<()>, Arc<Mutex<u32>>) {
+    let (open, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let built = Arc::new(Mutex::new(0u32));
+    let count = built.clone();
+    let inner = making(mock);
+    let make: Make = Box::new(move |adapter, settings| {
+        let _ = gate.lock().unwrap().recv();
+        *count.lock().unwrap() += 1;
+        inner(adapter, settings)
+    });
+    (make, open, built)
+}
+
+#[test]
+fn a_key_change_while_the_provider_is_set_up_builds_it_again_with_the_new_key() {
+    let (make, open, built) = gated(image(MockModel::new(MockOutput::Image)));
+    let mut h = scene(make);
+    press(&mut h, Role::Button, "Generate");
+    assert_eq!(h.state().notice.as_deref(), Some(super::runs::SETTING_UP));
+    // The key is replaced while the first build is still reading the old one.
+    let app = h.state_mut();
+    app.runs.as_mut().unwrap().forget_adapters(&mut app.session).unwrap();
+    open.send(()).unwrap();
+    frames_until(&mut h, |_| *built.lock().unwrap() == 1);
+    // Time for the stale answer to arrive and be dropped.
+    std::thread::sleep(Duration::from_millis(200));
+    frames_until(&mut h, |_| true);
+    assert!(h.state().run_confirm.is_none(), "an adapter built with the old key is not used");
+    open.send(()).unwrap();
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(*built.lock().unwrap(), 2);
+    assert_eq!(h.state().notice, None);
+}
+
+#[test]
+fn leaving_the_canvas_while_its_provider_is_set_up_clears_the_waiting_notice() {
+    let (make, open, _) = gated(image(MockModel::new(MockOutput::Image)));
+    let mut h = scene(make);
+    press(&mut h, Role::Button, "Generate");
+    assert_eq!(h.state().notice.as_deref(), Some(super::runs::SETTING_UP));
+    h.state_mut().canvas = CanvasId::from_bytes([94; 16]);
+    open.send(()).unwrap();
+    frames_until(&mut h, |app| app.notice.is_none());
+    assert!(h.state().run_confirm.is_none(), "nothing is quoted for a card on another canvas");
 }
 
 #[test]

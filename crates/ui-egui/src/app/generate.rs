@@ -96,7 +96,7 @@ impl NodeCraftApp {
         if let Some(runs) = &mut self.runs {
             let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
             if runs.route(&mut self.session, self.canvas, id, &settings)? == super::runs::Route::Waiting {
-                self.notice = Some("Setting up the provider…".into());
+                self.notice = Some(super::runs::SETTING_UP.into());
                 return Ok(());
             }
         }
@@ -126,14 +126,17 @@ impl NodeCraftApp {
         if runs.is_busy() || runs.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        if (tick.ready.is_some() || tick.abandoned) && self.notice.as_deref() == Some(super::runs::SETTING_UP) {
+            self.notice = None;
+        }
         if let Some(notice) = tick.notice {
             self.notice = Some(notice);
         }
-        if let Some(id) = tick.ready {
-            self.notice = None;
-            if let Err(error) = self.request_generate(id) {
-                self.notice = Some(error.message);
-            }
+        // Quoted last: if it can't be, that is the newest thing to say.
+        if let Some(id) = tick.ready
+            && let Err(error) = self.request_generate(id)
+        {
+            self.notice = Some(error.message);
         }
     }
 
