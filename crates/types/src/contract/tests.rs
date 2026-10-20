@@ -146,6 +146,25 @@ fn a_generation_identity_admits_a_random_seed_and_names_it_to_draw() {
 }
 
 #[test]
+fn a_parameter_outside_identity_is_sent_but_unhashed_and_only_while_enabled() {
+    let mut contract = video();
+    for rule in &mut contract.rules {
+        if rule.param == "steps" {
+            rule.affects.identity = false;
+        }
+    }
+    let seed = ("seed", Value::Unsigned(Unsigned(3)));
+    let slow = contract.resolve(&values(std::slice::from_ref(&seed)), true).unwrap().into_resolved(true).unwrap();
+    assert!(slow.visible.contains("steps") && slow.unhashed.contains("steps"), "sent, not hashed");
+    assert_eq!(slow.unhashed.len(), 1);
+    assert!(slow.identity_values().all(|(name, _)| name != "steps"));
+    let fast = contract.resolve(&values(&[("speed", text("fast")), seed]), true).unwrap().into_resolved(true).unwrap();
+    assert!(!fast.visible.contains("steps") && fast.unhashed.is_empty(), "a disabled value is neither sent nor listed");
+    let identity = contract.resolve(&values(&[]), true).unwrap().into_identity(true).unwrap();
+    assert!(!identity.visible.contains("steps") && identity.unhashed.is_empty(), "into_identity leaves it out of visible itself");
+}
+
+#[test]
 fn a_stored_value_replaces_its_default_in_the_text_budget() {
     let big = "x".repeat(600_000);
     let contract = Contract::from_schema(

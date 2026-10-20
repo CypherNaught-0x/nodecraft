@@ -91,6 +91,8 @@ impl Resolution {
     /// always refuses; a missing value or failed check refuses only when `ready`, so a node can
     /// be edited through a state that a run would refuse. A run that would draw a random seed
     /// is unsupported here: only a catalog-admitted generation draws and records one.
+    /// Parameters declared `identity: false` are sent but marked
+    /// [`ResolvedParams::unhashed`], so a result's identity leaves them out.
     pub fn into_resolved(self, ready: bool) -> Result<ResolvedParams, Error> {
         self.into_resolved_where(ready, false, |_| true)
     }
@@ -114,9 +116,13 @@ impl Resolution {
             && !seeds
             && let Some(seed) = self.params.iter().find(|state| state.enabled && state.value == Effective::RandomSeed)
         {
-            return Err(Error::new(ErrorKind::Unsupported, format!("{} draws a random seed per run, which can't be recorded yet; set a seed", seed.name)));
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("{} draws a random seed per run, which only a catalog generation can do; set a seed", seed.name),
+            ));
         }
         let visible = self.params.iter().filter(|state| state.enabled && keep(state)).map(|state| state.name.clone()).collect();
+        let unhashed = self.params.iter().filter(|state| state.enabled && keep(state) && !state.affects.identity).map(|state| state.name.clone()).collect();
         let values = self
             .params
             .into_iter()
@@ -125,7 +131,7 @@ impl Resolution {
                 Effective::Unset | Effective::Auto | Effective::RandomSeed => None,
             })
             .collect();
-        Ok(ResolvedParams { values, visible })
+        Ok(ResolvedParams { values, visible, unhashed })
     }
 
     /// Enabled parameters whose effective setting is part of a result's identity. A literal

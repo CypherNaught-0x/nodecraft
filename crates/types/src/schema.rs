@@ -103,6 +103,9 @@ pub struct ResolvedParams {
     /// Includes hidden overrides for editor persistence. Provider adapters use visible_values().
     pub values: ParamValues,
     pub visible: BTreeSet<String>,
+    /// Visible parameters left out of a result's identity: their contract declares
+    /// `identity: false`, so editing them keeps results fresh. Always a subset of `visible`.
+    pub unhashed: BTreeSet<String>,
 }
 
 impl ResolvedParams {
@@ -112,6 +115,11 @@ impl ResolvedParams {
     }
     pub fn into_visible_values(self) -> ParamValues {
         self.values.into_iter().filter(|(name, _)| self.visible.contains(name)).collect()
+    }
+    /// The visible values a result's identity hashes: [`ResolvedParams::visible_values`] less
+    /// [`ResolvedParams::unhashed`].
+    pub fn identity_values(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.visible_values().filter(|(name, _)| !self.unhashed.contains(*name))
     }
 }
 
@@ -274,7 +282,11 @@ impl ParamSchema {
     pub fn resolve(&self, supplied: &ParamValues, ready: bool) -> Result<ResolvedParams, Error> {
         self.validate()?;
         let borrowed = self.resolve_checked(supplied, ready, None, false)?;
-        Ok(ResolvedParams { values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(), visible: borrowed.visible })
+        Ok(ResolvedParams {
+            values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(),
+            visible: borrowed.visible,
+            unhashed: BTreeSet::new(),
+        })
     }
 
     /// Borrow effective values without cloning defaults. With `selected`, unrelated node
