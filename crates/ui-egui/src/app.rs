@@ -781,6 +781,7 @@ impl NodeCraftApp {
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
+        self.keep_canvas();
         // Dismissing or choosing from a palette must not replay another key from the same
         // input frame as a canvas shortcut. Keep ownership even after palette.show closes it.
         let palette_owned_input = self.palette.is_some();

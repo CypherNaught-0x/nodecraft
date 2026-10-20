@@ -43,6 +43,10 @@ fn making() -> Make {
 
 /// A project with a plain canvas, opened on it; `sheet` also adds sheet `S` with these prompts.
 fn scene(sheet: &[&str]) -> Harness<'static, NodeCraftApp> {
+    scene_of(&sheet.iter().map(|prompt| (*prompt).to_owned()).collect::<Vec<_>>())
+}
+
+fn scene_of(sheet: &[String]) -> Harness<'static, NodeCraftApp> {
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -57,16 +61,22 @@ fn scene(sheet: &[&str]) -> Harness<'static, NodeCraftApp> {
     runs.install(&mut session);
     if !sheet.is_empty() {
         session.dispatch("sheet.create", &json!({"canvas": S, "title": "Foxes"})).unwrap();
-        session.dispatch("sheet.rows_add", &json!({"canvas": S, "seed": NodeId::from_bytes([104; 16]), "prompts": sheet})).unwrap();
-        let rows = rows_of(&session);
-        let preview = session.dispatch("node.model_preview", &json!({"canvas": S, "nodes": rows, "model": "mock-square"})).unwrap();
-        let revision = session.revision();
-        session
-            .dispatch(
-                "node.set_model",
-                &json!({"canvas": S, "nodes": rows, "model": "mock-square", "expected_revision": revision, "preview_binding": preview["binding"]}),
-            )
-            .unwrap();
+        // The row commands add at most 100 at a time.
+        for (n, chunk) in sheet.chunks(100).enumerate() {
+            let seed = NodeId::from_bytes([104u8.wrapping_add(u8::try_from(n).unwrap()); 16]);
+            session.dispatch("sheet.rows_add", &json!({"canvas": S, "seed": seed, "prompts": chunk})).unwrap();
+        }
+        // And a model swap reports on at most so many cards at once.
+        for rows in rows_of(&session).chunks(100) {
+            let preview = session.dispatch("node.model_preview", &json!({"canvas": S, "nodes": rows, "model": "mock-square"})).unwrap();
+            let revision = session.revision();
+            session
+                .dispatch(
+                    "node.set_model",
+                    &json!({"canvas": S, "nodes": rows, "model": "mock-square", "expected_revision": revision, "preview_binding": preview["binding"]}),
+                )
+                .unwrap();
+        }
     }
     let mut app = NodeCraftApp::from_session(session, C).unwrap();
     app.runs = Some(runs);
@@ -201,6 +211,129 @@ fn run_all_quotes_every_row_in_one_price_then_records_each() {
     });
     h.run();
     assert_eq!(h.query_all_by_label("Done").count(), 2);
+}
+
+/// Clicks into the prompt field showing `prompt` and types `more` at its end.
+fn type_into(h: &mut Harness<'static, NodeCraftApp>, prompt: &str, more: &str) {
+    let field = h.query_all_by_role(Role::MultilineTextInput).find(|node| node.value().as_deref() == Some(prompt)).unwrap().rect().center();
+    click(h, field);
+    h.key_press(egui::Key::End);
+    h.event(egui::Event::Text(more.into()));
+    h.run();
+}
+
+fn on_sheet(prompts: &[&str]) -> Harness<'static, NodeCraftApp> {
+    let mut h = scene(prompts);
+    h.state_mut().open_canvas(S);
+    h.run();
+    h
+}
+
+#[test]
+fn undoing_the_sheet_that_is_open_goes_back_to_the_canvas() {
+    let mut h = scene(&[]);
+    open_sheets(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Title").focus();
+    h.run();
+    h.event(egui::Event::Text("Owls".into()));
+    h.run();
+    press(&mut h, Role::Button, "New sheet");
+    assert!(h.state().on_sheet());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document().canvases().len(), 1, "the sheet is undone");
+    assert_eq!(h.state().canvas, C, "and the view is back on the canvas, not on nothing");
+    assert!(!h.state().on_sheet());
+}
+
+#[test]
+fn a_project_opens_on_its_canvas_even_when_a_sheet_sorts_first() {
+    let mut project = Project::new(ProjectId::from_bytes([103; 16]), "Sheets").unwrap();
+    Change::AddCanvas { canvas: Canvas::sheet(CanvasId::from_bytes([1; 16]), "Sheet") }.apply(&mut project).unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    assert_eq!(super::sheet_view::home_canvas(&project), Some(C));
+}
+
+#[test]
+fn a_prompt_still_being_typed_is_kept_when_a_dialog_takes_the_input() {
+    let mut h = on_sheet(&["a fox", "an owl"]);
+    type_into(&mut h, "a fox", " at dusk");
+    let owl = rows_of(&h.state().session)[1];
+    // A quote opening (here for the other row) blocks the table while the field still has focus.
+    h.state_mut().request_runs(vec![owl], super::generate::RunKind::Generate).unwrap();
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.run();
+    assert_eq!(prompts(h.state(), S), ["a fox at dusk", "an owl"]);
+}
+
+#[test]
+fn the_save_key_commits_a_prompt_being_typed_first() {
+    let mut h = on_sheet(&["a fox"]);
+    type_into(&mut h, "a fox", " at dusk");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.run();
+    assert_eq!(prompts(h.state(), S), ["a fox at dusk"]);
+    assert!(!h.state().sheet_drafts_pending());
+}
+
+#[test]
+fn the_undo_key_is_the_text_fields_while_a_prompt_has_focus() {
+    let mut h = on_sheet(&["a fox"]);
+    type_into(&mut h, "a fox", " at dusk");
+    let revision = h.state().session.revision();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.revision(), revision, "the document's undo didn't run");
+}
+
+#[test]
+fn a_rows_run_button_includes_the_prompt_typed_into_it() {
+    let mut h = on_sheet(&["a fox", "an owl"]);
+    type_into(&mut h, "a fox", " at dusk");
+    let fox = rows_of(&h.state().session)[0];
+    let run = h.query_all_by_role_and_label(Role::Button, "Run").next().unwrap().rect().center();
+    click(&mut h, run);
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(prompts(h.state(), S), ["a fox at dusk", "an owl"], "leaving the field for Run committed it");
+    let confirm = h.state().run_confirm.as_ref().unwrap();
+    assert_eq!(confirm.nodes(), [fox]);
+    assert!(!confirm.drafts(), "nothing typed is left out of the run");
+}
+
+#[test]
+fn run_selected_quotes_only_the_checked_rows_and_up_moves_a_row() {
+    let mut h = on_sheet(&["a fox", "an owl"]);
+    let up = h.query_all_by_role_and_label(Role::Button, "Up").nth(1).unwrap().rect().center();
+    click(&mut h, up);
+    assert_eq!(prompts(h.state(), S), ["an owl", "a fox"]);
+    let owl = rows_of(&h.state().session)[0];
+    let first = h.query_all_by_role(Role::CheckBox).next().unwrap().rect().center();
+    click(&mut h, first);
+    press(&mut h, Role::Button, "Run 1 selected");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(h.state().run_confirm.as_ref().unwrap().nodes(), [owl]);
+}
+
+#[test]
+fn a_full_sheet_lays_out_only_the_rows_in_view() {
+    let prompts: Vec<String> = (0..1000).map(|n| format!("prompt {n}")).collect();
+    let mut h = scene_of(&prompts);
+    h.state_mut().open_canvas(S);
+    h.run();
+    let fields = h.query_all_by_role(Role::MultilineTextInput).count();
+    assert!(fields > 0 && fields < 30, "{fields} prompt fields laid out");
+    let frames = 60;
+    let start = Instant::now();
+    for _ in 0..frames {
+        h.step();
+    }
+    println!("1000-row sheet: {:?} per frame", start.elapsed() / frames);
+    // An edit reads the rows again, once.
+    let first = rows_of(&h.state().session)[0];
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": S, "id": first, "name": "prompt", "value": Value::Text("edited".into())})).unwrap();
+    let start = Instant::now();
+    h.step();
+    println!("1000-row sheet: {:?} for the frame after an edit", start.elapsed());
 }
 
 #[test]

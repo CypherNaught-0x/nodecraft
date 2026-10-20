@@ -49,6 +49,19 @@ pub(super) struct RunConfirm {
     error: Option<String>,
 }
 
+#[cfg(test)]
+impl RunConfirm {
+    /// The nodes this confirmation would run, in order.
+    pub(super) fn nodes(&self) -> &[NodeId] {
+        &self.nodes
+    }
+
+    /// Whether it warns that unsaved edits are not part of the run.
+    pub(super) fn drafts(&self) -> bool {
+        self.drafts
+    }
+}
+
 /// What the confirmation shows and `run.start` needs, read from a `run.quote` result.
 #[derive(Debug, PartialEq)]
 struct Quote {
@@ -157,7 +170,7 @@ impl NodeCraftApp {
         }
         let value = self.session.dispatch("run.quote", &json!({"canvas": self.canvas, "mode": kind.mode(), "nodes": nodes}))?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
-        let drafts = nodes.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted));
+        let drafts = nodes.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted) || self.sheet_draft_pending(*id));
         self.run_confirm = Some(RunConfirm {
             session: self.session.view_identity(),
             canvas: self.canvas,

@@ -206,8 +206,8 @@ impl NodeCraftApp {
                 .to_str()
                 .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project path isn't valid UTF-8"))
                 .and_then(|location| session.dispatch("file.open", &json!({"location": location, "discard_dirty": true})).map(|_| ()));
-            if let Some(first) = session.document().canvases().keys().next() {
-                canvas = *first;
+            if let Some(first) = super::sheet_view::home_canvas(session.document()) {
+                canvas = first;
             }
         }
         Ok((session, canvas, kept, opened.err()))

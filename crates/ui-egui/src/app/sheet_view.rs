@@ -4,6 +4,9 @@
 use super::*;
 use serde_json::Value as Json;
 
+/// The most characters of a title, model or reason shown on one line.
+const LINE_CHARS: usize = 80;
+
 /// The sheet view's own state: which panel is open, the new sheet's title, and unsaved prompts.
 #[derive(Default)]
 pub(super) struct SheetView {
@@ -14,7 +17,9 @@ pub(super) struct SheetView {
     /// Prompts being edited, by row, committed when the field loses focus.
     drafts: BTreeMap<NodeId, String>,
     /// The last `sheet.rows` result, with the canvas and revision it describes.
-    rows: Option<(CanvasId, u64, Rows)>,
+    rows: Option<(CanvasId, u64, Arc<Rows>)>,
+    /// The open canvas, when it was last seen in the document.
+    present: Option<CanvasId>,
 }
 
 /// One `sheet.rows` result, read into what the table shows.
@@ -29,22 +34,23 @@ struct Row {
     id: NodeId,
     model: String,
     prompt: String,
-    references: Vec<(NodeId, bool)>,
+    /// The references' titles, read once per document revision.
+    references: String,
     result: String,
     stale: bool,
 }
 
 impl Rows {
-    fn read(value: &Json) -> Self {
-        let rows = value.get("rows").and_then(Json::as_array).into_iter().flatten().filter_map(Row::read).collect();
+    fn read(value: &Json, label: impl Fn(&[(NodeId, bool)]) -> String) -> Self {
+        let rows = value.get("rows").and_then(Json::as_array).into_iter().flatten().filter_map(|row| Row::read(row, &label)).collect();
         Self { rows, error: None }
     }
 }
 
 impl Row {
-    fn read(value: &Json) -> Option<Self> {
+    fn read(value: &Json, label: impl Fn(&[(NodeId, bool)]) -> String) -> Option<Self> {
         let text = |key: &str| value.get(key).and_then(Json::as_str).unwrap_or_default().to_owned();
-        let references = value
+        let references: Vec<(NodeId, bool)> = value
             .get("references")
             .and_then(Json::as_array)
             .into_iter()
@@ -58,11 +64,25 @@ impl Row {
             id: serde_json::from_value(value.get("id")?.clone()).ok()?,
             model: text("model"),
             prompt: text("prompt"),
-            references,
+            references: label(&references),
             result: text("result"),
             stale: value.get("stale").and_then(Json::as_bool).unwrap_or(false),
         })
     }
+}
+
+/// The table's column widths: the checkbox and number, the prompt, and the rest.
+#[derive(Clone, Copy)]
+struct Columns {
+    index: f32,
+    prompt: f32,
+    other: f32,
+}
+
+/// The canvas a project opens on: its first plain canvas, or its first sheet if it has no other.
+pub(super) fn home_canvas(project: &Project) -> Option<CanvasId> {
+    let canvases = project.canvases();
+    canvases.values().find(|canvas| canvas.kind() != nodecraft_graph::CanvasKind::Sheet).or_else(|| canvases.values().next()).map(|canvas| canvas.id())
 }
 
 /// What a click asked for, applied after the frame is drawn.
@@ -83,7 +103,7 @@ impl NodeCraftApp {
         self.session.document().canvases().get(&self.canvas).is_some_and(|canvas| canvas.kind() == nodecraft_graph::CanvasKind::Sheet)
     }
 
-    /// Opens `canvas`, leaving the old one's selection, editors and drafts behind.
+    /// Opens `canvas`, leaving the old one's selection, editors, drafts and menus behind.
     pub(super) fn open_canvas(&mut self, canvas: CanvasId) {
         if canvas == self.canvas {
             return;
@@ -94,7 +114,50 @@ impl NodeCraftApp {
         self.selection.clear();
         self.editors.clear();
         self.sheet.drafts.clear();
+        self.palette = None;
+        self.turn_into = None;
         self.centred = false;
+    }
+
+    /// Goes back to the project's home canvas when the open one is removed, as by undoing the
+    /// `sheet.create` that made it.
+    pub(super) fn keep_canvas(&mut self) {
+        let document = self.session.document();
+        if document.canvases().contains_key(&self.canvas) {
+            self.sheet.present = Some(self.canvas);
+        } else if self.sheet.present == Some(self.canvas)
+            && let Some(home) = home_canvas(document)
+        {
+            self.open_canvas(home);
+        }
+    }
+
+    /// Whether row `id` has a prompt typed but not yet committed.
+    pub(super) fn sheet_draft_pending(&self, id: NodeId) -> bool {
+        self.sheet.drafts.get(&id).is_some_and(|draft| self.committed_prompt(id) != Some(draft.as_str()))
+    }
+
+    /// Whether any row has a prompt typed but not yet committed.
+    pub(super) fn sheet_drafts_pending(&self) -> bool {
+        self.sheet.drafts.keys().any(|id| self.sheet_draft_pending(*id))
+    }
+
+    fn committed_prompt(&self, id: NodeId) -> Option<&str> {
+        let node = self.session.document().canvases().get(&self.canvas)?.nodes().get(&id)?;
+        match node.params.get("prompt") {
+            Some(Value::Text(text)) => Some(text),
+            _ => Some(""),
+        }
+    }
+
+    /// Commits every typed prompt, so saving or opening keeps it; false, with the error shown, if
+    /// one could not be.
+    fn commit_sheet_drafts(&mut self) -> bool {
+        let drafts = std::mem::take(&mut self.sheet.drafts);
+        let canvas = self.canvas;
+        let changed: Vec<(NodeId, String)> =
+            drafts.into_iter().filter(|(id, draft)| self.committed_prompt(*id).is_some_and(|prompt| prompt != draft)).collect();
+        changed.into_iter().all(|(id, text)| self.sheet_action(Action::Prompt(canvas, id, text)))
     }
 
     /// A frame on a sheet: the table and the floating controls, without the node graph's input.
@@ -102,6 +165,12 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         if !blocked {
             self.sheet_keys(ui);
+        }
+        self.keep_canvas();
+        if !self.on_sheet() {
+            // An undo took the sheet away; the next frame draws the canvas it went back to.
+            ui.ctx().request_repaint();
+            return;
         }
         self.sheet_table(ui, viewport, t, blocked);
         self.show_notices(ui, viewport, t);
@@ -121,7 +190,7 @@ impl NodeCraftApp {
     fn sheet_keys(&mut self, ui: &mut egui::Ui) {
         let (save_as, save, open) =
             ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
-        if save || save_as || open {
+        if (save || save_as || open) && self.commit_sheet_drafts() {
             self.notice = self.file_shortcut(ui.ctx(), save, save_as);
         }
         if canvas::text_input_focused(ui.ctx()) {
@@ -177,7 +246,7 @@ impl NodeCraftApp {
             .resizable(false)
             .frame(frame)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(t.minimap_height * 2.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
                     for (id, title, sheet) in &canvases {
                         let label = if *sheet { format!("{title} (sheet)") } else { title.clone() };
                         if ui.selectable_label(*id == self.canvas, label).clicked() {
@@ -189,7 +258,7 @@ impl NodeCraftApp {
                 ui.horizontal(|ui| {
                     let name = ui.label("Title");
                     let field = ui
-                        .add(egui::TextEdit::singleline(&mut self.sheet.title).hint_text("New sheet").desired_width(t.search_width * 0.6))
+                        .add(egui::TextEdit::singleline(&mut self.sheet.title).hint_text("New sheet").desired_width(t.sheet_title_width))
                         .labelled_by(name.id);
                     let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let can = !self.sheet.title.trim().is_empty();
@@ -204,7 +273,8 @@ impl NodeCraftApp {
         }
     }
 
-    /// The open sheet as a table, drawn over the whole viewport in place of the node graph.
+    /// The open sheet as a table, drawn over the whole viewport in place of the node graph. Only
+    /// the rows in view are laid out, so a full sheet costs what a screenful does.
     pub(super) fn sheet_table(&mut self, ui: &mut egui::Ui, viewport: Rect, t: &Tokens, blocked: bool) {
         ui.painter().rect_filled(viewport, 0.0, t.canvas_bg);
         let rows = self.sheet_rows();
@@ -247,83 +317,109 @@ impl NodeCraftApp {
                     ui.label(egui::RichText::new("No rows yet. Add one, then type its prompt.").color(t.text_muted));
                     return;
                 }
+                let gap = t.control_gap * 2.0;
+                ui.spacing_mut().item_spacing = Vec2::new(gap, t.control_gap);
                 // The prompt takes what the other columns leave, but never less than a card.
-                let prompt_width = (ui.available_width() - t.card_width * 2.5).max(t.card_width);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("sheet_rows").num_columns(8).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
-                        for label in ["", "#", "Prompt", "Model", "References", "Result", "Status", ""] {
-                            ui.label(egui::RichText::new(label).color(t.text_muted));
+                let fixed = t.sheet_index_width * 2.0 + t.sheet_column_width * 5.0 + gap * 7.0;
+                let prompt_width = (ui.available_width() - fixed).max(t.card_width);
+                let widths = Columns { index: t.sheet_index_width, prompt: prompt_width, other: t.sheet_column_width };
+                ui.horizontal(|ui| {
+                    for (label, width) in [
+                        ("", widths.index),
+                        ("#", widths.index),
+                        ("Prompt", widths.prompt),
+                        ("Model", widths.other),
+                        ("References", widths.other),
+                        ("Result", widths.other),
+                        ("Status", widths.other),
+                    ] {
+                        ui.add_sized([width, t.control_row_height * 0.5], egui::Label::new(egui::RichText::new(label).color(t.text_muted)));
+                    }
+                });
+                let last = rows.rows.len().saturating_sub(1);
+                egui::ScrollArea::both().auto_shrink([false, false]).show_rows(ui, t.control_row_height, rows.rows.len(), |ui, shown| {
+                    for index in shown {
+                        if let Some(row) = rows.rows.get(index) {
+                            self.sheet_row(ui, t, widths, index, last, row, &mut actions);
                         }
-                        ui.end_row();
-                        let last = rows.rows.len().saturating_sub(1);
-                        for (index, row) in rows.rows.iter().enumerate() {
-                            self.sheet_row(ui, t, prompt_width, index, last, row, &mut actions);
-                            ui.end_row();
-                        }
-                    });
+                    }
                 });
             });
         });
-        if !blocked {
-            // In order, so a prompt committed by clicking Run is in that run; one that fails
-            // stops the rest.
-            for action in actions {
-                if !self.sheet_action(action) {
-                    break;
-                }
+        // In order, so a prompt committed by clicking Run is in that run; one that fails stops the
+        // rest. A prompt is committed even while a dialog holds the input: the dialog opening is
+        // what took its field's focus, and dropping it would lose what was typed.
+        for action in actions {
+            if blocked && !matches!(action, Action::Prompt(..)) {
+                continue;
+            }
+            if !self.sheet_action(action) {
+                break;
             }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn sheet_row(&mut self, ui: &mut egui::Ui, t: &Tokens, prompt_width: f32, index: usize, last: usize, row: &Row, actions: &mut Vec<Action>) {
-        let mut chosen = self.selection.contains(row.id);
-        if ui.checkbox(&mut chosen, "").on_hover_text("Select this row").changed() {
-            self.selection.toggle(row.id);
+    fn sheet_row(&mut self, ui: &mut egui::Ui, t: &Tokens, widths: Columns, index: usize, last: usize, row: &Row, actions: &mut Vec<Action>) {
+        let height = t.control_row_height;
+        let band = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), height));
+        if index % 2 == 1 {
+            ui.painter().rect_filled(band, 0.0, ui.visuals().faint_bg_color);
         }
-        ui.label(egui::RichText::new(format!("{}", index.saturating_add(1))).color(t.text_muted));
-        let mut text = self.sheet.drafts.get(&row.id).cloned().unwrap_or_else(|| row.prompt.clone());
-        let field = ui.add_sized(
-            [prompt_width, t.control_row_height],
-            egui::TextEdit::multiline(&mut text).id(egui::Id::new(("sheet_prompt", row.id))).desired_rows(1).hint_text("Prompt"),
-        );
-        if field.has_focus() {
-            self.sheet.drafts.insert(row.id, text);
-        } else {
-            // Committed as the field loses focus, before any button clicked to leave it.
-            self.sheet.drafts.remove(&row.id);
-            if field.lost_focus() && text != row.prompt {
-                actions.push(Action::Prompt(self.canvas, row.id, text));
-            }
-        }
-        ui.label(if row.model.is_empty() { "No model".to_owned() } else { line(&row.model) });
-        ui.label(self.references_label(&row.references)).on_hover_text("Shared references are wired into every row");
-        let (result, color) = match row.result.as_str() {
-            "complete" if row.stale => ("Out of date", t.stale),
-            "complete" => ("Done", t.text),
-            "partial" => ("Partial", t.stale),
-            _ => ("Not run", t.text_muted),
-        };
-        ui.label(egui::RichText::new(result).color(color));
-        ui.label(self.row_status(row.id, t));
         ui.horizontal(|ui| {
-            if ui.add_enabled(index > 0, egui::Button::new("Up")).on_hover_text("Move this row up").clicked() {
-                actions.push(Action::Move(row.id, index.saturating_sub(1)));
+            ui.set_height(height);
+            let mut chosen = self.selection.contains(row.id);
+            if ui.add_sized([widths.index, height], egui::Checkbox::without_text(&mut chosen)).on_hover_text("Select this row").changed() {
+                self.selection.toggle(row.id);
             }
-            if ui.add_enabled(index < last, egui::Button::new("Down")).on_hover_text("Move this row down").clicked() {
-                actions.push(Action::Move(row.id, index.saturating_add(1)));
+            ui.add_sized([widths.index, height], egui::Label::new(egui::RichText::new(format!("{}", index.saturating_add(1))).color(t.text_muted)));
+            let mut text = self.sheet.drafts.get(&row.id).cloned().unwrap_or_else(|| row.prompt.clone());
+            let field = ui.add_sized(
+                [widths.prompt, height],
+                egui::TextEdit::multiline(&mut text).id(egui::Id::new(("sheet_prompt", row.id))).desired_rows(1).hint_text("Prompt"),
+            );
+            if field.has_focus() {
+                self.sheet.drafts.insert(row.id, text);
+            } else {
+                // Committed as the field loses focus, before any button clicked to leave it.
+                // Escape leaves the field too, so it commits rather than cancels.
+                self.sheet.drafts.remove(&row.id);
+                if field.lost_focus() && text != row.prompt {
+                    actions.push(Action::Prompt(self.canvas, row.id, text));
+                }
             }
-            if ui.button("Run").on_hover_text("Quote this row, then run it").clicked() {
-                actions.push(Action::Run(vec![row.id]));
-            }
+            let cell = |ui: &mut egui::Ui, text: egui::RichText| ui.add_sized([widths.other, height], egui::Label::new(text).truncate());
+            cell(ui, egui::RichText::new(if row.model.is_empty() { "No model".to_owned() } else { line(&row.model) }));
+            cell(ui, egui::RichText::new(&row.references)).on_hover_text("Shared references are wired into every row");
+            let (result, color) = match row.result.as_str() {
+                "complete" if row.stale => ("Out of date", t.stale),
+                "complete" => ("Done", t.text),
+                "partial" => ("Partial", t.stale),
+                _ => ("Not run", t.text_muted),
+            };
+            cell(ui, egui::RichText::new(result).color(color));
+            cell(ui, self.row_status(row.id, t));
+            ui.allocate_ui_with_layout(Vec2::new(widths.other, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = t.control_gap;
+                if ui.add_enabled(index > 0, egui::Button::new("Up")).on_hover_text("Move this row up").clicked() {
+                    actions.push(Action::Move(row.id, index.saturating_sub(1)));
+                }
+                if ui.add_enabled(index < last, egui::Button::new("Down")).on_hover_text("Move this row down").clicked() {
+                    actions.push(Action::Move(row.id, index.saturating_add(1)));
+                }
+                if ui.button("Run").on_hover_text("Quote this row, then run it").clicked() {
+                    actions.push(Action::Run(vec![row.id]));
+                }
+            });
         });
     }
 
-    fn references_label(&self, references: &[(NodeId, bool)]) -> String {
+    /// The titles of a row's references, marking those wired into every row.
+    fn references_label(&self, canvas: CanvasId, references: &[(NodeId, bool)]) -> String {
         if references.is_empty() {
             return "None".into();
         }
-        let canvas = self.session.document().canvases().get(&self.canvas);
+        let canvas = self.session.document().canvases().get(&canvas);
         let names: Vec<String> = references
             .iter()
             .map(|(id, shared)| {
@@ -353,19 +449,20 @@ impl NodeCraftApp {
     }
 
     /// The open sheet's rows, read again only when the document has changed.
-    fn sheet_rows(&mut self) -> Rows {
+    fn sheet_rows(&mut self) -> Arc<Rows> {
         let revision = self.session.revision();
         if let Some((canvas, seen, rows)) = &self.sheet.rows
             && *canvas == self.canvas
             && *seen == revision
         {
-            return rows.clone();
+            return Arc::clone(rows);
         }
-        let rows = match self.session.dispatch("sheet.rows", &json!({"canvas": self.canvas})) {
-            Ok(value) => Rows::read(&value),
+        let canvas = self.canvas;
+        let rows = Arc::new(match self.session.dispatch("sheet.rows", &json!({"canvas": canvas})) {
+            Ok(value) => Rows::read(&value, |references| self.references_label(canvas, references)),
             Err(error) => Rows { rows: Vec::new(), error: Some(error.message) },
-        };
-        self.sheet.rows = Some((self.canvas, revision, rows.clone()));
+        });
+        self.sheet.rows = Some((canvas, revision, Arc::clone(&rows)));
         rows
     }
 
@@ -423,7 +520,7 @@ impl NodeCraftApp {
 fn line(text: &str) -> String {
     let first = text.lines().next().unwrap_or_default();
     let mut chars = first.chars();
-    let mut out: String = chars.by_ref().take(80).collect();
+    let mut out: String = chars.by_ref().take(LINE_CHARS).collect();
     if chars.next().is_some() || text.lines().nth(1).is_some() {
         out.push('…');
     }

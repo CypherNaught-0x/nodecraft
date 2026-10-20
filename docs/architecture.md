@@ -663,4 +663,7 @@ table in place of the node graph. Each row has an editable prompt, which is comm
 `node.param_set` when the field loses focus, plus its model, references, result, live run status,
 and buttons to move and run it. The toolbar adds, duplicates, removes and runs rows. Running
 rows, whether selected, one or all, quotes them together in one price confirmation, the same one
-Generate uses (`request_runs`).
+Generate uses (`request_runs`). A prompt still being typed is committed before the save and
+open keys act, and when a dialog takes the input; a project opens on its first plain canvas
+(`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
+out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
