@@ -118,6 +118,12 @@ impl NodeCraftApp {
         if id == "canvas.stale" { json!({"canvas": self.canvas}) } else { json!({}) }
     }
     pub(super) fn dispatch_palette_command(&mut self, id: &str) {
+        // The review is read a page at a time in its panel.
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == "usage.ownership" {
+            self.open_ownership_review();
+            return;
+        }
         let stamp = (id == "canvas.stale").then(|| StaleSnapshot::capture(self));
         let result = self.session.dispatch(id, &self.palette_command_params(id));
         let Some(mut stamp) = stamp else {

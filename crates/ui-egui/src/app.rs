@@ -335,6 +335,8 @@ mod navigation;
 mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
+mod ownership_panel;
+#[cfg(not(target_arch = "wasm32"))]
 mod queue_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
@@ -452,6 +454,9 @@ pub struct NodeCraftApp {
     /// The queue panel is open (#82).
     #[cfg(not(target_arch = "wasm32"))]
     queue_open: bool,
+    /// The quarantined-charge review, when open (#362).
+    #[cfg(not(target_arch = "wasm32"))]
+    ownership: Option<ownership_panel::OwnershipReview>,
     /// The sheets panel and the open sheet's table (#163).
     sheet: sheet_view::SheetView,
     /// The Techniques panel (#96).
@@ -781,6 +786,8 @@ impl NodeCraftApp {
             option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            ownership: None,
             sheet: sheet_view::SheetView::default(),
             library: library_view::LibraryView::default(),
         })
@@ -1725,6 +1732,8 @@ impl NodeCraftApp {
         self.save_accounts(changes);
         #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.ownership_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
         self.techniques_panel(ui.ctx(), t);
         // Floating UI must lay out before final quick-add admission, including a Window's first

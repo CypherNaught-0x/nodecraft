@@ -1,8 +1,8 @@
 //! Reconciling quarantined legacy charge ownership (#325).
 //!
 //! - `usage.ownership` (read-only): pages of the quarantined groups, or of one group's evidence,
-//!   totals and charges with the token a decision must carry. At most 768 KiB of encoded JSON
-//!   per page.
+//!   totals and charges with the token a decision must carry. At most 512 KiB of encoded JSON
+//!   per page, the MCP page budget, so a page reaches an agent whole.
 //! - `usage.reconcile_ownership` (human only): states which total holds each quarantined charge
 //!   of one group, bound to the token the person reviewed. The host's
 //!   [`OWNERSHIP_SERVICE`] applies it to the live usage log, which checks the token again, so a
@@ -14,7 +14,8 @@
 //!   totals it would produce, changing nothing.
 //!
 //! Host contract: after the service succeeds, save the log and replace the [`UsageSnapshot`]
-//! resource, or every later review is refused as stale.
+//! resource, or every later review is refused as stale. The desktop's run host does both
+//! ([`crate::run_host::RunHost::register_ownership`]), saving before it keeps the decision.
 //!
 //! Reconciliation never settles, releases or refunds a charge; see `nodecraft_exec::cost`.
 
@@ -35,7 +36,7 @@ pub const OWNERSHIP_SERVICE: &str = "usage.reconcile_ownership";
 pub const MAX_GROUPS_PER_PAGE: usize = 200;
 /// Most charges one `usage.ownership` group page lists.
 pub const MAX_CHARGES_PER_PAGE: usize = 500;
-const MAX_PAGE_JSON_BYTES: usize = 768 * 1024;
+const MAX_PAGE_JSON_BYTES: usize = 512 * 1024;
 
 fn invalid(message: &str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -125,14 +126,20 @@ fn decision_and_mode(value: &Value) -> Result<(OwnershipDecision, bool), Error> 
 /// token against its current state; the host saves the log after a successful call.
 pub fn ownership_service(log: Arc<Mutex<UsageLog>>, wall_clock_ms: Arc<dyn Fn() -> u64>) -> impl FnMut(&Value) -> Result<Value, Error> {
     move |request| {
-        let (decision, dry_run) = decision_and_mode(request)?;
-        if dry_run {
-            return Err(invalid("a dry run is answered by the command, not the host service"));
-        }
         let mut log = log.lock().map_err(|_| Error::new(ErrorKind::Internal, "the usage log is unavailable after a failure; restart NodeCraft"))?;
-        let record = log.reconcile_ownership(&decision, wall_clock_ms())?;
-        Ok(record_json(&record))
+        reconcile(&mut log, request, wall_clock_ms())
     }
+}
+
+/// Applies the decision in a service `request` to `log`, recorded at `at_ms`; what
+/// [`ownership_service`] does under its lock, for a host that saves the result before keeping it.
+pub fn reconcile(log: &mut UsageLog, request: &Value, at_ms: u64) -> Result<Value, Error> {
+    let (decision, dry_run) = decision_and_mode(request)?;
+    if dry_run {
+        return Err(invalid("a dry run is answered by the command, not the host service"));
+    }
+    let record = log.reconcile_ownership(&decision, at_ms)?;
+    Ok(record_json(&record))
 }
 
 fn money(m: Money) -> Value {

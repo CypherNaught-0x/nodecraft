@@ -40,6 +40,7 @@ use crate::action_exec::LocalActions;
 use crate::commands::Services;
 use crate::generate;
 use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent, WriteAhead};
+use crate::ownership_cmds::{self, OWNERSHIP_SERVICE};
 use crate::provider_routing::RegisteredProvider;
 use crate::run_cmds::{AuthorizedRun, BudgetState, PreparedRun, UsageSnapshot};
 use crate::run_jobs::{JobKey, JobState, JobView, MAX_RECENT, Reports, RunJobs};
@@ -199,6 +200,8 @@ struct Shared {
     submitted: Vec<Submitted>,
     /// The host is shutting down: nothing new is sent.
     closing: bool,
+    /// An ownership decision changed the usage log since the budget resources were refreshed.
+    reconciled: bool,
 }
 
 impl RunHost {
@@ -409,6 +412,44 @@ impl RunHost {
         })
     }
 
+    /// Registers the `usage.reconcile_ownership` service (#362) over the shared usage log. A
+    /// decision is applied to a copy of the log and saved in the journal before the live log
+    /// takes it, so a save that fails leaves both as they were and the decision can be confirmed
+    /// again. The next [`Self::pump`] (or [`Self::sync_usage`]) refreshes the snapshot reviews
+    /// read; until then a review of the changed group is refused as stale.
+    pub fn register_ownership(&self, services: &mut Services) -> Result<(), Error> {
+        let shared = Arc::clone(&self.journal);
+        let log = Arc::clone(&self.budget.log);
+        let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
+        services.register(OWNERSHIP_SERVICE, move |request| {
+            // The write-ahead's order: the journal, then the log.
+            let mut shared = lock(&shared);
+            let mut live = lock(&log);
+            let at_ms = wall_clock_ms();
+            // The decision is tried on a copy and saved first. The live log is then changed in
+            // place, never replaced: running jobs hold reservations tied to its identity.
+            let mut next = live.clone();
+            ownership_cmds::reconcile(&mut next, request, at_ms)?;
+            if let Some(store) = &shared.store {
+                let journal = Journal { version: JOURNAL_VERSION, usage: next, submitted: shared.submitted.clone() };
+                store
+                    .save(&journal)
+                    .map_err(|error| Error::new(error.kind, format!("the decision wasn't kept, because the usage log couldn't be saved: {}", error.message)))?;
+            }
+            let kept = ownership_cmds::reconcile(&mut live, request, at_ms)
+                .map_err(|error| Error::new(ErrorKind::Internal, format!("the saved decision couldn't be applied to the live usage log: {}", error.message)))?;
+            shared.reconciled = true;
+            Ok(kept)
+        })
+    }
+
+    /// Refreshes the budget resources after an ownership decision changed the usage log.
+    pub fn sync_usage(&self, session: &mut Session) {
+        if std::mem::take(&mut lock(&self.journal).reconciled) {
+            refresh(session, &self.budget);
+        }
+    }
+
     /// Installs the budget resources quotes read, from the shared usage log.
     pub fn install(&self, session: &mut Session) {
         refresh(session, &self.budget);
@@ -511,7 +552,10 @@ impl RunHost {
         }
         keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
         if settled {
+            lock(&self.journal).reconciled = false;
             refresh(session, &self.budget);
+        } else {
+            self.sync_usage(session);
         }
         self.journal_changed |= journal_changed;
         let now = self.runtime.now_ms();

@@ -30,19 +30,16 @@ fn human_only_and_unclassified_commands_never_reach_the_host() {
         registry.register(nodecraft_engine::commands::CommandSpec { id, ..spec }).unwrap();
     }
     let mut host = Observed { session: Session::with_registry(session.document().clone(), registry).unwrap(), calls: 0 };
-    for id in ["keys.set", "keys.remove", "file.open", "file.save", "run.selected", "test.unclassified"] {
+    for id in ["keys.set", "keys.remove", "file.open", "file.save", "usage.reconcile_ownership", "run.selected", "test.unclassified"] {
         let request = Request::RunCommand(json!({"id":id,"params":{}}).as_object().unwrap().clone());
         assert_eq!(answer_with(&mut host, &request).unwrap().unwrap_err().kind, ErrorKind::Unsupported);
         assert_eq!(host.calls, 0);
     }
     let list = answer_with(&mut host, &Request::ListCommands(Default::default())).unwrap().unwrap();
-    assert!(
-        list["commands"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|entry| !matches!(entry["id"].as_str(), Some("keys.set" | "keys.remove" | "file.open" | "file.save" | "run.selected" | "test.unclassified")))
-    );
+    assert!(list["commands"].as_array().unwrap().iter().all(|entry| !matches!(
+        entry["id"].as_str(),
+        Some("keys.set" | "keys.remove" | "file.open" | "file.save" | "usage.reconcile_ownership" | "run.selected" | "test.unclassified")
+    )));
     // Paid is not a separate exclusion: classified run.start reaches engine admission, which
     // still refuses absent/invalid quote and host resources. No provider is installed here.
     assert!(nodecraft_automation::mcp::visible("run.start"));
