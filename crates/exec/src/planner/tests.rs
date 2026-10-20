@@ -717,6 +717,16 @@ fn a_fanning_list_input_runs_once_per_item_with_its_other_wires() {
         assert_eq!(cell.first().unwrap().from, vec![InputSource::Item { node: id(4), port: "out".into(), index }]);
     }
     assert_eq!(cells.len(), 2);
+
+    // Two batches into one fanning input combine as two fanned inputs do: every pair, in wire
+    // order.
+    let p = wired(vec![batch(1, "a\nb", "cross"), batch(3, "x\ny", "cross"), of_kind(2, "test.fanning", None)], &[(1, "item", 2, "in"), (3, "item", 2, "in")]);
+    let plan = ready(plan_of(&p, &[2]));
+    let fanout = plan.steps.first().unwrap().fanout.as_ref().unwrap();
+    let sources: Vec<_> = fanout.cells.iter().map(|cell| cell.first().unwrap().from.clone()).collect();
+    assert_eq!(sources.len(), 4);
+    assert_eq!(sources.first().unwrap(), &vec![value("a"), value("x")]);
+    assert_eq!(sources.last().unwrap(), &vec![value("b"), value("y")]);
 }
 
 #[test]
@@ -809,6 +819,19 @@ fn an_existing_fanned_result_fans_its_consumers_out() {
     let step = plan.steps.first().unwrap();
     assert_eq!(fanned_values(step), vec![texts(&["A"]), texts(&["B"])]);
     assert_eq!(step.fanout.as_ref().unwrap().items, items, "consumers keep their source items");
+
+    // A fanning list input fans out over the stored result too, before a text wired after it.
+    let node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    let p = wired(
+        vec![batch(1, "a\nb", "cross"), node, of_kind(4, "test.fanning", None), text(5, "outro")],
+        &[(1, "item", 2, "in"), (2, "out", 4, "in"), (5, "out", 4, "in")],
+    );
+    let plan = ready(plan_of(&p, &[4]));
+    let step = plan.steps.first().unwrap();
+    let value = |t: &str| InputSource::Value(Value::Text(t.into()));
+    let sources: Vec<_> = step.fanout.as_ref().unwrap().cells.iter().map(|cell| cell.first().unwrap().from.clone()).collect();
+    assert_eq!(sources, vec![vec![value("A"), value("outro")], vec![value("B"), value("outro")]]);
+    assert_eq!(step.fanout.as_ref().unwrap().items, items);
 }
 
 #[test]

@@ -4,8 +4,15 @@
   wired into Generate's `prompt` (a list, so several prompt pieces can be joined) ran once with
   every prompt joined. An input contract now carries `fans_out` (contract 1.2): a list input
   marked with it runs the node once per item of a batch wired into it, as a single input does.
-  The generation kind marks `prompt`; its media roles keep collecting, because a batch of
-  reference images is one request with several references.
+  Text Generate marks `prompt`; media roles keep collecting, because a batch of reference
+  images is one request with several references.
+- **Text only for now.** Image, video and audio Generate make a list per run, so fanning them
+  would give one list per item, which downstream ports, the card and Extract can't read yet. They
+  keep joining a prompt batch until #519 flattens per-item lists.
+- **Earlier results don't turn stale.** The staleness recipe doesn't include the fan/collect
+  choice, so a text result made by joining a prompt batch before this change still shows fresh.
+  Running it again makes one answer per prompt. This one-time change wasn't worth a recipe
+  version.
 - **The other wires join each item in place.** The planner keeps the fanned wire's position in
   the input's wire order, so each run sees its item where the batch was wired, between the
   pieces before and after it. Wire order still decides prompt order.

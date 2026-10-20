@@ -382,9 +382,13 @@ impl<'a> Graph<'a> {
             blockers.push(blocker(None, None, Reason::Invalid(error.message)));
         }
         // List inputs that run once per item rather than collecting them (#515).
-        let fans_out: BTreeSet<String> = kind
-            .instance_contract(node)
-            .map_or_else(|_| BTreeSet::new(), |contract| contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect());
+        let fans_out: BTreeSet<String> = match kind.instance_contract(node) {
+            Ok(contract) => contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect(),
+            Err(error) => {
+                blockers.push(blocker(None, None, Reason::Invalid(error.message)));
+                BTreeSet::new()
+            }
+        };
         let mut inputs = Vec::new();
         let mut fanned: Vec<Fanned> = Vec::new();
         let mut after = BTreeSet::new();

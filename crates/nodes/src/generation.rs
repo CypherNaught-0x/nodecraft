@@ -186,6 +186,9 @@ impl GenerationKind {
             let mut contract = NodeContract::derive(&descriptor);
             contract.params = Contract::from_schema(id, ParamOwner::Node, local_schema(Some(&model.id)));
             contract.owned_groups.push(model.parameters.clone());
+            // A run that makes one value per item can fan out; a list of media per item would
+            // reach downstream as nested lists, which nothing reads yet (#519).
+            let single = descriptor.outputs.iter().all(|p| !p.port_type.many);
             contract.inputs = descriptor
                 .inputs
                 .iter()
@@ -194,8 +197,8 @@ impl GenerationKind {
                     role: p.name.clone(),
                     min: 0,
                     max: Some(if p.name == PROMPT { 1024 } else { 255 }),
-                    // A batch of prompts makes one result per prompt; media roles collect.
-                    fans_out: p.name == PROMPT,
+                    // A batch of prompts makes one answer per prompt; media roles collect.
+                    fans_out: single && p.name == PROMPT,
                 })
                 .collect();
             contract.modes = model

@@ -7,8 +7,9 @@ editing too. This page is the specification. The code is `nodecraft_types::contr
 parameter part) and `nodecraft_nodes::NodeContract` (L2, ports and modes); neither depends on egui.
 
 Version 1.0 covers the shared foundation and the source nodes. Version 1.1 adds
-[option sources](#option-sources). Version 1.2 adds `fans_out` on list inputs. Model, action and editor issues fill it in for their own
-parameters; see [What is not in 1.1](#what-is-not-in-11).
+[option sources](#option-sources), and 1.2 lets a list input fan out (`fans_out`). Model, action
+and editor issues fill it in for their own parameters; see
+[What is not in 1.2](#what-is-not-in-12).
 
 ## Versions
 
@@ -170,9 +171,10 @@ A `NodeContract` lists the descriptor's ports in the same order.
   never a role (registration checks this). `min` above zero means required. A single port has `max` at most 1, and an absent
   `max` (no limit) is allowed on list ports only. A list input marked `fans_out` (1.2) runs
   the node once per item of a batch wired into it, the way a single input does, instead of
-  collecting the batch into one list; its other wires join each item in order. Generate's
-  `prompt` fans out, so a batch of prompts makes one result per prompt, while media roles still
-  collect. Only a list input may be marked; `fans_out` is omitted when false.
+  collecting the batch into one list; its other wires join each item in order. Text Generate's
+  `prompt` fans out, so a batch of prompts makes one answer per prompt, while media roles still
+  collect. Media Generate doesn't fan out yet (#519). Only a list input may be marked;
+  `fans_out` is omitted when false.
 - **Outputs** have a role and say whether they hold a collection, matching the port.
 - **Modes** name the wire counts a mode needs on some inputs; an input a mode doesn't name
   accepts any count its own bounds allow. For example:
@@ -298,11 +300,12 @@ empty list when it has none). Recorded inputs can be large (up to the node's own
 a caller that only needs the contract should describe the kind. The command is read-only and available to agents, so the CLI and
 MCP see the same fields, conditions and issues as the inspector.
 
-## What is not in 1.1
+## What is not in 1.2
 
 Version 1.0 defines and tests the contract, validates every built-in kind's contract at
 registration, exposes it through `node.describe`, and plans and runs every kind through it (see
-[Running](#running)). Version 1.1 adds option sources and the store a host fills.
+[Running](#running)). Version 1.1 adds option sources and the store a host fills; 1.2 adds
+fan-out on list inputs.
 
 These are tracked on #162 and on the issues that need them:
 
