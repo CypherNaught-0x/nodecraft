@@ -127,6 +127,8 @@ pub fn sheet_prompt(node: &Node) -> String {
     let mut prompt =
         format!("A reference sheet of {}. Plain neutral background, even lighting, every view consistent with the others.", subject(&text(node, CATEGORY)));
     let guidelines = text(node, GUIDELINES);
+    // A `#` would make the sheet card mention Elements, possibly its own: drop it.
+    let guidelines = guidelines.replace('#', "");
     if !guidelines.trim().is_empty() {
         prompt.push_str(" Keep: ");
         prompt.push_str(guidelines.trim());
@@ -233,8 +235,9 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ListParams = params(value)?;
     let canvas = canvas(c, p.canvas)?;
     let mut mentioned: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    let index = mentions::Index::new(canvas, c.kinds);
     for node in canvas.nodes().values() {
-        for mention in mentions::of(canvas, node) {
+        for mention in index.of(node) {
             if let Resolved::Element(id) | Resolved::Wired(id) = mention.resolved {
                 mentioned.entry(id).or_default().push(node.id);
             }
@@ -255,7 +258,7 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "category": text(n, CATEGORY),
                 "images": image_wires(canvas, n.id).len(),
                 "sheet": sheet,
-                "has_reference": n.active.is_some(),
+                "computed": n.active.is_some(),
                 "mentioned_by": mentioned.get(&n.id).cloned().unwrap_or_default(),
             })
         })
@@ -315,7 +318,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: create_schema,
-            params_doc: "{canvas, id: new NodeId, name, category?, guidelines?, from: [{node, port}], edges: [new EdgeId], pos: {x, y}} -> {id}; adds an Element wired from up to 8 image outputs, in order, as one undo step. The name (letters, digits, - and _) must be free on the canvas; prompts mention it as #name, which feeds the Element's references into that card's first image input. Categories: general, person, character, product, object, material, setting, style, moodboard.",
+            params_doc: "{canvas, id: new NodeId, name, category?, guidelines?, from: [{node, port}], edges: [new EdgeId], pos: {x, y}} -> {id}; adds an Element wired from up to 8 image outputs, in order, as one undo step. The name (letters, digits, - and _) must be free on the canvas; prompts mention it as #name, which feeds the Element's references into that generation card's reference image list (not while its prompt is wired). Categories: general, person, character, product, object, material, setting, style, moodboard.",
             enabled: enabled_create,
             run: create,
         },
@@ -325,7 +328,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: sheet_schema,
-            params_doc: "{canvas, element: Element NodeId, id: new NodeId, edges: [one new EdgeId per reference image, then one more], pos: {x, y}, model?} -> {id}; adds a generation card taking the Element's reference images, prompted from its category and guidelines, and wires its result into the Element's sheet input, as one undo step. The Element then gives the sheet instead of its images; the card's history and active result are its reference history and default. It does not run: run the card as usual, which shows its cost first.",
+            params_doc: "{canvas, element: Element NodeId, id: new NodeId, edges: [one new EdgeId per reference image, then one more], pos: {x, y}, model?} -> {id}; adds a generation card taking the Element's reference images, prompted from its category and guidelines, and wires its result into the Element's sheet input, as one undo step. The card is wired from the images connected now; wire later images into the card too. Once the card has a result the Element gives the sheet instead of its images (until then, its images); the card's history and active result are its reference history and default. It does not run: run the card as usual, which shows its cost first.",
             enabled: enabled_sheet,
             run: sheet,
         },
@@ -335,7 +338,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas} -> {elements: [{id, name, valid_name, shared_name, category, images, sheet, has_reference, mentioned_by}]}; the canvas's Elements: how many reference images are wired, the sheet card if any, whether it has a result, and the nodes whose prompt mentions it. A shared name blocks the cards mentioning it.",
+            params_doc: "{canvas} -> {elements: [{id, name, valid_name, shared_name, category, images, sheet, computed, mentioned_by}]}; the canvas's Elements: how many reference images are wired, the sheet card if any, whether its references have been computed, and the nodes whose prompt mentions it. A shared name blocks the cards mentioning it.",
             enabled: always,
             run: list,
         },

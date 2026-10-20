@@ -151,3 +151,13 @@ fn list_reports_mentions_and_shared_names() {
     twin["id"] = json!(NodeId::from_bytes([9; 16]));
     assert!(s.dispatch("element.create", &twin).is_err(), "a shared name is refused on create");
 }
+
+#[test]
+fn guidelines_cant_make_the_sheet_mention_elements() {
+    let mut s = session();
+    let mut params = create_params("Hero", &[A]);
+    params["guidelines"] = json!("#hero's #ff0000 scarf");
+    s.dispatch("element.create", &params).unwrap();
+    let prompt = sheet_prompt(&node(&s, HERO));
+    assert!(!prompt.contains('#') && prompt.ends_with("Keep: hero's ff0000 scarf"), "{prompt}");
+}

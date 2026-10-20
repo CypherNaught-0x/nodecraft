@@ -1,7 +1,7 @@
 use super::*;
 use crate::planner::{InputSource, Planned, Reason, RunMode, plan};
 use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Generation, Port, Project};
-use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, Registry};
+use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, Registry, router};
 use nodecraft_types::{
     AssetRef, Blake3, CanvasId, EdgeId, Error, GenerationId, MediaMeta, ParamControl, ParamSchema, ParamSpec, ParamValues, PortType, ProjectId,
 };
@@ -41,13 +41,20 @@ fn kinds() -> Registry {
             id: "test.gen".into(),
             label: "Gen".into(),
             category: Category::Generation,
-            inputs: vec![Port { name: "image".into(), port_type: IMAGES }],
+            inputs: vec![
+                Port { name: "image".into(), port_type: IMAGES },
+                Port { name: PROMPT.into(), port_type: PortType { modality: Modality::Text, many: false } },
+            ],
             outputs: vec![Port { name: "out".into(), port_type: IMAGES }],
             params: ParamSchema { params: vec![prompt] },
             quick_add: None,
         })))
         .unwrap();
     kinds
+}
+
+fn mentioned(p: &Project, n: u8) -> Vec<Mention> {
+    of(canvas(p), &kinds(), canvas(p).nodes().get(&id(n)).unwrap())
 }
 
 fn id(n: u8) -> NodeId {
@@ -125,7 +132,7 @@ fn a_mention_feeds_the_elements_references_after_the_wires() {
     let consumer = run.steps.get(1).unwrap();
     let input = consumer.inputs.iter().find(|input| input.port == "image").unwrap();
     assert_eq!(input.from, vec![InputSource::Value(image(4)), InputSource::Step { node: id(3), port: element::REFERENCE.into(), list: true }]);
-    assert_eq!(of(canvas(&p), canvas(&p).nodes().get(&id(5)).unwrap()), vec![Mention { name: "hero".into(), resolved: Resolved::Element(id(3)) }]);
+    assert_eq!(mentioned(&p, 5), vec![Mention { name: "hero".into(), resolved: Resolved::Element(id(3)) }]);
 }
 
 #[test]
@@ -133,7 +140,7 @@ fn unknown_tags_stay_text_and_block_nothing() {
     let p = scene("colour #ff0000, shot #1");
     let Planned::Ready(run) = planned(&p, 5).unwrap() else { panic!("blocked") };
     assert_eq!(run.steps.len(), 1);
-    let resolved: Vec<Resolved> = of(canvas(&p), canvas(&p).nodes().get(&id(5)).unwrap()).into_iter().map(|m| m.resolved).collect();
+    let resolved: Vec<Resolved> = mentioned(&p, 5).into_iter().map(|m| m.resolved).collect();
     assert_eq!(resolved, vec![Resolved::Unknown, Resolved::Unknown]);
 }
 
@@ -146,7 +153,7 @@ fn a_shared_name_blocks_the_mentioning_node() {
         matches!(blockers.as_slice(), [b] if b.node == id(5) && matches!(&b.reason, Reason::Invalid(m) if m.contains("more than one Element"))),
         "{blockers:?}"
     );
-    assert_eq!(of(canvas(&p), canvas(&p).nodes().get(&id(5)).unwrap()).first().unwrap().resolved, Resolved::Ambiguous);
+    assert_eq!(mentioned(&p, 5).first().unwrap().resolved, Resolved::Ambiguous);
 }
 
 #[test]
@@ -162,7 +169,7 @@ fn a_wired_element_is_not_fed_twice() {
     let Planned::Ready(run) = planned(&p, 5).unwrap() else { panic!("blocked") };
     let consumer = run.steps.iter().find(|step| step.node == id(5)).unwrap();
     assert_eq!(consumer.inputs.iter().find(|input| input.port == "image").unwrap().from.len(), 2);
-    assert_eq!(of(canvas(&p), canvas(&p).nodes().get(&id(5)).unwrap()).first().unwrap().resolved, Resolved::Wired(id(3)));
+    assert_eq!(mentioned(&p, 5).first().unwrap().resolved, Resolved::Wired(id(3)));
 }
 
 #[test]
@@ -195,4 +202,83 @@ fn editing_an_element_makes_its_mentioners_stale() {
         crate::staleness::input_hash(canvas(&plain), &kinds(), id(5)).unwrap(),
         crate::staleness::input_hash(canvas(&plain_changed), &kinds(), id(5)).unwrap()
     );
+}
+
+fn image_feeds(p: &Project, n: u8) -> Vec<InputSource> {
+    let Planned::Ready(run) = planned(p, n).unwrap() else { panic!("blocked") };
+    let consumer = run.steps.iter().find(|step| step.node == id(n)).unwrap();
+    consumer.inputs.iter().find(|input| input.port == "image").map(|input| input.from.clone()).unwrap_or_default()
+}
+
+#[test]
+fn an_unrun_sheet_card_is_not_run_and_the_element_uses_its_images() {
+    let sheet = kinds().get("test.gen").unwrap().descriptor().instantiate(id(6), &BTreeMap::new()).unwrap();
+    let mut p = scene("#hero");
+    Change::AddNode { canvas: C, node: sheet }.apply(&mut p).unwrap();
+    let edge = Edge {
+        id: EdgeId::from_bytes([201; 16]),
+        from: Endpoint { node: id(6), port: "out".into() },
+        to: Endpoint { node: id(3), port: element::SHEET.into() },
+        order: 0,
+    };
+    Change::Connect { canvas: C, edge }.apply(&mut p).unwrap();
+    let Planned::Ready(run) = planned(&p, 5).unwrap() else { panic!("blocked") };
+    let steps: Vec<NodeId> = run.steps.iter().map(|step| step.node).collect();
+    assert_eq!(steps, vec![id(3), id(5)], "the paid sheet run isn't pulled in");
+    assert_eq!(run.steps.first().unwrap().jobs.as_ref().unwrap().len(), 2, "the Element gives its images");
+    // Once the sheet has a result, the Element gives it instead.
+    let ran = with_result(canvas(&p).nodes().get(&id(6)).unwrap().clone(), 6, Value::List(vec![image(6)]));
+    Change::SetNode { canvas: C, node: ran }.apply(&mut p).unwrap();
+    let Planned::Ready(run) = planned(&p, 5).unwrap() else { panic!("blocked") };
+    assert_eq!(run.steps.first().unwrap().jobs.as_ref().unwrap().len(), 1, "the sheet replaces the images");
+}
+
+#[test]
+fn a_wired_prompt_mentions_nothing() {
+    let mut p = scene("#hero");
+    Change::AddNode { canvas: C, node: kinds().get("source.text").unwrap().descriptor().instantiate(id(7), &BTreeMap::new()).unwrap() }.apply(&mut p).unwrap();
+    let edge = Edge {
+        id: EdgeId::from_bytes([202; 16]),
+        from: Endpoint { node: id(7), port: "out".into() },
+        to: Endpoint { node: id(5), port: PROMPT.into() },
+        order: 0,
+    };
+    Change::Connect { canvas: C, edge }.apply(&mut p).unwrap();
+    assert!(mentioned(&p, 5).is_empty());
+    assert_eq!(crate::mentions::feeds(canvas(&p), &kinds()).feeds.len(), 0);
+}
+
+#[test]
+fn an_element_routed_in_is_not_fed_twice() {
+    let mut p = scene("#hero");
+    let router = kinds().get(router::ID).unwrap().instantiate_instance(id(8), router::config(Modality::Image), &ParamValues::new()).unwrap();
+    Change::AddNode { canvas: C, node: router }.apply(&mut p).unwrap();
+    for (n, from, to) in [
+        (203, Endpoint { node: id(3), port: element::REFERENCE.into() }, Endpoint { node: id(8), port: "in".into() }),
+        (204, Endpoint { node: id(8), port: "out".into() }, Endpoint { node: id(5), port: "image".into() }),
+    ] {
+        Change::Connect { canvas: C, edge: Edge { id: EdgeId::from_bytes([n; 16]), from, to, order: 5 } }.apply(&mut p).unwrap();
+    }
+    let element_feeds = image_feeds(&p, 5).into_iter().filter(|source| matches!(source, InputSource::Step { node, .. } if *node == id(3))).count();
+    assert_eq!(element_feeds, 1);
+}
+
+#[test]
+fn renaming_or_deleting_the_element_drops_the_mention_and_stales_the_card() {
+    let p = scene("#hero");
+    let before = crate::staleness::input_hash(canvas(&p), &kinds(), id(5)).unwrap();
+    let mut renamed = p.clone();
+    let mut node = canvas(&p).nodes().get(&id(3)).unwrap().clone();
+    node.params.insert(element::NAME.into(), Value::Text("villain".into()));
+    Change::SetNode { canvas: C, node }.apply(&mut renamed).unwrap();
+    assert_eq!(mentioned(&renamed, 5).first().unwrap().resolved, Resolved::Unknown);
+    assert_ne!(crate::staleness::input_hash(canvas(&renamed), &kinds(), id(5)).unwrap(), before);
+    let mut deleted = p.clone();
+    let edges: Vec<EdgeId> = canvas(&p).edges().values().filter(|e| e.to.node == id(3)).map(|e| e.id).collect();
+    for edge in edges {
+        Change::Disconnect { canvas: C, id: edge }.apply(&mut deleted).unwrap();
+    }
+    Change::RemoveNode { canvas: C, id: id(3) }.apply(&mut deleted).unwrap();
+    assert_eq!(mentioned(&deleted, 5).first().unwrap().resolved, Resolved::Unknown);
+    assert_ne!(crate::staleness::input_hash(canvas(&deleted), &kinds(), id(5)).unwrap(), before);
 }

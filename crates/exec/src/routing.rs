@@ -3,7 +3,7 @@
 //! inputs through [`incoming`], so a router adds no step, no cost and no hash of its own.
 
 use nodecraft_graph::Canvas;
-use nodecraft_nodes::{Registry, router};
+use nodecraft_nodes::{Registry, element, router};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -168,11 +168,25 @@ pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>
         }
         resolved.insert(*target, out);
     }
-    // Elements a prompt mentions feed in after the wires (#104).
-    let mentioned = crate::mentions::feeds(canvas);
+    // An Element's sheet card that hasn't run yet feeds nothing, so the Element uses its images
+    // and planning it doesn't pull in the paid sheet run (#104).
+    for (target, feeds) in resolved.iter_mut() {
+        if canvas.nodes().get(target).is_some_and(|node| node.kind == element::ID) {
+            feeds.retain(|feed| feed.0 != element::SHEET || canvas.nodes().get(&feed.2).is_some_and(|from| from.active.is_some()));
+            if !feeds.iter().any(|feed| feed.0 == element::SHEET) {
+                wired.remove(&(*target, element::SHEET));
+            }
+        }
+    }
+    // Elements a prompt mentions feed in after the wires (#104), unless a wire (perhaps through
+    // routers) already brings that Element's references.
+    let mentioned = crate::mentions::feeds(canvas, kinds);
     for (target, feeds) in mentioned.feeds {
         let out = resolved.entry(target).or_default();
         for (port, from, from_port) in feeds {
+            if out.iter().any(|feed| feed.2 == from && feed.3 == from_port) {
+                continue;
+            }
             let in_port = out.iter().filter(|feed| feed.0 == port).count();
             if in_port >= MAX_FEEDS_PER_PORT {
                 continue;

@@ -188,7 +188,8 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 if open && let Some(value) = changed {
                     intents.push(Intent::Parameter { name: PROMPT.into(), value });
                 }
-                if let Some(Value::Text(prompt)) = value {
+                // A wired prompt replaces the text, so its mentions feed nothing.
+                if let (false, Some(Value::Text(prompt))) = (wired, value) {
                     mention_hint(ui, prompt, elements, t);
                 }
                 if run {
