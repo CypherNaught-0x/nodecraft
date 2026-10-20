@@ -338,6 +338,7 @@ mod runs;
 mod search;
 mod split;
 mod stale;
+mod stale_badges;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 mod tags;
@@ -369,6 +370,8 @@ pub struct NodeCraftApp {
     pub viewport: Rect,
     pub notice: Option<String>,
     stale_snapshot: Option<stale::StaleSnapshot>,
+    /// Which cards show a stale badge, as of a revision (#211).
+    stale_badges: Option<stale_badges::StaleBadges>,
     #[cfg(not(target_arch = "wasm32"))]
     drop_acquisition: drop::Acquisition,
     editors: BTreeMap<NodeId, EditorState>,
@@ -680,6 +683,7 @@ impl NodeCraftApp {
             viewport: Rect::NOTHING,
             notice: None,
             stale_snapshot: None,
+            stale_badges: None,
             #[cfg(not(target_arch = "wasm32"))]
             drop_acquisition: drop::Acquisition::new(),
             editors: BTreeMap::new(),
@@ -1075,6 +1079,8 @@ impl NodeCraftApp {
         let mut comment_target = None;
         let mut split_after = None;
         let mut tag_action = None;
+        let mut refresh = None;
+        self.refresh_stale_badges();
         let tag_menu_allowed = !self.text_focused
             && !canvas::text_input_focused(ui.ctx())
             && self.drag.is_none()
@@ -1180,6 +1186,19 @@ impl NodeCraftApp {
                                 hover.on_hover_text(why.to_owned());
                             }
                         }
+                    }
+                    // A card being refreshed keeps its stale result until the run records, but
+                    // offers no second refresh meanwhile.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, node.id));
+                    #[cfg(target_arch = "wasm32")]
+                    let running = false;
+                    if !running
+                        && self.stale_badges.as_ref().is_some_and(|badges| badges.nodes.contains(&node.id))
+                        && stale_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, t)
+                        && !canvas_blocks
+                    {
+                        refresh = Some(node.id);
                     }
                     if self.tag_filter.active() {
                         let matches = self.tag_filter.matches(node.id);
@@ -1547,6 +1566,12 @@ impl NodeCraftApp {
                     }
                 }
             }
+        }
+        // After this pass's edits, like Generate, so the quote sees them.
+        if let Some(id) = refresh
+            && let Err(error) = self.request_run(id, generate::RunKind::Refresh)
+        {
+            self.notice = Some(error.message);
         }
         if !ui.input(|i| i.pointer.primary_down())
             && let Some(drag) = self.drag.take()
