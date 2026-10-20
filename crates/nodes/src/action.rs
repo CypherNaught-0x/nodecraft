@@ -254,6 +254,12 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
             vec![count("count", "Copies", 1, 64, 4)],
         ),
         image("image.resize", "Resize", vec![slider("factor", "Scale", 0.02, 8.0, 0.01, 0.5)?, choice("resampling", "Resampling", RESAMPLING, "bilinear")]),
+        // Adds transparent margins in pixels, for outpainting (#102).
+        image(
+            "image.expand",
+            "Expand canvas",
+            vec![count("left", "Left", 0, 4096, 0), count("top", "Top", 0, 4096, 0), count("right", "Right", 0, 4096, 0), count("bottom", "Bottom", 0, 4096, 0)],
+        ),
         kind(
             "text.split",
             "Split text",

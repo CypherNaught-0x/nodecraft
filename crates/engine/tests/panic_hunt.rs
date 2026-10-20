@@ -432,6 +432,11 @@ fn template(id: &str) -> (Session, Value) {
         "run.reuse" => json!({"canvas":canvas()}),
         "node.shader_set" => json!({"canvas":canvas(),"id":node_id(1),"source":"fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }"}),
         "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
+        "node.mask_set" => json!({"canvas":canvas(),"id":node_id(1),"strokes":[{"size":0.1,"hardness":0.5,"points":[[0.5,0.5]]}]}),
+        "mask.create" => json!({"canvas":canvas(),"from":{"node":node_id(1),"port":"out"},"expand":node_id(7),"mask":node_id(8),
+            "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2}}),
+        "mask.edit" => json!({"canvas":canvas(),"mask":node_id(1),"id":node_id(7),
+            "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2},"prompt":"a door"}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)

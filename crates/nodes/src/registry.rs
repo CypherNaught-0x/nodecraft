@@ -25,6 +25,7 @@ impl Registry {
             registry.register(Box::new(kind))?;
         }
         registry.register(Box::new(crate::shader::kind()?))?;
+        registry.register(Box::new(crate::mask::kind()))?;
         Ok(registry)
     }
 

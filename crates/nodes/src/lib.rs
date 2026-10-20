@@ -11,6 +11,7 @@ mod contract;
 mod descriptor;
 pub mod generation;
 pub mod image;
+pub mod mask;
 pub mod note;
 mod registry;
 pub mod router;
