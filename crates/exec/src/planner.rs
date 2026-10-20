@@ -8,9 +8,9 @@
 //! [`JobSpec`]s now, the others are planned by the driver once their upstream steps finish.
 //!
 //! Routers (#72) and batches (#92) are resolved here, before inputs are gathered: a router into
-//! its sources, a batch into its items. A node with a single input fed by a batch is planned
-//! once per item ([`Fanout`], combined by [`crate::fanout`]); techniques (#94) will be inlined
-//! here too.
+//! its sources, a batch into its items. A node with a single input fed by a batch, or a list
+//! input its contract marks as fanning out (a generation's prompt, #515), is planned once per
+//! item ([`Fanout`], combined by [`crate::fanout`]); techniques (#94) will be inlined here too.
 
 use nodecraft_graph::{Canvas, ItemTag, Node};
 use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch};
@@ -269,10 +269,12 @@ pub fn is_batch(canvas: &Canvas, id: NodeId) -> bool {
     canvas.nodes().get(&id).is_some_and(|node| node.kind == batch::ID)
 }
 
-/// A single input fed by a batch, or by a fanned result: one value per item.
+/// A single or fanning-out input fed by a batch, or by a fanned result: one value per item.
 struct Fanned {
     /// Index into the step's inputs.
     input: usize,
+    /// The wire's place among the input's sources, which each item takes in turn.
+    slot: usize,
     tags: Vec<ItemTag>,
     from: FannedFrom,
 }
@@ -379,6 +381,10 @@ impl<'a> Graph<'a> {
         if let Err(error) = kind.validate_instance(node, true) {
             blockers.push(blocker(None, None, Reason::Invalid(error.message)));
         }
+        // List inputs that run once per item rather than collecting them (#515).
+        let fans_out: BTreeSet<String> = kind
+            .instance_contract(node)
+            .map_or_else(|_| BTreeSet::new(), |contract| contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect());
         let mut inputs = Vec::new();
         let mut fanned: Vec<Fanned> = Vec::new();
         let mut after = BTreeSet::new();
@@ -409,9 +415,14 @@ impl<'a> Graph<'a> {
             // router it could.
             let list_into_single = |list: bool| list && !port.port_type.many;
             let list_through_router = || Reason::Invalid(format!("its {} input takes one value but a list reaches it through a router", port.name));
+            // A list input that collects every item of a batch into one run.
+            let collects = port.port_type.many && !fans_out.contains(&port.name);
             let mut from = Vec::with_capacity(feeds.len().min(MAX_LIST_ITEMS));
-            // Fanned feeds of this (single) input.
-            let mut fans = 0usize;
+            // A fanned wire holds its place in `from` with a stand-in that each item replaces.
+            let mut fan = |from: &mut Vec<InputSource>, tags: Vec<ItemTag>, source: FannedFrom| {
+                fanned.push(Fanned { input: inputs.len(), slot: from.len(), tags, from: source });
+                from.push(InputSource::Value(Value::List(Vec::new())));
+            };
             for (_, up, up_port, _) in feeds {
                 let upstream = self.canvas.nodes().get(up);
                 if upstream.is_some_and(|u| u.kind == batch::ID) {
@@ -422,12 +433,11 @@ impl<'a> Graph<'a> {
                                 blockers.push(blocker(Some(&port.name), None, Reason::Invalid(over_budget(bytes).into())));
                                 return Err(blockers);
                             }
-                            if port.port_type.many {
+                            if collects {
                                 from.extend(values.iter().cloned().map(InputSource::Value));
                             } else {
-                                fans = fans.saturating_add(1);
                                 fan_bytes = fan_bytes.saturating_add(*size);
-                                fanned.push(Fanned { input: inputs.len(), tags: tags.clone(), from: FannedFrom::Values(values.clone()) });
+                                fan(&mut from, tags.clone(), FannedFrom::Values(values.clone()));
                             }
                         }
                         Err(reason) => {
@@ -449,11 +459,8 @@ impl<'a> Graph<'a> {
                             break;
                         }
                         // A list input collects every item of a fanned step.
-                        Some(_) if port.port_type.many => from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list: true }),
-                        Some(tags) => {
-                            fans = fans.saturating_add(1);
-                            fanned.push(Fanned { input: inputs.len(), tags: tags.clone(), from: FannedFrom::Step { node: *up, port: (*up_port).to_owned() } });
-                        }
+                        Some(_) if collects => from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list: true }),
+                        Some(tags) => fan(&mut from, tags.clone(), FannedFrom::Step { node: *up, port: (*up_port).to_owned() }),
                         None => from.push(InputSource::Step { node: *up, port: (*up_port).to_owned(), list }),
                     }
                 } else {
@@ -481,10 +488,9 @@ impl<'a> Graph<'a> {
                                     blockers.push(blocker(Some(&port.name), Some(*up), Reason::Invalid(fanned_list(&port.name))));
                                     break;
                                 }
-                                Value::List(values) if !items.is_empty() && !port.port_type.many => {
-                                    fans = fans.saturating_add(1);
+                                Value::List(values) if !items.is_empty() && !collects => {
                                     fan_bytes = fan_bytes.saturating_add(size);
-                                    fanned.push(Fanned { input: inputs.len(), tags: items.clone(), from: FannedFrom::Values(values.clone()) });
+                                    fan(&mut from, items.clone(), FannedFrom::Values(values.clone()));
                                 }
                                 Value::List(values) if (list || !items.is_empty()) && port.port_type.many => {
                                     from.extend(values.iter().cloned().map(InputSource::Value));
@@ -500,7 +506,7 @@ impl<'a> Graph<'a> {
                     }
                 }
                 // A single input takes one value; through a router it could receive several.
-                if !port.port_type.many && from.len().saturating_add(fans) > 1 {
+                if !port.port_type.many && from.len() > 1 {
                     blockers.push(blocker(
                         Some(&port.name),
                         None,
@@ -576,8 +582,8 @@ impl<'a> Graph<'a> {
                     FannedFrom::Values(values) => InputSource::Value(values.get(*row).cloned().ok_or_else(|| invalid("an item is missing".into()))?),
                     FannedFrom::Step { node, port } => InputSource::Item { node: *node, port: port.clone(), index: *row },
                 };
-                if let Some(input) = cell_inputs.get_mut(fan.input) {
-                    input.from = vec![source];
+                if let Some(slot) = cell_inputs.get_mut(fan.input).and_then(|input| input.from.get_mut(fan.slot)) {
+                    *slot = source;
                 }
             }
             items.push(cell.tag);

@@ -115,7 +115,7 @@ fn option_sources_are_validated() {
     let json = serde_json::to_string(&comfy()).unwrap();
     assert_eq!(serde_json::from_str::<Contract>(&json).unwrap(), comfy());
     assert!(json.contains(r#""options":{"id":"comfyui.loras","scope":"checkpoint"}"#));
-    assert_eq!(ContractVersion::CURRENT, ContractVersion { major: 1, minor: 1 });
+    assert_eq!(ContractVersion::CURRENT, ContractVersion { major: 1, minor: 2 });
 }
 
 #[test]

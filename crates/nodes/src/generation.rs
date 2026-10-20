@@ -189,7 +189,14 @@ impl GenerationKind {
             contract.inputs = descriptor
                 .inputs
                 .iter()
-                .map(|p| InputContract { port: p.name.clone(), role: p.name.clone(), min: 0, max: Some(if p.name == PROMPT { 1024 } else { 255 }) })
+                .map(|p| InputContract {
+                    port: p.name.clone(),
+                    role: p.name.clone(),
+                    min: 0,
+                    max: Some(if p.name == PROMPT { 1024 } else { 255 }),
+                    // A batch of prompts makes one result per prompt; media roles collect.
+                    fans_out: p.name == PROMPT,
+                })
                 .collect();
             contract.modes = model
                 .modes

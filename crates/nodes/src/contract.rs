@@ -24,6 +24,11 @@ pub struct InputContract {
     /// At most this many; absent means unbounded (list ports only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<u16>,
+    /// A list port that runs the node once per batch item (1.2, #515): a batch, or a result a
+    /// batch fanned out, wired here takes its wire's place one item at a time instead of
+    /// collecting every item into one run. Single ports always fan out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fans_out: bool,
 }
 
 impl InputContract {
@@ -91,7 +96,13 @@ impl NodeContract {
             inputs: descriptor
                 .inputs
                 .iter()
-                .map(|port| InputContract { port: port.name.clone(), role: port.name.clone(), min: 0, max: (!port.port_type.many).then_some(1) })
+                .map(|port| InputContract {
+                    port: port.name.clone(),
+                    role: port.name.clone(),
+                    min: 0,
+                    max: (!port.port_type.many).then_some(1),
+                    fans_out: false,
+                })
                 .collect(),
             outputs: descriptor
                 .outputs
@@ -131,6 +142,9 @@ impl NodeContract {
             }
             if input.max.is_some_and(|max| max < input.min || max == 0) || (!port.port_type.many && input.max.is_none_or(|max| max > 1)) {
                 return Err(invalid("an input's wire bounds are impossible for its port"));
+            }
+            if input.fans_out && !port.port_type.many {
+                return Err(invalid("only a list input is marked as fanning out"));
             }
         }
         for (output, port) in self.outputs.iter().zip(&descriptor.outputs) {

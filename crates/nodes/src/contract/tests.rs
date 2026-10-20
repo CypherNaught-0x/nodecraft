@@ -155,3 +155,13 @@ fn contracts_round_trip_and_unknown_fields_are_rejected() {
     extra["surprise"] = serde_json::json!(1);
     assert!(serde_json::from_value::<NodeContract>(extra).is_err());
 }
+
+#[test]
+fn only_a_list_input_may_fan_out() {
+    let (descriptor, mut contract) = frames();
+    contract.inputs[0].fans_out = true;
+    assert!(contract.validate(&descriptor).is_ok(), "the prompt list may fan out");
+    contract.inputs[1].fans_out = true;
+    let error = contract.validate(&descriptor).unwrap_err();
+    assert!(error.message.contains("only a list input"), "{}", error.message);
+}

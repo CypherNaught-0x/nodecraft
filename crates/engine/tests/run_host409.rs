@@ -596,3 +596,28 @@ fn a_discarded_answer_is_gone_and_records_nothing() {
     assert!(f.host.keep_partial(&mut f.session, key).is_err(), "nothing is left to keep");
     assert!(history(&f.session).is_empty());
 }
+
+/// A batch of prompts into a Generate card runs it once per prompt (#515), each prompt in the
+/// batch wire's place among the card's prompt wires.
+#[test]
+fn a_batch_into_a_generate_card_runs_once_per_prompt() {
+    let mut f = fixture(MockProvider::standard());
+    let batch = NodeId::from_bytes([13; 16]);
+    add(&mut f, batch, nodecraft_nodes::batch::ID, 0);
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":batch,"name":"text","value":{"type":"text","value":"a fox\nan owl"}})).unwrap();
+    let edge = json!({"id": EdgeId::from_bytes([22; 16]), "from": {"node": batch, "port": "item"}, "to": {"node": WRITER, "port": "prompt"}, "order": 1});
+    f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    let request = json!({"canvas":C,"mode":"selected","nodes":[SOURCE, WRITER]});
+    let q = f.session.dispatch("run.quote", &request).unwrap();
+    assert_eq!(q["totals"]["USD"]["micros"], 20_000, "two calls: {q}");
+    start_request(&mut f, request);
+    let notices = drive(&mut f);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    let done = history(&f.session).last().cloned().unwrap();
+    assert_eq!(done.items.len(), 2);
+    let Value::List(texts) = &done.outputs[0] else { panic!("{done:?}") };
+    let [Value::Text(fox), Value::Text(owl)] = texts.as_slice() else { panic!("{texts:?}") };
+    // The source's prompt comes first, then the item.
+    assert!(fox.contains("Describe the sea\na fox") && owl.contains("Describe the sea\nan owl"), "{fox} / {owl}");
+    assert_eq!(f.mock.requests().len(), 2);
+}

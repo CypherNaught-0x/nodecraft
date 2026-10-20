@@ -7,7 +7,7 @@ editing too. This page is the specification. The code is `nodecraft_types::contr
 parameter part) and `nodecraft_nodes::NodeContract` (L2, ports and modes); neither depends on egui.
 
 Version 1.0 covers the shared foundation and the source nodes. Version 1.1 adds
-[option sources](#option-sources). Model, action and editor issues fill it in for their own
+[option sources](#option-sources). Version 1.2 adds `fans_out` on list inputs. Model, action and editor issues fill it in for their own
 parameters; see [What is not in 1.1](#what-is-not-in-11).
 
 ## Versions
@@ -168,7 +168,11 @@ A `NodeContract` lists the descriptor's ports in the same order.
 - **Inputs** have a `role`, a `min` and an optional `max` wire count. The role says what the input
   is for, such as `prompt`, `start_frame` or `style_reference`; two ports can share a modality but
   never a role (registration checks this). `min` above zero means required. A single port has `max` at most 1, and an absent
-  `max` (no limit) is allowed on list ports only.
+  `max` (no limit) is allowed on list ports only. A list input marked `fans_out` (1.2) runs
+  the node once per item of a batch wired into it, the way a single input does, instead of
+  collecting the batch into one list; its other wires join each item in order. Generate's
+  `prompt` fans out, so a batch of prompts makes one result per prompt, while media roles still
+  collect. Only a list input may be marked; `fans_out` is omitted when false.
 - **Outputs** have a role and say whether they hold a collection, matching the port.
 - **Modes** name the wire counts a mode needs on some inputs; an input a mode doesn't name
   accepts any count its own bounds allow. For example:
