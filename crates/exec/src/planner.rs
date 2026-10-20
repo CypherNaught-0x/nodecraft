@@ -40,7 +40,9 @@ pub enum InputSource {
     /// set (a list output) and the input is a list too, its items are spliced in, not nested.
     Step { node: NodeId, port: String, list: bool },
     /// Value `index` of the output `port` of the fanned step for `node` (#92): one item's value.
-    Item { node: NodeId, port: String, index: usize },
+    /// When `list` is set (one list per item, #519) and the input is a list too, that item's
+    /// values are spliced in.
+    Item { node: NodeId, port: String, index: usize, list: bool },
 }
 
 /// One connected input port of a step. List inputs (`many`) have one source per noodle, in
@@ -458,6 +460,10 @@ impl<'a> Graph<'a> {
                         break;
                     }
                     match state.fanned.get(up) {
+                        // A list input collects every item's list, flattened in item order (#519).
+                        Some(tags) if list && collects => {
+                            from.extend((0..tags.len()).map(|index| InputSource::Item { node: *up, port: (*up_port).to_owned(), index, list: true }))
+                        }
                         Some(_) if list => {
                             blockers.push(blocker(Some(&port.name), Some(*up), Reason::Invalid(fanned_list(&port.name))));
                             break;
@@ -488,6 +494,10 @@ impl<'a> Graph<'a> {
                             // Within budget: only now copy. A list output into a list input
                             // contributes its items, not a nested list; so does a fanned result.
                             match value {
+                                // A list input collects every item's list, flattened (#519).
+                                Value::List(lists) if list && !items.is_empty() && collects => {
+                                    from.extend(flatten(lists).cloned().map(InputSource::Value));
+                                }
                                 Value::List(_) if list && !items.is_empty() => {
                                     blockers.push(blocker(Some(&port.name), Some(*up), Reason::Invalid(fanned_list(&port.name))));
                                     break;
@@ -584,7 +594,7 @@ impl<'a> Graph<'a> {
             for (fan, row) in fanned.iter().zip(&cell.rows) {
                 let source = match &fan.from {
                     FannedFrom::Values(values) => InputSource::Value(values.get(*row).cloned().ok_or_else(|| invalid("an item is missing".into()))?),
-                    FannedFrom::Step { node, port } => InputSource::Item { node: *node, port: port.clone(), index: *row },
+                    FannedFrom::Step { node, port } => InputSource::Item { node: *node, port: port.clone(), index: *row, list: false },
                 };
                 if let Some(slot) = cell_inputs.get_mut(fan.input).and_then(|input| input.from.get_mut(fan.slot)) {
                     *slot = source;
@@ -642,6 +652,7 @@ impl<'a> Graph<'a> {
             }
             let (value, list, items) = self.resolve(*up, up_port)?;
             match value {
+                Value::List(lists) if list && !items.is_empty() => wired.extend(flatten(&lists).cloned()),
                 Value::List(values) if list || !items.is_empty() => wired.extend(values),
                 value => wired.push(value),
             }
@@ -687,6 +698,14 @@ impl<'a> Graph<'a> {
 
 fn over_budget(bytes: usize) -> &'static str {
     if bytes > MAX_STEP_INPUT_BYTES { "its inputs are too large to run in one step" } else { "the inputs of this run are too large to plan at once" }
+}
+
+/// The values of a fanned list result (#519), one list per item, in item order.
+fn flatten(lists: &[Value]) -> impl Iterator<Item = &Value> {
+    lists.iter().flat_map(|list| match list {
+        Value::List(values) => values.as_slice(),
+        other => std::slice::from_ref(other),
+    })
 }
 
 fn fanned_list(port: &str) -> String {

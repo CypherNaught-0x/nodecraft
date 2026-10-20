@@ -714,7 +714,7 @@ fn a_fanning_list_input_runs_once_per_item_with_its_other_wires() {
     let last = plan.steps.iter().find(|s| s.node == id(2)).unwrap();
     let cells = &last.fanout.as_ref().unwrap().cells;
     for (index, cell) in cells.iter().enumerate() {
-        assert_eq!(cell.first().unwrap().from, vec![InputSource::Item { node: id(4), port: "out".into(), index }]);
+        assert_eq!(cell.first().unwrap().from, vec![InputSource::Item { node: id(4), port: "out".into(), index, list: false }]);
     }
     assert_eq!(cells.len(), 2);
 
@@ -767,7 +767,13 @@ fn one_batch_reaching_a_node_twice_joins_on_its_items() {
     assert!(last.jobs.is_none(), "its inputs come from this run");
     for (index, cell) in fanout.cells.iter().enumerate() {
         let sources: Vec<_> = cell.iter().flat_map(|input| input.from.clone()).collect();
-        assert_eq!(sources, vec![InputSource::Item { node: id(2), port: "out".into(), index }, InputSource::Item { node: id(3), port: "out".into(), index }]);
+        assert_eq!(
+            sources,
+            vec![
+                InputSource::Item { node: id(2), port: "out".into(), index, list: false },
+                InputSource::Item { node: id(3), port: "out".into(), index, list: false }
+            ]
+        );
     }
 }
 
@@ -843,4 +849,44 @@ fn a_fanned_step_is_quoted_per_item_even_when_its_jobs_come_later() {
     let jobs = |n: u8| quote.steps.iter().find(|s| s.node == id(n)).map(|s| (s.jobs, s.jobs_known)).unwrap();
     assert_eq!(jobs(2), (3, true));
     assert_eq!(jobs(3), (3, false));
+}
+
+#[test]
+fn a_list_per_item_reaches_a_collecting_list_input_flattened() {
+    // 2 runs once per batch item and makes a list each time; 3's list input collects them all.
+    let p = wired(vec![batch(1, "a\nb", "cross"), of_kind(2, "test.split", None), relay(3, None)], &[(1, "item", 2, "in"), (2, "items", 3, "in")]);
+    let plan = ready(plan_of(&p, &[2, 3]));
+    let last = plan.steps.iter().find(|s| s.node == id(3)).unwrap();
+    assert!(last.fanout.is_none(), "a collecting input doesn't fan out");
+    let item = |index| InputSource::Item { node: id(2), port: "items".into(), index, list: true };
+    assert_eq!(last.inputs.first().unwrap().from, vec![item(0), item(1)]);
+
+    // A stored result with one list per item contributes every value, in item order.
+    let items = plan.steps.iter().find(|s| s.node == id(2)).unwrap().fanout.as_ref().unwrap().items.clone();
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    let generation = GenerationId::from_bytes([2; 16]);
+    let lists = Value::List(vec![Value::List(texts(&["a1", "a2"])), Value::List(texts(&["b1"]))]);
+    node.history.push(Generation { id: generation, outputs: vec![lists], input_hash: None, items, settings: Vec::new(), incomplete: None });
+    node.active = Some(generation);
+    let p = wired(
+        vec![batch(1, "a\nb", "cross"), node.clone(), relay(3, None), of_kind(4, "test.fanning", None)],
+        &[(1, "item", 2, "in"), (2, "items", 3, "in"), (2, "items", 4, "in")],
+    );
+    let plan = ready(plan_of(&p, &[3]));
+    let values: Vec<_> = texts(&["a1", "a2", "b1"]).into_iter().map(InputSource::Value).collect();
+    assert_eq!(plan.steps.first().unwrap().inputs.first().unwrap().from, values);
+    // A batch collects them flattened too.
+    let p =
+        wired(vec![batch(1, "a\nb", "cross"), node, batch(5, "", "cross"), single(6)], &[(1, "item", 2, "in"), (2, "items", 5, "in"), (5, "item", 6, "in")]);
+    let plan = ready(plan_of(&p, &[6]));
+    assert_eq!(fanned_values(plan.steps.first().unwrap()), vec![texts(&["a1"]), texts(&["a2"]), texts(&["b1"])]);
+}
+
+#[test]
+fn a_list_per_item_into_a_fanning_input_is_still_refused() {
+    let p = wired(
+        vec![batch(1, "a\nb", "cross"), of_kind(2, "test.split", None), of_kind(4, "test.fanning", None)],
+        &[(1, "item", 2, "in"), (2, "items", 4, "in")],
+    );
+    assert!(blocked(plan_of(&p, &[2, 4])).contains("isn't supported yet"));
 }

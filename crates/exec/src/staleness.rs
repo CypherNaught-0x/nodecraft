@@ -334,6 +334,8 @@ pub struct InputHasher {
     batches: BTreeMap<NodeId, Option<Result<Blake3, InvalidHash>>>,
     /// Batches being hashed right now; a chain deeper than [`MAX_BATCH_DEPTH`] is unknown.
     batch_depth: usize,
+    /// Whether a node's result is fanned out by batches (#519), by node.
+    fanned: BTreeMap<NodeId, bool>,
     meter: Meter,
     diagnostic_credit: Option<DiagnosticCredit>,
     #[cfg(test)]
@@ -378,6 +380,7 @@ impl InputHasher {
             outputs: BTreeMap::new(),
             batches: BTreeMap::new(),
             batch_depth: 0,
+            fanned: BTreeMap::new(),
             meter,
             diagnostic_credit,
             #[cfg(test)]
@@ -443,7 +446,13 @@ impl InputHasher {
                             Err(rejected) => Err(rejected),
                             Ok(resolved) => {
                                 if nodecraft_nodes::generation::is_generation(&node.kind) {
-                                    let contract = kind.instance_contract(node)?;
+                                    let mut contract = kind.instance_contract(node)?;
+                                    // Whether a list port fans out or collects is hashed per
+                                    // feed instead (#519): only a batch behind it changes what
+                                    // the node makes, so declaring it never makes results stale.
+                                    for input in &mut contract.inputs {
+                                        input.fans_out = false;
+                                    }
                                     w.generation_contract(&contract, &mut self.meter)?;
                                 }
                                 for (name, value) in &resolved.values {
@@ -623,11 +632,23 @@ impl InputHasher {
         for (port, order, from, from_port) in self.feeds.get(&id).into_iter().flatten() {
             feeds.entry(port.clone()).or_default().push((*order, *from, from_port.clone()));
         }
+        let fans_out = fans_out_ports(kinds, node);
         for port in &node.inputs {
             w.text(&port.name);
             let mut list = feeds.remove(port.name.as_str()).unwrap_or_default();
             list.sort();
             w.len(list.len());
+            // A list port that runs once per item (#519) makes something else than one that
+            // collects them: mark the ports a batch fans out.
+            if fans_out.contains(&port.name) {
+                let mut fanned = false;
+                for (_, from, _) in &list {
+                    fanned |= self.fans(canvas, kinds, *from)?;
+                }
+                if fanned {
+                    w.text("fan");
+                }
+            }
             for (_, from, from_port) in list {
                 // Each feed costs a little, so huge fan-ins count against the budget too.
                 self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
@@ -689,6 +710,63 @@ impl InputHasher {
             }
         }
         Ok(HashResult::Ready(Blake3::from_bytes(w.finish())))
+    }
+}
+
+impl InputHasher {
+    /// Whether `id`'s result is fanned out by batches (#92): it is a batch, or a batch's items
+    /// reach it through a single port or one that fans out. Iterative, with a seen-set, so a
+    /// deep or cyclic graph is bounded by its size.
+    fn fans(&mut self, canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<bool, Error> {
+        if let Some(known) = self.fanned.get(&id) {
+            return Ok(*known);
+        }
+        // A node is pushed once to expand it, then again with its upstream to decide it.
+        let mut stack: Vec<(NodeId, Option<Vec<NodeId>>)> = vec![(id, None)];
+        let mut seen = BTreeSet::new();
+        while let Some((at, upstream)) = stack.pop() {
+            if self.fanned.contains_key(&at) {
+                continue;
+            }
+            if let Some(upstream) = upstream {
+                // Provisional on a cycle: a node there sees itself as not fanned (the planner
+                // refuses cycles, so no run depends on it).
+                let fans = upstream.iter().any(|from| self.fanned.get(from).copied().unwrap_or(false));
+                self.fanned.insert(at, fans);
+                continue;
+            }
+            if !seen.insert(at) {
+                continue;
+            }
+            let Some(node) = canvas.nodes().get(&at) else {
+                self.fanned.insert(at, false);
+                continue;
+            };
+            if node.kind == nodecraft_nodes::batch::ID {
+                self.fanned.insert(at, true);
+                continue;
+            }
+            let fans_out = fans_out_ports(kinds, node);
+            let carries = |port: &str| fans_out.contains(port) || node.inputs.iter().any(|p| p.name == port && !p.port_type.many);
+            let upstream: Vec<NodeId> = self.feeds.get(&at).into_iter().flatten().filter(|(port, ..)| carries(port)).map(|(_, _, from, _)| *from).collect();
+            self.meter.charge(VALUE_COST.saturating_mul(upstream.len().saturating_add(1)))?;
+            let next: Vec<(NodeId, Option<Vec<NodeId>>)> = upstream.iter().filter(|from| !seen.contains(*from)).map(|from| (*from, None)).collect();
+            stack.push((at, Some(upstream)));
+            stack.extend(next);
+        }
+        Ok(self.fanned.get(&id).copied().unwrap_or(false))
+    }
+}
+
+/// The list ports of `node` that run it once per batch item rather than collecting (#515).
+/// A Generate card's depend on its model; other kinds declare theirs statically, so no
+/// instance hook runs for them here.
+fn fans_out_ports(kinds: &Registry, node: &Node) -> BTreeSet<String> {
+    let Ok(kind) = kinds.get(&node.kind) else { return BTreeSet::new() };
+    let contract = if nodecraft_nodes::generation::is_generation(&node.kind) { kind.instance_contract(node) } else { Ok(kind.contract(kind.descriptor())) };
+    match contract {
+        Ok(contract) => contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect(),
+        Err(_) => BTreeSet::new(),
     }
 }
 

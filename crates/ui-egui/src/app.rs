@@ -1140,12 +1140,21 @@ impl NodeCraftApp {
                     continue;
                 }
                 // Only cards on screen at a readable zoom ask for their image (#386).
-                let image = nodecraft_engine::split::image_of(node).filter(|_| self.view.zoom >= card::BODY_MIN_ZOOM).map(|asset| {
-                    let hash = asset.hash;
-                    let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
+                let images = if self.view.zoom >= card::BODY_MIN_ZOOM {
+                    let (rows, count) = nodecraft_engine::split::image_rows(node);
+                    // A tile's edge: the card's width shared by the widest row (#519).
+                    let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1) as f32;
+                    let edge = t.card_width / columns * self.view.zoom * ui.ctx().pixels_per_point();
                     let assets = self.session.assets();
-                    self.previews.request_asset(ui.ctx(), hash, edge, || assets.preview_read(asset))
-                });
+                    let previews = &mut self.previews;
+                    let rows = rows
+                        .iter()
+                        .map(|row| row.iter().map(|asset| previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset))).collect())
+                        .collect();
+                    (rows, count)
+                } else {
+                    (Vec::new(), 0)
+                };
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
@@ -1168,7 +1177,7 @@ impl NodeCraftApp {
                         visible: schema.map(|cached| &cached.visible),
                         enabled: schema.and_then(|cached| cached.enabled.as_ref()),
                         preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
-                        image,
+                        images,
                         grid: self.split_shown.filter(|(id, ..)| *id == node.id).map(|(_, rows, columns)| {
                             let full = nodecraft_engine::split::image_of(node).and_then(|asset| Some([asset.meta.width?, asset.meta.height?]));
                             (rows, columns, full)
@@ -2291,6 +2300,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod gallery_tests;
 #[cfg(test)]
 mod generate_tests;
 #[cfg(test)]

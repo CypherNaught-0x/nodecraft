@@ -172,7 +172,9 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let output = generation.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the result has no value for that output"))?;
     let value = match (output, p.item) {
-        (Value::List(items), Some(item)) => items.get(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?,
+        (Value::List(items), Some(item)) => {
+            list_items(items, !generation.items.is_empty()).nth(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?
+        }
         (Value::List(_), None) => return Err(invalid("that output is a list: choose an item to extract")),
         (_, Some(_)) => return Err(invalid("that output is a single value, not a list")),
         (value, None) => value,
@@ -184,6 +186,15 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let changes = Changeset::new(vec![Change::AddNode { canvas: p.canvas, node: extracted }]);
     c.preview_changes(&changes)?;
     Ok(Effect::Edit { changes, result: json!({"id": p.node}), gesture: None })
+}
+
+/// The values a list output offers one by one: its items, with a list per batch item opened when
+/// a batch `fanned` the result (a fanned media result, #519), so its media count individually.
+pub fn list_items(items: &[Value], fanned: bool) -> impl Iterator<Item = &Value> {
+    items.iter().flat_map(move |item| match item {
+        Value::List(inner) if fanned => inner.iter(),
+        single => std::slice::from_ref(single).iter(),
+    })
 }
 
 fn enabled(c: &Context<'_>, value: &Json, run: fn(&Context<'_>, &Json) -> Result<Effect, Error>) -> Result<(), Error> {
@@ -296,7 +307,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: extract_schema,
-            params_doc: "{canvas, id: NodeId, generation, port?: output name (default the first), item?: list index, node: new NodeId, pos: {x, y}} -> {id}; adds a source node (text, image, video or audio) whose parameter is that value, so it feeds downstream nodes at once. The caller supplies the new id.",
+            params_doc: "{canvas, id: NodeId, generation, port?: output name (default the first), item?: list index (counting through the per-item lists of a batch-fanned result), node: new NodeId, pos: {x, y}} -> {id}; adds a source node (text, image, video or audio) whose parameter is that value, so it feeds downstream nodes at once. The caller supplies the new id.",
             enabled: enabled_extract,
             run: extract,
         },
