@@ -86,6 +86,12 @@ the live selection and trusted card geometry, which MCP and the control bridge c
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
 
+**Option lists:** `options.refresh` asks the host to fetch the run-time option lists the
+catalog's models name (the checkpoints the ComfyUI server in settings has, #529) and returns
+`{pending: id}`; read what was installed, refused and why with `options.status`, then
+`node.options` for one parameter's list. Only a host with a fetch service runs it: through the
+bridge to the desktop app it works, while the standalone CLI reports it unavailable.
+
 **Limits:** messages are at most 4 MiB. The engine accepts at most 1 MiB of decoded command parameters, and clients may escape non-ASCII text.
 A longer line is skipped with an error reply instead of being buffered. Messages must be UTF-8
 JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.

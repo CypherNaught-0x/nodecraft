@@ -80,6 +80,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "technique.detach",
     "node.describe",
     "node.options",
+    "options.refresh",
+    "options.status",
     "history.select",
     "history.previous",
     "history.next",

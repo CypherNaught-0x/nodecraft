@@ -330,6 +330,8 @@ mod live;
 mod metrics;
 mod models;
 mod navigation;
+#[cfg(not(target_arch = "wasm32"))]
+mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod queue_panel;
@@ -443,6 +445,9 @@ pub struct NodeCraftApp {
     /// The runs `run.start` hands over, and the providers they use (#409).
     #[cfg(not(target_arch = "wasm32"))]
     runs: Option<runs::Runs>,
+    /// Fetches the option lists `options.refresh` asks for (#529).
+    #[cfg(not(target_arch = "wasm32"))]
+    option_fetch: Option<option_fetch::OptionFetcher>,
     /// The queue panel is open (#82).
     #[cfg(not(target_arch = "wasm32"))]
     queue_open: bool,
@@ -514,6 +519,13 @@ impl NodeCraftApp {
                 None
             }
         };
+        let option_fetch = match option_fetch::OptionFetcher::new(&mut services) {
+            Ok(fetcher) => Some(fetcher),
+            Err(e) => {
+                log::warn!("option lists can't be fetched: {}", e.message);
+                None
+            }
+        };
         // Preserve the existing plugin/trust location. All package I/O, including opening
         // its index, runs on the worker; requests expose retained results through commands.
         let mut plugin_problem = None;
@@ -562,6 +574,7 @@ impl NodeCraftApp {
             runs.install(&mut app.session);
         }
         app.runs = runs;
+        app.option_fetch = option_fetch;
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.apply_settings(ctx, &settings);
@@ -744,6 +757,8 @@ impl NodeCraftApp {
             key_results: None,
             #[cfg(not(target_arch = "wasm32"))]
             runs: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
             sheet: sheet_view::SheetView::default(),
@@ -2283,6 +2298,8 @@ impl eframe::App for NodeCraftApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_runs(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_option_fetch(ctx);
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
     }

@@ -301,6 +301,19 @@ admitted by the rules it already had, and a blocked run names the code rather th
 `node.options {canvas, id, param}` returns a stored node's list for one parameter, as
 `{source, scope, known, options: [{value, label}] | null}`.
 
+**Fetching (#529).** `options.refresh {}` asks the host's `options.fetch` service for every
+unscoped list the catalog's contracts name; the handler does no I/O and the host answers
+`{pending: id}`. The desktop app fetches the ComfyUI server's `/object_info` off the UI thread
+(the adapter's own settings and optional token) and installs each list once per model that names
+it, in the server's order, without blank, oversized (over 4 KiB) or repeated values. A list over
+16,384 values or 16 MiB is refused whole rather than truncated. `options.status {}` reports the last fetch:
+`{id, installed: [{owner, source, values, skipped}], refused: [{owner, source, reason}], error}`.
+A failed fetch and every refused list keep what was installed before. The source ids a ComfyUI
+server answers are `comfyui.checkpoints`, `comfyui.loras`, `comfyui.vaes`,
+`comfyui.upscale_models`, `comfyui.samplers` and `comfyui.schedulers`; scoped sources are refused
+with a reason until a fetch can narrow them. The built-in SDXL row's `checkpoint` names
+`comfyui.checkpoints`.
+
 ## Surfaces
 
 `node.describe {kind}` returns a kind's contract. `node.describe {canvas, id}` returns a stored
@@ -318,8 +331,8 @@ fan-out on list inputs.
 
 These are tracked on #162 and on the issues that need them:
 
-- fetching option lists (ComfyUI `object_info`, provider inventories); what the host has already
-  fetched is checked when a run is planned;
+- fetching provider inventories (voices, account models), lists narrowed by a scope, and
+  fetching from the CLI;
 - typed nested records and lists;
 - generated UI reading rules (enabled state, reset) and the bulk panel itself (#71);
 - per-provider parameter inventories.
