@@ -26,7 +26,7 @@
 > [!NOTE]
 > NodeCraft is being built in the open, three days in. The canvas, the document model, undo,
 > automation surfaces and the whole generation engine are in the tree; the step in progress is
-> wiring that engine to the app, so **the app does not generate or save files yet**.
+> wiring that engine to the app, so **the app does not generate yet**; it does save and open `.ncraft` projects.
 > [`ROADMAP.md`](ROADMAP.md) says exactly what works, what does not, and what is next.
 
 ## What it does today
@@ -207,7 +207,7 @@ and checklists for adding commands, node kinds and providers.
 | Milestone | Focus | Where it stands |
 |---|---|---|
 | M0 | Workspace skeleton, lints, CI, empty canvas | done |
-| M1–M2 | Canvas core, organisation tools | canvas nearly done; save/open and fields UI to wire |
+| M1–M2 | Canvas core, organisation tools | canvas nearly done; fields UI to wire |
 | M3 | Generation engine, providers, history, cost | engine built and tested, app not wired yet |
 | M4–M5 | Actions, Batch, Techniques, CLI | actions built as a library; M5 not started |
 | M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | not started |
