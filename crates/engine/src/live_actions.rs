@@ -8,7 +8,7 @@
 //! nothing from the session) and [`apply`] (UI thread).
 use crate::Session;
 use crate::action_exec::LocalActions;
-use nodecraft_exec::planner::{Planned, RunMode, RunPlan, plan};
+use nodecraft_exec::planner::{Planned, RunMode, RunPlan, Step, plan, ready_alone};
 use nodecraft_exec::run::{Run, RunOptions};
 use nodecraft_exec::scheduler::RetryPolicy;
 use nodecraft_format::AssetStore;
@@ -78,16 +78,9 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     if !hits.is_empty() {
         return Ok(Some(LiveJob { canvas, base: session.revision(), id: [0; 16], plan: None, hits, live: live.clone(), assets: AssetStore::default() }));
     }
-    // Plan each wanted node on its own terms: one that can't run yet (nothing connected, or a
-    // model upstream with no result) mustn't hold the others back.
-    let mut runnable = BTreeSet::new();
-    for id in &wanted {
-        if let Ok(Planned::Ready(plan)) = plan(live, kinds, &RunMode::WithUpstream, &BTreeSet::from([*id]), &stale)
-            && local_only(&plan, live, kinds)
-        {
-            runnable.insert(*id);
-        }
-    }
+    // Each wanted node on its own terms: one that can't run yet (nothing connected, or a model
+    // upstream with no result) mustn't hold the others back. One walk decides for all (#549).
+    let runnable = ready_alone(live, kinds, &wanted, &stale, &|step| local_step(step, live, kinds)).unwrap_or_default();
     if runnable.is_empty() {
         return Ok(None);
     }
@@ -102,13 +95,43 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     Ok(Some(LiveJob { canvas, base: session.revision(), id, plan: Some(plan), hits: Vec::new(), live: live.clone(), assets: session.assets().clone() }))
 }
 
+/// A canvas [`pending`] found nothing to do on. Until it changes in more than layout (moving a
+/// node, grouping), asking again gives the same answer, and at a thousand nodes asking costs a
+/// frame (#549). It only holds while there is nothing to redo and the project is writable, as
+/// when it was taken; the host drops it when a failure is recorded, since `failed` changes.
+pub struct Settled {
+    canvas: CanvasId,
+    live: Canvas,
+}
+
+impl Settled {
+    /// `canvas` as `session` holds it now, after [`pending`] found nothing to do on it.
+    pub fn now(session: &Session, canvas: CanvasId) -> Option<Settled> {
+        if session.can_redo() || session.file_status().read_only {
+            return None;
+        }
+        Some(Settled { canvas, live: session.document().canvases().get(&canvas)?.clone() })
+    }
+
+    /// Whether [`pending`] would still find nothing to do on `canvas`.
+    pub fn holds(&self, session: &Session, canvas: CanvasId) -> bool {
+        self.canvas == canvas
+            && !session.can_redo()
+            && !session.file_status().read_only
+            && session.document().canvases().get(&canvas).is_some_and(|live| live.same_but_layout(&self.live))
+    }
+}
+
 /// Whether every step is a source, an action or structure: nothing that calls a model.
 fn local_only(plan: &RunPlan, live: &Canvas, kinds: &Registry) -> bool {
-    plan.steps.iter().all(|step| {
-        let jobs_local = step.jobs.as_ref().is_none_or(|jobs| jobs.iter().all(|j| matches!(j, JobSpec::Source { .. } | JobSpec::Action { .. })));
-        let kind_local = live.nodes().get(&step.node).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category != Category::Generation);
-        jobs_local && kind_local
-    })
+    plan.steps.iter().all(|step| local_step(step, live, kinds))
+}
+
+/// Whether `step` is a source, an action or structure.
+fn local_step(step: &Step, live: &Canvas, kinds: &Registry) -> bool {
+    let jobs_local = step.jobs.as_ref().is_none_or(|jobs| jobs.iter().all(|j| matches!(j, JobSpec::Source { .. } | JobSpec::Action { .. })));
+    let kind_local = live.nodes().get(&step.node).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category != Category::Generation);
+    jobs_local && kind_local
 }
 
 /// Runs `job` (any thread): sources emit their values, actions run on [`LocalActions`].

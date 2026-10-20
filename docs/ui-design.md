@@ -116,7 +116,12 @@ message. Asset controls display/remove existing references; file import is track
   not current frame-time or native 60 fps guarantees; rerun the command for current edit timings.
   The run found one hotspot, fixed: every edit made the schema cache
   rescan all entries per visible card (O(visible²), 10.2 ms after an edit at 1,000 nodes); it
-  now keeps a running byte total and a shared-descriptor index. Title font sizes still change
+  now keeps a running byte total and a shared-descriptor index. Live recompute (#88) later made
+  every edit plan each action node alone, rebuilding the planner graph per node (O(nodes²), 284 ms
+  after an edit at 1,000 nodes); one walk now decides for all of them, the project is copied only
+  when a cached result applies, and a settled canvas skips the look entirely for moves and
+  grouping (#549). Apple M3 Pro, 2026-10-21, load average about 18: 2.3 ms after an edit at 200
+  nodes and 7.8 ms at 1,000, against 1.7 and 5.4 ms panning. Title font sizes still change
   with every zoom step (a new glyph size per frame in a sweep); snapping them to a few sizes is
   the next lever if sweeps get heavier.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the

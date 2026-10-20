@@ -204,3 +204,39 @@ fn a_result_joining_a_drag_keeps_it_one_step() {
     assert_eq!(pos(&s), start);
     assert_eq!(sigma(&s), Value::Number(nodecraft_types::Number::new(9.0).unwrap()), "the parameter edit is the next step");
 }
+
+#[test]
+fn an_action_that_cannot_run_does_not_hold_back_one_that_can() {
+    let mut s = session();
+    let other = NodeId::from_bytes([13; 16]);
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": other, "kind": "image.blur", "pos": {"x": 400, "y": 300}})).unwrap();
+    let edge = nodecraft_types::EdgeId::from_bytes([14; 16]);
+    s.dispatch(
+        "edge.connect",
+        &json!({"canvas": CANVAS, "edge": {"id": edge, "from": {"node": SOURCE, "port": "out"}, "to": {"node": other, "port": "image"}, "order": 0}}),
+    )
+    .unwrap();
+    assert!(settle(&mut s), "the connected blur runs while the unconnected one waits");
+    let nodes = s.document().canvases().get(&CANVAS).unwrap().nodes();
+    assert!(nodes.get(&other).unwrap().active.is_some());
+    assert!(nodes.get(&BLUR).unwrap().active.is_none());
+}
+
+#[test]
+fn a_settled_canvas_stays_settled_through_layout_only() {
+    let mut s = session();
+    connect(&mut s);
+    settle(&mut s);
+    let settled = Settled::now(&s, CANVAS).expect("nothing to redo");
+    assert!(settled.holds(&s, CANVAS));
+    s.dispatch("node.move", &json!({"canvas": CANVAS, "id": BLUR, "pos": {"x": 900, "y": 40}})).unwrap();
+    assert!(settled.holds(&s, CANVAS), "moving a node changes nothing a run reads");
+    assert!(!settled.holds(&s, CanvasId::from_bytes([9; 16])), "another canvas");
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(!settled.holds(&s, CANVAS), "results wait while there is something to redo");
+    assert!(Settled::now(&s, CANVAS).is_none());
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": BLUR, "name": "sigma", "value": Value::Number(nodecraft_types::Number::new(6.0).unwrap())}))
+        .unwrap();
+    assert!(!settled.holds(&s, CANVAS), "a parameter change needs a new look");
+}

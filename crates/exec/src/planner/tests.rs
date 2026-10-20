@@ -401,6 +401,27 @@ proptest! {
         });
         prop_assert_eq!(blocked, expected);
     }
+
+    /// One walk for all requested nodes says the same as planning each one alone (#549).
+    #[test]
+    fn ready_alone_matches_planning_each_node((p, stale, requested) in arb_graph()) {
+        let canvas = p.canvases().get(&C).unwrap();
+        let kinds = kinds();
+        // Live recompute asks only for nodes that need a run themselves.
+        let requested: BTreeSet<NodeId> =
+            requested.into_iter().filter(|r| stale.contains(r) || canvas.nodes().get(r).is_some_and(|n| n.kind == "test.relay" && active_outputs(n).is_none())).collect();
+        // Refusing one node must fail everything that runs it, as a refused plan would.
+        let accept = |step: &Step| step.node != id(2);
+        let ready = ready_alone(canvas, &kinds, &requested, &stale, &accept).unwrap();
+        for r in &requested {
+            let alone = match plan_run(canvas, &kinds, &RunMode::WithUpstream, &BTreeSet::from([*r]), &stale).unwrap() {
+                Planned::Ready(plan) => plan.steps.iter().all(accept),
+                Planned::Blocked(_) => false,
+            };
+            prop_assert_eq!(ready.contains(r), alone, "{:?}", r);
+        }
+        prop_assert!(ready.is_subset(&requested));
+    }
 }
 
 #[test]
