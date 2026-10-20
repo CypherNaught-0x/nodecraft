@@ -1,0 +1,37 @@
+[package]
+name = "nodecraft-eyecandy"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Opt-in offscreen renderer that paints NodeCraft showcase scenes with the real egui shell and writes the README artwork. Never built or run by CI or by the product."
+
+# Deliberately its own workspace: the root workspace members are `crates/*`, `apps/*` and `xtask`,
+# so `cargo xtask ci` (layers, wasm, clippy, tests) never sees this crate and nothing here can run
+# automatically. Run it on purpose:
+#
+#   cargo run --release --target-dir /tmp/nc-eyecandy --shots all
+#
+[workspace]
+
+[dependencies]
+# The product, as a library: the renderer draws the real shell, not a picture of it.
+nodecraft-ui-egui = { path = "../../crates/ui-egui" }
+nodecraft-engine = { path = "../../crates/engine" }
+nodecraft-graph = { path = "../../crates/graph" }
+nodecraft-nodes = { path = "../../crates/nodes" }
+nodecraft-types = { path = "../../crates/types" }
+egui = "0.36"
+egui_kittest = { version = "0.36", features = ["wgpu"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
