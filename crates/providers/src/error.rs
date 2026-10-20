@@ -38,6 +38,50 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// Every kind, for lookups.
+    pub const ALL: [Self; 14] = [
+        Self::BlockedContent,
+        Self::UnsupportedInput,
+        Self::Busy,
+        Self::RateLimited,
+        Self::Timeout,
+        Self::Budget,
+        Self::Auth,
+        Self::Network,
+        Self::Server,
+        Self::Malformed,
+        Self::NotFound,
+        Self::Cancelled,
+        Self::JobFailed,
+        Self::Expired,
+    ];
+
+    /// What the error's text starts with ([`ProviderError`]'s `Display` is `"{label}: {message}"`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BlockedContent => "blocked by the provider's content filter",
+            Self::UnsupportedInput => "input not supported",
+            Self::Busy => "provider busy",
+            Self::RateLimited => "rate limited",
+            Self::Timeout => "timed out",
+            Self::Budget => "out of budget or credit",
+            Self::Auth => "not authorised (check the API key)",
+            Self::Network => "network error",
+            Self::Server => "provider error",
+            Self::Malformed => "unexpected reply",
+            Self::NotFound => "job not found",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "took too long",
+            Self::JobFailed => "the job failed",
+        }
+    }
+
+    /// The kind of a [`ProviderError`] from its displayed text, for hosts that only kept the
+    /// text (a scheduler failure carries a string).
+    pub fn from_error_text(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| text.strip_prefix(kind.label()).is_some_and(|rest| rest.starts_with(": ")))
+    }
+
     /// Worth retrying with backoff (the scheduler does, under the same idempotency key).
     pub fn is_transient(self) -> bool {
         matches!(self, Self::Busy | Self::RateLimited | Self::Timeout | Self::Network | Self::Server)
@@ -90,22 +134,7 @@ pub fn excerpt(body: &[u8]) -> String {
 
 impl fmt::Display for ProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let what = match self.kind {
-            ErrorKind::BlockedContent => "blocked by the provider's content filter",
-            ErrorKind::UnsupportedInput => "input not supported",
-            ErrorKind::Busy => "provider busy",
-            ErrorKind::RateLimited => "rate limited",
-            ErrorKind::Timeout => "timed out",
-            ErrorKind::Budget => "out of budget or credit",
-            ErrorKind::Auth => "not authorised (check the API key)",
-            ErrorKind::Network => "network error",
-            ErrorKind::Server => "provider error",
-            ErrorKind::Malformed => "unexpected reply",
-            ErrorKind::NotFound => "job not found",
-            ErrorKind::Cancelled => "cancelled",
-            ErrorKind::Expired => "took too long",
-            ErrorKind::JobFailed => "the job failed",
-        };
+        let what = self.kind.label();
         write!(f, "{what}: {}", self.message)
     }
 }
@@ -115,6 +144,15 @@ impl std::error::Error for ProviderError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displayed_errors_name_their_kind() {
+        for kind in ErrorKind::ALL {
+            assert_eq!(ErrorKind::from_error_text(&ProviderError::new(kind, "x: y").to_string()), Some(kind), "{kind:?}");
+        }
+        assert_eq!(ErrorKind::from_error_text("cancelledness"), None);
+        assert_eq!(ErrorKind::from_error_text(""), None);
+    }
 
     #[test]
     fn status_mapping_and_transience() {

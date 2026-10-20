@@ -21,6 +21,9 @@
 //! touched only in `pump`. After every settlement the budget resources are refreshed from the
 //! usage log, so the next quote counts what was spent.
 //!
+//! Every queued job is also followed as a [`JobView`] ([`RunHost::jobs`]) for the queue panel,
+//! and can be cancelled on its own ([`RunHost::cancel`]); see [`crate::run_jobs`].
+//!
 //! Not yet: the usage log and submitted handles aren't saved, so a run cut short by quitting is
 //! not resumed and its open reservations are lost with the process; and media is read on the UI
 //! thread when a job is queued.
@@ -30,6 +33,7 @@ use crate::commands::Services;
 use crate::generate;
 use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner};
 use crate::run_cmds::{AuthorizedRun, BudgetState, PreparedRun, UsageSnapshot};
+use crate::run_jobs::{JobKey, JobState, JobView, MAX_RECENT, Reports, RunJobs};
 use nodecraft_exec::cost::Budgets;
 use nodecraft_exec::driver::{CancelToken, Handle, JobRunner, Runtime, TaskFuture, driver};
 use nodecraft_exec::run::{Progress, RunOptions, SourceRunner, StepResult, take_outputs};
@@ -81,6 +85,8 @@ struct Mailbox {
     deliveries: BTreeMap<JobId, CompletionDelivery>,
     /// Jobs the scheduler refused to queue; they never start.
     rejected: Vec<(JobId, String)>,
+    /// The provider's latest progress report for each job.
+    reports: Reports,
     /// The driver returned: every job is finished and the handle is gone.
     ended: bool,
 }
@@ -98,6 +104,8 @@ impl JobRunner for Either {
 }
 
 struct Active {
+    /// The run's number in start order, for [`JobKey`]s.
+    seq: u64,
     canvas: CanvasId,
     run: AuthorizedRun,
     runner: Arc<Either>,
@@ -110,6 +118,8 @@ struct Active {
     live: BTreeMap<JobId, NodeId>,
     /// Cancelled: nothing more is sent, and what the run unlocks fails instead.
     cancelled: bool,
+    /// What the queue panel shows of its jobs.
+    jobs: RunJobs,
 }
 
 /// See the module docs.
@@ -122,6 +132,10 @@ pub struct RunHost {
     retry: RetryPolicy,
     /// Notices raised outside `pump`, delivered by the next one.
     held: Vec<RunNotice>,
+    /// The next run's number.
+    next_run: u64,
+    /// Jobs that ended, oldest first, at most [`MAX_RECENT`].
+    recent: VecDeque<JobView>,
 }
 
 impl RunHost {
@@ -135,6 +149,8 @@ impl RunHost {
             limits: nodecraft_providers::RunLimits::default(),
             retry: RetryPolicy::default(),
             held: Vec::new(),
+            next_run: 1,
+            recent: VecDeque::new(),
         }
     }
 
@@ -172,6 +188,33 @@ impl RunHost {
         self.runs.iter().flat_map(|active| active.live.values().map(move |node| (active.canvas, *node))).collect()
     }
 
+    /// Every job: those that ended recently (oldest first), then those queued or running, in
+    /// the order their runs started.
+    pub fn jobs(&self) -> Vec<JobView> {
+        self.recent.iter().cloned().chain(self.runs.iter().flat_map(|active| active.jobs.live.values().cloned())).collect()
+    }
+
+    /// Asks one job to stop. A queued job is dropped without being sent; a running one is asked to
+    /// cancel, and may still finish (and be recorded) or be billed. What the run unlocks after it
+    /// fails. Its end arrives through [`Self::pump`].
+    pub fn cancel(&mut self, key: JobKey) -> Result<(), Error> {
+        let gone = || Error::new(ErrorKind::NotFound, "that job has already ended");
+        let active = self.runs.iter_mut().find(|active| active.seq == key.run).ok_or_else(gone)?;
+        let view = active.jobs.live.get_mut(&key.job).ok_or_else(gone)?;
+        if view.cancel_requested {
+            return Ok(());
+        }
+        let handle = active.handle.as_ref().ok_or_else(gone)?;
+        handle.cancel(CancelScope::Jobs(vec![key.job])).map_err(|_| gone())?;
+        view.cancel_requested = true;
+        Ok(())
+    }
+
+    /// Forgets the jobs that ended.
+    pub fn clear_finished(&mut self) {
+        self.recent.clear();
+    }
+
     /// Stops every run: runs not yet started are dropped, queued jobs are cancelled, running ones
     /// are asked to cancel, and nothing they unlock is sent. A job that finishes anyway is still
     /// recorded. The notices arrive through [`Self::pump`].
@@ -180,6 +223,9 @@ impl RunHost {
         self.held.extend(waiting.into_iter().map(|_| RunNotice::Refused { reason: "cancelled before it started".into() }));
         for active in &mut self.runs {
             stop(active);
+            for view in active.jobs.live.values_mut() {
+                view.cancel_requested = true;
+            }
         }
     }
 
@@ -195,10 +241,12 @@ impl RunHost {
             }
         }
         let mut settled = false;
+        let recent = &mut self.recent;
         self.runs.retain_mut(|active| {
             // Read first: everything the driver reported before it returned is then absorbed.
             let ended = lock(&active.mailbox).ended;
             settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget);
+            keep_recent(recent, active.jobs.ended.drain(..));
             if ended {
                 notices.push(RunNotice::Finished { canvas: active.canvas });
             }
@@ -219,26 +267,41 @@ impl RunHost {
         let canvas = run.canvas_id();
         let mailbox: Arc<Mutex<Mailbox>> = Arc::default();
         let sink = Arc::clone(&mailbox);
+        let reports = Arc::clone(&mailbox);
         let provider = ProviderRunner::new(
             Arc::clone(&self.runtime),
             self.limits,
             Arc::new(move |job, delivery| {
                 lock(&sink).deliveries.insert(job, delivery);
             }),
-            Arc::new(|_, _, _| {}),
+            Arc::new(move |job, _, update| lock(&reports).reports.note(job, &update)),
         )
         .with_budget(self.budget.clone());
         let actions = Arc::new(LocalActions::new(session.assets().clone()));
         let sources = SourceRunner::default().with_actions(actions.clone());
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
         let (driver, handle) = driver(Scheduler::new(Default::default()));
-        let mut active =
-            Active { canvas, run, runner, actions, mailbox, handle: Some(handle), provider_jobs: BTreeSet::new(), live: BTreeMap::new(), cancelled: false };
+        let seq = self.next_run;
+        self.next_run = self.next_run.saturating_add(1);
+        let mut active = Active {
+            seq,
+            canvas,
+            run,
+            runner,
+            actions,
+            mailbox,
+            handle: Some(handle),
+            provider_jobs: BTreeSet::new(),
+            live: BTreeMap::new(),
+            cancelled: false,
+            jobs: RunJobs::default(),
+        };
         // Queue before the driver runs, so a job that can't be prepared is never sent.
         let mut started = Vec::new();
         advance(session, &mut active, progress, &mut started, &self.runtime);
         notices.push(RunNotice::Started { canvas, nodes: active.live.values().copied().collect::<BTreeSet<_>>().into_iter().collect() });
         notices.extend(started);
+        keep_recent(&mut self.recent, active.jobs.ended.drain(..));
         let events = Arc::clone(&active.mailbox);
         let ended = Ended(Arc::clone(&active.mailbox));
         let runner: Arc<dyn JobRunner> = active.runner.clone();
@@ -259,6 +322,16 @@ struct Ended(Arc<Mutex<Mailbox>>);
 impl Drop for Ended {
     fn drop(&mut self) {
         lock(&self.0).ended = true;
+    }
+}
+
+/// Adds jobs that ended to `recent`, dropping the oldest past [`MAX_RECENT`].
+fn keep_recent(recent: &mut VecDeque<JobView>, ended: impl Iterator<Item = JobView>) {
+    for view in ended {
+        if recent.len() >= MAX_RECENT {
+            recent.pop_front();
+        }
+        recent.push_back(view);
     }
 }
 
@@ -310,6 +383,7 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
                 Ok(()) => ready.push(spec),
                 Err(reason) => {
                     active.live.remove(&spec.id);
+                    active.jobs.end(spec.id, JobState::Failed { reason: reason.clone(), cause: None });
                     pending.push_back(active.run.job_failed(spec.id, &reason));
                 }
             }
@@ -335,15 +409,36 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
 /// Registers one job with the runner that will run it.
 fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::scheduler::JobSpec) -> Result<(), String> {
     let work = active.run.work(spec.id).ok_or("the job has no work")?;
+    let (run, canvas) = (active.seq, active.canvas);
+    let view = |node: NodeId| JobView {
+        key: JobKey { run, job: spec.id },
+        canvas,
+        node,
+        provider: None,
+        model: None,
+        estimate: None,
+        state: JobState::Queued,
+        sent: false,
+        cancel_requested: false,
+    };
     match work {
         JobSpec::Generate { node, .. } => {
-            active.live.insert(spec.id, *node);
+            let node = *node;
+            active.live.insert(spec.id, node);
+            active.jobs.live.insert(spec.id, view(node));
             let queued = active.run.queued_job_with_media(spec.id, &spec.idempotency_key, session.assets()).map_err(|e| e.message)?;
+            if let Some(view) = active.jobs.live.get_mut(&spec.id) {
+                view.provider = Some(queued.provider.target().adapter().to_owned());
+                view.model = Some(queued.job.model.clone());
+                view.estimate = queued.charged_price().and_then(|price| price.estimate);
+            }
             active.runner.provider.register(spec.id, queued);
             active.provider_jobs.insert(spec.id);
         }
         JobSpec::Source { node, .. } | JobSpec::Action { node, .. } => {
-            active.live.insert(spec.id, *node);
+            let node = *node;
+            active.live.insert(spec.id, node);
+            active.jobs.live.insert(spec.id, view(node));
             active.runner.sources.register(spec.id, work.clone());
             lock(&active.runner.local).insert(spec.id);
         }
@@ -353,12 +448,16 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
 
 /// Absorbs one run's messages; returns whether a paid job settled.
 fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotice>, runtime: &Arc<dyn Runtime>, budget: &JobBudget) -> bool {
-    let (events, rejected) = {
+    let (events, rejected, reports) = {
         let mut mailbox = lock(&active.mailbox);
-        (std::mem::take(&mut mailbox.events), std::mem::take(&mut mailbox.rejected))
+        (std::mem::take(&mut mailbox.events), std::mem::take(&mut mailbox.rejected), std::mem::take(&mut mailbox.reports))
     };
+    // Before the events, so a job cancelled this frame knows whether the provider had it; again
+    // after, so a job that started this frame shows its progress.
+    active.jobs.absorb_reports(&reports);
     let mut settled = false;
     for (job, reason) in rejected {
+        active.jobs.end(job, JobState::Failed { reason: reason.clone(), cause: None });
         settled |= finish(active, job);
         let progress = active.run.job_failed(job, &reason);
         advance(session, active, progress, notices, runtime);
@@ -368,6 +467,7 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
             Event::Done { job } => {
                 let outputs = outputs(session, active, job);
                 settled |= finish(active, job);
+                active.jobs.end(job, ended(&outputs));
                 match outputs {
                     Ok(outputs) => active.run.job_done(session.kinds(), job, outputs),
                     Err(reason) => active.run.job_failed(job, &reason),
@@ -379,6 +479,7 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                     let node = active.live.get(&job).copied();
                     let outputs = outputs(session, active, job);
                     settled |= finish(active, job);
+                    active.jobs.end(job, ended(&outputs));
                     if let Err(reason) = charge {
                         notices.extend(node.map(|node| RunNotice::Unaccounted { canvas: active.canvas, node, reason }));
                         stop(active);
@@ -390,26 +491,47 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                 }
                 None => {
                     settled |= finish(active, job);
+                    active.jobs.end(job, JobState::Failed { reason: error.clone(), cause: None });
                     active.run.job_failed(job, &error)
                 }
             },
             Event::Cancelled { job } => {
                 settled |= finish(active, job);
+                active.jobs.end(job, JobState::Cancelled);
                 active.run.job_failed(job, "cancelled")
             }
             Event::Skipped { job, .. } => {
                 settled |= finish(active, job);
-                active.run.job_failed(job, "skipped because an earlier job failed")
+                let reason = "skipped because an earlier job failed";
+                active.jobs.end(job, JobState::Failed { reason: reason.into(), cause: None });
+                active.run.job_failed(job, reason)
             }
-            Event::Queued { .. } | Event::Started { .. } | Event::Retrying { .. } => continue,
+            Event::Started { job, attempt } => {
+                active.jobs.started(job, attempt);
+                continue;
+            }
+            Event::Retrying { job, next_attempt, error, .. } => {
+                active.jobs.retrying(job, next_attempt, &error);
+                continue;
+            }
+            Event::Queued { .. } => continue,
         };
         advance(session, active, progress, notices, runtime);
     }
+    active.jobs.absorb_reports(&reports);
     if active.run.is_finished() {
         // Dropping the last handle lets the driver drain and return.
         active.handle = None;
     }
     settled
+}
+
+/// How a finished job ended for the panel: done, or failed when its outputs couldn't be kept.
+fn ended<T>(outputs: &Result<T, String>) -> JobState {
+    match outputs {
+        Ok(_) => JobState::Done,
+        Err(reason) => JobState::Failed { reason: reason.clone(), cause: None },
+    }
 }
 
 /// For a model job whose output arrived but whose charge failed to write: retries the write once
