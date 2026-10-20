@@ -247,7 +247,7 @@ pub fn plan_expanded(
     options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
     let canvas: &Canvas = &expanded.canvas;
-    let graph = Graph::new(canvas, kinds, targets, &expanded.collects, options)?;
+    let graph = Graph::new(canvas, kinds, targets, &expanded.collects, &expanded.inner, options)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id) || expanded.inner.contains_key(id)) {
@@ -390,6 +390,8 @@ struct Graph<'a> {
     pairing: BTreeMap<NodeId, batch::Pairing>,
     /// Where each inlined technique node's outputs come from (#94).
     collects: &'a BTreeMap<NodeId, Vec<Collect>>,
+    /// Each inlined node's technique node on the real canvas.
+    inner: &'a BTreeMap<NodeId, NodeId>,
 }
 
 impl<'a> Graph<'a> {
@@ -398,6 +400,7 @@ impl<'a> Graph<'a> {
         kinds: &'a Registry,
         targets: &'a nodecraft_types::TargetSelection,
         collects: &'a BTreeMap<NodeId, Vec<Collect>>,
+        inner: &'a BTreeMap<NodeId, NodeId>,
         options: &'a dyn nodecraft_types::OptionLookup,
     ) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
@@ -407,7 +410,7 @@ impl<'a> Graph<'a> {
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
         let pairing = canvas.nodes().values().filter(|n| n.kind == batch::ID).filter_map(|n| Some((n.id, batch::pairing(n).ok()?))).collect();
-        Ok(Self { canvas, kinds, targets, options, into, routing, pairing, collects })
+        Ok(Self { canvas, kinds, targets, options, into, routing, pairing, collects, inner })
     }
 
     /// What `id` is made from: its inputs' nodes and, for a technique node, the inlined nodes
@@ -684,9 +687,21 @@ impl<'a> Graph<'a> {
         // A technique node takes each output from its inlined node; one fanned by a batch fans
         // the technique node too, one run of its version per item (#533).
         if let Some(collects) = self.collects.get(&id) {
+            // Its own inputs only feed the inlined nodes: a batch on them fans the technique
+            // node through what it collects, or not at all when the version collects the items.
+            // Those inputs, holding only stand-ins for the items, are left out of its step.
+            let fed: BTreeSet<usize> = fanned.drain(..).map(|fan| fan.input).collect();
+            inputs = std::mem::take(&mut inputs).into_iter().enumerate().filter(|(index, _)| !fed.contains(index)).map(|(_, input)| input).collect();
             for collect in collects {
                 let (collected, port_type) =
                     self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| vec![blocker(None, Some(upstream), reason)])?;
+                // A batch inside the version stays unsupported (#93); only one on the canvas
+                // fans a technique node.
+                if let Collected::Fanned(tags, _) = &collected
+                    && tags.iter().flatten().any(|key| self.inner.contains_key(&key.batch))
+                {
+                    return Err(vec![blocker(None, Some(collect.node), Reason::Invalid("a batch inside its technique can't fan it out yet".into()))]);
+                }
                 let from = match collected {
                     Collected::Plain(from) => from,
                     Collected::Fanned(tags, source) => {

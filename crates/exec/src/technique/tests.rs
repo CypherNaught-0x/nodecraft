@@ -370,3 +370,116 @@ fn a_cancelled_inner_job_reports_its_reason_as_it_is_under_its_owner() {
     let progress = run.job_cancelled(&kinds, job, "cancelled");
     assert_eq!(progress.failed, vec![StepFailure { node: T, reason: "cancelled".into() }], "the host still sees a cancellation");
 }
+
+const BATCH: NodeId = NodeId::from_bytes([14; 16]);
+
+/// A batch on the canvas holding `items`, one per line.
+fn batch_node(kinds: &Registry, id: NodeId, items: &str) -> Node {
+    let mut batch = node(kinds, id, nodecraft_nodes::batch::ID, "");
+    batch.params.insert("text".into(), Value::Text(items.into()));
+    batch
+}
+
+#[test]
+fn a_batch_into_a_technique_node_runs_its_version_once_per_item() {
+    let (mut project, kinds) = project(None, "!");
+    let changes = vec![
+        Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, "fox\nowl") },
+        Change::Connect { canvas: C, edge: edge(41, (BATCH, "item"), (T, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let step = plan.steps.last().unwrap();
+    assert_eq!(step.node, T);
+    assert_eq!(step.fanout.as_ref().map(|fanout| fanout.items.len()), Some(2), "{step:?}");
+    let (finished, failed) = drive(&project, &kinds, &plan, None);
+    assert!(failed.is_empty(), "{failed:?}");
+    // One value per item, and a list output gives each item's list.
+    assert_eq!(outputs(&finished), vec![(T, vec!["FOX!+OWL!".to_owned(), "f+o+x+o+w+l".to_owned()])]);
+    let items = &finished.first().unwrap().generation.items;
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|tag| tag.len() == 1 && tag.first().is_some_and(|key| key.batch == BATCH)), "{items:?}");
+}
+
+#[test]
+fn a_batch_its_version_collects_runs_the_technique_once() {
+    let (mut project, mut kinds) = project(None, "");
+    let items = NodeDescriptor {
+        id: "test.items".into(),
+        label: "Items".into(),
+        category: Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: LIST }],
+        outputs: vec![Port { name: "out".into(), port_type: LIST }],
+        params: ParamSchema { params: Vec::new() },
+        quick_add: None,
+    };
+    kinds.register(Box::new(Items(items))).unwrap();
+    // "Gather": a Words input into one Items node, which takes every item in one run.
+    let (brief, gather) = (NodeId::from_bytes([70; 16]), NodeId::from_bytes([71; 16]));
+    let technique = Technique {
+        id: TechniqueId::from_bytes([10; 16]),
+        version: 1,
+        name: "Gather".into(),
+        description: String::new(),
+        category: String::new(),
+        tags: Vec::new(),
+        inputs: vec![port("Words", brief, "out", TEXT)],
+        outputs: vec![port("All", gather, "out", LIST)],
+        params: Vec::new(),
+        source: None,
+        retired: false,
+    };
+    let nodes = vec![node(&kinds, brief, "source.text", "cat"), node(&kinds, gather, "test.items", "")];
+    let version = Canvas::technique(CanvasId::from_bytes([6; 16]), "Gather v1", technique, nodes, vec![edge(72, (brief, "out"), (gather, "in"), 0)]).unwrap();
+    let interface = technique::interface_of(&version, &kinds).unwrap();
+    let placed_id = NodeId::from_bytes([15; 16]);
+    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(placed_id, interface.config().unwrap(), &Default::default()).unwrap();
+    let changes = vec![
+        Change::AddCanvas { canvas: version },
+        Change::AddNode { canvas: C, node: placed },
+        Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, "fox\nowl\nhare") },
+        Change::Connect { canvas: C, edge: edge(73, (BATCH, "item"), (placed_id, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let plan = ready(planned(&project, &kinds, &[placed_id]).unwrap());
+    assert_eq!(plan.steps.len(), 2, "{plan:?}");
+    assert!(plan.steps.iter().all(|step| step.fanout.is_none()), "nothing fans: the version takes the items in one run: {plan:?}");
+    let (finished, failed) = drive(&project, &kinds, &plan, None);
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(finished.first().is_some_and(|result| result.node == placed_id && result.generation.items.is_empty()), "{finished:?}");
+}
+
+#[test]
+fn a_batch_inside_a_version_still_blocks_its_technique_node() {
+    let (mut project, kinds) = project(Some("fox"), "");
+    // "Split": a Words input through a batch of its own into a Shout.
+    let (brief, inner_batch, shout) = (NodeId::from_bytes([80; 16]), NodeId::from_bytes([81; 16]), NodeId::from_bytes([82; 16]));
+    let technique = Technique {
+        id: TechniqueId::from_bytes([11; 16]),
+        version: 1,
+        name: "Split".into(),
+        description: String::new(),
+        category: String::new(),
+        tags: Vec::new(),
+        inputs: vec![port("Words", brief, "out", TEXT)],
+        outputs: vec![port("Shouted", shout, "out", TEXT)],
+        params: Vec::new(),
+        source: None,
+        retired: false,
+    };
+    let nodes = vec![node(&kinds, brief, "source.text", "cat"), batch_node(&kinds, inner_batch, "a\nb"), node(&kinds, shout, "test.shout", "")];
+    let edges = vec![edge(83, (brief, "out"), (inner_batch, "in"), 0), edge(84, (inner_batch, "item"), (shout, "in"), 0)];
+    let version = Canvas::technique(CanvasId::from_bytes([7; 16]), "Split v1", technique, nodes, edges).unwrap();
+    let interface = technique::interface_of(&version, &kinds).unwrap();
+    let placed_id = NodeId::from_bytes([16; 16]);
+    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(placed_id, interface.config().unwrap(), &Default::default()).unwrap();
+    let changes = vec![
+        Change::AddCanvas { canvas: version },
+        Change::AddNode { canvas: C, node: placed },
+        Change::Connect { canvas: C, edge: edge(85, (SOURCE, "out"), (placed_id, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let Planned::Blocked(blockers) = planned(&project, &kinds, &[placed_id]).unwrap() else { panic!("a batch inside a version can't fan it out (#93)") };
+    assert_eq!(blockers.iter().map(|b| b.node).collect::<Vec<_>>(), vec![placed_id]);
+    assert!(blockers.first().unwrap().message(project.canvases().get(&C).unwrap()).contains("batch inside"), "{blockers:?}");
+}
