@@ -459,16 +459,33 @@ fn the_queue_lists_a_running_job_and_cancelling_it_leaves_its_cost_unresolved() 
     h.get_by_label("Queue (1)");
     open_queue(&mut h);
     h.get_by_label("mock · mock-image");
-    h.get_by_label("0.04 USD");
+    h.get_by_label("0.04 USD est.");
     press(&mut h, Role::Button, "Cancel");
     frames_until(&mut h, idle);
     h.get_by_label("Cancelled after it was sent (cost unresolved)");
-    h.get_by_label("0.04 USD, unresolved");
+    h.get_by_label("0.04 USD est., unresolved");
     assert!(!mock.cancelled().is_empty(), "the provider was asked to cancel");
     assert!(node(h.state()).history.is_empty());
+    // A cancel is not a failure: the card says nothing went wrong, and no failure notice shows.
+    assert!(h.query_by_label_contains("Run failed").is_none());
+    assert!(h.state().runs.as_ref().is_some_and(|runs| runs.failure(C, N).is_none()));
+    assert!(!h.state().notice.as_deref().is_some_and(|notice| notice.contains("failed")), "{:?}", h.state().notice);
     h.get_by_role_and_label(Role::Button, "Queue");
     press(&mut h, Role::Button, "Clear finished");
     h.get_by_label_contains("Nothing has run yet");
+}
+
+#[test]
+fn a_finished_job_shows_done_next_to_its_recorded_image() {
+    let mut h = scene(making(image(MockModel::new(MockOutput::Image))));
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
+    open_queue(&mut h);
+    h.get_by_label("Done");
+    h.get_by_label("0.04 USD est.");
+    assert!(node(h.state()).active.is_some(), "the result is on its card");
 }
 
 #[test]

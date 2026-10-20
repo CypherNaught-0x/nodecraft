@@ -15,6 +15,23 @@ provider error's kind (`ErrorKind::label`, which is also how the error displays)
 the panel can say **Run failed: API key** and hint at the fix. Retry in the panel quotes the
 card again, exactly like Generate, so a retry never spends without showing its price.
 
+A budget refusal happens before any provider call, so a job refused on its first attempt is
+**Not charged** too. Estimates are labelled **est.** everywhere in the panel until the panel can
+show settled charges.
+
+**A cancel is a request, not a guarantee.** The run asks the provider to stop and waits briefly
+for an answer. Only a confirmed cancel ends the job as **Cancelled** (and its card as cancelled,
+not failed). If the provider refuses or does not answer, the job keeps being polled to its end
+and shows **Cancel refused; still running (may be billed)**: the provider may still bill it, so
+its result is kept and recorded rather than thrown away, and the job finishes as **Finished; the
+provider refused to cancel**. A job whose result was already arriving when the cancel came in
+keeps that result (**Finished before it could be cancelled**).
+
+While running, a job distinguishes **Waiting at the provider** (queued there, with its position
+when the provider gives one), **Generating** with its progress, and **Connection lost,
+retrying** while polls fail transiently; a progress message is replaced, not kept, when the next
+report has none.
+
 The **Queue** toggle sits with **API keys** in the top-right row, left of the closed tag filter
 and search, which own the corner; before this change the keys row overlapped them and a click on
 it also opened search. The panel opens under search, since notices own the bottom-left corner and

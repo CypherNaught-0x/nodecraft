@@ -5,8 +5,10 @@
 //! how it ended. Cancelling is a request: the job's end says what happened.
 //!
 //! - **Never sent:** cancelled before it started. Nothing was charged.
-//! - **Sent:** cancelled after it started, when a request may already be with the provider. It may still be billed, so the cost stays
-//!   unresolved. It is never shown as refunded or free.
+//! - **Sent:** cancelled after it started, when a request may already be with the provider. It
+//!   may still be billed, so the cost stays unresolved. It is never shown as refunded or free.
+//! - **Refused:** the provider refused to stop it, or didn't confirm. It may still run and be
+//!   billed, so it is followed to its end and its result kept ([`JobView::cancel_refused`]).
 //! - **Too late:** it finished, or failed, before the cancel took effect. The result is kept.
 use nodecraft_exec::scheduler::JobId;
 use nodecraft_providers::{ErrorKind as Cause, JobProgress, RunUpdate};
@@ -30,9 +32,9 @@ pub struct JobKey {
 pub enum JobState {
     /// Waiting in NodeCraft's queue for a free slot.
     Queued,
-    /// Working. `position` is the provider's queue position while it waits there; `fraction` is
-    /// 0–1 when the provider says.
-    Running { attempt: u32, position: Option<u32>, fraction: Option<f32>, message: Option<String> },
+    /// Working. `waiting` while the provider has it queued, at `position` when it says;
+    /// `fraction` is 0–1 when the provider says; `reconnecting` while a failed poll is retried.
+    Running { attempt: u32, waiting: bool, position: Option<u32>, fraction: Option<f32>, message: Option<String>, reconnecting: bool },
     /// Failed for a passing reason and waiting to try again.
     Retrying { next_attempt: u32, reason: String },
     /// Finished; its result is recorded on its card.
@@ -67,6 +69,11 @@ pub struct JobView {
     pub sent: bool,
     /// A cancel was asked for and has not yet been answered by the job's end.
     pub cancel_requested: bool,
+    /// The provider refused to stop the job, or didn't confirm it did: it may still run and be
+    /// billed, so it is followed to its end.
+    pub cancel_refused: bool,
+    /// The provider itself reported the job (submitted, queued or running), so it was sent.
+    pub(crate) reported_sent: bool,
 }
 
 impl JobView {
@@ -75,12 +82,17 @@ impl JobView {
         match &self.state {
             JobState::Queued if self.cancel_requested => "Cancelling…".into(),
             JobState::Queued => "Queued".into(),
+            JobState::Running { .. } if self.cancel_refused => "Cancel refused; still running (may be billed)".into(),
             JobState::Running { .. } if self.cancel_requested => "Cancelling…".into(),
-            JobState::Running { position: Some(position), fraction: None, .. } => format!("Waiting at the provider (#{position})"),
+            JobState::Running { reconnecting: true, .. } => "Connection lost, retrying".into(),
+            JobState::Running { waiting: true, position: Some(position), .. } => format!("Waiting at the provider (#{position})"),
+            JobState::Running { waiting: true, .. } => "Waiting at the provider".into(),
             JobState::Running { fraction: Some(fraction), .. } => format!("Generating {}%", percent(*fraction)),
             JobState::Running { message: Some(message), .. } => message.clone(),
             JobState::Running { .. } => "Generating".into(),
+            JobState::Retrying { .. } if self.cancel_requested => "Cancelling…".into(),
             JobState::Retrying { next_attempt, .. } => format!("Retrying (attempt {next_attempt})"),
+            JobState::Done if self.cancel_refused => "Finished; the provider refused to cancel".into(),
             JobState::Done if self.cancel_requested => "Finished before it could be cancelled".into(),
             JobState::Done => "Done".into(),
             JobState::Failed { .. } if self.cancel_requested => "Failed before it could be cancelled".into(),
@@ -142,17 +154,24 @@ pub fn cause_of(reason: &str) -> Option<Cause> {
     Cause::from_error_text(reason)
 }
 
-/// The latest provider report for each job, written by the update sink off the UI thread. A job
-/// keeps one entry, so repeated reports replace each other.
+/// The provider's reports for each job since the last pump, written by the update sink off the
+/// UI thread. A job keeps one entry, so repeated reports replace each other.
 #[derive(Default)]
 pub(crate) struct Reports(BTreeMap<JobId, Report>);
 
 #[derive(Default)]
 pub(crate) struct Report {
     sent: bool,
-    position: Option<u32>,
-    fraction: Option<f32>,
-    message: Option<String>,
+    /// The latest progress, which replaces what the job showed.
+    latest: Option<Latest>,
+    /// A poll failed after the latest progress and is being retried.
+    reconnecting: bool,
+    cancel_refused: bool,
+}
+
+enum Latest {
+    Waiting(Option<u32>),
+    Running { fraction: Option<f32>, message: Option<String> },
 }
 
 impl Reports {
@@ -162,16 +181,21 @@ impl Reports {
             RunUpdate::Submitted(_) => report.sent = true,
             RunUpdate::Progress(JobProgress::Queued { position }) => {
                 report.sent = true;
-                report.position = *position;
+                report.latest = Some(Latest::Waiting(*position));
+                report.reconnecting = false;
             }
             RunUpdate::Progress(JobProgress::Running { fraction, message, .. }) => {
                 report.sent = true;
-                report.position = None;
-                report.fraction = fraction.filter(|f| f.is_finite()).map(|f| f.clamp(0.0, 1.0));
-                report.message = message.as_deref().map(bounded);
+                let fraction = fraction.filter(|f| f.is_finite()).map(|f| f.clamp(0.0, 1.0));
+                report.latest = Some(Latest::Running { fraction, message: message.as_deref().map(bounded) });
+                report.reconnecting = false;
             }
             RunUpdate::Progress(JobProgress::Done(_) | JobProgress::Failed(_)) => report.sent = true,
-            RunUpdate::PollRetry(_) => report.message = Some("Connection lost, retrying".into()),
+            RunUpdate::PollRetry(_) => report.reconnecting = true,
+            RunUpdate::CancelRefused(_) => {
+                report.sent = true;
+                report.cancel_refused = true;
+            }
         }
     }
 }
@@ -190,21 +214,33 @@ impl RunJobs {
         for (job, report) in &reports.0 {
             let Some(view) = self.live.get_mut(job) else { continue };
             view.sent |= report.sent;
-            if let JobState::Running { position, fraction, message, .. } = &mut view.state {
-                *position = report.position;
-                if report.fraction.is_some() {
-                    *fraction = report.fraction;
+            view.reported_sent |= report.sent;
+            view.cancel_refused |= report.cancel_refused;
+            let JobState::Running { waiting, position, fraction, message, reconnecting, .. } = &mut view.state else { continue };
+            match &report.latest {
+                Some(Latest::Waiting(at)) => {
+                    *waiting = true;
+                    *position = *at;
+                    *message = None;
                 }
-                if report.message.is_some() {
-                    message.clone_from(&report.message);
+                Some(Latest::Running { fraction: reported, message: said }) => {
+                    *waiting = false;
+                    *position = None;
+                    // A provider that sometimes leaves the fraction out keeps the last one.
+                    if reported.is_some() {
+                        *fraction = *reported;
+                    }
+                    message.clone_from(said);
                 }
+                None => {}
             }
+            *reconnecting = report.reconnecting || (*reconnecting && report.latest.is_none());
         }
     }
 
     pub(crate) fn started(&mut self, job: JobId, attempt: u32) {
         if let Some(view) = self.live.get_mut(&job) {
-            view.state = JobState::Running { attempt, position: None, fraction: None, message: None };
+            view.state = JobState::Running { attempt, waiting: false, position: None, fraction: None, message: None, reconnecting: false };
             // From here a request may be in flight, whether or not the provider says so.
             view.sent |= view.provider.is_some();
         }
@@ -219,8 +255,19 @@ impl RunJobs {
     /// Ends a job, moving it to `ended`. A job that already ended is left as it was.
     pub(crate) fn end(&mut self, job: JobId, state: JobState) {
         let Some(mut view) = self.live.remove(&job) else { return };
+        let first_attempt = match &view.state {
+            JobState::Queued => true,
+            JobState::Running { attempt, .. } => *attempt <= 1,
+            _ => false,
+        };
         view.state = match state {
-            JobState::Failed { reason, cause } => JobState::Failed { cause: cause.or_else(|| cause_of(&reason)), reason: bounded(&reason) },
+            JobState::Failed { reason, cause } => {
+                // The runner refuses before it sends anything; an earlier attempt may have.
+                if crate::jobs::is_budget_refusal(&reason) && first_attempt && !view.reported_sent {
+                    view.sent = false;
+                }
+                JobState::Failed { cause: cause.or_else(|| cause_of(&reason)), reason: bounded(&reason) }
+            }
             other => other,
         };
         self.ended.push(view);
@@ -251,6 +298,8 @@ mod tests {
             state,
             sent: false,
             cancel_requested: false,
+            cancel_refused: false,
+            reported_sent: false,
         }
     }
 
@@ -282,7 +331,7 @@ mod tests {
         reports.note(JobId(2), &RunUpdate::Progress(JobProgress::Running { fraction: Some(7.0), message: None, partial: None }));
         let mut jobs = RunJobs::default();
         for id in [1, 2] {
-            let mut v = view(JobState::Running { attempt: 1, position: None, fraction: None, message: None });
+            let mut v = view(JobState::Running { attempt: 1, waiting: false, position: None, fraction: None, message: None, reconnecting: false });
             v.key.job = JobId(id);
             jobs.live.insert(JobId(id), v);
         }

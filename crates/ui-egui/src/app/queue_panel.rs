@@ -33,6 +33,7 @@ impl NodeCraftApp {
             .id(egui::Id::new("nodecraft.queue"))
             .open(&mut open)
             // Under its toggle and search; notices own the bottom-left corner, the map the bottom-right.
+            .constrain_to(self.viewport)
             .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
             .collapsible(false)
             .resizable(false)
@@ -109,17 +110,18 @@ impl NodeCraftApp {
     }
 }
 
-/// The price column. A job that may have reached the provider is never shown as refunded or free.
+/// The price column: the run's estimate, since the settled charge isn't shown here yet. A job
+/// that may have reached the provider is never shown as refunded or free.
 fn price(view: &JobView) -> String {
     if view.provider.is_none() {
         return "Free".into();
     }
     let estimate = view.estimate.map(nodecraft_exec::cost::format_money);
     match (&view.state, estimate) {
-        (JobState::Cancelled, _) if !view.sent => "Not charged".into(),
-        (JobState::Cancelled | JobState::Failed { .. }, Some(estimate)) if view.sent => format!("{estimate}, unresolved"),
-        (JobState::Cancelled | JobState::Failed { .. }, None) if view.sent => "Unresolved".into(),
-        (_, Some(estimate)) => estimate,
+        (JobState::Cancelled | JobState::Failed { .. }, _) if !view.sent => "Not charged".into(),
+        (JobState::Cancelled | JobState::Failed { .. }, Some(estimate)) => format!("{estimate} est., unresolved"),
+        (JobState::Cancelled | JobState::Failed { .. }, None) => "Unresolved".into(),
+        (_, Some(estimate)) => format!("{estimate} est."),
         (_, None) => "Unpriced".into(),
     }
 }

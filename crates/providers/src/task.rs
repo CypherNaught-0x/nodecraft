@@ -39,6 +39,9 @@ pub enum RunUpdate {
     Progress(JobProgress),
     /// A poll failed and will be retried (shown as "connection lost, retrying").
     PollRetry(ProviderError),
+    /// The job was cancelled, but the provider refused to stop it or didn't confirm it did (the
+    /// reason). It may still run and be billed, so it is followed to the end like any other job.
+    CancelRefused(String),
 }
 
 /// A failed run. When `handle` is set the job reached the provider (and may be billed, or still
@@ -84,7 +87,8 @@ impl std::error::Error for RunFailure {}
 
 /// Submits `job` and, for queue-style providers, polls until it finishes, fails, is cancelled or
 /// runs past the deadline. Cancellation interrupts waiting and polling alike; the provider is then
-/// asked to stop (time-limited), and the error says if it couldn't be.
+/// asked to stop (time-limited). If it refuses or doesn't confirm, the job may still run and be
+/// billed, so it is reported ([`RunUpdate::CancelRefused`]) and polled to its end as usual.
 pub async fn run_to_completion(
     provider: &dyn Provider,
     job: &ProviderJob,
@@ -122,6 +126,7 @@ pub async fn resume(
     let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()), finished: false, uncertain: false };
     let started = clock.now_ms();
     let mut poll_errors: u32 = 0;
+    let mut refused = false;
     let max_interval = limits.max_poll_interval_ms.max(1);
     let mut interval = provider.poll_interval_ms(&JobProgress::Queued { position: None }).clamp(1, max_interval);
     loop {
@@ -132,17 +137,21 @@ pub async fn resume(
         }
         // Wait for the next poll, then poll; cancellation interrupts either.
         let wait = interval.min(limits.deadline_ms.saturating_sub(elapsed)).max(1);
-        let polled = race(
-            async {
-                clock.sleep(wait).await;
-                provider.poll(handle).await
-            },
-            cancel,
-        )
-        .await;
+        let next = async {
+            clock.sleep(wait).await;
+            provider.poll(handle).await
+        };
+        // Once the provider refused to stop it, the cancel has done all it can.
+        let polled = if refused { Some(next.await) } else { race(next, cancel).await };
         let Some(polled) = polled else {
             let note = stop(provider, handle, clock).await;
-            return Err(fail(ProviderError::new(ErrorKind::Cancelled, format!("cancelled{note}"))));
+            if note.is_empty() {
+                return Err(fail(ProviderError::new(ErrorKind::Cancelled, "cancelled")));
+            }
+            // It may still run and be billed: keep polling, so a result it is billed for arrives.
+            refused = true;
+            on_update(RunUpdate::CancelRefused(note.trim_start_matches("; ").to_owned()));
+            continue;
         };
         match polled {
             Ok(JobProgress::Done(done)) => return Ok(done),
@@ -181,7 +190,8 @@ async fn race<T>(work: impl std::future::Future<Output = T>, cancel: &dyn Cancel
 async fn stop(provider: &dyn Provider, handle: &JobHandle, clock: &dyn Clock) -> String {
     let mut cancel = provider.cancel(handle).fuse();
     let mut timeout: futures::future::Fuse<BoxFuture<'static, ()>> = clock.sleep(CANCEL_TIMEOUT_MS).fuse();
-    let result = futures::select! {
+    // Biased: an answer that is ready counts, even if the timeout is ready too.
+    let result = futures::select_biased! {
         r = cancel => Some(r),
         () = timeout => None,
     };
@@ -507,9 +517,9 @@ mod tests {
         assert!(!f.uncertain, "it never reached the provider");
 
         // Cancelled while polling: resume() races the poll against the signal.
-        let p = Scripted { cancel_result: Err(ProviderError::new(ErrorKind::Network, "down")), ..Scripted::new(vec![]) };
         let flag = Flag::default();
         let handle = JobHandle { remote_id: "x".into(), data: serde_json::Value::Null };
+        let p = Scripted::new(vec![]);
         let mut polls = 0;
         let f = block_on(resume(&p, &handle, &flag, &p.clock, RunLimits::default(), |_| {
             polls += 1;
@@ -520,7 +530,27 @@ mod tests {
         .unwrap_err();
         assert_eq!(f.error.kind, ErrorKind::Cancelled);
         assert!(p.cancelled.load(Ordering::SeqCst), "the provider is asked to cancel");
-        assert!(f.error.message.contains("may still run and be billed"), "{}", f.error);
+
+        // A provider that refuses the cancel keeps the job: it is reported and followed to the end,
+        // so the result it bills for still arrives.
+        let running = || Ok(JobProgress::Running { fraction: None, message: None, partial: None });
+        let p = Scripted {
+            cancel_result: Err(ProviderError::new(ErrorKind::Network, "down")),
+            ..Scripted::new(vec![running(), running(), running(), Ok(JobProgress::Done(Completed::new(vec![Output::Text("kept".into())])))])
+        };
+        let flag = Flag::default();
+        let mut updates = Vec::new();
+        let finished = block_on(resume(&p, &handle, &flag, &p.clock, RunLimits::default(), |update| {
+            if matches!(update, RunUpdate::Progress(_)) && updates.len() == 1 {
+                flag.0.store(true, Ordering::SeqCst);
+            }
+            updates.push(update);
+        }));
+        assert!(finished.is_ok(), "{finished:?}");
+        assert!(p.cancelled.load(Ordering::SeqCst), "the provider is asked to cancel");
+        let refused: Vec<&String> = updates.iter().filter_map(|u| if let RunUpdate::CancelRefused(why) = u { Some(why) } else { None }).collect();
+        assert_eq!(refused.len(), 1, "reported once: {updates:?}");
+        assert!(refused[0].contains("may still run and be billed"), "{}", refused[0]);
     }
 
     #[test]

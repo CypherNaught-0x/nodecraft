@@ -44,6 +44,9 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+/// The reason a cancelled step's job fails with; reported as [`RunNotice::Cancelled`].
+const CANCELLED: &str = "cancelled";
+
 /// Most runs the host holds at once, waiting or running; `run.start` beyond it is refused.
 pub const MAX_RUNS: usize = 8;
 
@@ -68,6 +71,8 @@ pub enum RunNotice {
     Recorded { canvas: CanvasId, node: NodeId },
     /// A step produced nothing, and why.
     Failed { canvas: CanvasId, node: NodeId, reason: String },
+    /// A step was cancelled before it produced anything.
+    Cancelled { canvas: CanvasId, node: NodeId },
     /// A run could not start (authorization or queueing refused it); nothing was sent.
     Refused { reason: String },
     /// A paid result was kept but its charge couldn't be written to the usage log, so budgets
@@ -361,14 +366,18 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
     let mut pending = VecDeque::from([progress]);
     while let Some(progress) = pending.pop_front() {
         for failure in progress.failed {
-            notices.push(RunNotice::Failed { canvas, node: failure.node, reason: failure.reason });
+            notices.push(if failure.reason == CANCELLED {
+                RunNotice::Cancelled { canvas, node: failure.node }
+            } else {
+                RunNotice::Failed { canvas, node: failure.node, reason: failure.reason }
+            });
         }
         for result in progress.finished {
             notices.push(record(session, canvas, result));
         }
         if active.cancelled {
             for spec in progress.jobs {
-                pending.push_back(active.run.job_failed(spec.id, "cancelled"));
+                pending.push_back(active.run.job_failed(spec.id, CANCELLED));
             }
             continue;
         }
@@ -420,6 +429,8 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
         state: JobState::Queued,
         sent: false,
         cancel_requested: false,
+        cancel_refused: false,
+        reported_sent: false,
     };
     match work {
         JobSpec::Generate { node, .. } => {
@@ -498,13 +509,19 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
             Event::Cancelled { job } => {
                 settled |= finish(active, job);
                 active.jobs.end(job, JobState::Cancelled);
-                active.run.job_failed(job, "cancelled")
+                active.run.job_failed(job, CANCELLED)
             }
             Event::Skipped { job, .. } => {
                 settled |= finish(active, job);
-                let reason = "skipped because an earlier job failed";
-                active.jobs.end(job, JobState::Failed { reason: reason.into(), cause: None });
-                active.run.job_failed(job, reason)
+                if active.cancelled {
+                    // Stopped by the run's own cancel, not by a failure.
+                    active.jobs.end(job, JobState::Cancelled);
+                    active.run.job_failed(job, CANCELLED)
+                } else {
+                    let reason = "skipped because an earlier job failed";
+                    active.jobs.end(job, JobState::Failed { reason: reason.into(), cause: None });
+                    active.run.job_failed(job, reason)
+                }
             }
             Event::Started { job, attempt } => {
                 active.jobs.started(job, attempt);

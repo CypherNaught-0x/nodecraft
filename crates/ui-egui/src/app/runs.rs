@@ -328,7 +328,7 @@ impl Runs {
                         self.failed.remove(&(canvas, node));
                     }
                 }
-                RunNotice::Recorded { canvas, node } => {
+                RunNotice::Recorded { canvas, node } | RunNotice::Cancelled { canvas, node } => {
                     self.failed.remove(&(canvas, node));
                 }
                 RunNotice::Failed { canvas, node, reason } | RunNotice::Unaccounted { canvas, node, reason } => {
@@ -371,8 +371,9 @@ impl Runs {
     pub(super) fn card_status(&self, canvas: CanvasId, node: NodeId) -> Option<String> {
         let view = self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node && !view.state.is_final())?;
         Some(match &view.state {
+            _ if view.cancel_refused => "Cancel refused".into(),
             _ if view.cancel_requested => "Cancelling…".into(),
-            JobState::Running { fraction: None, position: None, .. } => "Generating…".into(),
+            JobState::Running { waiting: false, fraction: None, message: None, reconnecting: false, .. } => "Generating…".into(),
             JobState::Retrying { .. } => "Retrying…".into(),
             _ => view.status(),
         })
