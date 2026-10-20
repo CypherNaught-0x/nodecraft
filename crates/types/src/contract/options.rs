@@ -93,12 +93,15 @@ impl OptionLists {
                 return Err(invalid("option values must be unique and bounded, with nonempty labels"));
             }
             bytes = bytes.saturating_add(choice.value.len().saturating_mul(2)).saturating_add(choice.label.len());
+            if bytes > MAX_OPTION_BYTES {
+                return Err(Error::new(ErrorKind::InvalidInput, "too many fetched option lists; clear some first"));
+            }
             values.insert(choice.value.clone());
         }
         let owned = owned(key);
         let replaced = self.lists.get(&owned).map_or(0, |list| list.bytes);
         let total = self.bytes.saturating_sub(replaced).saturating_add(bytes);
-        if total > MAX_OPTION_BYTES || (replaced == 0 && !self.lists.contains_key(&owned) && self.lists.len() >= MAX_OPTION_LISTS) {
+        if total > MAX_OPTION_BYTES || (!self.lists.contains_key(&owned) && self.lists.len() >= MAX_OPTION_LISTS) {
             return Err(Error::new(ErrorKind::InvalidInput, "too many fetched option lists; clear some first"));
         }
         self.bytes = total;

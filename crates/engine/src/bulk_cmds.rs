@@ -118,7 +118,7 @@ fn prepare(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
             let resolution = contract.resolve_with(&proposed, false, crate::option_cmds::lookup(c.resources))?;
             let pending: Vec<_> = resolution.params.iter().filter(|state| state.reset).map(|state| state.name.clone()).collect();
             if pending.is_empty() {
-                if let Some(issue) = crate::option_cmds::refusing(&resolution.issues, &p.name) {
+                if let Some(issue) = crate::option_cmds::refusing(&resolution.issues, p.value.as_ref().map(|_| p.name.as_str())) {
                     return Err(invalid(&issue.message));
                 }
                 break;
@@ -140,7 +140,7 @@ fn prepare(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         }
         let final_contract = kind.instance_contract(&proposed_node)?;
         let final_resolution = final_contract.resolve_with(&proposed_node.params, false, crate::option_cmds::lookup(c.resources))?;
-        if let Some(issue) = crate::option_cmds::refusing(&final_resolution.issues, &p.name) {
+        if let Some(issue) = crate::option_cmds::refusing(&final_resolution.issues, p.value.as_ref().map(|_| p.name.as_str())) {
             return Err(invalid(&issue.message));
         }
         if final_resolution.params.iter().any(|state| state.reset) {

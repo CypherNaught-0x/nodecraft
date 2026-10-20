@@ -15,11 +15,12 @@ pub(crate) fn lookup(resources: &Resources) -> &dyn OptionLookup {
     }
 }
 
-/// The first issue that refuses an edit of `edited`. A value off its fetched list blocks only
-/// a run, and blocks an edit only of that parameter, so a checkpoint removed from the server
-/// never stops the rest of the node being edited.
-pub(crate) fn refusing<'a>(issues: &'a [Issue], edited: &str) -> Option<&'a Issue> {
-    issues.iter().find(|issue| issue.code != IssueCode::NotAnOption || issue.param.as_deref() == Some(edited))
+/// The first issue that refuses an edit setting `edited` (`None` when the edit clears it). A
+/// value off its fetched list refuses only an edit setting that parameter, so a checkpoint
+/// removed from the server never stops the rest of the node being edited, or the stale value
+/// being cleared.
+pub(crate) fn refusing<'a>(issues: &'a [Issue], edited: Option<&str>) -> Option<&'a Issue> {
+    issues.iter().find(|issue| issue.code != IssueCode::NotAnOption || (edited.is_some() && issue.param.as_deref() == edited))
 }
 
 #[derive(Deserialize)]
@@ -48,8 +49,10 @@ fn options(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let owner = contract.parameter_groups().find(|group| group.schema.params.iter().any(|spec| spec.name == p.param)).map(|group| group.namespace.as_str());
     let result = match (&state.options, owner) {
         (Some(listed), Some(owner)) => {
+            // Unknown also covers a scoped source whose scope has no value, which must not
+            // fall back to the unscoped list of the same name.
             let key = OptionKey { owner, source: &listed.source, scope: listed.scope.as_deref() };
-            let choices = lists.and_then(|lists| lists.get(key));
+            let choices = lists.filter(|_| listed.known).and_then(|lists| lists.get(key));
             json!({"source": listed.source, "scope": listed.scope, "known": choices.is_some(), "options": choices})
         }
         // A fixed list, or a parameter that is disabled or takes free values.

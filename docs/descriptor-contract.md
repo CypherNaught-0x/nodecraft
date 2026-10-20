@@ -98,7 +98,8 @@ with a code, the parameter or check involved, and a message:
 - `unknown_param`: a stored key the contract doesn't know.
 - `required`: an enabled required parameter with no value. Reported only when `ready`.
 - `check`: a cross-field check failed.
-- `not_an_option`: an enabled value is not on its fetched option list. Blocks only a run.
+- `not_an_option`: an enabled value is not on its fetched option list. Reported only when
+  `ready`, and refused by an edit only when it sets that parameter.
 
 Hidden and disabled parameters marked `reset` include ones holding an invalid value, so an editor
 can clear the value that blocks running.
@@ -274,12 +275,14 @@ values or blank labels, is refused and the previous list kept.
 - **Unknown is not empty.** A list the host has not fetched, could not fetch, or whose scope
   parameter has no value refuses nothing; the provider checks the value when the job is
   submitted. Each such parameter's resolution says `options: {source, scope, known: false}`.
-- **A value off a known list blocks a run.** It is a `not_an_option` issue. Editing refuses it
-  only for the parameter being edited, so a checkpoint removed from the server never stops the
-  rest of the node being edited, and is fixed by picking another value.
+- **A value off a known list is a `not_an_option` issue.** An edit refuses it only when it sets
+  that parameter, so a checkpoint removed from the server never stops the rest of the node
+  being edited, and is fixed by picking another value or clearing it.
 - **Disabled parameters draw from no list**, like every other check on a disabled value.
 
-Planning a run does not consult the lists yet; the edit, bulk-edit and describe paths do.
+Planning a run does not consult the lists yet, so a stale value is still submitted and the
+provider refuses it; the edit, bulk-edit, describe and `node.options` paths do. Once planning
+consults them, `not_an_option` blocks the run before anything is charged.
 `node.options {canvas, id, param}` returns a stored node's list for one parameter, as
 `{source, scope, known, options: [{value, label}] | null}`.
 

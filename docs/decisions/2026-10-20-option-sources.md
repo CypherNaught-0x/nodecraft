@@ -11,8 +11,8 @@
 - **Unknown is not empty.** An unfetched list, a failed fetch or a scope with no value refuses
   nothing; the provider stays the authority. Treating unknown as empty would make every node
   uneditable while offline.
-- **Off-list blocks a run, not the node.** `not_an_option` is dropped when not `ready`, and edit
-  commands refuse it only for the parameter being edited. A checkpoint deleted on the server
+- **Off-list never blocks the node.** `not_an_option` is dropped when not `ready`, and edit
+  commands refuse it only when they set that parameter (clearing it is allowed). A checkpoint deleted on the server
   then shows as an issue on its own parameter while the rest of the node stays editable.
 - **Run planning does not consult the lists yet.** That comes with the fetch (ComfyUI
   `object_info`) so a run is never refused against a list the host never refreshed.
