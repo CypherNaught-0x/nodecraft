@@ -44,6 +44,8 @@ pub(super) struct Ownership {
     pub(super) groups: BTreeMap<Arc<str>, BTreeMap<Currency, LegacyGroupEvidence>>,
     /// Confirmed reconciliations of former groups (#325), oldest first.
     pub(super) records: Vec<super::reconcile::OwnershipReconciliation>,
+    /// Confirmed resolutions of reconciled charges (#332), oldest first.
+    pub(super) resolutions: Vec<super::resolve::ChargeResolution>,
 }
 
 pub(super) fn identity(provider: &str, key: &str) -> Identity {
@@ -114,7 +116,7 @@ pub(super) fn check_file_bounds(file: &UsageLogFile) -> Result<(), Error> {
     if file.provider_identity_version == 0 && all_entries(file).any(|e| e.instance.is_some()) {
         return Err(bad("scoped charges require provider identity version 1"));
     }
-    if file.open_session_ownership > 3 {
+    if file.open_session_ownership > 4 {
         return Err(bad("unsupported open-session ownership version; use a newer NodeCraft"));
     }
     let retained = file.entries.len().checked_add(file.pending.len()).and_then(|n| n.checked_add(file.quarantined.len()));
@@ -139,8 +141,14 @@ pub(super) fn check_file_bounds(file: &UsageLogFile) -> Result<(), Error> {
     {
         return Err(bad("ownership sidecars require version 2"));
     }
-    if (file.open_session_ownership == 3) == records.is_empty() {
+    if (file.open_session_ownership >= 3) == records.is_empty() {
         return Err(bad("ownership reconciliations require version 3, and version 3 requires them"));
+    }
+    if (file.open_session_ownership == 4) == file.charge_resolutions.is_empty() {
+        return Err(bad("charge resolutions require version 4, and version 4 requires them"));
+    }
+    if file.charge_resolutions.len() > reconciled.unwrap_or(0) {
+        return Err(bad("too many charge resolutions"));
     }
     Ok(())
 }
@@ -323,6 +331,8 @@ impl Ownership {
                 }
             }
         }
+        super::resolve::admit_resolutions(file)?;
+        result.resolutions = std::mem::take(&mut file.charge_resolutions);
         result.records = std::mem::take(&mut file.ownership_reconciliations);
         result.quarantined =
             std::mem::take(&mut file.quarantined).into_iter().map(|e| (identity_target(&e.provider, e.instance, &e.idempotency_key), e)).collect();

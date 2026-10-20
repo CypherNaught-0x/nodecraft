@@ -42,6 +42,7 @@ use crate::generate;
 use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent, WriteAhead};
 use crate::ownership_cmds::{self, OWNERSHIP_SERVICE};
 use crate::provider_routing::RegisteredProvider;
+use crate::resolve_cmds::{self, RESOLUTION_SERVICE};
 use crate::run_cmds::{AuthorizedRun, BudgetState, PreparedRun, UsageSnapshot};
 use crate::run_jobs::{JobKey, JobState, JobView, MAX_RECENT, Reports, RunJobs};
 use crate::run_journal::{JOURNAL_VERSION, Journal, JournalStore, MAX_PARKED_LAUNCHES, Submitted};
@@ -79,6 +80,36 @@ struct Inbox {
     waiting: VecDeque<PreparedRun>,
     running: usize,
 }
+
+/// Applies a person's decision to the usage log: tried on a copy and saved in the journal
+/// first, then applied to the live log in place, never replaced, since running jobs hold
+/// reservations tied to its identity. A failed save leaves both as they were. `guard` refuses
+/// the decision under the journal lock, before anything is tried.
+fn keep_decision(
+    shared: &Mutex<Shared>,
+    log: &Mutex<UsageLog>,
+    at_ms: u64,
+    guard: impl FnOnce(&Shared) -> Result<(), Error>,
+    apply: impl Fn(&mut UsageLog, u64) -> Result<serde_json::Value, Error>,
+) -> Result<serde_json::Value, Error> {
+    // The write-ahead's order: the journal, then the log.
+    let mut shared = lock(shared);
+    guard(&shared)?;
+    let mut live = lock(log);
+    let mut next = live.clone();
+    apply(&mut next, at_ms)?;
+    if let Some(store) = &shared.store {
+        let journal = Journal { version: JOURNAL_VERSION, usage: next, submitted: shared.submitted.clone() };
+        store
+            .save(&journal)
+            .map_err(|error| Error::new(error.kind, format!("the decision wasn't kept, because the usage log couldn't be saved: {}", error.message)))?;
+    }
+    let kept = apply(&mut live, at_ms)
+        .map_err(|error| Error::new(ErrorKind::Internal, format!("the saved decision couldn't be applied to the live usage log: {}", error.message)))?;
+    shared.reconciled = true;
+    Ok(kept)
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -284,6 +315,9 @@ impl RunHost {
                 reason: "it was given up on after a restart, because its project wasn't opened again; it may have been charged".into(),
             });
         }
+        // What the journal follows until the next save: a decision kept before then saves these
+        // runs again rather than dropping them.
+        lock(&self.journal).submitted = self.parked.clone();
         self.journal_changed = true;
         Ok(())
     }
@@ -422,24 +456,27 @@ impl RunHost {
         let log = Arc::clone(&self.budget.log);
         let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
         services.register(OWNERSHIP_SERVICE, move |request| {
-            // The write-ahead's order: the journal, then the log.
-            let mut shared = lock(&shared);
-            let mut live = lock(&log);
-            let at_ms = wall_clock_ms();
-            // The decision is tried on a copy and saved first. The live log is then changed in
-            // place, never replaced: running jobs hold reservations tied to its identity.
-            let mut next = live.clone();
-            ownership_cmds::reconcile(&mut next, request, at_ms)?;
-            if let Some(store) = &shared.store {
-                let journal = Journal { version: JOURNAL_VERSION, usage: next, submitted: shared.submitted.clone() };
-                store
-                    .save(&journal)
-                    .map_err(|error| Error::new(error.kind, format!("the decision wasn't kept, because the usage log couldn't be saved: {}", error.message)))?;
-            }
-            let kept = ownership_cmds::reconcile(&mut live, request, at_ms)
-                .map_err(|error| Error::new(ErrorKind::Internal, format!("the saved decision couldn't be applied to the live usage log: {}", error.message)))?;
-            shared.reconciled = true;
-            Ok(kept)
+            keep_decision(&shared, &log, wall_clock_ms(), |_| Ok(()), |usage, at_ms| ownership_cmds::reconcile(usage, request, at_ms))
+        })
+    }
+
+    /// Provides `usage.resolve_charge` over the shared usage log, saved and kept exactly as
+    /// [`Self::register_ownership`] keeps an ownership decision. A charge a saved run still
+    /// follows is refused: that run settles it when it resumes.
+    pub fn register_resolution(&self, services: &mut Services) -> Result<(), Error> {
+        let shared = Arc::clone(&self.journal);
+        let log = Arc::clone(&self.budget.log);
+        let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
+        services.register(RESOLUTION_SERVICE, move |request| {
+            let (provider, key) = resolve_cmds::requested_charge(request)?;
+            // Checked under the same journal lock the decision is saved under.
+            let unfollowed = |shared: &Shared| {
+                if shared.submitted.iter().any(|s| s.target.adapter() == provider && s.sent_key() == key) {
+                    return Err(Error::new(ErrorKind::Conflict, "a saved run still follows this charge; it settles when the run resumes"));
+                }
+                Ok(())
+            };
+            keep_decision(&shared, &log, wall_clock_ms(), unfollowed, |usage, at_ms| resolve_cmds::resolve(usage, request, at_ms))
         })
     }
 

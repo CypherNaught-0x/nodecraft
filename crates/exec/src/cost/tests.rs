@@ -952,6 +952,7 @@ mod strict257;
 
 mod legacy255;
 mod reconcile325;
+mod resolve332;
 
 #[test]
 fn csv_row_admission_never_writes_rejected_rows_and_preserves_writer_errors() {

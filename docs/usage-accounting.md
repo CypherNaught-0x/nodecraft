@@ -44,6 +44,18 @@ and saves the copy in the run journal before the live log takes it. A failed sav
 leaves both unchanged, and the same review can be confirmed again. See
 [the decision](decisions/2026-10-20-ownership-host.md).
 
+A reconciled charge is established again, but no run is left to settle it: the run that held it
+ended in an older NodeCraft. A person states its outcome after checking their provider's records
+(#332). `usage.unsettled` lists these charges, each with a token over the charge as reviewed;
+`usage.resolve_charge` (human only) records it as `settled` at the billed amount, as an actual
+charge, or `released` because it was never billed, which takes it out of the totals. Releasing
+an unresolved charge is allowed here, unlike the automatic path, because a person confirmed it.
+A changed charge is refused as stale, and `dry_run: true` reports the session and project totals
+afterwards. Each decision is final and kept as an immutable audit record (marker 4), at most one
+per reconciled charge. A charge a saved run still follows is refused, since that run settles it
+when it resumes. The desktop lists these charges below the quarantined groups. See
+[the decision](decisions/2026-10-20-charge-resolution.md).
+
 Unknown-price jobs reserve metadata capacity before invoking the provider. A non-cloneable
 permit captures a live ledger identity, exact provider/key, metadata and one serial. Its
 lifetime owns the admitted slot; ordinary mutations cannot steal it. Dropping a permit only

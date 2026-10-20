@@ -211,6 +211,7 @@ impl Registry {
             .chain(crate::shader_cmds::specs())
             .chain(crate::plugin_cmds::specs())
             .chain(crate::ownership_cmds::specs())
+            .chain(crate::resolve_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::turn_into_cmds::specs())

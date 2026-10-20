@@ -224,6 +224,14 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
         session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
     }
+    if id == "usage.unsettled" || id == "usage.resolve_charge" {
+        use nodecraft_engine::resolve_cmds::*;
+        // One reconciled open charge, so adversarial params reach the token and amount checks.
+        let log = reconciled_legacy();
+        session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(log.clone()))));
+        let log = std::sync::Mutex::new(log);
+        session.register_host_service(RESOLUTION_SERVICE, move |request| resolve(&mut log.lock().unwrap(), request, 0)).unwrap();
+    }
     if id.starts_with("usage.ownership") || id == "usage.reconcile_ownership" {
         use nodecraft_engine::ownership_cmds::*;
         // One quarantined group, so adversarial params reach token and holder checks.
@@ -378,6 +386,13 @@ fn template(id: &str) -> (Session, Value) {
                 serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
             let token: String = legacy.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
             json!({"session":"a","currency":"USD","token":token,"holder":"earlier","except":[{"provider":"t","key":"old"}],"only":[{"provider":"t","key":"old"}],"dry_run":false})
+        }
+        "usage.unsettled" => json!({"offset":0,"limit":1}),
+        "usage.resolve_charge" => {
+            // A real token for the fixture's reconciled charge; not a dry run, so the service's
+            // path is hunted too.
+            let token: String = reconciled_legacy().resolvable_charges()[0].token.iter().map(|b| format!("{b:02x}")).collect();
+            json!({"provider":"t","key":"old","token":token,"outcome":"settled","currency":"USD","micros":1,"dry_run":false})
         }
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
@@ -537,6 +552,8 @@ fn typed_template_panic_hunt() {
                             | "perf.report"
                             | "usage.ownership"
                             | "usage.reconcile_ownership"
+                            | "usage.unsettled"
+                            | "usage.resolve_charge"
                             // The fixture has no results to reuse: nothing changes.
                             | "run.reuse"
                     ) {
@@ -638,4 +655,13 @@ fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
         }
         assert_eq!((session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo()), before, "{id}");
     }
+}
+
+/// The legacy fixture with its one quarantined group reconciled.
+fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
+    let mut log: nodecraft_exec::cost::UsageLog =
+        serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
+    let token: String = log.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
+    nodecraft_engine::ownership_cmds::reconcile(&mut log, &json!({"session":"a","currency":"USD","token":token,"holder":"named"}), 0).unwrap();
+    log
 }

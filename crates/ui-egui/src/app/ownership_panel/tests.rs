@@ -44,7 +44,7 @@ fn scene(path: &std::path::Path) -> Harness<'static, NodeCraftApp> {
     h
 }
 
-fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
+fn press(h: &mut Harness<'_, NodeCraftApp>, role: Role, label: &str) {
     let pos = h.get_by_role_and_label(role, label).rect().center();
     h.hover_at(pos);
     h.run();
@@ -83,7 +83,7 @@ fn a_person_reviews_previews_and_confirms_who_holds_a_quarantined_charge() {
     press(&mut h, Role::Button, "Confirm");
 
     assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Recorded which total holds 1 charge of session a.")));
-    h.get_by_label("No charges are waiting for review (1 decision recorded).");
+    h.get_by_label("No quarantined charges are waiting for review (1 decision recorded).");
     // The decision was saved in the run journal before it was kept.
     let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.usage.ownership_reconciliations().len(), 1);
@@ -113,6 +113,74 @@ fn a_decision_made_stale_meanwhile_is_refused_in_the_panel() {
     assert_eq!(saved.usage.ownership_reconciliations().len(), 1, "only the first decision was recorded");
     drop(h);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Reviews and confirms the fixture's group, leaving its charge reconciled and open.
+fn reconcile(h: &mut Harness<'static, NodeCraftApp>) {
+    h.state_mut().dispatch_palette_command("usage.ownership");
+    h.run();
+    press(h, Role::Button, "Review");
+    press(h, Role::Button, "Preview");
+    press(h, Role::Button, "Confirm");
+}
+
+#[test]
+fn a_person_settles_a_reconciled_charge_at_the_billed_amount() {
+    let path = journal();
+    let mut h = scene(&path);
+    reconcile(&mut h);
+    h.get_by_label("Reconciled charges still open");
+    press(&mut h, Role::Button, "Resolve");
+    // A typed amount the decision can't carry is refused before anything is asked.
+    if let Some(resolving) = &mut h.state_mut().ownership.as_mut().unwrap().resolving {
+        resolving.amount = "1.0000001".into();
+    }
+    press(&mut h, Role::Button, "Preview");
+    assert!(h.state().ownership.as_ref().unwrap().resolving.as_ref().unwrap().refused.is_some());
+    assert!(!confirm_enabled(&h));
+    if let Some(resolving) = &mut h.state_mut().ownership.as_mut().unwrap().resolving {
+        resolving.amount = "0.000007".into();
+    }
+    press(&mut h, Role::Button, "Preview");
+    h.get_by_label_contains("Settles at");
+    press(&mut h, Role::Button, "Confirm");
+    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Settled the charge old at")), "{:?}", h.state().notice);
+    assert!(h.query_by_label("Reconciled charges still open").is_none());
+    let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved.usage.charge_resolutions().len(), 1, "saved in the run journal");
+    drop(h);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_person_releases_a_charge_that_was_never_billed() {
+    let path = journal();
+    let mut h = scene(&path);
+    reconcile(&mut h);
+    press(&mut h, Role::Button, "Resolve");
+    press(&mut h, Role::Button, "Preview");
+    // Changing the outcome takes the preview away.
+    press(&mut h, Role::RadioButton, "Never billed");
+    assert!(!confirm_enabled(&h));
+    press(&mut h, Role::Button, "Preview");
+    h.get_by_label_contains("Leaves the totals");
+    press(&mut h, Role::Button, "Confirm");
+    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Released the charge old")), "{:?}", h.state().notice);
+    let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(saved.usage.resolvable_charges().is_empty());
+    drop(h);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn typed_amounts_become_micros_or_nothing() {
+    for (typed, micros) in [("0.000007", Some(7)), ("1", Some(1_000_000)), (".5", Some(500_000)), ("2.", Some(2_000_000)), (" 3.25 ", Some(3_250_000))] {
+        assert_eq!(super::micros(typed), micros, "{typed}");
+    }
+    for typed in ["", ".", "-1", "1.0000001", "1e3", "1,5", "١", "99999999999999999999"] {
+        assert_eq!(super::micros(typed), None, "{typed}");
+    }
+    assert_eq!(super::decimal(7), "0.000007");
 }
 
 #[test]
@@ -145,5 +213,22 @@ fn ownership362_visual() {
         h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
     }
     drop(h);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+#[ignore = "manual public-safe capture; RESOLVE332_RENDER_DIR"]
+fn resolve332_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("RESOLVE332_RENDER_DIR").unwrap());
+    let path = journal();
+    let mut h = scene(&path);
+    reconcile(&mut h);
+    let mut shot = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
+    shot.run();
+    shot.render().unwrap().save(dir.join("resolve332-list.png")).unwrap();
+    press(&mut shot, Role::Button, "Resolve");
+    press(&mut shot, Role::Button, "Preview");
+    shot.render().unwrap().save(dir.join("resolve332-preview.png")).unwrap();
+    drop(shot);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
