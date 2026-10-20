@@ -440,26 +440,34 @@ fn cancelling_a_queued_job_drops_it_unsent_and_a_running_one_leaves_its_cost_unr
 
 #[test]
 fn a_job_that_finishes_before_its_cancel_keeps_its_result() {
-    let mut f = fixture(MockProvider::standard());
-    start(&mut f);
-    pump_until(&mut f, "the model job was queued", |f| f.host.jobs().iter().any(|v| v.node == WRITER));
-    // From here nothing is absorbed until the cancel is in: the model finishes at submit, so its
-    // result is already on its way when the cancel is asked for.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while f.mock.requests().is_empty() {
-        assert!(Instant::now() < deadline, "the job was never sent");
-        std::thread::sleep(Duration::from_millis(1));
+    // The model finishes at submit, so its result is on its way when the cancel is asked for. A
+    // slow machine can absorb that result while the run is still being set up, before there is
+    // anything to cancel; then the scenario runs again, and the result is kept either way.
+    for _ in 0..20 {
+        let mut f = fixture(MockProvider::standard());
+        start(&mut f);
+        pump_until(&mut f, "the model job was queued", |f| f.host.jobs().iter().any(|v| v.node == WRITER));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while f.mock.requests().is_empty() {
+            assert!(Instant::now() < deadline, "the job was never sent");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let live = job(&f.host, WRITER);
+        let raced = !live.state.is_final();
+        if raced {
+            f.host.cancel(live.key).unwrap();
+        }
+        let notices = drive(&mut f);
+        let writer = job(&f.host, WRITER);
+        assert_eq!(writer.state, JobState::Done, "{writer:?}");
+        assert_eq!(history(&f.session).len(), 1);
+        if raced {
+            assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+            assert!(writer.cancel_requested);
+            assert_eq!(writer.status(), "Finished before it could be cancelled");
+            return;
+        }
     }
-    let live = job(&f.host, WRITER);
-    assert!(!live.state.is_final(), "{live:?}");
-    f.host.cancel(live.key).unwrap();
-    let notices = drive(&mut f);
-    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
-    let writer = job(&f.host, WRITER);
-    assert_eq!(writer.state, JobState::Done);
-    assert!(writer.cancel_requested);
-    assert_eq!(writer.status(), "Finished before it could be cancelled");
-    assert_eq!(history(&f.session).len(), 1);
 }
 
 #[test]
