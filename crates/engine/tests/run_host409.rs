@@ -181,9 +181,15 @@ fn a_started_run_is_driven_recorded_and_charged_once() {
     // The quote now counts what the run spent: a second call would pass the session cap.
     let q = f.session.dispatch("run.quote", &request()).unwrap();
     assert_eq!(q["allowed"], false, "the budget resource was refreshed after the charge: {q}");
-    // And the recorded result is an ordinary undoable change.
+    // And each recorded step is an ordinary undoable change. Both jobs start together (the
+    // source's text is known up front), so either may be recorded last.
+    let source = |s: &Session| s.document().canvases().get(&C).unwrap().nodes().get(&SOURCE).unwrap().history.len();
+    assert_eq!(source(&f.session), 1);
+    f.session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(self::history(&f.session).len() + source(&f.session), 1, "one step per undo");
     f.session.dispatch("edit.undo", &json!({})).unwrap();
     assert!(self::history(&f.session).is_empty());
+    assert_eq!(source(&f.session), 0);
 }
 
 #[test]
