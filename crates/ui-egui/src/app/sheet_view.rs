@@ -327,10 +327,9 @@ impl NodeCraftApp {
         let names: Vec<String> = references
             .iter()
             .map(|(id, shared)| {
-                let title = canvas.and_then(|canvas| canvas.nodes().get(id)).map_or_else(
-                    || "Deleted".to_owned(),
-                    |node| card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor())),
-                );
+                let title = canvas
+                    .and_then(|canvas| canvas.nodes().get(id))
+                    .map_or_else(|| "Deleted".to_owned(), |node| card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor())));
                 if *shared { format!("{} (shared)", line(&title)) } else { line(&title) }
             })
             .collect();
