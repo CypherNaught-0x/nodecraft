@@ -59,9 +59,11 @@ fn feeds<'a>(canvas: &'a Canvas, node: NodeId, input: &Exposed) -> Feeds<'a> {
     let mut form = Vec::new();
     let mut other = Vec::new();
     for edge in wires {
-        // A form source is a source of the input's kind whose every wire leads to this input.
+        // A form source is a source of the input's kind, holding a value, whose every wire leads
+        // to this input. An empty one is someone's work in progress, not the form's.
         let source = canvas.nodes().get(&edge.from.node).filter(|source| {
             Some(source.kind.as_str()) == kind
+                && source_value(source).is_some()
                 && canvas.edges().values().filter(|wire| wire.from.node == source.id).all(|wire| wire.to.node == node && wire.to.port == input.port)
         });
         match source {

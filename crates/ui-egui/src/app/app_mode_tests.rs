@@ -160,8 +160,11 @@ fn run_asks_for_the_price_and_done_or_escape_closes() {
     h.get_by_label("Run").click();
     h.run();
     assert!(h.state().run_confirm.is_some(), "the price is shown first: {:?}", h.state().notice);
-    h.state_mut().run_confirm = None;
+    // Escape cancels the price dialog only; the form stays open under it.
+    h.key_press(egui::Key::Escape);
     h.run();
+    assert!(h.state().run_confirm.is_none());
+    assert!(h.state().app_mode.is_some());
     h.get_by_label("Done").click();
     h.run();
     assert!(h.state().app_mode.is_none());

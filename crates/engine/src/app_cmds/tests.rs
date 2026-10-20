@@ -160,3 +160,19 @@ fn a_removed_version_blocks_the_form() {
     assert_eq!(form["ready"], json!(false));
     assert!(form["blocked"].as_str().unwrap().contains("removed"));
 }
+
+#[test]
+fn an_empty_source_is_not_the_forms() {
+    let mut s = session();
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let mut empty = node(&kinds, 7, "source.text", &[]);
+    empty.params.remove("text");
+    s.dispatch("canvas.paste", &json!({"canvas": C, "nodes": [empty]})).unwrap();
+    let edge = json!({"id": EdgeId::from_bytes([22; 16]), "from": {"node": id(7), "port": "out"}, "to": {"node": PLACED, "port": "brief"}, "order": 0});
+    s.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    // Values and sources stay in step: the empty node is shown as wired, and the form leaves it.
+    let form = form(&mut s);
+    assert_eq!((form["inputs"][0]["feed"].clone(), form["inputs"][0]["from"].clone()), (json!("wired"), json!([id(7)])));
+    assert_eq!(fill(&mut s, json!([])).unwrap_err().kind, ErrorKind::Conflict);
+    assert!(s.document().canvases().get(&C).unwrap().nodes().contains_key(&id(7)));
+}

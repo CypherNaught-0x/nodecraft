@@ -212,7 +212,10 @@ impl NodeCraftApp {
                 });
             });
         });
-        close |= keys(ui, &mut asks);
+        // The price dialog sits on top: its Escape and the editor's undo keys are its own.
+        if self.run_confirm.is_none() {
+            close |= keys(ui, &mut asks);
+        }
         app.form = Some((revision, form));
         for ask in asks {
             if !self.app_ask(&mut app, ask, &t) {
