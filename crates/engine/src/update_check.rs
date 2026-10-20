@@ -4,9 +4,10 @@
 //! GitHub; the host runs [`fetch`] off the UI thread and hands the outcome to [`finish`], which
 //! picks the newest release on the person's [`UpdateChannel`] that is newer than this build and
 //! records it for `app.update_status`. The request carries nothing but the generic
-//! `NodeCraft/<version>` User-Agent. A reply is hostile input: it is size-capped, and a release
-//! whose page isn't on NodeCraft's own releases page is ignored, so a link the app offers to open
-//! always leads there. Handlers do no I/O.
+//! `NodeCraft/<version>` User-Agent. A reply is hostile input: it is size-capped, a tag that
+//! isn't a clean version is ignored, and the link the app offers to open is built from that
+//! version rather than taken from the reply, so it always leads to NodeCraft's releases page.
+//! Handlers do no I/O.
 use crate::build_info::VERSION;
 use crate::commands::{CommandSpec, Context, Effect, Phase, params};
 use crate::session::Session;
@@ -20,10 +21,10 @@ use std::cmp::Ordering;
 pub const UPDATE_SERVICE: &str = "updates.fetch";
 
 /// NodeCraft's releases, newest first.
-pub const RELEASES_URL: &str = "https://api.github.com/repos/CypherNaught-0x/NodeCraft/releases?per_page=30";
+pub const RELEASES_URL: &str = "https://api.github.com/repos/CypherNaught-0x/NodeCraft/releases?per_page=100";
 
-/// Every release page starts with this (compared without regard to case, as GitHub does).
-const RELEASE_PAGES: &str = "https://github.com/cyphernaught-0x/nodecraft/releases/";
+/// A release's page is this followed by its tag.
+const RELEASE_TAGS: &str = "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/";
 
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RELEASES: usize = 100;
@@ -44,7 +45,7 @@ pub enum UpdateChannel {
 /// One published release.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Release {
-    /// Its version, without the tag's `v`.
+    /// Its version, without the tag's `v` or build metadata.
     pub version: String,
     /// Its page on GitHub, with the notes and downloads.
     pub url: String,
@@ -88,13 +89,12 @@ pub async fn fetch(http: &dyn Http) -> Result<Vec<Release>, Error> {
     releases(&response.body)
 }
 
-/// The releases in a GitHub release list. Drafts, releases whose tag isn't a version and
-/// releases whose page isn't NodeCraft's are left out.
+/// The releases in a GitHub release list. Drafts and releases whose tag isn't a version are left
+/// out; each page is built from its tag, never read from the reply.
 pub fn releases(body: &[u8]) -> Result<Vec<Release>, Error> {
     #[derive(Deserialize)]
     struct Listed {
         tag_name: String,
-        html_url: String,
         #[serde(default)]
         prerelease: bool,
         #[serde(default)]
@@ -104,21 +104,17 @@ pub fn releases(body: &[u8]) -> Result<Vec<Release>, Error> {
     let mut releases = Vec::new();
     for value in listed.into_iter().take(MAX_RELEASES) {
         let Ok(release) = serde_json::from_value::<Listed>(value) else { continue };
-        if release.draft || release.tag_name.len() > MAX_FIELD_BYTES || !is_release_page(&release.html_url) {
+        if release.draft {
             continue;
         }
-        let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name);
-        let Some(parsed) = Version::parse(version) else { continue };
-        releases.push(Release { version: version.to_owned(), url: release.html_url, prerelease: release.prerelease || !parsed.pre.is_empty() });
+        let tagged = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name);
+        // Parsing admits only digits, ASCII letters, `.`, `-` and `+`, so the tag is safe in a url.
+        let Some(parsed) = Version::parse(tagged) else { continue };
+        let version = tagged.split_once('+').map_or(tagged, |(version, _)| version);
+        let url = format!("{RELEASE_TAGS}{}", release.tag_name);
+        releases.push(Release { version: version.to_owned(), url, prerelease: release.prerelease || !parsed.pre.is_empty() });
     }
     Ok(releases)
-}
-
-fn is_release_page(url: &str) -> bool {
-    url.len() <= MAX_FIELD_BYTES
-        && url.get(..RELEASE_PAGES.len()).is_some_and(|start| start.eq_ignore_ascii_case(RELEASE_PAGES))
-        && url.len() > RELEASE_PAGES.len()
-        && url.chars().all(|c| c.is_ascii_graphic())
 }
 
 /// The newest release on `channel` that is newer than `current`.
@@ -144,7 +140,7 @@ pub fn finish(session: &mut Session, id: u64, channel: UpdateChannel, fetched: R
     check
 }
 
-/// A semantic version (`1.2.3`, `0.2.0-rc.1`); build metadata is ignored.
+/// A semantic version (`1.2.3`, `0.2.0-rc.1`); build metadata is checked, then ignored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Version {
     core: [u64; 3],
@@ -163,10 +159,13 @@ impl Version {
         if text.is_empty() || text.len() > MAX_FIELD_BYTES {
             return None;
         }
-        let text = text.split_once('+').map_or(text, |(version, _)| version);
+        let (text, build) = text.split_once('+').map_or((text, None), |(version, build)| (version, Some(build)));
+        if build.is_some_and(|build| !build.split('.').all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))) {
+            return None;
+        }
         let (core, pre) = text.split_once('-').map_or((text, None), |(core, pre)| (core, Some(pre)));
         let mut parts = core.split('.');
-        let mut number = || parts.next().filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).and_then(|p| p.parse::<u64>().ok());
+        let mut number = || parts.next().filter(|p| is_number(p)).and_then(|p| p.parse::<u64>().ok());
         let core = [number()?, number()?, number()?];
         if parts.next().is_some() {
             return None;
@@ -179,7 +178,7 @@ impl Version {
                     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
                         None
                     } else if id.bytes().all(|b| b.is_ascii_digit()) {
-                        id.parse().ok().map(Identifier::Number)
+                        is_number(id).then(|| id.parse().ok().map(Identifier::Number)).flatten()
                     } else {
                         Some(Identifier::Text(id.to_owned()))
                     }
@@ -188,6 +187,11 @@ impl Version {
         };
         Some(Self { core, pre })
     }
+}
+
+/// Digits without a leading zero, as semver numbers are written.
+fn is_number(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) && (text == "0" || !text.starts_with('0'))
 }
 
 impl Ord for Version {

@@ -17,11 +17,31 @@ fn versions_order_as_semver_does() {
         assert!(a < b, "{} < {}", pair[0], pair[1]);
     }
     assert_eq!(Version::parse("1.2.3+build.7"), Version::parse("1.2.3"));
+    assert!(Version::parse("1.2.3-rc.0").is_some() && Version::parse("0.0.0").is_some());
 }
 
 #[test]
 fn hostile_versions_are_refused_not_panicked_on() {
-    for bad in ["", "1", "1.2", "1.2.3.4", "1..3", "a.b.c", "1.2.3-", "1.2.3-rc..1", "1.2.3-rc_1", "99999999999999999999.0.0", "١.٢.٣", &"9".repeat(1000)] {
+    for bad in [
+        "",
+        "1",
+        "1.2",
+        "1.2.3.4",
+        "1..3",
+        "a.b.c",
+        "1.2.3-",
+        "1.2.3-rc..1",
+        "1.2.3-rc_1",
+        "99999999999999999999.0.0",
+        "١.٢.٣",
+        "01.2.3",
+        "1.2.3-rc.01",
+        "1.2.3+",
+        "1.2.3+a..b",
+        "1.2.3+\u{202e}x",
+        "1.2.3+a b",
+        &"9".repeat(1000),
+    ] {
         assert_eq!(Version::parse(bad), None, "{bad:?}");
     }
 }
@@ -37,17 +57,15 @@ fn the_newest_release_on_the_channel_is_offered_only_when_newer() {
 }
 
 #[test]
-fn drafts_odd_tags_and_foreign_pages_are_left_out() {
-    let ours = "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/v0.3.0";
+fn drafts_and_odd_tags_are_left_out_and_pages_come_from_the_tag() {
     let body = serde_json::to_vec(&json!([
-        listed("v0.3.0", ours, false, false),
+        // The reply's own link is never used: this one would leave the releases page.
+        listed("v0.3.0", "https://github.com/CypherNaught-0x/NodeCraft/releases/../../../attacker/repo", false, false),
         listed("v0.4.0", "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/v0.4.0", false, true),
         listed("nightly", "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/nightly", false, false),
-        listed("v9.0.0", "https://evil.example/releases/tag/v9.0.0", false, false),
-        listed("v9.0.1", "https://github.com/someone-else/NodeCraft/releases/tag/v9.0.1", false, false),
-        listed("v9.0.2", "https://github.com/CypherNaught-0x/NodeCraft/releases/", false, false),
-        listed("v9.0.3", "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/v9 0 3", false, false),
-        listed("v0.3.1-rc.1", "https://github.com/cyphernaught-0x/nodecraft/releases/tag/v0.3.1-rc.1", false, false),
+        listed("v9.0.0/../../x", "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/v9.0.0", false, false),
+        listed("v9.0.1+\u{202e}gnp", "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/v9.0.1", false, false),
+        listed("v0.3.1-rc.1+build.5", "https://evil.example/", false, false),
         {"tag_name": 5},
         "not an object",
     ]))
@@ -56,9 +74,13 @@ fn drafts_odd_tags_and_foreign_pages_are_left_out() {
     assert_eq!(
         releases,
         vec![
-            Release { version: "0.3.0".into(), url: ours.into(), prerelease: false },
-            // A pre-release version is one, whatever the flag says.
-            Release { version: "0.3.1-rc.1".into(), url: "https://github.com/cyphernaught-0x/nodecraft/releases/tag/v0.3.1-rc.1".into(), prerelease: true },
+            release("0.3.0", false),
+            // A pre-release version is one, whatever the flag says; build metadata isn't shown.
+            Release {
+                version: "0.3.1-rc.1".into(),
+                url: "https://github.com/CypherNaught-0x/NodeCraft/releases/tag/v0.3.1-rc.1+build.5".into(),
+                prerelease: true
+            },
         ]
     );
 }

@@ -42,9 +42,11 @@ pub(super) struct UpdateChecker {
     quiet: Option<u64>,
     /// The release the banner offers.
     pub(super) banner: Option<Available>,
+    /// What updates this copy instead of the person, when something does.
+    managed: Option<&'static str>,
 }
 
-/// How this copy was installed, when something other than NodeCraft updates it.
+/// What updates this copy, when it came from Flatpak, Snap or a Linux system package.
 fn managed() -> Option<&'static str> {
     if std::env::var_os("FLATPAK_ID").is_some() {
         return Some("Flatpak");
@@ -64,8 +66,9 @@ impl UpdateChecker {
             .build()
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the update check thread: {e}")))?;
         let http = nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?;
-        let (checker, mut service) = Self::spawn(Box::new(move || runtime.block_on(update_check::fetch(&http as &dyn Http))))?;
+        let (mut checker, mut service) = Self::spawn(Box::new(move || runtime.block_on(update_check::fetch(&http as &dyn Http))))?;
         services.register(UPDATE_SERVICE, move |request| service(request))?;
+        checker.managed = managed();
         Ok(checker)
     }
 
@@ -98,7 +101,7 @@ impl UpdateChecker {
             asked.queued = Some(id);
             Ok(json!({"pending": id}))
         };
-        Ok((Self { asked, asks, done, quiet: None, banner: None }, Box::new(service)))
+        Ok((Self { asked, asks, done, quiet: None, banner: None, managed: None }, Box::new(service)))
     }
 
     /// Whether a check is queued or running.
@@ -145,7 +148,14 @@ impl UpdateChecker {
             self.banner = offered;
             return None;
         }
-        (!quiet).then(|| notice(&check))
+        if quiet {
+            return None;
+        }
+        // An explicit check that offers nothing replaces whatever an earlier one offered.
+        if check.error.is_none() {
+            self.banner = None;
+        }
+        Some(notice(&check))
     }
 }
 
@@ -157,6 +167,9 @@ pub(super) fn notice(check: &Check) -> String {
         (None, None) => format!("NodeCraft {} is up to date.", check.current),
     }
 }
+
+/// Said when a banner choice can't be kept for the next start.
+const UNSAVED: &str = "Settings can't be saved in this window, so NodeCraft will check for updates again next time it starts.";
 
 /// What the banner's buttons asked for.
 enum Chosen {
@@ -192,21 +205,22 @@ impl super::NodeCraftApp {
         }
     }
 
-    /// The banner offering a newer release.
-    pub(super) fn show_update_banner(&mut self, ui: &egui::Ui, t: &crate::theme::Tokens) {
-        let Some(available) = self.updates.as_ref().and_then(|updates| updates.banner.clone()) else {
+    /// The banner offering a newer release, centred under the top row of canvas controls.
+    pub(super) fn show_update_banner(&mut self, ui: &egui::Ui, viewport: egui::Rect, t: &crate::theme::Tokens) {
+        let Some((available, managed)) = self.updates.as_ref().and_then(|updates| Some((updates.banner.clone()?, updates.managed))) else {
             return;
         };
         let mut chosen = None;
         egui::Area::new(ui.id().with("update_banner"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_TOP, egui::Vec2::new(0.0, t.card_padding))
+            .fixed_pos(egui::pos2(viewport.center().x, viewport.min.y + t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap))
+            .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| {
                 egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
-                    ui.set_max_width(2.0 * t.card_width);
+                    ui.set_max_width((2.0 * t.card_width).min(viewport.width().max(0.0)));
                     let kind = if available.prerelease { "A pre-release, " } else { "" };
                     ui.label(format!("{kind}NodeCraft {} is available (this is {VERSION}).", available.version));
-                    if let Some(manager) = managed() {
+                    if let Some(manager) = managed {
                         ui.label(format!("Update it through {manager}."));
                     }
                     ui.horizontal(|ui| {
@@ -227,16 +241,22 @@ impl super::NodeCraftApp {
             // The url is on NodeCraft's releases page: `update_check` keeps no other.
             Chosen::Notes(url) => ui.ctx().open_url(egui::OpenUrl::new_tab(url)),
             Chosen::Dismiss(version) => {
-                if let Some(store) = &mut self.store {
-                    store.update(|settings| settings.updates.dismissed = Some(version));
+                match &mut self.store {
+                    Some(store) => {
+                        store.update(|settings| settings.updates.dismissed = Some(version));
+                    }
+                    None => self.notice = Some(UNSAVED.into()),
                 }
                 self.close_update_banner();
             }
             Chosen::StopChecking => {
-                if let Some(store) = &mut self.store {
-                    store.update(|settings| settings.updates.check = false);
-                }
-                self.notice = Some("NodeCraft won't check for updates at startup. Check for Updates… in the palette still checks.".into());
+                self.notice = Some(match &mut self.store {
+                    Some(store) => {
+                        store.update(|settings| settings.updates.check = false);
+                        "NodeCraft won't check for updates at startup. Check for Updates… in the palette still checks.".into()
+                    }
+                    None => UNSAVED.into(),
+                });
                 self.close_update_banner();
             }
         }

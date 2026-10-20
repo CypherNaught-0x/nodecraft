@@ -1729,7 +1729,7 @@ impl NodeCraftApp {
         // All document-changing frame effects precede the last-check stamp test and paint.
         self.show_notices(ui, viewport, t);
         #[cfg(not(target_arch = "wasm32"))]
-        self.show_update_banner(ui, t);
+        self.show_update_banner(ui, viewport, t);
         self.navigation.finish_frame(ui.ctx());
         self.tag_focused = self.tag_filter.open && ui.ctx().memory(|m| m.focused()).is_some_and(|id| self.tag_focus_ids.contains(&id));
         self.search_focused = ui.ctx().memory(|m| m.focused()) == Some(self.search_input_id());

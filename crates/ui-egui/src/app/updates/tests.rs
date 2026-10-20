@@ -119,13 +119,75 @@ fn a_dismissed_release_returns_only_when_asked_for() {
     assert_eq!(banner(&h).as_deref(), Some("99.0.0"));
 }
 
-#[test]
-fn turning_off_the_startup_check_from_the_banner_closes_it_and_says_how_to_check() {
-    let mut h = with_releases(Ok(vec![release("99.0.0")]));
+/// A settings store in a fresh directory, which the caller removes.
+fn store() -> (nodecraft_engine::settings::SettingsStore, std::path::PathBuf) {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("nodecraft-updates-{}-{nanos}", std::process::id()));
+    let (store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(dir.clone()));
+    (store, dir)
+}
+
+fn offered(h: &mut Harness<'static, NodeCraftApp>) {
     h.state_mut().dispatch_palette_command("app.check_updates");
-    answered(&mut h);
+    answered(h);
+    assert_eq!(banner(h).as_deref(), Some("99.0.0"));
+}
+
+#[test]
+fn the_banner_buttons_keep_their_choice_in_settings() {
+    let (settings, dir) = store();
+    let mut h = with_releases(Ok(vec![release("99.0.0")]));
+    h.state_mut().store = Some(settings);
+    offered(&mut h);
     h.get_by_label("Don't check at startup").click();
     h.run();
     assert_eq!(banner(&h), None);
     assert!(h.state().notice.as_deref().is_some_and(|notice| notice.contains("won't check for updates at startup")));
+    assert!(!h.state().store.as_ref().unwrap().get().updates.check);
+
+    offered(&mut h);
+    h.get_by_label("Dismiss").click();
+    h.run();
+    assert_eq!(banner(&h), None);
+    assert_eq!(h.state().store.as_ref().unwrap().get().updates.dismissed.as_deref(), Some("99.0.0"));
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn without_settings_the_banner_says_its_choice_wont_last() {
+    let mut h = with_releases(Ok(vec![release("99.0.0")]));
+    offered(&mut h);
+    h.get_by_label("Don't check at startup").click();
+    h.run();
+    assert_eq!(banner(&h), None);
+    assert_eq!(h.state().notice.as_deref(), Some(UNSAVED));
+}
+
+#[test]
+fn an_explicit_check_that_finds_nothing_takes_down_an_earlier_offer() {
+    let mut h = with_releases(Ok(vec![release("0.0.1")]));
+    h.state_mut().updates.as_mut().unwrap().banner = Some(release("99.0.0"));
+    h.state_mut().dispatch_palette_command("app.check_updates");
+    answered(&mut h);
+    assert_eq!(banner(&h), None);
+    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.ends_with("is up to date.")));
+}
+
+#[test]
+#[ignore = "manual public-safe capture; UPDATES123_RENDER_DIR"]
+fn updates123_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("UPDATES123_RENDER_DIR").unwrap());
+    let mut h = with_releases(Ok(vec![release("99.0.0")]));
+    h.state_mut().dispatch_palette_command("app.check_updates");
+    answered(&mut h);
+    for (theme, name) in [(crate::theme::ThemeKind::Dark, "updates123-dark.png"), (crate::theme::ThemeKind::Light, "updates123-light.png")] {
+        h.state_mut().theme = theme;
+        let mut shot =
+            Harness::builder().wgpu().with_size(egui::Vec2::new(1000.0, 600.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
+        crate::theme::apply(&shot.ctx, theme);
+        shot.run();
+        shot.render().unwrap().save(dir.join(name)).unwrap();
+        h = Harness::builder().with_size(egui::Vec2::new(1000.0, 600.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
+    }
 }

@@ -72,8 +72,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   playback UI (#105, #106), no video actions (#108) and no video generation.
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
   batch, Techniques, app mode, library, Layer/Timeline/Mask editors, Elements, 3D, PDF,
-  collaboration, installing updates (the desktop app only says when a newer release is out, #123), and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai and Gemini
-  are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
+  collaboration, installing updates (the desktop app only says when a newer release is out,
+  #123; installing is #540), and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai and
+  Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
   Tripo, Meshy and the 25 `future` names have no work started).
 
 ## Next up
