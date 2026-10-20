@@ -289,3 +289,25 @@ fn a_fitted_image_keeps_its_proportions() {
     assert_eq!(at(&out, 130, 50), [0, 0, 255, 255]);
     assert_eq!(at(&out, 170, 50), CLEAR);
 }
+
+#[test]
+fn a_layer_renders_alone_upright_with_room_around_its_box() {
+    let limits = ImageLimits::default();
+    let mut box_layer = layer("r", 500.0, 500.0, 20.0, 10.0, rect("#ff0000"));
+    box_layer.rotation = 30.0;
+    box_layer.opacity = 0.5;
+    let (out, pad) = render_layer(&box_layer, 2.0, limits).unwrap();
+    // 1 px of room either side, doubled; rotation, position and opacity are the caller's.
+    assert_eq!((pad, out.width(), out.height()), (1.0, 44, 24));
+    assert_eq!(at(&out, 22, 12), [255, 0, 0, 255]);
+    assert_eq!(at(&out, 0, 0)[3], 0);
+    // Text reaches past its box by up to its size, so the room is that.
+    let words = layer("t", 0.0, 0.0, 60.0, 20.0, text("Hg", 16.0, Align::Left));
+    let (out, pad) = render_layer(&words, 1.0, limits).unwrap();
+    assert_eq!(pad, 16.0);
+    assert!(out.pixels().as_chunks::<4>().0.iter().any(|p| p[3] > 0), "some ink");
+    // Images aren't drawn here, and nothing huge is allocated.
+    assert!(render_layer(&layer("i", 0.0, 0.0, 10.0, 10.0, Content::Image { input: 0, fit: false }), 1.0, limits).is_err());
+    assert_eq!(render_layer(&layer("big", 0.0, 0.0, 90_000.0, 90_000.0, rect("#000000")), 1.0, limits).unwrap_err(), ImageError::Dimensions);
+    assert!(render_layer(&box_layer, f64::NAN, limits).is_err());
+}

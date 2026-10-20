@@ -484,35 +484,7 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], scale
                 });
                 ctx.fill_rect(&Rect::new(0.0, 0.0, iw, ih));
             }
-            Content::Text { color: c, .. } => {
-                let path = text::outline(layer)?;
-                ctx.set_transform(at);
-                ctx.set_paint(paint(parse_color(c)?, layer.opacity));
-                ctx.fill_path(&path);
-            }
-            Content::Shape { shape, fill, stroke, stroke_width } => {
-                let path = shape_path(*shape, layer.width, layer.height);
-                ctx.set_transform(at);
-                // An opacity layer, so an outline over a fill doesn't double up where they meet.
-                let faded = layer.opacity < 1.0;
-                if faded {
-                    ctx.push_opacity_layer(layer.opacity as f32);
-                }
-                if let Some(c) = fill.as_deref().map(parse_color).transpose()? {
-                    ctx.set_paint(paint(c, 1.0));
-                    ctx.fill_path(&path);
-                }
-                if let Some(c) = stroke.as_deref().map(parse_color).transpose()?
-                    && *stroke_width > 0.0
-                {
-                    ctx.set_paint(paint(c, 1.0));
-                    ctx.set_stroke(Stroke::new(*stroke_width));
-                    ctx.stroke_path(&path);
-                }
-                if faded {
-                    ctx.pop_layer();
-                }
-            }
+            Content::Text { .. } | Content::Shape { .. } => draw_vector(&mut ctx, layer, at, layer.opacity)?,
             Content::Source { .. } => return Err(bad("unresolved source layer")),
         }
     }
@@ -524,6 +496,85 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], scale
         out.copy_from_slice(&[px.r, px.g, px.b, px.a]);
     }
     Raster::new(u32::from(w), u32::from(h), pixels, limits)
+}
+
+/// Draws a text or shape layer's content, mapped by `at`, at `opacity`.
+fn draw_vector(ctx: &mut RenderContext, layer: &Layer, at: Affine, opacity: f64) -> Result<(), ImageError> {
+    match &layer.content {
+        Content::Text { color: c, .. } => {
+            let path = text::outline(layer)?;
+            ctx.set_transform(at);
+            ctx.set_paint(paint(parse_color(c)?, opacity));
+            ctx.fill_path(&path);
+        }
+        Content::Shape { shape, fill, stroke, stroke_width } => {
+            let path = shape_path(*shape, layer.width, layer.height);
+            ctx.set_transform(at);
+            // An opacity layer, so an outline over a fill doesn't double up where they meet.
+            let faded = opacity < 1.0;
+            if faded {
+                ctx.push_opacity_layer(opacity as f32);
+            }
+            if let Some(c) = fill.as_deref().map(parse_color).transpose()? {
+                ctx.set_paint(paint(c, 1.0));
+                ctx.fill_path(&path);
+            }
+            if let Some(c) = stroke.as_deref().map(parse_color).transpose()?
+                && *stroke_width > 0.0
+            {
+                ctx.set_paint(paint(c, 1.0));
+                ctx.set_stroke(Stroke::new(*stroke_width));
+                ctx.stroke_path(&path);
+            }
+            if faded {
+                ctx.pop_layer();
+            }
+        }
+        Content::Image { .. } | Content::Source { .. } => return Err(bad("vector layer")),
+    }
+    Ok(())
+}
+
+/// Most pixels on either side of a [`render_layer`] raster.
+pub const MAX_LAYER_RENDER_EDGE: u32 = 4096;
+
+/// A text or shape layer drawn alone and upright, at full opacity: its own box scaled by
+/// `scale`, with `pad` layer pixels of room on every side for outlines and glyphs that reach
+/// past the box. Returns the raster and `pad`. For previews, which place it with the layer's
+/// transform and opacity; a run draws through [`composite`].
+pub fn render_layer(layer: &Layer, scale: f64, limits: ImageLimits) -> Result<(Raster, f64), ImageError> {
+    limits.validate()?;
+    layer.check()?;
+    within(scale, 1.0 / 64.0, 8.0, "scale")?;
+    let pad = match &layer.content {
+        Content::Text { size, .. } => *size,
+        Content::Shape { stroke_width, .. } => stroke_width / 2.0 + 1.0,
+        Content::Image { .. } | Content::Source { .. } => return Err(bad("vector layer")),
+    };
+    let edge = |v: f64| -> Result<u32, ImageError> {
+        let scaled = ((v + 2.0 * pad) * scale).ceil().max(1.0);
+        if scaled > f64::from(MAX_LAYER_RENDER_EDGE.min(limits.edge)) { Err(ImageError::Dimensions) } else { Ok(scaled as u32) }
+    };
+    let (w, h) = (edge(layer.width)?, edge(layer.height)?);
+    let out_bytes = u64::from(w) * u64::from(h) * 4;
+    if u64::from(w) * u64::from(h) > limits.pixels || out_bytes.saturating_mul(2) > limits.working_bytes {
+        return Err(ImageError::Dimensions);
+    }
+    let text = if let Content::Text { text, .. } = &layer.content { text.len() as u64 } else { 0 };
+    if (out_bytes / 2).saturating_add(text.saturating_mul(4096)) > limits.work {
+        return Err(ImageError::WorkLimit);
+    }
+    let (Ok(pw), Ok(ph)) = (u16::try_from(w), u16::try_from(h)) else { return Err(ImageError::Dimensions) };
+    let mut ctx = RenderContext::new_with(pw, ph, RenderSettings { level: Level::baseline(), num_threads: 0 });
+    draw_vector(&mut ctx, layer, Affine::scale(scale) * Affine::translate((pad, pad)), 1.0)?;
+    ctx.flush();
+    let mut target = Pixmap::new(pw, ph);
+    ctx.render(&mut target, &mut Resources::new());
+    let mut pixels = crate::image::buffer(out_bytes as usize)?;
+    for (out, px) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(target.take_unpremultiplied()) {
+        out.copy_from_slice(&[px.r, px.g, px.b, px.a]);
+    }
+    Ok((Raster::new(w, h, pixels, limits)?, pad))
 }
 
 fn paint(c: [u8; 4], opacity: f64) -> color::AlphaColor<color::Srgb> {
