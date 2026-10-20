@@ -270,3 +270,27 @@ fn a_drop_during_a_save_waits_for_it_instead_of_failing() {
     assert_eq!(imported.nodes, vec![common::node_id(9)]);
     assert_eq!(session.poll_file().unwrap().unwrap()["saved"], true);
 }
+
+/// Recovery ownership (#450): a recovery copy is superseded only once its document's save has
+/// actually succeeded, so a held or failed background save never grants it.
+#[test]
+fn only_a_finished_successful_save_marks_the_document_saved() {
+    let gate = Arc::new(Gate::default());
+    let (mut session, storage) = setup(gate.clone());
+    let lineage = session.document_lineage();
+    session.dispatch("node.move", &movement(10)).unwrap();
+    storage.0.lock().unwrap().save = true;
+    background_save_as(&mut session);
+    assert!(!session.has_saved_document(&lineage), "a started save is not a saved document");
+    gate.release();
+    assert!(session.poll_file().unwrap().is_err());
+    assert!(!session.has_saved_document(&lineage), "a failed save keeps the recovery copy");
+
+    storage.0.lock().unwrap().save = false;
+    background_save_as(&mut session);
+    assert!(!session.has_saved_document(&lineage));
+    gate.release();
+    assert_eq!(session.poll_file().unwrap().unwrap()["saved"], true);
+    assert!(session.is_current_document(&lineage), "saving keeps the lineage");
+    assert!(session.has_saved_document(&lineage));
+}

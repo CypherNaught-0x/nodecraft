@@ -175,7 +175,10 @@ fn keep_unrecovered(recovery: &std::path::Path, storage: &NativeStorage) -> Resu
             return Ok(Some(kept));
         }
     }
-    Err(Error::new(ErrorKind::Conflict, "all recovery safety-copy slots are occupied; earlier work was left untouched, so this journal was not replaced"))
+    Err(Error::new(
+        ErrorKind::Conflict,
+        "all recovery safety-copy slots are occupied, so this session's journal was not replaced and earlier work is untouched; move or delete old session.journal.unrecovered-* copies in the recovery folder, then restart",
+    ))
 }
 
 impl NodeCraftApp {

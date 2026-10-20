@@ -408,7 +408,8 @@ fn full_kept_slots_refuse_before_replacing_the_newest_live_journal() {
         std::fs::write(dir.0.join(format!("session.journal.unrecovered-{n}")), format!("old retained {n}")).unwrap();
     }
     let result = NodeCraftApp::storage_session(StorageSetup { recovery: dir.journal(), open: None });
-    assert!(result.is_err(), "full retention must not silently checkpoint over the newest work");
+    let error = result.err().expect("full retention must not silently checkpoint over the newest work");
+    assert!(error.message.contains("recovery folder") && error.message.contains("unrecovered"), "the refusal says how to free a slot: {}", error.message);
     assert_eq!(std::fs::read(dir.journal()).unwrap(), live);
     for n in 1..=storage::MAX_KEPT {
         assert_eq!(std::fs::read_to_string(dir.0.join(format!("session.journal.unrecovered-{n}"))).unwrap(), format!("old retained {n}"));
