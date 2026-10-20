@@ -4,6 +4,10 @@
 //! Limits are conservative representation/work budgets, not exact JSON bytes or allocator/RSS
 //! guarantees. Provider-owned inputs/results remain with the caller when conversion is refused.
 
+use nodecraft_format::{
+    AssetStore,
+    asset_source::{StreamMetrics, TransferCancel},
+};
 use nodecraft_graph::{MAX_NODE_BYTES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS};
 use nodecraft_media::{ContentHash, MediaKind};
 use nodecraft_nodes::{GenerateOutput, JobSpec};
@@ -16,6 +20,37 @@ use std::sync::Arc;
 pub const MAX_INLINE_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 // Matches graph's per-value aggregate text limit; parity is pinned by a Generation test.
 const MAX_TEXT_VALUE_BYTES: usize = 1024 * 1024;
+/// Largest aggregate size of the media one model call sends (#502).
+pub const MAX_MEDIA_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where a model call's media inputs come from (#502). `size` answers from metadata without
+/// reading content, so an oversized call is refused before any bytes are read; `read` returns
+/// the stored, verified bytes and refuses an asset larger than `limit`.
+pub trait MediaSource {
+    fn size(&self, asset: &AssetRef) -> Result<u64, Error>;
+    fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, Error>;
+}
+impl MediaSource for AssetStore {
+    fn size(&self, asset: &AssetRef) -> Result<u64, Error> {
+        self.descriptor(&asset.hash).map(|d| d.bytes).ok_or_else(|| invalid("a media input names an asset this project doesn't have"))
+    }
+    fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, Error> {
+        if self.size(asset)? > limit {
+            return Err(invalid("a media input is larger than this model call allows"));
+        }
+        let metrics = StreamMetrics::default();
+        let lease = self.open_verified(asset, &TransferCancel::default(), &metrics)?;
+        if lease.byte_len() > limit {
+            return Err(invalid("a media input is larger than this model call allows"));
+        }
+        let length = usize::try_from(lease.byte_len()).map_err(|_| invalid("a media input is larger than this model call allows"))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| Error::new(ErrorKind::Internal, "not enough memory to read a media input"))?;
+        bytes.resize(length, 0);
+        std::io::Read::read_exact(&mut lease.reader(metrics), &mut bytes).map_err(|_| Error::new(ErrorKind::Internal, "a media input could not be read"))?;
+        Ok(bytes.into())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Limits {
@@ -27,6 +62,7 @@ struct Limits {
     inline: usize,
     raw_outputs: usize,
     outputs: usize,
+    media: u64,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -39,6 +75,7 @@ impl Default for Limits {
             inline: MAX_INLINE_OUTPUT_BYTES,
             raw_outputs: MAX_INLINE_OUTPUT_BYTES,
             outputs: MAX_NODE_BYTES,
+            media: MAX_MEDIA_INPUT_BYTES,
         }
     }
 }
@@ -104,13 +141,15 @@ impl Conversion {
     }
 }
 
-struct RequestBudget {
+struct RequestBudget<'a> {
     bytes: Budget,
     values: usize,
     inputs: usize,
     limits: Limits,
+    source: Option<&'a dyn MediaSource>,
+    media: u64,
 }
-impl RequestBudget {
+impl RequestBudget<'_> {
     fn value(&mut self, root: &Value, role: Option<&str>) -> Result<(), Error> {
         let mut stack = vec![std::slice::from_ref(root).iter()];
         let mut text_bytes = 0usize;
@@ -148,13 +187,19 @@ impl RequestBudget {
                     self.bytes.string(text)?;
                 }
                 Value::Number(number) if !f64::from(*number).is_finite() => return Err(invalid("a parameter is not a finite number")),
-                Value::Media(_) => {
-                    return Err(unsupported(if role.is_some() {
-                        "media inputs need the asset store, which isn't available yet"
-                    } else {
-                        "a media value can't be a model parameter"
-                    }));
-                }
+                Value::Media(asset) => match (role, self.source) {
+                    (None, _) => return Err(unsupported("a media value can't be a model parameter")),
+                    (Some(_), None) => return Err(unsupported("this model call has no asset store to send media inputs from")),
+                    (Some(_), Some(source)) => {
+                        let size = source.size(asset)?;
+                        self.media = self.media.checked_add(size).ok_or_else(|| invalid("model media size overflowed"))?;
+                        if self.media > self.limits.media {
+                            return Err(invalid("the model call's media inputs are larger than it allows"));
+                        }
+                        self.bytes.charge(512)?;
+                        self.bytes.string(asset.mime.essence())?;
+                    }
+                },
                 _ => {}
             }
             if let Some(role) = role {
@@ -173,12 +218,12 @@ struct AdmittedRequest<'a> {
     spec: &'a JobSpec,
     key: &'a str,
 }
-fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits) -> Result<AdmittedRequest<'a>, Error> {
+fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits, source: Option<&dyn MediaSource>) -> Result<AdmittedRequest<'a>, Error> {
     let JobSpec::Generate { provider, model, params, inputs, .. } = spec else { return Err(invalid("not a model call")) };
     if params.len() > limits.items || inputs.len() > limits.items {
         return Err(invalid("model request exceeds item limit"));
     }
-    let mut budget = RequestBudget { bytes: Budget(limits.request), values: 0, inputs: 0, limits };
+    let mut budget = RequestBudget { bytes: Budget(limits.request), values: 0, inputs: 0, limits, source, media: 0 };
     for text in [provider.as_str(), model.as_str(), key] {
         budget.bytes.string(text)?;
     }
@@ -210,11 +255,33 @@ fn json(value: &Value, conversion: &mut Conversion) -> Result<Json, Error> {
         Value::Media(_) => return Err(unsupported("a media value can't be a model parameter")),
     })
 }
-fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, conversion: &mut Conversion) -> Result<(), Error> {
+struct MediaReads<'a> {
+    source: Option<&'a dyn MediaSource>,
+    left: u64,
+}
+fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, media: &mut MediaReads<'_>, conversion: &mut Conversion) -> Result<(), Error> {
     if let Value::List(items) = value {
         for item in items {
-            inputs(role, item, out, conversion)?;
+            inputs(role, item, out, media, conversion)?;
         }
+        return Ok(());
+    }
+    if let Value::Media(asset) = value {
+        let source = media.source.ok_or_else(|| unsupported("this model call has no asset store to send media inputs from"))?;
+        let bytes = source.read(asset, media.left)?;
+        // Admission summed the stored sizes; the bytes actually read are held to the same cap.
+        media.left = u64::try_from(bytes.len())
+            .ok()
+            .and_then(|n| media.left.checked_sub(n))
+            .ok_or_else(|| invalid("the model call's media inputs are larger than it allows"))?;
+        let role = conversion.string(role);
+        let mime = conversion.string(asset.mime.essence());
+        #[cfg(test)]
+        {
+            conversion.input_records += 1;
+            conversion.asset_arcs += 1;
+        }
+        out.push(JobInput::Media { role, mime, bytes });
         return Ok(());
     }
     let text = match value {
@@ -232,8 +299,14 @@ fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, conversion: &mut C
     out.push(JobInput::Text { role, text });
     Ok(())
 }
-fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &mut Conversion) -> Result<(String, ProviderJob), Error> {
-    let proof = admit_request(spec, key, limits)?;
+fn request_with_limits(
+    spec: &JobSpec,
+    key: &str,
+    limits: Limits,
+    source: Option<&dyn MediaSource>,
+    conversion: &mut Conversion,
+) -> Result<(String, ProviderJob), Error> {
+    let proof = admit_request(spec, key, limits, source)?;
     let JobSpec::Generate { provider, model, params, inputs: given, .. } = proof.spec else { return Err(invalid("not a model call")) };
     let mut map = Map::new();
     for (name, value) in params {
@@ -241,8 +314,9 @@ fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &m
         map.insert(name, json(value, conversion)?);
     }
     let mut job_inputs = Vec::new();
+    let mut media = MediaReads { source, left: limits.media };
     for input in given {
-        inputs(&input.role, &input.value, &mut job_inputs, conversion)?;
+        inputs(&input.role, &input.value, &mut job_inputs, &mut media, conversion)?;
     }
     Ok((
         conversion.string(provider),
@@ -252,8 +326,14 @@ fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &m
 /// Convert a standalone job after complete borrowed depth/item/text/representation admission.
 /// The request representation budget is 64 MiB, with 4096 aggregate values/inputs and graph depth 32.
 /// Text per original value is 1 MiB. Metadata and repeated flattened roles share the byte budget.
+/// A job with media inputs is refused here; see [`provider_job_with_media`].
 pub fn provider_job(spec: &JobSpec, idempotency_key: &str) -> Result<(String, ProviderJob), Error> {
-    request_with_limits(spec, idempotency_key, Limits::default(), &mut Conversion::default())
+    request_with_limits(spec, idempotency_key, Limits::default(), None, &mut Conversion::default())
+}
+/// [`provider_job`], reading media inputs from `source`. Their stored sizes are summed against
+/// [`MAX_MEDIA_INPUT_BYTES`] before the first read, so an oversized call reads nothing.
+pub fn provider_job_with_media(spec: &JobSpec, idempotency_key: &str, source: &dyn MediaSource) -> Result<(String, ProviderJob), Error> {
+    request_with_limits(spec, idempotency_key, Limits::default(), Some(source), &mut Conversion::default())
 }
 
 /// Converted outputs and shared media bytes for the host to store; no asset store is mutated.

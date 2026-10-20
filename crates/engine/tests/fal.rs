@@ -1,5 +1,5 @@
 //! Actual typed host seam: quote/start -> PreparedRun/authorization -> Driver/ProviderRunner -> record.
-//! The tiny immutable media resolver is TEST ONLY; no shipping canvas asset resolver is claimed.
+//! Media inputs go through the production conversion over a one-asset test media source.
 #![cfg(not(target_arch = "wasm32"))]
 use futures::executor::block_on;
 use nodecraft_engine::{
@@ -39,6 +39,21 @@ fn usd(n: u64) -> Money {
 }
 fn png() -> Vec<u8> {
     nodecraft_media::encode_png(2, 2, &[140; 16], &Default::default()).unwrap()
+}
+/// The fixture's one input image, served by hash like the session's asset store would.
+struct OneAsset(Arc<[u8]>);
+impl generate::MediaSource for OneAsset {
+    fn size(&self, asset: &AssetRef) -> Result<u64, nodecraft_types::Error> {
+        if asset.hash == hash(&self.0) {
+            Ok(self.0.len() as u64)
+        } else {
+            Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::NotFound, "no such asset"))
+        }
+    }
+    fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, nodecraft_types::Error> {
+        assert!(self.size(asset)? <= limit);
+        Ok(self.0.clone())
+    }
 }
 fn hash(b: &[u8]) -> Blake3 {
     Blake3::from_bytes(*blake3::hash(b).as_bytes())
@@ -286,9 +301,6 @@ fn all_five_genuine_consent_run_driver_converter_record_and_undo() {
         assert!(!matches!(step.per_job, Ok(None)), "no Fal model is free");
         let estimate = step.per_job.as_ref().ok().copied().flatten();
         assert_eq!(estimate, if m == TRELLIS { Some(usd(250_000)) } else { None });
-        // Only this immutable, single-step fixture's Media resolver needs a price read.
-        // It comes from the SAME prepared admission consumed below, never host input.
-        let media_price = Some(JobPrice::new(step.node, catalog_id(m).into(), estimate));
         let (mut run, progress) = session
             .authorize_prepared_run(
                 prepared,
@@ -299,7 +311,7 @@ fn all_five_genuine_consent_run_driver_converter_record_and_undo() {
         let spec = &progress.jobs[0];
         let work = run.work(spec.id).unwrap();
         let queued = if [TRELLIS, ESRGAN].contains(&m) {
-            assert!(run.queued_job(spec.id, &spec.idempotency_key).is_err(), "production Media resolver is unsupported");
+            assert!(run.queued_job(spec.id, &spec.idempotency_key).is_err(), "media needs a media source");
             assert!(generate::provider_job(work, &spec.idempotency_key).is_err());
             let JobSpec::Generate { inputs, model, provider, instance, .. } = work else { panic!() };
             assert_eq!(provider, "fal");
@@ -311,16 +323,10 @@ fn all_five_genuine_consent_run_driver_converter_record_and_undo() {
             assert_eq!(asset.hash, hash(&input));
             assert_eq!(asset.mime.as_str(), "image/png");
             assert!(input.len() < 1024);
-            QueuedJob::new(
-                run.binding(spec.id).unwrap().clone(),
-                ProviderJob {
-                    model: m.into(),
-                    params: Default::default(),
-                    inputs: vec![JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: input.clone() }],
-                    idempotency_key: spec.idempotency_key.clone(),
-                },
-                media_price,
-            )
+            // The production conversion (#502), over this fixture's one stored image.
+            let queued = run.queued_job_with_media(spec.id, &spec.idempotency_key, &OneAsset(input.clone())).unwrap();
+            assert_eq!(queued.job.inputs, [JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: input.clone() }]);
+            queued
         } else {
             run.queued_job(spec.id, &spec.idempotency_key).unwrap()
         };

@@ -138,8 +138,9 @@ The standard engine Session registers `generation.image` from one immutable cata
 Its node-owned controls are model and prompt; model-owned controls retain their original
 namespace. Default-registry composition does not install credentials, a scheduler or a paid
 desktop run host. The current production planner supports ordered connected/local text prompts
-and image outputs through the existing authorized engine pipeline. Wired media inputs, unknown
-models, unsupported roles/versions refuse explicitly; a `random_seed` default is drawn per run
+and image outputs through the existing authorized engine pipeline, plus wired media on the
+roles the selected mode declares (#502, read from the asset store at conversion). Unknown
+models, undeclared or mismatched roles and unsupported versions refuse explicitly; a `random_seed` default is drawn per run
 (see `descriptor-contract.md`). Saved unknown
 model IDs remain unchanged and readable. Model replacement requires the separate #157 migration
 transaction; ordinary parameter editing cannot replace this production selector.

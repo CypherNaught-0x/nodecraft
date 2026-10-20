@@ -10,7 +10,8 @@ Request admission checks depth 32, 4,096 aggregate visits (including empty conta
 flattened inputs, and 1 MiB aggregate text per original value. All parameters, input roots and
 repeated flattened roles share a 64 MiB conservative representation/work budget. Strings cost
 6 * UTF8 bytes + 34; values 128; input roots/emitted leaves 64 plus their charged role. Provider, model,
-parameter names and idempotency key count. Media inputs remain unsupported. These logical bounds
+parameter names and idempotency key count. Media inputs need a `MediaSource` (#502): each costs
+512 plus its MIME, and their stored sizes are summed against 64 MiB before any bytes are read. These logical bounds
 are not exact JSON sizes, allocator backing or RSS limits.
 
 Results retain the 4,096 item/route ceiling, 1 MiB aggregate routed text, 256 MiB binary item/raw

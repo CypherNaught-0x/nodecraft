@@ -2,8 +2,8 @@
 //! (`generation.text`, #84) cards over the same contract. Engine compiles the validated catalog
 //! into these immutable definitions; this L2 module never depends on catalog or a provider.
 use crate::{
-    Category, GenerateInput, GenerateOutput, InputContract, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx, PortCount,
-    descriptor::invalid,
+    Category, GenerateInput, GenerateOutput, InputContract, InputValue, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx,
+    PortCount, descriptor::invalid,
 };
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
@@ -216,6 +216,41 @@ impl GenerationKind {
         }
         Ok(Self { output, id, base: base(id, output), snapshot, definitions: Arc::new(definitions) })
     }
+    /// The media wired into `mode`'s non-prompt roles, one input per asset: roles in the order
+    /// the mode declares them, each role's assets in wire order. Every asset must carry its
+    /// role's modality, and each role gets between its `min` and `max` assets.
+    fn media(&self, mode: &GenerationMode, inputs: &[InputValue]) -> Result<Vec<GenerateInput>, Error> {
+        let mut media = Vec::new();
+        for role in mode.inputs.iter().filter(|role| role.role != PROMPT) {
+            let mut count = 0usize;
+            for input in inputs.iter().filter(|input| input.port == role.role) {
+                if role.modality == Modality::Text {
+                    return Err(said(ErrorKind::Unsupported, self.output, "connected text only feeds the {noun} prompt"));
+                }
+                let items = match &input.value {
+                    Value::List(items) => items.as_slice(),
+                    value => std::slice::from_ref(value),
+                };
+                for value in items {
+                    let Value::Media(asset) = value else {
+                        return Err(bad(self.output, "{noun} media inputs must be assets"));
+                    };
+                    if !role.modality.accepts_mime(asset.mime.essence()) {
+                        return Err(bad(self.output, "a {noun} media input has the wrong kind of asset for its role"));
+                    }
+                    count = count.saturating_add(1);
+                    if count > usize::from(role.max) {
+                        return Err(Error::new(ErrorKind::InvalidInput, format!("input {} takes at most {} assets", role.role, role.max)));
+                    }
+                    media.push(GenerateInput { role: role.role.clone(), value: value.clone() });
+                }
+            }
+            if count < usize::from(role.min) {
+                return Err(Error::new(ErrorKind::InvalidInput, format!("input {} needs at least {} assets", role.role, role.min)));
+            }
+        }
+        Ok(media)
+    }
     pub fn model(&self, id: &str) -> Option<&GenerationModel> {
         self.definitions.get(id).map(|d| &d.model)
     }
@@ -328,6 +363,23 @@ impl NodeKind for GenerationKind {
         let mode = if self.output == Modality::Text { "text-to-text" } else { "text-to-image" };
         inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
     }
+    /// Wired media is accepted when one of the model's modes declares a role of every connected
+    /// modality (#502); `plan` then checks roles, counts and asset types by port.
+    fn instance_mode(&self, node: &Node, inputs: &[PortType]) -> Result<Option<ModeId>, Error> {
+        self.resolve_instance(node)?;
+        if inputs.iter().all(|p| p.modality == Modality::Text) {
+            return Ok(self.mode(inputs));
+        }
+        Ok(self
+            .definition(node)?
+            .model
+            .modes
+            .iter()
+            .find(|mode| {
+                inputs.iter().all(|p| p.modality == Modality::Text || mode.inputs.iter().any(|role| role.role != PROMPT && role.modality == p.modality))
+            })
+            .map(|mode| mode.id.clone()))
+    }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         self.validate_instance(ctx.node, true)?;
         let definition = self.definition(ctx.node)?;
@@ -336,10 +388,10 @@ impl NodeKind for GenerationKind {
         }
         let mut wires = BTreeMap::new();
         for input in ctx.inputs {
-            if input.port != PROMPT || input.port_type.modality != Modality::Text {
-                return Err(said(ErrorKind::Unsupported, self.output, "{noun} generation media inputs require a host media resolver"));
-            }
-            if !definition.contract.inputs.iter().any(|port| port.port == input.port) {
+            let port = definition.descriptor.inputs.iter().find(|port| port.name == input.port);
+            if !port.is_some_and(|port| port.port_type.modality == input.port_type.modality)
+                || !definition.contract.inputs.iter().any(|port| port.port == input.port)
+            {
                 return Err(bad(self.output, "{noun} input names an unavailable port"));
             }
             let count = wires.entry(input.port.as_str()).or_insert(0usize);
@@ -349,7 +401,13 @@ impl NodeKind for GenerationKind {
         // In particular local text is never a substitute for a required non-inline wire.
         let mode_id = definition.contract.resolve_mode(&wires, true)?.ok_or_else(|| bad(self.output, "{noun} model has no declared input mode"))?;
         let mode = definition.model.modes.iter().find(|mode| mode.id == *mode_id).ok_or_else(|| bad(self.output, "{noun} model mode is unavailable"))?;
-        if !mode.inputs.iter().all(|r| (r.role == PROMPT && r.modality == Modality::Text && r.min <= 1 && r.max >= 1) || r.min == 0) {
+        // Media roles are sent as assets (#502); a required text role other than the prompt has
+        // no source yet.
+        if !mode
+            .inputs
+            .iter()
+            .all(|r| (r.role == PROMPT && r.modality == Modality::Text && r.min <= 1 && r.max >= 1) || r.modality != Modality::Text || r.min == 0)
+        {
             return Err(said(ErrorKind::Unsupported, self.output, "this {noun} model requires unsupported input roles"));
         }
         let prompt_role = mode
@@ -357,13 +415,11 @@ impl NodeKind for GenerationKind {
             .iter()
             .find(|r| r.role == PROMPT && r.modality == Modality::Text)
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, "model has no supported prompt role"))?;
+        let media = self.media(mode, ctx.inputs)?;
         let mut texts = Vec::new();
-        for input in ctx.inputs {
+        for input in ctx.inputs.iter().filter(|input| input.port == PROMPT) {
             if texts.len() >= MAX_PROMPTS {
                 return Err(invalid("too many prompt values"));
-            }
-            if input.port != PROMPT || input.port_type.modality != Modality::Text {
-                return Err(said(ErrorKind::Unsupported, self.output, "{noun} generation media inputs require a host media resolver"));
             }
             match &input.value {
                 Value::Text(text) => {
@@ -404,7 +460,7 @@ impl NodeKind for GenerationKind {
             instance: target.instance(),
             model: definition.model.remote.clone(),
             params,
-            inputs: vec![GenerateInput { role: PROMPT.into(), value: Value::Text(prompt) }],
+            inputs: std::iter::once(GenerateInput { role: PROMPT.into(), value: Value::Text(prompt) }).chain(media).collect(),
         }])
     }
 }
