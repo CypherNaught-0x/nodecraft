@@ -90,6 +90,7 @@ impl ResumeRecipe {
             input_hash: self.input_hash,
             items: Vec::new(),
             settings: self.settings.iter().cloned().collect(),
+            incomplete: None,
         };
         recordable(generation)
     }

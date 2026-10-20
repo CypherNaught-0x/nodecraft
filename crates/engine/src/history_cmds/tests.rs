@@ -211,7 +211,14 @@ fn the_active_result_is_what_downstream_nodes_are_built_on() {
     kinds.register(Box::new(Gen(descriptor))).unwrap();
     // The downstream result was made from take 2.
     let hash = nodecraft_exec::staleness::input_hash(project.canvases().get(&C).unwrap(), &kinds, down).unwrap();
-    let made = Generation { id: g(9), outputs: vec![Value::Text("from take 2".into())], input_hash: Some(hash), items: Vec::new(), settings: Vec::new() };
+    let made = Generation {
+        id: g(9),
+        outputs: vec![Value::Text("from take 2".into())],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
     Change::AddGeneration { canvas: C, id: down, index: 0, generation: made }.apply(&mut project).unwrap();
     Change::SetActiveGeneration { canvas: C, id: down, generation: Some(g(9)) }.apply(&mut project).unwrap();
     let mut s = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();

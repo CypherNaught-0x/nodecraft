@@ -92,7 +92,10 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
     }
     settings(generation)?;
     if generation.items.is_empty() {
-        return Ok(());
+        return match generation.incomplete {
+            Some(_) => Err(invalid("only a fanned generation can be partial")),
+            None => Ok(()),
+        };
     }
     if generation.items.len() > MAX_VALUE_ITEMS {
         return Err(invalid("generation exceeds item limit"));
@@ -104,6 +107,13 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
     }
     if generation.outputs.iter().any(|output| !matches!(output, Value::List(values) if values.len() == generation.items.len())) {
         return Err(invalid("a fanned generation needs one value per item on every output"));
+    }
+    if let Some(incomplete) = &generation.incomplete {
+        let ascending = incomplete.missing.windows(2).all(|pair| matches!(pair, [a, b] if a.item < b.item));
+        let in_range = incomplete.missing.last().is_some_and(|last| usize::try_from(last.item).is_ok_and(|item| item < generation.items.len()));
+        if !ascending || !in_range || incomplete.missing.len() >= generation.items.len() {
+            return Err(invalid("a partial generation names some, not all, of its items, once each, in order"));
+        }
     }
     Ok(())
 }

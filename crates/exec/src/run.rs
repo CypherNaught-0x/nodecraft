@@ -17,7 +17,7 @@
 use crate::planner::{InputSource, MAX_LIST_ITEMS, MAX_PLAN_INPUT_BYTES, MAX_STEP_INPUT_BYTES, RunPlan, Step};
 use crate::scheduler::{self, JobId, Lane, Outcome, RetryPolicy, Start};
 use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
-use nodecraft_graph::{Canvas, Change, Generation, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Node};
+use nodecraft_graph::{Canvas, Change, Generation, Incomplete, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Missing, MissingItem, Node};
 use nodecraft_nodes::{InputValue, JobSpec, PlanCtx, Registry};
 use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
 use std::collections::BTreeMap;
@@ -111,6 +111,9 @@ struct StepState {
     jobs: Vec<JobId>,
     /// For a fanned step (#92): the item each of `jobs` is for.
     job_items: Vec<usize>,
+    /// For a fanned step (#480): the items that won't finish in this run, why, and the first
+    /// error.
+    missing: BTreeMap<usize, (Missing, String)>,
     /// Steps that come after this one.
     dependents: Vec<NodeId>,
 }
@@ -288,7 +291,10 @@ impl Run {
                 earlier.dependents.push(step.node);
                 waiting = waiting.saturating_add(1);
             }
-            steps.insert(step.node, StepState { step, status: Status::Waiting(waiting), jobs: Vec::new(), job_items: Vec::new(), dependents: Vec::new() });
+            steps.insert(
+                step.node,
+                StepState { step, status: Status::Waiting(waiting), jobs: Vec::new(), job_items: Vec::new(), missing: BTreeMap::new(), dependents: Vec::new() },
+            );
         }
         let hasher = InputHasher::new(&canvas, kinds, MAX_QUERY_BYTES)?;
         let open_steps = steps.len();
@@ -389,25 +395,70 @@ impl Run {
         progress
     }
 
-    /// A job failed for good or was cancelled: its step fails (its other jobs are to be
-    /// cancelled), and so does everything after it.
-    pub fn job_failed(&mut self, job: JobId, error: &str) -> Progress {
+    /// A job failed for good: its step fails (its other jobs are to be cancelled), and so does
+    /// everything after it. In a fanned step only the job's item fails (#480): the other items
+    /// carry on, and the step records the ones that finish as a partial result.
+    pub fn job_failed(&mut self, kinds: &Registry, job: JobId, error: &str) -> Progress {
+        self.job_ended(kinds, job, Missing::Failed, error)
+    }
+
+    /// A job was cancelled, `reason` saying why: like [`Run::job_failed`], but its item is
+    /// recorded as cancelled rather than failed.
+    pub fn job_cancelled(&mut self, kinds: &Registry, job: JobId, reason: &str) -> Progress {
+        self.job_ended(kinds, job, Missing::Cancelled, reason)
+    }
+
+    fn job_ended(&mut self, kinds: &Registry, job: JobId, why: Missing, error: &str) -> Progress {
         let Some(state) = self.jobs.get_mut(&job) else { return Progress::default() };
         if state.done {
             return Progress::default();
         }
         state.done = true;
         let node = state.step;
-        if !matches!(self.steps.get(&node).map(|s| s.status), Some(Status::Running(_))) {
+        let Some(step) = self.steps.get_mut(&node) else { return Progress::default() };
+        if !matches!(step.status, Status::Running(_)) {
             return Progress::default();
         }
-        self.fail(node, error.to_owned())
+        let item = step.jobs.iter().position(|j| *j == job).and_then(|n| step.job_items.get(n).copied());
+        let (Some(item), Some(_)) = (item, &step.step.fanout) else { return self.fail(node, error.to_owned()) };
+        step.missing.entry(item).or_insert_with(|| (why, error.to_owned()));
+        // The item's other jobs can't make it whole any more.
+        let mut progress = Progress::default();
+        let mut ended = 1usize;
+        for (other, of) in step.jobs.iter().zip(&step.job_items) {
+            if *of != item || *other == job {
+                continue;
+            }
+            if let Some(state) = self.jobs.get_mut(other) {
+                state.outputs = Vec::new();
+                if !state.done {
+                    state.done = true;
+                    progress.cancel.push(*other);
+                    ended = ended.saturating_add(1);
+                }
+            }
+        }
+        let Status::Running(left) = &mut step.status else { return progress };
+        *left = left.saturating_sub(ended);
+        if *left > 0 {
+            return progress;
+        }
+        let (finished, ready) = self.finish(kinds, node);
+        progress.absorb(finished);
+        progress.absorb(self.start_ready(kinds, ready));
+        progress
     }
 
     /// Fails `node` and, transitively, every step after it.
     fn fail(&mut self, node: NodeId, reason: String) -> Progress {
+        self.fail_with(node, reason, "didn't produce a result")
+    }
+
+    /// [`Run::fail`], the steps after it told the node `skipped`.
+    fn fail_with(&mut self, node: NodeId, reason: String, skipped: &str) -> Progress {
         let mut progress = Progress::default();
         let mut queue = vec![(node, reason)];
+        let mut skipped = Some(skipped);
         while let Some((node, reason)) = queue.pop() {
             let Some(state) = self.steps.get_mut(&node) else { continue };
             if matches!(state.status, Status::Done | Status::Failed) {
@@ -427,7 +478,8 @@ impl Run {
             }
             progress.failed.push(StepFailure { node, reason });
             let title = self.title(node);
-            queue.extend(dependents.into_iter().map(|d| (d, format!("skipped: “{title}” didn't produce a result"))));
+            let why = skipped.take().unwrap_or("didn't produce a result");
+            queue.extend(dependents.into_iter().map(|d| (d, format!("skipped: “{title}” {why}"))));
         }
         progress
     }
@@ -681,10 +733,27 @@ impl Run {
     /// A step whose jobs are all done: its result, and the steps it makes ready (for the caller
     /// to start).
     fn finish(&mut self, kinds: &Registry, node: NodeId) -> (Progress, Vec<NodeId>) {
-        let result = match self.assemble(kinds, node) {
+        let missing = self.steps.get_mut(&node).map(|s| std::mem::take(&mut s.missing)).unwrap_or_default();
+        let items = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref()).map_or(0, |f| f.items.len());
+        if !missing.is_empty() && missing.len() >= items {
+            // Nothing finished: the step fails as a whole.
+            return (self.fail(node, first_reason(&missing)), Vec::new());
+        }
+        let result = match self.assemble(kinds, node, &missing) {
             Ok(result) => result,
             Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
+        if !missing.is_empty() {
+            // A partial result is kept, but what comes after it needs every item.
+            let reason = if missing.values().all(|(why, _)| *why == Missing::Cancelled) {
+                first_reason(&missing)
+            } else {
+                format!("{} of {items} items didn't finish: {}", missing.len(), first_reason(&missing))
+            };
+            let mut progress = self.fail_with(node, reason, "didn't produce a result for every item");
+            progress.finished.insert(0, result);
+            return (progress, Vec::new());
+        }
         let progress = Progress { finished: vec![result], ..Progress::default() };
         let mut ready = Vec::new();
         let dependents = self.steps.get_mut(&node).map(|state| {
@@ -709,22 +778,32 @@ impl Run {
 
     /// Assembles a step's outputs and stamps its input hash. A fanned step (#92) assembles each
     /// item as a step of its own, and each output becomes a list with one value per item.
-    fn assemble(&mut self, kinds: &Registry, node: NodeId) -> Result<StepResult, String> {
+    /// Items in `missing` (#480) get an empty list on every output; a step completing a partial
+    /// result copies the items it kept from it.
+    fn assemble(&mut self, kinds: &Registry, node: NodeId, missing: &BTreeMap<usize, (Missing, String)>) -> Result<StepResult, String> {
         let target = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
-        let (job_ids, job_items, items) = match self.steps.get(&node) {
-            Some(state) => (state.jobs.clone(), state.job_items.clone(), state.step.fanout.as_ref().map(|f| f.items.clone())),
-            None => (Vec::new(), Vec::new(), None),
+        let (job_ids, job_items, items, resume) = match self.steps.get(&node) {
+            Some(state) => {
+                let fanout = state.step.fanout.as_ref();
+                (state.jobs.clone(), state.job_items.clone(), fanout.map(|f| f.items.clone()), fanout.and_then(|f| f.resume.clone()))
+            }
+            None => (Vec::new(), Vec::new(), None, None),
+        };
+        let kept = match &resume {
+            Some(resume) => Some(target.history.iter().find(|g| g.id == resume.generation).ok_or("the partial result it completes is gone")?),
+            None => None,
         };
         let cells = items.as_ref().map_or(1, Vec::len);
         let mut per_cell: Vec<Vec<Vec<Value>>> = vec![vec![Vec::new(); target.outputs.len()]; cells];
-        let mut settings = Vec::new();
+        let mut settings: Vec<Vec<JobSettings>> = vec![Vec::new(); cells];
         for (n, job) in job_ids.into_iter().enumerate() {
             let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
             let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
             if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, .. }) = self.jobs.get(&job) {
                 let item = if items.is_some() { Some(u32::try_from(cell).map_err(|_| "a job's item is out of range")?) } else { None };
                 let inputs = inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect();
-                settings.push(JobSettings { provider: provider.clone(), instance: *instance, model: model.clone(), params: params.clone(), inputs, item });
+                let cell_settings = settings.get_mut(cell).ok_or("a job's item is out of range")?;
+                cell_settings.push(JobSettings { provider: provider.clone(), instance: *instance, model: model.clone(), params: params.clone(), inputs, item });
             }
             let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
             for (port, value) in outputs {
@@ -737,7 +816,26 @@ impl Run {
             }
         }
         let mut assembled = Vec::with_capacity(cells);
-        for per_port in per_cell {
+        for (cell, per_port) in per_cell.into_iter().enumerate() {
+            if missing.contains_key(&cell) {
+                settings.get_mut(cell).map(Vec::clear);
+                assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
+                continue;
+            }
+            if let (Some(resume), Some(kept)) = (&resume, kept)
+                && !resume.runs(cell)
+            {
+                let outputs = kept.outputs.iter().map(|output| match output {
+                    Value::List(values) => values.get(cell).cloned().ok_or("the partial result it completes lacks an item"),
+                    _ => Err("the partial result it completes isn't per item"),
+                });
+                assembled.push(outputs.collect::<Result<Vec<_>, _>>()?);
+                if let Some(cell_settings) = settings.get_mut(cell) {
+                    let of_cell = |job: &&JobSettings| job.item.and_then(|item| usize::try_from(item).ok()) == Some(cell);
+                    *cell_settings = kept.settings.iter().filter(of_cell).cloned().collect();
+                }
+                continue;
+            }
             let mut outputs = Vec::with_capacity(per_port.len());
             for (port, values) in target.outputs.iter().zip(per_port) {
                 if port.port_type.many {
@@ -769,9 +867,21 @@ impl Run {
         // What it was made from: the planned canvas, with this run's upstream outputs. An
         // over-budget hash is recorded as unknown rather than failing a paid result.
         let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
-        let generation = Generation { id: self.generation_id(node), outputs, input_hash, items: items.unwrap_or_default(), settings };
+        let incomplete = if missing.is_empty() {
+            None
+        } else {
+            let mut items = Vec::with_capacity(missing.len());
+            for (item, (why, _)) in missing {
+                items.push(MissingItem { item: u32::try_from(*item).map_err(|_| "a job's item is out of range")?, why: *why });
+            }
+            Some(Incomplete { missing: items })
+        };
+        let settings = settings.into_iter().flatten().collect();
+        let generation = Generation { id: self.generation_id(node), outputs, input_hash, items: items.unwrap_or_default(), settings, incomplete };
         let generation = recordable(generation)?;
-        self.produced.insert(node, generation.outputs.clone());
+        if generation.incomplete.is_none() {
+            self.produced.insert(node, generation.outputs.clone());
+        }
         Ok(StepResult { node, generation })
     }
 }
@@ -782,6 +892,12 @@ fn recordable(mut generation: Generation) -> Result<Generation, String> {
     while generation.validate().is_err() && shed(&mut generation) {}
     generation.validate().map_err(|e| format!("its result can't be recorded: {}", e.message))?;
     Ok(generation)
+}
+
+/// Why a step's items didn't finish: the first failure's error, else the first cancel's reason.
+fn first_reason(missing: &BTreeMap<usize, (Missing, String)>) -> String {
+    let failed = missing.values().find(|(why, _)| *why == Missing::Failed);
+    failed.or_else(|| missing.values().next()).map_or_else(String::new, |(_, reason)| reason.clone())
 }
 
 /// The item each job is for, from how many jobs each item has; empty when not fanned.
@@ -881,6 +997,9 @@ mod seed;
 pub use resume::{RecipePort, ResumeRecipe};
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod partial_tests;
 
 #[cfg(test)]
 mod output_contract_tests;

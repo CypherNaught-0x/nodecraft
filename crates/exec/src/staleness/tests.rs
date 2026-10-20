@@ -88,8 +88,14 @@ fn stamp(project: &mut Project, kinds: &Registry, n: u8) {
     let hash = input_hash(project.canvases().get(&C).unwrap(), kinds, id(n)).unwrap();
     let serial = project.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().history.len();
     let g = generation(n.wrapping_mul(16).wrapping_add(u8::try_from(serial).unwrap()));
-    let result =
-        Generation { id: g, outputs: vec![Value::Text(format!("result {n}.{serial}"))], input_hash: Some(hash), items: Vec::new(), settings: Vec::new() };
+    let result = Generation {
+        id: g,
+        outputs: vec![Value::Text(format!("result {n}.{serial}"))],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
     Changeset::new(vec![
         Change::AddGeneration { canvas: C, id: id(n), index: serial, generation: result },
         Change::SetActiveGeneration { canvas: C, id: id(n), generation: Some(g) },
@@ -427,7 +433,14 @@ fn a_large_source_fanned_out_is_hashed_once_and_oversized_queries_are_refused() 
             canvas: C,
             id: gen_id(i),
             index: 0,
-            generation: Generation { id: g, outputs: vec![Value::Text("r".into())], input_hash: Some(hash), items: Vec::new(), settings: Vec::new() },
+            generation: Generation {
+                id: g,
+                outputs: vec![Value::Text("r".into())],
+                input_hash: Some(hash),
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         });
         stamps.push(Change::SetActiveGeneration { canvas: C, id: gen_id(i), generation: Some(g) });
     }
@@ -884,6 +897,7 @@ fn diagnostic_results(project: &mut Project) {
             input_hash: Some(Blake3::from_bytes([0; 32])),
             items: Vec::new(),
             settings: Vec::new(),
+            incomplete: None,
         });
         node.active = Some(generation);
         Change::SetNode { canvas: C, node }.apply(project).unwrap();
@@ -998,7 +1012,14 @@ fn report_shared_rejected_source_reuses_cache_and_target_rejection_names_target(
     assert_eq!(calls.swap(0, std::sync::atomic::Ordering::SeqCst), 1);
     let mut source = project.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
     let generation = GenerationId::from_bytes([1; 16]);
-    source.history.push(Generation { id: generation, outputs: vec![], input_hash: Some(Blake3::from_bytes([0; 32])), items: Vec::new(), settings: Vec::new() });
+    source.history.push(Generation {
+        id: generation,
+        outputs: vec![],
+        input_hash: Some(Blake3::from_bytes([0; 32])),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    });
     source.active = Some(generation);
     Change::SetNode { canvas: C, node: source }.apply(&mut project).unwrap();
     let report = stale_report(project.canvases().get(&C).unwrap(), &kinds).unwrap();

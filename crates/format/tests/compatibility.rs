@@ -76,8 +76,14 @@ fn current_writers_admit_new_values_while_v1_envelopes_refuse_every_replay_role(
         assert_eq!(validate_v1_project(&snapshot.project).unwrap_err().kind, ErrorKind::Unsupported);
         assert_eq!(decode(&encode(&snapshot).unwrap()).unwrap(), snapshot);
         assert!(journal::checkpoint(&snapshot).is_ok());
-        let generation =
-            Generation { id: GenerationId::from_bytes([9; 16]), outputs: vec![value.clone()], input_hash: None, items: Vec::new(), settings: Vec::new() };
+        let generation = Generation {
+            id: GenerationId::from_bytes([9; 16]),
+            outputs: vec![value.clone()],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        };
         let mut canvas_data = Canvas::new(canvas(), "Canvas");
         let mut p = Project::new(ProjectId::from_bytes([1; 16]), "P").unwrap();
         Change::AddCanvas { canvas: canvas_data.clone() }.apply(&mut p).unwrap();
@@ -244,6 +250,7 @@ fn typed_generation_hashes_require_v2_but_absent_hash_stays_genuine_v1() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        incomplete: None,
     };
     assert!(serde_json::to_value(&generation).unwrap().get("input_hash").is_none());
     let mut n = node();

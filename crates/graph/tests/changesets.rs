@@ -131,6 +131,7 @@ fn all_edit_types_and_annotation_stubs_are_reversible() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        incomplete: None,
     };
     replacement.active = Some(generation.id);
     replacement.history.push(generation);
@@ -333,7 +334,14 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
                 canvas,
                 id,
                 index: usize::from(other - 1),
-                generation: Generation { id: generation, outputs: vec![Value::Text(text)], input_hash: None, items: Vec::new(), settings: Vec::new() },
+                generation: Generation {
+                    id: generation,
+                    outputs: vec![Value::Text(text)],
+                    input_hash: None,
+                    items: Vec::new(),
+                    settings: Vec::new(),
+                    incomplete: None,
+                },
             },
             13 => Change::RemoveGeneration { canvas, id, generation },
             14 => Change::SetActiveGeneration { canvas, id, generation: Some(generation) },
@@ -400,6 +408,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            incomplete: None,
         });
     }
     item.active = Some(GenerationId::from_bytes([2; 16]));
@@ -415,6 +424,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            incomplete: None,
         },
     };
     let undo = added.apply(&mut project).unwrap();
@@ -436,13 +446,27 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             canvas: canvas(),
             id: node_id(2),
             index: 0,
-            generation: Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![], input_hash: None, items: Vec::new(), settings: Vec::new() },
+            generation: Generation {
+                id: GenerationId::from_bytes([1; 16]),
+                outputs: vec![],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         },
         Change::AddGeneration {
             canvas: canvas(),
             id: node_id(1),
             index: usize::MAX,
-            generation: Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![], input_hash: None, items: Vec::new(), settings: Vec::new() },
+            generation: Generation {
+                id: GenerationId::from_bytes([4; 16]),
+                outputs: vec![],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         },
     ] {
         assert!(change.apply(&mut project).is_err());
@@ -520,6 +544,7 @@ fn aggregate_parameters_and_history_are_bounded_together() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        incomplete: None,
     });
     assert!(Change::SetNode { canvas: canvas(), node: item }.apply(&mut project).is_err());
     assert_eq!(project, before);

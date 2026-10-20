@@ -901,7 +901,7 @@ impl Controller {
         let run = self.run.as_mut().ok_or("run")?;
         let progress = match good {
             Some(outputs) => run.job_done(self.out.session.kinds(), job, outputs),
-            None => run.job_failed(job, "fixture terminal or conversion refusal"),
+            None => run.job_failed(self.out.session.kinds(), job, "fixture terminal or conversion refusal"),
         };
         if let Some(row) = self.out.jobs.get_mut(index) {
             row.notified = true;

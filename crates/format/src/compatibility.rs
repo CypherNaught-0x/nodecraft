@@ -63,8 +63,9 @@ fn node(item: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn generation(item: &Value) -> Result<(), Error> {
-    // Item tags (#92) and job settings (#162) are as unknown to version 1 as input hashes.
-    if item.get("input_hash").is_some() || item.get("items").is_some() || item.get("settings").is_some() {
+    // Item tags (#92), job settings (#162) and partial results (#480) are as unknown to version 1
+    // as input hashes.
+    if item.get("input_hash").is_some() || item.get("items").is_some() || item.get("settings").is_some() || item.get("incomplete").is_some() {
         return Err(unsupported());
     }
     if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
@@ -254,7 +255,11 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
             if !node.config.is_empty() || node.kind == "structure.note" {
                 return Err(unsupported());
             }
-            if node.history.iter().any(|generation| generation.input_hash.is_some() || !generation.items.is_empty() || !generation.settings.is_empty()) {
+            if node
+                .history
+                .iter()
+                .any(|generation| generation.input_hash.is_some() || !generation.items.is_empty() || !generation.settings.is_empty() || generation.is_partial())
+            {
                 return Err(unsupported());
             }
             for value in node.params.values().chain(node.history.iter().flat_map(|generation| &generation.outputs)) {
@@ -287,6 +292,7 @@ mod tests {
             input_hash: Some(nodecraft_types::Blake3::from_bytes([6; 32])),
             items: Vec::new(),
             settings: Vec::new(),
+            incomplete: None,
         });
         nodes.push(hashed);
         // Fanned results (#92) carry item tags version 1 can't read.
@@ -298,6 +304,7 @@ mod tests {
             input_hash: None,
             items: vec![vec![key]],
             settings: Vec::new(),
+            incomplete: None,
         });
         let mut v1 = Project::new(ProjectId::from_bytes([4; 16]), "Items").unwrap();
         Change::AddCanvas { canvas: Canvas::new(c, "C") }.apply(&mut v1).unwrap();
@@ -336,6 +343,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                incomplete: None,
             });
             nodes.push(output);
         }

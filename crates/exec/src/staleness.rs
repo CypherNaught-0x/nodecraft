@@ -713,7 +713,7 @@ fn input_hash_within(canvas: &Canvas, kinds: &Registry, id: NodeId, budget: usiz
 }
 
 /// Nodes whose active result is stale: its recorded input hash differs from the current one, or
-/// a node upstream of it is stale (it was built on out-of-date data). Nodes without a result, or
+/// a node upstream of it is stale (it was built on out-of-date data), or it is partial (#480). Nodes without a result, or
 /// whose result recorded no hash (made before hashing), or that their kind rejects, are never
 /// stale themselves. The set is transitive, as `planner::plan` expects. `Err` when routers can't
 /// be resolved or the canvas is too large to check ([`MAX_QUERY_BYTES`]).
@@ -742,8 +742,13 @@ fn query_stale(canvas: &Canvas, kinds: &Registry, budget: usize, details: bool) 
     let mut unknown_total = 0usize;
     let mut first_unknown = None;
     for node in canvas.nodes().values() {
-        let recorded = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).and_then(|g| g.input_hash);
-        if let Some(recorded) = recorded {
+        let active = node.active.and_then(|active| node.history.iter().find(|g| g.id == active));
+        // A partial result (#480) waits to be completed, whatever its inputs.
+        if active.is_some_and(nodecraft_graph::Generation::is_partial) {
+            stale.insert(node.id);
+            continue;
+        }
+        if let Some(recorded) = active.and_then(|g| g.input_hash) {
             match query.hash_detailed(canvas, kinds, node.id, &none)? {
                 HashResult::Ready(now) if now != recorded => {
                     stale.insert(node.id);

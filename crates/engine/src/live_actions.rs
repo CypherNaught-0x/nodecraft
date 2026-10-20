@@ -133,10 +133,10 @@ pub fn compute(job: LiveJob, kinds: &Registry) -> Result<LiveOutcome, Error> {
             Some(JobSpec::Action { action, params, inputs, output, .. }) => {
                 match nodecraft_exec::run::ActionExecutor::execute(&actions, &action, &params, &inputs) {
                     Ok(value) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
-                    Err(reason) => run.job_failed(scheduled.id, &reason),
+                    Err(reason) => run.job_failed(kinds, scheduled.id, &reason),
                 }
             }
-            _ => run.job_failed(scheduled.id, "live recompute runs only local work"),
+            _ => run.job_failed(kinds, scheduled.id, "live recompute runs only local work"),
         };
         queue.extend(progress.jobs);
         finished.extend(progress.finished.into_iter().map(|r| (r.node, r.generation)));
