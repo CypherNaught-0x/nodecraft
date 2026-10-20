@@ -38,7 +38,9 @@ panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 
 additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally. The composer's submit button is 28
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide. A sheet's table has 32-wide checkbox and number columns and
 120-wide model, references, result, status and button columns, the prompt taking the rest; the
-Sheets panel lists canvases 320 high, with a 250-wide title field.
+Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
+properties panels are 250 wide; a dragged layer snaps within 6 points of a guide, and its rotate
+handle sits 24 points above it.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the

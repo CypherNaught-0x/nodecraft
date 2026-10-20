@@ -81,7 +81,7 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
                 assert_eq!(action.inputs.first().map(|p| p.port_type.modality), Some(input), "{id}");
             }
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
-            let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()) }];
+            let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()), origins: vec![] }];
             assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
         }
     }
@@ -108,6 +108,8 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
             }
             // A technique node (#94) needs the version it pins, and runs only once that is inlined.
             "structure.technique" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
+            // The layer editor (#101) draws text and shapes with nothing connected.
+            "image.layers" => assert!(matches!(result.unwrap().as_slice(), [JobSpec::Action { inputs, .. }] if inputs.is_empty())),
             // Action kinds (#410) need a connected input before they can be planned.
             id if descriptor.category == nodecraft_nodes::Category::Action => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "{id}"),
             id => panic!("add an explicit default-planning contract for builtin {id}"),

@@ -17,6 +17,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }
 regex-syntax = { workspace = true }
+harfrust = { workspace = true }
+skrifa = { workspace = true }
+vello_cpu = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.12"

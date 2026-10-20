@@ -67,7 +67,7 @@ fn its_plan_gives_back_the_inlined_results_and_refuses_without_them() {
     let node = kind.instantiate_instance(NodeId::from_bytes([5; 16]), interface.config().unwrap(), &Default::default()).unwrap();
     let ctx = |inputs: &[InputValue]| kind.plan(&PlanCtx { node: &node, inputs, targets: &nodecraft_types::EMPTY_TARGET_SELECTION });
     assert_eq!(ctx(&[]).unwrap_err().kind, ErrorKind::Unsupported);
-    let inlined = InputValue { port: format!("{OUTPUT_PREFIX}swapped"), port_type: text(), value: Value::Text("a dog".into()) };
+    let inlined = InputValue { port: format!("{OUTPUT_PREFIX}swapped"), port_type: text(), value: Value::Text("a dog".into()), origins: vec![] };
     assert_eq!(ctx(&[inlined]).unwrap(), vec![JobSpec::Source { node: node.id, output: "swapped".into(), value: Value::Text("a dog".into()) }]);
 }
 

@@ -12,6 +12,7 @@ mod validate;
 use color::Pixel;
 pub use executor::CpuExecutor;
 pub use params::ImageRequest;
+pub(crate) use raster::buffer;
 pub use raster::{Raster, RasterView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

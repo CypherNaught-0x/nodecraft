@@ -129,6 +129,14 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.create",
     "mask.margins_set",
     "mask.edit",
+    // Layers only change the node's stored layers; nothing runs.
+    "layers.list",
+    "node.layers_set",
+    "layers.add",
+    "layers.update",
+    "layers.remove",
+    "layers.reorder",
+    "layers.align",
     "plugins.list",
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",

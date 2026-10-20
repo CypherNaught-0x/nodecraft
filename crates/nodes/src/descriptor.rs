@@ -116,6 +116,10 @@ pub struct InputValue {
     pub port: String,
     pub port_type: PortType,
     pub value: Value,
+    /// The upstream node each value came from, in order: one per item of a list input, one for
+    /// a single input. A kind can key per-source state on it (the layer editor's layers, #101);
+    /// it may be empty or shorter when the origin isn't known.
+    pub origins: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug)]

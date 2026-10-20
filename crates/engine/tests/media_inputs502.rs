@@ -119,7 +119,7 @@ fn asset(n: u8, mime: &str) -> Value {
 }
 
 fn wired(port: &str, modality: Modality, value: Value) -> InputValue {
-    InputValue { port: port.into(), port_type: PortType { modality, many: true }, value }
+    InputValue { port: port.into(), port_type: PortType { modality, many: true }, value, origins: vec![] }
 }
 
 /// Plan a lone card of `kind` running `model` with `inputs`, with no session around it.

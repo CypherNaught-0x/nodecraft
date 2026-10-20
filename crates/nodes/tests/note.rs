@@ -10,8 +10,12 @@ fn note_has_no_ports_and_plans_no_work() {
     assert_eq!(node.params.get("text"), Some(&Value::Text(String::new())));
     assert!(kind.mode(&[]).is_some());
     assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &[] }).unwrap().is_empty());
-    let inputs =
-        [InputValue { port: "in".into(), port_type: PortType { modality: Modality::Text, many: false }, value: Value::Text("not a wire destination".into()) }];
+    let inputs = [InputValue {
+        port: "in".into(),
+        port_type: PortType { modality: Modality::Text, many: false },
+        value: Value::Text("not a wire destination".into()),
+        origins: vec![],
+    }];
     assert!(kind.mode(&[inputs[0].port_type]).is_none());
     assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &node, inputs: &inputs }).is_err());
     let mut stale = node;

@@ -24,6 +24,7 @@ pub mod history_cmds;
 pub mod import;
 pub mod jobs;
 pub mod keys_cmds;
+pub mod layer_cmds;
 pub mod layout_cmds;
 pub mod library;
 pub mod library_cmds;

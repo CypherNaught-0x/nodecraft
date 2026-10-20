@@ -40,7 +40,7 @@ fn every_action_kind_runs_with_its_defaults() {
         }
         ran += 1;
     }
-    assert_eq!(ran, 19);
+    assert_eq!(ran, 20);
     // Every new image is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());
@@ -271,6 +271,36 @@ fn the_new_kinds_do_what_they_say() {
 }
 
 #[test]
+fn the_layer_editor_draws_its_stored_layers_over_a_fitted_image() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let hash = assets.insert(&png(200, 100)).unwrap();
+    let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    let mut params = defaults(&kinds, nodecraft_nodes::layers::ID);
+    params.insert("width".into(), Value::Unsigned(nodecraft_types::Unsigned(300)));
+    params.insert("height".into(), Value::Unsigned(nodecraft_types::Unsigned(300)));
+    let shape =
+        r##"{"layers":[{"id":"box","name":"Box","x":150,"y":150,"width":20,"height":20,"content":{"kind":"shape","shape":"rectangle","fill":"#ff0000"}}]}"##;
+    params.insert(nodecraft_nodes::layers::SPEC_PARAM.into(), Value::Text(shape.into()));
+    params.insert(nodecraft_nodes::layers::SOURCES_PARAM.into(), Value::List(vec![Value::Text("a".into())]));
+    let Value::Media(out) = actions.execute(nodecraft_nodes::layers::ID, &params, &[image]).unwrap() else { panic!("an image") };
+    assert_eq!((out.meta.width, out.meta.height), (Some(300), Some(300)));
+    let staged = actions.take_staged();
+    let png = staged.get(&out.hash).unwrap();
+    let (_, decoded) = nodecraft_media::decode_image(png, &nodecraft_media::Limits::default()).unwrap();
+    let rgba = decoded.to_rgba8();
+    let px = |x: u32, y: u32| rgba.get_pixel(x, y).0.to_vec();
+    // The image fits the frame's width and is centred, so the white background shows above it,
+    // and the image layer, added on top, covers the stored shape.
+    assert_eq!(px(150, 10), vec![255, 255, 255, 255]);
+    assert_eq!(px(150, 150)[1..], [80, 160, 255]);
+    // A hostile spec is an error, not a panic.
+    params.insert(nodecraft_nodes::layers::SPEC_PARAM.into(), Value::Text("{".into()));
+    assert!(actions.execute(nodecraft_nodes::layers::ID, &params, &[]).is_err());
+}
+
+#[test]
 fn an_overlay_plans_with_both_of_its_inputs_in_port_order() {
     use nodecraft_nodes::{InputValue, PlanCtx};
     use nodecraft_types::{Modality, PortType};
@@ -278,7 +308,7 @@ fn an_overlay_plans_with_both_of_its_inputs_in_port_order() {
     let kind = kinds.get("image.overlay").unwrap();
     let node = kind.instantiate_instance(NodeId::from_bytes([1; 16]), Default::default(), &Default::default()).unwrap();
     let t = PortType { modality: Modality::Image, many: false };
-    let input = |port: &str, n: u8| InputValue { port: port.into(), port_type: t, value: Value::Text(format!("{n}")) };
+    let input = |port: &str, n: u8| InputValue { port: port.into(), port_type: t, value: Value::Text(format!("{n}")), origins: vec![] };
     // Connected in the "wrong" order: planning still puts the base image first.
     let jobs =
         kind.plan(&PlanCtx { node: &node, inputs: &[input("overlay", 2), input("image", 1)], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap();

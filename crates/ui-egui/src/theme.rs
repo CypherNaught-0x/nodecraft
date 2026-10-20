@@ -134,6 +134,11 @@ pub struct Tokens {
     pub sheet_column_width: f32,
     pub sheet_list_height: f32,
     pub sheet_title_width: f32,
+    /// The Layer Editor (#101): the width of its layers and properties panels, how near (screen
+    /// points) an edge or centre snaps to a guide, and how far above a layer its rotate handle sits.
+    pub layers_panel_width: f32,
+    pub layer_snap_distance: f32,
+    pub layer_rotate_offset: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -233,6 +238,9 @@ pub const DARK: Tokens = Tokens {
     sheet_column_width: 120.0,
     sheet_list_height: 320.0,
     sheet_title_width: 250.0,
+    layers_panel_width: 250.0,
+    layer_snap_distance: 6.0,
+    layer_rotate_offset: 24.0,
 };
 
 pub const LIGHT: Tokens = Tokens {

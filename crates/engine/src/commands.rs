@@ -210,6 +210,7 @@ impl Registry {
             .chain(crate::cache_cmds::specs())
             .chain(crate::shader_cmds::specs())
             .chain(crate::mask_cmds::specs())
+            .chain(crate::layer_cmds::specs())
             .chain(crate::plugin_cmds::specs())
             .chain(crate::ownership_cmds::specs())
             .chain(crate::resolve_cmds::specs())

@@ -705,15 +705,21 @@ impl Run {
             let mut inputs = Vec::with_capacity(planned.len());
             for input in *planned {
                 let mut values = Vec::new();
-                for source in &input.from {
+                let mut origins = Vec::new();
+                for (index, source) in input.from.iter().enumerate() {
+                    let origin = input.origins.get(index).copied();
                     for item in self.input_items(source, input.port_type.many)? {
                         values.push(item.clone());
+                        origins.extend(origin);
                         #[cfg(test)]
                         self.copied_input_bytes.set(self.copied_input_bytes.get().saturating_add(crate::planner::value_bytes(item)));
                     }
                 }
                 let value = if input.port_type.many { Value::List(values) } else { values.into_iter().next().ok_or("the preflight input is gone")? };
-                inputs.push(InputValue { port: input.port.clone(), port_type: input.port_type, value });
+                if !input.port_type.many {
+                    origins.truncate(1);
+                }
+                inputs.push(InputValue { port: input.port.clone(), port_type: input.port_type, value, origins });
             }
             let planned = kind
                 .plan(&PlanCtx {

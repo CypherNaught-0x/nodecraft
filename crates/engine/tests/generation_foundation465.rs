@@ -550,6 +550,7 @@ fn production_connected_prompt_order_and_media_refusal_are_pure_before_submit() 
         port: "prompt".into(),
         port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: true },
         value: Value::List(vec![Value::Text("First".into()), Value::Text("Second".into())]),
+        origins: vec![],
     }];
     let jobs = kind.plan(&nodecraft_nodes::PlanCtx { node, inputs: &inputs, targets: &targets }).unwrap();
     let nodecraft_nodes::JobSpec::Generate { inputs: sent, .. } = &jobs[0] else { panic!() };
@@ -562,6 +563,7 @@ fn production_connected_prompt_order_and_media_refusal_are_pure_before_submit() 
             mime: "image/png".parse().unwrap(),
             meta: Default::default(),
         }),
+        origins: vec![],
     }];
     // This model declares no image role (#502), so the wire reaches a port the card doesn't have.
     let refused = kind.plan(&nodecraft_nodes::PlanCtx { node, inputs: &media, targets: &targets }).unwrap_err();

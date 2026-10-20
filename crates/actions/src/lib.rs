@@ -8,6 +8,8 @@
 pub mod expr;
 /// Bounded deterministic CPU image operations.
 pub mod image;
+/// The layer editor's compositor: image, text and shape layers in one frame (#101).
+pub mod layers;
 /// Brush masks and canvas expansion for inpainting and outpainting (#102).
 pub mod mask;
 /// Bounded deterministic CPU text operations; no document mutation.
