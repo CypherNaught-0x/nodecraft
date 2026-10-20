@@ -71,8 +71,9 @@ pub enum IssueCode {
     /// A cross-field check failed.
     Check,
     /// The value is not on the list the host fetched for it (the checkpoint was removed from
-    /// the server). Dropped when not `ready`, so other fields stay editable; run planning does
-    /// not consult the lists yet.
+    /// the server). Dropped when not `ready`, so other fields stay editable. `run.quote` and
+    /// `run.start` plan with the host's lists, so it blocks those runs before anything is
+    /// admitted or charged; an unfetched list still refuses nothing.
     NotAnOption,
 }
 

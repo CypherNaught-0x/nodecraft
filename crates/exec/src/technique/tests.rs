@@ -124,7 +124,15 @@ fn project(words: Option<&str>, ending: &str) -> (Project, Registry) {
 
 fn planned(project: &Project, kinds: &Registry, requested: &[NodeId]) -> Result<Planned, Error> {
     let expanded = expand(project.canvases(), project.canvases().get(&C).unwrap(), kinds)?;
-    plan_expanded(&expanded, kinds, &RunMode::Selected, &requested.iter().copied().collect(), &BTreeSet::new(), &nodecraft_types::EMPTY_TARGET_SELECTION)
+    plan_expanded(
+        &expanded,
+        kinds,
+        &RunMode::Selected,
+        &requested.iter().copied().collect(),
+        &BTreeSet::new(),
+        &nodecraft_types::EMPTY_TARGET_SELECTION,
+        &nodecraft_types::NoOptions,
+    )
 }
 
 fn ready(planned: Planned) -> RunPlan {

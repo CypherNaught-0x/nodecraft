@@ -20,6 +20,8 @@ use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, 
 use nodecraft_types::{Error, ErrorKind, FieldId, NodeId, PortType, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod options;
+
 /// Which nodes a run covers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunMode {
@@ -124,6 +126,11 @@ pub enum Reason {
     UnsupportedInputs,
     /// The kind rejected the node (e.g. a required parameter is empty).
     Invalid(String),
+    /// A parameter's value is not on the run-time list the host fetched for it (#162). Carries
+    /// nothing on purpose: the blocked report a CLI, agent or the shell's notice is built from is
+    /// fixed-shape records that never copy a contract, kind or model string. `node.describe` and
+    /// `node.options` name the parameter, per node, when a caller needs which one.
+    NotAnOption,
     /// Checked endpoint selection failed.
     ProviderTarget(TargetReason),
 }
@@ -151,6 +158,9 @@ impl Blocker {
             (Reason::UnknownKind, ..) => format!("Can't run {node}: its node kind isn't available."),
             (Reason::UnsupportedInputs, ..) => format!("Can't run {node}: it doesn't accept this combination of inputs."),
             (Reason::ProviderTarget(reason), ..) => format!("Can't run {node}: {}.", reason.message()),
+            (Reason::NotAnOption, ..) => {
+                format!("Can't run {node}: a parameter is not one of the available options; refresh the list or pick another.")
+            }
             (Reason::Invalid(message), _, Some(up)) if up != self.node => format!("Can't run {node}: {} has a problem: {message}", name(up)),
             (Reason::Invalid(message), ..) => format!("Can't run {node}: {message}"),
         }
@@ -189,8 +199,10 @@ pub fn plan(canvas: &Canvas, kinds: &Registry, mode: &RunMode, requested: &BTree
     plan_with_targets(canvas, kinds, mode, requested, stale, &nodecraft_types::EMPTY_TARGET_SELECTION)
 }
 
-/// Plan with the immutable endpoint view supplied before any kind hook, on a canvas whose
-/// technique nodes are already inlined (or that has none).
+/// Plan with the immutable endpoint view supplied before any kind hook, and no run-time option
+/// lists: [`plan_with_options`] with an empty [`nodecraft_types::NoOptions`], so nothing is
+/// refused for its options. Live local recompute and a technique's publish check plan through
+/// this; a run that can cost money plans through [`plan_expanded`] with the host's lists.
 pub fn plan_with_targets(
     canvas: &Canvas,
     kinds: &Registry,
@@ -199,11 +211,32 @@ pub fn plan_with_targets(
     stale: &BTreeSet<NodeId>,
     targets: &nodecraft_types::TargetSelection,
 ) -> Result<Planned, Error> {
-    plan_expanded(&Expanded::plain(canvas), kinds, mode, requested, stale, targets)
+    plan_with_options(canvas, kinds, mode, requested, stale, targets, &nodecraft_types::NoOptions)
+}
+
+/// Plan with the endpoint view and the option lists the host has fetched (#162), on a canvas
+/// with no technique nodes to inline: [`plan_expanded`] over the canvas as is.
+pub fn plan_with_options(
+    canvas: &Canvas,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+    options: &dyn nodecraft_types::OptionLookup,
+) -> Result<Planned, Error> {
+    plan_expanded(&Expanded::plain(canvas), kinds, mode, requested, stale, targets, options)
 }
 
 /// Plan on a canvas with its technique nodes inlined ([`crate::technique::expand`]). `stale`
 /// holds nodes of the real canvas; inlined nodes have no results of their own, so they run.
+///
+/// `options` answers what the host knows of a parameter's run-time list; a value off a list it
+/// *has* fetched blocks its node with [`Reason::NotAnOption`] here, before any job is admitted,
+/// quoted or charged, and before an idempotency key exists. A list it has not fetched, could not
+/// fetch, or whose scope parameter has no value refuses nothing: unknown is not empty, and the
+/// provider stays the authority when the job is submitted; the check itself is the `options`
+/// module. Inlined technique nodes carry their params, so they are checked the same way.
 pub fn plan_expanded(
     expanded: &Expanded<'_>,
     kinds: &Registry,
@@ -211,9 +244,10 @@ pub fn plan_expanded(
     requested: &BTreeSet<NodeId>,
     stale: &BTreeSet<NodeId>,
     targets: &nodecraft_types::TargetSelection,
+    options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
     let canvas: &Canvas = &expanded.canvas;
-    let graph = Graph::new(canvas, kinds, targets, &expanded.collects)?;
+    let graph = Graph::new(canvas, kinds, targets, &expanded.collects, options)?;
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id) || expanded.inner.contains_key(id)) {
@@ -278,6 +312,10 @@ pub fn plan_expanded(
 /// A blocker as the real canvas shows it: one inside a technique is its technique node's.
 fn owned(blocker: Blocker, expanded: &Expanded<'_>) -> Blocker {
     if expanded.inner.contains_key(&blocker.node) {
+        // An off-list value keeps its own reason, so the technique node reports the same code.
+        if blocker.reason == Reason::NotAnOption {
+            return Blocker { node: expanded.owner(blocker.node), port: None, upstream: None, reason: Reason::NotAnOption };
+        }
         let message = blocker.message(&expanded.canvas);
         return Blocker { node: expanded.owner(blocker.node), port: None, upstream: None, reason: Reason::Invalid(format!("inside its technique: {message}")) };
     }
@@ -331,6 +369,8 @@ struct Graph<'a> {
     canvas: &'a Canvas,
     kinds: &'a Registry,
     targets: &'a nodecraft_types::TargetSelection,
+    /// What the host has fetched of each parameter's run-time list (#162).
+    options: &'a dyn nodecraft_types::OptionLookup,
     /// Inputs of each node: (port, upstream node, upstream port, order).
     into: BTreeMap<NodeId, Vec<(&'a str, NodeId, &'a str, u32)>>,
     routing: crate::routing::Incoming<'a>,
@@ -347,6 +387,7 @@ impl<'a> Graph<'a> {
         kinds: &'a Registry,
         targets: &'a nodecraft_types::TargetSelection,
         collects: &'a BTreeMap<NodeId, Vec<Collect>>,
+        options: &'a dyn nodecraft_types::OptionLookup,
     ) -> Result<Self, Error> {
         // Routers are resolved away: consumers read the routers' own sources.
         let mut routing = crate::routing::incoming(canvas, kinds)?;
@@ -355,7 +396,7 @@ impl<'a> Graph<'a> {
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
         let pairing = canvas.nodes().values().filter(|n| n.kind == batch::ID).filter_map(|n| Some((n.id, batch::pairing(n).ok()?))).collect();
-        Ok(Self { canvas, kinds, targets, into, routing, pairing, collects })
+        Ok(Self { canvas, kinds, targets, options, into, routing, pairing, collects })
     }
 
     /// What `id` is made from: its inputs' nodes and, for a technique node, the inlined nodes
@@ -455,7 +496,15 @@ impl<'a> Graph<'a> {
         }
         // List inputs that run once per item rather than collecting them (#515).
         let fans_out: BTreeSet<String> = match kind.instance_contract(node) {
-            Ok(contract) => contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect(),
+            Ok(contract) => {
+                // A value off a list the host has fetched blocks the run here, before any job of
+                // this node is admitted, quoted or charged (#162). An unfetched list refuses
+                // nothing, so an offline host still runs the node and lets the provider judge.
+                if options::off_list(&contract, node, self.options) {
+                    blockers.push(blocker(None, None, Reason::NotAnOption));
+                }
+                contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect()
+            }
             Err(error) => {
                 blockers.push(blocker(None, None, Reason::Invalid(error.message)));
                 BTreeSet::new()
@@ -883,5 +932,7 @@ fn known_inputs(inputs: &[PlannedInput]) -> Option<Vec<InputValue>> {
 
 #[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+mod options_tests;
 #[cfg(test)]
 mod tests;

@@ -14,5 +14,11 @@
 - **Off-list never blocks the node.** `not_an_option` is dropped when not `ready`, and edit
   commands refuse it only when they set that parameter (clearing it is allowed). A checkpoint deleted on the server
   then shows as an issue on its own parameter while the rest of the node stays editable.
-- **Run planning does not consult the lists yet.** That comes with the fetch (ComfyUI
-  `object_info`) so a run is never refused against a list the host never refreshed.
+- **Run planning consults the installed lists.** It did not when this record was written;
+  [A value off a fetched option list blocks the run](2026-10-20-option-lists-block-a-run.md)
+  is the change that made it so.
+  `run.quote` and `run.start` plan with the host's `OptionLists`, so a value off a *known* list
+  blocks the run before anything is admitted, priced or charged. What still refuses nothing is
+  what never did: a list the host has not fetched, could not fetch, or whose scope parameter has
+  no value, so a run is never refused against a list the host never refreshed. Fetching from a
+  real server (ComfyUI `object_info`, provider inventories) remains a separate issue.
