@@ -18,6 +18,8 @@ impl AssetStore {
     /// lease. Indexed bytes remain streamed; unknown signatures and advisory metadata keep
     /// the existing format policy. A project UUID is never content authority.
     pub fn validate_reference(&self, asset: &nodecraft_types::AssetRef) -> Result<(), Error> {
+        #[cfg(any(test, feature = "validation-metrics"))]
+        crate::validation_metrics::record(|metrics| metrics.reference_checks = metrics.reference_checks.saturating_add(1));
         self.open_verified(asset, &crate::asset_source::TransferCancel::default(), &crate::asset_source::StreamMetrics::default()).map(|_| ())
     }
 

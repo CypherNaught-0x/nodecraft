@@ -65,7 +65,7 @@ impl std::fmt::Debug for Blake3 {
 
 /// A validated MIME value, including optional parameters (for example a text charset).
 /// Equality preserves parameter spelling/spacing. Use `essence()` to compare media types.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Mime(String);
 
@@ -110,7 +110,7 @@ impl From<Mime> for String {
 
 /// Optional facts reported by a media probe. Integers avoid NaN/infinity; consumers must still
 /// cap dimensions, durations and allocation sizes before decoding hostile assets.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
@@ -126,7 +126,7 @@ pub struct MediaMeta {
     pub page_count: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AssetRef {
     pub hash: Blake3,
     pub mime: Mime,

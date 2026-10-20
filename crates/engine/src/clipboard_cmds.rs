@@ -34,12 +34,15 @@ fn paste(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
             kind.validate_instance(node, false).map_err(|error| Error::new(error.kind, format!("pasted {} node: {}", node.kind, error.message)))?;
         }
     }
+    // Each distinct reference is verified once per paste: the same media in many nodes or
+    // list items streams its bytes once.
+    let mut verified = std::collections::HashSet::new();
     for node in &p.nodes {
         // params() has bounded the JSON and detached graph payload. Bound list traversal
         // independently before growing the explicit reference stack.
         node.validate_payload()?;
         for root in node.params.values().chain(node.config.values()) {
-            validate_assets(c, root)?;
+            validate_assets(c, root, &mut verified)?;
         }
     }
     let ids: Vec<_> = p.nodes.iter().map(|node| node.id).collect();
@@ -50,7 +53,11 @@ fn paste(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Edit { changes, result: json!({"nodes": ids}), gesture: None })
 }
 
-fn validate_assets(c: &Context<'_>, root: &nodecraft_types::Value) -> Result<(), Error> {
+fn validate_assets<'v>(
+    c: &Context<'_>,
+    root: &'v nodecraft_types::Value,
+    verified: &mut std::collections::HashSet<&'v nodecraft_types::AssetRef>,
+) -> Result<(), Error> {
     let mut stack = vec![(root, 0usize)];
     let mut seen = 0usize;
     while let Some((value, depth)) = stack.pop() {
@@ -59,7 +66,12 @@ fn validate_assets(c: &Context<'_>, root: &nodecraft_types::Value) -> Result<(),
             return Err(invalid("asset references exceed value limits"));
         }
         match value {
-            nodecraft_types::Value::Media(asset) => c.validate_asset(asset)?,
+            nodecraft_types::Value::Media(asset) => {
+                if !verified.contains(asset) {
+                    c.validate_asset(asset)?;
+                    verified.insert(asset);
+                }
+            }
             nodecraft_types::Value::List(values) => {
                 if seen.saturating_add(stack.len()).saturating_add(values.len()) > nodecraft_graph::MAX_VALUE_ITEMS {
                     return Err(invalid("asset references exceed value limits"));
@@ -73,7 +85,11 @@ fn validate_assets(c: &Context<'_>, root: &nodecraft_types::Value) -> Result<(),
 }
 
 fn enabled_paste(c: &Context<'_>, value: &Value) -> Result<(), Error> {
-    // Full validation only when previewing; dispatch stages the changeset once itself.
+    // Full validation only when previewing; dispatch runs `paste` right after this check and
+    // stages the changeset once itself, so it shouldn't verify every asset twice.
+    if matches!(c.phase, crate::commands::Phase::Dispatch) {
+        return c.editable();
+    }
     if let Effect::Edit { changes, .. } = paste(c, value)? {
         c.preview_changes(&changes)?;
     }
@@ -225,5 +241,25 @@ mod tests {
         let p = json!({"canvas":C,"nodes":[n]});
         assert!(s.enabled("canvas.paste", &p).is_err());
         assert!(s.dispatch("canvas.paste", &p).is_err());
+    }
+    #[test]
+    fn paste_verifies_each_distinct_reference_once() {
+        let mut s = session();
+        let shared =
+            nodecraft_types::AssetRef { hash: s.import_asset(b"shared fixture").unwrap(), mime: "text/plain".parse().unwrap(), meta: Default::default() };
+        let other = nodecraft_types::AssetRef { hash: s.import_asset(b"other fixture").unwrap(), ..shared.clone() };
+        let nodes: Vec<_> = (1..=3)
+            .map(|n| {
+                let mut node = node(n);
+                let media = nodecraft_types::Value::Media(shared.clone());
+                node.config.insert("nested".into(), nodecraft_types::Value::List(vec![media.clone(), media.clone()]));
+                node.params.insert("asset".into(), if n == 3 { nodecraft_types::Value::Media(other.clone()) } else { media });
+                node
+            })
+            .collect();
+        nodecraft_format::take_validation_metrics();
+        s.dispatch("canvas.paste", &json!({"canvas":C,"nodes":nodes})).unwrap();
+        // Nine references, two distinct: one check each, not one per occurrence.
+        assert_eq!(nodecraft_format::take_validation_metrics().reference_checks, 2);
     }
 }

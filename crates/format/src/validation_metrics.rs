@@ -7,10 +7,11 @@ pub struct ValidationMetrics {
     pub sniffs: usize,
     pub image_probes: usize,
     pub replay_preflights: usize,
+    pub reference_checks: usize,
 }
 thread_local! {
     static METRICS: std::cell::Cell<ValidationMetrics> = const { std::cell::Cell::new(ValidationMetrics {
-        full_asset_checks: 0, full_v1_checks: 0, asset_node_visits: 0, sniffs: 0, image_probes: 0, replay_preflights: 0,
+        full_asset_checks: 0, full_v1_checks: 0, asset_node_visits: 0, sniffs: 0, image_probes: 0, replay_preflights: 0, reference_checks: 0,
     }) };
 }
 pub(crate) fn record(update: impl FnOnce(&mut ValidationMetrics)) {
