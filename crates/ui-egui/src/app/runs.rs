@@ -13,6 +13,7 @@
 use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
+    held_store::FileHeld,
     jobs::JobBudget,
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
@@ -215,11 +216,23 @@ impl Runs {
     }
 
     /// Keeps runs in the journal at `path` across restarts (see the module docs), restoring
-    /// what it holds. Call before [`Self::install`], and only while this window owns `path`.
+    /// what it holds, and held results in the `held` folder beside it (#614). Call before
+    /// [`Self::install`], and only while this window owns `path`.
     pub(super) fn open_journal(&mut self, path: std::path::PathBuf) {
+        let held = path.with_file_name("held");
+        let mut problems = Vec::new();
         if let Err(error) = self.host.open_journal(Box::new(FileJournal::at(path))) {
             log::warn!("run journal: {}", error.message);
-            self.journal_problem = Some(format!("Runs from the last session couldn't be restored: {}", error.message));
+            problems.push(format!("Runs from the last session couldn't be restored: {}", error.message));
+        }
+        if let Err(error) = self.host.open_held(Box::new(FileHeld::at(held))) {
+            log::warn!("held results: {}", error.message);
+            problems.push(format!("Paid results held from the last session: {}", error.message));
+        }
+        // Restored results show in the queue panel before anything runs.
+        self.held = self.host.held_results();
+        if !problems.is_empty() {
+            self.journal_problem = Some(problems.join("\n"));
         }
     }
 

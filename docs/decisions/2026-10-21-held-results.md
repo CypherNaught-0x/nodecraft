@@ -27,8 +27,8 @@
   Jobs already in flight may still add theirs, so the store can briefly exceed the bound, but
   only by the number of in-flight jobs.
 - **Memory only.** A result a restarted job delivers while its project is closed is held too,
-  and is retried or placed once that project is open. Held results are lost when NodeCraft quits; the queue panel says so. Writing
-  them to disk is a follow-up (#614).
+  and is retried or placed once that project is open. The desktop saves held results so they survive a restart; see
+  `2026-10-21-held-results-on-disk.md` (#614).
 - **Placing hands the outputs to the document.** Once placed, a result is no longer held; undoing
   the placement and then editing leaves its assets only in the asset store.
 - **Agents may retry and place, not discard.** Discarding a paid result can't be undone, so MCP
