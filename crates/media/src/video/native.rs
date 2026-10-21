@@ -59,6 +59,50 @@ impl Drop for DirectoryGuard {
     }
 }
 const MAX_CACHE_ENTRIES: usize = 256;
+/// The one fixed VP9 encoding every output uses.
+const VP9: &[&str] = &[
+    "-c:v",
+    "libvpx-vp9",
+    "-threads:v",
+    "2",
+    "-row-mt",
+    "0",
+    "-tile-columns",
+    "0",
+    "-tile-rows",
+    "0",
+    "-deadline",
+    "good",
+    "-cpu-used",
+    "4",
+    "-crf",
+    "32",
+    "-b:v",
+    "4000000",
+    "-g",
+    "120",
+    "-lag-in-frames",
+    "0",
+    "-pix_fmt",
+    "yuv420p",
+];
+/// No input metadata survives into an output; colour is always declared BT.709 limited range.
+const TAGS: &[&str] = &[
+    "-map_metadata",
+    "-1",
+    "-map_chapters",
+    "-1",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-colorspace",
+    "bt709",
+    "-color_range",
+    "tv",
+    "-f",
+    "webm",
+];
 #[derive(Default)]
 struct FrameCache {
     entries: VecDeque<Cached>,
@@ -946,6 +990,70 @@ impl Context {
         }
         Ok(())
     }
+    /// Run an encoder writing `path`, stopping it once the file outgrows `quota`.
+    fn encode(
+        &mut self,
+        args: &[std::ffi::OsString],
+        path: &Path,
+        quota: u64,
+        input: Option<process::Input>,
+        cancel: &Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<()> {
+        let tool = self.config.tools.ffmpeg.clone();
+        let dir = self.dir.clone();
+        let closed = Arc::clone(&self.control.closed);
+        let mut exceeded = false;
+        let process_cancel = Arc::new(AtomicBool::new(false));
+        let result = process::run(
+            &tool,
+            args,
+            &dir,
+            input,
+            0,
+            process::Watchdog { cancel: &process_cancel, closed: &closed, deadline, counters: Some(Arc::clone(&self.control.counters)) },
+            &mut || {
+                if cancel.load(Ordering::Acquire) {
+                    process_cancel.store(true, Ordering::Release);
+                }
+                if fs::metadata(path).is_ok_and(|m| m.len() > quota) {
+                    exceeded = true;
+                    process_cancel.store(true, Ordering::Release);
+                }
+            },
+        );
+        if exceeded {
+            return Err(VideoError::Limit);
+        }
+        result?;
+        Ok(())
+    }
+    /// Hash a finished output and shrink its disk reservation to the `size` it took.
+    fn seal(&mut self, pin: Arc<Pin>, path: &Path, metadata: VideoMetadata, size: u64, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<VideoAsset> {
+        let mut file = File::open(path).map_err(|_| VideoError::Io)?;
+        let mut hash = blake3::Hasher::new();
+        let mut buf = [0u8; 65536];
+        loop {
+            if cancel.load(Ordering::Acquire) || self.control.closed.load(Ordering::Acquire) {
+                return Err(VideoError::Cancelled);
+            }
+            check_deadline(deadline)?;
+            let n = file.read(&mut buf).map_err(|_| VideoError::Io)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(buf.get(..n).ok_or(VideoError::Io)?);
+        }
+        check_deadline(deadline)?;
+        {
+            let mut registry = self.registry.lock().map_err(|_| VideoError::Closed)?;
+            let record = registry.records.iter_mut().find(|record| record.id == pin.id).ok_or(VideoError::Closed)?;
+            let (_, lease) = record.payload.as_mut().ok_or(VideoError::Closed)?;
+            lease.shrink_disk(size)?;
+        }
+        check_deadline(deadline)?;
+        Ok(VideoAsset { pin, metadata: Arc::new(metadata), hash: ContentHash(*hash.finalize().as_bytes()), mov: false })
+    }
     fn render(
         &mut self,
         spec: RenderSpec,
@@ -1030,78 +1138,13 @@ impl Context {
             "-dn",
             "-vf",
             "scale=iw:ih:flags=bilinear:in_range=pc:out_range=pc:out_color_matrix=bt709,format=yuv444p,colorspace=iall=bt709:itrc=srgb:irange=pc:all=bt709:range=tv:format=yuv420p:fast=0:dither=none",
-            "-c:v",
-            "libvpx-vp9",
-            "-threads:v",
-            "2",
-            "-row-mt",
-            "0",
-            "-tile-columns",
-            "0",
-            "-tile-rows",
-            "0",
-            "-deadline",
-            "good",
-            "-cpu-used",
-            "4",
-            "-crf",
-            "32",
-            "-b:v",
-            "4000000",
-            "-g",
-            "120",
-            "-lag-in-frames",
-            "0",
-            "-pix_fmt",
-            "yuv420p",
-            "-fps_mode",
-            "passthrough",
-            "-frames:v",
-            &spec.count.to_string(),
-            "-map_metadata",
-            "-1",
-            "-map_chapters",
-            "-1",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-colorspace",
-            "bt709",
-            "-color_range",
-            "tv",
-            "-f",
-            "webm",
-            "-fs",
-            &quota.to_string(),
         ]);
+        args.extend(process::args(VP9));
+        args.extend(process::args(&["-fps_mode", "passthrough", "-frames:v", &spec.count.to_string()]));
+        args.extend(process::args(TAGS));
+        args.extend(process::args(&["-fs", &quota.to_string()]));
         args.push(path.as_os_str().to_owned());
-        let tool = self.config.tools.ffmpeg.clone();
-        let dir = self.dir.clone();
-        let closed = Arc::clone(&self.control.closed);
-        let mut exceeded = false;
-        let process_cancel = Arc::new(AtomicBool::new(false));
-        let result = process::run(
-            &tool,
-            &args,
-            &dir,
-            Some(input),
-            0,
-            process::Watchdog { cancel: &process_cancel, closed: &closed, deadline, counters: Some(Arc::clone(&self.control.counters)) },
-            &mut || {
-                if cancel.load(Ordering::Acquire) {
-                    process_cancel.store(true, Ordering::Release);
-                }
-                if fs::metadata(&path).is_ok_and(|m| m.len() > quota) {
-                    exceeded = true;
-                    process_cancel.store(true, Ordering::Release);
-                }
-            },
-        );
-        if exceeded {
-            return Err(VideoError::Limit);
-        }
-        result?;
+        self.encode(&args, &path, quota, Some(input), cancel, deadline)?;
         if Instant::now() >= deadline {
             return Err(VideoError::Timeout);
         }
@@ -1122,33 +1165,8 @@ impl Context {
         if metadata.duration_us.abs_diff(expected) > tolerance {
             return Err(VideoError::Process);
         }
-        let mut file = File::open(&path).map_err(|_| VideoError::Io)?;
-        let mut hash = blake3::Hasher::new();
-        let mut buf = [0u8; 65536];
-        loop {
-            if cancel.load(Ordering::Acquire) || self.control.closed.load(Ordering::Acquire) {
-                return Err(VideoError::Cancelled);
-            }
-            check_deadline(deadline)?;
-            let n = file.read(&mut buf).map_err(|_| VideoError::Io)?;
-            if n == 0 {
-                break;
-            }
-            hash.update(buf.get(..n).ok_or(VideoError::Io)?);
-        }
-        check_deadline(deadline)?;
-        {
-            let mut registry = self.registry.lock().map_err(|_| VideoError::Closed)?;
-            let record = registry.records.iter_mut().find(|record| record.id == pin.id).ok_or(VideoError::Closed)?;
-            let (_, lease) = record.payload.as_mut().ok_or(VideoError::Closed)?;
-            lease.shrink_disk(size)?;
-        }
-        check_deadline(deadline)?;
-        Ok(RenderedVideo {
-            asset: VideoAsset { pin, metadata: Arc::new(metadata), hash: ContentHash(*hash.finalize().as_bytes()), mov: false },
-            frames: spec.count,
-            bytes: size,
-        })
+        let asset = self.seal(pin, &path, metadata, size, cancel, deadline)?;
+        Ok(RenderedVideo { asset, frames: spec.count, bytes: size })
     }
 }
 fn linear(v: u8) -> f64 {
@@ -1176,6 +1194,7 @@ fn composite(rgba: &[u8], rgb: &mut [u8], background: [u8; 3]) -> Result<()> {
     Ok(())
 }
 
+mod compose;
 #[cfg(test)]
 mod tests;
 

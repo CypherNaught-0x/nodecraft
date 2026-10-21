@@ -732,3 +732,82 @@ fn actual_output_quota_refuses_partial_file_without_becoming_user_cancel() {
     drop(job);
     assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
 }
+
+/// A clip FFmpeg draws itself: a test card, optionally with a tone, in the given container.
+fn generated(name: &str, size: &str, seconds: &str, tone: bool, webm: bool) -> Vec<u8> {
+    let id = SERVICE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nodecraft-compose-fixture-{}-{id}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join(if webm { format!("{name}.webm") } else { format!("{name}.mp4") });
+    let tool = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let card = format!("testsrc2=size={size}:rate=10:duration={seconds}");
+    let mut args = process::args(&["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", &card]);
+    if tone {
+        args.extend(process::args(&["-f", "lavfi", "-i", &format!("sine=frequency=440:duration={seconds}")]));
+    }
+    if webm {
+        args.extend(process::args(&["-c:v", "libvpx-vp9", "-deadline", "realtime"]));
+    } else {
+        args.extend(process::args(&["-c:v", "libx264"]));
+    }
+    args.extend(process::args(&["-pix_fmt", "yuv420p", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]));
+    if tone {
+        args.extend(process::args(&["-c:a", if webm { "libopus" } else { "aac" }]));
+    }
+    args.push(path.as_os_str().to_owned());
+    let status = std::process::Command::new(tool).args(&args).status().unwrap();
+    assert!(status.success());
+    let bytes = fs::read(&path).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    bytes
+}
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_compose_stitches_four_clips_with_fades_crosses_and_sound() {
+    let service = service();
+    let mut assets = Vec::new();
+    for (name, size, tone, webm) in [("a", "64x48", true, false), ("b", "64x48", true, false), ("c", "64x48", false, true), ("d", "48x64", true, false)] {
+        let mut job = service.import(Arc::from(generated(name, size, "2", tone, webm)), ColorPolicy::default()).ok().unwrap();
+        let asset = wait(&mut job).unwrap();
+        assert_eq!(asset.metadata().has_audio(), tone, "{name}");
+        assets.push(asset);
+    }
+    let [a, b, c, d] = <[VideoAsset; 4]>::try_from(assets).ok().unwrap();
+    let clips = vec![
+        ComposeClip::new(a, 0, 2_000_000).unwrap().with_fades(500_000, 0).unwrap().with_transition(500_000).unwrap(),
+        ComposeClip::new(b, 500_000, 2_000_000).unwrap().with_volume(500, false).unwrap(),
+        ComposeClip::new(c, 0, 1_500_000).unwrap().with_transition(300_000).unwrap(),
+        ComposeClip::new(d, 0, 2_000_000).unwrap().with_fades(0, 500_000).unwrap(),
+    ];
+    let spec = ComposeSpec::new(64, 48, (10, 1), [0, 0, 0], clips).unwrap();
+    assert_eq!(spec.duration_us(), 6_200_000);
+    let mut job = service.compose(spec.clone()).unwrap();
+    assert_eq!(service.compose(spec).err(), Some(VideoError::Busy), "one render at a time");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let video = loop {
+        if let Some(video) = job.try_result().unwrap() {
+            break video;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(video.frames().abs_diff(62) <= 2, "{} frames", video.frames());
+    let m = video.asset().metadata();
+    assert_eq!((m.width, m.height), (64, 48));
+    assert!(m.has_audio());
+    assert!(m.duration_us.abs_diff(6_200_000) <= 300_000, "{}", m.duration_us);
+    let luma = |time_us: u64| {
+        let mut job = service.frame(video.asset(), FrameRequest::new(time_us, 64, 48).unwrap()).unwrap();
+        let frame = wait(&mut job).unwrap();
+        frame.pixels().chunks(4).map(|p| u64::from(p[0]) + u64::from(p[1]) + u64::from(p[2])).sum::<u64>() / (64 * 48)
+    };
+    assert!(luma(0) < 20, "the fade in starts on black");
+    assert!(luma(1_000_000) > 100, "the card shows once faded in");
+    // d is portrait, so its frames are letterboxed with black bars at the sides.
+    let mut job = service.frame(video.asset(), FrameRequest::new(5_000_000, 64, 48).unwrap()).unwrap();
+    let frame = wait(&mut job).unwrap();
+    assert!(frame.pixels().get(..4).unwrap().iter().take(3).all(|v| *v < 20), "left bar is background");
+    drop(job);
+    drop(video);
+    assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
+}
