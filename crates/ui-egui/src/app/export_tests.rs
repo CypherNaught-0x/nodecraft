@@ -71,3 +71,21 @@ fn only_media_results_offer_export() {
     let text = nodecraft_graph::Generation::new(IMAGE, vec![Value::Text("words".into())]);
     assert!(crate::history::export_targets(&node, &text).is_empty());
 }
+
+#[test]
+fn saving_every_item_numbers_them_in_a_folder_and_keeps_files_already_there() {
+    let (mut h, png) = with_image();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("result-2.png"), b"mine").unwrap();
+    h.state_mut().exports.answer = Some(dir.path().to_path_buf());
+    let canvas = h.state().canvas;
+    let targets = vec![(Some("out".to_owned()), None, "result.png".to_owned()); 2];
+    h.state_mut().start_export_all(canvas, NODE, IMAGE, targets);
+    h.run();
+    h.run();
+    assert_eq!(std::fs::read(dir.path().join("result-1.png")).unwrap(), png);
+    assert_eq!(std::fs::read(dir.path().join("result-2.png")).unwrap(), b"mine", "a folder pick never replaces a file");
+    let notice = h.state().notice.clone().unwrap_or_default();
+    assert!(notice.starts_with("Exported 1 of 2 files; result-2.png:"), "{notice}");
+    assert_eq!(super::export::numbered("clip", 3), "clip-3");
+}

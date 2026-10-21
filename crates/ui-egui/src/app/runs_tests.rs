@@ -584,3 +584,33 @@ fn queue82_visual() {
         h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
     }
 }
+
+#[test]
+fn the_toolbar_downloads_the_shown_result_once_there_is_one() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock));
+    h.state_mut().selection.only(N);
+    h.run();
+    assert!(h.query_by_label("Download").is_none(), "nothing to save before a result");
+    generated(&mut h);
+    h.state_mut().selection.only(N);
+    h.run();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("take.png");
+    h.state_mut().exports.answer = Some(path.clone());
+    press(&mut h, Role::Button, "Download");
+    h.run();
+    h.run();
+    let outputs = node(h.state()).history.first().map(|g| g.outputs.clone()).unwrap_or_default();
+    let asset = match outputs.first() {
+        Some(Value::Media(asset)) => asset.clone(),
+        Some(Value::List(items)) => match items.first() {
+            Some(Value::Media(asset)) => asset.clone(),
+            other => panic!("an image result, not {other:?}"),
+        },
+        other => panic!("an image result, not {other:?}"),
+    };
+    let bytes = h.state().session.assets().get(&asset.hash).unwrap().to_vec();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "{:?}", h.state().notice);
+    assert_eq!(h.state().notice.as_deref(), Some("Exported take.png."));
+}
