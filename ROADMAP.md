@@ -104,7 +104,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
   maps reference-to-video yet.
   The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
-  tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574).
+  tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574);
+  each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
+  faster or slower, and the render has a quality (#577).
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
   batch, Techniques, app mode, library, Layer editor, Elements, PDF,
   collaboration, and 33 of the 41 tracked provider adapters (ComfyUI, fal.ai and

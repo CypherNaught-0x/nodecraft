@@ -14,6 +14,42 @@ pub const MAX_VOLUME: u16 = 4000;
 pub const MIN_TRANSITION_US: u64 = 10_000;
 /// Most captions one composition may draw.
 pub const MAX_CAPTIONS: usize = 64;
+/// A clip's playback rate range, in thousandths.
+pub const MIN_SPEED: u16 = 250;
+pub const MAX_SPEED: u16 = 4000;
+/// Longest side a placed picture may be scaled to, in pixels.
+pub const MAX_PLACED_SIDE: u32 = 8192;
+
+/// Where a clip's picture sits in the output frame. Every number is in thousandths except
+/// `rotation`, in degrees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// Where the picture's centre is, in thousandths of the frame's width and height.
+    pub pos_x: i32,
+    pub pos_y: i32,
+    /// Its size, in thousandths of the size at which the cropped picture fits the frame.
+    pub scale: u16,
+    /// How much is cut from its left, top, right and bottom edges, in thousandths.
+    pub crop: [u16; 4],
+    /// Clockwise turn about its centre, from -180 to 180.
+    pub rotation: i16,
+    /// 1000 is opaque, 0 invisible.
+    pub opacity: u16,
+}
+impl Placement {
+    /// Centred, fitted, uncropped, upright and opaque: what a clip has unless it is placed.
+    pub const IDENTITY: Self = Self { pos_x: 500, pos_y: 500, scale: 1000, crop: [0; 4], rotation: 0, opacity: 1000 };
+    fn valid(&self) -> bool {
+        let [left, top, right, bottom] = self.crop.map(u32::from);
+        (-1000..=2000).contains(&self.pos_x)
+            && (-1000..=2000).contains(&self.pos_y)
+            && (10..=4000).contains(&self.scale)
+            && left + right < 900
+            && top + bottom < 900
+            && (-180..=180).contains(&self.rotation)
+            && self.opacity <= 1000
+    }
+}
 
 /// When and how loudly one clip plays, in the clip's own microseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,9 +61,22 @@ pub(crate) struct Span {
     pub(crate) volume: u16,
     pub(crate) muted: bool,
     pub(crate) transition_us: u64,
+    /// Playback rate, in thousandths.
+    pub(crate) speed: u16,
+    pub(crate) placement: Placement,
 }
 impl Span {
+    /// How long the clip plays in the output, at its speed.
     fn length_us(&self) -> u64 {
+        let media = self.media_us();
+        if self.speed == 1000 {
+            return media;
+        }
+        let played = u128::from(media) * 1000 / u128::from(self.speed.max(1));
+        u64::try_from(played).unwrap_or(u64::MAX).max(1)
+    }
+    /// How much of its media it plays.
+    pub(crate) fn media_us(&self) -> u64 {
         self.out_us.saturating_sub(self.in_us)
     }
 }
@@ -86,14 +135,40 @@ impl ComposeClip {
         if in_us >= out_us || out_us > duration {
             return Err(VideoError::Invalid);
         }
-        let span = Span { in_us, out_us, fade_in_us: 0, fade_out_us: 0, volume: 1000, muted: false, transition_us: 0 };
+        let span =
+            Span { in_us, out_us, fade_in_us: 0, fade_out_us: 0, volume: 1000, muted: false, transition_us: 0, speed: 1000, placement: Placement::IDENTITY };
         Ok(Self { source, span })
     }
     pub fn source(&self) -> &Source {
         &self.source
     }
+    /// How long it plays in the output, at its speed.
     pub fn length_us(&self) -> u64 {
         self.span.length_us()
+    }
+    /// How much of its source it reads.
+    pub(crate) fn media_us(&self) -> u64 {
+        self.span.media_us()
+    }
+    /// Play at `speed` thousandths (2000 is twice as fast). A still has no speed. Set it before
+    /// fades and a transition, which are measured in the output's time.
+    pub fn with_speed(mut self, speed: u16) -> Result<Self> {
+        if !(MIN_SPEED..=MAX_SPEED).contains(&speed) || (speed != 1000 && matches!(self.source, Source::Still(_))) {
+            return Err(VideoError::Invalid);
+        }
+        self.span.speed = speed;
+        if self.span.fade_in_us.saturating_add(self.span.fade_out_us) > self.length_us() || self.span.transition_us > self.length_us() {
+            return Err(VideoError::Invalid);
+        }
+        Ok(self)
+    }
+    /// Put the picture somewhere other than centred and fitted. A sound has no picture to place.
+    pub fn with_placement(mut self, placement: Placement) -> Result<Self> {
+        if !placement.valid() || (placement != Placement::IDENTITY && matches!(self.source, Source::Audio(_))) {
+            return Err(VideoError::Invalid);
+        }
+        self.span.placement = placement;
+        Ok(self)
     }
     /// Fade from and to the background colour (and silence) over the clip's own ends.
     /// On a layer the picture fades to transparent instead.
@@ -167,6 +242,27 @@ pub struct ComposeSpec {
     pub(crate) clips: Vec<ComposeClip>,
     pub(crate) layers: Vec<Layer>,
     pub(crate) captions: Vec<ComposeCaption>,
+    pub(crate) quality: Quality,
+}
+/// How hard the encoder works to keep detail, and how many bits it may spend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quality {
+    /// Fast and small: for checking a cut.
+    Draft,
+    #[default]
+    Standard,
+    /// More detail, in a larger file.
+    High,
+}
+impl Quality {
+    /// The VP9 constant quality and the most bits a second it may spend.
+    pub(crate) fn vp9(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Draft => ("40", "2000000"),
+            Self::Standard => ("32", "4000000"),
+            Self::High => ("24", "8000000"),
+        }
+    }
 }
 /// The output picture: size, rate and the colour behind letterboxing and fades.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,7 +281,11 @@ impl ComposeSpec {
         }
         let spans: Vec<Span> = clips.iter().map(|c| c.span).collect();
         validate(frame, &spans)?;
-        Ok(Self { frame, clips, layers: Vec::new(), captions: Vec::new() })
+        Ok(Self { frame, clips, layers: Vec::new(), captions: Vec::new(), quality: Quality::default() })
+    }
+    pub fn with_quality(mut self, quality: Quality) -> Self {
+        self.quality = quality;
+        self
     }
     /// Add clips that start at their own time, each `(clip, at_us)`, rounded to whole frames.
     /// Pictures stack in order over the main track (the last on top); every sound is mixed in.
@@ -347,13 +447,16 @@ fn start(format_start: i128, stream_start: i128, in_us: u64) -> String {
     seconds(offset.saturating_add(in_us))
 }
 /// The largest even size with the clip's display aspect that fits `width`×`height`.
+#[cfg(test)]
 fn fit(m: &VideoMetadata, width: u32, height: u32) -> (u32, u32) {
-    let mut w = u64::from(m.width) * u64::from(m.sar.0.max(1));
-    let mut h = u64::from(m.height) * u64::from(m.sar.1.max(1));
-    if matches!(m.rotation, 90 | 270) {
-        std::mem::swap(&mut w, &mut h);
-    }
+    let (w, h) = display(m);
     fit_display(w, h, width, height)
+}
+/// A video's display aspect, as a width and height: its pixels, stretched and turned upright.
+fn display(m: &VideoMetadata) -> (u64, u64) {
+    let w = u64::from(m.width) * u64::from(m.sar.0.max(1));
+    let h = u64::from(m.height) * u64::from(m.sar.1.max(1));
+    if matches!(m.rotation, 90 | 270) { (h, w) } else { (w, h) }
 }
 fn fit_display(w: u64, h: u64, width: u32, height: u32) -> (u32, u32) {
     let (bw, bh) = (u64::from(width), u64::from(height));
@@ -393,21 +496,24 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
                 270 => "transpose=cclock,",
                 _ => "",
             };
-            let (w, h) = fit(m, frame.width, frame.height);
+            let (w, h) = placed_size(display(m), span.placement, frame)?;
             write!(
                 g,
-                "[{k}:{stream}]setpts=PTS-STARTPTS,colorspace=ispace={p}:iprimaries={p}:itrc={t}:irange={range}:all=bt709:range=tv:format=yuv444p:fast=0:dither=none,\
-                 {rotate}scale={w}:{h}:flags=bicubic:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv,",
+                "[{k}:{stream}]{pts},colorspace=ispace={p}:iprimaries={p}:itrc={t}:irange={range}:all=bt709:range=tv:format=yuv444p:fast=0:dither=none,\
+                 {rotate}{crop}scale={w}:{h}:flags=bicubic:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv,",
                 stream = m.stream,
+                pts = timestamps(span.speed),
+                crop = crop(span.placement),
             )
             .map_err(|_| VideoError::Limit)?;
             (w, h)
         }
         // Raw RGBA staged by the service: no colour metadata to honour, sRGB into BT.709.
         Media::Still { width, height } => {
-            let (w, h) = fit_display(u64::from(width), u64::from(height), frame.width, frame.height);
-            write!(g, "[{k}:0]setpts=PTS-STARTPTS,scale={w}:{h}:flags=bicubic:out_color_matrix=bt709:out_range=tv,").map_err(|_| VideoError::Limit)?;
-            if layer.is_none() {
+            let (w, h) = placed_size((u64::from(width), u64::from(height)), span.placement, frame)?;
+            write!(g, "[{k}:0]setpts=PTS-STARTPTS,{crop}scale={w}:{h}:flags=bicubic:out_color_matrix=bt709:out_range=tv,", crop = crop(span.placement))
+                .map_err(|_| VideoError::Limit)?;
+            if layer.is_none() && span.placement == Placement::IDENTITY {
                 // On the main track a transparent pixel shows the background, not the colour it
                 // hides: the picture goes over a plain frame as long as it is shown.
                 write!(g, "format=rgba[p{k}];color=c={color}:s={w}x{h}:r={rate}:d={length}[q{k}];[q{k}][p{k}]overlay,").map_err(|_| VideoError::Limit)?;
@@ -416,18 +522,22 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
         }
         Media::Audio(_) => return Err(VideoError::Invalid),
     };
-    let x = (frame.width.saturating_sub(w) / 2) & !1;
-    let y = (frame.height.saturating_sub(h) / 2) & !1;
-    // A still has no colour of its own to pass on: tagged as the videos are, so a render of
-    // stills alone still declares its colour.
-    let tag = if matches!(media, Media::Still { .. }) { "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709," } else { "" };
-    write!(
-        g,
-        "format={format},{tag}setsar=1,pad={W}:{H}:{x}:{y}:color={pad},fps={rate},tpad=stop_mode=clone:stop_duration={length},trim=end_frame={count},setpts=PTS-STARTPTS",
-        W = frame.width,
-        H = frame.height,
-    )
-    .map_err(|_| VideoError::Limit)?;
+    // A still has no colour of its own to pass on, and a placed picture takes the plain frame's
+    // it is drawn on: tagged as the videos are, so the render still declares its colour.
+    let tag = if matches!(media, Media::Still { .. }) || span.placement != Placement::IDENTITY {
+        "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+    } else {
+        ""
+    };
+    if span.placement == Placement::IDENTITY {
+        let x = (frame.width.saturating_sub(w) / 2) & !1;
+        let y = (frame.height.saturating_sub(h) / 2) & !1;
+        write!(g, "format={format},{tag}setsar=1,pad={W}:{H}:{x}:{y}:color={pad},", W = frame.width, H = frame.height).map_err(|_| VideoError::Limit)?;
+    } else {
+        place(g, k, (w, h), span.placement, frame, layer.is_some(), &length)?;
+        write!(g, "format={format},{tag}setsar=1,").map_err(|_| VideoError::Limit)?;
+    }
+    write!(g, "fps={rate},tpad=stop_mode=clone:stop_duration={length},trim=end_frame={count},setpts=PTS-STARTPTS").map_err(|_| VideoError::Limit)?;
     if span.fade_in_us > 0 {
         write!(g, ",fade=t=in:st=0:d={}:color={color}{alpha}", seconds(span.fade_in_us)).map_err(|_| VideoError::Limit)?;
     }
@@ -441,12 +551,106 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
     }
     write!(g, "[{out}];").map_err(|_| VideoError::Limit)
 }
-/// Input `k`'s sound from `stream`, resampled, cut to the clip's frames and faded, unlabelled.
+/// The rest of a placed picture's chain, once it is scaled to `size`: turned, faded to its
+/// opacity and drawn onto a frame-sized plain picture (transparent on a layer) with its centre
+/// where the placement says. The picture may run off the frame's edges.
+fn place(g: &mut String, k: usize, size: (u32, u32), placement: Placement, frame: Frame, layer: bool, length: &str) -> Result<()> {
+    let (w, h) = size;
+    g.push_str("format=yuva444p,");
+    let (bw, bh) = if placement.rotation == 0 {
+        (w, h)
+    } else {
+        let (bw, bh) = turned(w, h, placement.rotation);
+        write!(g, "rotate=a={}*PI/180:ow={bw}:oh={bh}:c=none,", placement.rotation).map_err(|_| VideoError::Limit)?;
+        (bw, bh)
+    };
+    if placement.opacity < 1000 {
+        write!(g, "lutyuv=a=val*{}/1000,", placement.opacity).map_err(|_| VideoError::Limit)?;
+    }
+    let corner = |pos: i32, edge: u32, side: u32| {
+        let c = i64::from(pos) * i64::from(edge) / 1000 - i64::from(side) / 2;
+        c - c.rem_euclid(2)
+    };
+    let (x, y) = (corner(placement.pos_x, frame.width, bw), corner(placement.pos_y, frame.height, bh));
+    let ground = if layer { "black@0".to_owned() } else { hex(frame.background) };
+    let pixels = if layer { "yuva420p" } else { "yuv420p" };
+    write!(
+        g,
+        "setsar=1[p{k}];color=c={ground}:s={W}x{H}:r={rate}:d={length},format={pixels}[q{k}];[q{k}][p{k}]overlay=x={x}:y={y}:eof_action=repeat:format=yuv420,",
+        W = frame.width,
+        H = frame.height,
+        rate = format_args!("{}/{}", frame.fps.0, frame.fps.1),
+    )
+    .map_err(|_| VideoError::Limit)
+}
+/// The even box a `w`×`h` picture fills once turned by `degrees`.
+fn turned(w: u32, h: u32, degrees: i16) -> (u32, u32) {
+    let a = f64::from(degrees).to_radians();
+    let (sin, cos) = (a.sin().abs(), a.cos().abs());
+    let side = |v: f64| {
+        // Floating-point noise on a right angle must not add a pixel.
+        let v = (v - 1e-6).ceil().max(2.0);
+        let v = if v.is_finite() && v < f64::from(u32::MAX) { v as u32 } else { u32::MAX };
+        v.saturating_add(v % 2)
+    };
+    (side(f64::from(w) * cos + f64::from(h) * sin), side(f64::from(w) * sin + f64::from(h) * cos))
+}
+/// The size a picture of display size `display` is scaled to: its cropped part fitted to the
+/// frame, then sized by the placement. Even, at least 2, at most [`MAX_PLACED_SIDE`].
+fn placed_size(display: (u64, u64), placement: Placement, frame: Frame) -> Result<(u32, u32)> {
+    if placement == Placement::IDENTITY {
+        return Ok(fit_display(display.0, display.1, frame.width, frame.height));
+    }
+    let [left, top, right, bottom] = placement.crop.map(u64::from);
+    let cw = display.0.saturating_mul(1000u64.saturating_sub(left + right));
+    let ch = display.1.saturating_mul(1000u64.saturating_sub(top + bottom));
+    let (fw, fh) = fit_display(cw, ch, frame.width, frame.height);
+    let sized = |v: u32| {
+        let v = u64::from(v) * u64::from(placement.scale) / 1000;
+        u32::try_from(v & !1).ok().filter(|v| *v <= MAX_PLACED_SIDE).map(|v| v.max(2)).ok_or(VideoError::Limit)
+    };
+    let (w, h) = (sized(fw)?, sized(fh)?);
+    if placement.rotation != 0 {
+        let (bw, bh) = turned(w, h, placement.rotation);
+        if bw > MAX_PLACED_SIDE || bh > MAX_PLACED_SIDE {
+            return Err(VideoError::Limit);
+        }
+    }
+    Ok((w, h))
+}
+/// The crop a placement cuts, before the picture is scaled; nothing when it cuts nothing.
+fn crop(placement: Placement) -> String {
+    let [l, t, r, b] = placement.crop;
+    if placement.crop == [0; 4] {
+        return String::new();
+    }
+    format!("crop=w=iw*{w}/1000:h=ih*{h}/1000:x=iw*{l}/1000:y=ih*{t}/1000,", w = 1000 - u32::from(l) - u32::from(r), h = 1000 - u32::from(t) - u32::from(b))
+}
+/// A video's timestamps from 0, slowed or sped up to `speed` thousandths.
+fn timestamps(speed: u16) -> String {
+    if speed == 1000 { "setpts=PTS-STARTPTS".to_owned() } else { format!("setpts=(PTS-STARTPTS)*1000/{speed}") }
+}
+/// The `atempo` filters that play sound at `speed` thousandths, each within the 0.5–2.0 every
+/// FFmpeg accepts; nothing at normal speed.
+fn tempo(speed: u16) -> String {
+    let speed = u32::from(speed);
+    match speed {
+        1000 => String::new(),
+        ..500 => format!(",atempo=0.5,atempo={}", thousandths(speed * 2)),
+        2001.. => format!(",atempo=2.0,atempo={}.{:04}", speed / 2000, speed * 5 % 10_000),
+        _ => format!(",atempo={}", thousandths(speed)),
+    }
+}
+fn thousandths(v: u32) -> String {
+    format!("{}.{:03}", v / 1000, v % 1000)
+}
+/// Input `k`'s sound from `stream`, resampled, at its speed, cut to the clip's frames and faded, unlabelled.
 fn sound(g: &mut String, k: usize, stream: u32, span: &Span, frame: Frame) -> Result<()> {
     let shown = shown_us(span.length_us(), frame.fps);
     write!(
         g,
-        "[{k}:{stream}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad,atrim=duration={},asetpts=PTS-STARTPTS,volume={}.{:03}",
+        "[{k}:{stream}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS{},apad,atrim=duration={},asetpts=PTS-STARTPTS,volume={}.{:03}",
+        tempo(span.speed),
         seconds(shown),
         span.volume / 1000,
         span.volume % 1000

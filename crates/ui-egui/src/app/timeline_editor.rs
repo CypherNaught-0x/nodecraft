@@ -21,8 +21,6 @@ use std::collections::HashMap;
 const MIN_US: u64 = 100_000;
 /// The track's stand-in for a clip whose length isn't known yet.
 const UNKNOWN_US: u64 = 5_000_000;
-/// Trims land on whole milliseconds.
-const STEP_US: i128 = 1000;
 
 mod captions;
 
@@ -169,7 +167,8 @@ struct Placed {
 /// length, to the last end on any track.
 fn place(clips: &[Shown]) -> (Vec<Placed>, u64) {
     let at_place = |(index, s): (usize, &Shown)| {
-        let length = s.end_us().map(|end| end.saturating_sub(s.clip.in_us));
+        // On the track a clip lasts as long as it plays, at its speed.
+        let length = s.end_us().map(|end| s.clip.played(end.saturating_sub(s.clip.in_us)));
         let start_us = if s.clip.track == 0 { 0 } else { s.clip.at_us };
         Placed { index, track: s.clip.track, start_us, length_us: length.unwrap_or(UNKNOWN_US).max(1), known: length.is_some(), overlap_us: 0 }
     };
@@ -202,8 +201,14 @@ fn cut_at(clips: &[Shown], placed: &[Placed], us: u64, selected: Option<&str>) -
     let chosen = placed.iter().filter(splits).find(|p| clips.get(p.index).is_some_and(|s| Some(s.clip.id.as_str()) == selected));
     chosen.or_else(|| placed.iter().rev().filter(|p| p.track == 0).find(splits)).and_then(|p| {
         let clip = &clips.get(p.index)?.clip;
-        Some((p.index, clip.in_us.saturating_add(us.saturating_sub(p.start_us))))
+        Some((p.index, clip.in_us.saturating_add(media(us.saturating_sub(p.start_us), clip.speed))))
     })
+}
+
+/// How much of its media a clip at `speed` plays in `played_us` of output.
+fn media(played_us: u64, speed: u16) -> u64 {
+    let us = u128::from(played_us) * u128::from(speed) / u128::from(timeline::UNIT);
+    u64::try_from(us).unwrap_or(u64::MAX)
 }
 
 fn seconds(us: u64) -> f64 {
@@ -243,32 +248,80 @@ struct Drag {
     to: Option<usize>,
 }
 
+/// Where a dragged edge catches: on another clip's edge, the playhead or the output's start when
+/// within `reach_us` of one, else on a whole frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Snap {
+    /// Output times to catch on.
+    points: Vec<u64>,
+    reach_us: u64,
+    /// One frame of output.
+    frame_us: u64,
+}
+
+impl Snap {
+    /// The travel `dt` (microseconds of output) adjusted so the nearest of `edges` (output times
+    /// before the drag) to a point lands on it, or else the first edge on a whole frame.
+    fn travel(&self, dt: i128, edges: &[u64]) -> i128 {
+        let reach = i128::from(self.reach_us);
+        let caught = edges
+            .iter()
+            .flat_map(|e| self.points.iter().map(move |p| i128::from(*p) - (i128::from(*e) + dt)))
+            .filter(|off| off.abs() <= reach)
+            .min_by_key(|off| off.abs());
+        if let Some(off) = caught {
+            return dt + off;
+        }
+        let frame = i128::from(self.frame_us.max(1));
+        edges.first().map_or(dt, |e| {
+            let to = i128::from(*e) + dt;
+            (to + frame / 2).div_euclid(frame) * frame - i128::from(*e)
+        })
+    }
+}
+
 impl Drag {
     /// Trims or moves by the pointer's travel since it went down, `dx` points at `scale` points a
-    /// second, onto `track`. Off the main track a move shifts the clip's start, and a start trim
-    /// keeps its end where it was.
-    fn trim(&mut self, dx: f32, scale: f32, track: u8) {
+    /// second, onto `track`, the moved edges catching as `snap` says. Off the main track a move
+    /// shifts the clip's start, and a start trim keeps its end where it was. The travel is output
+    /// time; a trim moves through the media at the clip's speed.
+    fn trim(&mut self, dx: f32, scale: f32, track: u8, snap: &Snap) {
         self.now = self.before.clone();
         let travel = if scale > 0.0 && dx.is_finite() { f64::from(dx) / f64::from(scale) * 1e6 } else { 0.0 };
-        let dt = (travel.round() as i128 / STEP_US) * STEP_US;
+        let travel = travel.clamp(-1e15, 1e15).round() as i128;
+        let speed = i128::from(self.before.speed.max(1));
+        let unit = i128::from(timeline::UNIT);
+        let end = self.before.out_us.or(self.media_us);
+        let played = end.map(|e| self.before.played(e.saturating_sub(self.before.in_us)));
+        let ends = played.map(|p| self.from_us.saturating_add(p));
+        let dt = match self.grip {
+            // On the main track a start trim leaves the clip's start where it is: only whole frames.
+            Grip::Start if self.before.track == 0 => Snap { points: Vec::new(), ..snap.clone() }.travel(travel, &[self.from_us]),
+            Grip::Start => snap.travel(travel, &[self.from_us]),
+            Grip::End => ends.map_or(travel, |e| snap.travel(travel, &[e])),
+            Grip::Move if track > 0 => snap.travel(travel, &[Some(self.from_us), ends].into_iter().flatten().collect::<Vec<_>>()),
+            Grip::Move => travel,
+        };
+        // The same travel through the clip's media.
+        let dm = dt.saturating_mul(speed) / unit;
         let limit = i128::from(self.media_us.unwrap_or(timeline::MAX_US));
-        let at = |t: u64| i128::from(t).saturating_add(dt);
         let fit = |v: i128, lo: i128, hi: i128| u64::try_from(v.clamp(lo, hi.max(lo))).unwrap_or(0);
         let most = i128::from(timeline::MAX_US);
         match self.grip {
             Grip::Start => {
-                let end = i128::from(self.before.out_us.or(self.media_us).unwrap_or(timeline::MAX_US));
+                let end = i128::from(end.unwrap_or(timeline::MAX_US));
                 // Off the main track the start can't trim to before the output does.
-                let earliest = if self.before.track == 0 { 0 } else { i128::from(self.before.in_us) - i128::from(self.before.at_us) };
-                self.now.in_us = fit(at(self.before.in_us), earliest.max(0), end - i128::from(MIN_US));
+                let earliest =
+                    if self.before.track == 0 { 0 } else { i128::from(self.before.in_us) - i128::from(self.before.at_us).saturating_mul(speed) / unit };
+                self.now.in_us = fit(i128::from(self.before.in_us).saturating_add(dm), earliest.max(0), end - i128::from(MIN_US));
                 if self.before.track > 0 {
-                    let shift = i128::from(self.now.in_us) - i128::from(self.before.in_us);
+                    let shift = (i128::from(self.now.in_us) - i128::from(self.before.in_us)).saturating_mul(unit) / speed;
                     self.now.at_us = fit(i128::from(self.before.at_us) + shift, 0, most);
                 }
             }
             Grip::End => {
-                if let Some(end) = self.before.out_us.or(self.media_us) {
-                    let out = fit(at(end), i128::from(self.before.in_us.saturating_add(MIN_US)), limit);
+                if let Some(end) = end {
+                    let out = fit(i128::from(end).saturating_add(dm), i128::from(self.before.in_us.saturating_add(MIN_US)), limit);
                     // Back to the media's end plays to its end, wherever that is.
                     self.now.out_us = (Some(out) != self.media_us).then_some(out);
                 }
@@ -276,7 +329,7 @@ impl Drag {
             Grip::Move => {
                 self.now.track = track;
                 if track > 0 {
-                    self.now.at_us = fit(at(self.from_us), 0, most);
+                    self.now.at_us = fit(i128::from(self.from_us).saturating_add(dt), 0, most);
                     if self.before.track == 0 {
                         self.now.transition_us = 0;
                     }
@@ -285,8 +338,8 @@ impl Drag {
                 }
             }
         }
-        let length = self.now.out_us.or(self.media_us).map(|end| end.saturating_sub(self.now.in_us));
-        // Fades shrink with the clip, as `Clip::check` requires.
+        // Fades shrink with the clip, as `Clip::check` requires; they are output time.
+        let length = self.now.out_us.or(self.media_us).map(|end| self.now.played(end.saturating_sub(self.now.in_us)));
         if let Some(length) = length
             && self.now.fade_in_us.saturating_add(self.now.fade_out_us) > length
         {
@@ -414,7 +467,7 @@ impl NodeCraftApp {
                     .show(ui, |ui| properties(ui, &mut editor, &shown, &node, &tracks, &titles, &shown_captions, &t, &mut commands));
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(centre), |ui| {
-                track(ui, &mut editor, &shown, &placed, &tracks, total, &posters, &titles, &t, &mut commands);
+                track(ui, &mut editor, &shown, &placed, &tracks, total, &posters, &titles, &node, &t, &mut commands);
                 captions::preview(ui.painter(), editor.preview, frame_size(&node), &shown_captions, editor.playhead_us);
             });
             ui.allocate_rect(body, Sense::hover());
@@ -607,7 +660,7 @@ fn clips_panel(
                 let note = if !s.wired {
                     "not wired".to_owned()
                 } else {
-                    s.end_us().map_or_else(|| "length unknown".to_owned(), |end| duration(end.saturating_sub(s.clip.in_us)))
+                    s.end_us().map_or_else(|| "length unknown".to_owned(), |end| duration(s.clip.played(end.saturating_sub(s.clip.in_us))))
                 };
                 let note = if s.clip.track == 0 { note } else { format!("{note} · {}", track_name(tracks, s.clip.track)) };
                 ui.label(egui::RichText::new(note).color(t.text_muted).small());
@@ -714,7 +767,8 @@ fn properties(
             }
             ui.end_row();
         }
-        let length = end.map_or(limit, |e| seconds(e.saturating_sub(clip.in_us)));
+        // Fades and the crossing are output time: the media's length at the clip's speed.
+        let length = end.map_or(limit, |e| seconds(clip.played(e.saturating_sub(clip.in_us))));
         for (field, label, value) in [("fade_in_us", "Fade in (s)", clip.fade_in_us), ("fade_out_us", "Fade out (s)", clip.fade_out_us)] {
             if let Some(v) = number(ui, &mut editor.draft, &key(field), label, seconds(value), 0.0..=length, 0.05, 2) {
                 commands.push(update(editor, &clip.id, json!({field: micros(v)})));
@@ -738,7 +792,18 @@ fn properties(
             }
             ui.end_row();
         }
+        if !still {
+            let (low, high) = (f64::from(timeline::MIN_SPEED) / 10.0, f64::from(timeline::MAX_SPEED) / 10.0);
+            if let Some(v) = number(ui, &mut editor.draft, &key("speed"), "Speed (%)", f64::from(clip.speed) / 10.0, low..=high, 1.0, 0) {
+                let speed = (v * 10.0).round().clamp(f64::from(timeline::MIN_SPEED), f64::from(timeline::MAX_SPEED)) as u16;
+                commands.push(update(editor, &clip.id, json!({"speed": speed})));
+            }
+            ui.end_row();
+        }
     });
+    if clip.input.visual() {
+        placement(ui, editor, clip, t, commands);
+    }
     let mut muted = clip.muted;
     if !still && ui.checkbox(&mut muted, "Mute").changed() {
         commands.push(update(editor, &clip.id, json!({"muted": muted})));
@@ -747,11 +812,66 @@ fn properties(
         commands.push(update(editor, &clip.id, json!({"out_us": null})));
     }
     let help = if clip.track == 0 {
-        "Times are seconds into the clip's own media. Into next cross-fades into the clip after it; the last clip's is ignored."
+        "Start and End are seconds into the clip's own media; fades are seconds of output. Into next cross-fades into the clip after it; the last clip's is ignored."
     } else {
-        "Times are seconds into the clip's own media; it plays from its start time over the main track."
+        "Start and End are seconds into the clip's own media; fades are seconds of output. It plays from its start time over the main track."
     };
     ui.label(egui::RichText::new(help).color(t.text_muted).small());
+}
+
+/// Where a picture sits in the frame: its centre, size, crop, turn and opacity, in percent and
+/// degrees; each field one `timeline.update`.
+fn placement(ui: &mut egui::Ui, editor: &mut TimelineEditor, clip: &Clip, t: &Tokens, commands: &mut Commands) {
+    let key = |field: &str| format!("{}.{field}", clip.id);
+    let percent = |v: f64| v / 10.0;
+    let thousandths = |v: f64, low: i64, high: i64| ((v * 10.0).round() as i64).clamp(low, high);
+    let (low, high) = (i64::from(timeline::MIN_POS), i64::from(timeline::MAX_POS));
+    ui.separator();
+    ui.label(egui::RichText::new("In the frame").color(t.text_muted));
+    egui::Grid::new("timeline_clip_place").num_columns(2).show(ui, |ui| {
+        for (field, label, value) in [("pos_x", "Across (%)", clip.pos_x), ("pos_y", "Down (%)", clip.pos_y)] {
+            if let Some(v) = number(ui, &mut editor.draft, &key(field), label, percent(f64::from(value)), percent(low as f64)..=percent(high as f64), 0.5, 1) {
+                commands.push(update(editor, &clip.id, json!({field: thousandths(v, low, high)})));
+            }
+            ui.end_row();
+        }
+        let (small, large) = (i64::from(timeline::MIN_SCALE), i64::from(timeline::MAX_SCALE));
+        if let Some(v) =
+            number(ui, &mut editor.draft, &key("scale"), "Size (%)", percent(f64::from(clip.scale)), percent(small as f64)..=percent(large as f64), 0.5, 1)
+        {
+            commands.push(update(editor, &clip.id, json!({"scale": thousandths(v, small, large)})));
+        }
+        ui.end_row();
+        // Opposite crops leave at least a tenth of the picture.
+        let crops = [
+            ("crop_left", "Crop left (%)", clip.crop_left, clip.crop_right),
+            ("crop_right", "Crop right (%)", clip.crop_right, clip.crop_left),
+            ("crop_top", "Crop top (%)", clip.crop_top, clip.crop_bottom),
+            ("crop_bottom", "Crop bottom (%)", clip.crop_bottom, clip.crop_top),
+        ];
+        for (field, label, value, opposite) in crops {
+            let most = 899i64.saturating_sub(i64::from(opposite)).max(0);
+            if let Some(v) = number(ui, &mut editor.draft, &key(field), label, percent(f64::from(value)), 0.0..=percent(most as f64), 0.5, 1) {
+                commands.push(update(editor, &clip.id, json!({field: thousandths(v, 0, most)})));
+            }
+            ui.end_row();
+        }
+        if let Some(v) = number(ui, &mut editor.draft, &key("rotation"), "Turn (°)", f64::from(clip.rotation), -180.0..=180.0, 1.0, 0) {
+            commands.push(update(editor, &clip.id, json!({"rotation": v.round().clamp(-180.0, 180.0) as i16})));
+        }
+        ui.end_row();
+        let unit = i64::from(timeline::UNIT);
+        if let Some(v) = number(ui, &mut editor.draft, &key("opacity"), "Opacity (%)", percent(f64::from(clip.opacity)), 0.0..=percent(unit as f64), 1.0, 0) {
+            commands.push(update(editor, &clip.id, json!({"opacity": thousandths(v, 0, unit)})));
+        }
+        ui.end_row();
+    });
+    if clip.placement() != timeline::Placement::IDENTITY && ui.button("Fit to the frame").clicked() {
+        let p = timeline::Placement::IDENTITY;
+        let [left, top, right, bottom] = p.crop;
+        let set = json!({"pos_x": p.pos_x, "pos_y": p.pos_y, "scale": p.scale, "crop_left": left, "crop_top": top, "crop_right": right, "crop_bottom": bottom, "rotation": p.rotation, "opacity": p.opacity});
+        commands.push(update(editor, &clip.id, set));
+    }
 }
 
 /// The output frame's width and height, as the card's parameters say.
@@ -792,6 +912,25 @@ fn frame_properties(ui: &mut egui::Ui, editor: &mut TimelineEditor, node: &nodec
             }
         });
         ui.end_row();
+        let quality = match node.params.get("quality") {
+            Some(Value::Text(text)) => text.clone(),
+            _ => "standard".into(),
+        };
+        ui.label("Quality");
+        let named = |q: &str| match q {
+            "draft" => "Draft (smallest file)",
+            "high" => "High (largest file)",
+            _ => "Standard",
+        };
+        let chosen = egui::ComboBox::from_id_salt("timeline_quality").selected_text(named(&quality)).show_ui(ui, |ui| {
+            for option in timeline::QUALITIES {
+                if ui.selectable_label(quality == option, named(option)).clicked() && quality != option {
+                    commands.push(param("quality", Value::Text(option.into())));
+                }
+            }
+        });
+        chosen.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Render quality"));
+        ui.end_row();
     });
     let colour = match node.params.get("background") {
         Some(Value::Text(text)) => text.clone(),
@@ -801,6 +940,42 @@ fn frame_properties(ui: &mut egui::Ui, editor: &mut TimelineEditor, node: &nodec
         commands.push(param("background", Value::Text(v)));
     }
     ui.label(egui::RichText::new("Pixels, 16 to 4096. Each clip is fitted inside the frame; the background fills the rest.").color(t.text_muted).small());
+}
+
+/// One frame of output at the card's frame rate.
+fn frame_us(node: &nodecraft_graph::Node) -> u64 {
+    let rate = match node.params.get("fps") {
+        Some(Value::Text(text)) => text.parse::<u64>().unwrap_or(30),
+        _ => 30,
+    };
+    1_000_000 / rate.max(1)
+}
+
+/// The output frame of `size` pixels as shown fitted inside `area`.
+fn fitted(area: Rect, size: [f32; 2]) -> Rect {
+    let scale = (area.width() / size[0].max(1.0)).min(area.height() / size[1].max(1.0));
+    Rect::from_center_size(area.center(), Vec2::new(size[0], size[1]) * scale.max(0.0))
+}
+
+/// The corners of a picture `aspect` wide to high, placed as `placement` says in the output
+/// frame of `size` pixels shown fitted inside `area`: its cropped part fitted to the frame, sized,
+/// turned clockwise about its centre and centred where it goes, as the render places it.
+fn outline(area: Rect, size: [f32; 2], aspect: f32, placement: timeline::Placement) -> Option<[Pos2; 4]> {
+    let frame = fitted(area, size);
+    let [left, top, right, bottom] = placement.crop.map(f32::from);
+    let unit = f32::from(timeline::UNIT);
+    let kept = (aspect * (unit - left - right) / (unit - top - bottom).max(1.0)).max(0.001);
+    let fit = if kept >= frame.width() / frame.height().max(0.001) {
+        Vec2::new(frame.width(), frame.width() / kept)
+    } else {
+        Vec2::new(frame.height() * kept, frame.height())
+    };
+    let half = fit * f32::from(placement.scale) / unit / 2.0;
+    let centre = frame.min + Vec2::new(frame.width() * placement.pos_x as f32, frame.height() * placement.pos_y as f32) / unit;
+    let (sin, cos) = f32::from(placement.rotation).to_radians().sin_cos();
+    let corner = |x: f32, y: f32| centre + Vec2::new(x * cos - y * sin, x * sin + y * cos);
+    let corners = [corner(-half.x, -half.y), corner(half.x, -half.y), corner(half.x, half.y), corner(-half.x, half.y)];
+    corners.iter().all(|c| c.x.is_finite() && c.y.is_finite()).then_some(corners)
 }
 
 /// Seconds between ruler ticks: the first step at least `min` points apart.
@@ -822,9 +997,11 @@ fn track(
     total: u64,
     posters: &HashMap<String, (egui::TextureId, [u32; 2])>,
     titles: &HashMap<String, String>,
+    node: &nodecraft_graph::Node,
     t: &Tokens,
     commands: &mut Commands,
 ) {
+    let frame_us = frame_us(node);
     let area = ui.available_rect_before_wrap();
     // Lanes share at most two thirds of the height, each no taller than the main track's.
     let count = tracks.len().max(1) as f32;
@@ -848,6 +1025,16 @@ fn track(
     } else {
         let why = if placed.is_empty() { "Nothing plays yet: wire media in and enable a clip." } else { "Run the card to render the timeline." };
         painter.text(preview.center(), egui::Align2::CENTER_CENTER, why, egui::FontId::proportional(t.body_size), t.text_muted);
+    }
+    // Where the selected picture sits in the frame, as an outline over the preview.
+    if let Some(s) = editor.selected.as_ref().and_then(|id| shown.iter().find(|s| &s.clip.id == id)).filter(|s| s.clip.input.visual()) {
+        let size = frame_size(node);
+        let aspect = posters.get(&s.clip.id).map_or(size[0] / size[1].max(1.0), |(_, px)| px[0] as f32 / px[1].max(1) as f32);
+        if let Some(corners) = outline(preview, size, aspect, s.clip.placement()) {
+            let frame = fitted(preview, size);
+            painter.with_clip_rect(preview).add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.5, t.accent)));
+            painter.rect_stroke(frame, 0.0, egui::Stroke::new(1.0, t.panel_stroke), egui::StrokeKind::Outside);
+        }
     }
 
     let span = total.max(UNKNOWN_US);
@@ -978,7 +1165,17 @@ fn track(
             // A move goes onto the lane under the pointer when that lane takes its media.
             let over = (0..tracks.len()).filter_map(|k| u8::try_from(k).ok()).find(|k| lane_of(*k).y_range().contains(p.y));
             let onto = over.filter(|k| drag.grip == Grip::Move && fits(tracks, *k, drag.before.input)).unwrap_or(drag.before.track);
-            drag.trim(p.x - drag.from_x, editor.scale, onto);
+            // Catch on what else is on the timeline, unless Alt is held.
+            let mut snap = Snap { points: Vec::new(), reach_us: micros(f64::from(grip / editor.scale.max(0.01))), frame_us };
+            if !ui.input(|i| i.modifiers.alt) {
+                let main = drag.before.track == 0;
+                // A main-track clip's followers move with its trim, so they aren't caught on.
+                let others = placed
+                    .iter()
+                    .filter(|q| shown.get(q.index).is_some_and(|s| s.clip.id != drag.clip) && !(main && q.track == 0 && q.start_us >= drag.from_us));
+                snap.points = others.flat_map(|q| [q.start_us, q.start_us.saturating_add(q.length_us)]).chain([0, editor.playhead_us]).collect();
+            }
+            drag.trim(p.x - drag.from_x, editor.scale, onto, &snap);
             drag.to = None;
             if drag.grip == Grip::Move && onto == 0 && drag.before.track == 0 {
                 // Lands before the first other playing main-track clip whose middle is right of the pointer.
@@ -1079,18 +1276,18 @@ mod tests {
         let drag =
             |grip| Drag { clip: "a".into(), grip, from_x: 0.0, from_us: 0, before: clip.clone(), media_us: Some(1_000_000), now: clip.clone(), to: None };
         let mut start = drag(Grip::Start);
-        start.trim(-50.0, 100.0, 0);
+        start.trim(-50.0, 100.0, 0, &Snap::default());
         assert_eq!(start.now.in_us, 0, "not before the video starts");
-        start.trim(30.0, 100.0, 0);
+        start.trim(30.0, 100.0, 0, &Snap::default());
         assert_eq!((start.now.in_us, start.now.fade_in_us, start.now.fade_out_us), (300_000, 350_000, 350_000), "fades shrink to fit");
-        start.trim(500.0, 100.0, 0);
+        start.trim(500.0, 100.0, 0, &Snap::default());
         assert_eq!(start.now.in_us, 900_000, "at least MIN_US long");
         let mut end = drag(Grip::End);
-        end.trim(-25.0, 100.0, 0);
+        end.trim(-25.0, 100.0, 0, &Snap::default());
         assert_eq!(end.now.out_us, Some(750_000));
-        end.trim(80.0, 100.0, 0);
+        end.trim(80.0, 100.0, 0, &Snap::default());
         assert_eq!(end.now.out_us, None, "back at the video's end plays to the end");
-        end.trim(f32::NAN, 0.0, 0);
+        end.trim(f32::NAN, 0.0, 0, &Snap::default());
         assert_eq!(end.now.out_us, None);
     }
 
@@ -1128,23 +1325,89 @@ mod tests {
             to: None,
         };
         let mut moving = drag(Grip::Move);
-        moving.trim(50.0, 100.0, 1);
+        moving.trim(50.0, 100.0, 1, &Snap::default());
         assert_eq!((moving.now.track, moving.now.at_us), (1, 1_500_000));
-        moving.trim(-500.0, 100.0, 1);
+        moving.trim(-500.0, 100.0, 1, &Snap::default());
         assert_eq!(moving.now.at_us, 0, "not before the output starts");
-        moving.trim(10.0, 100.0, 0);
+        moving.trim(10.0, 100.0, 0, &Snap::default());
         assert_eq!((moving.now.track, moving.now.at_us), (0, 0), "the main track plays in order");
         let mut start = drag(Grip::Start);
-        start.trim(20.0, 100.0, 1);
+        start.trim(20.0, 100.0, 1, &Snap::default());
         assert_eq!((start.now.in_us, start.now.at_us), (700_000, 1_200_000), "the end stays put");
-        start.trim(-200.0, 100.0, 1);
+        start.trim(-200.0, 100.0, 1, &Snap::default());
         assert_eq!((start.now.in_us, start.now.at_us), (0, 500_000), "back to the media's start");
         // From the main track, a clip moved onto another starts where it was, plus the travel.
         let main = Clip { transition_us: 300_000, ..Clip::whole("b".into(), "n".into(), 0) };
         let mut lifted =
             Drag { clip: "b".into(), grip: Grip::Move, from_x: 0.0, from_us: 2_000_000, before: main.clone(), media_us: None, now: main, to: None };
-        lifted.trim(100.0, 100.0, 1);
+        lifted.trim(100.0, 100.0, 1, &Snap::default());
         assert_eq!((lifted.now.track, lifted.now.at_us, lifted.now.transition_us), (1, 3_000_000, 0));
+    }
+
+    #[test]
+    fn a_faster_clip_is_shorter_on_the_track_and_splits_and_trims_through_its_media() {
+        let mut fast = shown("a", 1_000_000, None, Some(5_000_000), 0);
+        fast.clip.speed = 2000;
+        let clips = vec![fast.clone(), shown("b", 0, None, Some(1_000_000), 0)];
+        let (placed, total) = place(&clips);
+        assert_eq!((placed.first().map(|p| p.length_us), total), (Some(2_000_000), 3_000_000), "4 s of media at double speed");
+        assert_eq!(cut_at(&clips, &placed, 500_000, None), Some((0, 2_000_000)), "half a second in is a second of media");
+        let drag = |grip| Drag {
+            clip: "a".into(),
+            grip,
+            from_x: 0.0,
+            from_us: 0,
+            before: fast.clip.clone(),
+            media_us: Some(5_000_000),
+            now: fast.clip.clone(),
+            to: None,
+        };
+        let mut end = drag(Grip::End);
+        end.trim(-50.0, 100.0, 0, &Snap::default());
+        assert_eq!(end.now.out_us, Some(4_000_000), "half a second of output is a second of media");
+        let mut start = drag(Grip::Start);
+        start.trim(25.0, 100.0, 0, &Snap::default());
+        assert_eq!(start.now.in_us, 1_500_000);
+    }
+
+    #[test]
+    fn dragged_edges_catch_on_nearby_edges_and_the_playhead_else_whole_frames() {
+        let snap = Snap { points: vec![0, 2_000_000, 3_000_000], reach_us: 90_000, frame_us: 40_000 };
+        // The nearer catch of either edge wins.
+        assert_eq!(snap.travel(950_000, &[1_000_000, 1_900_000]), 1_000_000, "the start catches at 2 s");
+        assert_eq!(snap.travel(1_060_000, &[1_000_000, 1_900_000]), 1_100_000, "the end is nearer 3 s");
+        // Out of reach, the edge lands on the nearest whole frame of output.
+        assert_eq!(snap.travel(410_000, &[1_000_000]), 400_000);
+        assert_eq!(snap.travel(-1_030_000, &[1_000_000]), -1_000_000, "and catches on the output's start");
+        assert_eq!(Snap::default().travel(123, &[]), 123);
+        let clip = Clip { track: 1, at_us: 1_000_000, ..Clip::whole("a".into(), "n".into(), 0) };
+        let mut moving =
+            Drag { clip: "a".into(), grip: Grip::Move, from_x: 0.0, from_us: 1_000_000, before: clip.clone(), media_us: Some(900_000), now: clip, to: None };
+        moving.trim(104.0, 100.0, 1, &snap);
+        assert_eq!(moving.now.at_us, 2_000_000);
+        moving.trim(f32::INFINITY, 100.0, 1, &snap);
+        assert_eq!(moving.now.at_us, 1_000_000, "a hostile travel is no travel");
+    }
+
+    #[test]
+    fn the_outline_follows_the_placement() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0));
+        // A square picture fitted into a 2:1 frame shown 200 × 100: 100 × 100, centred.
+        let identity = outline(area, [400.0, 200.0], 1.0, timeline::Placement::IDENTITY);
+        assert_eq!(identity, Some([Pos2::new(50.0, 0.0), Pos2::new(150.0, 0.0), Pos2::new(150.0, 100.0), Pos2::new(50.0, 100.0)]));
+        let moved = timeline::Placement { pos_x: 0, pos_y: 1000, scale: 500, crop: [0, 0, 500, 0], ..timeline::Placement::IDENTITY };
+        // Half the width cut off leaves 1:2; fitted 50 × 100, then halved, centred on the bottom-left corner.
+        let corners = outline(area, [400.0, 200.0], 1.0, moved);
+        assert_eq!(corners.map(|c| (c[0], c[2])), Some((Pos2::new(-12.5, 75.0), Pos2::new(12.5, 125.0))));
+        let turned = outline(area, [400.0, 200.0], 1.0, timeline::Placement { rotation: 90, ..timeline::Placement::IDENTITY });
+        let first = turned.map(|c| c[0]).unwrap_or(Pos2::ZERO);
+        assert!((first.x - 150.0).abs() < 0.01 && first.y.abs() < 0.01, "turned clockwise: the top-left corner goes top-right, {first:?}");
+        let node = |fps: &str| {
+            let mut n = nodecraft_graph::Node::new(NodeId::from_bytes([4; 16]), timeline::ID);
+            n.params.insert("fps".into(), Value::Text(fps.into()));
+            n
+        };
+        assert_eq!((frame_us(&node("25")), frame_us(&node("x"))), (40_000, 33_333));
     }
 
     #[test]
