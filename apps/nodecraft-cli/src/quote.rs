@@ -28,7 +28,11 @@ pub fn canvas_of(session: &Session, wanted: Option<&str>) -> Result<CanvasId, Er
     let canvases = session.document().canvases();
     if let Some(wanted) = wanted {
         let id: CanvasId = wanted.parse().map_err(|_| Error::new(ErrorKind::InvalidInput, "`--canvas` must be a canvas id (see `inspect`)"))?;
-        return canvases.contains_key(&id).then_some(id).ok_or_else(|| Error::new(ErrorKind::NotFound, "the project has no canvas with that id"));
+        let canvas = canvases.get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "the project has no canvas with that id"))?;
+        if !canvas.kind().is_canvas() {
+            return Err(Error::new(ErrorKind::InvalidInput, "that canvas isn't a node canvas; nothing on it runs"));
+        }
+        return Ok(id);
     }
     let mut graphs = canvases.values().filter(|c| c.kind().is_canvas());
     match (graphs.next(), graphs.next()) {
@@ -73,21 +77,27 @@ fn adapters_of(session: &Session, canvas: &Canvas) -> Result<Adapters, Error> {
     Ok((adapters, expanded.inner))
 }
 
-/// Builds the adapters a run of `nodes` (every stale or unrun card when empty) needs with `maker`,
-/// routes the canvas's cards to them and installs empty budgets: what `run.quote` reads.
-pub fn prepare(session: &mut Session, canvas: CanvasId, nodes: &[NodeId], maker: &mut Maker<'_>) -> Result<(), Error> {
+/// The cards a quote is for: `nodes`, or every stale or never-run card when it is empty.
+pub fn targets(session: &Session, canvas: CanvasId, nodes: &[NodeId]) -> Result<Vec<NodeId>, Error> {
     let graph = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "no such canvas"))?;
-    let stale = nodecraft_exec::staleness::stale(graph, session.kinds())?;
     for node in nodes {
         if !graph.nodes().contains_key(node) {
             return Err(Error::new(ErrorKind::NotFound, format!("the canvas has no node {node}")));
         }
     }
-    let mut reached = if nodes.is_empty() {
-        graph.nodes().values().filter(|n| stale.contains(&n.id) || !has_result(n)).map(|n| n.id).collect()
-    } else {
-        with_upstream(graph, nodes, &stale)
-    };
+    if !nodes.is_empty() {
+        return Ok(nodes.to_vec());
+    }
+    let stale = nodecraft_exec::staleness::stale(graph, session.kinds())?;
+    Ok(graph.nodes().values().filter(|n| stale.contains(&n.id) || !has_result(n)).map(|n| n.id).collect())
+}
+
+/// Builds the adapters a run of `targets` and their upstream needs with `maker`, routes the
+/// canvas's cards to them and installs empty budgets: what `run.quote` reads.
+pub fn prepare(session: &mut Session, canvas: CanvasId, targets: &[NodeId], maker: &mut Maker<'_>) -> Result<(), Error> {
+    let graph = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "no such canvas"))?;
+    let stale = nodecraft_exec::staleness::stale(graph, session.kinds())?;
+    let mut reached = with_upstream(graph, targets, &stale);
     let (adapters, inner) = adapters_of(session, graph)?;
     reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
     let needed: BTreeSet<&str> = reached.iter().filter_map(|node| adapters.get(node).map(String::as_str)).collect();
@@ -104,10 +114,11 @@ pub fn prepare(session: &mut Session, canvas: CanvasId, nodes: &[NodeId], maker:
     Ok(())
 }
 
-/// The `run.quote` result for a run of `nodes` with their upstream, or of every stale card.
-pub fn quote(session: &mut Session, canvas: CanvasId, nodes: &[NodeId]) -> Result<Value, Error> {
+/// The `run.quote` result for a run of `targets` with their upstream.
+pub fn quote(session: &mut Session, canvas: CanvasId, targets: &[NodeId]) -> Result<Value, Error> {
+    // Nothing to run still gets a (empty) quote: `all_stale` on a canvas with nothing stale.
     let params =
-        if nodes.is_empty() { json!({"canvas": canvas, "mode": "all_stale"}) } else { json!({"canvas": canvas, "mode": "with_upstream", "nodes": nodes}) };
+        if targets.is_empty() { json!({"canvas": canvas, "mode": "all_stale"}) } else { json!({"canvas": canvas, "mode": "with_upstream", "nodes": targets}) };
     session.dispatch("run.quote", &params)
 }
 
@@ -164,7 +175,7 @@ pub fn quote_text(session: &Session, canvas: CanvasId, quote: &Value) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nodecraft_graph::{Change, Node, Project};
+    use nodecraft_graph::{Change, Project};
     use nodecraft_types::{ProjectId, Value as V};
 
     const CANVAS: CanvasId = CanvasId::from_bytes([1; 16]);
@@ -175,8 +186,14 @@ mod tests {
         for n in 0..canvases {
             Change::AddCanvas { canvas: Canvas::new(CanvasId::from_bytes([n.wrapping_add(1); 16]), "Canvas") }.apply(&mut project).unwrap();
         }
-        let mut node = Node::new(NODE, nodecraft_nodes::generation::KIND);
-        node.params.insert("model".into(), V::Text(model.into()));
+        // Instantiated by its kind, as the canvas adds it, so its parameters are complete.
+        let blank = Session::new(project.clone()).unwrap();
+        let kinds = blank.kinds();
+        let mut values: BTreeMap<String, V> = [("prompt".into(), V::Text("a fox".into()))].into();
+        if !model.is_empty() {
+            values.insert("model".into(), V::Text(model.into()));
+        }
+        let node = kinds.get(nodecraft_nodes::generation::KIND).unwrap().instantiate_instance(NODE, Default::default(), &values).unwrap();
         Change::AddNode { canvas: CANVAS, node }.apply(&mut project).unwrap();
         project
     }
@@ -191,7 +208,8 @@ mod tests {
     fn a_provider_without_a_key_is_named_and_nothing_else_is_built() {
         let mut session = Session::new(project(1, &first_model("openai-images"))).unwrap();
         let mut asked = Vec::new();
-        let error = prepare(&mut session, CANVAS, &[], &mut |adapter| {
+        let targets = targets(&session, CANVAS, &[]).unwrap();
+        let error = prepare(&mut session, CANVAS, &targets, &mut |adapter| {
             asked.push(adapter.to_owned());
             Err(Readiness::NeedsKey { account: "openai".into() })
         })
@@ -218,9 +236,52 @@ mod tests {
 
     #[test]
     fn an_unknown_node_is_refused() {
-        let mut session = Session::new(project(1, "")).unwrap();
-        let error = prepare(&mut session, CANVAS, &[NodeId::from_bytes([7; 16])], &mut |_| Err(Readiness::NotSetUp("unused".into()))).err().unwrap();
+        let session = Session::new(project(1, "")).unwrap();
+        let error = targets(&session, CANVAS, &[NodeId::from_bytes([7; 16])]).unwrap_err();
         assert_eq!(error.kind, ErrorKind::NotFound);
+    }
+
+    /// The mock provider stands in for a ready adapter: the catalog prices the card.
+    fn ready(adapter: &str) -> Result<Arc<dyn Provider>, Readiness> {
+        use nodecraft_testkit::mock::{MockModel, MockOutput, MockProvider};
+        Ok(Arc::new(MockProvider::new(adapter, [(first_model(adapter), MockModel::new(MockOutput::Image))])))
+    }
+
+    #[test]
+    fn a_ready_provider_prices_the_run() {
+        // Seedream's first model has one price per call.
+        let mut session = Session::new(project(1, &first_model("seedream"))).unwrap();
+        let targets = targets(&session, CANVAS, &[]).unwrap();
+        assert_eq!(targets, vec![NODE], "a never-run card is quoted by default");
+        prepare(&mut session, CANVAS, &targets, &mut ready).unwrap();
+        let quote = quote(&mut session, CANVAS, &targets).unwrap();
+        assert_eq!(quote["steps"].as_array().map(Vec::len), Some(1), "{quote}");
+        assert!(quote["totals"]["USD"]["micros"].as_u64().is_some_and(|m| m > 0), "{quote}");
+        let text = quote_text(&session, CANVAS, &quote);
+        assert!(text.contains("1 step:") && !text.contains("Total: No charge") && !text.contains("Unknown"), "{text}");
+    }
+
+    #[test]
+    fn by_default_a_card_with_a_current_result_needs_no_key() {
+        let mut project = project(1, &first_model("openai-images"));
+        let generation = nodecraft_types::GenerationId::from_bytes([5; 16]);
+        // No input hash: a result recorded that way is never stale.
+        let made = nodecraft_graph::Generation::new(generation, Vec::new());
+        Change::AddGeneration { canvas: CANVAS, id: NODE, index: 0, generation: made }.apply(&mut project).unwrap();
+        Change::SetActiveGeneration { canvas: CANVAS, id: NODE, generation: Some(generation) }.apply(&mut project).unwrap();
+        let mut session = Session::new(project).unwrap();
+        let targets = targets(&session, CANVAS, &[]).unwrap();
+        assert!(targets.is_empty(), "{targets:?}");
+        let mut asked = 0;
+        prepare(&mut session, CANVAS, &targets, &mut |_| {
+            asked += 1;
+            Err(Readiness::NeedsKey { account: "openai".into() })
+        })
+        .unwrap();
+        assert_eq!(asked, 0, "no adapter is built for a card that won't run");
+        let quote = quote(&mut session, CANVAS, &targets).unwrap();
+        let text = quote_text(&session, CANVAS, &quote);
+        assert!(text.starts_with("Nothing to run."), "{text}");
     }
 
     #[test]

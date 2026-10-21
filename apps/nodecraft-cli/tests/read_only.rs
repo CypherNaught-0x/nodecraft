@@ -12,17 +12,24 @@ use serde_json::Value;
 const CANVAS: CanvasId = CanvasId::from_bytes([1; 16]);
 const NOTE: NodeId = NodeId::from_bytes([3; 16]);
 
-fn cli(args: &[&str]) -> (Output, u32) {
-    let child = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli"))
+/// Runs the CLI with a fresh, empty home folder, and checks it is still empty afterwards: the CLI
+/// writes nothing to the user's data or settings folders (no project lock, no recovery journal),
+/// so it can read a project the app has open.
+fn cli(args: &[&str]) -> Output {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli"))
         .args(args)
         // Defaults, in memory: the tests never read the developer's settings.
         .env("NODECRAFT_CONFIG_DIR", "")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .output()
         .unwrap();
-    let pid = child.id();
-    (child.wait_with_output().unwrap(), pid)
+    assert!(names(home.path()).is_empty(), "{args:?} wrote into the home folder: {:?}", names(home.path()));
+    output
 }
 
 fn stdout(output: &Output) -> String {
@@ -50,19 +57,12 @@ fn names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// The command's scratch folder is gone once it ends.
-fn no_scratch_left(pid: u32) {
-    let prefix = format!("nodecraft-cli-{pid}-");
-    let left: Vec<String> = names(&std::env::temp_dir()).into_iter().filter(|n| n.starts_with(&prefix)).collect();
-    assert!(left.is_empty(), "scratch left behind: {left:?}");
-}
-
 #[test]
 fn commands_lists_the_engines_commands() {
-    let (out, _) = cli(&["commands"]);
+    let out = cli(&["commands"]);
     assert!(out.status.success());
     assert!(stdout(&out).lines().any(|l| l.starts_with("node.add ")), "{}", stdout(&out));
-    let (out, _) = cli(&["commands", "--json", "--full"]);
+    let out = cli(&["commands", "--json", "--full"]);
     assert!(out.status.success());
     let listed: Value = serde_json::from_slice(&out.stdout).unwrap();
     let add = listed.as_array().unwrap().iter().find(|c| c["id"] == "node.add").unwrap();
@@ -74,16 +74,15 @@ fn commands_lists_the_engines_commands() {
 fn inspect_reads_a_project_without_changing_anything() {
     let (dir, path) = project("fox.ncraft");
     let before = std::fs::read(&path).unwrap();
-    let (out, pid) = cli(&["inspect", path.to_str().unwrap()]);
+    let out = cli(&["inspect", path.to_str().unwrap()]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = stdout(&out);
     assert!(text.starts_with("Fox study\n"), "{text}");
     assert!(text.contains("“Sketches”") && text.contains("1 nodes") && text.contains("Brief"), "{text}");
     assert_eq!(std::fs::read(&path).unwrap(), before, "the project is not written");
     assert_eq!(names(dir.path()), vec!["fox.ncraft".to_owned()], "nothing is written beside it");
-    no_scratch_left(pid);
 
-    let (out, _) = cli(&["inspect", "--json", path.to_str().unwrap()]);
+    let out = cli(&["inspect", "--json", path.to_str().unwrap()]);
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["project"]["title"], "Fox study");
     let node = &report["canvases"][0]["nodes"][0];
@@ -95,11 +94,10 @@ fn inspect_reads_a_project_without_changing_anything() {
 #[test]
 fn quote_prices_a_run_without_running_it() {
     let (_dir, path) = project("fox.ncraft");
-    let (out, pid) = cli(&["quote", path.to_str().unwrap(), "--node", &NOTE.to_string()]);
+    let out = cli(&["quote", path.to_str().unwrap(), "--node", &NOTE.to_string()]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(stdout(&out).contains("Total: "), "{}", stdout(&out));
-    no_scratch_left(pid);
-    let (out, _) = cli(&["quote", "--json", path.to_str().unwrap()]);
+    let out = cli(&["quote", "--json", path.to_str().unwrap()]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let quote: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(quote["token"].is_string(), "{quote}");
@@ -127,10 +125,9 @@ fn bad_input_is_an_error_not_a_panic() {
         vec!["commands", "extra"],
         vec!["providers", "--full"],
     ] {
-        let (out, pid) = cli(&args);
+        let out = cli(&args);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {stderr}");
         assert!(stderr.starts_with("error: ") && !stderr.contains("panicked"), "{args:?}: {stderr}");
-        no_scratch_left(pid);
     }
 }

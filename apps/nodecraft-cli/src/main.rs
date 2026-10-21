@@ -34,7 +34,7 @@ commands:
   inspect <project.ncraft>
                   list a project's canvases and nodes, with which are stale
   quote <project.ncraft> [--canvas <id>] [--node <id>]...
-                  price a run of the nodes and their upstream (default: every stale node);
+                  price a run of the nodes and their upstream (default: every stale or never-run node);
                   nothing runs and nothing is charged
   providers       list the model providers and whether each can run (reads the keychain)
   --version, -V   print the version, commit and build date
@@ -149,7 +149,14 @@ fn options(args: &[String], allowed: &[&str]) -> Result<Options, String> {
 
 /// Prints `value` as JSON or, for people, as `text` renders it.
 fn print(json: bool, value: &serde_json::Value, text: impl FnOnce(&serde_json::Value) -> String) -> ExitCode {
-    let out = if json { serde_json::to_string_pretty(value).map(|mut s| (s.push('\n'), s).1).unwrap_or_default() } else { text(value) };
+    let out = if json {
+        match serde_json::to_string_pretty(value) {
+            Ok(out) => out + "\n",
+            Err(error) => return fail(&format!("can't write JSON: {error}")),
+        }
+    } else {
+        text(value)
+    };
     // A closed pipe (`| head`) isn't an error worth a message.
     let _ = std::io::stdout().lock().write_all(out.as_bytes());
     ExitCode::SUCCESS
@@ -203,11 +210,11 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
                 Ok(path) => path,
                 Err(message) => return fail(&format!("{message}\n\n{USAGE}")),
             };
-            let mut opened = match project::open(&path, &mut new_id) {
-                Ok(opened) => opened,
+            let mut session = match project::open(&path) {
+                Ok(session) => session,
                 Err(error) => return fail(&error.message),
             };
-            let session = &mut opened.session;
+            let session = &mut session;
             if command == "inspect" {
                 return match inspect::inspect(session) {
                     Ok(report) => print(options.json, &report, inspect::inspect_text),
@@ -215,9 +222,10 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
                 };
             }
             let quoted = quote::canvas_of(session, options.canvas.as_deref()).and_then(|canvas| {
+                let targets = quote::targets(session, canvas, &options.nodes)?;
                 let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
-                quote::prepare(session, canvas, &options.nodes, &mut maker)?;
-                quote::quote(session, canvas, &options.nodes).map(|quote| (canvas, quote))
+                quote::prepare(session, canvas, &targets, &mut maker)?;
+                quote::quote(session, canvas, &targets).map(|quote| (canvas, quote))
             });
             match quoted {
                 Ok((canvas, value)) => print(options.json, &value, |value| quote::quote_text(session, canvas, value)),

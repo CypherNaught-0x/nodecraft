@@ -1,53 +1,50 @@
-//! Opening a `.ncraft` project headlessly.
+//! Opening a `.ncraft` project headlessly, read-only.
 //!
-//! The engine opens projects through storage with a recovery journal, as the app does. The CLI's
-//! journal lives in a private folder of its own under the system temp folder, made fresh for each
-//! command and removed when it ends, so the CLI never shares (or locks) the app's recovery files
-//! and never writes next to the project.
-use std::path::{Path, PathBuf};
+//! The CLI decodes the file in place rather than opening it through the app's storage: storage
+//! takes the per-user project lock and keeps a recovery journal, so it would refuse a project the
+//! app has open and would write into the app's data folder. Decoding reads the file and writes
+//! nothing anywhere.
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use nodecraft_engine::Session;
-use nodecraft_format::{AssetStore, NativeStorage, Snapshot};
-use nodecraft_graph::Project;
-use nodecraft_types::{Error, ErrorKind, ProjectId};
-use serde_json::json;
+use nodecraft_format::AssetContext;
+use nodecraft_format::asset_source::{AssetRange, AssetSource, StreamMetrics, TransferCancel};
+use nodecraft_format::zip_index::ArchiveIndex;
+use nodecraft_types::{Error, ErrorKind};
 
-/// A private temp folder, removed (with everything in it) when dropped.
-struct Scratch(PathBuf);
+/// The project file as a bounded source; reads seek a shared handle.
+struct FileSource {
+    file: Mutex<File>,
+    len: u64,
+}
 
-impl Scratch {
-    fn new(new_id: &mut dyn FnMut() -> [u8; 16]) -> Result<Self, Error> {
-        let suffix: String = new_id().iter().map(|b| format!("{b:02x}")).collect();
-        let dir = std::env::temp_dir().join(format!("nodecraft-cli-{}-{suffix}", std::process::id()));
-        // `create_dir`, not `create_dir_all`: a folder that is already there isn't ours.
-        std::fs::create_dir(&dir).map_err(|e| Error::new(ErrorKind::Internal, format!("can't make a scratch folder: {e}")))?;
-        Ok(Self(dir))
+impl AssetSource for FileSource {
+    fn byte_len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Result<usize, Error> {
+        let unreadable = || Error::new(ErrorKind::Internal, "can't read the project file");
+        let mut file = self.file.lock().map_err(|_| unreadable())?;
+        file.seek(SeekFrom::Start(offset)).map_err(|_| unreadable())?;
+        file.read(buffer).map_err(|_| unreadable())
     }
 }
 
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// A session on an opened project. The session goes before its scratch folder.
-pub struct Opened {
-    pub session: Session,
-    _scratch: Scratch,
-}
-
-/// Opens the project at `path` read-only: nothing is saved back to it.
-pub fn open(path: &Path, new_id: &mut dyn FnMut() -> [u8; 16]) -> Result<Opened, Error> {
-    // Checked first, so a typo reads as one rather than as a storage error.
+/// Opens the project at `path` read-only: nothing is written, and the app's lock is not taken.
+pub fn open(path: &Path) -> Result<Session, Error> {
+    // Checked first, so a typo reads as one rather than as a format error.
     if !path.is_file() {
         return Err(Error::new(ErrorKind::NotFound, format!("no project file at {}", path.display())));
     }
-    let location = path.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project path must be valid UTF-8"))?;
-    let scratch = Scratch::new(new_id)?;
-    let storage = NativeStorage::new(scratch.0.join("recovery"))?;
-    let blank = Project::new(ProjectId::from_bytes(new_id()), "Untitled")?;
-    let mut session = Session::with_sendable_storage(Snapshot { project: blank, assets: AssetStore::default(), epoch: 0 }, Box::new(storage))?;
-    session.dispatch("file.open", &json!({"location": location, "discard_dirty": true}))?;
-    Ok(Opened { session, _scratch: scratch })
+    let file = File::open(path).map_err(|e| Error::new(ErrorKind::NotFound, format!("can't open {}: {e}", path.display())))?;
+    let len = file.metadata().map_err(|e| Error::new(ErrorKind::Internal, format!("can't read {}: {e}", path.display())))?.len();
+    let source: Arc<dyn AssetSource> = Arc::new(FileSource { file: Mutex::new(file), len });
+    let range = AssetRange::new(source, 0, len)?;
+    let index = ArchiveIndex::read(&range, &TransferCancel::default(), &StreamMetrics::default())?;
+    let snapshot = nodecraft_format::decode_indexed(&index, AssetContext::default())?;
+    Session::new(snapshot.project)
 }
