@@ -8,7 +8,7 @@ use crate::{
 use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use nodecraft_graph::{Node, Position};
 use nodecraft_nodes::NodeDescriptor;
-use nodecraft_types::{Integer, Number, ParamControl, Unsigned, Value};
+use nodecraft_types::{Integer, Modality, Number, ParamControl, Unsigned, Value};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -118,6 +118,15 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
     clipped
 }
 
+/// Whether this card's own result is media (#321), read from the ports its kind declares rather
+/// than from a list of kind ids: an image, video, audio or 3D output makes a media card, so the
+/// media kinds the catalogue doesn't offer yet are covered when they arrive. A text or document
+/// card is not a media card, and `H` leaves its prompt composer alone.
+pub(crate) fn media_card(descriptor: Option<&NodeDescriptor>) -> bool {
+    descriptor
+        .is_some_and(|d| d.outputs.iter().any(|port| matches!(port.port_type.modality, Modality::Image | Modality::Video | Modality::Audio | Modality::Mesh)))
+}
+
 /// Position-independent logical metrics, including the node's history strip.
 /// Never recover these by subtracting large coordinates.
 pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Vec2 {
@@ -160,6 +169,10 @@ pub struct CardView<'a> {
     pub lists: Option<&'a nodecraft_types::OptionLists>,
     /// A wire feeds the card's prompt port (#84).
     pub prompt_wired: bool,
+    /// Whether the card may draw its prompt overlay at all (#321). `H` clears this to hide the
+    /// overlays on media cards for a clean board; it is view state, and only a media card obeys
+    /// it: a text card's composer is its editor, not an overlay, so it is never hidden.
+    pub prompt_overlay: bool,
     /// How many Elements go by each lowercased name, for the prompt's mention hint (#104).
     pub elements: &'a std::collections::BTreeMap<String, usize>,
     /// The cards on the canvas, for the prompt's `@` mentions (#505).
@@ -214,6 +227,7 @@ pub fn show(
         listed: listed_params,
         lists,
         prompt_wired,
+        prompt_overlay,
         elements,
         mentions,
         mention_blocked,
@@ -225,6 +239,13 @@ pub fn show(
         variations,
     } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
+    // `H` hides the prompt overlay on media cards only (#321). The overlay is the composer frame
+    // (#83): its prompt, its variation counter and its submit arrow. Hiding it is painting only —
+    // the card keeps its size, every shortcut keeps working, and the composer's own parameters
+    // stay out of the parameter list rather than moving down the card, which is what makes the
+    // card clean. A text card's composer is its editor rather than an overlay over a result, so
+    // it is never hidden.
+    let draw_composer = composer.filter(|_| prompt_overlay || !media_card(descriptor));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -385,7 +406,7 @@ pub fn show(
             inner = rest;
             generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
         }
-        if let Some(d) = composer {
+        if let Some(d) = draw_composer {
             inner = generate::show(
                 &mut ui,
                 inner,
@@ -406,6 +427,8 @@ pub fn show(
                 t,
             );
         }
+        // Owned either way: with the overlay hidden these parameters are simply not shown, which
+        // is the point of a clean board (#321).
         let own = |name: &str| composer.is_some() && (name == nodecraft_nodes::generation::PROMPT || roles.and_then(|r| r.count.as_deref()) == Some(name));
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
@@ -1063,6 +1086,27 @@ mod audio_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_media_result_makes_a_media_card() {
+        let card = |modality| NodeDescriptor {
+            id: "generation.test".into(),
+            label: "Test".into(),
+            category: nodecraft_nodes::Category::Generation,
+            inputs: Vec::new(),
+            outputs: vec![nodecraft_graph::Port { name: "out".into(), port_type: nodecraft_types::PortType { modality, many: false } }],
+            params: Default::default(),
+            quick_add: None,
+        };
+        // Video, audio and 3D aren't in the catalogue yet; the port check already covers them.
+        for media in [Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh] {
+            assert!(media_card(Some(&card(media))), "{media:?} is a media card, so `H` hides its overlay");
+        }
+        for other in [Modality::Text, Modality::Document] {
+            assert!(!media_card(Some(&card(other))), "{other:?} is not, so its prompt stays");
+        }
+        assert!(!media_card(None), "a card whose kind is unavailable keeps its prompt");
+    }
 
     #[test]
     fn grid_lines_fall_where_the_split_cuts() {
