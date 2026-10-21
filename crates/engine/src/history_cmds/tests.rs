@@ -236,7 +236,7 @@ fn extract_picks_a_port_and_a_list_item_and_refuses_what_it_cannot_hold() {
         |n: u8| vec![Value::Text(format!("caption {n}")), Value::List(vec![Value::Text("a".into()), Value::Text("b".into())]), Value::Text("report".into())];
     let mut s = session(1, vec![("caption", Modality::Text, false), ("variants", Modality::Text, true), ("report", Modality::Document, false)], lists);
     let error = extract(&mut s, json!({"port": "variants"})).unwrap_err();
-    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "that output is a list: choose an item to extract"));
+    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "that output is a list: choose an item"));
     assert_eq!(extract(&mut s, json!({"port": "variants", "item": 5})).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(extract(&mut s, json!({"item": 0})).unwrap_err().kind, ErrorKind::InvalidInput);
     assert_eq!(extract(&mut s, json!({"port": "report"})).unwrap_err().kind, ErrorKind::Unsupported);

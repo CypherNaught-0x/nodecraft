@@ -646,7 +646,7 @@ impl Session {
             // Handlers describe effects without I/O. Preview custom edits through the same
             // admission boundary as dispatch; services and file I/O are never invoked here.
             match (spec.run)(&context, params)? {
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::CancelFile => Ok(()),
+                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
@@ -755,10 +755,13 @@ impl Session {
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
         let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;
-        let reads = matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::PreparedRun { .. } | Effect::CancelFile);
+        let reads = matches!(
+            effect,
+            Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::PreparedRun { .. } | Effect::CancelFile
+        );
         // A run would start on the project being replaced, so only pure reads go past an open.
         if matches!(self.pending, Some(PendingFile::Open(_)))
-            && !matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::CancelFile)
+            && !matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile)
         {
             return Err(opening());
         }
@@ -793,6 +796,10 @@ impl Session {
                     crate::perf_cmds::PerfAction::Clear => self.perf.clear(),
                 }
                 return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
+            }
+            Effect::Export { asset, path, overwrite } => {
+                let bytes = guard(|| crate::export::write(&self.assets, &asset, &path, overwrite))?;
+                return Ok(serde_json::json!({"bytes": bytes}));
             }
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
@@ -1028,6 +1035,7 @@ impl Session {
             Effect::None { .. }
             | Effect::PreparedRun { .. }
             | Effect::Service { .. }
+            | Effect::Export { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }

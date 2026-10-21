@@ -18,7 +18,7 @@ an agent can actually do today.
 | 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 6/9 |
 | 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 17/30 |
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
-| 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540) | 2/16 |
+| 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557) | 2/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105) | 2/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22) | 3/7 |

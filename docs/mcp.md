@@ -78,7 +78,8 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
 and `keys.remove` deletes a key with no undo. `file.open`, `file.save`, `file.save_as` and `file.cancel` are
 temporarily human-only until MCP enforces allowed read/write roots (#116); they remain available
-through the engine and native app. `run.record` writes results the host ran, and
+through the engine and native app. `history.export` writes a result to a file anywhere on the
+machine, so it is human-only for the same reason (#557). `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325), as does `usage.resolve_charge` for what a reconciled charge was billed
 (#332); agents can still review those charges with `usage.ownership` and `usage.unsettled`. The

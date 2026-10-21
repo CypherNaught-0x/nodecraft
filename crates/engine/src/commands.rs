@@ -154,6 +154,12 @@ pub enum Effect {
     },
     Undo,
     Redo,
+    /// Write one asset's bytes to a file (`history.export`); never over one unless `overwrite`.
+    Export {
+        asset: nodecraft_types::AssetRef,
+        path: std::path::PathBuf,
+        overwrite: bool,
+    },
     /// Start, stop or clear the session's performance recorder (`perf_cmds`).
     Perf {
         action: crate::perf_cmds::PerfAction,
@@ -220,6 +226,7 @@ impl Registry {
             .chain(crate::resolve_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
+            .chain(crate::export_cmds::specs())
             .chain(crate::turn_into_cmds::specs())
             .chain(crate::tag_cmds::specs())
             .chain(crate::tag_filter_cmds::specs())
