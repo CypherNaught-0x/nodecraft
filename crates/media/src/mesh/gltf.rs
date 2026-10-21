@@ -9,16 +9,19 @@
 use super::{Builder, MeshLimits};
 use crate::{Limits, MediaError, mesh::Mesh};
 use serde::Deserialize;
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, cell::Cell, collections::HashMap};
 
 const JSON_CHUNK: u32 = 0x4E4F_534A;
 const BIN_CHUNK: u32 = 0x004E_4942;
 /// Extensions a file may require that change nothing NodeCraft draws, or that it reads anyway.
-const KNOWN_REQUIRED: &[&str] = &["KHR_mesh_quantization", "KHR_texture_transform", "KHR_materials_unlit", "KHR_materials_emissive_strength"];
+const KNOWN_REQUIRED: &[&str] = &["KHR_mesh_quantization", "KHR_materials_unlit", "KHR_materials_emissive_strength"];
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 /// Most JSON values (counted by their separators) a file may hold. Typed parsing can grow a
 /// number into eight bytes, so this, not the input size, bounds what the JSON tree costs.
 const MAX_JSON_VALUES: usize = 4_000_000;
+/// Most JSON objects a file may hold: each becomes a typed struct of up to a few hundred bytes,
+/// so a few megabytes of `{},` can't grow into hundreds of megabytes.
+const MAX_JSON_OBJECTS: usize = 262_144;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +172,11 @@ struct Reader<'a> {
     limits: &'a MeshLimits,
     /// Decoded textures by image index; `None` when one couldn't be (it is left out).
     textures: HashMap<usize, Option<Rgba>>,
+    /// Primitives drawn so far, counted at every instance; shares the node-visit cap.
+    primitives: usize,
+    /// Accessor values decoded so far. Shared instances decode their accessors again, and an
+    /// unused attribute is decoded before it is dropped, so this, not the output, bounds the work.
+    decoded: Cell<usize>,
 }
 
 /// A GLB chunk: its type, its payload and where the next one starts.
@@ -213,7 +221,8 @@ pub(super) fn decode_gltf(bytes: &[u8], limits: &MeshLimits) -> Result<Mesh, Med
 
 impl<'a> Reader<'a> {
     fn new(json: &[u8], bin: Option<&'a [u8]>, limits: &'a MeshLimits) -> Result<Self, MediaError> {
-        if json_values(json) > MAX_JSON_VALUES {
+        let (values, objects) = json_values(json);
+        if values > MAX_JSON_VALUES || objects > MAX_JSON_OBJECTS {
             return Err(MediaError::LimitExceeded("the glTF JSON holds too many values".into()));
         }
         let root: Root = serde_json::from_slice(json).map_err(|e| corrupt(&format!("its JSON is not valid glTF ({e})")))?;
@@ -241,7 +250,7 @@ impl<'a> Reader<'a> {
             }
             buffers.push(data);
         }
-        Ok(Self { root, buffers, limits, textures: HashMap::new() })
+        Ok(Self { root, buffers, limits, textures: HashMap::new(), primitives: 0, decoded: Cell::new(0) })
     }
 
     fn read(mut self) -> Result<Mesh, MediaError> {
@@ -305,6 +314,10 @@ impl<'a> Reader<'a> {
     }
 
     fn primitive(&mut self, mesh: usize, index: usize, world: &[f32; 16], builder: &mut Builder<'_>) -> Result<(), MediaError> {
+        self.primitives += 1;
+        if self.primitives > self.limits.max_node_visits {
+            return Err(MediaError::LimitExceeded(format!("more than {} mesh primitives", self.limits.max_node_visits)));
+        }
         let Some(primitive) = self.root.meshes.get(mesh).and_then(|m| m.primitives.get(index)) else {
             return Ok(());
         };
@@ -365,7 +378,9 @@ impl<'a> Reader<'a> {
             if world_p.iter().any(|c| !c.is_finite()) {
                 return Err(corrupt("a vertex position isn't a finite number"));
             }
-            builder.vertex(world_p, super::normalize(apply3(&normal_matrix, normal)).unwrap_or([0.0; 3]), rgba)?;
+            // The cofactor matrix is det·M⁻ᵀ, so a mirroring transform turns normals inside out.
+            let normal = apply3(&normal_matrix, normal).map(|c| if flip { -c } else { c });
+            builder.vertex(world_p, super::normalize(normal).unwrap_or([0.0; 3]), rgba)?;
         }
         for &[a, b, c] in triangles.as_chunks::<3>().0 {
             if [a, b, c].iter().any(|&i| i as usize >= n) {
@@ -430,7 +445,8 @@ impl<'a> Reader<'a> {
             values
                 .chunks_exact(components)
                 .map(|c| {
-                    [c.first().copied().unwrap_or(1.0), c.get(1).copied().unwrap_or(1.0), c.get(2).copied().unwrap_or(1.0), c.get(3).copied().unwrap_or(1.0)]
+                    let channel = |i: usize| c.get(i).copied().filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 1.0));
+                    [channel(0), channel(1), channel(2), channel(3)]
                 })
                 .collect(),
         ))
@@ -510,6 +526,7 @@ impl<'a> Reader<'a> {
         }
         let (bytes, stride, _, count, accessor) = self.elements(index, components)?;
         let size = component_size(accessor.component_type).unwrap_or(4);
+        self.charge(count.saturating_mul(components))?;
         let mut out = Vec::with_capacity(count.saturating_mul(components));
         for i in 0..count {
             for c in 0..components {
@@ -521,6 +538,18 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
+    /// Charges `values` decoded accessor values to the file's budget: enough for every vertex to
+    /// carry a position, normal, colour and UV set, and for every triangle's indices, twice over.
+    fn charge(&self, values: usize) -> Result<(), MediaError> {
+        let budget = self.limits.max_vertices.saturating_mul(24).saturating_add(self.limits.max_triangles.saturating_mul(6));
+        let total = self.decoded.get().saturating_add(values);
+        if total > budget {
+            return Err(MediaError::LimitExceeded("the glTF reads more vertex data than a model this size needs".into()));
+        }
+        self.decoded.set(total);
+        Ok(())
+    }
+
     fn indices(&self, index: usize) -> Result<Vec<u32>, MediaError> {
         if self.components(index)? != 1 {
             return Err(corrupt("triangle indices must be scalars"));
@@ -529,6 +558,7 @@ impl<'a> Reader<'a> {
         if !matches!(accessor.component_type, 5121 | 5123 | 5125) {
             return Err(corrupt("triangle indices must be unsigned integers"));
         }
+        self.charge(count)?;
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let raw = bytes.get(i * stride..i * stride + size).ok_or_else(|| corrupt("an accessor runs past its buffer view"))?;
@@ -543,9 +573,10 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Separators outside strings: a cheap upper bound on the values a JSON document holds.
-fn json_values(json: &[u8]) -> usize {
-    let (mut count, mut in_string, mut escaped) = (0usize, false, false);
+/// Separators outside strings, and objects: cheap upper bounds on the values a JSON document
+/// holds and on the structs it parses into.
+fn json_values(json: &[u8]) -> (usize, usize) {
+    let (mut count, mut objects, mut in_string, mut escaped) = (0usize, 0usize, false, false);
     for &b in json {
         if in_string {
             match (escaped, b) {
@@ -557,12 +588,16 @@ fn json_values(json: &[u8]) -> usize {
         } else {
             match b {
                 b'"' => in_string = true,
-                b',' | b'[' | b'{' | b':' => count += 1,
+                b'{' => {
+                    count += 1;
+                    objects += 1;
+                }
+                b',' | b'[' | b':' => count += 1,
                 _ => {}
             }
         }
     }
-    count
+    (count, objects)
 }
 
 fn component_size(kind: u32) -> Option<usize> {

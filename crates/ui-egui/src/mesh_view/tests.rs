@@ -34,11 +34,26 @@ fn the_cache_keeps_failures_and_stays_within_its_budget() {
     assert!(one > 0);
     meshes.inline(hash(2), QUAD);
     assert_eq!(meshes.bytes(), one, "a replaced model is not counted twice");
-    // Over budget, models not used this frame go first.
+    // Over budget, a model drawn last frame stays (it is on screen); an older one goes.
     meshes.bytes = MAX_MODEL_BYTES + 1;
     meshes.poll();
     meshes.evict();
+    assert!(meshes.entries.contains_key(&hash(2)), "a model on screen is not decoded again every frame");
+    meshes.poll();
+    meshes.evict();
     assert!(!meshes.entries.contains_key(&hash(2)));
+}
+
+#[test]
+fn a_busy_read_is_asked_again_and_a_corrupt_one_is_not() {
+    use nodecraft_format::PreviewReadError as E;
+    let mut meshes = Meshes::default();
+    meshes.fail_read(hash(1), E::Busy);
+    meshes.fail_read(hash(2), E::Corrupt);
+    assert!(matches!(meshes.entries.get(&hash(1)), Some(Entry::Retry { .. })));
+    assert!(matches!(meshes.entries.get(&hash(2)), Some(Entry::Failed(_))));
+    let Some(Entry::Retry { at, .. }) = meshes.entries.get(&hash(1)) else { panic!("retry") };
+    assert_eq!(*at, RETRY_FRAMES, "not asked again on the very next frame");
 }
 
 #[test]

@@ -26,6 +26,13 @@ pub const MAX_EDGES: usize = 6_000_000;
 pub const MAX_INLINE_BYTES: usize = 8 * 1024 * 1024;
 /// Offscreen images kept at once; the least recently drawn go first.
 const MAX_TARGETS: usize = 32;
+/// GPU memory the offscreen images may take together, in bytes; the least recently drawn go
+/// first, but never the one being drawn.
+const MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
+/// Frames a GPU model survives without being drawn.
+const GPU_MESH_FRAMES: u64 = 600;
+/// Frames to wait before reading a model again after a read that may succeed later (busy).
+const RETRY_FRAMES: u64 = 30;
 /// Frames a card's offscreen image survives without being drawn.
 const TARGET_FRAMES: u64 = 120;
 
@@ -108,8 +115,34 @@ pub enum MeshPreview {
 
 enum Entry {
     Pending,
-    Ready { model: Arc<Model>, used: u64 },
+    Ready {
+        model: Arc<Model>,
+        used: u64,
+    },
     Failed(&'static str),
+    /// A read that may work later (the store was busy): asked again from frame `at`.
+    Retry {
+        why: &'static str,
+        at: u64,
+    },
+}
+
+/// Why a model couldn't be shown, and whether asking again may help.
+#[derive(Clone, Copy, Debug)]
+struct Failure {
+    why: &'static str,
+    retry: bool,
+}
+
+impl Failure {
+    fn permanent(why: &'static str) -> Self {
+        Self { why, retry: false }
+    }
+
+    fn read(reason: nodecraft_format::PreviewReadError) -> Self {
+        use nodecraft_format::PreviewReadError as E;
+        Self { why: read_message(reason), retry: matches!(reason, E::Busy | E::Cancelled) }
+    }
 }
 
 /// How one card looks at its model: view state, never saved.
@@ -119,7 +152,7 @@ pub struct MeshView {
     pub style: Style,
 }
 
-type Done = (Blake3, Result<Model, &'static str>);
+type Done = (Blake3, Result<Model, Failure>);
 
 /// The decoded-model cache. One per app.
 #[derive(Default)]
@@ -192,13 +225,14 @@ impl Meshes {
         }
     }
 
-    fn finish(&mut self, hash: Blake3, result: Result<Model, &'static str>) {
+    fn finish(&mut self, hash: Blake3, result: Result<Model, Failure>) {
         let entry = match result {
             Ok(model) => {
                 self.bytes = self.bytes.saturating_add(model.bytes);
                 Entry::Ready { model: Arc::new(model), used: self.clock }
             }
-            Err(why) => Entry::Failed(why),
+            Err(Failure { why, retry: true }) => Entry::Retry { why, at: self.clock.saturating_add(RETRY_FRAMES) },
+            Err(Failure { why, .. }) => Entry::Failed(why),
         };
         if let Some(Entry::Ready { model, .. }) = self.entries.insert(hash, entry) {
             self.bytes = self.bytes.saturating_sub(model.bytes);
@@ -206,14 +240,16 @@ impl Meshes {
         self.evict();
     }
 
-    /// Drops least recently used models until under budget, never one used this frame.
+    /// Drops least recently used models until under budget. A model shown this frame or the last
+    /// one stays (this runs before the frame's requests): when the models on screen alone are
+    /// over budget, the cache goes over rather than decoding them again and again.
     fn evict(&mut self) {
         while self.bytes > MAX_MODEL_BYTES {
             let oldest = self
                 .entries
                 .iter()
                 .filter_map(|(hash, entry)| match entry {
-                    Entry::Ready { used, .. } if *used != self.clock => Some((*used, *hash)),
+                    Entry::Ready { used, .. } if self.clock.saturating_sub(*used) > 1 => Some((*used, *hash)),
                     _ => None,
                 })
                 .min();
@@ -239,7 +275,11 @@ impl Meshes {
             }
             Some(Entry::Failed(why)) => return MeshPreview::Unavailable(why),
             Some(Entry::Pending) => return MeshPreview::Pending,
-            None => {}
+            Some(Entry::Retry { why, at }) if self.clock < *at => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                return MeshPreview::Unavailable(why);
+            }
+            Some(Entry::Retry { .. }) | None => {}
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.worker.is_some() {
@@ -248,9 +288,9 @@ impl Meshes {
         }
         let input = match source() {
             Ok(input) if input.hash() == hash => input,
-            Ok(_) => return self.failed(hash, "Can't read this 3D model"),
+            Ok(_) => return self.failed(ctx, hash, Failure::permanent("Can't read this 3D model")),
             Err(nodecraft_format::PreviewReadError::Missing) => return MeshPreview::Unavailable("This 3D model's data is missing"),
-            Err(why) => return self.failed(hash, read_message(why)),
+            Err(why) => return self.failed(ctx, hash, Failure::read(why)),
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -260,9 +300,12 @@ impl Meshes {
             let ctx = ctx.clone();
             let spawned = std::thread::Builder::new().name("nodecraft-3d".into()).spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    input.read_verified(&read_cancel, &Default::default()).map_err(read_message).and_then(|bytes| Model::decode(&bytes))
+                    input
+                        .read_verified(&read_cancel, &Default::default())
+                        .map_err(Failure::read)
+                        .and_then(|bytes| Model::decode(&bytes).map_err(Failure::permanent))
                 }))
-                .unwrap_or(Err("Can't read this 3D model"));
+                .unwrap_or(Err(Failure::permanent("Can't read this 3D model")));
                 let _ = send.send((hash, result));
                 ctx.request_repaint();
             });
@@ -280,23 +323,32 @@ impl Meshes {
             let _ = ctx;
             // No worker here: only a small model already in memory decodes inline.
             let result = match input.resident() {
-                Some(bytes) if bytes.len() <= MAX_INLINE_BYTES => Model::decode(bytes),
-                _ => Err("3D preview not available here"),
+                Some(bytes) if bytes.len() <= MAX_INLINE_BYTES => Model::decode(bytes).map_err(Failure::permanent),
+                _ => Err(Failure::permanent("3D preview not available here")),
             };
             self.finish(hash, result);
             self.request(ctx, asset, || Err(nodecraft_format::PreviewReadError::Unavailable))
         }
     }
 
-    fn failed(&mut self, hash: Blake3, why: &'static str) -> MeshPreview {
-        self.entries.insert(hash, Entry::Failed(why));
-        MeshPreview::Unavailable(why)
+    fn failed(&mut self, ctx: &egui::Context, hash: Blake3, failure: Failure) -> MeshPreview {
+        if failure.retry {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        self.finish(hash, Err(failure));
+        MeshPreview::Unavailable(failure.why)
     }
 
     /// Decodes inline, for tests: the model is ready in the same frame.
     #[cfg(test)]
     pub(crate) fn inline(&mut self, hash: Blake3, bytes: &[u8]) {
-        self.finish(hash, Model::decode(bytes));
+        self.finish(hash, Model::decode(bytes).map_err(Failure::permanent));
+    }
+
+    /// Records a failed read, for tests.
+    #[cfg(test)]
+    pub(crate) fn fail_read(&mut self, hash: Blake3, reason: nodecraft_format::PreviewReadError) {
+        self.finish(hash, Err(Failure::read(reason)));
     }
 }
 
@@ -327,8 +379,10 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
             }
             let hovered = response.hovered() || response.dragged();
             if hovered {
+                // ⌘-scroll and pinch zoom the canvas everywhere; Alt-scroll zooms the model (over a
+                // card the canvas doesn't scroll).
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                if scroll != 0.0 && ui.input(|i| i.modifiers.command || i.modifiers.alt) {
+                if scroll != 0.0 && ui.input(|i| i.modifiers.alt) {
                     view.orbit = view.orbit.zoomed((scroll / 200.0).exp());
                 }
             }
@@ -461,19 +515,20 @@ impl MeshResources {
         if !self.mesh(device, queue, call.hash, &call.model, call.frame) {
             return;
         }
-        let size = self.renderer.clamp_size(call.size);
-        let stale = self.targets.get(&call.slot).is_none_or(|slot| slot.target.size() != size);
-        if stale {
-            let target = self.renderer.target(device, size);
-            self.targets.insert(call.slot, Slot { target, used: call.frame, drawn: None });
-        }
         let frame = call.frame;
-        self.targets.retain(|_, slot| slot.used.saturating_add(TARGET_FRAMES) >= frame);
-        while self.targets.len() > MAX_TARGETS {
-            let oldest = self.targets.iter().filter(|(id, _)| **id != call.slot).min_by_key(|(_, slot)| slot.used).map(|(id, _)| *id);
-            let Some(id) = oldest else { break };
-            self.targets.remove(&id);
+        let size = self.renderer.clamp_size(call.size);
+        match self.targets.get_mut(&call.slot) {
+            Some(slot) if slot.target.size() == size => slot.used = frame,
+            _ => {
+                // Free the old image (and others over budget) before asking for a new one.
+                self.targets.remove(&call.slot);
+                let need = u64::from(size[0]).saturating_mul(u64::from(size[1])).saturating_mul(nodecraft_gpu::mesh::TARGET_PIXEL_BYTES);
+                self.trim(MAX_TARGET_BYTES.saturating_sub(need), MAX_TARGETS.saturating_sub(1), None);
+                let Some(target) = self.renderer.target(device, size) else { return };
+                self.targets.insert(call.slot, Slot { target, used: frame, drawn: None });
+            }
         }
+        self.prune(frame);
         let (Some(slot), Some((mesh, _))) = (self.targets.get_mut(&call.slot), self.meshes.get(&call.hash)) else { return };
         self.renderer.render(queue, encoder, &slot.target, mesh, &call.view);
         slot.used = frame;
@@ -481,8 +536,50 @@ impl MeshResources {
     }
 }
 
+impl MeshResources {
+    /// Drops what hasn't been drawn lately: images after [`TARGET_FRAMES`], GPU models after
+    /// [`GPU_MESH_FRAMES`].
+    fn prune(&mut self, frame: u64) {
+        self.targets.retain(|_, slot| slot.used.saturating_add(TARGET_FRAMES) >= frame);
+        let mut freed = 0u64;
+        self.meshes.retain(|_, (mesh, used)| {
+            let keep = used.saturating_add(GPU_MESH_FRAMES) >= frame;
+            if !keep {
+                freed = freed.saturating_add(mesh.bytes());
+            }
+            keep
+        });
+        self.gpu_bytes = self.gpu_bytes.saturating_sub(freed);
+        self.refused.retain(|_, at| at.saturating_add(GPU_MESH_FRAMES) >= frame);
+        self.trim(MAX_TARGET_BYTES, MAX_TARGETS, Some(frame));
+    }
+
+    /// Drops the least recently drawn images until at most `bytes` and `count` remain, keeping
+    /// any drawn on `keep_frame`.
+    fn trim(&mut self, bytes: u64, count: usize, keep_frame: Option<u64>) {
+        loop {
+            let total = self.targets.values().fold(0u64, |sum, slot| sum.saturating_add(slot.target.bytes()));
+            if total <= bytes && self.targets.len() <= count {
+                return;
+            }
+            let oldest = self.targets.iter().filter(|(_, slot)| Some(slot.used) != keep_frame).min_by_key(|(_, slot)| slot.used).map(|(id, _)| *id);
+            let Some(id) = oldest else { return };
+            self.targets.remove(&id);
+        }
+    }
+}
+
+/// Frees offscreen images and GPU models no card has drawn lately. Call once a frame, so they go
+/// even when no 3D card is on screen to draw (and so prune) them.
+pub fn prune(render: &egui_wgpu::RenderState, frame: u64) {
+    if let Some(resources) = render.renderer.write().callback_resources.get_mut::<MeshResources>() {
+        resources.prune(frame);
+    }
+}
+
 /// Puts the 3D renderer into eframe's wgpu renderer, so cards can draw models. Call once, with
-/// the creation context's render state.
+/// the creation context's render state. The apps leave eframe's multisampling off, so the image
+/// is blitted into a single-sample pass.
 pub fn install(render: &egui_wgpu::RenderState) {
     let renderer = MeshRenderer::new(&render.device, render.target_format, 1);
     let resources = MeshResources { renderer, meshes: HashMap::new(), refused: HashMap::new(), gpu_bytes: 0, targets: HashMap::new() };

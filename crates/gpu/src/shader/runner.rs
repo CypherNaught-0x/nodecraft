@@ -6,6 +6,7 @@
 //! runner unusable, so the next run starts on a fresh one.
 use super::ValidShader;
 use crate::image::GpuImageError;
+use crate::scoped;
 use futures::FutureExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -24,17 +25,6 @@ pub struct ShaderRunner {
     refused: BTreeSet<String>,
     /// Lost, broken by an uncaught error, or left busy by a timeout.
     lost: Arc<AtomicBool>,
-}
-
-/// Runs `work` inside validation, internal and out-of-memory scopes; `true` if any caught an
-/// error.
-fn scoped<T>(device: &wgpu::Device, work: impl FnOnce() -> T) -> (T, bool) {
-    let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let value = work();
-    let caught = [validation.pop(), internal.pop(), oom.pop()].into_iter().any(|scope| scope.now_or_never().flatten().is_some());
-    (value, caught)
 }
 
 impl ShaderRunner {

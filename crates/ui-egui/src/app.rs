@@ -426,6 +426,8 @@ pub struct NodeCraftApp {
     meshes: crate::mesh_view::Meshes,
     mesh_views: std::collections::HashMap<NodeId, crate::mesh_view::MeshView>,
     mesh_gpu: bool,
+    /// eframe's renderer, to free 3D previews no card draws any more.
+    mesh_render: Option<eframe::egui_wgpu::RenderState>,
     /// When the last timed frame started, for the frame interval (#151).
     last_frame: Option<u64>,
     frame_workload: Option<nodecraft_engine::perf::Workload>,
@@ -800,6 +802,7 @@ impl NodeCraftApp {
             meshes: crate::mesh_view::Meshes::default(),
             mesh_views: std::collections::HashMap::new(),
             mesh_gpu: false,
+            mesh_render: None,
             last_frame: None,
             frame_workload: None,
             split_size: (2, 2),
@@ -906,6 +909,9 @@ impl NodeCraftApp {
         self.previews.poll(ui.ctx());
         self.videos.poll(ui.ctx());
         self.meshes.poll();
+        if let Some(render) = &self.mesh_render {
+            crate::mesh_view::prune(render, ui.ctx().cumulative_frame_nr());
+        }
         let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
         let changed_session = self.marquee_geometry.prepare(&mut self.session, self.canvas, self.theme);

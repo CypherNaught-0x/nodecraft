@@ -83,10 +83,26 @@ fn uploads_refuse_inconsistent_models() {
     assert_eq!(GpuMesh::upload(&device, &queue, empty).err(), Some(MeshUploadError::Invalid));
 }
 
+#[test]
+fn targets_keep_their_shape_within_the_pixel_budget() {
+    let Some((device, _queue)) = device() else { return };
+    let renderer = MeshRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, 1);
+    assert_eq!(renderer.clamp_size([640, 360]), [640, 360], "an ordinary card is drawn at its own size");
+    assert_eq!(renderer.clamp_size([0, 0]), [1, 1]);
+    for size in [[8192, 1024], [4096, 4096], [u32::MAX, 3], [3, u32::MAX]] {
+        let [w, h] = renderer.clamp_size(size);
+        assert!(u64::from(w) * u64::from(h) <= MAX_TARGET_PIXELS && w <= MAX_TARGET_SIDE && h <= MAX_TARGET_SIDE, "{size:?} → {w}×{h}");
+        let (want, got) = (f64::from(size[0]) / f64::from(size[1]), f64::from(w) / f64::from(h));
+        assert!(w == 1 || h == 1 || (want / got - 1.0).abs() < 0.01, "{size:?} → {w}×{h} keeps its shape");
+    }
+    let target = renderer.target(&device, [8192, 1024]).unwrap();
+    assert_eq!(target.bytes(), u64::from(target.size()[0]) * u64::from(target.size()[1]) * TARGET_PIXEL_BYTES);
+}
+
 /// Renders the quad and reads the centre and a corner pixel back.
 fn render(device: &wgpu::Device, queue: &wgpu::Queue, mesh: &GpuMesh, style: Style) -> ([u8; 4], [u8; 4]) {
     let renderer = MeshRenderer::new(device, wgpu::TextureFormat::Rgba8UnormSrgb, 1);
-    let target = renderer.target(device, [64, 64]);
+    let target = renderer.target(device, [64, 64]).unwrap();
     let view = View {
         orbit: Orbit { yaw: 0.0, pitch: 0.0, zoom: 1.0 },
         style,

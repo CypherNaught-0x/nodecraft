@@ -15,6 +15,11 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The longest side of an offscreen target, whatever the device allows.
 pub const MAX_TARGET_SIDE: u32 = 4096;
+/// Most pixels in one offscreen target; a larger one is drawn smaller and scaled up, keeping its
+/// shape. With multisampled colour and depth a pixel costs [`TARGET_PIXEL_BYTES`].
+pub const MAX_TARGET_PIXELS: u64 = 2048 * 2048;
+/// GPU bytes per target pixel: 4× multisampled colour and depth, and the resolved image.
+pub const TARGET_PIXEL_BYTES: u64 = 4 * SAMPLES as u64 + 4 * SAMPLES as u64 + 4;
 /// Vertical field of view of the camera, in radians.
 const FOV: f32 = 0.7;
 /// Bytes of the per-target uniform block: a 4×4 matrix, the light and the line colour.
@@ -93,19 +98,23 @@ impl GpuMesh {
             buffer
         };
         let words = |list: &[u32]| list.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>();
-        let vertices = buffer("NodeCraft 3D vertices", &interleaved, vertex_bytes, wgpu::BufferUsages::VERTEX);
-        let indices = buffer("NodeCraft 3D triangles", &words(data.indices), index_bytes(data.indices)?, wgpu::BufferUsages::INDEX);
-        let mut bytes = vertex_bytes.saturating_add(index_bytes(data.indices)?);
-        let edges = match data.edges {
-            Some(list) if !list.is_empty() => {
-                let size = index_bytes(list)?;
-                bytes = bytes.saturating_add(size);
-                let count = u32::try_from(list.len()).map_err(|_| MeshUploadError::TooLarge)?;
-                Some((buffer("NodeCraft 3D edges", &words(list), size, wgpu::BufferUsages::INDEX), count))
-            }
+        let triangle_bytes = index_bytes(data.indices)?;
+        let edge_list = match data.edges {
+            Some(list) if !list.is_empty() => Some((list, index_bytes(list)?, u32::try_from(list.len()).map_err(|_| MeshUploadError::TooLarge)?)),
             _ => None,
         };
-        Ok(Self { vertices, indices, index_count, edges, bytes })
+        // A GPU out of memory refuses the model rather than reaching the device's error handler.
+        let (mesh, caught) = crate::scoped(device, || {
+            let vertices = buffer("NodeCraft 3D vertices", &interleaved, vertex_bytes, wgpu::BufferUsages::VERTEX);
+            let indices = buffer("NodeCraft 3D triangles", &words(data.indices), triangle_bytes, wgpu::BufferUsages::INDEX);
+            let edges = edge_list.map(|(list, size, count)| (buffer("NodeCraft 3D edges", &words(list), size, wgpu::BufferUsages::INDEX), count));
+            let bytes = vertex_bytes.saturating_add(triangle_bytes).saturating_add(edge_list.map_or(0, |(_, size, _)| size));
+            Self { vertices, indices, index_count, edges, bytes }
+        });
+        if caught {
+            return Err(MeshUploadError::TooLarge);
+        }
+        Ok(mesh)
     }
 
     /// GPU memory the model's buffers take.
@@ -219,6 +228,11 @@ pub struct Target {
 }
 
 impl Target {
+    /// GPU memory its images take.
+    pub fn bytes(&self) -> u64 {
+        u64::from(self.size[0]).saturating_mul(u64::from(self.size[1])).saturating_mul(TARGET_PIXEL_BYTES)
+    }
+
     /// Its size in pixels.
     pub fn size(&self) -> [u32; 2] {
         self.size
@@ -360,13 +374,23 @@ impl MeshRenderer {
     }
 
     /// `size` kept within what a target may be: at least one pixel, at most the device's (and
-    /// [`MAX_TARGET_SIDE`]) on each side.
+    /// [`MAX_TARGET_SIDE`]) on a side and [`MAX_TARGET_PIXELS`] in all, scaled down evenly so the
+    /// image keeps its shape.
     pub fn clamp_size(&self, size: [u32; 2]) -> [u32; 2] {
-        size.map(|side| side.clamp(1, self.max_side.max(1)))
+        let [w, h] = size.map(|side| f64::from(side.max(1)));
+        let side = f64::from(self.max_side.max(1));
+        let scale = (side / w).min(side / h).min((MAX_TARGET_PIXELS as f64 / (w * h)).sqrt()).min(1.0);
+        [w, h].map(|v| ((v * scale).floor() as u32).clamp(1, self.max_side.max(1)))
     }
 
-    /// Offscreen images of `size` (clamped with [`Self::clamp_size`]).
-    pub fn target(&self, device: &wgpu::Device, size: [u32; 2]) -> Target {
+    /// Offscreen images of `size` (clamped with [`Self::clamp_size`]); `None` when the GPU
+    /// can't make them (out of memory, say).
+    pub fn target(&self, device: &wgpu::Device, size: [u32; 2]) -> Option<Target> {
+        let (target, caught) = crate::scoped(device, || self.make_target(device, size));
+        (!caught).then_some(target)
+    }
+
+    fn make_target(&self, device: &wgpu::Device, size: [u32; 2]) -> Target {
         let size = self.clamp_size(size);
         let texture = |label: &str, format, samples, usage| {
             device

@@ -306,3 +306,71 @@ fn base64_decodes_padded_unpadded_and_url_safe() {
     assert_eq!(gltf::test_support::base64(b"-_8=").unwrap(), vec![0xfb, 0xff]);
     assert!(gltf::test_support::base64(b"a b").is_none());
 }
+
+#[test]
+fn shared_primitives_and_rereads_are_bounded_work() {
+    // One node lists another a hundred times, whose mesh has twenty primitives that draw nothing:
+    // free per visit, so they count against the visit cap themselves.
+    let mut limits = MeshLimits { max_node_visits: 1000, ..MeshLimits::default() };
+    let empty = triangle_gltf(|doc| {
+        doc["nodes"] = json!([{"children": vec![1; 100]}, {"mesh": 1}, {"mesh": 0}]);
+        doc["scenes"] = json!([{"nodes": [0, 2]}]);
+        doc["meshes"] = json!([doc["meshes"][0].clone(), {"primitives": vec![json!({"attributes": {}}); 20]}]);
+    });
+    let message = decode_mesh(&empty, &limits).unwrap_err().to_string();
+    assert!(message.contains("primitives"), "{message}");
+
+    // An unused NORMAL accessor is decoded again at every instance of an empty primitive.
+    limits = MeshLimits { max_vertices: 10, max_triangles: 10, ..MeshLimits::default() };
+    let reread = triangle_gltf(|doc| {
+        doc["nodes"] = json!([{"children": vec![1; 100]}, {"mesh": 1}, {"mesh": 0}]);
+        doc["scenes"] = json!([{"nodes": [0, 2]}]);
+        doc["accessors"].as_array_mut().unwrap().push(json!({"bufferView": 0, "componentType": 5126, "count": 0, "type": "VEC3"}));
+        doc["meshes"] = json!([doc["meshes"][0].clone(), {"primitives": [{"attributes": {"POSITION": 2, "NORMAL": 0}}]}]);
+    });
+    let message = decode_mesh(&reread, &limits).unwrap_err().to_string();
+    assert!(message.contains("vertex data"), "{message}");
+}
+
+#[test]
+fn many_small_json_objects_are_refused_before_parsing() {
+    let crowded = triangle_gltf(|doc| doc["nodes"] = json!(vec![json!({}); 300_000]));
+    let message = decode_mesh(&crowded, &MeshLimits::default()).unwrap_err().to_string();
+    assert!(message.contains("too many values") && message.starts_with("media exceeds"), "{message}");
+}
+
+#[test]
+fn mirrored_normals_stay_outward_and_colours_stay_finite() {
+    // NORMAL (three +z) and COLOR_0 (NaN, 2, -1, 0.5) follow the triangle's data.
+    let file = triangle_gltf_with(
+        |bin| {
+            for v in [0.0f32, 0.0, 1.0].repeat(3) {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in [f32::NAN, 2.0, -1.0, 0.5].repeat(3) {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        },
+        |doc| {
+            doc["nodes"] = json!([{"mesh": 0, "scale": [-1.0, 1.0, 1.0]}]);
+            doc["meshes"][0]["primitives"][0]["attributes"] = json!({"POSITION": 0, "NORMAL": 2, "COLOR_0": 3});
+            let views = doc["bufferViews"].as_array_mut().unwrap();
+            views.push(json!({"buffer": 0, "byteOffset": 44, "byteLength": 36}));
+            views.push(json!({"buffer": 0, "byteOffset": 80, "byteLength": 48}));
+            let accessors = doc["accessors"].as_array_mut().unwrap();
+            accessors.push(json!({"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3"}));
+            accessors.push(json!({"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"}));
+        },
+    );
+    let mesh = decode_mesh(&file, &MeshLimits::default()).unwrap();
+    assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0]; 3], "a mirror about x leaves a +z normal pointing +z");
+    assert_eq!(mesh.colors, vec![[1.0, 1.0, 0.0, 0.5]; 3], "NaN becomes 1, others are clamped");
+    assert!(encode_glb(&mesh).is_ok());
+}
+
+#[test]
+fn a_required_texture_transform_is_refused_not_ignored() {
+    let file = triangle_gltf(|doc| doc["extensionsRequired"] = json!(["KHR_texture_transform"]));
+    let message = decode_mesh(&file, &MeshLimits::default()).unwrap_err().to_string();
+    assert!(message.contains("KHR_texture_transform"), "{message}");
+}

@@ -20,6 +20,7 @@ impl NodeCraftApp {
     pub fn install_mesh_renderer(&mut self, render: &eframe::egui_wgpu::RenderState) {
         crate::mesh_view::install(render);
         self.mesh_gpu = true;
+        self.mesh_render = Some(render.clone());
     }
 
     /// The frame's start time while a capture runs, recording the interval since the last one.

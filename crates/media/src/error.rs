@@ -30,7 +30,7 @@ impl fmt::Display for MediaError {
             }
             Self::Unrecognized => f.write_str("unrecognised media format"),
             Self::Unsupported { mime } => write!(f, "{mime} is not supported here"),
-            Self::LimitExceeded(m) => write!(f, "image exceeds a decode limit: {m}"),
+            Self::LimitExceeded(m) => write!(f, "media exceeds a decode limit: {m}"),
             Self::Decode(m) => write!(f, "could not decode media: {m}"),
             Self::UnsupportedFeature(m) => f.write_str(m),
             Self::InvalidParameter(m) => write!(f, "invalid parameter: {m}"),
