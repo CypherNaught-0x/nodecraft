@@ -985,3 +985,63 @@ fn actual_a_late_frame_is_exact_and_costs_no_more_than_an_early_one() {
     // Decoding from the start would read 17,700 frames for the late grab.
     assert!(late_took < early_took * 4 + Duration::from_secs(1), "early {early_took:?}, late {late_took:?}");
 }
+/// Three seconds at 10 a second, red then blue from 1.5 s, with a tone; MP4 with AAC or WebM with Opus.
+fn hard_cut(webm: bool) -> Vec<u8> {
+    let id = SERVICE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nodecraft-cut-fixture-{}-{id}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join(if webm { "cut.webm" } else { "cut.mp4" });
+    let tool = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let graph = "color=c=red:s=64x48:r=10:d=1.5[a];color=c=blue:s=64x48:r=10:d=1.5[b];[a][b]concat=n=2:v=1:a=0[v];sine=frequency=440:duration=3[s]";
+    let mut args = process::args(&["-v", "error", "-nostdin", "-y", "-filter_complex", graph, "-map", "[v]", "-map", "[s]"]);
+    if webm {
+        args.extend(process::args(&["-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"]));
+    } else {
+        args.extend(process::args(&["-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac"]));
+    }
+    args.extend(process::args(&["-pix_fmt", "yuv420p", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]));
+    args.push(path.as_os_str().to_owned());
+    let status = std::process::Command::new(tool).args(&args).status().unwrap();
+    assert!(status.success());
+    let bytes = fs::read(&path).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    bytes
+}
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_scenes_find_a_hard_cut_and_nothing_else() {
+    let service = service();
+    for webm in [false, true] {
+        let mut job = service.import(Arc::from(hard_cut(webm)), ColorPolicy::default()).ok().unwrap();
+        let asset = wait(&mut job).unwrap();
+        let mut job = service.scenes(&asset, 300).unwrap();
+        assert_eq!(wait(&mut job).unwrap(), vec![1_500_000], "webm {webm}");
+        assert_eq!(service.scenes(&asset, 49).err(), Some(VideoError::Invalid));
+        assert_eq!(service.scenes(&asset, 1001).err(), Some(VideoError::Invalid));
+    }
+    assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
+}
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_extract_audio_writes_a_probed_ogg_copied_or_encoded() {
+    let service = service();
+    for webm in [false, true] {
+        let mut job = service.import(Arc::from(hard_cut(webm)), ColorPolicy::default()).ok().unwrap();
+        let video = wait(&mut job).unwrap();
+        let mut job = service.extract_audio(&video).unwrap();
+        let sound = wait(&mut job).unwrap();
+        let m = sound.asset().metadata();
+        assert!(m.duration_us.abs_diff(3_000_000) < 60_000, "webm {webm}: {} µs", m.duration_us);
+        assert_eq!(m.codec, "opus");
+        // AAC is encoded to stereo; Opus is copied as it was, one channel.
+        assert_eq!((m.sample_rate, m.channels), (48_000, if webm { 1 } else { 2 }), "webm {webm}");
+        let mut job = service.read_audio_chunk(sound.asset(), 0, 4).unwrap();
+        assert_eq!(wait(&mut job).unwrap().bytes(), b"OggS");
+        assert!(sound.bytes() > 0);
+    }
+    let mut job = service.import(Arc::from(generated("silent", "64x48", "1", false, false)), ColorPolicy::default()).ok().unwrap();
+    let silent = wait(&mut job).unwrap();
+    assert_eq!(service.extract_audio(&silent).err(), Some(VideoError::Invalid));
+    drop(silent);
+    assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
+}

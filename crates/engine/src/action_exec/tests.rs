@@ -46,6 +46,7 @@ fn every_action_kind_runs_with_its_defaults() {
             && !nodecraft_nodes::video_edit::IDS.contains(&id)
             && !nodecraft_nodes::video_frames::IDS.contains(&id)
             && !nodecraft_nodes::video_look::IDS.contains(&id)
+            && !nodecraft_nodes::video_split::IDS.contains(&id)
     };
     for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && runs(&d.id)) {
         let input = if descriptor.id.starts_with("image.") {

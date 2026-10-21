@@ -71,6 +71,19 @@ impl RenderedVideo {
         match *self {}
     }
 }
+#[derive(Clone)]
+pub enum RenderedAudio {}
+impl RenderedAudio {
+    pub fn asset(&self) -> &AudioAsset {
+        match *self {}
+    }
+    pub fn bytes(&self) -> u64 {
+        match *self {}
+    }
+    pub fn hash(&self) -> crate::ContentHash {
+        match *self {}
+    }
+}
 pub enum VideoOpening {}
 impl VideoOpening {
     pub fn try_result(&mut self) -> Result<Option<VideoService>> {
@@ -101,6 +114,15 @@ impl VideoService {
         Err(VideoError::Unsupported)
     }
     pub fn read_chunk(&self, _: &VideoAsset, _: u64, _: usize) -> Result<VideoJob<VideoChunk>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn read_audio_chunk(&self, _: &AudioAsset, _: u64, _: usize) -> Result<VideoJob<VideoChunk>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn scenes(&self, _: &VideoAsset, _: u16) -> Result<VideoJob<Vec<u64>>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn extract_audio(&self, _: &VideoAsset) -> Result<VideoJob<RenderedAudio>> {
         Err(VideoError::Unsupported)
     }
     pub fn statistics(&self) -> (usize, usize) {

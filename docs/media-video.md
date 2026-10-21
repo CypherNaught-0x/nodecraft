@@ -143,7 +143,7 @@ they never run live.
 
 | Kind | Inputs | Does |
 |---|---|---|
-| `video.frames` Extract frames | a video | One frame at a time, 2 to 64 evenly spaced, or one every few seconds (at most 64), as a list of pictures. |
+| `video.frames` Extract frames | a video | One frame at a time, 2 to 64 evenly spaced, one every few seconds (at most 64), or one a scene (at most 64), as a list of pictures. |
 | `video.contact_sheet` Contact sheet | a video | Up to 64 evenly spaced frames in a grid of columns and rows, with a gap and a background, as one picture within the image limits. |
 | `video.long_exposure` Long exposure | a video | 2 to 64 frames from a stretch averaged (motion blur), or their lightest or darkest values kept (light trails). |
 | `video.reverse` Reverse video | a video | Plays it backwards, or forwards then backwards without showing either end twice. At most 600 source frames (20 s at 30 a second), and fewer above 720p (about 266 at 1080p); trim a longer video first. |
@@ -168,7 +168,29 @@ and such a kind is offered in Turn into only when its required ports' media are 
 | `video.watermark` Watermark video | a video, and a picture | Text (drawn with the caption renderer, its size a share of the height) or the connected picture (its width a share of the video's) at a corner, an edge or the centre, a margin in, at an opacity, for the whole video. |
 | `video.duplicate` Duplicate video | a video | The same video 2 to 16 times as a list, for branching; nothing is rendered, so it runs anywhere. |
 
-Splitting a video and extracting its sound come in a later part.
+### Split and extract sound
+
+The split kinds (`crates/nodes/src/video_split.rs`, executor
+`crates/engine/src/action_exec/video_split.rs`) never change the source video: each part, and the
+extracted sound, is a new asset.
+
+| Kind | Inputs | Does |
+|---|---|---|
+| `video.split` Split video | a video | Cuts it into a list of videos in time order: 2 to 32 equal parts, parts of a set length (the last part takes what is left), or a part per scene change. Each part is rendered as WebM and keeps its sound. |
+| `video.extract_audio` Extract sound | a video | Its sound as an Ogg file: Opus and Vorbis sound is copied as is, anything else is encoded as Opus at 128 kb/s, stereo, 48 kHz. A video with no sound fails with "the video has no sound". |
+
+Cuts fall on whole frames, and every part is at least two frames long: a remainder shorter than
+that joins the part before it, and a scene change closer than that, or closer than the
+**Shortest part**, to the previous cut or to the end is skipped. More than 32 parts fails with
+an error saying to use longer parts or a higher threshold. Scene changes are found by
+`VideoService::scenes`, which scores each frame (scaled to at most 256 a side) against the one
+before; the **Scene change threshold** (0.05 to 1) is the score a cut must pass, so a lower one
+finds more. A video with no scene change comes out as one part. `video.frames` uses the same
+detection for its **One a scene** pick: the first frame and the first frame of every scene, at
+most 64.
+
+Splitting checks for a cancel between parts. To make a silent copy of a video, use Change speed
+at 1× with **Sound** set to silence, or Replace sound.
 
 ## Limits, cancellation and cleanup
 

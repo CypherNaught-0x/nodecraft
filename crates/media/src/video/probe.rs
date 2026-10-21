@@ -263,6 +263,8 @@ pub(super) fn parse_audio(bytes: &[u8]) -> Result<AudioMetadata> {
         codec,
         format_start,
         stream_start,
+        sample_rate: u32::try_from(rate).map_err(|_| VideoError::Limit)?,
+        channels: u32::try_from(channels).map_err(|_| VideoError::Limit)?,
     })
 }
 /// The bounded input options for a sound file read with `demuxer`.

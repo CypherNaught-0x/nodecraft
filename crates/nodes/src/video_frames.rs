@@ -49,10 +49,16 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
             video_in(),
             vec![port("out", Modality::Image, true)],
             vec![
-                choice("pick", "Frames", &[("one", "One, at a time"), ("count", "Evenly spaced"), ("every", "Every few seconds")], "count"),
+                choice(
+                    "pick",
+                    "Frames",
+                    &[("one", "One, at a time"), ("count", "Evenly spaced"), ("every", "Every few seconds"), ("scenes", "One a scene")],
+                    "count",
+                ),
                 when(slider("at", "At (s)", 0.0, MAX_SECONDS, 0.01, 0.0)?, "pick", "one"),
                 when(count("frames", "How many", 2, MAX_PICTURES, 8), "pick", "count"),
                 when(slider("every", "Every (s)", 0.1, 600.0, 0.1, 1.0)?, "pick", "every"),
+                when(slider("threshold", "Scene change threshold (lower finds more)", 0.05, 1.0, 0.01, 0.3)?, "pick", "scenes"),
                 count("size", "Longest side", 16, MAX_FRAME_SIDE, 1024),
             ],
         ),

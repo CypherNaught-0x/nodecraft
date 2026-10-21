@@ -133,6 +133,7 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     use nodecraft_nodes::video_edit::{REPLACE_AUDIO, SPEED, STITCH, TRIM};
     use nodecraft_nodes::video_frames::{CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REVERSE};
     use nodecraft_nodes::video_look::{DUPLICATE, FILTER, GRADE, KEY, WATERMARK};
+    use nodecraft_nodes::video_split::{EXTRACT_AUDIO, SPLIT};
     let (batch, timeline) = (nodecraft_nodes::batch::ID, nodecraft_nodes::timeline::ID);
     let mut video_one = ids(PortType { modality: Modality::Video, many: false });
     video_one.sort();
@@ -153,6 +154,8 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         GRADE,
         KEY,
         WATERMARK,
+        SPLIT,
+        EXTRACT_AUDIO,
     ];
     want.sort();
     assert_eq!(video_one, want, "a Timeline and the video actions take a video");

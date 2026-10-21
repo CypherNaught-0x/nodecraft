@@ -101,8 +101,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   pasting a copied image works in the desktop app only.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them
-  (#411). There is no audio playback (#106). Video actions (#108) trim, change speed, stitch and replace
-  sound; reverse, extraction, contact sheets and grading are still to come.
+  (#411). There is no audio playback (#106). Video actions (#108) trim, change speed, stitch, replace
+  sound, extract frames, reverse, grade, key, watermark, split and extract sound.
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
   maps reference-to-video yet.

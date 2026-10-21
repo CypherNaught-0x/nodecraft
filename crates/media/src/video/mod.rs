@@ -209,6 +209,10 @@ pub struct AudioMetadata {
     pub(crate) codec: &'static str,
     pub(crate) format_start: i128,
     pub(crate) stream_start: i128,
+    /// Samples per second, 8000..=384000.
+    pub sample_rate: u32,
+    /// 1..=8.
+    pub channels: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameRequest {
@@ -305,8 +309,8 @@ impl<T> Drop for VideoJob<T> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
-    AudioAsset, FramePacket, FrameSender, RenderedVideo, ScrubSession, ShutdownReport, ShutdownTicket, ShutdownWaitError, StillAsset, TrySendFrameError,
-    VideoAsset, VideoChunk, VideoFrame, VideoOpening, VideoService,
+    AudioAsset, FramePacket, FrameSender, RenderedAudio, RenderedVideo, ScrubSession, ShutdownReport, ShutdownTicket, ShutdownWaitError, StillAsset,
+    TrySendFrameError, VideoAsset, VideoChunk, VideoFrame, VideoOpening, VideoService,
 };
 #[cfg(target_arch = "wasm32")]
 mod unsupported;
