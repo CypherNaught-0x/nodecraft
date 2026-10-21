@@ -107,7 +107,8 @@ fn spans(split: Split, length_us: u64, fps: (u32, u32), changes: &[u64]) -> Resu
             cuts.extend((1..p).map(|i| u64::try_from(f * i / p).unwrap_or(u64::MAX)));
         }
         Split::Length(length) => {
-            if nearest_frame(length, fps) < MIN_FRAMES {
+            // At least MIN_FRAMES whole frames, not rounded: two cuts then round at least that far apart.
+            if u128::from(length).saturating_mul(u128::from(fps.0)) < u128::from(MIN_FRAMES).saturating_mul(u128::from(fps.1)).saturating_mul(1_000_000) {
                 return Err(format!("a part is at least {MIN_FRAMES} frames ({}) long", seconds(frame_at(MIN_FRAMES, fps))));
             }
             let count = length_us.div_ceil(length.max(1));
@@ -118,7 +119,7 @@ fn spans(split: Split, length_us: u64, fps: (u32, u32), changes: &[u64]) -> Resu
             // Each cut from the start, not the one before, so the rounding to frames never adds up.
             for k in 1..count {
                 let cut = nearest_frame(length.saturating_mul(k), fps);
-                if cut < frames {
+                if cut < frames && cut.saturating_sub(cuts.last().copied().unwrap_or(0)) >= MIN_FRAMES {
                     cuts.push(cut);
                 }
             }
@@ -176,7 +177,7 @@ mod native {
     use super::super::timeline::native::{closed, message, service, wait};
     use super::super::video::{frame_for, quality};
     use super::{Job, LocalActions, MAX_SPLIT_BYTES, Split, job, spans};
-    use nodecraft_media::video::{ComposeClip, ComposeSpec, VideoAsset, VideoError, VideoService};
+    use nodecraft_media::video::{ComposeClip, ComposeSpec, Quality, VideoAsset, VideoError, VideoService};
     use nodecraft_types::{AssetRef, MediaMeta, ParamValues, Value};
     use std::sync::PoisonError;
 
@@ -217,9 +218,39 @@ mod native {
                 Split::Scenes { threshold, .. } => scenes(&service, &video, threshold, cancelled)?,
                 _ => Vec::new(),
             };
+            let spans = spans(split, m.duration_us, fps, &changes)?;
+            // What was staged before, so a split that fails part way unstages only its own parts.
+            let before: std::collections::BTreeSet<_> = self.videos.lock().unwrap_or_else(PoisonError::into_inner).keys().copied().collect();
             let mut parts = Vec::new();
+            let result = self.split_parts(&service, &video, &spans, size, fps, quality, &mut parts, cancelled);
+            if result.is_err() {
+                let mut videos = self.videos.lock().unwrap_or_else(PoisonError::into_inner);
+                for part in &parts {
+                    if let Value::Media(asset) = part
+                        && !before.contains(&asset.hash)
+                    {
+                        videos.remove(&asset.hash);
+                    }
+                }
+            }
+            result.map(|()| Value::List(parts))
+        }
+
+        /// Render each of `spans` of `video` into `parts`, stopping at the first that fails.
+        #[allow(clippy::too_many_arguments)]
+        fn split_parts(
+            &self,
+            service: &VideoService,
+            video: &VideoAsset,
+            spans: &[(u64, u64)],
+            size: (u32, u32),
+            fps: (u32, u32),
+            quality: Quality,
+            parts: &mut Vec<Value>,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<(), String> {
             let mut staged = 0u64;
-            for (n, (start, end)) in (1u64..).zip(spans(split, m.duration_us, fps, &changes)?) {
+            for (n, &(start, end)) in (1u64..).zip(spans) {
                 if cancelled() {
                     return Err(message(VideoError::Cancelled));
                 }
@@ -230,20 +261,17 @@ mod native {
                         _ => format!("part {n} is shorter than a frame"),
                     })?
                     .with_quality(quality);
-                let part = self.render(&service, spec, size, cancelled)?;
+                let part = self.render(service, spec, size, cancelled)?;
                 if let Value::Media(asset) = &part {
                     let bytes = self.videos.lock().unwrap_or_else(PoisonError::into_inner).get(&asset.hash).map_or(0, |b| b.len() as u64);
                     staged = staged.saturating_add(bytes);
-                    if staged > MAX_SPLIT_BYTES {
-                        return Err(format!(
-                            "the parts come to more than {} MiB; use a lower quality or split a shorter video",
-                            MAX_SPLIT_BYTES / (1024 * 1024)
-                        ));
-                    }
                 }
                 parts.push(part);
+                if staged > MAX_SPLIT_BYTES {
+                    return Err(format!("the parts come to more than {} MiB; use a lower quality or split a shorter video", MAX_SPLIT_BYTES / (1024 * 1024)));
+                }
             }
-            Ok(Value::List(parts))
+            Ok(())
         }
 
         /// `video`'s sound, written out as Ogg on `service` and staged as a sound.

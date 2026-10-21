@@ -293,3 +293,20 @@ fn split_parts_add_up_and_extract_writes_the_sound() {
     assert!(report.contains("codec_name=opus") && report.contains("format_name=ogg"), "{report}");
     assert_eq!(run(EXTRACT_AUDIO, &[], &quiet), Err("the video has no sound".to_owned()));
 }
+
+#[test]
+fn parts_by_length_are_never_shorter_than_two_frames() {
+    // 1.5 frames rounds to 2 but cuts would alternate 1 and 2 frames apart: refused up front.
+    let error = spans(Split::Length(150_000), 3_000_000, (10, 1), &[]).unwrap_err();
+    assert!(error.contains("at least 2 frames"), "{error}");
+    // The slider's shortest length at 18 a second is under two frames too.
+    assert!(spans(Split::Length(100_000), 3_000_000, (18, 1), &[]).is_err());
+    // From two whole frames up, every part has at least two.
+    for (length, fps) in [(200_000, (10, 1)), (220_000, (10, 1)), (111_112, (18, 1)), (66_734, NTSC)] {
+        let s = spans(Split::Length(length), 1_000_000, fps, &[]).unwrap();
+        contiguous(&s, 1_000_000);
+        for (start, end) in &s {
+            assert!(nearest_frame(*end, fps) - nearest_frame(*start, fps) >= 2, "{length} at {fps:?}: {s:?}");
+        }
+    }
+}
