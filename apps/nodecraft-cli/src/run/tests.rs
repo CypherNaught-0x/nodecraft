@@ -72,18 +72,20 @@ fn a_paid_run_needs_consent_then_runs_and_exports_its_result() {
     let steps = runner.run(&mut session, C, &[N], &quote, Consent { spend: true }).unwrap();
     assert_eq!(steps, [json!({"node": N, "status": "recorded"})]);
     let dir = tempfile::tempdir().unwrap();
-    let written = export(&mut session, C, &[N], dir.path()).unwrap();
+    let out = out_folder(dir.path()).unwrap();
+    let written = export(&mut session, C, &[N], &out).unwrap();
     let [result] = written.as_slice() else { panic!("{written:?}") };
     let path = PathBuf::from(result["path"].as_str().unwrap());
     let name = path.file_name().unwrap().to_str().unwrap();
     assert!(name.starts_with("red-square-") && name.ends_with("-out-1.png"), "{name}");
     assert_eq!(std::fs::metadata(&path).unwrap().len(), result["bytes"].as_u64().unwrap());
 
-    // A second export never replaces the first.
-    let again = export(&mut session, C, &[N], dir.path()).unwrap_err();
-    assert_eq!(again.kind, ErrorKind::Conflict, "{}", again.message);
-    let missing = export(&mut session, C, &[N], &dir.path().join("nowhere")).unwrap_err();
-    assert_eq!(missing.kind, ErrorKind::NotFound);
+    // A second export never replaces the first: it takes the next free name.
+    let again = export(&mut session, C, &[N], &out).unwrap();
+    let second = again[0]["path"].as_str().unwrap();
+    assert!(second.ends_with("-out-1-2.png") && std::fs::metadata(&path).is_ok(), "{again:?}");
+    assert_eq!(out_folder(&dir.path().join("nowhere")).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(out_folder(&path).unwrap_err().kind, ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -118,7 +120,8 @@ fn file_names_are_safe_and_distinct() {
     let id = NodeId::from_bytes([0xab; 16]);
     assert_eq!(stem("../My  Fox/étude", "image", id), format!("my-fox-tude-{}", &id.to_string()[..8]));
     assert_eq!(stem("  ", "text", id), format!("text-{}", &id.to_string()[..8]));
-    let path = file(Path::new("/out"), "fox", "../im age", Some(0), "image/webp");
-    assert_eq!(path.file_name().unwrap(), "fox-image-1.webp");
+    assert_eq!(name("fox", "../im age", Some(0)), "fox-im-age-1");
+    assert_eq!(name("fox", "étude", None), "fox-tude");
+    assert_eq!(name("fox", "日本", None), "fox-out");
     assert_eq!(extension("application/x-unknown"), "bin");
 }

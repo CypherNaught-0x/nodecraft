@@ -25,6 +25,8 @@ const PUMP_EVERY: Duration = Duration::from_millis(20);
 const MAX_ITEMS: usize = 64;
 /// Characters of a card's title kept in an exported file's name.
 const MAX_TITLE: usize = 40;
+/// Numbered names tried for one result when its name is taken (`-2` up to this).
+const MAX_TAKEN: usize = 99;
 
 /// The engine's runtime over the CLI's tokio runtime.
 struct Tokio {
@@ -112,6 +114,7 @@ impl Runner {
         };
         session.dispatch("run.start", &params)?;
         let mut steps = Vec::new();
+        let mut finished = false;
         loop {
             for notice in self.host.pump(session) {
                 match notice {
@@ -121,11 +124,11 @@ impl Runner {
                     RunNotice::Cancelled { node, .. } => steps.push(json!({"node": node, "status": "cancelled"})),
                     RunNotice::Unaccounted { node, reason, .. } => steps.push(json!({"node": node, "status": "unaccounted", "reason": reason})),
                     RunNotice::Refused { reason } => return Err(Error::new(ErrorKind::Conflict, format!("the run didn't start: {reason}"))),
-                    RunNotice::Finished { canvas: done } if done == canvas => return Ok(steps),
-                    RunNotice::Finished { .. } => {}
+                    // The rest of this batch is still read, so no outcome is lost.
+                    RunNotice::Finished { canvas: done } => finished |= done == canvas,
                 }
             }
-            if !self.host.is_busy() {
+            if finished || !self.host.is_busy() {
                 return Ok(steps);
             }
             std::thread::sleep(PUMP_EVERY);
@@ -180,28 +183,47 @@ fn accept(quote: &Value, consent: Consent) -> Result<Value, Error> {
     Ok(accept)
 }
 
-/// Exports the active media results of `nodes` into the folder `out`, never replacing a file.
-/// Returns what was written, and the text results, which have no file.
-pub fn export(session: &mut Session, canvas: CanvasId, nodes: &[NodeId], out: &Path) -> Result<Vec<Value>, Error> {
+/// The `--out` folder, resolved; checked before anything runs, so a typo costs nothing.
+pub fn out_folder(out: &Path) -> Result<PathBuf, Error> {
     let out = std::fs::canonicalize(out).map_err(|_| Error::new(ErrorKind::NotFound, "the `--out` folder doesn't exist"))?;
     if !out.is_dir() {
         return Err(Error::new(ErrorKind::InvalidInput, "`--out` must be a folder"));
     }
+    Ok(out)
+}
+
+/// Exports the active media results of `nodes` into the folder `out` (from [`out_folder`]),
+/// never replacing a file: a taken name gets a number. Returns each file written or why it
+/// wasn't, and the text results, which have no file. One failed file doesn't stop the rest.
+pub fn export(session: &mut Session, canvas: CanvasId, nodes: &[NodeId], out: &Path) -> Result<Vec<Value>, Error> {
     let graph = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "no such canvas"))?;
     let mut planned = Vec::new();
     let mut texts = Vec::new();
     for id in nodes {
         let Some(node) = graph.nodes().get(id) else { continue };
         let Some(generation) = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)) else { continue };
+        // A result recorded for another port layout can't be matched to its ports.
+        if node.outputs.len() != generation.outputs.len() {
+            continue;
+        }
         let stem = stem(&node.title, &node.kind, *id);
         for (port, value) in node.outputs.iter().zip(&generation.outputs) {
             match value {
-                Output::Media(asset) => planned.push((*id, generation.id, port.name.clone(), None, file(&out, &stem, &port.name, None, asset.mime.essence()))),
+                Output::Media(asset) => {
+                    planned.push((*id, generation.id, port.name.clone(), None, name(&stem, &port.name, None), extension(asset.mime.essence())))
+                }
                 Output::List(items) => {
                     let media = nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).take(MAX_ITEMS).enumerate();
                     for (item, value) in media {
                         if let Output::Media(asset) = value {
-                            planned.push((*id, generation.id, port.name.clone(), Some(item), file(&out, &stem, &port.name, Some(item), asset.mime.essence())));
+                            planned.push((
+                                *id,
+                                generation.id,
+                                port.name.clone(),
+                                Some(item),
+                                name(&stem, &port.name, Some(item)),
+                                extension(asset.mime.essence()),
+                            ));
                         }
                     }
                 }
@@ -211,13 +233,28 @@ pub fn export(session: &mut Session, canvas: CanvasId, nodes: &[NodeId], out: &P
         }
     }
     let mut written = Vec::new();
-    for (node, generation, port, item, path) in planned {
-        let mut params = json!({"canvas": canvas, "id": node, "generation": generation, "port": port, "path": path, "overwrite": false});
+    for (node, generation, port, item, name, extension) in planned {
+        let mut params = json!({"canvas": canvas, "id": node, "generation": generation, "port": port, "overwrite": false});
         if let Some(item) = item {
             params["item"] = json!(item);
         }
-        let done = session.dispatch("history.export", &params)?;
-        written.push(json!({"node": node, "port": port, "item": item, "path": path, "bytes": done["bytes"]}));
+        let mut outcome = Err(Error::new(ErrorKind::Conflict, "every name for this result is taken"));
+        for taken in 1..=MAX_TAKEN {
+            let numbered = if taken == 1 { String::new() } else { format!("-{taken}") };
+            let path = out.join(format!("{name}{numbered}.{extension}"));
+            params["path"] = json!(path);
+            match session.dispatch("history.export", &params) {
+                Err(error) if error.kind == ErrorKind::Conflict => continue,
+                done => {
+                    outcome = done.map(|done| (path, done));
+                    break;
+                }
+            }
+        }
+        written.push(match outcome {
+            Ok((path, done)) => json!({"node": node, "port": port, "item": item, "path": path, "bytes": done["bytes"]}),
+            Err(error) => json!({"node": node, "port": port, "item": item, "status": "failed", "reason": error.message}),
+        });
     }
     written.extend(texts);
     Ok(written)
@@ -227,22 +264,29 @@ pub fn export(session: &mut Session, canvas: CanvasId, nodes: &[NodeId], out: &P
 /// so two cards with one title don't collide.
 fn stem(title: &str, kind: &str, id: NodeId) -> String {
     let named = if title.trim().is_empty() { kind } else { title };
+    let id = id.to_string();
+    format!("{}-{}", slug(named), id.get(..8).unwrap_or(&id))
+}
+
+/// `text`'s ASCII letters and digits, lowercased, with each other run as one `-`.
+fn slug(text: &str) -> String {
     let mut safe = String::new();
-    for c in named.chars().take(MAX_TITLE) {
+    for c in text.chars().take(MAX_TITLE) {
         if c.is_ascii_alphanumeric() {
             safe.push(c.to_ascii_lowercase());
         } else if !safe.ends_with('-') {
             safe.push('-');
         }
     }
-    let id = id.to_string();
-    format!("{}-{}", safe.trim_matches('-'), id.get(..8).unwrap_or(&id))
+    safe.trim_matches('-').to_owned()
 }
 
-fn file(out: &Path, stem: &str, port: &str, item: Option<usize>, mime: &str) -> PathBuf {
-    let port: String = port.chars().filter(char::is_ascii_alphanumeric).take(MAX_TITLE).collect();
+/// A result's file name, less its extension and any number added when it is taken.
+fn name(stem: &str, port: &str, item: Option<usize>) -> String {
+    let port = slug(port);
+    let port = if port.is_empty() { "out".to_owned() } else { port };
     let item = item.map(|item| format!("-{}", item.saturating_add(1))).unwrap_or_default();
-    out.join(format!("{stem}-{port}{item}.{}", extension(mime)))
+    format!("{stem}-{port}{item}")
 }
 
 /// The usual extension of a result of type `mime`.
@@ -280,6 +324,8 @@ pub fn report_text(report: &Value) -> String {
     for result in report["results"].as_array().into_iter().flatten() {
         if let Some(path) = result["path"].as_str() {
             out.push_str(&format!("wrote {path}\n"));
+        } else if let Some(reason) = result["reason"].as_str() {
+            out.push_str(&format!("{}: not exported: {reason}\n", result["node"].as_str().unwrap_or_default()));
         } else if let Some(text) = result["text"].as_str() {
             out.push_str(&format!("{}:\n{text}\n", result["node"].as_str().unwrap_or_default()));
         }

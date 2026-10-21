@@ -42,7 +42,8 @@ commands:
                   run the nodes and their stale upstream (default: every stale or never-run node)
                   and export their media results into the folder; a run that costs money, or
                   whose price isn't fully known, needs --yes (check it with `quote` first). The
-                  project file is not changed
+                  project file is not changed. Stopping the CLI mid-run doesn't stop jobs a
+                  provider already accepted; they may still be charged
   providers       list the model providers and whether each can run (reads the keychain)
   --version, -V   print the version, commit and build date
   --help, -h      print this help
@@ -265,6 +266,11 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
         Err(error) => return fail(&error.message),
     };
     let session = &mut session;
+    // Checked before anything runs, so a typo costs nothing.
+    let out = match options.out.as_deref().map(|out| run::out_folder(std::path::Path::new(out))).transpose() {
+        Ok(out) => out,
+        Err(error) => return fail(&error.message),
+    };
     let done = quote::canvas_of(session, options.canvas.as_deref()).and_then(|canvas| {
         let targets = quote::targets(session, canvas, &options.nodes)?;
         let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
@@ -272,16 +278,19 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
         runner.install(session);
         let quoted = quote::quote(session, canvas, &targets)?;
         let steps = runner.run(session, canvas, &targets, &quoted, run::Consent { spend: options.yes })?;
-        let ran: Vec<NodeId> = steps.iter().filter(|s| s["status"] == "recorded").filter_map(|s| s["node"].as_str()?.parse().ok()).collect();
-        let results = match &options.out {
-            Some(out) => run::export(session, canvas, &ran, std::path::Path::new(out))?,
+        // An unaccounted result was kept on its card, so it is exported too.
+        let kept = |s: &&serde_json::Value| s["status"] == "recorded" || s["status"] == "unaccounted";
+        let ran: Vec<NodeId> = steps.iter().filter(kept).filter_map(|s| s["node"].as_str()?.parse().ok()).collect();
+        let results = match &out {
+            Some(out) => run::export(session, canvas, &ran, out)?,
             None => Vec::new(),
         };
         Ok(serde_json::json!({"quote": quoted, "steps": steps, "results": results}))
     });
     match done {
         Ok(report) => {
-            let failed = report["steps"].as_array().into_iter().flatten().any(|step| step["status"] != "recorded");
+            let listed = |key: &str| report[key].as_array().into_iter().flatten().cloned().collect::<Vec<_>>();
+            let failed = listed("steps").iter().any(|step| step["status"] != "recorded") || listed("results").iter().any(|r| r["status"] == "failed");
             let printed = print(options.json, &report, run::report_text);
             if failed { ExitCode::FAILURE } else { printed }
         }
