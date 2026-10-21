@@ -120,7 +120,7 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // Before a fetch any checkpoint is accepted: the list is unknown, not empty.
     checkpoint(&mut session, "anything.safetensors").unwrap();
     let sources = refresh(&mut session, &asked);
-    assert_eq!(sources, ["comfyui.checkpoints", "higgsfield.restyle_presets"]);
+    assert_eq!(sources, ["comfyui.checkpoints", "higgsfield.restyle_presets", "higgsfield.soul_ids"]);
     let http = server(&["sdxl.safetensors", "juggernaut.safetensors", "", "sdxl.safetensors"]);
     let fetched = fetch(http.clone(), &settings(), &sources);
     // Higgsfield has no key here: it isn't asked, and the ComfyUI lists still come.
@@ -132,8 +132,8 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     assert_eq!(report.installed.len(), 1, "{report:?}");
     // Higgsfield isn't set up: its list is unavailable, not refused.
     assert!(report.refused.is_empty(), "{report:?}");
-    assert_eq!(report.unavailable.len(), 1, "{report:?}");
-    assert!(report.unavailable[0].source == "higgsfield.restyle_presets" && report.unavailable[0].reason.contains("key"), "{report:?}");
+    let unavailable: Vec<&str> = report.unavailable.iter().filter(|r| r.reason.contains("key")).map(|r| r.source.as_str()).collect();
+    assert_eq!(unavailable, ["higgsfield.restyle_presets", "higgsfield.soul_ids"], "{report:?}");
     assert_eq!((report.installed[0].owner.as_str(), report.installed[0].values, report.installed[0].skipped), ("comfyui.sdxl", 2, 2));
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": N, "param": "checkpoint"})).unwrap();
     assert_eq!(listed["known"], true);
@@ -247,8 +247,10 @@ fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_
     assert_eq!(report.error, None);
     let installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.source.as_str(), i.values, i.skipped)).collect();
     assert_eq!(installed, [("higgsfield.genjutsu-restyle", "higgsfield.restyle_presets", 2, 1)]);
-    // The ComfyUI list is unavailable with the reason, and what it had stays.
-    assert!(report.refused.is_empty(), "{report:?}");
+    // The ComfyUI list is unavailable with the reason, and what it had stays. The Soul IDs
+    // weren't asked for here.
+    let refused: Vec<(&str, &str)> = report.refused.iter().map(|r| (r.source.as_str(), r.reason.as_str())).collect();
+    assert_eq!(refused, [("higgsfield.soul_ids", "not part of this fetch; refresh again")], "{report:?}");
     assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("comfyui_url")), "{report:?}");
     // The restyle card offers the presets by name; the id is what it keeps and sends.
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": RESTYLE, "param": "preset_id"})).unwrap();
@@ -284,4 +286,54 @@ fn when_nothing_could_be_fetched_a_provider_that_failed_says_more_than_one_not_s
     let error = block_on(option_fetch::fetch(&env, &sources)).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Network, "{}", error.message);
     assert!(error.message.contains("comfyui_url") && error.message.contains("restyle presets"), "{}", error.message);
+}
+
+/// Answers Higgsfield's Soul ID list; the preset list fails.
+struct Souls(Mutex<Vec<HttpRequest>>);
+
+impl Http for Souls {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("Higgsfield never follows redirects")
+    }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let answer = if request.url == "https://api.higgsfield.ai/v1/custom-references/list?page=1&page_size=50" {
+            let body = json!({"items": [
+                {"id": "7C9E6679-7425-40DE-944B-E07FC1F90AE7", "name": "Mara", "model_version": "v2", "status": "completed"},
+                {"id": "11111111-2222-4333-8444-555555555555", "name": "Still training", "model_version": "v2", "status": "in_progress"},
+                {"id": "22222222-2222-4333-8444-555555555555", "name": "Soul 1", "model_version": "v1", "status": "completed"},
+                {"name": "Broken"},
+            ]});
+            Ok(HttpResponse { status: 200, headers: vec![], body: serde_json::to_vec(&body).unwrap() })
+        } else if request.url == "https://api.higgsfield.ai/v1/custom-references/list?page=2&page_size=50" {
+            Ok(HttpResponse { status: 200, headers: vec![], body: b"[]".to_vec() })
+        } else {
+            Err(ProviderError::new(WireKind::Network, "connection refused"))
+        };
+        self.0.lock().unwrap().push(request);
+        Box::pin(async move { answer })
+    }
+}
+
+#[test]
+fn soul_ids_are_listed_by_name_for_soul_2_even_when_the_presets_fail() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
+    let http = Arc::new(Souls(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+    let sources = ["higgsfield.restyle_presets".to_owned(), "higgsfield.soul_ids".to_owned()];
+    let fetched = block_on(option_fetch::fetch(&env, &sources));
+    // The presets, then Soul ID pages until an empty one.
+    assert_eq!(http.0.lock().unwrap().len(), 3);
+    let (mut session, _) = session();
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    let installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.source.as_str(), i.values, i.skipped)).collect();
+    // Only the ready SOUL 2 identity is listed; the unreadable entry is counted.
+    assert_eq!(installed, [("higgsfield.soul-2", "higgsfield.soul_ids", 1, 1)]);
+    assert!(report.refused.iter().any(|r| r.source == "higgsfield.restyle_presets" && r.reason.contains("restyle presets")), "{report:?}");
+    let lists = session.option_lists().unwrap();
+    let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };
+    let choices: Vec<(&str, &str)> = lists.get(key).unwrap().iter().map(|c| (c.value.as_str(), c.label.as_str())).collect();
+    assert_eq!(choices, [("7c9e6679-7425-40de-944b-e07fc1f90ae7", "Mara")]);
 }

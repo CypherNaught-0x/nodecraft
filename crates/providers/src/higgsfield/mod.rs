@@ -1,5 +1,7 @@
 //! Higgsfield (#177): SOUL 2 text to image, Kling 2.5 Turbo Pro image to video and the Genjutsu
-//! source video edits (#179: motion transfer, object swap, restyle) on Higgsfield's queue API. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
+//! source video edits (#179: motion transfer, object swap, restyle) on Higgsfield's queue API.
+//! SOUL 2 can draw a Soul ID (#180), an identity trained on the account: the adapter lists the
+//! account's ready ones, and confirms the one a request names is ready before paying. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
 //! submit is the paid step. It carries the job's idempotency key, and the exact body sent under a
 //! key is kept for this process, so a retry after a lost reply replays it byte for byte and gets
 //! the original request back instead of paying for a second one. Higgsfield keeps results for at
@@ -29,6 +31,12 @@ pub const OBJECT_SWAP: &str = "higgsfield/genjutsu/object-swap/v1.0";
 pub const RESTYLE: &str = "higgsfield/genjutsu/restyle/v1.0";
 /// The restyle presets Higgsfield lists, as the `preset_id` option list.
 pub const RESTYLE_PRESETS: &str = "higgsfield.restyle_presets";
+/// The account's ready SOUL 2 Soul IDs, as the `custom_reference_id` option list.
+pub const SOUL_IDS: &str = "higgsfield.soul_ids";
+/// Soul IDs asked for per list page, and the pages read: an account with more is refused
+/// rather than listed in part.
+const SOUL_PAGE: usize = 50;
+const SOUL_PAGES: usize = 20;
 const API: &str = "https://api.higgsfield.ai";
 const MIB: usize = 1024 * 1024;
 /// Bodies kept for exact replay; the oldest goes first.
@@ -119,6 +127,40 @@ pub struct Presets {
     pub skipped: usize,
 }
 
+/// A Soul ID trained for SOUL 2 and ready to use: the id a request names, and its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoulId {
+    pub id: String,
+    pub name: String,
+}
+
+/// The account's ready SOUL 2 Soul IDs, in Higgsfield's order, and how many entries didn't read
+/// as a reference. Ones still training, failed or trained for another SOUL aren't listed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SoulIds {
+    pub ids: Vec<SoulId>,
+    pub skipped: usize,
+}
+
+/// Where a Soul ID's training stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Training {
+    Pending,
+    Completed,
+    /// With Higgsfield's reason, when it gave one.
+    Failed(Option<String>),
+    /// A state Higgsfield doesn't document, as it said it.
+    Unknown(String),
+}
+
+/// A Soul ID as `GET /v1/custom-references/{id}` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Reference {
+    /// Trained for SOUL 2 (`model_version: "v2"`).
+    pub v2: bool,
+    pub training: Training,
+}
+
 /// One staged body: what was sent, or is about to be sent, under an idempotency key.
 struct Staged {
     key: String,
@@ -178,6 +220,11 @@ impl Higgsfield {
         let fingerprint = request::fingerprint(job);
         if let Some(staged) = self.lock().iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
             return Ok(Arc::clone(&staged.body));
+        }
+        // A Soul ID is checked once, when the body is first staged; a replay sends the body
+        // that was checked.
+        if let Some(id) = &prepared.reference {
+            self.ready(id).await?;
         }
         let video = match &prepared.video {
             Some(video) => Some(self.upload(video.mime, video.bytes).await?),
@@ -249,6 +296,55 @@ impl Higgsfield {
         quote.max_response_bytes = self.limits.response_bytes;
         let reply = self.send(quote, false, None).await?;
         response::estimate(&reply.body)
+    }
+    /// Refuses a Soul ID this account doesn't have, or whose training isn't done or was for
+    /// another SOUL, so a request never pays for an image made without its identity. Free.
+    async fn ready(&self, id: &str) -> Result<(), ProviderError> {
+        if !request::uuid(id) {
+            return Err(invalid("a Higgsfield Soul ID is the UUID Higgsfield issued"));
+        }
+        let status = HttpRequest::get(format!("{API}/v1/custom-references/{id}")).timeout_ms(30_000);
+        let reply = self.send(status, false, None).await.map_err(|e| {
+            if e.kind == ErrorKind::NotFound {
+                invalid("this Higgsfield account has no such Soul ID; Soul IDs belong to the account that trained them. Nothing was billed")
+            } else {
+                e
+            }
+        })?;
+        let reference = response::reference(&reply.body, id, |s| self.leaks(s))?;
+        match reference.training {
+            _ if !reference.v2 => Err(invalid("this Soul ID was trained for another SOUL version, not SOUL 2. Nothing was billed")),
+            Training::Completed => Ok(()),
+            Training::Pending => Err(invalid("this Soul ID is still training; run again once Higgsfield finishes it. Nothing was billed")),
+            Training::Failed(Some(reason)) => Err(invalid(format!("this Soul ID's training failed: {reason}. Nothing was billed"))),
+            Training::Failed(None) => Err(invalid("this Soul ID's training failed. Nothing was billed")),
+            Training::Unknown(status) => Err(invalid(format!("this Soul ID isn't ready: Higgsfield reports it as {status}. Nothing was billed"))),
+        }
+    }
+    /// The account's ready SOUL 2 Soul IDs. Free, and sends nothing but the key.
+    pub async fn soul_ids(&self) -> Result<SoulIds, ProviderError> {
+        let mut out = SoulIds::default();
+        let mut seen = std::collections::BTreeSet::new();
+        // Only an empty page ends the list: Higgsfield doesn't document its page size, so a
+        // short page may still have more after it. One page past the cap probes for more.
+        for page in 1..=SOUL_PAGES.saturating_add(1) {
+            let list = HttpRequest::get(format!("{API}/v1/custom-references/list?page={page}&page_size={SOUL_PAGE}")).timeout_ms(30_000);
+            let reply = self.send(list, false, None).await?;
+            let (ready, entries, skipped) = response::soul_page(&reply.body, SOUL_PAGE, |s| self.leaks(s))?;
+            if entries == 0 {
+                return Ok(out);
+            }
+            if page > SOUL_PAGES {
+                break;
+            }
+            out.skipped = out.skipped.saturating_add(skipped);
+            for soul in ready {
+                if seen.insert(soul.id.clone()) {
+                    out.ids.push(soul);
+                }
+            }
+        }
+        Err(malformed("this Higgsfield account has more Soul IDs than NodeCraft lists"))
     }
     /// The restyle presets Higgsfield lists today. Free, and sends nothing but the key.
     pub async fn restyle_presets(&self) -> Result<Presets, ProviderError> {

@@ -42,8 +42,9 @@ fn only_unscoped_known_sources_are_fetched() {
         want("elevenlabs.voices", None),
         want("comfyui.samplers", None),
         want("higgsfield.restyle_presets", None),
+        want("higgsfield.soul_ids", None),
     ];
-    assert_eq!(fetchable(&wanted), strings(&["comfyui.checkpoints", "comfyui.samplers", "higgsfield.restyle_presets"]));
+    assert_eq!(fetchable(&wanted), strings(&["comfyui.checkpoints", "comfyui.samplers", "higgsfield.restyle_presets", "higgsfield.soul_ids"]));
 }
 
 #[test]
@@ -61,4 +62,6 @@ fn the_builtin_catalog_asks_for_the_sdxl_checkpoints() {
     assert!(wanted.contains(&Wanted { owner: "comfyui.sdxl".into(), source: "comfyui.checkpoints".into(), scope: None }), "{wanted:?}");
     let restyle = Wanted { owner: "higgsfield.genjutsu-restyle".into(), source: "higgsfield.restyle_presets".into(), scope: None };
     assert!(wanted.contains(&restyle), "{wanted:?}");
+    let souls = Wanted { owner: "higgsfield.soul-2".into(), source: "higgsfield.soul_ids".into(), scope: None };
+    assert!(wanted.contains(&souls), "{wanted:?}");
 }

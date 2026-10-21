@@ -20,6 +20,8 @@ pub(super) struct Prepared<'a> {
     pub model: &'static str,
     /// Results the request asks for.
     pub count: u64,
+    /// The Soul ID a SOUL 2 request names, which the adapter confirms is ready before paying.
+    pub reference: Option<String>,
     /// Everything but staged inputs, which [`Prepared::body`] adds.
     fields: Map<String, Value>,
     /// A Genjutsu source video, staged first.
@@ -45,12 +47,14 @@ fn text(value: &Value, what: &str, allowed: &[&'static str]) -> Result<&'static 
 fn count(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
-fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<u64, ProviderError> {
+fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(u64, Option<String>), ProviderError> {
     // Sent explicitly: Higgsfield's pages disagree on some defaults.
     let mut aspect = "1:1";
     let mut resolution = "720p";
     let mut enhance = false;
     let mut batch = 1;
+    let mut reference = None;
+    let mut strength = None;
     for (name, value) in &job.params {
         match name.as_str() {
             "aspect_ratio" => aspect = text(value, "aspect ratio", &ASPECTS)?,
@@ -62,14 +66,34 @@ fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<u64, Provi
                 let seed = value.as_u64().filter(|n| SEEDS.contains(n)).ok_or_else(|| invalid("a Higgsfield seed is 1 to 1000000"))?;
                 fields.insert("seed".into(), json!(seed));
             }
+            // No Soul ID is an empty field: the card's text box before one is picked.
+            "custom_reference_id" if value.as_str().is_some_and(|s| s.trim().is_empty()) => {}
+            "custom_reference_id" => {
+                let id = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|id| uuid(id))
+                    .ok_or_else(|| invalid("a Higgsfield Soul ID is the UUID Higgsfield issued; Refresh option lists fetches this account's"))?;
+                reference = Some(id.to_ascii_lowercase());
+            }
+            "custom_reference_strength" => {
+                let n =
+                    value.as_f64().filter(|n| n.is_finite() && (0.0..=1.0).contains(n)).ok_or_else(|| invalid("a Higgsfield Soul ID strength is 0 to 1"))?;
+                strength = Some((n * 100.0).round() / 100.0);
+            }
             _ => return Err(invalid("unknown Higgsfield SOUL option")),
         }
+    }
+    // The strength means nothing without an identity, and is left out with none.
+    if let Some(id) = &reference {
+        fields.insert("custom_reference_id".into(), json!(id));
+        fields.insert("custom_reference_strength".into(), json!(strength.unwrap_or(1.0)));
     }
     fields.insert("aspect_ratio".into(), json!(aspect));
     fields.insert("resolution".into(), json!(resolution));
     fields.insert("enhance_prompt".into(), json!(enhance));
     fields.insert("batch_size".into(), json!(batch));
-    Ok(batch)
+    Ok((batch, reference))
 }
 fn kling(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), ProviderError> {
     let mut duration = 5;
@@ -89,8 +113,8 @@ fn kling(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), Provi
     fields.entry("negative_prompt").or_insert_with(|| json!(""));
     Ok(())
 }
-/// A restyle preset id as Higgsfield issues them: a UUID.
-pub(super) fn preset_id(s: &str) -> bool {
+/// A restyle preset or Soul ID as Higgsfield issues them: a UUID.
+pub(super) fn uuid(s: &str) -> bool {
     s.len() == 36 && s.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() })
 }
 fn genjutsu(model: &str, job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), ProviderError> {
@@ -101,7 +125,7 @@ fn genjutsu(model: &str, job: &ProviderJob, fields: &mut Map<String, Value>) -> 
         match name.as_str() {
             "resolution" => resolution = text(value, "resolution", &EDIT_RESOLUTIONS)?,
             "preset_id" if model == RESTYLE => {
-                let id = value.as_str().filter(|id| preset_id(id)).ok_or_else(choose)?;
+                let id = value.as_str().filter(|id| uuid(id)).ok_or_else(choose)?;
                 fields.insert("preset_id".into(), json!(id.to_ascii_lowercase()));
             }
             _ => return Err(invalid("unknown Higgsfield Genjutsu option")),
@@ -180,6 +204,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
     if !fields.contains_key("prompt") && !edits(model) {
         return Err(invalid("a Higgsfield model needs a prompt"));
     }
+    let mut reference = None;
     let count = if edits(model) {
         if video.is_none() {
             return Err(invalid("a Higgsfield Genjutsu edit needs a source video"));
@@ -191,7 +216,9 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         genjutsu(model, job, &mut fields)?;
         1
     } else if model == SOUL {
-        soul(job, &mut fields)?
+        let (count, id) = soul(job, &mut fields)?;
+        reference = id;
+        count
     } else {
         if images.len() != 1 {
             return Err(invalid("Kling image to video needs one image"));
@@ -199,7 +226,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         kling(job, &mut fields)?;
         1
     };
-    Ok(Prepared { model, count, fields, video, images })
+    Ok(Prepared { model, count, reference, fields, video, images })
 }
 impl Prepared<'_> {
     /// The request body, given the staged source video's public URL and each image's (in
