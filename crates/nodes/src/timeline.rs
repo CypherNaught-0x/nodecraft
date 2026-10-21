@@ -6,12 +6,16 @@
 //! (`{"clips": [...]}`, first first; the format is [`Timeline`]). The host checks them where they
 //! are set (`timeline.*` commands) and again, against each video's length, before it renders;
 //! this kind only carries them, with the node each connected video came from, so a clip stays
-//! with its video when wires are reordered.
+//! with its video when wires are reordered. Captions (#574) are stored with them: text drawn over
+//! the picture between two times (see [`caption`]).
 use crate::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx, descriptor::invalid};
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{Choice, Error, ErrorKind, Modality, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, Value};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+
+pub mod caption;
+pub use caption::{Caption, MAX_CAPTIONS};
 
 /// The kind's id.
 pub const ID: &str = "video.timeline";
@@ -42,7 +46,7 @@ pub const DEFAULT_HEIGHT: u64 = 720;
 pub const RATES: [&str; 5] = ["24", "25", "30", "50", "60"];
 /// Most clips on a timeline, and most stored bytes.
 pub const MAX_CLIPS: usize = 32;
-pub const MAX_ENCODED_BYTES: usize = 64 * 1024;
+pub const MAX_ENCODED_BYTES: usize = 128 * 1024;
 /// Longest time anywhere on a timeline: an hour, in microseconds.
 pub const MAX_US: u64 = 3_600_000_000;
 /// Shortest cross transition; shorter ones are a cut (0).
@@ -119,14 +123,16 @@ pub struct Track {
     pub kind: TrackKind,
 }
 
-/// The clips (first first; on the main track that is playing order) and the tracks beyond the
-/// main one, track 1 first.
+/// The clips (first first; on the main track that is playing order), the tracks beyond the
+/// main one, track 1 first, and the captions drawn over them all.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Timeline {
     pub clips: Vec<Clip>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tracks: Vec<Track>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captions: Vec<Caption>,
 }
 
 /// One clip: a stretch of the `nth` video, sound or picture wired from node `origin` into `input`.
@@ -299,6 +305,16 @@ impl Timeline {
             }
             if !ids.insert(clip.id.as_str()) {
                 return Err(Error::new(ErrorKind::Conflict, "two clips have the same id"));
+            }
+        }
+        if self.captions.len() > MAX_CAPTIONS {
+            return Err(bad("a timeline has at most 64 captions"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for caption in &self.captions {
+            caption.check()?;
+            if !ids.insert(caption.id.as_str()) {
+                return Err(Error::new(ErrorKind::Conflict, "two captions have the same id"));
             }
         }
         Ok(())

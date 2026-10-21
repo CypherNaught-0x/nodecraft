@@ -13,6 +13,7 @@ use vello_cpu::kurbo::{Affine, BezPath, Ellipse, Rect, Shape as _, Stroke};
 use vello_cpu::peniko::{Extend, ImageQuality, ImageSampler};
 use vello_cpu::{Level, Pixmap, RenderContext, RenderSettings, Resources, color};
 
+pub mod caption;
 mod text;
 pub use text::{BUILTIN_FONT, text_size};
 

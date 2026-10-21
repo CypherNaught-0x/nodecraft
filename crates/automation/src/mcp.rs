@@ -157,6 +157,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "timeline.remove",
     "timeline.track_add",
     "timeline.track_remove",
+    "timeline.caption_add",
+    "timeline.caption_update",
+    "timeline.caption_remove",
     // Elements only add and wire cards; the sheet card runs (and is quoted) through run.start.
     "element.create",
     "element.sheet",

@@ -12,6 +12,8 @@ pub const MAX_DURATION_US: u64 = 3_600_000_000;
 pub const MAX_VOLUME: u16 = 4000;
 /// Shortest cross transition, in microseconds; anything shorter is a cut.
 pub const MIN_TRANSITION_US: u64 = 10_000;
+/// Most captions one composition may draw.
+pub const MAX_CAPTIONS: usize = 64;
 
 /// When and how loudly one clip plays, in the clip's own microseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,12 +131,42 @@ pub(crate) struct Layer {
     pub(crate) at: u64,
 }
 
-/// The output frame, the main track of pictures played one after another, and the layers over it.
+/// A staged picture drawn over everything else, its top-left corner at `(x, y)` in the frame,
+/// from `start_us` until `end_us` (rounded to whole frames, at least one): a caption.
+#[derive(Clone)]
+pub struct ComposeCaption {
+    pub(crate) still: StillAsset,
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) start_us: u64,
+    pub(crate) end_us: u64,
+}
+impl ComposeCaption {
+    /// `x` and `y` are even, for 4:2:0 video; the spec checks that the picture fits its frame.
+    pub fn new(still: StillAsset, x: u32, y: u32, start_us: u64, end_us: u64) -> Result<Self> {
+        if start_us >= end_us || end_us > MAX_DURATION_US || !x.is_multiple_of(2) || !y.is_multiple_of(2) {
+            return Err(VideoError::Invalid);
+        }
+        Ok(Self { still, x, y, start_us, end_us })
+    }
+}
+/// A caption as the graph sees it: where it goes, and the output frames `[from, to)` it shows on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Overlay {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) from: u64,
+    pub(crate) to: u64,
+}
+
+/// The output frame, the main track of pictures played one after another, the layers over it
+/// and the captions over them all.
 #[derive(Clone)]
 pub struct ComposeSpec {
     pub(crate) frame: Frame,
     pub(crate) clips: Vec<ComposeClip>,
     pub(crate) layers: Vec<Layer>,
+    pub(crate) captions: Vec<ComposeCaption>,
 }
 /// The output picture: size, rate and the colour behind letterboxing and fades.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,7 +185,7 @@ impl ComposeSpec {
         }
         let spans: Vec<Span> = clips.iter().map(|c| c.span).collect();
         validate(frame, &spans)?;
-        Ok(Self { frame, clips, layers: Vec::new() })
+        Ok(Self { frame, clips, layers: Vec::new(), captions: Vec::new() })
     }
     /// Add clips that start at their own time, each `(clip, at_us)`, rounded to whole frames.
     /// Pictures stack in order over the main track (the last on top); every sound is mixed in.
@@ -181,6 +213,36 @@ impl ComposeSpec {
             self.layers.push(Layer { clip, at });
         }
         Ok(self)
+    }
+    /// Draw captions over the picture, the last on top. They don't lengthen the output: one
+    /// that starts after it ends isn't drawn, and one that runs past its end is cut there.
+    pub fn with_captions(mut self, captions: Vec<ComposeCaption>) -> Result<Self> {
+        if self.captions.len().saturating_add(captions.len()) > MAX_CAPTIONS {
+            return Err(VideoError::Invalid);
+        }
+        for caption in &captions {
+            let fits = |at: u32, side: u32, edge: u32| at.checked_add(side).is_some_and(|end| end <= edge) && side.is_multiple_of(2);
+            if !fits(caption.x, caption.still.width(), self.frame.width) || !fits(caption.y, caption.still.height(), self.frame.height) {
+                return Err(VideoError::Invalid);
+            }
+        }
+        self.captions.extend(captions);
+        Ok(self)
+    }
+    /// The captions drawn, each with the frames it shows on.
+    pub(crate) fn shown_captions(&self) -> Vec<(&ComposeCaption, Overlay)> {
+        let total = frames_at(self.duration_us(), self.frame.fps);
+        self.captions
+            .iter()
+            .filter_map(|c| {
+                let from = frames_at(c.start_us, self.frame.fps);
+                let to = frames_at(c.end_us, self.frame.fps).max(from.saturating_add(1)).min(total);
+                (from < to).then_some((c, Overlay { x: c.x, y: c.y, from, to }))
+            })
+            .collect()
+    }
+    pub(super) fn caption_parts(&self) -> Vec<Overlay> {
+        self.shown_captions().into_iter().map(|(_, o)| o).collect()
     }
     /// Running time of the output: the main track (every clip as whole frames, less the overlap
     /// of each transition) or the last layer's end, whichever is later.
@@ -408,12 +470,14 @@ fn audible(media: Media<'_>, span: &Span) -> Option<u32> {
     stream.filter(|_| !span.muted && span.volume > 0)
 }
 
-/// The filter graph reading input `k` from the `k`th part (the main track, then the layers),
-/// ending in `[vout]` and `[aout]`.
-pub(super) fn graph(frame: Frame, parts: &[(Media<'_>, &Span)], layers: &[(Media<'_>, &Span, u64)]) -> Result<String> {
+/// The filter graph reading input `k` from the `k`th part (the main track, then the layers,
+/// then the captions' pictures), ending in `[vout]` and `[aout]`.
+pub(super) fn graph(frame: Frame, parts: &[(Media<'_>, &Span)], layers: &[(Media<'_>, &Span, u64)], captions: &[Overlay]) -> Result<String> {
     let mut g = String::new();
     let single = parts.len() == 1;
-    let (main_v, main_a) = if layers.is_empty() { ("vout", "aout") } else { ("mv", "ma") };
+    // With captions the picture is drawn into `[cv0]`, and they go over it on the way to `[vout]`.
+    let picture_out = if captions.is_empty() { "vout" } else { "cv0" };
+    let (main_v, main_a) = if layers.is_empty() { (picture_out, "aout") } else { ("mv", "ma") };
     for (k, (media, span)) in parts.iter().enumerate() {
         let (v, a) = if single { (main_v.to_owned(), main_a.to_owned()) } else { (format!("v{k}"), format!("a{k}")) };
         picture(&mut g, k, *media, span, frame, None, &v)?;
@@ -485,13 +549,29 @@ pub(super) fn graph(frame: Frame, parts: &[(Media<'_>, &Span)], layers: &[(Media
                 mixed.push(format!("[s{j}]"));
             }
         }
-        write!(g, "[b{base}]trim=end_frame={},setpts=PTS-STARTPTS[vout];", frames(total, frame.fps)).map_err(|_| VideoError::Limit)?;
+        write!(g, "[b{base}]trim=end_frame={},setpts=PTS-STARTPTS[{picture_out}];", frames(total, frame.fps)).map_err(|_| VideoError::Limit)?;
         if mixed.len() > 1 {
             write!(g, "{}amix=inputs={}:duration=longest:dropout_transition=0:normalize=0,", mixed.concat(), mixed.len()).map_err(|_| VideoError::Limit)?;
         } else {
             g.push_str("[ma]");
         }
         write!(g, "apad,atrim=duration={}[aout];", seconds(total)).map_err(|_| VideoError::Limit)?;
+    }
+    // Each caption shows while a frame's time is within half a frame of its first to its last.
+    let half = frame_us(1, frame.fps) / 2;
+    for (j, o) in captions.iter().enumerate() {
+        let k = parts.len().saturating_add(layers.len()).saturating_add(j);
+        let next = if j + 1 == captions.len() { "vout".to_owned() } else { format!("cv{}", j + 1) };
+        write!(
+            g,
+            "[{k}:0]scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,setpts=PTS-STARTPTS[t{j}];\
+             [cv{j}][t{j}]overlay=x={x}:y={y}:eof_action=repeat:format=yuv420:enable='between(t,{a},{b})'[{next}];",
+            x = o.x,
+            y = o.y,
+            a = seconds(frame_us(o.from, frame.fps).saturating_sub(half)),
+            b = seconds(frame_us(o.to, frame.fps).saturating_sub(half)),
+        )
+        .map_err(|_| VideoError::Limit)?;
     }
     g.pop();
     Ok(g)

@@ -6,11 +6,12 @@
 //! `timeline.update`, so every gesture is one undo step. Lengths and thumbnails come from the
 //! shell's video player, which probes each wired video with the settings' tools; a clip whose
 //! length isn't known yet takes a stand-in width. Rendering is the card's run, as for any node.
+//! Captions (#574) are listed, edited and previewed in `captions`.
 use super::NodeCraftApp;
 use super::layer_editor::{colour_field, number, param_json};
 use crate::theme::Tokens;
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
-use nodecraft_nodes::timeline::{self, Clip, Input, TrackKind};
+use nodecraft_nodes::timeline::{self, Caption, Clip, Input, TrackKind};
 use nodecraft_types::{AssetRef, CanvasId, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -23,15 +24,19 @@ const UNKNOWN_US: u64 = 5_000_000;
 /// Trims land on whole milliseconds.
 const STEP_US: i128 = 1000;
 
+mod captions;
+
 pub(super) struct TimelineEditor {
     canvas: CanvasId,
     pub(super) node: NodeId,
     pub(super) selected: Option<String>,
+    /// The caption picked instead of a clip.
+    pub(super) caption: Option<String>,
     drag: Option<Drag>,
     /// `timeline.list` as of a document revision.
     listing: Option<(u64, Listing)>,
     /// A field being typed or dragged, applied when it lets go: (field key, text).
-    draft: Option<(String, String)>,
+    pub(super) draft: Option<(String, String)>,
     /// A field had focus last frame (see the Layer Editor's `typing`).
     typing: bool,
     /// Where the playhead is, in microseconds of output.
@@ -39,11 +44,26 @@ pub(super) struct TimelineEditor {
     /// Screen points per second of output, and where the track's time 0 is, as last drawn.
     pub(super) scale: f32,
     pub(super) origin: Pos2,
+    /// Where the picture under the playhead is shown, as last drawn.
+    preview: Rect,
 }
 
 impl TimelineEditor {
     pub(super) fn new(canvas: CanvasId, node: NodeId) -> Self {
-        Self { canvas, node, selected: None, drag: None, listing: None, draft: None, typing: false, playhead_us: 0, scale: 1.0, origin: Pos2::ZERO }
+        Self {
+            canvas,
+            node,
+            selected: None,
+            caption: None,
+            drag: None,
+            listing: None,
+            draft: None,
+            typing: false,
+            playhead_us: 0,
+            scale: 1.0,
+            origin: Pos2::ZERO,
+            preview: Rect::NOTHING,
+        }
     }
 }
 
@@ -83,6 +103,7 @@ struct Listing {
     origins: Vec<String>,
     /// What each track holds, the main track first.
     tracks: Vec<TrackKind>,
+    captions: Vec<Caption>,
 }
 
 /// `timeline.list`'s answer: each clip with its media, if it is wired in, and the tracks.
@@ -110,7 +131,8 @@ fn parse(listed: Json) -> Option<Listing> {
             origins.push(input.origin);
         }
     }
-    Some(Listing { clips: out, origins, tracks })
+    let captions = serde_json::from_value(listed.get("captions")?.clone()).ok()?;
+    Some(Listing { clips: out, origins, tracks, captions })
 }
 
 /// Whether `track` (of `tracks`, the main one first) takes the clip's media: pictures go on
@@ -308,6 +330,7 @@ impl NodeCraftApp {
         };
         let titles = titles(self.session.document().canvases().get(&self.canvas), self.session.kinds(), &listing);
         let tracks = listing.tracks.clone();
+        let shown_captions = listing.captions.clone();
         let clips = &mut listing.clips;
         let t = *self.theme.tokens();
         let ctx = ui.ctx().clone();
@@ -334,6 +357,7 @@ impl NodeCraftApp {
             s.clip = drag.now.clone();
         }
         editor.selected = editor.selected.take().filter(|id| shown.iter().any(|s| &s.clip.id == id));
+        editor.caption = editor.caption.take().filter(|id| shown_captions.iter().any(|c| &c.id == id));
         let (placed, total) = place(&shown);
         editor.playhead_us = editor.playhead_us.min(total);
 
@@ -381,14 +405,17 @@ impl NodeCraftApp {
             let left = Rect::from_min_size(body.min, Vec2::new(side, body.height()));
             let right = Rect::from_min_max(Pos2::new(body.max.x - side, body.min.y), body.max);
             let centre = Rect::from_min_max(Pos2::new(left.max.x + gap, body.min.y), Pos2::new(right.min.x - gap, body.max.y));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| clips_panel(ui, &mut editor, &shown, &placed, &tracks, &titles, &t, &mut commands));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| {
+                clips_panel(ui, &mut editor, &shown, &placed, &tracks, &titles, &shown_captions, &t, &mut commands)
+            });
             ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("timeline_properties")
-                    .show(ui, |ui| properties(ui, &mut editor, &shown, &node, &tracks, &titles, &t, &mut commands));
+                    .show(ui, |ui| properties(ui, &mut editor, &shown, &node, &tracks, &titles, &shown_captions, &t, &mut commands));
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(centre), |ui| {
                 track(ui, &mut editor, &shown, &placed, &tracks, total, &posters, &titles, &t, &mut commands);
+                captions::preview(ui.painter(), editor.preview, frame_size(&node), &shown_captions, editor.playhead_us);
             });
             ui.allocate_rect(body, Sense::hover());
         });
@@ -491,14 +518,16 @@ fn keys(ui: &egui::Ui, editor: &mut TimelineEditor, commands: &mut Commands) -> 
             }
         }
         if i.consume_key(Modifiers::NONE, Key::Escape) && editor.drag.take().is_none() {
-            close = editor.selected.is_none();
+            close = editor.selected.is_none() && editor.caption.is_none();
             editor.selected = None;
+            editor.caption = None;
         }
-        if editor.drag.is_none()
-            && (i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace))
-            && let Some(id) = editor.selected.take()
-        {
-            commands.push(("timeline.remove", on(editor, &id)));
+        if editor.drag.is_none() && (i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace)) {
+            if let Some(id) = editor.selected.take() {
+                commands.push(("timeline.remove", on(editor, &id)));
+            } else if let Some(id) = editor.caption.take() {
+                commands.push(("timeline.caption_remove", json!({"canvas": editor.canvas, "id": editor.node, "caption": id})));
+            }
         }
     });
     close
@@ -514,6 +543,7 @@ fn clips_panel(
     placed: &[Placed],
     tracks: &[TrackKind],
     titles: &HashMap<String, String>,
+    captions: &[Caption],
     t: &Tokens,
     commands: &mut Commands,
 ) {
@@ -572,6 +602,7 @@ fn clips_panel(
                 }
                 if ui.selectable_label(editor.selected.as_ref() == Some(&s.clip.id), text).clicked() {
                     editor.selected = Some(s.clip.id.clone());
+                    editor.caption = None;
                 }
                 let note = if !s.wired {
                     "not wired".to_owned()
@@ -600,6 +631,7 @@ fn clips_panel(
                 }
             });
         }
+        captions::list(ui, editor, captions, t, commands);
     });
 }
 
@@ -612,11 +644,18 @@ fn properties(
     node: &nodecraft_graph::Node,
     tracks: &[TrackKind],
     titles: &HashMap<String, String>,
+    captions: &[Caption],
     t: &Tokens,
     commands: &mut Commands,
 ) {
     // A field still holding an edit stays on screen until it applies (see the Layer Editor).
-    let held = editor.draft.as_ref().and_then(|(key, _)| key.split_once('.').map(|(clip, _)| clip.to_owned()));
+    let caption = captions::held(editor.draft.as_ref()).or_else(|| editor.caption.clone().filter(|_| editor.draft.is_none()));
+    if let Some(id) = caption
+        && captions::properties(ui, editor, captions, &id, t, commands)
+    {
+        return;
+    }
+    let held = editor.draft.as_ref().filter(|(key, _)| !key.starts_with("caption:")).and_then(|(key, _)| key.split_once('.').map(|(clip, _)| clip.to_owned()));
     let chosen = held.filter(|h| h != "frame").or_else(|| editor.selected.clone());
     let Some(s) = chosen.and_then(|id| shown.iter().find(|s| s.clip.id == id)) else {
         frame_properties(ui, editor, node, t, commands);
@@ -715,6 +754,15 @@ fn properties(
     ui.label(egui::RichText::new(help).color(t.text_muted).small());
 }
 
+/// The output frame's width and height, as the card's parameters say.
+fn frame_size(node: &nodecraft_graph::Node) -> [f32; 2] {
+    let side = |name: &str, default: u64| match node.params.get(name) {
+        Some(Value::Unsigned(n)) => n.0 as f32,
+        _ => default as f32,
+    };
+    [side("width", timeline::DEFAULT_WIDTH), side("height", timeline::DEFAULT_HEIGHT)]
+}
+
 fn frame_properties(ui: &mut egui::Ui, editor: &mut TimelineEditor, node: &nodecraft_graph::Node, t: &Tokens, commands: &mut Commands) {
     let (canvas, id) = (editor.canvas, editor.node);
     let param = |name: &str, value: Value| ("node.param_set", json!({"canvas": canvas, "id": id, "name": name, "value": param_json(value)}));
@@ -787,6 +835,7 @@ fn track(
     let lane_of = |track: u8| Rect::from_min_size(Pos2::new(area.min.x, ruler.max.y + row * f32::from(track)), Vec2::new(area.width(), row));
     let lane = Rect::from_min_max(ruler.left_bottom(), Pos2::new(area.max.x, ruler.max.y + row * count));
     let painter = ui.painter_at(area);
+    editor.preview = preview;
 
     // What the playhead is over on the main track: the clip's thumbnail, as a still.
     let head_us = editor.playhead_us.max(1);
@@ -876,10 +925,12 @@ fn track(
                     to: None,
                 });
                 editor.selected = Some(s.clip.id.clone());
+                editor.caption = None;
             }
         }
         if grips.first().is_some_and(|(_, r)| r.clicked()) {
             editor.selected = Some(s.clip.id.clone());
+            editor.caption = None;
         }
 
         let colour = match s.clip.input {

@@ -326,6 +326,16 @@ fn measured_videos_show_their_lengths_and_trim_to_their_ends() {
         }
         let image = h.render().unwrap();
         image.save(std::path::Path::new(&dir).join("timeline-editor.png")).unwrap();
+        // A caption over the picture, picked so its fields show.
+        dispatch(
+            &mut h,
+            "timeline.caption_add",
+            json!({"caption": "hello", "text": "Hello, timeline", "start_us": 0, "end_us": 2_000_000, "size": 120, "stroke_width": 6}),
+        );
+        let editor = h.state_mut().timeline_editor.as_mut().unwrap();
+        (editor.selected, editor.caption) = (None, Some("hello".into()));
+        h.run_steps(4);
+        h.render().unwrap().save(std::path::Path::new(&dir).join("timeline-captions.png")).unwrap();
     }
 }
 
@@ -349,4 +359,58 @@ fn the_editor_exports_an_interchange_archive_where_the_dialog_says() {
     assert_eq!(names.len(), 3, "the same video wired twice is one file: {names:?}");
     assert!(names.iter().any(|n| n.ends_with(".fcpxml")) && names.contains(&"report.txt".to_owned()), "{names:?}");
     assert_eq!(h.state().session.revision(), revision, "exporting doesn't edit the project");
+}
+
+fn captions(h: &mut Harness<'static, NodeCraftApp>) -> Vec<serde_json::Value> {
+    let canvas = h.state().canvas;
+    let listed = h.state_mut().session.dispatch("timeline.list", &json!({"canvas": canvas, "id": EDITOR})).unwrap();
+    listed["captions"].as_array().unwrap().clone()
+}
+
+#[test]
+fn captions_are_added_at_the_playhead_edited_and_deleted_as_undo_steps() {
+    let mut h = opened();
+    h.state_mut().timeline_editor.as_mut().unwrap().playhead_us = 1_000_000;
+    h.get_by_label("Add caption").click();
+    h.run_steps(2);
+    let added = captions(&mut h);
+    assert_eq!(added.len(), 1, "{:?}", h.state().notice);
+    assert_eq!((&added[0]["text"], &added[0]["start_us"], &added[0]["end_us"]), (&json!("Caption"), &json!(1_000_000), &json!(3_000_000)));
+    // The new caption is picked, so the panel shows its fields.
+    assert_eq!(h.state().timeline_editor.as_ref().unwrap().caption.as_deref(), Some("caption-1"));
+    assert!(h.query_by_label("Delete caption").is_some());
+    // Its fields fit the side panel: the editor doesn't grow past the window.
+    assert!(h.get_by_label("Earlier").rect().min.x >= 0.0);
+
+    h.get_by_label("Top").click();
+    h.run_steps(2);
+    assert_eq!(captions(&mut h)[0]["position"], json!("top"));
+    h.get_by_label("Show caption Caption").click();
+    h.run_steps(2);
+    assert_eq!(captions(&mut h)[0]["enabled"], json!(false), "{:?}", h.state().notice);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!(captions(&mut h)[0]["enabled"], json!(true));
+
+    // Picking a clip shows its fields instead; Delete with the caption picked deletes it.
+    h.get_by_label(&clip_label(&h, TWO)).click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Delete caption").is_none());
+    assert_eq!(h.state().timeline_editor.as_ref().unwrap().caption, None);
+    h.get_by_label("Caption").click();
+    h.run_steps(2);
+    assert_eq!(h.state().timeline_editor.as_ref().unwrap().selected, None);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert!(captions(&mut h).is_empty());
+    assert_eq!(ids(&mut h).len(), 2, "the clips stay");
+
+    // An edit held for a caption that goes elsewhere is dropped, so another can be picked.
+    dispatch(&mut h, "timeline.caption_add", json!({"caption": "a", "text": "First", "start_us": 0, "end_us": 10}));
+    dispatch(&mut h, "timeline.caption_add", json!({"caption": "b", "text": "Second", "start_us": 0, "end_us": 10}));
+    h.state_mut().timeline_editor.as_mut().unwrap().draft = Some(("caption:gone.text".into(), "typed".into()));
+    h.get_by_label("Second").click();
+    h.run_steps(3);
+    assert!(h.state().timeline_editor.as_ref().unwrap().draft.is_none());
+    assert!(h.query_by_label("Delete caption").is_some());
 }

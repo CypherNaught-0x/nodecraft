@@ -186,10 +186,10 @@ fn template(id: &str) -> (Session, Value) {
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: editor }.apply(&mut document).unwrap();
     }
     if id.starts_with("timeline.") || id == "node.timeline_set" {
-        // A Timeline (node 9) holding a clip `t1` with a known end and an empty audio track 1, so the valid templates reach
+        // A Timeline (node 9) holding a clip `t1` with a known end, an empty audio track 1 and a caption `c1`, so the valid templates reach
         // the clip code rather than the kind check.
         let mut editor = nodecraft_nodes::timeline::kind().descriptor().instantiate(node_id(9), &std::collections::BTreeMap::new()).unwrap();
-        let stored = json!({"clips": [{"id":"t1","origin":"n1","in_us":0,"out_us":2_000_000}], "tracks": [{"kind":"audio"}]});
+        let stored = json!({"clips": [{"id":"t1","origin":"n1","in_us":0,"out_us":2_000_000}], "tracks": [{"kind":"audio"}], "captions": [{"id":"c1","text":"Hi","start_us":0,"end_us":1_000_000}]});
         editor.config.insert(nodecraft_nodes::timeline::CONFIG.into(), nodecraft_types::Value::Text(stored.to_string()));
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: editor }.apply(&mut document).unwrap();
     }
@@ -533,6 +533,9 @@ fn template(id: &str) -> (Session, Value) {
         "timeline.remove" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1"}),
         "timeline.track_add" => json!({"canvas":canvas(),"id":node_id(9),"kind":"audio"}),
         "timeline.track_remove" => json!({"canvas":canvas(),"id":node_id(9),"track":1}),
+        "timeline.caption_add" => json!({"canvas":canvas(),"id":node_id(9),"text":"Hello","start_us":0,"end_us":500_000,"stroke_width":2}),
+        "timeline.caption_update" => json!({"canvas":canvas(),"id":node_id(9),"caption":"c1","set":{"text":"Bye","position":"top"}}),
+        "timeline.caption_remove" => json!({"canvas":canvas(),"id":node_id(9),"caption":"c1"}),
         "element.create" => json!({"canvas":canvas(),"id":node_id(6),"name":"hero","category":"character","guidelines":"red scarf",
             "from":[{"node":node_id(5),"port":"out"}],"edges":[nodecraft_types::EdgeId::from_bytes([0x76; 16])],"pos":{"x":1,"y":2}}),
         "element.sheet" => json!({"canvas":canvas(),"element":node_id(6),"id":node_id(7),

@@ -16,7 +16,7 @@ fn crossing() -> (Timeline, Vec<Wire>, Vec<Source>) {
     fox.transition_us = 1_000_000;
     let owl = Clip::wired("owl".into(), Input::Clips, "n2".into(), 0, 0);
     let sources = vec![source("Fox", "media/01-fox.mp4", MediaKind::Video, 4), source("Owl", "media/02-owl.mp4", MediaKind::Video, 3)];
-    (Timeline { clips: vec![fox, owl], tracks: Vec::new() }, vec![Wire::video("n1"), Wire::video("n2")], sources)
+    (Timeline { clips: vec![fox, owl], tracks: Vec::new(), captions: Vec::new() }, vec![Wire::video("n1"), Wire::video("n2")], sources)
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn media_played_twice_is_one_asset() {
     let wires = [Wire::video("n1"), Wire::video("n2")];
     let mut copy = Clip::wired("c".into(), Input::Clips, "n2".into(), 0, 0);
     copy.out_us = Some(1_000_000);
-    let timeline = Timeline { clips: vec![first, again, copy], tracks: Vec::new() };
+    let timeline = Timeline { clips: vec![first, again, copy], tracks: Vec::new(), captions: Vec::new() };
     let sources = [source("Fox", "media/01-fox.mp4", MediaKind::Video, 4)];
     let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(0)], &sources)).unwrap();
     assert_eq!(out.used, [0]);
@@ -114,7 +114,7 @@ fn media_played_twice_is_one_asset() {
 #[test]
 fn names_are_escaped_and_paths_percent_encoded() {
     let clip = Clip::wired("fox".into(), Input::Clips, "n1".into(), 0, 0);
-    let timeline = Timeline { clips: vec![clip], tracks: Vec::new() };
+    let timeline = Timeline { clips: vec![clip], tracks: Vec::new(), captions: Vec::new() };
     let sources = [source("Füchse & <\"Eulen\">\u{7}", "media/01-füchse eulen.mp4", MediaKind::Video, 2)];
     let mut seq = sequence(&timeline, &[], &[Some(0)], &sources);
     let wires = [Wire::video("n1")];
@@ -232,7 +232,7 @@ fn urls_keep_unreserved_bytes_and_slashes() {
 #[test]
 fn a_sound_with_no_stored_clip_plays_on_the_sound_track_it_is_given() {
     // No stored clips and no tracks: the sound gets the audio track `with_sources` adds.
-    let timeline = Timeline { clips: Vec::new(), tracks: Vec::new() };
+    let timeline = Timeline { clips: Vec::new(), tracks: Vec::new(), captions: Vec::new() };
     let wires = vec![Wire::video("n1"), Wire::new(Input::Audio, "n2".to_owned())];
     let sources = vec![source("Fox", "media/01-fox.mp4", MediaKind::Video, 4), source("Song", "media/02-song.wav", MediaKind::Audio, 6)];
     let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();

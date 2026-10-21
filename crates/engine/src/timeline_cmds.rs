@@ -6,12 +6,12 @@
 //! Editing stores the automatic clips too, so each keeps its place from then on. Nothing here runs.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Node};
-use nodecraft_nodes::timeline::{self, CONFIG, Clip, ID, Input, MAX_CLIPS, MAX_TRACKS, Timeline, Track, TrackKind, Wire};
+use nodecraft_nodes::timeline::{self, CONFIG, Caption, Clip, ID, Input, MAX_CAPTIONS, MAX_CLIPS, MAX_TRACKS, Timeline, Track, TrackKind, Wire};
 use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
 
-fn not_found(what: &str) -> Error {
+pub(crate) fn not_found(what: &str) -> Error {
     Error::new(ErrorKind::NotFound, format!("{what} does not exist"))
 }
 
@@ -112,7 +112,7 @@ fn media_length(inputs: &[(Wire, Option<AssetRef>)], clip: &Clip) -> Option<u64>
     asset.as_ref()?.meta.duration_ms?.checked_mul(1000)
 }
 
-fn store(canvas: CanvasId, node: &Node, timeline: Timeline) -> Result<Effect, Error> {
+pub(crate) fn store(canvas: CanvasId, node: &Node, timeline: Timeline) -> Result<Effect, Error> {
     let json = timeline.encode()?;
     let mut changed = node.clone();
     changed.config.insert(CONFIG.into(), Value::Text(json));
@@ -122,7 +122,7 @@ fn store(canvas: CanvasId, node: &Node, timeline: Timeline) -> Result<Effect, Er
     Ok(Effect::Edit { changes: Changeset::new(vec![Change::SetNode { canvas, node: changed }]), result: json!({"changed": true}), gesture: None })
 }
 
-fn with_result(effect: Effect, result: Json) -> Effect {
+pub(crate) fn with_result(effect: Effect, result: Json) -> Effect {
     match effect {
         Effect::Edit { changes, gesture, .. } => Effect::Edit { changes, result, gesture },
         other => other,
@@ -133,7 +133,7 @@ fn index_of(timeline: &Timeline, id: &str) -> Result<usize, Error> {
     timeline.clips.iter().position(|c| c.id == id).ok_or_else(|| not_found("clip"))
 }
 
-fn always(_: &Context<'_>, _: &Json) -> Result<(), Error> {
+pub(crate) fn always(_: &Context<'_>, _: &Json) -> Result<(), Error> {
     Ok(())
 }
 
@@ -165,7 +165,7 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let tracks: Vec<Json> = std::iter::once(TrackKind::Video).chain(shown.tracks.iter().map(|t| t.kind)).map(|kind| json!({"kind": kind})).collect();
     let inputs: Vec<Json> = inputs.into_iter().map(|(wire, media)| json!({"origin": wire.origin, "input": wire.input, "media": media})).collect();
-    Ok(Effect::None { result: json!({"clips": clips, "tracks": tracks, "inputs": inputs}) })
+    Ok(Effect::None { result: json!({"clips": clips, "tracks": tracks, "inputs": inputs, "captions": shown.captions}) })
 }
 
 #[derive(Deserialize)]
@@ -176,12 +176,20 @@ struct SetParams {
     clips: Vec<Clip>,
     #[serde(default)]
     tracks: Vec<Track>,
+    /// Absent keeps the captions the node has.
+    #[serde(default)]
+    captions: Option<Vec<Caption>>,
 }
 
 fn set(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: SetParams = params(value)?;
     let node = editor(c, p.canvas, p.id)?;
-    store(p.canvas, node, Timeline { clips: p.clips, tracks: p.tracks })
+    let captions = match p.captions {
+        Some(captions) => captions,
+        // An unreadable stored timeline is replaced whole, as before captions: it has none to keep.
+        None => stored(node).map(|t| t.captions).unwrap_or_default(),
+    };
+    store(p.canvas, node, Timeline { clips: p.clips, tracks: p.tracks, captions })
 }
 
 #[derive(Deserialize)]
@@ -417,7 +425,7 @@ fn clip_schema() -> Json {
     json!({"type": "object", "additionalProperties": false, "required": ["id", "origin"], "properties": properties})
 }
 
-fn object(required: &[&str], mut properties: Map<String, Json>) -> Json {
+pub(crate) fn object(required: &[&str], mut properties: Map<String, Json>) -> Json {
     properties.insert("canvas".into(), uuid());
     properties.insert("id".into(), uuid());
     let mut required: Vec<&str> = required.to_vec();
@@ -425,7 +433,7 @@ fn object(required: &[&str], mut properties: Map<String, Json>) -> Json {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": required, "properties": properties})
 }
 
-fn props(value: Json) -> Map<String, Json> {
+pub(crate) fn props(value: Json) -> Map<String, Json> {
     match value {
         Json::Object(map) => map,
         _ => Map::new(),
@@ -444,9 +452,11 @@ fn set_schema() -> Json {
     let track = json!({"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": track_kind()}});
     object(
         &["clips"],
-        props(
-            json!({"clips": {"type": "array", "maxItems": MAX_CLIPS, "items": clip_schema()}, "tracks": {"type": "array", "maxItems": MAX_TRACKS, "items": track}}),
-        ),
+        props(json!({
+            "clips": {"type": "array", "maxItems": MAX_CLIPS, "items": clip_schema()},
+            "tracks": {"type": "array", "maxItems": MAX_TRACKS, "items": track},
+            "captions": {"type": "array", "maxItems": MAX_CAPTIONS, "items": crate::timeline_captions::caption_schema(), "description": "Absent keeps the node's captions."},
+        })),
     )
 }
 
@@ -482,7 +492,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas, id: Timeline NodeId} -> {clips, tracks, inputs}; every clip: the stored ones and a whole clip for each wired video, sound or picture no stored clip names. A clip is {id, origin, input, nth, track, at_us, in_us, out_us?, fade_in_us, fade_out_us, volume, muted, transition_us, enabled, wired, media_us}: input the port its media is wired into (clips, audio or stills), track 0 the main track (its clips play in list order) or another track (its clips start at at_us), times in microseconds into its media, out_us absent to play to the end (a still's length), volume in thousandths, transition_us the cross-fade into the next main-track clip (0 cuts), wired whether its media is connected now and media_us the video's or sound's length when known. tracks lists every track as {kind: video|audio}, the main track first: video tracks draw over the ones before them, audio tracks mix in. inputs lists each wired item in input order as {origin, input, media}: the node it comes from, its port and the asset it shows now (null until that node has a result).",
+            params_doc: "{canvas, id: Timeline NodeId} -> {clips, tracks, inputs, captions}; every clip: the stored ones and a whole clip for each wired video, sound or picture no stored clip names. A clip is {id, origin, input, nth, track, at_us, in_us, out_us?, fade_in_us, fade_out_us, volume, muted, transition_us, enabled, wired, media_us}: input the port its media is wired into (clips, audio or stills), track 0 the main track (its clips play in list order) or another track (its clips start at at_us), times in microseconds into its media, out_us absent to play to the end (a still's length), volume in thousandths, transition_us the cross-fade into the next main-track clip (0 cuts), wired whether its media is connected now and media_us the video's or sound's length when known. tracks lists every track as {kind: video|audio}, the main track first: video tracks draw over the ones before them, audio tracks mix in. inputs lists each wired item in input order as {origin, input, media}: the node it comes from, its port and the asset it shows now (null until that node has a result). captions lists the text drawn over the picture, in drawing order (see timeline.caption_add), every field included.",
             enabled: always,
             run: list,
         },
@@ -492,7 +502,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: set_schema,
-            params_doc: "{canvas, id, clips: [clip, …], tracks?: [{kind}, …]} -> {changed}; replaces a Timeline node's clips (main-track ones in playing order) and its tracks beyond the main one, as one undo step. A clip is {id, origin, input?, nth?, track?, at_us?, in_us?, out_us?, fade_in_us?, fade_out_us?, volume?, muted?, transition_us?, enabled?} (see timeline.list). Wired media no clip names is added when the node runs: videos and pictures after the main track's clips, sounds on the first audio track.",
+            params_doc: "{canvas, id, clips: [clip, …], tracks?: [{kind}, …], captions?: [caption, …]} -> {changed}; replaces a Timeline node's clips (main-track ones in playing order), its tracks beyond the main one and, when given, its captions (see timeline.caption_add), as one undo step. A clip is {id, origin, input?, nth?, track?, at_us?, in_us?, out_us?, fade_in_us?, fade_out_us?, volume?, muted?, transition_us?, enabled?} (see timeline.list). Wired media no clip names is added when the node runs: videos and pictures after the main track's clips, sounds on the first audio track.",
             enabled: always,
             run: set,
         },
