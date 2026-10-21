@@ -1,7 +1,7 @@
 //! Model descriptors: what a model makes, from which inputs, with which parameters, at what
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
 use crate::pricing::{Pricing, TokenRates};
-use nodecraft_types::{Currency, Error, ErrorKind, Modality, Money, ParamControl, ParamSchema, ParamValues};
+use nodecraft_types::{AudioUse, Currency, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues};
 use serde::Deserialize;
 
 pub const MAX_MODES: usize = 32;
@@ -46,6 +46,13 @@ pub struct ModeSpec {
     pub output: Modality,
     #[serde(default)]
     pub inputs: Vec<InputRole>,
+    /// The model settings this mode sends, when it doesn't take them all (#559): an
+    /// audio-driven video mode has no duration, for example. Absent: every setting.
+    #[serde(default)]
+    pub params: Option<Vec<String>>,
+    /// How the mode treats its audio input, when it has one.
+    #[serde(default)]
+    pub audio: Option<AudioUse>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -117,6 +124,22 @@ impl ModelDescriptor {
                     return Err(invalid(id, &format!("input `{}`: only text inputs can be inline", role.role)));
                 }
             }
+            if let Some(names) = &mode.params {
+                let mut seen = std::collections::BTreeSet::new();
+                for name in names {
+                    if !self.params.params.iter().any(|spec| spec.name == *name) || !seen.insert(name.as_str()) {
+                        return Err(invalid(id, &format!("mode `{}` lists a setting the model doesn't have, or one twice", mode.id)));
+                    }
+                }
+            }
+            if let Some(audio) = &mode.audio {
+                if !mode.inputs.iter().any(|role| role.role == audio.role && role.modality == Modality::Audio) {
+                    return Err(invalid(id, &format!("mode `{}` describes audio for `{}`, which isn't one of its audio inputs", mode.id, audio.role)));
+                }
+                if audio.max_ms.is_some_and(|ms| ms == 0 || ms > MAX_AUDIO_MS) {
+                    return Err(invalid(id, &format!("mode `{}`: `max_ms` is 1 to {MAX_AUDIO_MS}", mode.id)));
+                }
+            }
         }
         self.params.validate().map_err(|error| invalid(id, &error.message))?;
         if let Some(contract) = &self.parameter_contract {
@@ -166,6 +189,10 @@ impl ModelDescriptor {
                     }
                     if spec.default.is_none() && default_count.is_none() && !unit.usage_based() {
                         return Err(invalid(id, &format!("pricing parameter `{count}` needs a default (or set `default_count`)")));
+                    }
+                    // A quote counted from a setting a mode never sends would price a run wrongly.
+                    if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.contains(count))) {
+                        return Err(invalid(id, &format!("mode `{}` doesn't send `{count}`, which pricing counts", mode.id)));
                     }
                 }
             }

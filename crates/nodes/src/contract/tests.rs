@@ -23,9 +23,9 @@ fn frames() -> (NodeDescriptor, NodeContract) {
     contract.inputs[2].role = "end_frame".into();
     let count = |port: &str, min: u16, max: u16| PortCount { port: port.into(), min, max: Some(max) };
     contract.modes = vec![
-        ModeContract { mode: ModeId::new("text").unwrap(), inputs: vec![count("prompt", 1, u16::MAX), count("start", 0, 0), count("end", 0, 0)] },
-        ModeContract { mode: ModeId::new("first_frame").unwrap(), inputs: vec![count("start", 1, 1), count("end", 0, 0)] },
-        ModeContract { mode: ModeId::new("first_last").unwrap(), inputs: vec![count("start", 1, 1), count("end", 1, 1)] },
+        ModeContract { mode: ModeId::new("text").unwrap(), inputs: vec![count("prompt", 1, u16::MAX), count("start", 0, 0), count("end", 0, 0)], params: None },
+        ModeContract { mode: ModeId::new("first_frame").unwrap(), inputs: vec![count("start", 1, 1), count("end", 0, 0)], params: None },
+        ModeContract { mode: ModeId::new("first_last").unwrap(), inputs: vec![count("start", 1, 1), count("end", 1, 1)], params: None },
     ];
     (descriptor, contract)
 }

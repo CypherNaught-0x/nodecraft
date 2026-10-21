@@ -1,5 +1,6 @@
 //! Paired immutable catalog/production-generation definitions (#465): one generation kind per
-//! output the catalog's modes make (image, and text since #84), each looked up by node kind.
+//! output the catalog's modes make (image; text since #84, 3D since #22, video since #559),
+//! each looked up by node kind.
 use crate::{Session, commands::Resources, run_cmds::RunCatalog};
 use nodecraft_catalog::Catalog;
 use nodecraft_exec::admission::measure::{add, contract, mul, schema};
@@ -21,7 +22,7 @@ struct Snapshot {
     kinds: Vec<GenerationKind>,
 }
 /// The outputs that get a generation kind, in registration order.
-const OUTPUTS: [Modality; 3] = [Modality::Image, Modality::Text, Modality::Mesh];
+const OUTPUTS: [Modality; 4] = [Modality::Image, Modality::Text, Modality::Mesh, Modality::Video];
 #[derive(Clone)]
 pub struct GenerationCatalogStamp(RunCatalog);
 impl GenerationCatalogStamp {
@@ -60,6 +61,7 @@ impl GenerationCatalog {
                 Modality::Image => kinds.push(GenerationKind::new(models, identity)?),
                 _ if models.is_empty() => {}
                 Modality::Text => kinds.push(GenerationKind::text(models, identity)?),
+                Modality::Video => kinds.push(GenerationKind::video(models, identity)?),
                 _ => kinds.push(GenerationKind::mesh(models, identity)?),
             }
         }
@@ -97,6 +99,10 @@ impl GenerationCatalog {
             *charge = add(*charge, mul(3, mode_ports)?)?;
             for mode in &m.modes {
                 *charge = add(*charge, add(1024, add(mode.id.len(), mul(mode.inputs.len(), 1024)?)?)?)?;
+                // Validated above: each listed setting is a distinct model setting.
+                let listed = mode.params.iter().flatten().try_fold(0usize, |n, name| add(n, add(name.len(), 64)?))?;
+                let audio = mode.audio.as_ref().map_or(0, |audio| audio.role.len().saturating_add(256));
+                *charge = add(*charge, add(listed, audio)?)?;
             }
             if *charge > LIMIT {
                 return Err(Error::new(ErrorKind::Budget, "generation definitions exceed the 64 MiB logical metadata limit"));
@@ -122,6 +128,8 @@ impl GenerationCatalog {
                                 inline: r.inline,
                             })
                             .collect(),
+                        params: mode.params.clone(),
+                        audio: mode.audio.clone(),
                     })
                 })
                 .collect::<Result<_, Error>>()?;
@@ -288,6 +296,7 @@ pub(crate) fn validate_plan(
                 match node.kind.as_str() {
                     nodecraft_nodes::generation::TEXT_KIND => "selected text model is unavailable",
                     nodecraft_nodes::generation::MESH_KIND => "selected 3D model is unavailable",
+                    nodecraft_nodes::generation::VIDEO_KIND => "selected video model is unavailable",
                     _ => "selected image model is unavailable",
                 },
             )

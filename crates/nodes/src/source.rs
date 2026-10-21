@@ -52,7 +52,7 @@ impl NodeKind for SourceKind {
         for output in &mut contract.outputs {
             output.role = "value".into();
         }
-        contract.modes = vec![ModeContract { mode: ModeId::source(), inputs: Vec::new() }];
+        contract.modes = vec![ModeContract { mode: ModeId::source(), inputs: Vec::new(), params: None }];
         contract.params.rules = descriptor
             .params
             .params

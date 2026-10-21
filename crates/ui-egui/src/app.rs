@@ -2607,6 +2607,8 @@ mod tests;
 #[cfg(test)]
 mod text_card_tests;
 #[cfg(test)]
+mod video559_tests;
+#[cfg(test)]
 mod video_tests;
 
 #[cfg(test)]

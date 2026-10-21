@@ -307,6 +307,12 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
                 if role.inline { "; local prompt supported" } else { "" }
             ));
         }
+        if let Some(audio) = &mode.audio {
+            ui.label(audio.summary());
+        }
+        if let Some(params) = &mode.params {
+            ui.label(if params.is_empty() { "Sends no settings".to_owned() } else { format!("Sends only: {}", params.join(", ")) });
+        }
     }
 }
 

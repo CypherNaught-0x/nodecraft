@@ -19,7 +19,7 @@ fn model(id: &str, mode: &str, inputs: Vec<GenerationRole>) -> GenerationModel {
         provider: "tripo".into(),
         remote: id.into(),
         parameters: Contract::from_schema(id, ParamOwner::Model, ParamSchema::default()),
-        modes: vec![GenerationMode { id: ModeId::new(mode).unwrap(), inputs }],
+        modes: vec![GenerationMode { id: ModeId::new(mode).unwrap(), inputs, params: None, audio: None }],
     }
 }
 fn kind() -> GenerationKind {
@@ -99,7 +99,12 @@ fn a_text_mode_sends_its_prompt_and_image_modes_send_only_images() {
 fn the_image_card_plans_an_image_only_mode_too() {
     // An upscaler (fal's ESRGAN) has no prompt role: the image card plans it with just its image.
     let upscale = GenerationModel {
-        modes: vec![GenerationMode { id: ModeId::new("upscale").unwrap(), inputs: vec![role("image", Modality::Image, 1, 1, false)] }],
+        modes: vec![GenerationMode {
+            id: ModeId::new("upscale").unwrap(),
+            inputs: vec![role("image", Modality::Image, 1, 1, false)],
+            params: None,
+            audio: None,
+        }],
         ..model("esrgan", "upscale", vec![])
     };
     let kind = GenerationKind::new(vec![upscale], [5; 32]).unwrap();

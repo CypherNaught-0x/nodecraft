@@ -23,8 +23,15 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
         let contract = kind.instance_contract(node).ok()?;
         let resolution = contract.resolve(&node.params, false).ok()?;
         roles = crate::card::Roles::of(&contract);
-        visible = resolution.params.iter().filter(|state| state.visible).map(|state| state.name.clone()).collect();
-        enabled = Some(resolution.params.iter().filter(|state| state.enabled).map(|state| state.name.clone()).collect());
+        // A model setting the wired mode doesn't send is hidden (#559); the card's own stay.
+        let mode = wired_mode(session, node, &contract);
+        let shown = |state: &&nodecraft_types::ParamState| {
+            mode.is_none_or(|mode| {
+                mode.sends(&state.name) || !contract.owned_groups.iter().any(|group| group.schema.params.iter().any(|param| param.name == state.name))
+            })
+        };
+        visible = resolution.params.iter().filter(|state| state.visible).filter(shown).map(|state| state.name.clone()).collect();
+        enabled = Some(resolution.params.iter().filter(|state| state.enabled).filter(shown).map(|state| state.name.clone()).collect());
     } else {
         let proof = descriptor.params.validated().ok()?;
         visible = proof.resolve_borrowed(&node.params, false).ok()?.visible;
@@ -44,6 +51,44 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
         return None;
     }
     Some(Admitted { descriptor, visible, enabled, roles, bytes })
+}
+
+/// The mode `node`'s wiring chooses, when it chooses one; `None` while it fits none or several.
+fn wired_mode<'c>(session: &Session, node: &Node, contract: &'c nodecraft_nodes::NodeContract) -> Option<&'c nodecraft_nodes::ModeContract> {
+    if contract.modes.is_empty() {
+        return None;
+    }
+    let canvas = session.document().canvases().values().find(|canvas| canvas.nodes().contains_key(&node.id))?;
+    let id = contract.resolve_mode(&wire_counts(canvas, contract, node), false).ok()??;
+    contract.modes.iter().find(|mode| mode.mode == *id)
+}
+
+/// How many items reach each of `node`'s inputs, counted as the planner counts them: the items
+/// each wired output holds now, or one for an output with no result yet.
+pub(super) fn wire_counts<'a>(canvas: &'a Canvas, contract: &nodecraft_nodes::NodeContract, node: &Node) -> BTreeMap<&'a str, usize> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for edge in canvas.edges().values().filter(|edge| edge.to.node == node.id) {
+        if contract.inputs.iter().any(|input| input.port == edge.to.port) {
+            let items = canvas.nodes().get(&edge.from.node).and_then(|from| held(from, &edge.from.port)).unwrap_or(1);
+            let count = counts.entry(edge.to.port.as_str()).or_default();
+            *count = count.saturating_add(items);
+        }
+    }
+    counts
+}
+
+/// How many items `node`'s output `port` holds in its shown result, lists flattened.
+fn held(node: &Node, port: &str) -> Option<usize> {
+    fn items(value: &Value, depth: usize) -> usize {
+        match value {
+            Value::List(values) if depth < 4 => values.iter().fold(0usize, |total, value| total.saturating_add(items(value, depth.saturating_add(1)))),
+            Value::List(_) => 0,
+            _ => 1,
+        }
+    }
+    let at = node.outputs.iter().position(|output| output.name == port)?;
+    let shown = node.history.iter().find(|generation| Some(generation.id) == node.active)?;
+    shown.outputs.get(at).map(|value| items(value, 0))
 }
 
 /// Navigation needs no view-cache access; keep the cached implementation private to App.

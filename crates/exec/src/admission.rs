@@ -64,11 +64,38 @@ struct Selected {
     schema: ParamSchema,
     semantic: bool,
 }
+/// Seed parameters a submission draws, with each one's upper bound (#162).
+type Seeds = Vec<(String, Option<nodecraft_types::Unsigned>)>;
 struct Allowed {
     id: String,
     expected: ParamValues,
     /// Seeds the run draws for this submission, with each one's upper bound (#162).
-    seeds: Vec<(String, Option<nodecraft_types::Unsigned>)>,
+    seeds: Seeds,
+    /// The narrower submissions of modes that send only some settings (#559), each with its
+    /// seeds. A job matches one of these exactly; defaults are never filled back in.
+    narrowed: Vec<(ParamValues, Seeds)>,
+}
+impl Allowed {
+    fn new(model: &ModelDescriptor, expected: ParamValues, seeds: Seeds) -> Self {
+        let mut narrowed: Vec<(ParamValues, Vec<_>)> = Vec::new();
+        for names in model.modes.iter().filter_map(|mode| mode.params.as_ref()) {
+            let sends = |name: &String| names.contains(name);
+            let params: ParamValues = expected.iter().filter(|(k, _)| sends(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+            let drawn: Vec<_> = seeds.iter().filter(|(k, _)| sends(k)).cloned().collect();
+            if (params != expected || drawn != seeds) && !narrowed.iter().any(|(p, d)| *p == params && *d == drawn) {
+                narrowed.push((params, drawn));
+            }
+        }
+        Self { id: model.id.clone(), expected, seeds, narrowed }
+    }
+    /// The admitted submission `params` is meant to be: a mode's narrower one when it matches
+    /// exactly, else the full one.
+    fn submission(&self, params: &ParamValues) -> (&ParamValues, &[(String, Option<nodecraft_types::Unsigned>)], bool) {
+        match self.narrowed.iter().find(|(narrow, _)| narrow == params) {
+            Some((narrow, seeds)) => (narrow, seeds, true),
+            None => (&self.expected, &self.seeds, false),
+        }
+    }
 }
 pub(crate) struct Witness {
     models: BTreeMap<String, Selected>,
@@ -145,11 +172,12 @@ impl Witness {
             if measure::scratch(&s.schema)? > self.scratch {
                 return Err(cap());
             }
-            let v = if s.semantic {
+            let (expected, _, narrowed) = a.submission(params);
+            let v = if s.semantic || narrowed {
                 // The source's shared Contract was resolved before admission. A generated
                 // job must match that EXACT submission; applying defaults here would revive
                 // disabled/hidden settings. Equality only traverses admitted scalar values.
-                if params.len() != a.expected.len() || params.iter().any(|(k, v)| a.expected.get(k) != Some(v)) {
+                if params.len() != expected.len() || params.iter().any(|(k, v)| expected.get(k) != Some(v)) {
                     continue;
                 }
                 nodecraft_types::BorrowedResolvedParams {
@@ -160,8 +188,8 @@ impl Witness {
                 let Ok(v) = s.schema.resolve_view(params, true, false) else { continue };
                 v
             };
-            let same = v.values.iter().filter(|(k, _)| v.visible.contains(**k)).count() == a.expected.len()
-                && v.values.iter().filter(|(k, _)| v.visible.contains(**k)).all(|(k, v)| a.expected.get(*k) == Some(*v));
+            let same = v.values.iter().filter(|(k, _)| v.visible.contains(**k)).count() == expected.len()
+                && v.values.iter().filter(|(k, _)| v.visible.contains(**k)).all(|(k, v)| expected.get(*k) == Some(*v));
             if !same {
                 continue;
             }
@@ -183,12 +211,13 @@ impl Witness {
         let mut chosen: Option<&[(String, Option<nodecraft_types::Unsigned>)]> = None;
         for a in self.steps.get(&node).into_iter().flatten() {
             let s = self.models.get(&a.id).ok_or_else(invalid)?;
-            if !s.semantic || s.provider != *provider || s.remote != *model || a.expected != *params {
+            let (expected, seeds, _) = a.submission(params);
+            if !s.semantic || s.provider != *provider || s.remote != *model || expected != params {
                 continue;
             }
             match chosen {
-                Some(prior) if prior != a.seeds.as_slice() => return Err(invalid()),
-                _ => chosen = Some(&a.seeds),
+                Some(prior) if prior != seeds => return Err(invalid()),
+                _ => chosen = Some(seeds),
             }
         }
         Ok(chosen.unwrap_or(&[]))
@@ -487,7 +516,9 @@ pub fn admit_run_with_targets(
             let expected = model.params.resolve_view(&s.source.params, true, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
             measure::resolved(&expected)?
         };
-        witness_size = add(witness_size, add(size_of::<Allowed>(), add(model.id.len(), expected_charge)?)?)?;
+        // Each mode that sends only some settings may keep one narrower copy as well.
+        let copies = add(1, model.modes.iter().filter(|mode| mode.params.is_some()).count())?;
+        witness_size = add(witness_size, add(size_of::<Allowed>(), add(model.id.len(), mul(copies, expected_charge)?)?)?)?;
     }
     witness_size = add(witness_size, mul(plan.steps.len(), size_of::<(NodeId, Vec<Allowed>)>() + measure::LINK)?)?;
     let limit = limits.witness_bytes.min(MAX_WITNESS_BYTES);
@@ -530,7 +561,7 @@ pub fn admit_run_with_targets(
         });
         let expected = model.effective_params(&s.source.params, true).map_err(safe_error)?;
         let seeds = model.random_seeds(&s.source.params, true).map_err(safe_error)?;
-        witness.steps.entry(s.node).or_default().push(Allowed { id: model.id.clone(), expected, seeds });
+        witness.steps.entry(s.node).or_default().push(Allowed::new(model, expected, seeds));
     }
     for step in &plan.steps {
         usage.reserve(step.node, add(measure::step(step)?, size_of::<(NodeId, usize)>() + measure::LINK)?)?;
