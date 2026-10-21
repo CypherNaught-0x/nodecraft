@@ -1,0 +1,147 @@
+use super::super::tests::harness;
+use super::*;
+use egui_kittest::Harness;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+
+fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<nodecraft_graph::Node> {
+    h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().cloned().collect()
+}
+/// A clipboard that answers `picture` and counts its reads.
+fn clipboard(h: &mut Harness<'static, NodeCraftApp>, picture: impl Fn() -> Result<Option<Picture>, String> + Send + Sync + 'static) -> Arc<AtomicUsize> {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&reads);
+    h.state_mut().image_paste.reader = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        picture()
+    });
+    reads
+}
+/// What a test clipboard answers.
+type Answer = fn() -> Result<Option<Picture>, String>;
+fn grey(width: usize, height: usize) -> Picture {
+    Picture { width, height, rgba: vec![90; width * height * 4] }
+}
+/// ⌘V as egui-winit reports it for a clipboard without text: only the release.
+fn release_paste(h: &mut Harness<'static, NodeCraftApp>, at: Pos2) {
+    h.hover_at(at);
+    h.run();
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    h.step();
+}
+fn finish(h: &mut Harness<'static, NodeCraftApp>) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().image_paste_pending() {
+        h.step();
+        assert!(std::time::Instant::now() < end, "the clipboard read finishes");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    h.run();
+}
+
+#[test]
+fn a_copied_image_becomes_an_image_node_at_the_pointer_as_one_undo_step() {
+    let mut h = harness();
+    let reads = clipboard(&mut h, || Ok(Some(grey(6, 4))));
+    let before = h.state().session.document().clone();
+    let at = Pos2::new(640.0, 260.0);
+    release_paste(&mut h, at);
+    finish(&mut h);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let existing = before.canvases().get(&h.state().canvas).unwrap().nodes().clone();
+    let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
+    assert_eq!(added.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(added[0].kind, "source.image");
+    let world = h.state().view.to_world(h.state().viewport.min, at);
+    let t = *h.state().theme.tokens();
+    assert!((added[0].pos.x + t.card_width * 0.5 - world.x).abs() < 1.0, "centred under the pointer");
+    assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "one undo removes the pasted image");
+}
+
+#[test]
+fn a_text_paste_never_reads_the_image_clipboard() {
+    let mut h = harness();
+    let reads = clipboard(&mut h, || Ok(Some(grey(2, 2))));
+    let count = nodes(&h).len();
+    h.hover_at(Pos2::new(600.0, 300.0));
+    h.run();
+    // egui-winit reports the press as a text paste, then the key's release.
+    h.input_mut().events.push(egui::Event::Paste("Pasted words".into()));
+    h.step();
+    release_paste(&mut h, Pos2::new(600.0, 300.0));
+    finish(&mut h);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let added = nodes(&h);
+    assert_eq!(added.len(), count + 1);
+    assert!(added.iter().all(|n| n.kind != "source.image"), "the text became a text node, not an image");
+    // Both events in one frame read as the same text paste.
+    h.input_mut().events.push(egui::Event::Paste("More words".into()));
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    h.step();
+    finish(&mut h);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn an_empty_unreadable_or_oversized_clipboard_adds_nothing_and_says_why() {
+    let mut h = harness();
+    let count = nodes(&h).len();
+    let cases: [(Answer, &str); 4] = [
+        (|| Ok(None), "The clipboard holds no image or text to paste."),
+        (|| Err("The copied image can't be read; nothing was pasted.".into()), "The copied image can't be read; nothing was pasted."),
+        (|| Ok(Some(Picture { width: 16_385, height: 1, rgba: Vec::new() })), "Copied images are at most 16384×16384 pixels; nothing was pasted."),
+        (|| Ok(Some(Picture { width: 4, height: 4, rgba: vec![0; 3] })), "The copied image can't be read; nothing was pasted."),
+    ];
+    for (picture, notice) in cases {
+        clipboard(&mut h, picture);
+        release_paste(&mut h, Pos2::new(600.0, 300.0));
+        finish(&mut h);
+        assert_eq!(nodes(&h).len(), count);
+        assert_eq!(h.state().notice.as_deref(), Some(notice));
+        assert!(!h.state().session.can_undo());
+    }
+}
+
+#[test]
+fn an_edit_while_the_image_is_read_wins_and_a_second_paste_waits() {
+    let mut h = harness();
+    let gate = Arc::new(Mutex::new(()));
+    let held = gate.lock().unwrap();
+    let waiting = Arc::clone(&gate);
+    let reads = clipboard(&mut h, move || {
+        drop(waiting.lock());
+        Ok(Some(grey(2, 2)))
+    });
+    let at = Pos2::new(600.0, 300.0);
+    release_paste(&mut h, at);
+    assert!(h.state().image_paste_pending());
+    release_paste(&mut h, at);
+    assert_eq!(h.state().notice.as_deref(), Some("The copied image is still being read; try again in a moment."));
+    let canvas = h.state().canvas;
+    let node = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([77; 16]), "fixture.unknown");
+    h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": node})).unwrap();
+    let count = nodes(&h).len();
+    drop(held);
+    finish(&mut h);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(nodes(&h).len(), count);
+    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading the copied image; nothing was added. Paste again."));
+}
+
+/// The real OS clipboard: copy an image first, e.g. on macOS
+/// `osascript -e 'set the clipboard to (read (POSIX file "/path/x.png") as «class PNGf»)'`.
+#[test]
+#[ignore = "reads the real clipboard; copy an image first"]
+fn the_system_clipboard_reads_a_copied_image() {
+    let picture = system().unwrap().expect("the clipboard holds an image");
+    assert_eq!(picture.rgba.len(), picture.width * picture.height * 4);
+    let png = encode(&picture).unwrap();
+    let meta = nodecraft_media::probe_image(&png, &Default::default()).unwrap();
+    println!("read {}×{} from the clipboard, {} bytes as PNG", meta.width, meta.height, png.len());
+}

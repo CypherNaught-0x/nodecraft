@@ -3328,6 +3328,7 @@ dependencies = [
 name = "nodecraft-ui-egui"
 version = "0.2.0-rc.1"
 dependencies = [
+ "arboard",
  "craft-quit",
  "craft-ui",
  "ed25519-dalek",
@@ -3356,6 +3357,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "wasm-bindgen-futures",
+ "web-sys",
  "zip",
 ]
 

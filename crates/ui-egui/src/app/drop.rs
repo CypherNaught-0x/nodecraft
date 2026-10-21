@@ -8,7 +8,6 @@ use egui::Pos2;
 use egui::Rect;
 #[cfg(not(target_arch = "wasm32"))]
 use nodecraft_engine::import::{Incoming, MAX_MEDIA_BYTES, MAX_PROJECT_MEDIA_BYTES};
-#[cfg(not(target_arch = "wasm32"))]
 use nodecraft_graph::Position;
 #[cfg(not(target_arch = "wasm32"))]
 pub const MAX_DROP_BYTES: usize = MAX_MEDIA_BYTES;
@@ -16,6 +15,8 @@ pub const MAX_DROP_BYTES: usize = MAX_MEDIA_BYTES;
 pub const MAX_DROP_TOTAL_BYTES: usize = MAX_PROJECT_MEDIA_BYTES;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(super) mod web;
 #[cfg(not(target_arch = "wasm32"))]
 struct Pending {
     ticket: native::Ticket,
@@ -101,11 +102,18 @@ impl NodeCraftApp {
     pub(super) fn poll_drop(&mut self, ui: &mut egui::Ui, t: &Tokens) -> bool {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (ui, t);
+            let _ = t;
+            self.poll_web_drop();
+            if self.web_drop.is_some() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            }
             false
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // Native tests drive the browser drop's import (#319).
+            #[cfg(test)]
+            self.poll_web_drop();
             if self.drop_acquisition.pending.is_none() && !self.drop_acquisition.pointer_owned {
                 self.drop_acquisition.rect = Rect::NOTHING;
             }
@@ -203,7 +211,7 @@ impl NodeCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            false
+            self.web_drop.is_some()
         }
     }
     pub(super) fn drop_files(&mut self, ui: &egui::Ui, viewport: Rect, t: &Tokens) {
@@ -222,7 +230,12 @@ impl NodeCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.notice = Some("Dropping files is only available in the desktop app for now.".into());
+            let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
+            let world = self.view.to_world(viewport.min, at);
+            let position = Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
+            let files = ui.input(|i| i.raw.dropped_files.clone());
+            self.start_web_drop(ui.ctx(), &files, position, t.card_width + t.card_padding * 4.0);
+            ui.ctx().request_repaint();
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

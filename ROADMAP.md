@@ -95,7 +95,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   is no settings screen for them yet, and the browser build has no agent.
 - **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99), but no browser host provides project storage,
-  keys or runs yet, and dropping files in a browser is an explicit *unsupported*.
+  keys or runs yet. Files dropped in a browser are read asynchronously and added as nodes (#319);
+  pasting a copied image works in the desktop app only.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them
   (#411). There is no audio playback (#106) and no video actions (#108).
