@@ -26,6 +26,7 @@ craft-quit = { workspace = true }
 log = { workspace = true }
 # The agent sidebar (#114) asks its model on a thread with a runtime of its own.
 tokio = { workspace = true, features = ["rt", "time"] }
+futures = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for nodecraft.exe; build.rs only uses it when targeting Windows.

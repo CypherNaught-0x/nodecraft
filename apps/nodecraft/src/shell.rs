@@ -10,6 +10,21 @@ pub struct Shell {
     pub channel: Option<Channel>,
 }
 
+impl Shell {
+    /// One frame of the window: the sidebar, then the canvas in what it leaves.
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        let intents = self.agent.show(ui, &self.app);
+        let rest = ui.available_rect_before_wrap();
+        // The canvas's cards draw on a layer above the sidebar's and clip only to their parent, so
+        // the canvas is clipped to its own rect, not just laid out in it.
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| {
+            ui.shrink_clip_rect(rest);
+            self.app.show(ui);
+        });
+        self.agent.apply(intents, &mut self.app, ui.ctx());
+    }
+}
+
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(channel) = &mut self.channel {
@@ -20,12 +35,8 @@ impl eframe::App for Shell {
         self.app.logic(ctx, frame);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let intents = self.agent.show(ui, &self.app);
-        // The canvas takes what the sidebar leaves.
-        let rest = ui.available_rect_before_wrap();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| self.app.ui(ui, frame));
-        self.agent.apply(intents, &mut self.app, ui.ctx());
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
     }
 
     fn on_exit(&mut self) {

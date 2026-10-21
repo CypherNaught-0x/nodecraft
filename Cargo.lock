@@ -3035,6 +3035,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "futures",
  "log",
  "nodecraft-agent",
  "nodecraft-automation",

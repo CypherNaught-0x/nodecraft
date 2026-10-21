@@ -23,6 +23,8 @@ use worker::Worker;
 
 /// Most nodes offered in the @ menu, and most mentions kept on one message.
 const MAX_MENTIONS: usize = 100;
+/// Longest node name shown on a mention, in characters.
+const MAX_NAME_CHARS: usize = 40;
 
 /// What the person did in the panel this frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -96,27 +98,43 @@ impl AgentPanel {
 
     /// Before the app's own frame: the panel's shortcuts, and replies that have arrived.
     pub fn logic(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash)) {
+        // A dialog keeps its keys: Cmd+/ and Esc mean nothing to the sidebar while one is open.
+        let modal = ctx.memory(|m| m.top_modal_layer()).is_some() || egui::Popup::is_any_open(ctx);
+        if !modal && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash)) {
             self.open = !self.open;
-            self.focus_input = self.open;
+            // Only take focus that nobody else holds, so a half-typed edit elsewhere stays put.
+            self.focus_input = self.open && ctx.memory(|m| m.focused()).is_none();
             let open = self.open;
             app.update_agent_settings(|s| s.open = open);
         }
-        // Esc stops the agent while it works, unless another text field or a popup has it.
-        let busy = self.agent.status() != Status::Idle;
-        let ours = ctx.memory(|m| m.focused()).is_none_or(|id| id == Self::input_id());
-        if self.open && busy && ours && !egui::Popup::is_any_open(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        // Esc stops the agent only from the sidebar's own text field; elsewhere it keeps its
+        // meaning (closing a dialog, cancelling a drag on the canvas).
+        // egui drops focus as Esc arrives, so the input counts as focused if it was last frame.
+        let ours = ctx.memory(|m| m.has_focus(Self::input_id()) || m.had_focus_last_frame(Self::input_id()));
+        if self.open && ours && !modal && self.agent.status() != Status::Idle && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.apply(vec![Intent::Cancel], app, ctx);
         }
-        let Ok(worker) = &self.worker else { return };
-        let mut replies = Vec::new();
-        while let Some(reply) = worker.poll() {
-            replies.push(reply);
+        if let Ok(worker) = &self.worker {
+            let mut replies = Vec::new();
+            while let Some(reply) = worker.poll() {
+                replies.push(reply);
+            }
+            for (ticket, reply) in replies {
+                let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx }, new_id: &mut *self.new_id };
+                let next = self.agent.on_reply(ticket, reply, &mut tools);
+                self.follow(next);
+            }
         }
-        for (ticket, reply) in replies {
-            let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx }, new_id: &mut *self.new_id };
-            let next = self.agent.on_reply(ticket, reply, &mut tools);
-            self.follow(next);
+        self.forget_unwanted();
+    }
+
+    /// Once the agent no longer waits for a reply (cancelled, cleared, answered), the worker drops
+    /// the request it was sending and any queued behind it, so nothing stale is paid for.
+    fn forget_unwanted(&self) {
+        if self.agent.status() != Status::Thinking
+            && let Ok(worker) = &self.worker
+        {
+            worker.forget();
         }
     }
 
@@ -155,6 +173,7 @@ impl AgentPanel {
                 Intent::Unmention(id) => self.mentions.retain(|m| *m != id),
             }
         }
+        self.forget_unwanted();
     }
 
     fn ask(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
@@ -162,8 +181,13 @@ impl AgentPanel {
             self.notice = Some(format!("The agent can't reach a model: {e}"));
             return;
         }
-        // Hand edits to `[agent]` apply from the next message.
-        self.settings = app.agent_settings();
+        // Hand edits to `[agent]` apply from the next message; the mode only when the file's
+        // changed, so a switch made here stands where settings aren't saved (the browser).
+        let read = app.agent_settings();
+        if read.mode != self.settings.mode {
+            self.agent.set_mode(mode(read.mode));
+        }
+        self.settings = read;
         let Some(model) = worker::model(&self.settings) else {
             self.notice = Some("Choose the agent's model in settings ([agent] model) for this endpoint.".into());
             return;
@@ -187,6 +211,10 @@ impl AgentPanel {
     /// Sends the request the agent asked for. If it can't be sent, the agent stops, so it never
     /// waits for a reply that won't come.
     fn follow(&mut self, next: Next) {
+        if matches!(next, Next::Approval) {
+            // A step waiting for approval is never hidden.
+            self.open = true;
+        }
         let Next::Send(ticket, request) = next else { return };
         let sent = match &self.worker {
             Ok(worker) => worker.send(ticket, &self.settings, request).map_err(|e| e.message),
@@ -203,6 +231,9 @@ impl AgentPanel {
     pub fn show(&mut self, ui: &mut egui::Ui, app: &NodeCraftApp) -> Vec<Intent> {
         let mut intents = Vec::new();
         if !self.open {
+            // The open panel takes one automatic id; so does the closed one, so the canvas's
+            // widgets keep their ids (and their state) when the sidebar opens or closes.
+            ui.skip_ahead_auto_ids(1);
             return intents;
         }
         let t = app.theme.tokens();
@@ -315,16 +346,12 @@ impl AgentPanel {
             .desired_rows(3)
             .desired_width(f32::INFINITY)
             .hint_text("Ask the agent… (Enter to send, Shift+Enter for a new line)");
+        // Enter sends, so it's taken before the text field would type it wherever the cursor is.
+        let focused = ui.memory(|m| m.has_focus(Self::input_id()));
+        let enter = focused && ui.input_mut(|i| !i.modifiers.shift && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let response = ui.add(input);
         if std::mem::take(&mut self.focus_input) {
             response.request_focus();
-        }
-        let enter = response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-        if enter {
-            // The text field already took the newline; it isn't part of the message.
-            if self.input.ends_with('\n') {
-                self.input.pop();
-            }
         }
         let can_ask = status == Status::Idle && !self.input.trim().is_empty();
         let send = ui.add_enabled(can_ask, egui::Button::new("Send")).clicked();
@@ -400,8 +427,8 @@ fn usd(micros: u64) -> String {
 
 fn node_name(title: &str, kind: &str) -> String {
     let name = if title.trim().is_empty() { kind } else { title };
-    let clipped: String = name.chars().take(40).map(|c| if c.is_control() { ' ' } else { c }).collect();
-    if name.chars().nth(40).is_some() { format!("{clipped}…") } else { clipped }
+    let clipped: String = name.chars().take(MAX_NAME_CHARS).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    if name.chars().nth(MAX_NAME_CHARS).is_some() { format!("{clipped}…") } else { clipped }
 }
 
 fn mode(mode: AgentMode) -> Mode {
