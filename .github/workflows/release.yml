@@ -320,6 +320,9 @@ jobs:
       # The feed the app installs updates from (#540): each payload's size and BLAKE3 hash,
       # signed with the release key. Without the key the release has no feed, and the app offers
       # only its release notes.
+      # Built before the key is in the environment, so no dependency's build script can read it.
+      - name: Build xtask
+        run: cargo build -p xtask --locked --release
       - name: Sign the update feed
         env:
           NODECRAFT_UPDATE_SIGNING_KEY: ${{ secrets.NODECRAFT_UPDATE_SIGNING_KEY }}
@@ -329,7 +332,7 @@ jobs:
             echo "::warning::NODECRAFT_UPDATE_SIGNING_KEY isn't set: this release has no update feed, so the app can't install it."
             exit 0
           fi
-          cargo xtask update-feed artifacts "$VERSION"
+          target/release/xtask update-feed artifacts "$VERSION"
       - name: Checksums
         working-directory: artifacts
         run: sha256sum -- * | tee SHA256SUMS.txt

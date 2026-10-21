@@ -130,7 +130,8 @@ fi
 # The bundle as stapled; the signed update feed (cargo xtask update-feed) names its hash.
 echo "==> building $APP_ZIP"
 rm -f "$APP_ZIP"
-ditto -c -k --keepParent "$APP" "$APP_ZIP"
+# No `._*` files for extended attributes: unpacked as plain files they break the signature.
+ditto -c -k --norsrc --noextattr --keepParent "$APP" "$APP_ZIP"
 
 # ---- DMG ---------------------------------------------------------------------------------------
 echo "==> building $DMG"

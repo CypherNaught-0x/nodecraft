@@ -175,7 +175,12 @@ impl Installer {
             update_install::record(session, install.clone());
             self.recorded = install;
         }
-        let restart = self.shared.borrow_mut().restart.take();
+        // A generation started after the swap (the busy check can be a frame old) keeps the window
+        // open until it finishes; the swapped-out copy keeps running meanwhile.
+        let restart = {
+            let mut shared = self.shared.borrow_mut();
+            if shared.busy { None } else { shared.restart.take() }
+        };
         match restart {
             Some((_, relaunch)) => {
                 self.relaunch = Some(relaunch);

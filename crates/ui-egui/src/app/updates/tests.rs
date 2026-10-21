@@ -290,7 +290,9 @@ fn restarting_waits_for_running_generations() {
     let checker = app.updates.as_mut().unwrap();
     assert!(!checker.tick_install(&mut app.session, false));
     assert_eq!(app.session.dispatch("app.restart_to_update", &json!({})).unwrap(), json!({"restarting": "99.0.0"}));
+    // A generation that started after the swap (the busy check was a frame old) holds the close.
     let checker = app.updates.as_mut().unwrap();
+    assert!(!checker.tick_install(&mut app.session, true));
     assert!(checker.tick_install(&mut app.session, false), "the window closes to restart");
 }
 

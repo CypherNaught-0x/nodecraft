@@ -69,10 +69,7 @@ pub(crate) fn detect() -> Result<Kind, String> {
         return Ok(Kind::MacBundle { bundle: bundle.to_path_buf(), verify: true });
     }
     if cfg!(target_os = "linux") {
-        return match std::env::var_os("APPIMAGE").map(PathBuf::from) {
-            Some(file) if file.is_absolute() && file.is_file() => Ok(Kind::AppImage { file }),
-            _ => Err("only the AppImage updates itself; update this copy the way it was installed".into()),
-        };
+        return appimage(std::env::var_os("APPIMAGE").map(PathBuf::from), std::env::var_os("APPDIR").map(PathBuf::from), &exe);
     }
     if cfg!(windows) {
         let dir = exe.parent().ok_or("this copy isn't an installed app")?;
@@ -84,11 +81,38 @@ pub(crate) fn detect() -> Result<Kind, String> {
     Err("NodeCraft can't update itself on this platform".into())
 }
 
+/// The AppImage this copy runs from. `APPIMAGE` alone isn't enough: a terminal or editor that is
+/// itself an AppImage passes it on to everything it starts, so the running executable must be
+/// inside `APPDIR`, the image's own mount.
+fn appimage(file: Option<PathBuf>, appdir: Option<PathBuf>, exe: &Path) -> Result<Kind, String> {
+    let ours = appdir.is_some_and(|dir| dir.is_absolute() && exe.starts_with(&dir));
+    match file {
+        Some(file) if ours && file.is_absolute() && file.is_file() => Ok(Kind::AppImage { file }),
+        _ => Err("only the AppImage updates itself; update this copy the way it was installed".into()),
+    }
+}
+
 /// Where the MSI installed NodeCraft (packaging/windows/nodecraft.wxs records it).
 fn msi_install_dir() -> Option<PathBuf> {
-    let out = std::process::Command::new("reg").args(["query", r"HKLM\Software\NodeCraft", "/v", "InstallDir"]).output().ok()?;
+    let out = system("reg").args(["query", r"HKLM\Software\NodeCraft", "/v", "InstallDir"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     reg_value(&text).map(PathBuf::from)
+}
+
+/// A Windows system tool by its full path, without a console window: `Command::new` would look in
+/// the running executable's folder first, and the helper runs from the user-writable updates
+/// folder.
+#[cfg(windows)]
+fn system(name: &str) -> std::process::Command {
+    let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let mut command = std::process::Command::new(root.join("System32").join(format!("{name}.exe")));
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
+#[cfg(not(windows))]
+fn system(name: &str) -> std::process::Command {
+    std::process::Command::new(name)
 }
 
 /// The value in `reg query`'s answer: `    InstallDir    REG_SZ    C:\Program Files\NodeCraft\`.
@@ -219,6 +243,10 @@ pub(crate) fn unzip_bundle(bytes: &[u8], into: &Path) -> Result<(), Error> {
         if top == "__MACOSX" {
             continue;
         }
+        // Extended attributes zipped as `._name` files would break the bundle's signature.
+        if name.components().any(|part| part.as_os_str().to_string_lossy().starts_with("._")) {
+            return Err(bad("it holds macOS metadata files (._*)"));
+        }
         if !Path::new(top).extension().is_some_and(|e| e == "app") || root.as_deref().is_some_and(|r| r != top) {
             return Err(bad("it holds something other than one app bundle"));
         }
@@ -301,6 +329,9 @@ pub(crate) fn apply(staged: &Staged, updates: &Path) -> Result<Relaunch, Error> 
                 // Put the running copy back before saying anything.
                 if let Err(back) = std::fs::rename(&old, bundle) {
                     log::error!("NodeCraft couldn't move {} back to {}: {back}", old.display(), bundle.display());
+                    let message =
+                        format!("the update couldn't be moved in ({e}), and NodeCraft is now at {}; rename it back to {}", old.display(), bundle.display());
+                    return Err(Error::new(ErrorKind::Internal, message));
                 }
                 return Err(io("moving in", bundle, &e));
             }
@@ -425,7 +456,7 @@ pub fn wait_for_exit(pid: &str) {
 fn alive(pid: &str) -> bool {
     if cfg!(windows) {
         let filter = format!("PID eq {pid}");
-        let out = std::process::Command::new("tasklist").args(["/FI", &filter, "/NH", "/FO", "CSV"]).output();
+        let out = system("tasklist").args(["/FI", &filter, "/NH", "/FO", "CSV"]).output();
         return out.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")));
     }
     std::process::Command::new("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().is_ok_and(|status| status.success())
@@ -435,10 +466,9 @@ fn alive(pid: &str) -> bool {
 /// from the updates folder, so the MSI can replace the installed executable.
 pub fn finish_update(msi: &Path, exe: &Path, pid: &str, project: Option<&Path>) {
     wait_for_exit(pid);
-    let updates = msi.parent().map(Path::to_path_buf).unwrap_or_default();
     let to = msi.file_stem().map(|stem| stem.to_string_lossy().trim_start_matches("nodecraft-").to_owned()).unwrap_or_default();
     // /passive shows progress and asks for elevation; it never restarts Windows by itself.
-    let error = match std::process::Command::new("msiexec").arg("/i").arg(msi).args(["/passive", "/norestart"]).status() {
+    let error = match system("msiexec").arg("/i").arg(msi).args(["/passive", "/norestart"]).status() {
         Ok(status) if status.success() => None,
         // 1602: the person cancelled; 3010: installed, a restart of Windows finishes it.
         Ok(status) if status.code() == Some(3010) => None,
@@ -446,8 +476,8 @@ pub fn finish_update(msi: &Path, exe: &Path, pid: &str, project: Option<&Path>) 
         Ok(status) => Some(format!("the installer stopped with code {}", status.code().map_or_else(|| "unknown".into(), |code| code.to_string()))),
         Err(e) => Some(format!("the installer couldn't start: {e}")),
     };
-    if error.is_some() {
-        write_last(&updates, &LastUpdate { from: VERSION.into(), to, error });
+    if let Some(updates) = msi.parent().filter(|_| error.is_some()) {
+        write_last(updates, &LastUpdate { from: VERSION.into(), to, error });
     }
     let mut command = std::process::Command::new(exe);
     if let Some(project) = project {

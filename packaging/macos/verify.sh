@@ -85,7 +85,13 @@ trap 'rm -rf "$WORK"' EXIT
 # ---- update payload ----------------------------------------------------------------------------
 # What the app unpacks when it updates itself (#540): one intact, signed NodeCraft.app.
 echo "==> $(basename "$APP_ZIP")"
-ditto -x -k "$APP_ZIP" "$WORK/update"
+if zipinfo -1 "$APP_ZIP" | grep -Eq '(^|/)(\._|__MACOSX)'; then
+  echo "error: $(basename "$APP_ZIP") holds macOS metadata (._* or __MACOSX); the app refuses it" >&2
+  exit 1
+fi
+# Unpacked as plain files, as the app does (not ditto -x, which restores extended attributes).
+mkdir -p "$WORK/update"
+unzip -q "$APP_ZIP" -d "$WORK/update"
 if [ "$(ls -A "$WORK/update")" != "NodeCraft.app" ]; then
   echo "error: $(basename "$APP_ZIP") must hold only NodeCraft.app (has: $(ls -A "$WORK/update" | tr '\n' ' '))" >&2
   exit 1

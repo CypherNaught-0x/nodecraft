@@ -66,6 +66,14 @@ fn hostile_or_broken_bundles_are_refused() {
         ("not a bundle", zipped(&[("NodeCraft/Contents/Info.plist", b"x")])),
         ("incomplete", zipped(&[("NodeCraft.app/Contents/Info.plist", b"x")])),
         ("symlink", symlink),
+        (
+            "xattrs",
+            zipped(&[
+                ("NodeCraft.app/Contents/Info.plist", b"x"),
+                ("NodeCraft.app/Contents/MacOS/._NodeCraft", b"attrs"),
+                ("NodeCraft.app/Contents/MacOS/NodeCraft", b"x"),
+            ]),
+        ),
     ];
     for (case, bytes) in cases {
         let dir = tempfile::tempdir().unwrap();
@@ -175,6 +183,23 @@ fn records_that_arent_about_this_version_say_nothing() {
     assert_eq!(after_start(dir.path(), None), None);
     assert!(!dir.path().join(LAST_UPDATE).exists());
     assert_eq!(after_start(dir.path(), None), None);
+}
+
+#[test]
+fn only_the_appimage_this_copy_runs_from_is_updated() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("nodecraft.AppImage");
+    std::fs::write(&file, b"\x7fELF").unwrap();
+    let mount = dir.path().join("mount");
+    let exe = mount.join("usr/bin/nodecraft");
+    assert_eq!(appimage(Some(file.clone()), Some(mount.clone()), &exe), Ok(Kind::AppImage { file: file.clone() }));
+    // A terminal that is itself an AppImage passes APPIMAGE and APPDIR on to a tar.gz copy.
+    let other = dir.path().join("other-mount");
+    assert!(appimage(Some(file.clone()), Some(other), &dir.path().join("opt/nodecraft")).is_err());
+    assert!(appimage(Some(file.clone()), None, &exe).is_err());
+    assert!(appimage(None, Some(mount.clone()), &exe).is_err());
+    assert!(appimage(Some(PathBuf::from("relative.AppImage")), Some(mount.clone()), &exe).is_err());
+    assert!(appimage(Some(dir.path().join("missing.AppImage")), Some(mount), &exe).is_err());
 }
 
 #[test]
