@@ -270,3 +270,21 @@ fn supplement_preview_pins_old_range_during_actual_private_pack() {
     assert!(weak.upgrade().is_none(), "last old preview range releases its source after completion");
     assert_eq!(context.retained_usage().unwrap(), (1, bytes.len() as u64));
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_video_with_a_size_reads_without_an_image_probe() {
+    let mut webm = b"\x1A\x45\xDF\xA3".to_vec();
+    webm.extend_from_slice(b"\x9f\x42\x82\x84webm");
+    webm.resize(64, 0);
+    let (_temp, store, mut asset, ..) = fixture(webm.clone(), false, None);
+    asset.mime = "video/webm".parse().unwrap();
+    asset.meta.width = Some(640);
+    asset.meta.height = Some(360);
+    let request = store.preview_read(&asset).unwrap();
+    assert_eq!(request.read_verified(&Default::default(), &Default::default()).unwrap(), webm);
+    // The type is still checked.
+    asset.mime = "video/mp4".parse().unwrap();
+    let request = store.preview_read(&asset).unwrap();
+    assert_eq!(request.read_verified(&Default::default(), &Default::default()), Err(PreviewReadError::Corrupt));
+}

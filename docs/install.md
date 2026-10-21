@@ -112,7 +112,15 @@ zoom_speed = 1.0      # 0.25 to 4
 
 ## Optional FFmpeg library integration
 
-The optional `nodecraft-media/video` library feature uses explicitly configured user-installed
-FFmpeg/ffprobe and does not bundle or install them. This is not yet a desktop timeline feature.
+The desktop app plays videos on cards with a user-installed FFmpeg and ffprobe; it does not
+bundle or install them. Set both as absolute paths in the settings file:
+
+```toml
+[media]
+ffmpeg = "/usr/bin/ffmpeg"
+ffprobe = "/usr/bin/ffprobe"
+```
+
+Without them a video card says how to set them up. There is no timeline yet.
 See [media-video.md](media-video.md) for capabilities, Flatpak/browser limitations and resource
 contracts. Installing NodeCraft alone does not install a video toolchain.

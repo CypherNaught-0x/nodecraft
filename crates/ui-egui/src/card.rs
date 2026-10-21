@@ -63,6 +63,8 @@ pub enum Intent {
     KeepPartial,
     /// Let that answer go.
     DiscardPartial,
+    /// Play, pause or scrub the card's video (#105); view state, not an edit.
+    Video(crate::video::VideoIntent),
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -108,8 +110,9 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
     // The history strip sits under the parameters and is never squeezed out by them; an image
-    // preview sits above them.
-    let preview = if nodecraft_engine::split::image_of(node).is_some() { t.card_preview_height } else { 0.0 };
+    // or video preview sits above them.
+    let shows = nodecraft_engine::split::image_of(node).is_some() || crate::video::video_of(node).is_some();
+    let preview = if shows { t.card_preview_height } else { 0.0 };
     // A text card always has room for its answer, so the card doesn't jump when one starts
     // streaming in (#504).
     let answer = if node.kind == nodecraft_nodes::generation::TEXT_KIND { t.card_preview_height } else { 0.0 };
@@ -140,6 +143,8 @@ pub struct CardView<'a> {
     pub elements: &'a std::collections::BTreeMap<String, usize>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
+    /// The node's video and its player, when it has one (#105).
+    pub video: Option<crate::video::VideoView>,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -164,7 +169,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, partial } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, partial, video } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -308,6 +313,10 @@ pub fn show(
                 }
                 rows => gallery(&mut ui, area, rows, images.1, t),
             }
+        } else if let Some(video) = &video {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_video(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), video, &mut intents, t);
         }
         if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
@@ -478,6 +487,63 @@ fn show_image_with(
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, text));
         }
     }
+}
+
+/// A card's video (#105): the frame fitted to `area` above a row with play/pause, a scrubber and
+/// the time. Without a frame, why not.
+fn show_video(ui: &mut egui::Ui, area: Rect, video: &crate::video::VideoView, intents: &mut Vec<Intent>, t: &Tokens) {
+    use crate::video::{VideoIntent, VideoView, clock};
+    let button = ui.spacing().interact_size.y;
+    let (picture, controls) = area.split_top_bottom_at_y(area.bottom() - button - t.control_gap);
+    let response = ui.interact(picture, ui.id().with("video"), Sense::hover());
+    let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+    painter.rect_filled(picture, t.card_radius, t.canvas_bg);
+    let VideoView::Frame { texture, size, position_us, duration_us, playing } = video else {
+        let text = match video {
+            VideoView::Unavailable(why) => *why,
+            _ => "Loading video…",
+        };
+        let galley = painter.layout(text.to_owned(), FontId::proportional(t.body_size), t.text_muted, picture.width() - 2.0 * t.card_padding);
+        painter.galley(picture.center() - galley.size() / 2.0, galley, t.text_muted);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, text));
+        return;
+    };
+    let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+    let scale = (picture.width() / w).min(picture.height() / h);
+    let fitted = Rect::from_center_size(picture.center(), Vec2::new(w * scale, h * scale));
+    painter.image(*texture, fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Video, {}", clock(*duration_us))));
+    let mut row = ui.new_child(egui::UiBuilder::new().id_salt("video_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    row.set_clip_rect(controls.intersect(ui.clip_rect()));
+    let name = if *playing { "Pause video" } else { "Play video" };
+    let (square, toggle) = row.allocate_exact_size(Vec2::splat(button), Sense::click());
+    toggle.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    // Drawn, not a glyph: the default fonts have no pause sign.
+    let style = row.style().interact(&toggle);
+    row.painter().rect(square, style.corner_radius, style.weak_bg_fill, style.bg_stroke, StrokeKind::Inside);
+    let icon = Rect::from_center_size(square.center(), Vec2::splat(button * 0.4));
+    if *playing {
+        let bar = Vec2::new(icon.width() / 3.0, icon.height());
+        row.painter().rect_filled(Rect::from_min_size(icon.left_top(), bar), 0.0, style.fg_stroke.color);
+        row.painter().rect_filled(Rect::from_min_size(icon.right_top() - Vec2::new(bar.x, 0.0), bar), 0.0, style.fg_stroke.color);
+    } else {
+        let points = vec![icon.left_top(), Pos2::new(icon.right(), icon.center().y), icon.left_bottom()];
+        row.painter().add(egui::Shape::convex_polygon(points, style.fg_stroke.color, Stroke::NONE));
+    }
+    if toggle.on_hover_text(name).clicked() {
+        intents.push(Intent::Video(VideoIntent::Toggle));
+    }
+    let time = format!("{} / {}", clock(*position_us), clock(*duration_us));
+    let time_width = row.fonts_mut(|f| f.layout_no_wrap(time.clone(), FontId::proportional(t.body_size), t.text_muted).size().x);
+    row.spacing_mut().slider_width = (row.available_width() - time_width - 2.0 * row.spacing().item_spacing.x).max(t.control_row_height);
+    let mut seconds = *position_us as f64 / 1_000_000.0;
+    let end = *duration_us as f64 / 1_000_000.0;
+    let slider = row.add(egui::Slider::new(&mut seconds, 0.0..=end).show_value(false));
+    slider.widget_info(|| egui::WidgetInfo::slider(true, seconds, "Video position"));
+    if slider.changed() && seconds.is_finite() {
+        intents.push(Intent::Video(VideoIntent::Seek((seconds.max(0.0) * 1_000_000.0).min(u64::MAX as f64) as u64)));
+    }
+    row.label(egui::RichText::new(time).color(t.text_muted));
 }
 
 /// Where the split's cuts fall on `fitted`, the image drawn on screen: the same edges

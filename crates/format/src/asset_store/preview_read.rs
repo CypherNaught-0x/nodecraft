@@ -105,6 +105,7 @@ impl PreviewAssetRead {
     }
 
     /// Checks the same image reference facts as open_verified, without publishing cache proof.
+    /// Other media (video, #105) are checked for their type only.
     /// Call under the consumer's panic guard, including in the resident inline fallback.
     pub fn validate_image(&self, bytes: &[u8]) -> Result<(), PreviewReadError> {
         if bytes.len() as u64 != self.byte_len() {
@@ -114,7 +115,8 @@ impl PreviewAssetRead {
             if sniffed.mime.split(';').next().unwrap_or_default() != self.mime {
                 return Err(PreviewReadError::Corrupt);
             }
-            if self.width.is_some() || self.height.is_some() {
+            // Only images are probed for their size; a video's is checked by its own service.
+            if self.mime.starts_with("image/") && (self.width.is_some() || self.height.is_some()) {
                 let meta = nodecraft_media::probe_image(bytes, &nodecraft_media::Limits::default()).map_err(|_| PreviewReadError::Corrupt)?;
                 if self.width.is_some_and(|n| n != meta.width) || self.height.is_some_and(|n| n != meta.height) {
                     return Err(PreviewReadError::Corrupt);
