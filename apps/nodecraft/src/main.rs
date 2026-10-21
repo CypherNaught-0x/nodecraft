@@ -7,7 +7,9 @@
 
 use std::process::ExitCode;
 
+mod agent_panel;
 mod control;
+mod shell;
 
 /// Stable application id: the Wayland app id and X11 WM class, which must match the `.desktop`
 /// file name (packaging/linux) so the desktop finds the icon; also the macOS bundle id.
@@ -105,17 +107,12 @@ fn main() -> ExitCode {
                 app.set_renderer(format!("{} ({:?})", info.name, info.backend));
                 app.install_mesh_renderer(render);
             }
-            if control {
-                // Without the channel the app still opens; the log says why.
-                return match control::Controlled::start(app, &cc.egui_ctx, dir) {
-                    Ok(controlled) => Ok(Box::new(controlled)),
-                    Err((app, e)) => {
-                        log::error!("control channel not started: {}", e.message);
-                        Ok(app)
-                    }
-                };
-            }
-            Ok(Box::new(app))
+            // Without the channel the app still opens; the log says why.
+            let channel = control
+                .then(|| control::Channel::start(&cc.egui_ctx, dir).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
+                .flatten();
+            let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings());
+            Ok(Box::new(shell::Shell { app, agent, channel }))
         }),
     );
     match result {

@@ -1,6 +1,6 @@
 //! `nodecraft --control`: the app answering the control channel (`automation::control`).
 //!
-//! [`Controlled`] wraps the egui app. Each frame it answers waiting requests against the
+//! [`Channel`] listens. Each frame the window's shell pumps it, answering waiting requests against the
 //! session the window shows, so changes appear live. Screenshots are taken through egui and
 //! answered when the image arrives, a frame later.
 
@@ -20,8 +20,9 @@ const SHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Marks the screenshots this module asks for, so others aren't taken as replies.
 struct ControlShot;
 
-pub struct Controlled {
-    pub app: NodeCraftApp,
+/// The control channel's listener and what it is waiting on. The window's [`crate::shell::Shell`]
+/// pumps it each frame.
+pub struct Channel {
     listener: Listener,
     shots: Vec<Call>,
     /// When the pending screenshot was requested.
@@ -29,13 +30,17 @@ pub struct Controlled {
     token_file: Option<(PathBuf, TokenFile)>,
 }
 
-impl Controlled {
+impl Channel {
     /// Starts listening and writes the token file into `dir` (`control.json`).
-    /// On failure the app comes back with the error, so it can still open without the channel.
-    pub fn start(app: NodeCraftApp, ctx: &egui::Context, dir: Option<PathBuf>) -> Result<Self, (Box<NodeCraftApp>, nodecraft_types::Error)> {
-        match Self::listen(ctx, dir) {
-            Ok((listener, token_file)) => Ok(Self { app, listener, shots: Vec::new(), shot_since: None, token_file }),
-            Err(e) => Err((Box::new(app), e)),
+    pub fn start(ctx: &egui::Context, dir: Option<PathBuf>) -> Result<Self, nodecraft_types::Error> {
+        let (listener, token_file) = Self::listen(ctx, dir)?;
+        Ok(Self { listener, shots: Vec::new(), shot_since: None, token_file })
+    }
+
+    /// Removes the token file, if this app wrote it.
+    pub fn close(&self) {
+        if let Some((path, file)) = &self.token_file {
+            file.remove_if_ours(path);
         }
     }
 
@@ -66,7 +71,7 @@ impl Controlled {
     }
 
     /// Answers waiting requests and finished screenshots.
-    fn pump(&mut self, ctx: &egui::Context) {
+    pub fn pump(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
         let ours = |data: &egui::UserData| data.data.as_ref().is_some_and(|d| d.downcast_ref::<ControlShot>().is_some());
         let image = ctx.input(|i| {
             i.raw.events.iter().find_map(|e| match e {
@@ -112,7 +117,7 @@ impl Controlled {
             if call.expired() {
                 continue;
             }
-            match answer(&mut self.app, ctx, &call.request) {
+            match answer(app, ctx, &call.request) {
                 Some(result) => call.reply(result),
                 None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
                     if self.shots.is_empty() {
@@ -132,35 +137,14 @@ impl Controlled {
     }
 }
 
-impl eframe::App for Controlled {
-    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.pump(ctx);
-        self.app.logic(ctx, frame);
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.app.ui(ui, frame);
-    }
-
-    fn on_exit(&mut self) {
-        self.app.on_exit();
-        if let Some((path, file)) = &self.token_file {
-            file.remove_if_ours(path);
-        }
-    }
-
-    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
-        self.app.clear_color(visuals)
-    }
-}
-
 // Keep the production UI-thread dispatch independently testable without a native window.
 fn answer(app: &mut NodeCraftApp, ctx: &egui::Context, request: &Request) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
     control::answer_with(&mut LiveCommands { app, ctx }, request)
 }
-struct LiveCommands<'a> {
-    app: &'a mut NodeCraftApp,
-    ctx: &'a egui::Context,
+/// The window's session as a command host: navigation and search commands reach the view.
+pub(crate) struct LiveCommands<'a> {
+    pub(crate) app: &'a mut NodeCraftApp,
+    pub(crate) ctx: &'a egui::Context,
 }
 impl LiveCommands<'_> {
     fn navigation_idle(&self) -> Result<(), nodecraft_types::Error> {

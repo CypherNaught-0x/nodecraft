@@ -336,3 +336,11 @@ The PDF reader (#590) is a window over one PDF: thumbnails `reader_thumb_width` 
 wide on the left, the page on the right, zoomed from 50% to 400%. Pages have a 1-point `card_stroke` edge so a white
 page shows on a light window; the current thumbnail is outlined in the accent colour. Dragging over the page selects a rectangle drawn with `marquee_fill` and
 `marquee_stroke`, the canvas's box-select tokens; "New Text node from selection" reads the text inside it.
+
+## Agent sidebar
+
+The agent sidebar (#114, Cmd+/) is a right panel `agent_width` (360 screen points) wide; the canvas
+takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear, then a muted line
+with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
+for approval show what they would do (read, change the project, run and its price) with Approve
+and Decline; Esc or Cancel stops the agent while it works.

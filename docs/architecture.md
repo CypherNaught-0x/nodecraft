@@ -221,6 +221,10 @@ Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`
 (`cargo xtask wasm`). Filesystem access, threads and processes go through platform services that the
 apps provide; network I/O uses `reqwest`, which works on both targets.
 
+`apps/nodecraft` wraps `NodeCraftApp` in a `Shell` that adds the agent sidebar (`agent_panel`,
+over `agent` with `automation`'s tools) and, with `--control`, the control channel; both run
+against the window's live session.
+
 `apps/nodecraft-web` is the browser app: the same `NodeCraftApp` on eframe's `WebRunner`, built
 by trunk (`packaging/web/package.sh`). It is a preview: no browser host provides project storage,
 the keychain or local runs yet, so those commands report *unsupported*.

@@ -15,7 +15,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod agent;
 mod projects;
+pub use agent::{AgentEndpoint, AgentMode, AgentSettings};
 pub use projects::ProjectSettings;
 
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
@@ -38,6 +40,7 @@ pub struct NodeCraftSettings {
     pub projects: ProjectSettings,
     pub updates: UpdateSettings,
     pub media: MediaSettings,
+    pub agent: AgentSettings,
 }
 
 /// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
