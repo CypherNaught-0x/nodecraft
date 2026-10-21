@@ -21,8 +21,12 @@ nodecraft-nodes = { workspace = true }
 nodecraft-providers = { workspace = true }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
+# Runs (#97): jobs are driven on a tokio runtime, as the app's are.
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
+nodecraft-catalog = { workspace = true }
+nodecraft-provider-testkit = { workspace = true }
 nodecraft-graph = { workspace = true }
 nodecraft-testkit = { workspace = true }
 tempfile = { workspace = true }

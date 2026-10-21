@@ -1,14 +1,16 @@
 //! `nodecraft-cli`: the headless NodeCraft frontend.
 //!
 //! `mcp` serves the engine's commands to MCP clients over stdio. `commands`, `inspect`, `quote`
-//! and `providers` read projects and the engine without changing them. Running graphs and
-//! techniques, `batch`, `comfy` and `serve` arrive with their milestones (docs/plan.md §4.8).
+//! and `providers` read projects and the engine without changing them; `run` runs a project's
+//! nodes and exports their results, leaving the project file as it was. Techniques' inputs,
+//! `batch`, `comfy` and `serve` arrive with their milestones (docs/plan.md §4.8).
 
 mod control;
 mod inspect;
 mod project;
 mod providers;
 mod quote;
+mod run;
 
 use std::hash::{BuildHasher, RandomState};
 use std::io::Write;
@@ -36,11 +38,17 @@ commands:
   quote <project.ncraft> [--canvas <id>] [--node <id>]...
                   price a run of the nodes and their upstream (default: every stale or never-run node);
                   nothing runs and nothing is charged
+  run <project.ncraft> [--canvas <id>] [--node <id>]... [--out <folder>] [--yes]
+                  run the nodes and their stale upstream (default: every stale or never-run node)
+                  and export their media results into the folder; a run that costs money, or
+                  whose price isn't fully known, needs --yes (check it with `quote` first). The
+                  project file is not changed. Stopping the CLI mid-run doesn't stop jobs a
+                  provider already accepted; they may still be charged
   providers       list the model providers and whether each can run (reads the keychain)
   --version, -V   print the version, commit and build date
   --help, -h      print this help
 
-Add --json to commands, inspect, quote and providers for machine-readable output.
+Add --json to commands, inspect, quote, run and providers for machine-readable output.
 ";
 
 /// 16 random bytes from the standard library's per-process random hasher keys and a counter:
@@ -119,6 +127,8 @@ struct Options {
     full: bool,
     canvas: Option<String>,
     nodes: Vec<NodeId>,
+    out: Option<String>,
+    yes: bool,
     positional: Vec<String>,
 }
 
@@ -137,6 +147,9 @@ fn options(args: &[String], allowed: &[&str]) -> Result<Options, String> {
             "--full" => out.full = true,
             "--canvas" if out.canvas.is_some() => return Err("`--canvas` is given twice".into()),
             "--canvas" => out.canvas = Some(value()?),
+            "--out" if out.out.is_some() => return Err("`--out` is given twice".into()),
+            "--out" => out.out = Some(value()?),
+            "--yes" => out.yes = true,
             "--node" => {
                 let id = value()?;
                 out.nodes.push(id.parse().map_err(|_| format!("`{id}` isn't a node id (see `inspect`)"))?);
@@ -180,6 +193,7 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
     let allowed: &[&str] = match command {
         "commands" => &["--json", "--full"],
         "quote" => &["--json", "--canvas", "--node"],
+        "run" => &["--json", "--canvas", "--node", "--out", "--yes"],
         _ => &["--json"],
     };
     let options = match options(args, allowed) {
@@ -210,6 +224,9 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
                 Ok(path) => path,
                 Err(message) => return fail(&format!("{message}\n\n{USAGE}")),
             };
+            if command == "run" {
+                return run(&path, &options);
+            }
             let mut session = match project::open(&path) {
                 Ok(session) => session,
                 Err(error) => return fail(&error.message),
@@ -232,6 +249,52 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
                 Err(error) => fail(&error.message),
             }
         }
+    }
+}
+
+/// `run`: quotes, runs once the price is agreed to, then exports the results.
+fn run(path: &std::path::Path, options: &Options) -> ExitCode {
+    let mut new_id = random_bytes();
+    let mut services = Services::default();
+    let session_id: String = new_id().iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let mut runner = match run::Runner::new(&mut services, session_id) {
+        Ok(runner) => runner,
+        Err(error) => return fail(&error.message),
+    };
+    let mut session = match project::open_with_assets(path) {
+        Ok(session) => session.with_services(services),
+        Err(error) => return fail(&error.message),
+    };
+    let session = &mut session;
+    // Checked before anything runs, so a typo costs nothing.
+    let out = match options.out.as_deref().map(|out| run::out_folder(std::path::Path::new(out))).transpose() {
+        Ok(out) => out,
+        Err(error) => return fail(&error.message),
+    };
+    let done = quote::canvas_of(session, options.canvas.as_deref()).and_then(|canvas| {
+        let targets = quote::targets(session, canvas, &options.nodes)?;
+        let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
+        quote::prepare(session, canvas, &targets, &mut maker)?;
+        runner.install(session);
+        let quoted = quote::quote(session, canvas, &targets)?;
+        let steps = runner.run(session, canvas, &targets, &quoted, run::Consent { spend: options.yes })?;
+        // An unaccounted result was kept on its card, so it is exported too.
+        let kept = |s: &&serde_json::Value| s["status"] == "recorded" || s["status"] == "unaccounted";
+        let ran: Vec<NodeId> = steps.iter().filter(kept).filter_map(|s| s["node"].as_str()?.parse().ok()).collect();
+        let results = match &out {
+            Some(out) => run::export(session, canvas, &ran, out)?,
+            None => Vec::new(),
+        };
+        Ok(serde_json::json!({"quote": quoted, "steps": steps, "results": results}))
+    });
+    match done {
+        Ok(report) => {
+            let listed = |key: &str| report[key].as_array().into_iter().flatten().cloned().collect::<Vec<_>>();
+            let failed = listed("steps").iter().any(|step| step["status"] != "recorded") || listed("results").iter().any(|r| r["status"] == "failed");
+            let printed = print(options.json, &report, run::report_text);
+            if failed { ExitCode::FAILURE } else { printed }
+        }
+        Err(error) => fail(&error.message),
     }
 }
 
@@ -264,7 +327,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Some(command @ ("commands" | "inspect" | "quote" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
+        Some(command @ ("commands" | "inspect" | "quote" | "run" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");
             ExitCode::SUCCESS

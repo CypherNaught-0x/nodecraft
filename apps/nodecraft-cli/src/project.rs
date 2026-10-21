@@ -36,6 +36,16 @@ impl AssetSource for FileSource {
 
 /// Opens the project at `path` read-only: nothing is written, and the app's lock is not taken.
 pub fn open(path: &Path) -> Result<Session, Error> {
+    Session::new(read(path)?.project)
+}
+
+/// [`open`] with the project's assets, for runs and exports. Its storage is in memory, so
+/// nothing the session does is written to the project file.
+pub fn open_with_assets(path: &Path) -> Result<Session, Error> {
+    Session::with_storage(read(path)?, Box::new(nodecraft_format::MemoryStorage::default()))
+}
+
+fn read(path: &Path) -> Result<nodecraft_format::Snapshot, Error> {
     // Checked first, so a typo reads as one rather than as a format error.
     if !path.is_file() {
         return Err(Error::new(ErrorKind::NotFound, format!("no project file at {}", path.display())));
@@ -45,6 +55,5 @@ pub fn open(path: &Path) -> Result<Session, Error> {
     let source: Arc<dyn AssetSource> = Arc::new(FileSource { file: Mutex::new(file), len });
     let range = AssetRange::new(source, 0, len)?;
     let index = ArchiveIndex::read(&range, &TransferCancel::default(), &StreamMetrics::default())?;
-    let snapshot = nodecraft_format::decode_indexed(&index, AssetContext::default())?;
-    Session::new(snapshot.project)
+    nodecraft_format::decode_indexed(&index, AssetContext::default())
 }

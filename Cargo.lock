@@ -3106,16 +3106,19 @@ name = "nodecraft-cli"
 version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-automation",
+ "nodecraft-catalog",
  "nodecraft-engine",
  "nodecraft-exec",
  "nodecraft-format",
  "nodecraft-graph",
  "nodecraft-nodes",
+ "nodecraft-provider-testkit",
  "nodecraft-providers",
  "nodecraft-testkit",
  "nodecraft-types",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
