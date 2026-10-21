@@ -143,7 +143,7 @@ they never run live.
 | `video.frames` Extract frames | a video | One frame at a time, 2 to 64 evenly spaced, or one every few seconds (at most 64), as a list of pictures. |
 | `video.contact_sheet` Contact sheet | a video | Up to 64 evenly spaced frames in a grid of columns and rows, with a gap and a background, as one picture within the image limits. |
 | `video.long_exposure` Long exposure | a video | 2 to 64 frames from a stretch averaged (motion blur), or their lightest or darkest values kept (light trails). |
-| `video.reverse` Reverse video | a video | Plays it backwards, or forwards then backwards without showing either end twice. At most 600 source frames (20 s at 30 a second); trim a longer video first. |
+| `video.reverse` Reverse video | a video | Plays it backwards, or forwards then backwards without showing either end twice. At most 600 source frames (20 s at 30 a second), and fewer above 720p (about 266 at 1080p); trim a longer video first. |
 | `video.ken_burns` Pan and zoom | a picture | 1 to 30 s at 24, 30 or 60 frames a second: zooms from one factor to another while panning across, steadily or easing in and out, at most 1920 a side. |
 
 Every run checks for a cancel between frames, and the settings are checked before any video is

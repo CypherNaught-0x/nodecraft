@@ -1029,14 +1029,14 @@ impl Context {
             "-noautorotate",
         ]);
         args.extend(probe::input_args(asset.mov));
-        args.push("-i".into());
-        args.push(self.path(asset)?.into_os_string());
+        // Seeking on the input jumps to the keyframe before the time and decodes only from
+        // there (still exactly to the time), so a late frame costs no more than an early one.
         let u = m.stream_start - m.format_start + i128::from(r.time_us);
         let time = format!("{}.{:06}", u / 1_000_000, u % 1_000_000);
+        args.extend(process::args(&["-ss", &time, "-i"]));
+        args.push(self.path(asset)?.into_os_string());
         let map = format!("0:{}", m.stream);
         args.extend(process::args(&[
-            "-ss",
-            &time,
             "-map",
             &map,
             "-frames:v",

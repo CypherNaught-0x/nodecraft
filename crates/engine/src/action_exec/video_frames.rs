@@ -234,11 +234,19 @@ fn on_frame(time_us: u64, fps: (u32, u32), length_us: u64) -> u64 {
 }
 
 /// The source frames, in the order Reverse shows them, for a video of `count` frames: last to
-/// first, then (for a boomerang) on to the last again without showing either end twice.
+/// first or, for a boomerang, first to last and back without showing either end twice.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn reversed(count: u64, boomerang: bool) -> Vec<u64> {
     let back = (0..count).rev();
     if boomerang && count > 1 { (0..count).chain(back.skip(1).take(usize::try_from(count - 2).unwrap_or(0))).collect() } else { back.collect() }
+}
+
+/// The most frames Reverse decodes at `size`: every frame is a seek and a decode, so the work is
+/// bounded by frames × pixels as well as by the frame count.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn reversible((w, h): (u32, u32)) -> u64 {
+    use nodecraft_nodes::video_frames::{MAX_REVERSED, MAX_REVERSED_PIXELS};
+    (MAX_REVERSED_PIXELS / (u64::from(w) * u64::from(h)).max(1)).min(MAX_REVERSED)
 }
 
 /// `pixels`, a `from` RGBA picture, centred on an opaque black `to` canvas (cropped if larger).
@@ -294,9 +302,13 @@ struct Exposure {
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Exposure {
-    fn new(blend: Blend, width: u32, height: u32) -> Self {
+    fn new(blend: Blend, width: u32, height: u32) -> Result<Self, String> {
         let start = if blend == Blend::Darken { 255 } else { 0 };
-        Self { blend, width, height, values: vec![start; width as usize * height as usize * 4], frames: 0 }
+        let len = usize::try_from(u64::from(width) * u64::from(height) * 4).map_err(|_| "the picture is too large")?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(len).map_err(|_| "there isn't enough memory for the exposure")?;
+        values.resize(len, start);
+        Ok(Self { blend, width, height, values, frames: 0 })
     }
 
     /// Adds a frame the exposure's size.
@@ -437,6 +449,7 @@ impl LocalActions {
 mod native {
     use super::super::timeline::native::{BUSY_WAIT, POLL, closed, message, service, wait};
     use super::super::video::{frame_for, quality};
+    use super::reversible;
     use super::{
         Exposure, Job, LocalActions, Sheet, fit, frame_count, frame_start, job, on_frame, pan_frame, picks, reversed, scaled, spread, view, within_side,
     };
@@ -555,7 +568,10 @@ mod native {
                     let mut exposure: Option<Exposure> = None;
                     for time in spread(frames, start, end) {
                         let frame = grab(&service, &video, at(time), (size, size), cancelled)?;
-                        let exposure = exposure.get_or_insert_with(|| Exposure::new(blend, frame.width, frame.height));
+                        let exposure = match &mut exposure {
+                            Some(exposure) => exposure,
+                            None => exposure.insert(Exposure::new(blend, frame.width, frame.height)?),
+                        };
                         exposure.add(&fit(frame.pixels(), (frame.width, frame.height), (exposure.width, exposure.height)));
                     }
                     let exposure = exposure.ok_or("the video has no frames")?;
@@ -566,6 +582,10 @@ mod native {
                     let count = frame_count(length, fps);
                     if count > MAX_REVERSED {
                         return Err(format!("the video has {count} frames; Reverse plays at most {MAX_REVERSED}, so trim it first"));
+                    }
+                    let most = reversible(size);
+                    if count > most {
+                        return Err(format!("the video has {count} frames; at {}×{} Reverse plays at most {most}, so trim it first", size.0, size.1));
                     }
                     let order = reversed(count, boomerang);
                     let out = u32::try_from(order.len()).map_err(|_| "the video is too long")?;

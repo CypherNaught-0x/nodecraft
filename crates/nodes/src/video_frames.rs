@@ -22,6 +22,9 @@ pub const IDS: [&str; 5] = [FRAMES, CONTACT_SHEET, LONG_EXPOSURE, REVERSE, KEN_B
 pub const MAX_PICTURES: u64 = 64;
 /// Most frames Reverse decodes from a video (20 seconds at 30 a second).
 pub const MAX_REVERSED: u64 = 600;
+/// Most frames × pixels Reverse decodes (600 frames at 1280×720), which bounds the
+/// render's work: about 266 frames at 1920×1080.
+pub const MAX_REVERSED_PIXELS: u64 = 600 * 1280 * 720;
 /// The longest side of a frame taken from a video, the video service's most.
 pub const MAX_FRAME_SIDE: u64 = 2048;
 /// The longest Ken Burns video, in seconds.

@@ -132,7 +132,7 @@ fn pictures_fit_the_shape_they_are_put_in() {
 fn exposures_average_or_keep_the_lightest_or_darkest() {
     let (dark, light) = ([10, 20, 30, 255], [30, 60, 90, 255]);
     for (blend, expected) in [(Blend::Average, [20, 40, 60, 255]), (Blend::Lighten, light), (Blend::Darken, dark)] {
-        let mut exposure = Exposure::new(blend, 1, 1);
+        let mut exposure = Exposure::new(blend, 1, 1).unwrap();
         exposure.add(&dark);
         exposure.add(&light);
         assert_eq!(exposure.pixels(), expected, "{blend:?}");
@@ -241,4 +241,14 @@ fn each_action_makes_the_pictures_or_video_it_says() {
     assert!(error.contains("at or after the video's end"), "{error}");
     let error = run(LONG_EXPOSURE, &[("end", n(9.0))], &video).unwrap_err();
     assert!(error.contains("isn't inside the video"), "{error}");
+}
+
+#[test]
+fn reverse_decodes_fewer_frames_the_larger_they_are() {
+    use nodecraft_nodes::video_frames::MAX_REVERSED;
+    assert_eq!(reversible((640, 360)), MAX_REVERSED);
+    assert_eq!(reversible((1280, 720)), MAX_REVERSED);
+    assert_eq!(reversible((1920, 1080)), 266);
+    assert_eq!(reversible((2048, 2048)), 131);
+    assert_eq!(reversible((0, 0)), MAX_REVERSED);
 }
