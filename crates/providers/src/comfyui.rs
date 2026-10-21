@@ -78,7 +78,7 @@ fn comfy_error(e: ComfyError) -> ProviderError {
     ProviderError::new(kind, e.to_string())
 }
 
-fn uuid_from(seed: &str) -> String {
+pub(crate) fn uuid_from(seed: &str) -> String {
     let h = nodecraft_media::ContentHash::of(seed.as_bytes()).0;
     let hex: String = h.iter().take(16).map(|b| format!("{b:02x}")).collect();
     let part = |a: usize, b: usize| hex.get(a..b).unwrap_or_default().to_owned();
@@ -357,7 +357,7 @@ fn looks_textual(name: &str) -> bool {
     matches!(ext.as_str(), "txt" | "json" | "srt" | "vtt" | "csv" | "md" | "obj" | "gltf" | "svg")
 }
 
-fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {
+pub(crate) fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {
     target
         .split_once('.')
         .filter(|(n, i)| !n.is_empty() && !i.is_empty())
