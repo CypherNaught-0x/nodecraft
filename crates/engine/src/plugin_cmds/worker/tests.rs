@@ -12,7 +12,7 @@ fn memory() -> Result<Store<MemoryBackend>, Error> {
     Store::open(MemoryBackend::default())
 }
 fn wait(worker: &PluginWorker, id: &str) -> Value {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + Duration::from_secs(60);
     loop {
         match worker.result(id) {
             Ok(value) if matches!(value["status"].as_str(), Some("completed" | "failed")) => return value,
@@ -20,7 +20,9 @@ fn wait(worker: &PluginWorker, id: &str) -> Value {
             Err(error) => assert_eq!(error.kind, ErrorKind::Busy),
         }
         assert!(Instant::now() < until, "plugin operation didn't finish");
-        std::thread::yield_now();
+        // Sleep rather than spin: a tight try_lock loop can starve the worker's blocking lock
+        // on a loaded runner, since std's mutex is not fair.
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 fn session(worker: Arc<PluginWorker>) -> Session {
