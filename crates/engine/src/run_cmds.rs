@@ -906,6 +906,10 @@ impl AuthorizedRun {
     ) -> nodecraft_exec::run::Progress {
         self.run.job_done(kinds, job, outputs)
     }
+    /// The units `job`'s provider said it billed (#437), recorded with its settings.
+    pub fn job_billed(&mut self, job: nodecraft_exec::scheduler::JobId, units: nodecraft_types::BillableUnits) {
+        self.run.job_billed(job, units)
+    }
     pub fn job_failed(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
         self.run.job_failed(kinds, job, reason)
     }

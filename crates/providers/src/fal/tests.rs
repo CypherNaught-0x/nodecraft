@@ -641,3 +641,38 @@ fn retry_after_is_bounded_checked_and_optional() {
         assert_eq!(e.retry_after_ms, expected);
     }
 }
+/// #437: the billed units come from the authenticated result fetch only, and a bad header never
+/// costs the result.
+#[test]
+fn billable_units_come_from_the_result_fetch_and_never_cost_the_result() {
+    let with = |headers: Vec<(&str, &str)>, response: HttpResponse| HttpResponse {
+        headers: headers.into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect(),
+        ..response
+    };
+    // `result` headers go on the result fetch, `cdn` on the media download.
+    let run = |result: Vec<(&str, &str)>, cdn: Vec<(&str, &str)>| {
+        let (o, b, _) = output(FLUX);
+        let t = Transport::new(vec![
+            with(vec![("x-fal-billable-units", "9")], reply(receipt(FLUX))),
+            with(vec![("x-fal-billable-units", "9")], reply(json!({"status":"COMPLETED"}))),
+            with(result, reply(o)),
+            with(cdn, bytes(b)),
+        ]);
+        let f = Fal::new(key(), t);
+        let Submission::Queued(h) = block_on(f.submit(&job(FLUX))).unwrap() else { panic!() };
+        let JobProgress::Done(done) = block_on(f.poll(&h)).unwrap() else { panic!("the result is kept") };
+        assert_eq!(done.outputs.len(), 1);
+        assert_eq!(done.usage.cost, None, "units are never money");
+        done.usage.billable_units.map(|u| u.to_string())
+    };
+    assert_eq!(run(vec![("x-fal-billable-units", "1.5")], vec![]), Some("1.5".into()));
+    assert_eq!(run(vec![("X-Fal-Billable-Units", " 2 ")], vec![]), Some("2".into()));
+    assert_eq!(run(vec![("x-fal-billable-units", "0")], vec![]), Some("0".into()));
+    // Absent from the result fetch: the receipt's, the status's and the CDN's don't count.
+    assert_eq!(run(vec![], vec![("x-fal-billable-units", "4")]), None);
+    for hostile in ["", "-1", "1e3", "NaN", "0.0000001", "1,5", "10000000000", "1.5 units", &"1".repeat(64)] {
+        assert_eq!(run(vec![("x-fal-billable-units", hostile)], vec![]), None, "{hostile:?}");
+    }
+    let duplicate = vec![("x-fal-billable-units", "1"), ("x-fal-billable-units", "2")];
+    assert_eq!(run(duplicate, vec![]), None, "two values: neither is trusted");
+}

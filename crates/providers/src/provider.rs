@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use nodecraft_types::Money;
+use nodecraft_types::{BillableUnits, Money};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -87,6 +87,9 @@ pub struct Usage {
     /// What the provider says the job cost (LiteLLM, for example). `None` when it doesn't say;
     /// budgets then charge the estimate.
     pub cost: Option<Money>,
+    /// How many of its own units the provider says it billed (fal's `X-Fal-Billable-Units`).
+    /// Evidence for the result's record, never a cost: what a unit costs is the model's price.
+    pub billable_units: Option<BillableUnits>,
 }
 
 /// A finished job: its outputs and what it used.

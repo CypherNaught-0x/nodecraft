@@ -140,6 +140,7 @@ pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
         input_tokens: usage.and_then(|u| u.get("input_tokens")).and_then(Value::as_u64),
         output_tokens: usage.and_then(|u| u.get("output_tokens")).and_then(Value::as_u64),
         cost: None,
+        billable_units: None,
     };
     Ok(ChatResponse::new(parts, stop, usage))
 }

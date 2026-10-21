@@ -12,7 +12,7 @@
 //! - **Results only.** A hit changes the document like any result does (one undo step, or the
 //!   edit's own step when live recompute applies it), and costs nothing.
 use nodecraft_exec::staleness::{CACHE_CONFIG, InputHasher, MAX_QUERY_BYTES};
-use nodecraft_graph::{Canvas, Change, Changeset, Generation, Node, Project};
+use nodecraft_graph::{Canvas, Change, Changeset, Generation, JobSettings, Node, Project};
 use nodecraft_nodes::{Category, Registry};
 use nodecraft_types::{Blake3, CanvasId, Error, GenerationId, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -110,7 +110,8 @@ pub fn hits(
                     outputs: other.outputs.clone(),
                     input_hash: Some(current),
                     items: other.items.clone(),
-                    settings: other.settings.clone(),
+                    // What the other result was billed is not this copy's: nothing was (#437).
+                    settings: other.settings.iter().cloned().map(|s| JobSettings { billable_units: None, ..s }).collect(),
                     incomplete: None,
                 };
                 if nodecraft_exec::run::record_changes(canvas_id, node, generation.clone()).is_ok() {

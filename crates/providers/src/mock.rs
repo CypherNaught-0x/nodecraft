@@ -2,7 +2,7 @@
 //! on the model, its parameters and its inputs, so tests can compare them byte for byte.
 
 use crate::{BoxFuture, Completed, ErrorKind, JobHandle, JobInput, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
-use nodecraft_types::Money;
+use nodecraft_types::{BillableUnits, Money};
 mod scripts;
 pub use scripts::{MockFailures, MockOperation, MockScript};
 use std::collections::BTreeMap;
@@ -45,12 +45,14 @@ pub struct MockModel {
     pub cost: Option<Money>,
     /// The input and output tokens it reports, if any.
     pub tokens: Option<(u64, u64)>,
+    /// The units it says it billed, if any (#437).
+    pub billable_units: Option<BillableUnits>,
     pub fail: Option<MockFailure>,
 }
 
 impl MockModel {
     pub fn new(output: MockOutput) -> Self {
-        Self { output, polls: 0, cost: None, tokens: None, fail: None }
+        Self { output, polls: 0, cost: None, tokens: None, billable_units: None, fail: None }
     }
 }
 
@@ -190,6 +192,7 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
     done.usage.cost = model.cost;
     done.usage.input_tokens = model.tokens.map(|(input, _)| input);
     done.usage.output_tokens = model.tokens.map(|(_, output)| output);
+    done.usage.billable_units = model.billable_units;
     done
 }
 

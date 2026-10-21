@@ -881,7 +881,12 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                 settled |= finish(active, job);
                 active.jobs.end(job, ended(&outputs));
                 match outputs {
-                    Ok(outputs) => active.run.job_done(session.kinds(), job, outputs),
+                    Ok((outputs, billed)) => {
+                        if let Some(units) = billed {
+                            active.run.job_billed(job, units);
+                        }
+                        active.run.job_done(session.kinds(), job, outputs)
+                    }
                     Err(reason) => active.run.job_failed(session.kinds(), job, &reason),
                 }
             }
@@ -897,7 +902,12 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                         stop(active);
                     }
                     match outputs {
-                        Ok(outputs) => active.run.job_done(session.kinds(), job, outputs),
+                        Ok((outputs, billed)) => {
+                            if let Some(units) = billed {
+                                active.run.job_billed(job, units);
+                            }
+                            active.run.job_done(session.kinds(), job, outputs)
+                        }
                         Err(reason) => active.run.job_failed(session.kinds(), job, &reason),
                     }
                 }
@@ -989,8 +999,11 @@ fn finish(active: &mut Active, job: JobId) -> bool {
     provider
 }
 
+/// A finished job's outputs and the units its provider said it billed (#437).
+type Finished = (Vec<(String, nodecraft_types::Value)>, Option<nodecraft_types::BillableUnits>);
+
 /// A finished job's outputs, with any assets it made imported into the project.
-fn outputs(session: &mut Session, active: &Active, job: JobId) -> Result<Vec<(String, nodecraft_types::Value)>, String> {
+fn outputs(session: &mut Session, active: &Active, job: JobId) -> Result<Finished, String> {
     if !active.provider_jobs.contains(&job) {
         // Staged images stay staged: a later action in the run may read them (chains).
         let staged = active.actions.staged();
@@ -1003,7 +1016,7 @@ fn outputs(session: &mut Session, active: &Active, job: JobId) -> Result<Vec<(St
                 return Err("an action's image changed while it was imported".into());
             }
         }
-        return Ok(take_outputs(&active.runner.sources.outputs, job));
+        return Ok((take_outputs(&active.runner.sources.outputs, job), None));
     }
     let delivery = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
     let Some(JobSpec::Generate { outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
@@ -1014,7 +1027,7 @@ fn outputs(session: &mut Session, active: &Active, job: JobId) -> Result<Vec<(St
             return Err("a generated asset changed while it was imported".into());
         }
     }
-    Ok(produced.outputs)
+    Ok((produced.outputs, delivery.completed.usage.billable_units))
 }
 
 /// Records one finished step on its card.

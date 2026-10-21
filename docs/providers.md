@@ -347,6 +347,19 @@ verified from the [official endpoint](https://fal.ai/models/fal-ai/trellis-2/api
 Absent monetary usage never becomes a provider-observed invoice: existing runner estimate
 fallback is separate. Unknown-price completions may have no numeric money row, not free work.
 
+Billable units (#437): fal may send `X-Fal-Billable-Units`, documented only as the "billing units
+charged for this request" ([response headers](https://fal.ai/docs/documentation/model-apis/common-parameters#response-headers),
+checked 2026-10-21); what a unit costs depends on the model's pricing. NodeCraft reads it from the
+authenticated result fetch on the queue origin only, never from receipts, status polls or CDN
+downloads. It must appear once and be a plain decimal of at most a billion with at most six
+decimal places (surrounding spaces and tabs allowed). Absent, repeated, oversized or malformed,
+it is left out and the result is kept. Accepted, it is recorded as `billable_units` on the job's
+settings in the result's history entry (`nodecraft_types::BillableUnits`, a decimal string),
+qualified by that entry's provider and model. It is observed units, never observed money: it
+does not replace the unknown-price consent count, settle a charge or fill the usage log. In the
+browser the header is only visible if fal exposes it to scripts (`Access-Control-Expose-Headers`);
+when it does not, it reads as absent.
+
 Accepted receipts publish a versioned handle before polling, even for already-completed work.
 Persist it to resume after restart without another create. Model-specific operation roots are
 explicitly allowlisted: FLUX uses fal-ai/flux, Wan fal-ai/wan, Kokoro fal-ai/kokoro, Trellis and

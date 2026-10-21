@@ -158,3 +158,19 @@ failed unknown-price invocation proves neither billing nor nonbilling and record
 Actual. Completed output still carries its typed accounting result exactly once. See
 [provider delivery contracts](providers.md) for audited LLM/native opt-in and conservative
 legacy, Comfy and browser paths.
+
+## Billable-unit evidence
+
+A provider may report how many of its own units it billed a job (fal's `X-Fal-Billable-Units`,
+#437) without saying what they cost. `providers::Usage::billable_units` carries that count as a
+`nodecraft_types::BillableUnits`: millionths of a unit, at most a billion units, a decimal string
+in JSON. The run records it as `billable_units` on the job's `JobSettings` in the result's history
+entry, beside the provider and model that give it meaning, and a result recorded after a restart
+keeps it too. It is evidence, not money: it never settles a charge, enters the usage log, or
+replaces the unknown-price job count a run is accepted with, so a `NoReportedCost` completion
+stays unpriced. A missing or untrusted report leaves the field out and keeps the result. A
+mapping layer (#489) should map units into this shape rather than into tokens or cost.
+
+The field records what one result was billed, not a ledger to add up. A result the cache copies
+onto another node carries no units, since nothing was billed for the copy. A result too large to
+keep its settings drops them, units included. Duplicating a node copies its history as it is.

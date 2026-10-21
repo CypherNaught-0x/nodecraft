@@ -119,6 +119,7 @@ fn usage(u: Option<&Value>) -> Usage {
         input_tokens: u.and_then(|u| u.get("prompt_tokens")).and_then(Value::as_u64),
         output_tokens: u.and_then(|u| u.get("completion_tokens")).and_then(Value::as_u64),
         cost: None,
+        billable_units: None,
     }
 }
 

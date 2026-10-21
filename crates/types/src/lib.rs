@@ -12,6 +12,7 @@ mod money;
 mod provider;
 mod scalar;
 mod schema;
+mod units;
 mod value;
 
 pub use asset::{AssetRef, Blake3, MediaMeta, Mime};
@@ -26,4 +27,5 @@ pub use money::{Currency, Money, Rounding};
 pub use provider::{EMPTY_TARGET_SELECTION, ProviderTarget, TargetChoice, TargetSelection};
 pub use scalar::{Integer, Number, Unsigned};
 pub use schema::{BorrowedResolvedParams, Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, ValidatedParamSchema, VisibleIf};
+pub use units::BillableUnits;
 pub use value::{Modality, PortType, Value};
