@@ -344,6 +344,8 @@ mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
+mod paste_image;
+#[cfg(not(target_arch = "wasm32"))]
 mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
@@ -394,6 +396,12 @@ pub struct NodeCraftApp {
     stale_badges: Option<stale_badges::StaleBadges>,
     #[cfg(not(target_arch = "wasm32"))]
     drop_acquisition: drop::Acquisition,
+    /// A copied image being read off the UI thread (#319).
+    #[cfg(not(target_arch = "wasm32"))]
+    image_paste: paste_image::ImagePaste,
+    /// A browser drop being read (#319); native tests drive its import too.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    web_drop: Option<drop::web::Pending>,
     editors: BTreeMap<NodeId, EditorState>,
     bulk: crate::bulk::Panel,
     drag: Option<Drag>,
@@ -824,6 +832,10 @@ impl NodeCraftApp {
             stale_badges: None,
             #[cfg(not(target_arch = "wasm32"))]
             drop_acquisition: drop::Acquisition::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            image_paste: paste_image::ImagePaste::new(),
+            #[cfg(any(test, target_arch = "wasm32"))]
+            web_drop: None,
             editors: BTreeMap::new(),
             bulk: Default::default(),
             drag: None,
@@ -1056,6 +1068,8 @@ impl NodeCraftApp {
         }
         let tag_blocks = if model_blocks { true } else { self.tag_overlay(ui) };
         let drop_blocks = self.poll_drop(ui, t);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_image_paste(ui.ctx());
         let search_blocks = if model_blocks { true } else { self.search_overlay(ui) };
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
@@ -1134,6 +1148,9 @@ impl NodeCraftApp {
                 || egui::Popup::is_any_open(ui.ctx())
                 || self.keys.open
                 || self.drop_pointer_owned();
+            // egui reports no ⌘V press when the clipboard holds no text, only its release (#319).
+            #[cfg(not(target_arch = "wasm32"))]
+            self.image_paste_keys(ui, t, !busy);
             let (copy, cut, pasted, duplicate) = ui.input_mut(|input| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {

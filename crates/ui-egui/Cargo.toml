@@ -36,6 +36,9 @@ nodecraft-exec = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native async sheets/portals stay at the UI layer and on its main thread (#407).
 rfd = "=0.17.2"
+# Copied images (#319): egui-winit only hands the app clipboard text. Pinned to the version
+# egui-winit already links, with the same features, so no second copy is built.
+arboard = { version = "=3.7.0", default-features = false, features = ["image-data"] }
 # Runs (#409): provider adapters over reqwest, driven on a tokio runtime the app owns.
 nodecraft-providers = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
@@ -44,6 +47,11 @@ nodecraft-media = { workspace = true, features = ["video"] }
 # Installing updates (#540): the zipped macOS app bundle (ditto deflates it) and the release keys.
 zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
 ed25519-dalek = { workspace = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Blob", "File"] }
+
 # Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
