@@ -28,11 +28,18 @@
   only by the number of in-flight jobs.
 - **Memory only.** A result a restarted job delivers while its project is closed is held too,
   and is retried or placed once that project is open. Held results are lost when NodeCraft quits; the queue panel says so. Writing
-  them to the run journal is a follow-up (#611).
+  them to disk is a follow-up (#614).
 - **Placing hands the outputs to the document.** Once placed, a result is no longer held; undoing
   the placement and then editing leaves its assets only in the asset store.
 - **Agents may retry and place, not discard.** Discarding a paid result can't be undone, so MCP
   lists `run.held_discard` as human-only.
-- **Follow-up (#611): multi-job steps.** A fanned or multi-job step whose record fails after every job
-  finished is not held yet. Neither are the results of sibling jobs that are lost when one job of
-  the step fails. Each job's own conversion failures are held.
+- **Multi-job steps are held as one (#611).** Each model job's converted result waits until its
+  step is recorded or ends. If a fanned or multi-job step's record is refused, or the step fails
+  after its jobs finished, every job's result is held as one entry, outputs in job order. It can
+  be placed or discarded but not retried, because recording it needs the whole step. A finished
+  result the step lets go is held on its own: a sibling in a failed fanned item, or a job that
+  finished after its step had ended. The run reports these as `Progress::dropped`, and they are
+  held before the step's own result is recorded, so a partial record can't take them along. A
+  cancelled step's results are held too; its card shows the cancel. A technique's inner steps let
+  go of their results once they're done, so a refused record of the technique node itself loses
+  them; holding those is a follow-up (#615).

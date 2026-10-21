@@ -182,4 +182,5 @@ A paid result the run can't keep on its card is held by the run host, not droppe
 is in the usage log once. Retrying, placing or discarding it never calls the provider and never
 charges again. The run host's write-ahead refuses every new job, before it is sent, while
 `MAX_HELD` results wait. The write-ahead runs for every job that has no provider handle yet,
-priced or not.
+priced or not. A fanned step's jobs are held together as one result when the step can't be
+recorded (#611).

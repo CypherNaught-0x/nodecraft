@@ -129,7 +129,7 @@ fn a_partial_result_with_other_inputs_now_runs_in_full_and_none_finished_fails_t
 }
 
 #[test]
-fn an_item_with_several_jobs_fails_alone_and_its_late_siblings_are_ignored() {
+fn an_item_with_several_jobs_fails_alone_and_its_siblings_results_are_let_go() {
     // A batch of two into a kind that plans three jobs per item.
     let mut kinds = kinds();
     let pieces = nodecraft_nodes::NodeDescriptor {
@@ -168,11 +168,15 @@ fn an_item_with_several_jobs_fails_alone_and_its_late_siblings_are_ignored() {
     assert_eq!(ids.len(), 6);
     let done = |n: &str| vec![("items".to_owned(), text(n))];
     assert_eq!(run.job_done(&kinds, ids[0], done("0")), Progress::default());
-    // Item 0's second job fails: only its own unfinished sibling is cancelled.
+    // Item 0's second job fails: only its own unfinished sibling is cancelled, and its finished
+    // sibling's result is let go for the host to hold (#611).
     let progress = run.job_failed(&kinds, ids[1], "provider said no");
     assert_eq!(progress.cancel, vec![ids[2]]);
+    assert_eq!(progress.dropped, vec![ids[0]]);
     assert!(progress.failed.is_empty() && progress.finished.is_empty(), "item 1 is still running");
-    // The cancelled sibling's late report changes nothing.
+    assert!(run.is_running(id(2)) && !run.has_failed(id(2)));
+    // The cancelled sibling's late result is let go too, once.
+    assert_eq!(run.job_done(&kinds, ids[2], done("2")), Progress { dropped: vec![ids[2]], ..Progress::default() });
     assert_eq!(run.job_done(&kinds, ids[2], done("2")), Progress::default());
     let mut last = Progress::default();
     for (n, job) in ids[3..].iter().enumerate() {

@@ -392,8 +392,8 @@ fn fan_out_runs_every_branch_and_a_failed_job_cancels_its_siblings() {
     assert!(failed.is_empty());
     assert_eq!((output(&finished, 3), output(&finished, 4)), ("((fox))".into(), "((fox))".into()));
 
-    // A three-job step: one job fails; the two others are to be cancelled, and a late report
-    // from one of them changes nothing.
+    // A three-job step: one job fails; the other unfinished one is to be cancelled, a late report
+    // with no result changes nothing, and a late result is let go for the host (#611).
     let mut kinds = kinds;
     let pieces = NodeDescriptor {
         id: "test.pieces".into(),
@@ -423,10 +423,14 @@ fn fan_out_runs_every_branch_and_a_failed_job_cancels_its_siblings() {
     let ids: Vec<JobId> = first.jobs.iter().map(|j| j.id).collect();
     assert_eq!(ids.len(), 3);
     assert!(run.job_done(&kinds, ids[0], vec![("items".into(), Value::Text("0".into()))]).finished.is_empty());
+    assert!(run.is_running(id(2)));
     let progress = run.job_failed(&kinds, ids[1], "no");
     assert_eq!(progress.cancel, vec![ids[2]]);
     assert_eq!(progress.failed.len(), 1);
+    assert!(progress.dropped.is_empty(), "the failed step's own results are the host's to hold");
+    assert!(run.has_failed(id(2)) && !run.is_running(id(2)));
     assert_eq!(run.job_done(&kinds, ids[2], vec![]), Progress::default());
+    assert_eq!(run.job_done(&kinds, ids[0], vec![("items".into(), Value::Text("0".into()))]), Progress::default(), "a repeated report");
     assert!(run.is_finished());
 }
 
