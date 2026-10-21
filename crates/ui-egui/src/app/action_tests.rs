@@ -165,3 +165,18 @@ fn render_look_action_review_evidence() {
     h.run();
     h.render().unwrap().save(folder.join("look-actions.png")).unwrap();
 }
+
+#[test]
+fn split_and_extract_cards_show_their_generated_controls() {
+    let app = with_kinds(&nodecraft_nodes::video_split::IDS, 2, 640.0);
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1800.0, 1200.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.step();
+    for label in ["Split video", "Extract sound", "Parts"] {
+        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+    }
+    // The part length and the scene settings show only once the split asks for them.
+    assert!(h.query_by_label_contains("Part length").is_none());
+    assert!(h.query_by_label_contains("Shortest part").is_none());
+}

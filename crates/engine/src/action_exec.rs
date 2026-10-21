@@ -318,6 +318,7 @@ pub(crate) mod timeline;
 mod video;
 mod video_frames;
 mod video_look;
+mod video_split;
 
 impl LocalActions {
     fn shader(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
@@ -368,6 +369,7 @@ impl ActionExecutor for LocalActions {
             || nodecraft_nodes::video_edit::IDS.contains(&action)
             || nodecraft_nodes::video_frames::IDS.contains(&action)
             || nodecraft_nodes::video_look::IDS.contains(&action)
+            || nodecraft_nodes::video_split::IDS.contains(&action)
     }
 
     fn execute_cancellable(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
@@ -382,6 +384,9 @@ impl ActionExecutor for LocalActions {
         }
         if nodecraft_nodes::video_look::IDS.contains(&action) {
             return self.video_look(action, params, inputs, cancelled);
+        }
+        if nodecraft_nodes::video_split::IDS.contains(&action) {
+            return self.video_split(action, params, inputs, cancelled);
         }
         self.execute(action, params, inputs)
     }
@@ -398,6 +403,9 @@ impl ActionExecutor for LocalActions {
         }
         if nodecraft_nodes::video_look::IDS.contains(&action) || action == nodecraft_nodes::video_look::DUPLICATE {
             return self.video_look(action, params, inputs, &|| false);
+        }
+        if nodecraft_nodes::video_split::IDS.contains(&action) {
+            return self.video_split(action, params, inputs, &|| false);
         }
         if action == nodecraft_nodes::shader::ID {
             return self.shader(params, inputs);

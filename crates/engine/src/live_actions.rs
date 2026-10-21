@@ -164,6 +164,7 @@ fn renders_video(kind: &str) -> bool {
         || nodecraft_nodes::video_edit::IDS.contains(&kind)
         || nodecraft_nodes::video_frames::IDS.contains(&kind)
         || nodecraft_nodes::video_look::IDS.contains(&kind)
+        || nodecraft_nodes::video_split::IDS.contains(&kind)
 }
 
 /// Whether nodes of `kind` refresh live: actions, and technique nodes made only of local work.

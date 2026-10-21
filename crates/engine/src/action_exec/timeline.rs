@@ -85,8 +85,8 @@ pub(super) mod native {
     use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
-        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, Placement, Quality, RenderedVideo, ServiceConfig, Source, ToolPaths, VideoError,
-        VideoJob, VideoLimits, VideoService,
+        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, Placement, Quality, RenderedVideo, ServiceConfig, Source, ToolPaths, VideoChunk,
+        VideoError, VideoJob, VideoLimits, VideoService,
     };
     use nodecraft_nodes::timeline::{Timeline, caption};
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
@@ -399,6 +399,33 @@ pub(super) mod native {
             self.keep(service, &rendered, size, duration_us, true, cancelled)
         }
 
+        /// A rendered file `bytes_len` long (at most [`MAX_RENDER_BYTES`]), read back a chunk at a
+        /// time with `read` and staged under its hash.
+        pub(in crate::action_exec) fn read_back(
+            &self,
+            bytes_len: u64,
+            read: &dyn Fn(u64, usize) -> Result<VideoJob<VideoChunk>, VideoError>,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<Blake3, String> {
+            if bytes_len > MAX_RENDER_BYTES {
+                return Err(format!("the rendered file is larger than {} MiB; make it shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
+            }
+            let too_large = |_| "the rendered file is too large".to_owned();
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(usize::try_from(bytes_len).map_err(too_large)?).map_err(|_| "the rendered file is too large")?;
+            while (bytes.len() as u64) < bytes_len {
+                let length = usize::try_from(CHUNK.min(bytes_len.saturating_sub(bytes.len() as u64))).map_err(too_large)?;
+                let chunk = wait(read(bytes.len() as u64, length).map_err(|error| message(closed(error)))?, cancelled).map_err(message)?;
+                if chunk.bytes().is_empty() {
+                    return Err("the rendered file ended early".into());
+                }
+                bytes.extend_from_slice(chunk.bytes());
+            }
+            let hash = Blake3::from_bytes(*blake3::hash(&bytes).as_bytes());
+            self.videos.lock().unwrap_or_else(PoisonError::into_inner).insert(hash, Arc::from(bytes));
+            Ok(hash)
+        }
+
         /// `rendered` read back from `service` and staged as a `size` WebM `duration_us` long,
         /// with stereo sound when `sound`.
         pub(in crate::action_exec) fn keep(
@@ -414,17 +441,7 @@ pub(super) mod native {
             if bytes_len > MAX_RENDER_BYTES {
                 return Err(format!("the rendered video is larger than {} MiB; make it shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
             }
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(usize::try_from(bytes_len).map_err(|_| "the rendered video is too large")?)
-                .map_err(|_| "the rendered video is too large")?;
-            while (bytes.len() as u64) < bytes_len {
-                let length = usize::try_from(CHUNK.min(bytes_len.saturating_sub(bytes.len() as u64))).map_err(|_| "the rendered video is too large")?;
-                let chunk = wait(service.read_chunk(rendered.asset(), bytes.len() as u64, length).map_err(message)?, cancelled).map_err(message)?;
-                bytes.extend_from_slice(chunk.bytes());
-            }
-            let hash = Blake3::from_bytes(*blake3::hash(&bytes).as_bytes());
-            self.videos.lock().unwrap_or_else(PoisonError::into_inner).insert(hash, Arc::from(bytes));
+            let hash = self.read_back(bytes_len, &|offset, length| service.read_chunk(rendered.asset(), offset, length), cancelled)?;
             let mime = "video/webm".parse().map_err(|_| "video/webm isn't a media type".to_owned())?;
             let meta = MediaMeta {
                 width: Some(size.0),

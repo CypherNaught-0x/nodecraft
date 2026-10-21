@@ -18,6 +18,8 @@ enum Pick {
     Count(u64),
     /// One every this many microseconds, from the start.
     Every(u64),
+    /// The first of each scene, at changes past this many thousandths of the scene score.
+    Scenes(u16),
 }
 
 /// How Long exposure blends its frames.
@@ -102,7 +104,8 @@ fn job(action: &str, params: &ParamValues, inputs: usize) -> Result<Job, String>
                     }
                     Pick::Every(every)
                 }
-                _ => return Err("the frames are one, evenly spaced or every few seconds".into()),
+                "scenes" => Pick::Scenes(super::video::thousandths(params, "threshold", 50, 1000)?),
+                _ => return Err("the frames are one, evenly spaced, every few seconds or one a scene".into()),
             };
             Job::Frames { pick, size: within(params, "size", "longest side", 16, MAX_FRAME_SIDE)? }
         }
@@ -190,7 +193,8 @@ fn spread(n: u64, start: u64, end: u64) -> Vec<u64> {
         .collect()
 }
 
-/// The times Extract frames decodes in a video `length_us` long.
+/// The times Extract frames decodes in a video `length_us` long, but for scenes (which
+/// [`scene_picks`] takes from the video's scene changes).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn picks(pick: Pick, length_us: u64) -> Result<Vec<u64>, String> {
     use super::timeline::seconds;
@@ -205,12 +209,23 @@ fn picks(pick: Pick, length_us: u64) -> Result<Vec<u64>, String> {
             }
             Ok((0..n).map(|i| i.saturating_mul(every)).collect())
         }
+        Pick::Scenes(_) => Err("scene changes are found in the video, not from its length".into()),
     }
+}
+
+/// The times Extract frames decodes for one frame a scene: the start, then each of `changes`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn scene_picks(changes: &[u64]) -> Result<Vec<u64>, String> {
+    let times: Vec<u64> = std::iter::once(0).chain(changes.iter().copied().filter(|&t| t > 0)).collect();
+    if times.len() as u64 > MAX_PICTURES {
+        return Err(format!("the video has {} scenes; Extract frames takes at most {MAX_PICTURES}, so raise the threshold", times.len()));
+    }
+    Ok(times)
 }
 
 /// The number of frames a video `length_us` long shows at `fps`, at least one.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-fn frame_count(length_us: u64, fps: (u32, u32)) -> u64 {
+pub(super) fn frame_count(length_us: u64, fps: (u32, u32)) -> u64 {
     let (n, d) = (u128::from(fps.0), u128::from(fps.1).max(1));
     let count = u128::from(length_us) * n / (d * 1_000_000);
     u64::try_from(count).unwrap_or(u64::MAX).max(1)
@@ -451,7 +466,8 @@ mod native {
     use super::super::video::{frame_for, quality};
     use super::reversible;
     use super::{
-        Exposure, Job, LocalActions, Sheet, fit, frame_count, frame_start, job, on_frame, pan_frame, picks, reversed, scaled, spread, view, within_side,
+        Exposure, Job, LocalActions, Pick, Sheet, fit, frame_count, frame_start, job, on_frame, pan_frame, picks, reversed, scaled, scene_picks, spread, view,
+        within_side,
     };
     use nodecraft_actions::image::{ImageLimits, Raster};
     use nodecraft_media::video::{
@@ -537,8 +553,12 @@ mod native {
             let at = |time| on_frame(time, fps, length);
             match job {
                 Job::Frames { pick, size } => {
+                    let times = match pick {
+                        Pick::Scenes(threshold) => scene_picks(&super::super::video_split::scenes(&service, &video, threshold, cancelled)?)?,
+                        _ => picks(pick, length)?,
+                    };
                     let mut images = Vec::new();
-                    for time in picks(pick, length)? {
+                    for time in times {
                         let frame = grab(&service, &video, at(time), (size, size), cancelled)?;
                         images.push(self.keep_frame(&frame)?);
                     }

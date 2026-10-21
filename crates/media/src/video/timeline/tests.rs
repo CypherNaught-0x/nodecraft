@@ -133,7 +133,7 @@ fn without_layers_the_graph_is_unchanged_and_with_them_tracks_stack_and_mix() {
     let s = span(0, 2_000_000);
     let plain = graph(FRAME, &[(Media::Video(&m), &s)], &[], &[]).unwrap();
     assert!(!plain.contains("overlay") && !plain.contains("amix") && plain.contains("[vout]"), "{plain}");
-    let music = AudioMetadata { duration_us: 9_000_000, stream: 0, codec: "flac", format_start: 0, stream_start: 0 };
+    let music = AudioMetadata { duration_us: 9_000_000, stream: 0, codec: "flac", format_start: 0, stream_start: 0, sample_rate: 48_000, channels: 2 };
     let mut tune = span(1_000_000, 4_000_000);
     tune.fade_out_us = 500_000;
     let mut logo = span(0, 1_000_000);
@@ -162,7 +162,15 @@ fn layers_stay_bounded() {
     assert_eq!(frames_at(1_016_000, card.fps), 30, "positions round to the nearest frame");
     assert_eq!(frame_us(45, (30, 1)), 1_500_000);
     assert_eq!(
-        graph(card, &[(Media::Audio(&AudioMetadata { duration_us: 1, stream: 0, codec: "mp3", format_start: 0, stream_start: 0 }), &span(0, 1))], &[], &[]),
+        graph(
+            card,
+            &[(
+                Media::Audio(&AudioMetadata { duration_us: 1, stream: 0, codec: "mp3", format_start: 0, stream_start: 0, sample_rate: 48_000, channels: 2 }),
+                &span(0, 1)
+            )],
+            &[],
+            &[]
+        ),
         Err(VideoError::Invalid)
     );
 }

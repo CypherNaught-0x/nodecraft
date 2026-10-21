@@ -237,6 +237,23 @@ impl RenderedVideo {
         self.asset.hash
     }
 }
+/// A video's sound written out on its own: an Ogg file, staged like any sound.
+#[derive(Clone)]
+pub struct RenderedAudio {
+    asset: AudioAsset,
+    bytes: u64,
+}
+impl RenderedAudio {
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+    pub fn asset(&self) -> &AudioAsset {
+        &self.asset
+    }
+    pub fn hash(&self) -> ContentHash {
+        self.asset.hash
+    }
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShutdownReport {
     pub children_stopped: bool,
@@ -450,17 +467,24 @@ impl VideoService {
     }
     /// Read at most 1 MiB without exposing the scratch path or doing filesystem I/O on this thread.
     pub fn read_chunk(&self, asset: &VideoAsset, offset: u64, length: usize) -> Result<VideoJob<VideoChunk>> {
-        self.check(asset)?;
+        self.read_pin(&asset.pin, offset, length)
+    }
+    /// [`VideoService::read_chunk`] for a staged sound.
+    pub fn read_audio_chunk(&self, asset: &AudioAsset, offset: u64, length: usize) -> Result<VideoJob<VideoChunk>> {
+        self.read_pin(&asset.pin, offset, length)
+    }
+    fn read_pin(&self, pin: &Arc<Pin>, offset: u64, length: usize) -> Result<VideoJob<VideoChunk>> {
+        self.check_pin(pin)?;
         if length == 0 || length > 1024 * 1024 {
             return Err(VideoError::Invalid);
         }
         let deadline = deadline_after(Duration::from_secs(15))?;
-        let asset = asset.clone();
+        let pin = Arc::clone(pin);
         self.submit(move |ctx, c| {
             check_deadline(deadline)?;
             use std::io::{Seek, SeekFrom};
             let lease = ctx.control.budget.reserve(Usage { bytes: length.saturating_add(64), ..Usage::default() })?;
-            let mut file = File::open(ctx.path(&asset)?).map_err(|_| VideoError::Io)?;
+            let mut file = File::open(ctx.pin_path(&pin)?).map_err(|_| VideoError::Io)?;
             let size = file.metadata().map_err(|_| VideoError::Io)?.len();
             let end = offset.checked_add(u64::try_from(length).map_err(|_| VideoError::Limit)?).ok_or(VideoError::Limit)?;
             if end > size {
@@ -935,6 +959,12 @@ impl Context {
     fn import_audio(&mut self, source: &[u8], cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<AudioAsset> {
         let demuxer = crate::sniff(source).and_then(|s| probe::audio_demuxer(s.mime)).ok_or(VideoError::Unsupported)?;
         let (pin, path, hash) = self.write_staged(source, &[], cancel, deadline)?;
+        let metadata = self.probe_audio(&path, demuxer, cancel, deadline)?;
+        check_deadline(deadline)?;
+        Ok(AudioAsset { pin, metadata: Arc::new(metadata), hash, demuxer })
+    }
+    /// The first decodable sound in the file at `path`, read with `demuxer`.
+    fn probe_audio(&mut self, path: &Path, demuxer: &'static str, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<AudioMetadata> {
         let _parse = self.control.budget.reserve(Usage { bytes: 2 * 1024 * 1024, ..Usage::default() })?;
         let mut args = process::args(&["-v", "error", "-max_alloc", "134217728"]);
         args.extend(probe::audio_input_args(demuxer));
@@ -948,9 +978,7 @@ impl Context {
         args.push(path.as_os_str().to_owned());
         let tool = self.config.tools.ffprobe.clone();
         let bytes = self.run(&tool, &args, None, 262144, cancel, deadline)?;
-        let metadata = probe::parse_audio(&bytes)?;
-        check_deadline(deadline)?;
-        Ok(AudioAsset { pin, metadata: Arc::new(metadata), hash, demuxer })
+        probe::parse_audio(&bytes)
     }
     /// Copy `source` into a fresh scratch record, hashing `salt` and then the bytes.
     fn write_staged(&mut self, source: &[u8], salt: &[&[u8]], cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<(Arc<Pin>, PathBuf, ContentHash)> {
@@ -1130,6 +1158,11 @@ impl Context {
     }
     /// Hash a finished output and shrink its disk reservation to the `size` it took.
     fn seal(&mut self, pin: Arc<Pin>, path: &Path, metadata: VideoMetadata, size: u64, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<VideoAsset> {
+        let hash = self.seal_file(&pin, path, size, cancel, deadline)?;
+        Ok(VideoAsset { pin, metadata: Arc::new(metadata), hash, mov: false })
+    }
+    /// The hash of the finished output at `path`, its disk reservation shrunk to `size`.
+    fn seal_file(&mut self, pin: &Pin, path: &Path, size: u64, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<ContentHash> {
         let mut file = File::open(path).map_err(|_| VideoError::Io)?;
         let mut hash = blake3::Hasher::new();
         let mut buf = [0u8; 65536];
@@ -1152,7 +1185,7 @@ impl Context {
             lease.shrink_disk(size)?;
         }
         check_deadline(deadline)?;
-        Ok(VideoAsset { pin, metadata: Arc::new(metadata), hash: ContentHash(*hash.finalize().as_bytes()), mov: false })
+        Ok(ContentHash(*hash.finalize().as_bytes()))
     }
     fn render(
         &mut self,
@@ -1295,6 +1328,7 @@ fn composite(rgba: &[u8], rgb: &mut [u8], background: [u8; 3]) -> Result<()> {
 }
 
 mod compose;
+mod extract;
 #[cfg(test)]
 mod tests;
 

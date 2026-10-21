@@ -33,6 +33,10 @@ fn settings_are_read_and_checked_before_any_video_is_imported() {
     assert_eq!(job(FRAMES, &planned(FRAMES, &[]), 1), Ok(Job::Frames { pick: Pick::Count(8), size: 1024 }));
     assert_eq!(job(FRAMES, &planned(FRAMES, &[("pick", text("one")), ("at", n(1.5))]), 1), Ok(Job::Frames { pick: Pick::One(1_500_000), size: 1024 }));
     assert_eq!(job(FRAMES, &planned(FRAMES, &[("pick", text("every")), ("every", n(0.5))]), 1), Ok(Job::Frames { pick: Pick::Every(500_000), size: 1024 }));
+    assert_eq!(job(FRAMES, &planned(FRAMES, &[("pick", text("scenes")), ("threshold", n(0.42))]), 1), Ok(Job::Frames { pick: Pick::Scenes(420), size: 1024 }));
+    let mut low = planned(FRAMES, &[("pick", text("scenes"))]);
+    low.insert("threshold".into(), n(0.01));
+    assert!(job(FRAMES, &low, 1).unwrap_err().contains("threshold"));
     assert!(job(FRAMES, &planned(FRAMES, &[]), 0).unwrap_err().contains("connect a video"));
     assert_eq!(job(CONTACT_SHEET, &planned(CONTACT_SHEET, &[]), 1), Ok(Job::Sheet { columns: 4, rows: 4, cell: 320, gap: 8, background: [0, 0, 0, 255] }));
     assert!(job(CONTACT_SHEET, &planned(CONTACT_SHEET, &[("columns", u(16)), ("rows", u(5))]), 1).unwrap_err().contains("at most 64"));
@@ -82,6 +86,12 @@ fn frames_are_taken_inside_the_video_and_never_too_many() {
     assert!(picks(Pick::One(1_000_000), 1_000_000).unwrap_err().contains("at or after the video's end"));
     assert_eq!(picks(Pick::Every(1_000_000), 2_500_000), Ok(vec![0, 1_000_000, 2_000_000]));
     assert!(picks(Pick::Every(100_000), 60_000_000).unwrap_err().contains("at most 64"));
+    assert!(picks(Pick::Scenes(300), 1_000_000).is_err());
+    // One frame a scene: the start, then each change.
+    assert_eq!(scene_picks(&[]), Ok(vec![0]));
+    assert_eq!(scene_picks(&[0, 1_500_000, 4_000_000]), Ok(vec![0, 1_500_000, 4_000_000]));
+    assert_eq!(scene_picks(&(1..64).collect::<Vec<_>>()).map(|t| t.len()), Ok(64));
+    assert!(scene_picks(&(1..65).collect::<Vec<_>>()).unwrap_err().contains("65 scenes"));
     // Every frame of a long video spread out is still inside it.
     for time in spread(MAX_PICTURES, 0, u64::MAX) {
         assert!(time < u64::MAX);
@@ -237,6 +247,9 @@ fn each_action_makes_the_pictures_or_video_it_says() {
     let pan = run(KEN_BURNS, &[("seconds", n(1.0)), ("size", u(64)), ("pan", text("right")), ("zoom_to", n(2.0))], &image).unwrap();
     assert_eq!(size(&pan), ("video/webm".to_owned(), Some(64), Some(48), Some(1000)));
 
+    // The test card has no hard cut: one frame, the first.
+    let Ok(Value::List(scenes)) = run(FRAMES, &[("pick", text("scenes")), ("size", u(32))], &video) else { panic!("scenes") };
+    assert_eq!(scenes.len(), 1);
     let error = run(FRAMES, &[("pick", text("one")), ("at", n(5.0))], &video).unwrap_err();
     assert!(error.contains("at or after the video's end"), "{error}");
     let error = run(LONG_EXPOSURE, &[("end", n(9.0))], &video).unwrap_err();
