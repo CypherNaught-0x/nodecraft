@@ -295,3 +295,88 @@ fn a_trainer_returning_another_family_s_style_keeps_nothing() {
     assert!(format!("{notices:?}").contains("different model family"), "{notices:?}");
     assert!(node(&f.session, TRAIN).active.is_none(), "no style of the wrong family is offered");
 }
+
+#[test]
+fn styles_are_listed_with_their_family_and_used_only_by_cards_that_take_them() {
+    let mut f = fixture();
+    let list = |f: &mut Fixture| f.session.dispatch("style.list", &json!({"canvas": C, "for": PAINT})).unwrap();
+    let before = list(&mut f);
+    let [untrained] = before["styles"].as_array().unwrap().as_slice() else { panic!("{before}") };
+    assert_eq!(
+        (untrained["ready"].clone(), untrained["compatible"].clone(), untrained["family"].clone()),
+        (json!(false), json!(false), json!(null)),
+        "{before}"
+    );
+    let use_it = json!({"canvas": C, "style": TRAIN, "target": PAINT, "edge": EdgeId::from_bytes([40; 16])});
+    let err = f.session.dispatch("style.use", &use_it).unwrap_err();
+    assert!(err.message.contains("run it first"), "{err:?}");
+
+    run(&mut f, TRAIN, 2_000_000);
+    let listed = list(&mut f);
+    let style = &listed["styles"][0];
+    assert_eq!(
+        (style["ready"].clone(), style["family"].clone(), style["trainer"].clone(), style["compatible"].clone()),
+        (json!(true), json!("flux-1"), json!(TRAINER), json!(true)),
+        "{listed}"
+    );
+    assert!(style["trigger"].is_string(), "{listed}");
+
+    // One changeset wires it; a second style card's style replaces it in one more.
+    let used = f.session.dispatch("style.use", &use_it).unwrap();
+    assert_eq!(used["replaced"], json!([]));
+    let wired = |f: &Fixture| -> Vec<NodeId> {
+        f.session.document().canvases().get(&C).unwrap().edges().values().filter(|e| e.to.node == PAINT && e.to.port == "style").map(|e| e.from.node).collect()
+    };
+    assert_eq!(wired(&f), [TRAIN]);
+    assert_eq!(f.session.dispatch("style.use", &use_it).unwrap_err().kind, nodecraft_types::ErrorKind::Conflict, "already wired");
+    f.session.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(wired(&f).is_empty(), "one undo step");
+    f.session.dispatch("edit.redo", &json!({})).unwrap();
+    run(&mut f, PAINT, 10_000);
+    assert!(f.mock.requests().last().unwrap().inputs.iter().any(|input| matches!(input, JobInput::Media { role, .. } if role == "style")));
+
+    // A card on another family is refused, with both families and the models that would take it.
+    let preview = f.session.dispatch("node.model_preview", &json!({"canvas":C,"nodes":[PAINT],"model":OTHER})).unwrap();
+    let commit = json!({"canvas":C,"nodes":[PAINT],"model":OTHER,"expected_revision":preview["revision"],"preview_binding":preview["binding"]});
+    f.session.dispatch("node.set_model", &commit).unwrap();
+    let listed = list(&mut f);
+    let reason = listed["styles"][0]["reason"].as_str().unwrap().to_owned();
+    assert_eq!(listed["styles"][0]["compatible"], false);
+    assert!(reason.contains("trained for flux-1") && reason.contains("takes sdxl-1") && reason.contains(PAINTER), "{reason}");
+    let again = json!({"canvas": C, "style": TRAIN, "target": PAINT, "edge": EdgeId::from_bytes([41; 16])});
+    assert!(f.session.dispatch("style.use", &again).unwrap_err().message.contains(PAINTER));
+    // Nor is a style wired into a card that isn't a generation card, or from one that isn't a style.
+    let into_picture = json!({"canvas": C, "style": TRAIN, "target": PICTURES[0], "edge": EdgeId::from_bytes([42; 16])});
+    assert!(f.session.dispatch("style.use", &into_picture).is_err());
+    let from_painter = json!({"canvas": C, "style": PAINT, "target": PAINT, "edge": EdgeId::from_bytes([43; 16])});
+    assert!(f.session.dispatch("style.use", &from_painter).unwrap_err().message.contains("Train style card"));
+}
+
+#[test]
+fn a_style_card_starts_a_card_on_a_model_that_takes_the_style() {
+    let mut f = fixture();
+    const NEW: NodeId = NodeId::from_bytes([50; 16]);
+    let params = |model: Option<&str>| {
+        let mut p = json!({"canvas": C, "style": TRAIN, "id": NEW, "edge": EdgeId::from_bytes([51; 16]), "pos": {"x": 400, "y": 300}});
+        if let Some(model) = model {
+            p["model"] = json!(model);
+        }
+        p
+    };
+    assert!(f.session.dispatch("style.card", &params(None)).unwrap_err().message.contains("run it first"));
+    run(&mut f, TRAIN, 2_000_000);
+    let refused = f.session.dispatch("style.card", &params(Some(OTHER))).unwrap_err();
+    assert!(refused.message.contains("flux-1") && refused.message.contains(PAINTER), "{refused:?}");
+    let made = f.session.dispatch("style.card", &params(None)).unwrap();
+    assert_eq!(made, json!({"id": NEW, "model": PAINTER}));
+    let card = node(&f.session, NEW).clone();
+    assert_eq!(card.params.get("model"), Some(&Value::Text(PAINTER.into())));
+    let trigger = f.session.dispatch("style.list", &json!({"canvas": C})).unwrap()["styles"][0]["trigger"].as_str().unwrap().to_owned();
+    assert!(trigger.starts_with("style "), "the mock names a trigger: {trigger:?}");
+    assert!(matches!(card.params.get("prompt"), Some(Value::Text(p)) if p.starts_with(&trigger)), "{:?}", card.params);
+    let wires: Vec<_> =
+        f.session.document().canvases().get(&C).unwrap().edges().values().filter(|e| e.to.node == NEW).map(|e| (e.from.node, e.to.port.clone())).collect();
+    assert_eq!(wires, [(TRAIN, "style".to_owned())]);
+    f.session.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(f.session.document().canvases().get(&C).unwrap().nodes().get(&NEW).is_none(), "one undo step");
+}

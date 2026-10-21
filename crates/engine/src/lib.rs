@@ -54,6 +54,7 @@ mod persistence;
 pub mod plugin_cmds;
 pub mod resolve_cmds;
 pub mod search_cmds;
+pub mod style_cmds;
 
 pub mod generation_catalog;
 pub mod interchange_cmds;
