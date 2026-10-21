@@ -53,6 +53,58 @@ fn legacy_constructor_effects_and_prior_possible_delivery_are_sticky() {
     assert!(c.finish_error().is_none());
 }
 #[test]
+fn a_documented_refusal_clears_only_the_paid_mark() {
+    // Paid and unanswered: possibly billed.
+    let c = SubmitContext::new();
+    c.arm();
+    c.paid();
+    assert!(c.finish_error().is_none());
+    // Paid and refused: not accepted.
+    let c = SubmitContext::new();
+    c.arm();
+    c.paid();
+    c.refused();
+    assert!(c.finish_error().is_some());
+    // A refusal never clears sticky evidence, before or after it was recorded.
+    for unknown_first in [true, false] {
+        let c = SubmitContext::new();
+        c.arm();
+        if unknown_first {
+            c.unknown();
+        }
+        c.paid();
+        c.refused();
+        if !unknown_first {
+            c.unknown();
+        }
+        assert!(c.finish_error().is_none());
+    }
+    // A refusal recorded before the paid mark, or for an earlier paid request, doesn't carry over.
+    let c = SubmitContext::new();
+    c.arm();
+    c.refused();
+    c.paid();
+    assert!(c.finish_error().is_none());
+    let c = SubmitContext::new();
+    c.arm();
+    c.paid();
+    c.refused();
+    c.paid();
+    assert!(c.finish_error().is_none());
+    // An unarmed scope, or a child request still out, can't certify.
+    let c = SubmitContext::new();
+    c.paid();
+    c.refused();
+    assert!(c.finish_error().is_none());
+    let c = SubmitContext::new();
+    c.arm();
+    c.paid();
+    let child = Child::new(Arc::clone(&c.state)).unwrap();
+    c.refused();
+    assert!(c.finish_error().is_none());
+    drop(child);
+}
+#[test]
 fn foreign_child_root_and_reused_proof_fail_closed() {
     for foreign_root in [false, true] {
         let c = SubmitContext::new();

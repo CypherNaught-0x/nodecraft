@@ -2154,6 +2154,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     mod native_build_tests;
     mod paid_unpriced_tests;
+    mod refused_submit_tests;
     mod reregister_retry_tests;
     mod restore_tests;
     mod stale_handle_tests;

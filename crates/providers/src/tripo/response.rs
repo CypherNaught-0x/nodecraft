@@ -35,6 +35,14 @@ fn kind(code: i64, status: u16) -> ErrorKind {
         _ => ProviderError::from_status(status, b"").kind,
     }
 }
+/// Whether a task create was refused before any task existed, by a code from Tripo's documented
+/// error table with its documented status (#631): authentication, a malformed request or
+/// parameter, a rate or generation limit, or too little credit "to create this task". Anything
+/// else, a 5xx or an unparsed body included, stays possibly billed.
+pub(super) fn refused_create(r: &HttpResponse) -> bool {
+    let Ok(envelope) = envelope(&r.body) else { return false };
+    matches!((r.status, envelope.code), (401, 1002) | (400, 1003 | 1004) | (429, 1007 | 2000) | (403, 2010))
+}
 /// A reply that fits the limit, with a failing status or nonzero code turned into an error.
 pub(super) fn check(r: &HttpResponse, l: Limits, key: &Secret) -> Result<(), ProviderError> {
     if r.body.len() > l.response_bytes {

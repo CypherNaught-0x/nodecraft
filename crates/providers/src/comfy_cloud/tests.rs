@@ -185,6 +185,51 @@ fn a_failed_upload_proves_no_job_but_a_lost_create_reply_may_hide_one() {
 }
 
 #[test]
+fn a_documented_refusal_of_the_create_proves_no_job_but_other_failures_may_hide_one() {
+    let create = |reply| {
+        let http = Transport::new(vec![object_info(), ok(json!({"id": ASSET})), reply]);
+        let scope = SubmitContext::new();
+        let error = block_on(provider(http).submit_with_delivery(&job(), &scope)).unwrap_err();
+        (error, scope.finish_error().is_some())
+    };
+    let refusal = |code: &str| json!({"error": {"code": code, "message": "no"}});
+    for (code, at, kind) in [
+        ("queue_full", 429, ErrorKind::Busy),
+        ("rate_limited", 429, ErrorKind::RateLimited),
+        ("insufficient_credits", 402, ErrorKind::Budget),
+        ("invalid_workflow", 422, ErrorKind::UnsupportedInput),
+    ] {
+        let (error, refused) = create(status(at, refusal(code)));
+        assert_eq!(error.kind, kind, "{code}");
+        assert!(refused, "{code}: Comfy made no job");
+    }
+    // A 5xx, a lost reply, an unparsed body, a code at another status or a key Comfy already took
+    // may each hide a job.
+    for (n, reply) in [
+        status(500, refusal("queue_full")),
+        status(503, json!({})),
+        Err(ProviderError::new(ErrorKind::Timeout, "lost")),
+        status(429, json!("queue_full")),
+        status(400, refusal("queue_full")),
+        status(429, refusal("busy")),
+        status(422, refusal("idempotency_key_reuse")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (_, refused) = create(reply);
+        assert!(!refused, "case {n}: the job may exist");
+    }
+    // A refusal too large to read is unread. No upload, so the limit only meets the create.
+    let big = json!({"error": {"code": "queue_full", "message": "x".repeat(64)}});
+    let http = Transport::new(vec![object_info(), status(429, big)]);
+    let small = provider(http).with_limits(Limits { response_bytes: 32, ..Limits::HARD }).unwrap();
+    let scope = SubmitContext::new();
+    assert!(block_on(small.submit_with_delivery(&job_with(json!({"workflow": workflow()}), vec![]), &scope)).is_err());
+    assert!(scope.finish_error().is_none(), "an oversized refusal isn't read");
+}
+
+#[test]
 fn a_retry_whose_key_comfy_already_took_is_reported_not_run_again() {
     let http = Transport::new(vec![
         object_info(),
