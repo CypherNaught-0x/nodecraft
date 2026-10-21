@@ -89,13 +89,45 @@ fn a_text_paste_never_reads_the_image_clipboard() {
 }
 
 #[test]
+fn command_let_go_just_before_v_still_pastes_but_a_typed_v_never_does() {
+    let mut h = harness();
+    let reads = clipboard(&mut h, || Ok(Some(grey(3, 3))));
+    let at = Pos2::new(600.0, 300.0);
+    h.hover_at(at);
+    h.run();
+    let v = |pressed| egui::Event::Key { key: egui::Key::V, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+    // A typed v: its press is reported, so its release is no paste, even with ⌘ just held.
+    h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    h.step();
+    h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.input_mut().events.push(v(true));
+    h.step();
+    h.input_mut().events.push(v(false));
+    h.step();
+    finish(&mut h);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let count = nodes(&h).len();
+    // ⌘V whose press egui swallowed, with ⌘ let go first: the bare release pastes.
+    h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    h.step();
+    h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.step();
+    h.input_mut().events.push(v(false));
+    h.step();
+    finish(&mut h);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(nodes(&h).len(), count + 1, "{:?}", h.state().notice);
+}
+
+#[test]
 fn an_empty_unreadable_or_oversized_clipboard_adds_nothing_and_says_why() {
     let mut h = harness();
     let count = nodes(&h).len();
-    let cases: [(Answer, &str); 4] = [
+    let cases: [(Answer, &str); 5] = [
         (|| Ok(None), "The clipboard holds no image or text to paste."),
         (|| Err("The copied image can't be read; nothing was pasted.".into()), "The copied image can't be read; nothing was pasted."),
         (|| Ok(Some(Picture { width: 16_385, height: 1, rgba: Vec::new() })), "Copied images are at most 16384×16384 pixels; nothing was pasted."),
+        (|| Ok(Some(Picture { width: 16_384, height: 4097, rgba: Vec::new() })), "Copied images are at most 67 megapixels; nothing was pasted."),
         (|| Ok(Some(Picture { width: 4, height: 4, rgba: vec![0; 3] })), "The copied image can't be read; nothing was pasted."),
     ];
     for (picture, notice) in cases {

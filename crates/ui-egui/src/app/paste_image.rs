@@ -2,6 +2,8 @@
 //! and reports nothing for the press when the clipboard holds no text, but it still reports the
 //! key's release. A ⌘V release with no text paste since the last one reads the image through the
 //! host clipboard off the UI thread; a later frame imports it through the same path as a drop.
+//! ⌘ is often let go a moment before V, so a V release whose press was never reported counts too
+//! when ⌘ was held just before it.
 use super::NodeCraftApp;
 use crate::{ids, theme::Tokens};
 use egui::Pos2;
@@ -11,6 +13,11 @@ use std::sync::{Arc, mpsc};
 
 /// The largest side a pasted image may have, as for any image NodeCraft decodes.
 const MAX_SIDE: u32 = 16_384;
+/// The most pixels a pasted image may have (8192×8192): the RGBA buffer is copied once to encode
+/// it, so this bounds that peak to about 512 MiB. The host clipboard's own buffer can't be capped.
+const MAX_PIXELS: usize = 8192 * 8192;
+/// How long after ⌘ was last held a V release whose press went unreported still pastes, in seconds.
+const COMMAND_GRACE: f64 = 0.5;
 
 /// Pixels read from the clipboard: 8-bit RGBA, row-major.
 pub(super) struct Picture {
@@ -44,10 +51,40 @@ pub(super) struct ImagePaste {
     pending: Option<Pending>,
     /// A text paste arrived since the last ⌘V release, so that release was a text paste.
     text_seen: bool,
+    /// V's press was reported (typed, not a paste), so its release isn't a paste.
+    v_down: bool,
+    /// When ⌘ was last seen held, in egui input time.
+    command_at: Option<f64>,
 }
 impl ImagePaste {
     pub(super) fn new() -> Self {
-        Self { reader: Arc::new(system), pending: None, text_seen: false }
+        Self { reader: Arc::new(system), pending: None, text_seen: false, v_down: false, command_at: None }
+    }
+
+    /// Reads this frame's events: whether a ⌘V was released (a text paste latches `text_seen`).
+    fn released(&mut self, input: &egui::InputState) -> bool {
+        let mut released = false;
+        for event in &input.events {
+            match event {
+                egui::Event::Paste(_) => self.text_seen = true,
+                egui::Event::Key { key: egui::Key::V, pressed: true, .. } => self.v_down = true,
+                egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } => {
+                    let recent = self.command_at.is_some_and(|at| input.time - at <= COMMAND_GRACE);
+                    released |= modifiers.command || (!self.v_down && recent);
+                    self.v_down = false;
+                }
+                _ => {}
+            }
+            if let egui::Event::Key { modifiers, .. } = event
+                && modifiers.command
+            {
+                self.command_at = Some(input.time);
+            }
+        }
+        if input.modifiers.command {
+            self.command_at = Some(input.time);
+        }
+        released
     }
 }
 
@@ -72,6 +109,9 @@ fn encode(picture: &Picture) -> Result<Vec<u8>, String> {
     let too_big = || format!("Copied images are at most {MAX_SIDE}×{MAX_SIDE} pixels; nothing was pasted.");
     let width = u32::try_from(picture.width).ok().filter(|w| *w <= MAX_SIDE).ok_or_else(too_big)?;
     let height = u32::try_from(picture.height).ok().filter(|h| *h <= MAX_SIDE).ok_or_else(too_big)?;
+    if picture.width.checked_mul(picture.height).is_none_or(|pixels| pixels > MAX_PIXELS) {
+        return Err(format!("Copied images are at most {} megapixels; nothing was pasted.", MAX_PIXELS / 1_000_000));
+    }
     let limits = nodecraft_media::Limits { max_width: MAX_SIDE, max_height: MAX_SIDE, ..Default::default() };
     let png = nodecraft_media::encode_png(width, height, &picture.rgba, &limits).map_err(|e| {
         log::warn!("clipboard image not encodable: {e}");
@@ -84,12 +124,10 @@ fn encode(picture: &Picture) -> Result<Vec<u8>, String> {
 }
 
 impl NodeCraftApp {
-    /// Called with this frame's clipboard input: whether a text paste arrived, and whether ⌘V
-    /// was released. `ready` is false while something else owns the canvas keys.
-    pub(super) fn image_paste_keys(&mut self, ui: &egui::Ui, t: &Tokens, text_pasted: bool, released: bool, ready: bool) {
-        if text_pasted {
-            self.image_paste.text_seen = true;
-        }
+    /// Watches this frame's keys for a ⌘V without text. `ready` is false while something else
+    /// owns the canvas keys.
+    pub(super) fn image_paste_keys(&mut self, ui: &egui::Ui, t: &Tokens, ready: bool) {
+        let released = ui.input(|input| self.image_paste.released(input));
         if !released {
             return;
         }

@@ -1140,15 +1140,7 @@ impl NodeCraftApp {
                 || self.drop_pointer_owned();
             // egui reports no ⌘V press when the clipboard holds no text, only its release (#319).
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                let (text_pasted, released) = ui.input(|input| {
-                    (
-                        input.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
-                        input.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)),
-                    )
-                });
-                self.image_paste_keys(ui, t, text_pasted, released, !busy);
-            }
+            self.image_paste_keys(ui, t, !busy);
             let (copy, cut, pasted, duplicate) = ui.input_mut(|input| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {
