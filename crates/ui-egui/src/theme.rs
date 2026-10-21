@@ -148,6 +148,11 @@ pub struct Tokens {
     /// App mode (#95): the width of its form and side of a result or media thumbnail.
     pub app_form_width: f32,
     pub app_thumbnail: f32,
+    /// The Timeline editor (#109): the height of its clip track and time ruler, and how near
+    /// (screen points) a clip's edge the pointer must be to trim it.
+    pub timeline_track_height: f32,
+    pub timeline_ruler_height: f32,
+    pub timeline_trim_grip: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -255,6 +260,9 @@ pub const DARK: Tokens = Tokens {
     layer_rotate_offset: 24.0,
     app_form_width: 640.0,
     app_thumbnail: 120.0,
+    timeline_track_height: 84.0,
+    timeline_ruler_height: 22.0,
+    timeline_trim_grip: 6.0,
 };
 
 pub const LIGHT: Tokens = Tokens {

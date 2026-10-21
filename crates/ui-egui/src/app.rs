@@ -359,6 +359,7 @@ mod stale_badges;
 pub mod storage;
 mod tags;
 mod technique_menu;
+mod timeline_editor;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
 
@@ -452,6 +453,7 @@ pub struct NodeCraftApp {
     /// The mask editor (#102), while open.
     mask_editor: Option<mask_editor::MaskEditor>,
     layer_editor: Option<layer_editor::LayerEditor>,
+    timeline_editor: Option<timeline_editor::TimelineEditor>,
     /// App mode's form (#95), while it is open.
     app_mode: Option<app_mode::AppMode>,
     /// A result's save dialog (#557), while open.
@@ -658,6 +660,10 @@ impl NodeCraftApp {
         self.videos.configure(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // Timelines render with the same tools the cards play with.
+            if let Some(runs) = self.runs.as_mut() {
+                runs.set_video_tools(settings.media.tools());
+            }
             self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
         }
         theme::apply(ctx, self.theme);
@@ -845,6 +851,7 @@ impl NodeCraftApp {
             reader: None,
             mask_editor: None,
             layer_editor: None,
+            timeline_editor: None,
             app_mode: None,
             exports: Default::default(),
             model_frame_owned: false,
@@ -978,6 +985,7 @@ impl NodeCraftApp {
         model_blocks |= self.run_overlay(ui);
         model_blocks |= self.mask_overlay(ui);
         model_blocks |= self.layer_overlay(ui);
+        model_blocks |= self.timeline_overlay(ui);
         if self.on_sheet() {
             self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
@@ -1234,6 +1242,7 @@ impl NodeCraftApp {
         let mut mask_request = None;
         let mut layers_request = None;
         let mut reader_request = None;
+        let mut timeline_request = None;
         let mut element_request = false;
         let mut technique_request = None;
         let mut wire_command = None;
@@ -1245,6 +1254,7 @@ impl NodeCraftApp {
         let mut mask_after = None;
         let mut layers_after = None;
         let mut reader_after = None;
+        let mut timeline_after = None;
         let mut element_after = false;
         let mut technique_after = None;
         let mut tag_action = None;
@@ -1518,6 +1528,10 @@ impl NodeCraftApp {
                                 layers_request = Some(node.id);
                                 ui.close();
                             }
+                            if node.kind == nodecraft_nodes::timeline::ID && ui.button("Edit timeline…").clicked() {
+                                timeline_request = Some(node.id);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::mask::ID {
                                 if ui.button("Paint mask…").clicked() {
                                     mask_request = Some((node.id, false));
@@ -1705,6 +1719,7 @@ impl NodeCraftApp {
             mask_after = mask_request;
             layers_after = layers_request;
             reader_after = reader_request;
+            timeline_after = timeline_request;
             element_after = element_request;
             technique_after = technique_request;
             if let Some(marquee) = &mut self.marquee
@@ -1758,6 +1773,9 @@ impl NodeCraftApp {
         }
         if let Some(node) = layers_after {
             self.open_layer_editor(node);
+        }
+        if let Some(node) = timeline_after {
+            self.open_timeline_editor(node);
         }
         match mask_after {
             Some((node, true)) => self.open_mask_editor_for(node),
@@ -2626,6 +2644,8 @@ mod technique_menu_tests;
 mod tests;
 #[cfg(test)]
 mod text_card_tests;
+#[cfg(test)]
+mod timeline_editor_tests;
 #[cfg(test)]
 mod video559_tests;
 #[cfg(test)]

@@ -38,10 +38,10 @@ fn every_action_kind_runs_with_its_defaults() {
     let document = pdf_value(&mut assets, &[PAGE]);
     let actions = LocalActions::new(assets);
     let mut ran = 0;
-    // The custom shader and 3D captures need a GPU: their own tests run them. An Element plans
-    // source jobs, not an action.
-    let gpu = ["image.shader", nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS];
-    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && !gpu.contains(&d.id.as_str()) && d.id != nodecraft_nodes::element::ID) {
+    // The custom shader and 3D captures need a GPU and the timeline ffmpeg: their own tests run
+    // them. An Element plans source jobs, not an action.
+    let skipped = ["image.shader", nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS, nodecraft_nodes::element::ID, nodecraft_nodes::timeline::ID];
+    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && !skipped.contains(&d.id.as_str())) {
         let input = if descriptor.id.starts_with("image.") {
             image.clone()
         } else if descriptor.id.starts_with("mesh.") {

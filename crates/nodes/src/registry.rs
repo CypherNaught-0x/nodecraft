@@ -34,6 +34,7 @@ impl Registry {
         registry.register(Box::new(crate::document::pages_kind()))?;
         registry.register(Box::new(crate::document::text_kind()))?;
         registry.register(Box::new(crate::layers::kind()))?;
+        registry.register(Box::new(crate::timeline::kind()))?;
         registry.register(Box::new(crate::element::kind()))?;
         Ok(registry)
     }

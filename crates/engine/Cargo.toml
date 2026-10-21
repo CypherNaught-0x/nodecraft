@@ -42,6 +42,8 @@ serde_path_to_error.workspace = true
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 # The run journal (#508) is replaced atomically, so a crash mid-save keeps the last one.
 craft-atomic.workspace = true
+# Timeline renders (#109) run the ffmpeg the settings name; browsers have no video service.
+nodecraft-media = { workspace = true, features = ["video"] }
 
 [dev-dependencies]
 nodecraft-media = { workspace = true, features = ["fixtures"] }

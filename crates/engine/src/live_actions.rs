@@ -62,10 +62,12 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
         failed.iter().filter(|(id, hash)| nodecraft_exec::staleness::input_hash(live, kinds, **id).is_ok_and(|now| now == **hash)).map(|(id, _)| *id).collect();
     let stale = nodecraft_exec::staleness::stale(live, kinds)?;
     let category = |id: &NodeId| live.nodes().get(id).and_then(|n| kinds.get(&n.kind).ok()).map(|k| k.descriptor().category);
-    // Stale action nodes, and ones with no result yet.
+    // Stale action nodes, and ones with no result yet. A Timeline renders a video, which takes
+    // too long to redo on every edit: it runs when asked.
     let wanted: BTreeSet<NodeId> = live
         .nodes()
         .iter()
+        .filter(|(_, node)| node.kind != nodecraft_nodes::timeline::ID)
         .filter(|(id, node)| category(id) == Some(Category::Action) && !skip.contains(id) && (node.active.is_none() || stale.contains(id)))
         .map(|(id, _)| *id)
         .collect();

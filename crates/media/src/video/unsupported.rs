@@ -68,6 +68,9 @@ impl VideoService {
     pub fn render(&self, _: RenderSpec) -> Result<(FrameSender, VideoJob<RenderedVideo>)> {
         Err(VideoError::Unsupported)
     }
+    pub fn compose(&self, _: ComposeSpec) -> Result<VideoJob<RenderedVideo>> {
+        Err(VideoError::Unsupported)
+    }
     pub fn read_chunk(&self, _: &VideoAsset, _: u64, _: usize) -> Result<VideoJob<VideoChunk>> {
         Err(VideoError::Unsupported)
     }

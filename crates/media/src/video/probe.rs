@@ -184,7 +184,21 @@ pub(super) fn parse(bytes: &[u8], policy: ColorPolicy) -> Result<VideoMetadata> 
         stream_start,
         timebase: tb,
         frames: text(s, "nb_read_frames").and_then(|v| v.parse().ok()),
+        audio: audio(streams),
     })
+}
+/// The first audio stream, if its codec is one of the few we decode; any other audio is ignored.
+fn audio(streams: &[Value]) -> Option<(u32, &'static str)> {
+    let s = streams.iter().find(|s| text(s, "codec_type") == Some("audio"))?;
+    let codec = match text(s, "codec_name")? {
+        "aac" => "aac",
+        "opus" => "opus",
+        "vorbis" => "vorbis",
+        "mp3" => "mp3",
+        "flac" => "flac",
+        _ => return None,
+    };
+    Some((u32::try_from(number(s, "index").ok()?).ok()?, codec))
 }
 pub(super) fn input_args(mov: bool) -> Vec<std::ffi::OsString> {
     let mut a = process::args(&[
@@ -356,5 +370,16 @@ mod tests {
         }
         value["format"]["duration"] = "8".into();
         assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().duration_us, 3_000_000);
+    }
+    #[test]
+    fn only_known_audio_codecs_are_kept() {
+        let mut value = metadata();
+        assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().audio, None);
+        let streams = value["streams"].as_array_mut().unwrap();
+        streams.push(serde_json::json!({"index":1,"codec_type":"audio","codec_name":"ac3"}));
+        streams.push(serde_json::json!({"index":2,"codec_type":"audio","codec_name":"aac"}));
+        assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().audio, None);
+        value["streams"][1]["codec_name"] = "opus".into();
+        assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().audio, Some((1, "opus")));
     }
 }

@@ -16,6 +16,8 @@ use std::{
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod probe;
+mod timeline;
+pub use timeline::{ComposeClip, ComposeSpec, MAX_CLIPS, MAX_DURATION_US, MAX_VOLUME, MIN_TRANSITION_US};
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
 mod quota;
@@ -116,6 +118,14 @@ impl VideoLimits {
         self.input = bytes;
         Ok(self)
     }
+    /// Caps each rendered file, so an encode stops once it outgrows what the caller keeps.
+    pub fn lower_output(mut self, bytes: u64) -> Result<Self> {
+        if bytes == 0 || bytes > self.output {
+            return Err(VideoError::Invalid);
+        }
+        self.output = bytes;
+        Ok(self)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ToolPaths {
@@ -179,6 +189,13 @@ pub struct VideoMetadata {
     pub(crate) stream_start: i128,
     pub(crate) timebase: (u64, u64),
     pub(crate) frames: Option<u64>,
+    /// First decodable audio stream: its index and FFmpeg decoder name.
+    pub(crate) audio: Option<(u32, &'static str)>,
+}
+impl VideoMetadata {
+    pub fn has_audio(&self) -> bool {
+        self.audio.is_some()
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameRequest {

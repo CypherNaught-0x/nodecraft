@@ -7,25 +7,46 @@
 //! staged images are dropped with it. Nothing here touches the document.
 //!
 //! Image work is CPU work: the host runs action jobs off the UI thread (a worker runtime), and
-//! the GPU path (#89) is a later step.
+//! the GPU path (#89) is a later step. A rendered timeline (#109) may be larger than the
+//! project's resident limit, so it is staged on its own ([`LocalActions::staged_videos`]) and
+//! the host streams it in.
 use nodecraft_actions::image::{CpuExecutor, ImageLimits, ImageRequest, ImageResult, Raster};
 use nodecraft_actions::text::{self, ConcatOptions, MatchMode, ReplaceOptions, SplitMode, TextRequest, TextResult};
 use nodecraft_exec::run::ActionExecutor;
 use nodecraft_format::AssetStore;
-use nodecraft_types::{AssetRef, MediaMeta, ParamValues, Value};
+use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
 use serde_json::{Map, Value as Json, json};
-use std::sync::{Mutex, PoisonError};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// Actions run against a snapshot of the project's assets.
 pub struct LocalActions {
     assets: AssetStore,
     staged: Mutex<AssetStore>,
+    /// Rendered videos, by content hash.
+    videos: Mutex<BTreeMap<Blake3, Arc<[u8]>>>,
+    /// ffmpeg and ffprobe, from the settings; renders refuse to run without them.
+    video: Option<(PathBuf, PathBuf)>,
 }
 
 impl LocalActions {
     /// Actions reading `assets` (a cheap clone of the session's store: buffers are shared).
     pub fn new(assets: AssetStore) -> Self {
-        Self { assets, staged: Mutex::new(AssetStore::default()) }
+        Self { assets, staged: Mutex::new(AssetStore::default()), videos: Mutex::default(), video: None }
+    }
+
+    /// Renders timelines with these tools (`[media]` in the settings; see
+    /// `MediaSettings::tools`). Never take them from a project.
+    pub fn with_video_tools(mut self, tools: Option<(PathBuf, PathBuf)>) -> Self {
+        self.video = tools;
+        self
+    }
+
+    /// The videos rendered so far, kept for later actions in the run, for the host to import
+    /// by streaming (they may be over the resident limit).
+    pub fn staged_videos(&self) -> Vec<(Blake3, Arc<[u8]>)> {
+        self.videos.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|(hash, bytes)| (*hash, Arc::clone(bytes))).collect()
     }
 
     /// The images actions made since the last call, for the host to import.
@@ -293,6 +314,7 @@ pub(crate) mod layers;
 mod mesh;
 mod mesh_capture;
 mod shader_state;
+pub(crate) mod timeline;
 
 impl LocalActions {
     fn shader(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
@@ -338,7 +360,21 @@ impl LocalActions {
 }
 
 impl ActionExecutor for LocalActions {
+    fn long_running(&self, action: &str) -> bool {
+        action == nodecraft_nodes::timeline::ID
+    }
+
+    fn execute_cancellable(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
+        if action == nodecraft_nodes::timeline::ID {
+            return self.timeline(params, inputs, cancelled);
+        }
+        self.execute(action, params, inputs)
+    }
+
     fn execute(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        if action == nodecraft_nodes::timeline::ID {
+            return self.timeline(params, inputs, &|| false);
+        }
         if action == nodecraft_nodes::shader::ID {
             return self.shader(params, inputs);
         }

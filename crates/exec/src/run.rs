@@ -1187,6 +1187,49 @@ pub fn take_outputs(outputs: &Outputs, job: JobId) -> Vec<(String, Value)> {
 /// project's assets. An error is a message for the person; it never panics.
 pub trait ActionExecutor: crate::driver::MaybeSendSync {
     fn execute(&self, action: &str, params: &nodecraft_types::ParamValues, inputs: &[Value]) -> Result<Value, String>;
+
+    /// [`ActionExecutor::execute`] for work long enough to stop early: `cancelled` turns true
+    /// once the run is cancelled. Quick actions needn't look.
+    fn execute_cancellable(
+        &self,
+        action: &str,
+        params: &nodecraft_types::ParamValues,
+        inputs: &[Value],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value, String> {
+        let _ = cancelled;
+        self.execute(action, params, inputs)
+    }
+
+    /// Whether `action` can take minutes (a video render), so it gets a thread of its own rather
+    /// than holding one of the runtime's. Natively only: the browser runs every action in place.
+    fn long_running(&self, action: &str) -> bool {
+        let _ = action;
+        false
+    }
+}
+
+/// Runs one action job on `actions`: a long one on its own thread, natively.
+async fn execute(
+    actions: Arc<dyn ActionExecutor>,
+    action: String,
+    params: nodecraft_types::ParamValues,
+    inputs: Vec<Value>,
+    cancel: crate::driver::CancelToken,
+) -> Result<Value, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if actions.long_running(&action) {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let spawned = std::thread::Builder::new().name("nodecraft-action".into()).spawn(move || {
+            let _ = sender.send(actions.execute_cancellable(&action, &params, &inputs, &|| cancel.is_cancelled()));
+        });
+        return match spawned {
+            // A thread that ends without an answer panicked; its job fails rather than the run.
+            Ok(_) => receiver.await.unwrap_or_else(|_| Err("the action stopped unexpectedly".into())),
+            Err(_) => Err("the action's thread couldn't start".into()),
+        };
+    }
+    actions.execute_cancellable(&action, &params, &inputs, &|| cancel.is_cancelled())
 }
 
 /// Runs jobs that need no provider: a [`JobSpec::Source`] emits its value, and a
@@ -1226,12 +1269,14 @@ impl crate::driver::JobRunner for SourceRunner {
                     Outcome::Done
                 }
                 Some(JobSpec::Generate { .. }) => Outcome::Failed { error: format!("{} needs a provider runner", start.job), transient: false },
-                Some(JobSpec::Action { action, params, inputs, output, .. }) => match actions.as_ref().map(|a| a.execute(&action, &params, &inputs)) {
-                    Some(Ok(value)) => {
-                        outputs.lock().unwrap_or_else(PoisonError::into_inner).insert(start.job, vec![(output, value)]);
-                        Outcome::Done
-                    }
-                    Some(Err(error)) => Outcome::Failed { error, transient: false },
+                Some(JobSpec::Action { action, params, inputs, output, .. }) => match actions {
+                    Some(actions) => match execute(actions, action, params, inputs, cancel.clone()).await {
+                        Ok(value) => {
+                            outputs.lock().unwrap_or_else(PoisonError::into_inner).insert(start.job, vec![(output, value)]);
+                            Outcome::Done
+                        }
+                        Err(error) => Outcome::Failed { error, transient: false },
+                    },
                     None => Outcome::Failed { error: "this host can't run actions".into(), transient: false },
                 },
                 None => Outcome::Failed { error: format!("{} has no work registered", start.job), transient: false },

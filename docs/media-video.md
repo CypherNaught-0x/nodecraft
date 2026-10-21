@@ -2,8 +2,9 @@
 
 With the optional `nodecraft-media/video` feature, `video::VideoService` imports bounded media,
 decodes preview frames, supports latest-request-wins scrubbing, and encodes a stream of RGBA
-frames to VP9 WebM. The desktop app uses it to play videos on cards (see "On cards" below); it
-is not a timeline and not an engine command. It does not call providers. The default media
+frames to VP9 WebM, and stitches staged clips into one WebM (see "Compose" below). The desktop
+app uses it to play videos on cards (see "On cards" below); the service itself is not an engine
+command. It does not call providers. The default media
 build is unchanged.
 
 ## Tools and platforms
@@ -75,6 +76,33 @@ path is exposed. The example explicitly creates a new destination file and expor
 ```sh
 cargo run -p nodecraft-media --features video --example video_roundtrip --   /absolute/ffmpeg /absolute/ffprobe /new/output.webm
 ```
+
+## Compose
+
+`VideoService::compose(ComposeSpec)` renders a timeline of staged clips in one FFmpeg run and
+returns the same verified `RenderedVideo` as a render. It shares the single render slot.
+
+- **Clips.** `ComposeClip::new(asset, in_us, out_us)` takes a span of an imported asset. Add
+  `with_fades` (to and from the background colour, and silence), `with_volume` (thousandths, up to
+  4.0×, or muted) and `with_transition` (a cross-dissolve of picture and sound into the next clip,
+  at least 10 ms).
+- **Spec.** `ComposeSpec::new` uses the frame rules of `RenderSpec`. It takes 1 to 32 clips and at
+  most an hour of output. Every clip must show for at least one frame outside the transitions it
+  takes part in, and the last clip has no transition.
+- **Picture.** Each clip is converted from its declared colour to BT.709, rotated, and fitted
+  inside the frame at its display aspect, with letterbox bars in the background colour. It is then
+  resampled to the output rate and padded or trimmed to exactly its span. Cuts concatenate;
+  transitions use `xfade` at the running length.
+- **Sound.** Only the first AAC, Opus, Vorbis, MP3 or FLAC stream of a clip is used, resampled to
+  48 kHz stereo. A clip with no usable audio, or a muted one, contributes silence, so the output
+  always has an Opus track. Transitions use `acrossfade`.
+- **Capabilities.** On top of what opening the service checks, compose needs the `xfade`,
+  `acrossfade`, `tpad` and `anullsrc` filters, the `libopus` encoder, and a decoder for each audio
+  codec in use. It fails as Unsupported without them.
+- **Verification.** The output is probed for its size, rate, audio, frame count and running time
+  (each within two frames) before it is accepted.
+- **Command line.** Every number on it is formatted from validated integers. No project or caller
+  string reaches FFmpeg.
 
 ## Limits, cancellation and cleanup
 

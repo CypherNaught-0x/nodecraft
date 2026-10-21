@@ -215,6 +215,11 @@ impl Runs {
         })
     }
 
+    /// The ffmpeg and ffprobe the settings name, for the Timeline's renders (#109).
+    pub(super) fn set_video_tools(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {
+        self.host.set_video_tools(tools);
+    }
+
     /// Keeps runs in the journal at `path` across restarts (see the module docs), restoring
     /// what it holds, and held results in the `held` folder beside it (#614). Call before
     /// [`Self::install`], and only while this window owns `path`.
