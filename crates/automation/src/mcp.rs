@@ -175,6 +175,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     "app.restart_to_update",
     "keys.set",
     "keys.remove",
+    // Writing files on this machine is the person's call, as saving the project is (#557).
+    "history.export",
     "file.open",
     "file.save",
     "file.save_as",

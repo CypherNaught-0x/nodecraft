@@ -139,6 +139,39 @@ fn clear(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     Ok(edit(changes, json!({"removed": node.history.len()})))
 }
 
+/// One value of a node's result, and the modality of the output it came from: the output `port`
+/// (the node's first when omitted) and, for a list output, its `item`.
+pub(crate) fn result_value<'a>(
+    c: &'a Context<'_>,
+    canvas: CanvasId,
+    id: NodeId,
+    generation: GenerationId,
+    port: Option<&str>,
+    item: Option<usize>,
+) -> Result<(&'a Value, Modality), Error> {
+    let source = node(c, canvas, id)?;
+    let generation = source.history.get(index_of(source, generation)?).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no such result"))?;
+    let port_index = match port {
+        Some(name) => source.outputs.iter().position(|port| port.name == name).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no such output"))?,
+        None => 0,
+    };
+    let port = source.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no outputs"))?;
+    // Results are positional: one recorded for a different port layout can't be read by port.
+    if generation.outputs.len() != source.outputs.len() {
+        return Err(Error::new(ErrorKind::Conflict, "this result was made for different outputs than the node has now"));
+    }
+    let output = generation.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the result has no value for that output"))?;
+    let value = match (output, item) {
+        (Value::List(items), Some(item)) => {
+            list_items(items, !generation.items.is_empty()).nth(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?
+        }
+        (Value::List(_), None) => return Err(invalid("that output is a list: choose an item")),
+        (_, Some(_)) => return Err(invalid("that output is a single value, not a list")),
+        (value, None) => value,
+    };
+    Ok((value, port.port_type.modality))
+}
+
 /// The source kind that holds a value of `modality`, and its parameter.
 fn source_kind(modality: Modality) -> Result<(&'static str, &'static str), Error> {
     match modality {
@@ -158,29 +191,8 @@ fn extract(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if !(p.pos.x.is_finite() && p.pos.y.is_finite() && p.pos.x.abs() <= MAX_COORDINATE && p.pos.y.abs() <= MAX_COORDINATE) {
         return Err(invalid("position is outside the canvas"));
     }
-    let source = node(c, p.canvas, p.id)?;
-    let generation = source.history.get(index_of(source, p.generation)?).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no such result"))?;
-    let port_index = match &p.port {
-        Some(name) => {
-            source.outputs.iter().position(|port| &port.name == name).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no such output"))?
-        }
-        None => 0,
-    };
-    let port = source.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the node has no outputs"))?;
-    // Results are positional: one recorded for a different port layout can't be read by port.
-    if generation.outputs.len() != source.outputs.len() {
-        return Err(Error::new(ErrorKind::Conflict, "this result was made for different outputs than the node has now"));
-    }
-    let output = generation.outputs.get(port_index).ok_or_else(|| Error::new(ErrorKind::NotFound, "the result has no value for that output"))?;
-    let value = match (output, p.item) {
-        (Value::List(items), Some(item)) => {
-            list_items(items, !generation.items.is_empty()).nth(item).ok_or_else(|| Error::new(ErrorKind::NotFound, "the list has no such item"))?
-        }
-        (Value::List(_), None) => return Err(invalid("that output is a list: choose an item to extract")),
-        (_, Some(_)) => return Err(invalid("that output is a single value, not a list")),
-        (value, None) => value,
-    };
-    let (kind, parameter) = source_kind(port.port_type.modality)?;
+    let (value, modality) = result_value(c, p.canvas, p.id, p.generation, p.port.as_deref(), p.item)?;
+    let (kind, parameter) = source_kind(modality)?;
     let supplied: ParamValues = [(parameter.to_owned(), value.clone())].into_iter().collect();
     let mut extracted = c.kinds.get(kind)?.instantiate_instance(p.node, BTreeMap::new(), &supplied)?;
     extracted.pos = p.pos;

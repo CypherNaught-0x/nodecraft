@@ -89,6 +89,8 @@ enum Ask {
     Choose(String, Option<usize>),
     Run,
     History(GenerationId, bool),
+    /// Save a result's first output (item `item` of a list) to a file named like `name`.
+    Export(GenerationId, Option<usize>, String),
 }
 
 impl NodeCraftApp {
@@ -268,6 +270,10 @@ impl NodeCraftApp {
                     None => return false,
                 }
             }
+            Ask::Export(generation, item, name) => {
+                self.start_export(app.canvas, app.node, generation, None, item, &name);
+                return true;
+            }
         };
         match self.session.dispatch(command, &params) {
             Ok(_) => {
@@ -346,6 +352,18 @@ fn first_output(generation: &Generation) -> Option<&Value> {
     match generation.outputs.first()? {
         Value::List(items) => items.first(),
         value => Some(value),
+    }
+}
+
+/// The media a result's first output exports (item `Some(0)` of a list), and its file name.
+fn exportable(generation: &Generation) -> Option<(Option<usize>, String)> {
+    let (item, value) = match generation.outputs.first()? {
+        Value::List(items) => (Some(0), nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).next()?),
+        value => (None, value),
+    };
+    match value {
+        Value::Media(asset) => Some((item, crate::history::suggested_name(asset.mime.essence()))),
+        _ => None,
     }
 }
 
@@ -463,6 +481,11 @@ impl View<'_> {
                         }
                         if ui.small_button("Send to canvas").on_hover_text("Add this result to the canvas as its own node").clicked() {
                             asks.push(Ask::History(generation.id, true));
+                        }
+                        if let Some((item, name)) = exportable(generation)
+                            && ui.small_button("Export…").on_hover_text("Save this result to a file").clicked()
+                        {
+                            asks.push(Ask::Export(generation.id, item, name));
                         }
                     });
                 });

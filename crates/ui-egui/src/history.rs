@@ -1,5 +1,5 @@
 //! The history strip on a card with results (#81): step through them, pick the active one
-//! (what downstream nodes use), and delete, extract or clear them. It only reports intents; the
+//! (what downstream nodes use), and delete, extract, export or clear them. It only reports intents; the
 //! app turns them into `history.*` commands.
 use crate::theme::Tokens;
 use egui::{RichText, Sense};
@@ -23,6 +23,13 @@ pub enum HistoryIntent {
         generation: GenerationId,
         port: Option<String>,
         item: Option<usize>,
+    },
+    /// Save one media output (or list item) to a file; `name` is the suggested file name.
+    Export {
+        generation: GenerationId,
+        port: Option<String>,
+        item: Option<usize>,
+        name: String,
     },
     Clear,
 }
@@ -89,6 +96,52 @@ pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Opt
         }
     }
     targets
+}
+
+/// What the Export menu offers for a result: each media output, or each media item of a list
+/// output (up to [`MAX_EXTRACT_ITEMS`]), labelled for the menu, with a suggested file name.
+pub fn export_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>, String)> {
+    let mut targets = Vec::new();
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+        match value {
+            Value::List(items) => {
+                let items = || nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty());
+                let count = items().count();
+                for (item, value) in items().enumerate().take(MAX_EXTRACT_ITEMS) {
+                    if let Value::Media(asset) = value {
+                        let label = format!("{}: item {} of {}", port.name, item + 1, count);
+                        targets.push((label, Some(port.name.clone()), Some(item), suggested_name(asset.mime.essence())));
+                    }
+                }
+            }
+            Value::Media(asset) => targets.push((port.name.clone(), Some(port.name.clone()), None, suggested_name(asset.mime.essence()))),
+            _ => {}
+        }
+    }
+    targets
+}
+
+/// The file name the save dialog suggests for a result of type `mime`.
+pub fn suggested_name(mime: &str) -> String {
+    let extension = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        "audio/mpeg" => "mp3",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        "model/gltf-binary" => "glb",
+        "model/gltf+json" => "gltf",
+        "model/obj" => "obj",
+        "application/pdf" => "pdf",
+        _ => "bin",
+    };
+    format!("result.{extension}")
 }
 
 /// Most result chips drawn at once, centred on the active result; the position label and ‹ ›
@@ -211,6 +264,28 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
                             for (label, port, item) in &targets {
                                 if ui.button(label).clicked() {
                                     intent = Some(HistoryIntent::Extract { generation: generation.id, port: port.clone(), item: *item });
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                }
+                let targets = export_targets(node, generation);
+                match targets.as_slice() {
+                    [(_, port, item, name)] => {
+                        if ui.button("Export…").clicked() {
+                            intent = Some(HistoryIntent::Export { generation: generation.id, port: port.clone(), item: *item, name: name.clone() });
+                            ui.close();
+                        }
+                    }
+                    [] => {
+                        ui.add_enabled(false, egui::Button::new("Export…")).on_disabled_hover_text("Only media results export to a file.");
+                    }
+                    _ => {
+                        ui.menu_button("Export…", |ui| {
+                            for (label, port, item, name) in &targets {
+                                if ui.button(label).clicked() {
+                                    intent = Some(HistoryIntent::Export { generation: generation.id, port: port.clone(), item: *item, name: name.clone() });
                                     ui.close();
                                 }
                             }

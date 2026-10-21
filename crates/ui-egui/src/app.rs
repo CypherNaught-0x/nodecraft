@@ -323,6 +323,7 @@ mod app_mode;
 mod comments;
 mod drop;
 mod elements;
+mod export;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
 mod generate;
@@ -450,6 +451,8 @@ pub struct NodeCraftApp {
     layer_editor: Option<layer_editor::LayerEditor>,
     /// App mode's form (#95), while it is open.
     app_mode: Option<app_mode::AppMode>,
+    /// A result's save dialog (#557), while open.
+    exports: export::Exports,
     /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
     model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -819,6 +822,7 @@ impl NodeCraftApp {
             mask_editor: None,
             layer_editor: None,
             app_mode: None,
+            exports: Default::default(),
             model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
@@ -912,6 +916,7 @@ impl NodeCraftApp {
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
+        self.poll_export(ui.ctx());
         self.videos.poll(ui.ctx());
         self.meshes.poll();
         if let Some(render) = &self.mesh_render {
@@ -2167,6 +2172,10 @@ impl NodeCraftApp {
                 }
                 ("history.extract", params)
             }
+            HistoryIntent::Export { generation, port, item, name } => {
+                self.start_export(self.canvas, id, generation, port, item, &name);
+                return None;
+            }
         })
     }
 
@@ -2522,6 +2531,8 @@ mod action_tests;
 mod app_mode_tests;
 #[cfg(test)]
 mod elements_tests;
+#[cfg(test)]
+mod export_tests;
 #[cfg(test)]
 mod gallery_tests;
 #[cfg(test)]
