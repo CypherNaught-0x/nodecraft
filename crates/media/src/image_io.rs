@@ -1,5 +1,6 @@
 //! Image metadata and decoding behind size caps.
 
+mod color;
 mod reader;
 pub use reader::{MAX_IMAGE_PROBE_BYTES, probe_image_reader};
 
@@ -79,6 +80,23 @@ pub struct ImageMeta {
     /// Bits per channel stored in the file (1, 2, 4, 8, 16 or 32).
     pub bits_per_channel: u8,
     pub has_alpha: bool,
+    /// What the file says about its colour space, or `None` where this build doesn't read
+    /// everything the format can say (#393). NodeCraft decodes every image as sRGB and applies
+    /// no profile yet.
+    pub color_tag: Option<ColorTag>,
+}
+
+/// What an image file says about its colour space, from the signals this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorTag {
+    /// The file declares no colour space.
+    Untagged,
+    /// The file declares sRGB (a PNG `sRGB` chunk).
+    Srgb,
+    /// The file embeds an ICC profile, or profile data that can't be read.
+    IccProfile,
+    /// The file declares a colour space another way: a PNG `cICP`, `gAMA` or `cHRM` chunk.
+    Other,
 }
 
 /// Reads an image's format, size and colour layout from its header, without decoding the pixels.
@@ -123,7 +141,8 @@ fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(ImageMeta, Orientation,
     if orientation != Orientation::NoTransforms {
         budget.reserve(decoder.total_bytes())?;
     }
-    let mut meta = meta_of(sniffed.mime, &decoder);
+    let color_tag = color::color_tag(format, &mut Cursor::new(bytes));
+    let mut meta = meta_of(sniffed.mime, &decoder, color_tag);
     if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
         std::mem::swap(&mut meta.width, &mut meta.height);
     }
@@ -151,7 +170,7 @@ pub fn is_undecoded_image(mime: &str) -> bool {
     matches!(mime, "image/x-exr" | "image/vnd.radiance")
 }
 
-fn meta_of(mime: &'static str, decoder: &impl ImageDecoder) -> ImageMeta {
+fn meta_of(mime: &'static str, decoder: &impl ImageDecoder, color_tag: Option<ColorTag>) -> ImageMeta {
     let (width, height) = decoder.dimensions();
     let stored = decoder.original_color_type();
     let decoded = decoder.color_type();
@@ -172,7 +191,7 @@ fn meta_of(mime: &'static str, decoder: &impl ImageDecoder) -> ImageMeta {
             u8::try_from(per).unwrap_or(8)
         }
     };
-    ImageMeta { mime, width, height, color, bits_per_channel, has_alpha: decoded.has_alpha() }
+    ImageMeta { mime, width, height, color, bits_per_channel, has_alpha: decoded.has_alpha(), color_tag }
 }
 
 #[cfg(test)]
@@ -331,6 +350,90 @@ pub(crate) mod tests {
         assert_eq!(probe_image(b"\0\0\0\x1cftypavif\0", &l).unwrap_err(), MediaError::Unsupported { mime: "image/avif" });
         assert_eq!(decode_image(b"hello", &l).unwrap_err(), MediaError::Unsupported { mime: "text/plain" });
         assert!(matches!(decode_image(b"\x89PNG\r\n\x1a\nnot really", &l), Err(MediaError::Decode(_))));
+    }
+
+    /// A PNG's colour chunks decide its tag (#393), and both probes read them alike. EXIF with no
+    /// colour chunk leaves the tag unknown; so do the formats whose colour signals aren't read.
+    #[test]
+    fn png_colour_chunks_decide_the_tag_and_unread_formats_stay_unknown() {
+        let chunk = |kind: &[u8; 4], data: &[u8]| {
+            let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+            chunk.extend_from_slice(kind);
+            chunk.extend_from_slice(data);
+            chunk.extend_from_slice(&crc32(&chunk[4..]).to_be_bytes());
+            chunk
+        };
+        let with_chunk = |kind: &[u8; 4], data: &[u8]| {
+            let png = png_rgba(3, 2);
+            // After the signature and the 25-byte IHDR chunk.
+            [&png[..33], &chunk(kind, data)[..], &png[33..]].concat()
+        };
+        let after_image_data = |kind: &[u8; 4], data: &[u8]| {
+            let png = png_rgba(3, 2);
+            // Before the 12-byte IEND chunk.
+            let at = png.len() - 12;
+            [&png[..at], &chunk(kind, data)[..], &png[at..]].concat()
+        };
+        let cases = [
+            (png_rgba(3, 2), Some(ColorTag::Untagged)),
+            (with_chunk(b"sRGB", &[0]), Some(ColorTag::Srgb)),
+            (with_chunk(b"gAMA", &45_455u32.to_be_bytes()), Some(ColorTag::Other)),
+            (with_chunk(b"cICP", &[9, 16, 0, 1]), Some(ColorTag::Other)),
+            (with_chunk(b"eXIf", b"MM\0*\0\0\0\x08\0\0"), None),
+            (with_chunk(b"tEXt", b"Comment\0hello"), Some(ColorTag::Untagged)),
+            // EXIF may follow the image data, and profiles may hide in text chunks.
+            (after_image_data(b"eXIf", b"MM\0*\0\0\0\x08\0\0"), None),
+            (with_chunk(b"zTXt", b"Raw profile type icc\0\0x"), Some(ColorTag::IccProfile)),
+            (with_chunk(b"tEXt", b"Raw profile type exif\0\nexif\n"), None),
+            (with_chunk(b"tEXt", b"Raw"), Some(ColorTag::Untagged)),
+            // sRGB with its gAMA/cHRM fallbacks is still sRGB.
+            (
+                [&with_chunk(b"gAMA", &45_455u32.to_be_bytes())[..33], &chunk(b"sRGB", &[0])[..], &with_chunk(b"gAMA", &45_455u32.to_be_bytes())[33..]]
+                    .concat(),
+                Some(ColorTag::Srgb),
+            ),
+        ];
+        for (bytes, tag) in cases {
+            let meta = probe_image(&bytes, &Limits::default()).unwrap();
+            assert_eq!(meta.color_tag, tag);
+            let read = super::probe_image_reader(Cursor::new(bytes.clone()), bytes.len() as u64, &Limits::default()).unwrap();
+            assert_eq!(read, meta);
+        }
+        let rgb = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 4, |x, _| Rgb([x as u8, 0, 0])));
+        for format in [ImageFormat::Bmp, ImageFormat::Tiff, ImageFormat::Gif] {
+            let source = if format == ImageFormat::Gif { DynamicImage::ImageRgba8(rgb.to_rgba8()) } else { rgb.clone() };
+            assert_eq!(probe_image(&encode(source, format), &Limits::default()).unwrap().color_tag, None, "{format:?}");
+        }
+        for format in [ImageFormat::Jpeg, ImageFormat::WebP] {
+            assert_eq!(probe_image(&encode(rgb.clone(), format), &Limits::default()).unwrap().color_tag, Some(ColorTag::Untagged), "{format:?}");
+        }
+    }
+
+    /// A JPEG's APP markers decide its tag: a damaged profile still counts as a profile, and EXIF
+    /// leaves the tag unknown (#393).
+    #[test]
+    fn jpeg_markers_decide_the_tag_even_when_the_profile_is_damaged() {
+        let rgb = DynamicImage::ImageRgb8(ImageBuffer::from_fn(8, 8, |x, y| Rgb([x as u8, y as u8, 0])));
+        let plain = encode(rgb, ImageFormat::Jpeg);
+        let with_segment = |code: u8, body: &[u8]| {
+            let mut segment = vec![0xff, code];
+            segment.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+            segment.extend_from_slice(body);
+            [&plain[..2], &segment[..], &plain[2..]].concat()
+        };
+        let cases = [
+            // Sequence number 0 of 0 chunks: the decoder can't assemble it.
+            (with_segment(0xe2, b"ICC_PROFILE\0\0\0junk"), Some(ColorTag::IccProfile)),
+            (with_segment(0xe1, b"Exif\0\0MM\0*\0\0\0\x08\0\0"), None),
+            (with_segment(0xe1, b"http://ns.adobe.com/xap/1.0/\0<x/>"), Some(ColorTag::Untagged)),
+            (with_segment(0xe2, b"ICC"), Some(ColorTag::Untagged)),
+        ];
+        for (bytes, tag) in cases {
+            let meta = probe_image(&bytes, &Limits::default()).unwrap();
+            assert_eq!(meta.color_tag, tag);
+            let read = super::probe_image_reader(Cursor::new(bytes.clone()), bytes.len() as u64, &Limits::default()).unwrap();
+            assert_eq!(read, meta);
+        }
     }
 
     #[test]

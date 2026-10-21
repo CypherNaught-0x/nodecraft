@@ -13,6 +13,43 @@ pub const MAX_TOTAL_ASSET_BYTES: usize = 48 * 1024 * 1024;
 
 pub use crate::asset_store::AssetStore;
 
+/// What an image's header proves, as reference metadata: its displayed size, alpha, stored bit
+/// depth and colour-space tag (#393). Import records exactly this, and verification compares a
+/// reference's claims with it, so the two can't drift apart.
+pub fn image_header_meta(probed: &nodecraft_media::ImageMeta) -> nodecraft_types::MediaMeta {
+    use nodecraft_types::ColorSpace;
+    nodecraft_types::MediaMeta {
+        width: Some(probed.width),
+        height: Some(probed.height),
+        has_alpha: Some(probed.has_alpha),
+        bits_per_channel: Some(probed.bits_per_channel),
+        color_space: probed.color_tag.map(|tag| match tag {
+            nodecraft_media::ColorTag::Untagged => ColorSpace::Untagged,
+            nodecraft_media::ColorTag::Srgb => ColorSpace::Srgb,
+            nodecraft_media::ColorTag::IccProfile => ColorSpace::IccProfile,
+            nodecraft_media::ColorTag::Other => ColorSpace::Other,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Refuses a reference whose image claims its header contradicts. A claim left out is not
+/// checked: it is unknown, not a default.
+pub(crate) fn check_image_header(claim: &nodecraft_types::MediaMeta, probed: &nodecraft_media::ImageMeta) -> Result<(), Error> {
+    let proven = image_header_meta(probed);
+    let differs = |claim: Option<u32>, proven: Option<u32>| claim.is_some() && claim != proven;
+    if differs(claim.width, proven.width) || differs(claim.height, proven.height) {
+        return Err(crate::invalid("asset dimensions do not match its stored bytes"));
+    }
+    if (claim.has_alpha.is_some() && claim.has_alpha != proven.has_alpha)
+        || (claim.bits_per_channel.is_some() && claim.bits_per_channel != proven.bits_per_channel)
+        || (claim.color_space.is_some() && claim.color_space != proven.color_space)
+    {
+        return Err(crate::invalid("asset image format does not match its stored bytes"));
+    }
+    Ok(())
+}
+
 impl AssetStore {
     /// Authenticate destination content and supported reference metadata through an immutable
     /// lease. Indexed bytes remain streamed; unknown signatures and advisory metadata keep
@@ -45,16 +82,12 @@ impl AssetStore {
                 if actual != expected && !generic_text {
                     return Err(crate::invalid("asset MIME does not match its stored bytes"));
                 }
-                if matches!(actual, "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff")
-                    && (asset.meta.width.is_some() || asset.meta.height.is_some())
-                {
+                if matches!(actual, "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff") && asset.meta.claims_image_header() {
                     #[cfg(any(test, feature = "validation-metrics"))]
                     crate::validation_metrics::record(|metrics| metrics.image_probes = metrics.image_probes.saturating_add(1));
                     let meta = nodecraft_media::probe_image(bytes, &nodecraft_media::Limits::default())
                         .map_err(|_| crate::invalid("cannot verify asset image dimensions"))?;
-                    if asset.meta.width.is_some_and(|width| width != meta.width) || asset.meta.height.is_some_and(|height| height != meta.height) {
-                        return Err(crate::invalid("asset dimensions do not match its stored bytes"));
-                    }
+                    check_image_header(&asset.meta, &meta)?;
                 }
             }
             Value::List(values) => {
@@ -406,6 +439,46 @@ mod tests {
         let final_changes = Changeset::new(vec![Change::SetNode { canvas, node: Node::new(id, "source.text") }]);
         final_changes.apply(&mut project).unwrap();
         assert!(assets.validate_changed_assets(&project, &changes).is_ok());
+    }
+    /// Alpha, bit depth and colour-space claims (#393) are checked against the bytes on both the
+    /// streamed and the in-memory path; a claim left out is unknown and never checked.
+    #[test]
+    fn image_header_claims_must_match_the_stored_bytes() {
+        use nodecraft_types::ColorSpace;
+        let mut store = AssetStore::default();
+        let png = nodecraft_media::encode_png(2, 1, &[20, 40, 60, 255, 1, 2, 3, 4], &nodecraft_media::Limits::default()).unwrap();
+        let hash = store.insert(&png).unwrap();
+        let proven = image_header_meta(&nodecraft_media::probe_image(&png, &nodecraft_media::Limits::default()).unwrap());
+        assert_eq!(
+            (proven.width, proven.height, proven.has_alpha, proven.bits_per_channel, proven.color_space),
+            (Some(2), Some(1), Some(true), Some(8), Some(ColorSpace::Untagged))
+        );
+        let canvas = CanvasId::from_bytes([1; 16]);
+        let check = |meta: MediaMeta| {
+            let reference = AssetRef { hash, mime: "image/png".parse().unwrap(), meta };
+            let streamed = store.validate_reference(&reference);
+            let mut project = Project::new(ProjectId::from_bytes([0; 16]), "Fixture").unwrap();
+            Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+            let mut node = Node::new(NodeId::from_bytes([2; 16]), "source.image");
+            node.config.insert("asset".into(), Value::Media(reference));
+            let changes = Changeset::new(vec![Change::AddNode { canvas, node }]);
+            changes.apply(&mut project).unwrap();
+            let in_memory = store.validate_changed_assets(&project, &changes);
+            assert_eq!(streamed.is_ok(), in_memory.is_ok(), "{streamed:?} {in_memory:?}");
+            streamed.map_err(|e| e.message)
+        };
+        check(proven.clone()).unwrap();
+        check(MediaMeta { has_alpha: Some(true), ..Default::default() }).unwrap();
+        check(MediaMeta::default()).unwrap();
+        for wrong in [
+            MediaMeta { has_alpha: Some(false), ..proven.clone() },
+            MediaMeta { bits_per_channel: Some(16), ..proven.clone() },
+            MediaMeta { color_space: Some(ColorSpace::Srgb), ..proven.clone() },
+            // A claim alone, with no dimensions, is still checked.
+            MediaMeta { color_space: Some(ColorSpace::IccProfile), ..Default::default() },
+        ] {
+            assert_eq!(check(wrong).unwrap_err(), "asset image format does not match its stored bytes");
+        }
     }
     #[test]
     fn borrowed_reference_policy_checks_presence_known_mime_and_image_dimensions() {

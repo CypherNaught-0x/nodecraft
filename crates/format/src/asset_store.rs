@@ -371,9 +371,7 @@ impl AssetStore {
             if actual != expected && !generic_text {
                 return Err(invalid("asset MIME does not match its stored bytes"));
             }
-            if matches!(actual, "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff")
-                && (asset.meta.width.is_some() || asset.meta.height.is_some())
-            {
+            if matches!(actual, "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff") && asset.meta.claims_image_header() {
                 let meta = match data.image {
                     Some(meta) => meta,
                     None => {
@@ -384,9 +382,7 @@ impl AssetStore {
                             .map_err(|_| invalid("cannot verify bounded asset image dimensions"))?
                     }
                 };
-                if asset.meta.width.is_some_and(|n| n != meta.width) || asset.meta.height.is_some_and(|n| n != meta.height) {
-                    return Err(invalid("asset dimensions do not match its stored bytes"));
-                }
+                crate::assets::check_image_header(&asset.meta, &meta)?;
                 data.image = Some(meta);
             }
         }

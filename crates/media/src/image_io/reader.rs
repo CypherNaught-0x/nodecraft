@@ -1,5 +1,5 @@
 //! Header-only reader probes. Complete content integrity and pixel decoding are separate.
-use super::{ImageMeta, Limits, decodable_format, meta_of};
+use super::{ImageMeta, Limits, color, decodable_format, meta_of};
 use crate::{MediaError, MediaKind, sniff};
 use image::{ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
 use std::{
@@ -118,6 +118,9 @@ pub fn probe_image_reader<R: Read + Seek>(reader: R, length: u64, limits: &Limit
         checked(&state)?;
         return result;
     }
+    // The colour signals are walked first, reading only chunk headers.
+    let color_tag = color::color_tag(format, &mut input);
+    input.seek(SeekFrom::Start(0)).map_err(|_| MediaError::Decode("cannot seek image header".into()))?;
     let mut reader = ImageReader::new(BufReader::with_capacity(8192, input));
     reader.set_format(format);
     let mut header_limits = limits.for_decoder();
@@ -135,7 +138,7 @@ pub fn probe_image_reader<R: Read + Seek>(reader: R, length: u64, limits: &Limit
         if orientation != Orientation::NoTransforms {
             decoded_budget.reserve(decoder.total_bytes())?;
         }
-        let mut meta = meta_of(sniffed.mime, &decoder);
+        let mut meta = meta_of(sniffed.mime, &decoder, color_tag);
         if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
             std::mem::swap(&mut meta.width, &mut meta.height);
         }
@@ -207,6 +210,7 @@ fn jpeg_headers(reader: &mut impl Read) -> Result<Vec<u8>, MediaError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ColorTag;
     use super::*;
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
     use std::io::Cursor;
@@ -262,6 +266,48 @@ mod tests {
             let actual = probe_image_reader(input, len, &Limits::default()).unwrap();
             assert_eq!(actual, expected, "{format:?}");
             assert!(reads.get() <= MAX_IMAGE_PROBE_BYTES);
+        }
+    }
+    /// An embedded ICC profile is reported (#393) the same way by both probes, for every format
+    /// whose encoder can write one; without one the file is untagged, except where the format's
+    /// colour signals aren't all read.
+    #[test]
+    fn both_probes_report_an_embedded_icc_profile() {
+        use image::ImageEncoder;
+        use image::codecs::{jpeg::JpegEncoder, png::PngEncoder, tiff::TiffEncoder, webp::WebPEncoder};
+        let pixels: Vec<u8> = (0..12 * 7 * 3).map(|i| (i % 251) as u8).collect();
+        let profile: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let write = |format: ImageFormat, icc: bool| {
+            let mut out = Cursor::new(Vec::new());
+            fn finish(mut encoder: impl ImageEncoder, icc: Option<Vec<u8>>, pixels: &[u8]) {
+                if let Some(icc) = icc {
+                    encoder.set_icc_profile(icc).unwrap();
+                }
+                encoder.write_image(pixels, 12, 7, image::ExtendedColorType::Rgb8).unwrap();
+            }
+            let icc = icc.then(|| profile.clone());
+            match format {
+                ImageFormat::Png => finish(PngEncoder::new(&mut out), icc, &pixels),
+                ImageFormat::Jpeg => finish(JpegEncoder::new(&mut out), icc, &pixels),
+                ImageFormat::WebP => finish(WebPEncoder::new_lossless(&mut out), icc, &pixels),
+                _ => finish(TiffEncoder::new(&mut out), icc, &pixels),
+            }
+            out.into_inner()
+        };
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP, ImageFormat::Tiff] {
+            for icc in [false, true] {
+                let bytes = write(format, icc);
+                let expected = super::super::probe_image(&bytes, &Limits::default()).unwrap();
+                let tag = match format {
+                    // The decoder can miss a TIFF's ICC tag, so TIFF never claims one way or the other.
+                    ImageFormat::Tiff => None,
+                    _ if icc => Some(ColorTag::IccProfile),
+                    _ => Some(ColorTag::Untagged),
+                };
+                assert_eq!(expected.color_tag, tag, "{format:?}");
+                let (input, _, len) = source(bytes);
+                assert_eq!(probe_image_reader(input, len, &Limits::default()).unwrap(), expected, "{format:?}");
+            }
         }
     }
     #[test]

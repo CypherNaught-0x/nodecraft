@@ -118,10 +118,9 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     let mut meta = MediaMeta::default();
     if sniffed.kind == MediaKind::Image {
         match probe_image(file.bytes, &Limits::default()) {
-            Ok(probed) => {
-                meta.width = Some(probed.width);
-                meta.height = Some(probed.height);
-            }
+            // Everything the header proves travels with the asset (#393), and is checked again
+            // whenever the reference is written.
+            Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
             Err(_) if decodes_later(&sniffed) => {}
             Err(_) => return Err("the image can't be read".into()),
         }
