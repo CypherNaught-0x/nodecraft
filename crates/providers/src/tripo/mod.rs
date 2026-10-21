@@ -87,7 +87,17 @@ impl Tripo {
         r.secret_header("Authorization", format!("Bearer {}", self.key.expose())).max_response_bytes(self.limits.response_bytes)
     }
     async fn send(&self, request: HttpRequest, paid: bool) -> Result<HttpResponse, ProviderError> {
+        self.send_with(request, paid, None).await
+    }
+    /// [`Self::send`]; a `refusal` scope learns of a documented refusal of the paid create.
+    async fn send_with(&self, request: HttpRequest, paid: bool, refusal: Option<&crate::SubmitContext>) -> Result<HttpResponse, ProviderError> {
         let reply = self.http.send_no_redirect(self.auth(request)).await.map_err(|e| transport(e, paid))?;
+        if let Some(context) = refusal
+            && reply.body.len() <= self.limits.response_bytes
+            && response::refused_create(&reply)
+        {
+            context.refused();
+        }
         response::check(&reply, self.limits, &self.key)?;
         Ok(reply)
     }
@@ -104,11 +114,12 @@ impl Tripo {
         }
         let body = prepared.body(&tokens)?;
         let create = HttpRequest::post_json(format!("{API}/task"), &body)?.timeout_ms(60_000);
-        // Everything local is done; from here a lost reply may hide a created, billed task.
+        // Everything local is done; from here a lost reply may hide a created, billed task, unless
+        // Tripo answers with a documented refusal.
         if let Some(context) = context {
-            context.unknown();
+            context.paid();
         }
-        let reply = self.send(create, true).await?;
+        let reply = self.send_with(create, true, context).await?;
         let id = response::created(&reply.body, &self.key)?;
         Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::json!({"v": 1, "type": prepared.task}) }))
     }
@@ -156,7 +167,7 @@ impl Provider for Tripo {
         Box::pin(self.create(j, None))
     }
     fn submit_with_delivery<'a>(&'a self, j: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
-        // This constructor is pure; create marks uncertainty before the paid request.
+        // This constructor is pure; create marks the paid request before it sends it.
         context.arm();
         Box::pin(self.create(j, Some(context)))
     }

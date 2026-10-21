@@ -121,9 +121,25 @@ impl ComfyCloud {
 
     /// One request to Comfy, without following redirects; a failing status becomes an error.
     async fn send(&self, request: HttpRequest, max_bytes: usize, paid: bool) -> Result<HttpResponse, ProviderError> {
+        self.send_with(request, max_bytes, paid, None).await
+    }
+
+    /// [`Self::send`]; a `refusal` scope learns of a documented refusal of the paid create.
+    async fn send_with(
+        &self,
+        request: HttpRequest,
+        max_bytes: usize,
+        paid: bool,
+        refusal: Option<&crate::SubmitContext>,
+    ) -> Result<HttpResponse, ProviderError> {
         let reply = self.http.send_no_redirect(request.max_response_bytes(max_bytes)).await.map_err(|e| transport(e, paid))?;
         if reply.body.len() > max_bytes {
             return Err(malformed("the Comfy Cloud reply exceeds the size limit"));
+        }
+        if let Some(context) = refusal
+            && response::refused_create(&reply)
+        {
+            context.refused();
         }
         response::check(&reply, &self.key)?;
         Ok(reply)
@@ -170,11 +186,12 @@ impl ComfyCloud {
             .bearer(HttpRequest::post_json(format!("{ORIGIN}/api/v2/jobs"), &body)?)
             .header("Idempotency-Key", request::idempotency_key(&job.idempotency_key))
             .timeout_ms(120_000);
-        // Everything local is done; from here a lost reply may hide a created job.
+        // Everything local is done; from here a lost reply may hide a created job, unless Comfy
+        // answers with a documented refusal.
         if let Some(context) = context {
-            context.unknown();
+            context.paid();
         }
-        let reply = self.send(submit, self.limits.response_bytes, true).await?;
+        let reply = self.send_with(submit, self.limits.response_bytes, true, context).await?;
         let created = response::job(&reply.body)?;
         Ok(Submission::Queued(JobHandle { remote_id: created.id, data: serde_json::json!({"v": 1}) }))
     }
@@ -286,7 +303,8 @@ impl Provider for ComfyCloud {
     }
 
     /// No: a retry under the same key is refused rather than answered with the job, so it could
-    /// only fail. A lost reply is reported as possibly billed instead.
+    /// only fail. A lost reply is reported as possibly billed instead. A documented refusal is
+    /// proof of no job, so it's retried anyway (#631).
     fn retry_ambiguous_submit(&self) -> bool {
         false
     }
@@ -296,7 +314,7 @@ impl Provider for ComfyCloud {
     }
 
     fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
-        // Construction sends nothing; `create` marks uncertainty before the paid request.
+        // Construction sends nothing; `create` marks the paid request before it sends it.
         context.arm();
         Box::pin(self.create(job, Some(context)))
     }

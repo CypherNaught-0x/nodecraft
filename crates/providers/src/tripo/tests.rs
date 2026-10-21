@@ -186,6 +186,54 @@ fn a_failed_upload_proves_no_task_but_a_lost_create_reply_may_have_billed() {
 }
 
 #[test]
+fn a_documented_refusal_of_the_create_proves_no_task_but_other_failures_may_have_billed() {
+    let create = |reply| {
+        let scope = crate::SubmitContext::new();
+        let error = block_on(Tripo::new(key(), Transport::new(vec![reply])).submit_with_delivery(&job(TEXT, vec![prompt("chair")]), &scope)).unwrap_err();
+        (error, scope.finish_error().is_some())
+    };
+    for (at, code, kind) in [
+        (401, 1002, ErrorKind::Auth),
+        (400, 1003, ErrorKind::UnsupportedInput),
+        (400, 1004, ErrorKind::UnsupportedInput),
+        (429, 1007, ErrorKind::RateLimited),
+        (429, 2000, ErrorKind::RateLimited),
+        (403, 2010, ErrorKind::Budget),
+    ] {
+        let (error, refused) = create(status(at, json!({"code": code, "message": "no"})));
+        assert_eq!(error.kind, kind, "code {code}");
+        assert!(refused, "code {code}: Tripo created no task");
+    }
+    // A 5xx, a lost reply, an unparsed body, a code at another status, or one the table doesn't
+    // say creates no task may each hide a billed task.
+    for (n, reply) in [
+        status(500, json!({"code": 1000, "message": "boom"})),
+        status(503, json!({"code": 2000})),
+        Err(ProviderError::new(ErrorKind::Timeout, "lost")),
+        Ok(HttpResponse { status: 429, headers: vec![], body: b"<html>slow down</html>".to_vec() }),
+        status(200, json!({"code": 2010})),
+        status(400, json!({"code": 2008})),
+        status(400, json!({"code": 2018})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (_, refused) = create(reply);
+        assert!(!refused, "case {n}: the task may exist");
+    }
+    // A refusal too large to read is unread.
+    let small = Tripo::with_limits(
+        key(),
+        Transport::new(vec![status(429, json!({"code": 2000, "message": "x".repeat(64)}))]),
+        Limits { response_bytes: 32, ..Limits::HARD },
+    )
+    .unwrap();
+    let scope = crate::SubmitContext::new();
+    assert!(block_on(small.submit_with_delivery(&job(TEXT, vec![prompt("chair")]), &scope)).is_err());
+    assert!(scope.finish_error().is_none(), "an oversized refusal isn't read");
+}
+
+#[test]
 fn tripo_error_codes_map_to_shared_kinds_without_echoing_the_key() {
     for (http_status, code, kind) in [
         (401, 1002, ErrorKind::Auth),

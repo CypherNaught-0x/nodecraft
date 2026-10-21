@@ -514,9 +514,12 @@ shape and texture seeds and a face limit (1,000–1,500,000).
 Images (PNG, JPEG or WebP whose bytes match their type, at most 20 MB each) are uploaded first;
 each upload returns a token and creates no task, so a failed upload is a proved non-acceptance.
 The task request comes next and is the paid step: from then on a lost reply may have billed, and
-there is no idempotency key, so a submit is never retried automatically. Polling is every three
-seconds and reports Tripo's queue position and percentage. Tripo has no cancel endpoint, so
-cancelling a run stops waiting but not the task.
+there is no idempotency key, so a submit is never retried automatically. The exceptions are the
+refusals in Tripo's error table that happen before a task exists, each at its documented status:
+401 `1002`, 400 `1003`/`1004`, 429 `1007`/`2000` and 403 `2010` (too little credit "to create this
+task"). They release the reservation, and the rate limits are retried with back-off (#631).
+Polling is every three seconds and reports Tripo's queue position and percentage. Tripo has no
+cancel endpoint, so cancelling a run stops waiting but not the task.
 
 A finished task names short-lived (about five minutes) result links. The adapter takes the PBR
 model, then the plain or base model, and downloads it **without the key**, from public `https`
@@ -617,7 +620,10 @@ local ComfyUI adapter's: `params.workflow` in API format, `params.values` overri
   (`idempotency_key_reuse`) without running it, so the same run is never charged twice. Comfy
   Cloud can't look a job up by key, so a submit whose reply was lost is reported as possibly
   billed and never retried automatically (`retry_ambiguous_submit` is false); a re-run gets a new
-  key.
+  key. Comfy's documented refusals that create no job and release the key (429 `queue_full` or
+  `rate_limited`, 402 `insufficient_credits`, 422 `invalid_workflow`) are proof that nothing was
+  accepted: the reservation is released, and a full queue or rate limit is retried with back-off
+  (#631). A 5xx, an unreadable body or a code at another status stays possibly billed.
 - **Progress and results:** polling `GET /api/v2/jobs/{id}` reports queue position, the progress
   fraction and message, and failures with the node that failed. Finished outputs are downloaded
   from `/api/v2/assets/{id}/content` with the key, and its redirect to a signed `https` storage

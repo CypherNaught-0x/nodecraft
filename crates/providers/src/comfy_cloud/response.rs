@@ -49,6 +49,15 @@ fn kind(code: &str, status: u16) -> ErrorKind {
     }
 }
 
+/// Whether a job create was answered with one of Comfy's documented refusals that create no job
+/// and release the idempotency key (`POST /api/v2/jobs`, #631). Each code counts only with its
+/// documented status, so a 5xx or an unparsed body stays possibly billed.
+pub(super) fn refused_create(r: &HttpResponse) -> bool {
+    let Ok(envelope) = serde_json::from_slice::<Envelope>(&r.body) else { return false };
+    let code = envelope.error.as_ref().and_then(|e| e.code.as_deref());
+    matches!((r.status, code), (429, Some("queue_full" | "rate_limited")) | (402, Some("insufficient_credits")) | (422, Some("invalid_workflow")))
+}
+
 /// A failing status becomes an error carrying Comfy's code, its message and any `Retry-After`.
 pub(super) fn check(r: &HttpResponse, key: &Secret) -> Result<(), ProviderError> {
     if r.is_success() {

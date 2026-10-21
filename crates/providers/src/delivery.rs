@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 struct Operation {
     armed: bool,
     unknown: bool,
+    /// A paid request was sent through the adapter's own transport (#631).
+    paid: bool,
+    /// The provider answered that paid request with a documented refusal.
+    refused: bool,
     children: usize,
     closed: bool,
 }
@@ -132,6 +136,28 @@ impl SubmitContext {
     pub(crate) fn unknown(&self) {
         taint(&self.state);
     }
+    /// Marks the paid request an audited adapter is about to send itself. Until
+    /// [`Self::refused`] reports the provider's documented refusal of it, a failure may hide an
+    /// accepted, billed job. Unlike [`Self::unknown`] this mark can be cleared, so only an adapter
+    /// that sends exactly one paid request after it may use it: any later request it sends itself
+    /// must call [`Self::unknown`] first, or a refusal of the earlier one would certify it.
+    pub(crate) fn paid(&self) {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !s.closed {
+            s.paid = true;
+            s.refused = false;
+        }
+    }
+    /// The paid request came back with a parsed refusal from the provider's documented list of
+    /// replies that create no job (#631). Call it only after matching such a reply: a transport
+    /// error, a 5xx, an oversized or unparsed body stays possibly billed. It clears only the
+    /// [`Self::paid`] mark; anything [`Self::unknown`] or a request child recorded stays.
+    pub(crate) fn refused(&self) {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !s.closed && s.paid {
+            s.refused = true;
+        }
+    }
     pub(crate) fn finish_error(self) -> Option<SubmitNotAccepted> {
         let mut s = match self.state.lock() {
             Ok(s) => s,
@@ -141,7 +167,7 @@ impl SubmitContext {
                 s
             }
         };
-        let proven = !s.closed && s.armed && !s.unknown && s.children == 0;
+        let proven = !s.closed && s.armed && !s.unknown && (!s.paid || s.refused) && s.children == 0;
         s.closed = true;
         proven.then_some(SubmitNotAccepted)
     }
