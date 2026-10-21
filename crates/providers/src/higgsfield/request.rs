@@ -7,8 +7,9 @@ pub(super) const ASPECTS: [&str; 7] = ["9:16", "16:9", "4:3", "3:4", "1:1", "2:3
 pub(super) const RESOLUTIONS: [&str; 2] = ["720p", "1080p"];
 /// Genjutsu output resolutions; its price per source second depends on it.
 pub(super) const EDIT_RESOLUTIONS: [&str; 3] = ["480p", "720p", "1080p"];
-/// Reference images a Genjutsu edit takes, in order.
+/// Reference images a Genjutsu edit takes, in order; restyle takes at most five.
 pub(super) const EDIT_IMAGES: usize = 8;
+pub(super) const RESTYLE_IMAGES: usize = 5;
 pub(super) const SEEDS: std::ops::RangeInclusive<u64> = 1..=1_000_000;
 
 pub(super) struct Image<'a> {
@@ -88,20 +89,36 @@ fn kling(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), Provi
     fields.entry("negative_prompt").or_insert_with(|| json!(""));
     Ok(())
 }
-fn genjutsu(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), ProviderError> {
+/// A restyle preset id as Higgsfield issues them: a UUID.
+pub(super) fn preset_id(s: &str) -> bool {
+    s.len() == 36 && s.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() })
+}
+fn genjutsu(model: &str, job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), ProviderError> {
     // Sent explicitly: the price depends on it.
     let mut resolution = "720p";
+    let choose = || invalid("choose a Higgsfield restyle preset; Refresh option lists fetches them");
     for (name, value) in &job.params {
         match name.as_str() {
             "resolution" => resolution = text(value, "resolution", &EDIT_RESOLUTIONS)?,
+            "preset_id" if model == RESTYLE => {
+                let id = value.as_str().filter(|id| preset_id(id)).ok_or_else(choose)?;
+                fields.insert("preset_id".into(), json!(id.to_ascii_lowercase()));
+            }
             _ => return Err(invalid("unknown Higgsfield Genjutsu option")),
         }
+    }
+    if model == RESTYLE && !fields.contains_key("preset_id") {
+        return Err(choose());
     }
     fields.insert("resolution".into(), json!(resolution));
     Ok(())
 }
 fn edits(model: &str) -> bool {
-    model == MOTION_TRANSFER || model == OBJECT_SWAP
+    model == MOTION_TRANSFER || model == OBJECT_SWAP || model == RESTYLE
+}
+/// The reference images an edit takes.
+fn edit_images(model: &str) -> usize {
+    if model == RESTYLE { RESTYLE_IMAGES } else { EDIT_IMAGES }
 }
 pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, ProviderError> {
     let model = match job.model.as_str() {
@@ -109,20 +126,21 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         KLING_I2V => KLING_I2V,
         MOTION_TRANSFER => MOTION_TRANSFER,
         OBJECT_SWAP => OBJECT_SWAP,
+        RESTYLE => RESTYLE,
         _ => return Err(invalid("choose a Higgsfield model this version supports")),
     };
-    let most = if edits(model) { EDIT_IMAGES + 2 } else { 3 };
+    let most = if edits(model) { edit_images(model) + 2 } else { 3 };
     if job.inputs.len() > most || job.params.len() > 8 {
-        return Err(invalid(if edits(model) {
-            "a Higgsfield Genjutsu edit takes a prompt, one source video and at most 8 images"
+        return Err(if edits(model) {
+            invalid(format!("this Higgsfield Genjutsu edit takes a prompt, one source video and at most {} images", edit_images(model)))
         } else {
-            "Higgsfield takes a prompt and at most one image"
-        }));
+            invalid("Higgsfield takes a prompt and at most one image")
+        });
     }
     let mut fields = Map::new();
     let mut video = None;
     let mut images = Vec::new();
-    images.try_reserve_exact(if edits(model) { EDIT_IMAGES } else { 1 }).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
+    images.try_reserve_exact(if edits(model) { edit_images(model) } else { 1 }).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
     for input in &job.inputs {
         match input {
             // A Genjutsu prompt is optional; an empty one is left out.
@@ -145,7 +163,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
                 video = Some(Image { mime: "video/mp4", bytes });
             }
             JobInput::Media { role, mime: m, bytes }
-                if role == "image" && ((model == KLING_I2V && images.is_empty()) || (edits(model) && images.len() < EDIT_IMAGES)) =>
+                if role == "image" && ((model == KLING_I2V && images.is_empty()) || (edits(model) && images.len() < edit_images(model))) =>
             {
                 let mime = mime(m).ok_or_else(|| invalid("Higgsfield takes PNG, JPEG or WebP images"))?;
                 if bytes.is_empty() || bytes.len() > l.input_bytes {
@@ -163,10 +181,14 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         return Err(invalid("a Higgsfield model needs a prompt"));
     }
     let count = if edits(model) {
-        if video.is_none() || images.is_empty() {
-            return Err(invalid("a Higgsfield Genjutsu edit needs a source video and at least one image"));
+        if video.is_none() {
+            return Err(invalid("a Higgsfield Genjutsu edit needs a source video"));
         }
-        genjutsu(job, &mut fields)?;
+        // Restyle's references are optional; the other edits are made from them.
+        if images.is_empty() && model != RESTYLE {
+            return Err(invalid("a Higgsfield Genjutsu edit needs at least one image"));
+        }
+        genjutsu(model, job, &mut fields)?;
         1
     } else if model == SOUL {
         soul(job, &mut fields)?
@@ -188,9 +210,12 @@ impl Prepared<'_> {
         }
         let mut body = self.fields.clone();
         if let Some(video) = video {
-            // Genjutsu: the images are ordered references.
+            // Genjutsu: the images are ordered references. Restyle refuses nulls, so a restyle
+            // without references sends no list at all.
             body.insert("video_url".into(), json!(video));
-            body.insert("image_urls".into(), json!(urls));
+            if !urls.is_empty() {
+                body.insert("image_urls".into(), json!(urls));
+            }
         } else if let Some(url) = urls.first() {
             body.insert("image_url".into(), json!(url));
         }

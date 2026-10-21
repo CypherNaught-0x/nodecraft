@@ -81,9 +81,21 @@ fn without_a_server_in_settings_the_notice_says_what_to_add() {
 fn a_refused_list_is_named_in_the_notice() {
     let refused =
         |source: &str| option_fetch::Refused { owner: "comfyui.sdxl".into(), source: source.into(), reason: "the server lists more than 16384 values".into() };
-    let report = Report { id: 1, installed: Vec::new(), refused: vec![refused("comfyui.checkpoints"), refused("comfyui.loras")], error: None };
+    let report =
+        Report { id: 1, installed: Vec::new(), refused: vec![refused("comfyui.checkpoints"), refused("comfyui.loras")], unavailable: Vec::new(), error: None };
     assert_eq!(
         notice(&report),
         "Fetched 0 option lists (0 values). comfyui.checkpoints for comfyui.sdxl wasn't installed: the server lists more than 16384 values (and 1 more)."
     );
+    // A provider that isn't set up is told only when nothing else came back.
+    let missing = option_fetch::Refused {
+        owner: "higgsfield.genjutsu-restyle".into(),
+        source: "higgsfield.restyle_presets".into(),
+        reason: "Higgsfield needs an API key.".into(),
+    };
+    let alone = Report { id: 2, installed: Vec::new(), refused: Vec::new(), unavailable: vec![missing.clone()], error: None };
+    assert_eq!(notice(&alone), "Option lists weren't fetched: Higgsfield needs an API key.");
+    let installed = option_fetch::Installed { owner: "comfyui.sdxl".into(), source: "comfyui.checkpoints".into(), values: 2, skipped: 0 };
+    let beside = Report { installed: vec![installed], ..alone };
+    assert_eq!(notice(&beside), "Fetched 1 option list (2 values).");
 }

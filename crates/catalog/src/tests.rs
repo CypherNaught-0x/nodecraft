@@ -168,6 +168,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan22-s2v", false),
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
+            ("higgsfield.genjutsu-restyle", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),

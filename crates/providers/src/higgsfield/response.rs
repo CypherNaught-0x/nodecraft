@@ -1,4 +1,5 @@
-//! Higgsfield's replies: `{detail}` errors, receipts, request status, upload grants and estimates.
+//! Higgsfield's replies: `{detail}` errors, receipts, request status, upload grants, estimates
+//! and the restyle preset list.
 use super::*;
 use serde_json::Value;
 
@@ -216,8 +217,34 @@ pub(super) fn media(bytes: &[u8], model: &str) -> Result<&'static str, ProviderE
         (SOUL, Some("image/png")) => "image/png",
         (SOUL, Some("image/jpeg")) => "image/jpeg",
         (SOUL, Some("image/webp")) => "image/webp",
-        (KLING_I2V | MOTION_TRANSFER | OBJECT_SWAP, Some("video/mp4")) => "video/mp4",
+        (KLING_I2V | MOTION_TRANSFER | OBJECT_SWAP | RESTYLE, Some("video/mp4")) => "video/mp4",
         _ => return Err(malformed("Higgsfield returned a different kind of media than the model makes")),
     };
     Ok(found)
+}
+/// The most presets a list may have; Higgsfield lists a few dozen.
+const MAX_PRESETS: usize = 1024;
+/// The restyle preset list, `{items: [{id, name}]}`. An entry without a UUID id or a readable
+/// name is left out and counted; a repeated id keeps its first entry.
+pub(super) fn presets(body: &[u8], leaks: impl Fn(&str) -> bool) -> Result<Presets, ProviderError> {
+    let v = json(body)?;
+    let items = v.get("items").and_then(Value::as_array).ok_or_else(|| malformed("Higgsfield preset list has no items"))?;
+    if items.len() > MAX_PRESETS {
+        return Err(malformed("Higgsfield lists more presets than NodeCraft takes"));
+    }
+    let mut out = Presets::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for item in items {
+        let id = item.get("id").and_then(Value::as_str).filter(|id| request::preset_id(id)).map(str::to_ascii_lowercase);
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && n.len() <= 256 && !n.chars().any(char::is_control) && !leaks(n));
+        match (id, name) {
+            (Some(id), Some(name)) if seen.insert(id.clone()) => out.presets.push(Preset { id, name: name.to_owned() }),
+            _ => out.skipped = out.skipped.saturating_add(1),
+        }
+    }
+    Ok(out)
 }
