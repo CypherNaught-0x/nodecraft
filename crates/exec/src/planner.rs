@@ -15,9 +15,9 @@
 //! node's own step gives their results back.
 
 use crate::technique::{Collect, Expanded};
-use nodecraft_graph::{Canvas, ItemTag, Node};
-use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch, technique};
-use nodecraft_types::{Error, ErrorKind, FieldId, NodeId, PortType, Value};
+use nodecraft_graph::{Canvas, ItemTag, Node, Port};
+use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch, mention, technique};
+use nodecraft_types::{Error, ErrorKind, FieldId, Modality, NodeId, PortType, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod options;
@@ -569,6 +569,9 @@ impl<'a> Graph<'a> {
             let reason = Reason::Invalid("its prompt mentions a name more than one Element has; rename one of them".into());
             blockers.push(blocker(Some(crate::mentions::PROMPT), None, reason));
         }
+        if let Some(reason) = self.routing.mention_problems.get(&id) {
+            blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), None, Reason::Invalid(reason.clone())));
+        }
         // List inputs that run once per item rather than collecting them (#515).
         let fans_out: BTreeSet<String> = match kind.instance_contract(node) {
             Ok(contract) => {
@@ -593,7 +596,15 @@ impl<'a> Graph<'a> {
         let mut fan_bytes = 0usize;
         // One blocker per (port, upstream), however many noodles repeat it.
         let mut reported = BTreeSet::new();
-        for port in &node.inputs {
+        // Cards the prompt `@mentions` feed a port the node doesn't have (#505).
+        let mentions = self
+            .into
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .any(|(p, ..)| *p == mention::PORT)
+            .then(|| Port { name: mention::PORT.into(), port_type: PortType { modality: Modality::Text, many: true } });
+        for port in node.inputs.iter().chain(&mentions) {
             if let Some(router) = self.routing.invalid.get(&(id, port.name.as_str())) {
                 let reason = self.routing.invalid_routers.get(router).copied().unwrap_or("invalid upstream router");
                 blockers.push(blocker(Some(&port.name), Some(*router), Reason::Invalid(reason.into())));
@@ -626,6 +637,7 @@ impl<'a> Graph<'a> {
             };
             for (_, up, up_port, _) in feeds {
                 let upstream = self.canvas.nodes().get(up);
+                let before = from.len();
                 if upstream.is_some_and(|u| u.kind == batch::ID) {
                     let items = state.batches.entry(*up).or_insert_with(|| self.batch_items(*up, run));
                     match items {
@@ -714,6 +726,20 @@ impl<'a> Graph<'a> {
                         }
                     }
                 }
+                // A mention puts one text where its token is (#505): a card giving several can't.
+                let several = || {
+                    upstream.is_some_and(|u| u.kind == batch::ID)
+                        || state.fanned.contains_key(up)
+                        || from.len().checked_sub(before) != Some(1)
+                        // A fanned feed's stand-in is an empty list.
+                        || matches!(from.last(), Some(InputSource::Step { list: true, .. } | InputSource::Item { .. } | InputSource::Value(Value::List(_))))
+                };
+                if port.name == mention::PORT && several() {
+                    let title = crate::node_mentions::title_of(node, *up);
+                    let reason = crate::node_mentions::reason(title, crate::node_mentions::Problem::Several);
+                    blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), Some(*up), Reason::Invalid(reason)));
+                    break;
+                }
                 origins.resize(from.len(), *up);
                 // A single input takes one value; through a router it could receive several.
                 if !port.port_type.many && from.len() > 1 {
@@ -732,7 +758,7 @@ impl<'a> Graph<'a> {
             }
             inputs.push(PlannedInput { port: port.name.clone(), port_type: port.port_type, from, origins });
         }
-        let connected: Vec<PortType> = inputs.iter().map(|input| input.port_type).collect();
+        let connected: Vec<PortType> = inputs.iter().filter(|input| input.port != mention::PORT).map(|input| input.port_type).collect();
         let mode = match kind.instance_mode(node, &connected) {
             Ok(Some(mode)) => Some(mode),
             Ok(None) => {

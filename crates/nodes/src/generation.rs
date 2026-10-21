@@ -3,7 +3,7 @@
 //! into these immutable definitions; this L2 module never depends on catalog or a provider.
 use crate::{
     Category, GenerateInput, GenerateOutput, InputContract, InputValue, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx,
-    PortCount, descriptor::invalid,
+    PortCount, descriptor::invalid, mention,
 };
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
@@ -398,8 +398,11 @@ impl NodeKind for GenerationKind {
         if ctx.inputs.len() > MAX_PROMPTS {
             return Err(bad(self.output, "too many {noun} prompt inputs"));
         }
+        // Cards the prompt @mentions (#505) aren't wires: their text goes into the prompt.
+        let (mentioned, wired): (Vec<&InputValue>, Vec<&InputValue>) = ctx.inputs.iter().partition(|input| input.port == mention::PORT);
+        let inputs: Vec<InputValue> = wired.into_iter().cloned().collect();
         let mut wires = BTreeMap::new();
-        for input in ctx.inputs {
+        for input in &inputs {
             let port = definition.descriptor.inputs.iter().find(|port| port.name == input.port);
             if !port.is_some_and(|port| port.port_type.modality == input.port_type.modality)
                 || !definition.contract.inputs.iter().any(|port| port.port == input.port)
@@ -420,7 +423,7 @@ impl NodeKind for GenerationKind {
             Ok(mode) => mode.ok_or_else(|| bad(self.output, "{noun} model has no declared input mode"))?,
             // With one mode, say which role the inputs break rather than that no mode fits.
             Err(error) => match definition.model.modes.as_slice() {
-                [only] => return Err(self.media(only, ctx.inputs).err().unwrap_or(error)),
+                [only] => return Err(self.media(only, &inputs).err().unwrap_or(error)),
                 _ => return Err(error),
             },
         };
@@ -439,9 +442,9 @@ impl NodeKind for GenerationKind {
             .iter()
             .find(|r| r.role == PROMPT && r.modality == Modality::Text)
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, "model has no supported prompt role"))?;
-        let media = self.media(mode, ctx.inputs)?;
+        let media = self.media(mode, &inputs)?;
         let mut texts = Vec::new();
-        for input in ctx.inputs.iter().filter(|input| input.port == PROMPT) {
+        for input in inputs.iter().filter(|input| input.port == PROMPT) {
             if texts.len() >= MAX_PROMPTS {
                 return Err(invalid("too many prompt values"));
             }
@@ -468,6 +471,8 @@ impl NodeKind for GenerationKind {
             None => "",
             _ => return Err(bad(self.output, "{noun} prompt must be text")),
         };
+        let local = if mentioned.is_empty() { Cow::Borrowed(local) } else { Cow::Owned(mention::substitute(local, &mentioned_texts(&mentioned)?)?) };
+        let local = local.as_ref();
         let prompt = compose_text(TextPrecedence::ConnectedReplaces, prompt_role.inline.then_some(local), &texts, "\n")?;
         if prompt.trim().is_empty() {
             return Err(bad(self.output, "{noun} generation needs a prompt"));
@@ -487,6 +492,28 @@ impl NodeKind for GenerationKind {
             inputs: std::iter::once(GenerateInput { role: PROMPT.into(), value: Value::Text(prompt) }).chain(media).collect(),
         }])
     }
+}
+
+/// The text each @mentioned card brings, by card.
+fn mentioned_texts<'v>(inputs: &[&'v InputValue]) -> Result<BTreeMap<NodeId, &'v str>, Error> {
+    let mut texts = BTreeMap::new();
+    for input in inputs {
+        let values = match &input.value {
+            Value::List(items) => items.as_slice(),
+            value => std::slice::from_ref(value),
+        };
+        if values.len() != input.origins.len() {
+            return Err(invalid("a mentioned card's text arrived without its card"));
+        }
+        for (value, origin) in values.iter().zip(&input.origins) {
+            let Value::Text(text) = value else { return Err(invalid("a mentioned card gives no text")) };
+            // The planner feeds one text per card; several would leave a token ambiguous.
+            if texts.insert(*origin, text.as_str()).is_some() {
+                return Err(invalid("a mentioned card gave several texts; mention a card with one text"));
+            }
+        }
+    }
+    Ok(texts)
 }
 
 #[cfg(test)]

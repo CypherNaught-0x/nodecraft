@@ -281,6 +281,34 @@ fn connected_text_replaces_the_local_prompt_and_keeps_the_draft() {
 }
 
 #[test]
+fn an_at_mention_puts_the_mentioned_cards_text_in_the_prompt() {
+    // The source stays on the canvas but no longer feeds the prompt by wire: the prompt mentions it (#505).
+    let mut f = fixture(Some("a lighthouse"), false);
+    f.session.dispatch("edge.disconnect", &json!({"canvas":C,"id":EdgeId::from_bytes([3; 16])})).unwrap();
+    let prompt = format!("Write a haiku about {} at night", nodecraft_nodes::mention::token("Subject", SOURCE));
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":WRITER,"name":"prompt","value":{"type":"text","value":prompt}})).unwrap();
+    let value = run(&mut f);
+    assert!(answer(&value).starts_with("mock-text: Write a haiku about a lighthouse at night #"), "{value:?}");
+    // The draft keeps the token, so renaming the source never breaks it.
+    assert_eq!(writer(&f.session).params.get("prompt"), Some(&Value::Text(prompt)));
+}
+
+#[test]
+fn a_blocked_mention_is_refused_before_any_provider_work() {
+    let mut f = fixture(Some("a lighthouse"), false);
+    f.session.dispatch("edge.disconnect", &json!({"canvas":C,"id":EdgeId::from_bytes([3; 16])})).unwrap();
+    // A card that was deleted, or never on this canvas.
+    let gone = NodeId::from_bytes([0xEE; 16]);
+    let prompt = format!("About {}", nodecraft_nodes::mention::token("Gone", gone));
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":WRITER,"name":"prompt","value":{"type":"text","value":prompt}})).unwrap();
+    let q = f.session.dispatch("run.quote", &request()).unwrap();
+    assert_eq!(q["allowed"], false, "{q}");
+    // The quote keeps fixed reason codes; the card shows why.
+    assert_eq!(q["blocked"], json!([format!("node {WRITER} [node_validation]: check node parameters, connections and installed kind")]), "{q}");
+    assert!(f.captured.lock().unwrap().is_empty() && f.mock.requests().is_empty());
+}
+
+#[test]
 fn an_empty_prompt_is_refused_before_any_provider_work() {
     let mut f = fixture(None, false);
     f.session.dispatch("node.param_set", &json!({"canvas":C,"id":WRITER,"name":"prompt","value":{"type":"text","value":"   "}})).unwrap();

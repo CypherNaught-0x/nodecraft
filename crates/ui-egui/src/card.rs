@@ -15,6 +15,7 @@ use std::{
 };
 
 pub(crate) mod generate;
+pub(crate) mod mention;
 pub use generate::Roles;
 
 pub const BODY_MIN_ZOOM: f32 = 0.55;
@@ -94,7 +95,7 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
     } else {
         &node.title
     };
-    let prefix: String = text.chars().take(256).collect();
+    let prefix = nodecraft_nodes::mention::display_start(text, 256);
     let line = prefix.lines().find(|line| !line.trim().is_empty()).unwrap_or_else(fallback).trim();
     let mut chars = line.chars();
     let mut clipped: String = chars.by_ref().take(64).collect();
@@ -141,6 +142,10 @@ pub struct CardView<'a> {
     pub prompt_wired: bool,
     /// How many Elements go by each lowercased name, for the prompt's mention hint (#104).
     pub elements: &'a std::collections::BTreeMap<String, usize>,
+    /// The cards on the canvas, for the prompt's `@` mentions (#505).
+    pub mentions: &'a [mention::Candidate],
+    /// Why the card's mentions block its run, when they do (#505).
+    pub mention_blocked: Option<&'a str>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
     /// The node's video and its player, when it has one (#105).
@@ -171,7 +176,8 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, partial, video, mesh } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, mentions, mention_blocked, partial, video, mesh } =
+        card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -333,7 +339,7 @@ pub fn show(
             inner = generate::show(
                 &mut ui,
                 inner,
-                generate::Composer { node, wired: prompt_wired, descriptor: d, roles, visible, enabled, elements },
+                generate::Composer { node, wired: prompt_wired, descriptor: d, roles, visible, enabled, elements, mentions, blocked: mention_blocked },
                 editor,
                 &mut intents,
                 t,
@@ -680,8 +686,14 @@ pub(crate) fn control_with_mode(
                 _ => Cow::Borrowed(""),
             };
             if !editor.text.contains_key(name) {
-                let mut preview: String = original.chars().take(t.preview_chars).collect();
-                if original.len() > preview.len() {
+                // A prompt's `@` mentions read as `@Title` until it is edited (#505).
+                let mut preview: String = if name == nodecraft_nodes::generation::PROMPT {
+                    nodecraft_nodes::mention::display_start(&original, t.preview_chars.saturating_add(1))
+                } else {
+                    original.chars().take(t.preview_chars.saturating_add(1)).collect()
+                };
+                if preview.chars().count() > t.preview_chars {
+                    preview = preview.chars().take(t.preview_chars).collect();
                     preview.push('…');
                 }
                 let response = ui

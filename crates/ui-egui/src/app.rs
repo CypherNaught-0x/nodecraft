@@ -332,6 +332,7 @@ mod library_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
 mod mask_editor;
+mod mentions;
 mod metrics;
 mod models;
 mod navigation;
@@ -455,6 +456,8 @@ pub struct NodeCraftApp {
     /// Exact previous text owner survives Escape and disabled-toolbar interaction.
     last_text_focus: Option<egui::Id>,
     schemas: SchemaCache,
+    /// The cards prompts can `@mention`, and blocked mentions (#505).
+    mention_cache: mentions::Cache,
     marquee_geometry: admission::GeometryCache,
     cache_clock: u64,
     next_gesture: u64,
@@ -819,6 +822,7 @@ impl NodeCraftApp {
             text_focused: false,
             last_text_focus: None,
             schemas: SchemaCache::default(),
+            mention_cache: mentions::Cache::default(),
             marquee_geometry: admission::GeometryCache::default(),
             cache_clock: 0,
             next_gesture: 0,
@@ -1240,6 +1244,9 @@ impl NodeCraftApp {
             let prompt_wired: BTreeSet<NodeId> =
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
             let element_names = elements::names(canvas);
+            self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
+            let mention_cards = &self.mention_cache.cards;
+            let mention_blocked = &self.mention_cache.blocked;
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1313,6 +1320,8 @@ impl NodeCraftApp {
                         roles: schema.map(|cached| &cached.roles),
                         prompt_wired: prompt_wired.contains(&node.id),
                         elements: &element_names,
+                        mentions: mention_cards,
+                        mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         #[cfg(not(target_arch = "wasm32"))]
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
                         #[cfg(target_arch = "wasm32")]
@@ -2524,6 +2533,8 @@ mod layer_editor_tests;
 mod library_view_tests;
 #[cfg(test)]
 mod mask_editor_tests;
+#[cfg(test)]
+mod mentions_tests;
 #[cfg(test)]
 mod mesh_tests;
 #[cfg(test)]

@@ -63,6 +63,14 @@ from the prompt or kind label in the app; it does not indicate missing node data
 to rename a node (empty restores automatic naming), and `node.param_set` to edit a schema
 parameter (null removes its override and restores the default).
 
+A generation card's typed `prompt` can mention another card on the same canvas with the token
+`@[Title](node id)`, for example `Retell @[Story](0a1b…-uuid) for children`. The title is for
+people (the app shows the token as `@Title`); the id is what counts, so retitling the mentioned
+card never breaks the mention. At plan time each mention is replaced by that card's single text
+output, and the card runs first if it is stale, as if it were wired in. A mention of a card that
+is gone, makes no single text, or is made from the mentioning card blocks the run with a message
+saying which. A wire into `prompt` replaces the typed prompt, so its mentions are then ignored.
+
 A command that fails comes back as a tool result with `isError: true` and a message the model can
 act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC errors.
 
