@@ -86,7 +86,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{} -> {held: [{id, canvas, node, provider, model, reason, outputs, retry, pending}], max}. Paid results a run couldn't keep (they couldn't be converted, fitted to the node's ports or recorded), oldest first. `retry` says whether run.held_retry can record it; `pending` is retry|place while the host carries that out. While `max` are held, new jobs are refused before they are sent. Held results are lost when NodeCraft quits. Read-only.",
+            params_doc: "{} -> {held: [{id, canvas, node, provider, model, reason, outputs, retry, pending, saved}], max}. Paid results a run couldn't keep (they couldn't be converted, fitted to the node's ports or recorded), oldest first. `retry` says whether run.held_retry can record it; `pending` is retry|place while the host carries that out. While `max` are held, new jobs are refused before they are sent. `saved` says whether it survives a restart: the desktop saves held results, except one too large to keep or that couldn't be written. Read-only.",
             enabled: enabled_list,
             run: run_list,
         },

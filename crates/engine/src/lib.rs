@@ -27,6 +27,7 @@ pub mod file_cmds;
 pub mod generate;
 pub mod graph_cmds;
 pub mod held_cmds;
+pub mod held_store;
 pub mod history_cmds;
 pub mod impact;
 pub mod import;

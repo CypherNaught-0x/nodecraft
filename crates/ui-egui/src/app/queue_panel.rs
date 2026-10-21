@@ -107,7 +107,15 @@ impl NodeCraftApp {
             format!("{} paid result{} couldn't be kept", held.len(), if held.len() == 1 { "" } else { "s" })
         };
         ui.label(egui::RichText::new(heading).color(if full { t.danger } else { t.text }));
-        ui.label(egui::RichText::new("They are kept until NodeCraft quits. Nothing here is sent or charged again.").color(t.text_muted));
+        let kept = if held.iter().all(|view| view.saved) {
+            "They are kept across restarts until you decide. Nothing here is sent or charged again."
+        } else if held.iter().any(|view| view.saved) {
+            "Those marked “until quit” are lost when NodeCraft quits; the rest are kept across restarts. Nothing here is sent or charged again."
+        } else {
+            "They are kept until NodeCraft quits. Nothing here is sent or charged again."
+        };
+        ui.label(egui::RichText::new(kept).color(t.text_muted));
+        let marked = held.iter().any(|view| view.saved) && held.iter().any(|view| !view.saved);
         egui::Grid::new("queue_held").num_columns(3).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
             for view in held {
                 let node = self.session.document().canvases().get(&view.canvas).and_then(|canvas| canvas.nodes().get(&view.node));
@@ -116,7 +124,13 @@ impl NodeCraftApp {
                     |node| crate::card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor())),
                 );
                 ui.label(title).on_hover_text(format!("{} · {}", view.provider, view.model));
-                ui.label(egui::RichText::new(&view.reason).color(t.danger));
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&view.reason).color(t.danger));
+                    if marked && !view.saved {
+                        ui.label(egui::RichText::new("until quit").color(t.text_muted))
+                            .on_hover_text("Too large to keep across restarts, or it couldn't be saved");
+                    }
+                });
                 ui.horizontal(|ui| {
                     let idle = view.pending.is_none();
                     let retry = ui.add_enabled(idle && view.retry, egui::Button::new("Retry"));

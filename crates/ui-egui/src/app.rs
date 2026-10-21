@@ -2619,4 +2619,7 @@ mod turn_into_tests;
 #[cfg(test)]
 mod held_minimap_tests;
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod held_restart_tests;
+#[cfg(test)]
 mod stale_tests;

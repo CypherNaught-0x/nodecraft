@@ -2,7 +2,7 @@
 //! handle, never sent again: its runner registration is resume-only. When it ends its charge
 //! settles like any other job's, and a finished one's result is recorded on its card when it can
 //! be (see [`super::RunHost::resume`]).
-use super::held::{Held, HeldResult};
+use super::held::{self, Held, HeldResult};
 use super::{HELD_NOTE, RunNotice, lock};
 use crate::Session;
 use crate::generate;
@@ -276,7 +276,7 @@ fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDeliver
                 routes: entry.routes.clone(),
                 recipe: entry.recipe.clone(),
             };
-            lock(held).hold(result);
+            held::hold(held, result);
             RunNotice::Failed { canvas, node, reason: format!("{reason}; {HELD_NOTE}") }
         }
     }

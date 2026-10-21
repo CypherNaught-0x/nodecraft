@@ -5,13 +5,17 @@
 //! these calls the provider again or charges again. A fanned or multi-job step's results are held
 //! as one, outputs in job order, and can only be placed or discarded (#611).
 //!
-//! Held results live in memory and are lost when NodeCraft quits. At most [`MAX_HELD`] are held:
+//! With a store ([`crate::run_host::RunHost::open_held`], #614) each held result is also saved as
+//! one record, removed once it is placed, recorded or discarded, so it survives a restart; one
+//! that doesn't fit the store's byte cap, or can't be written, is held in memory only and says so.
+//! Without a store, held results are lost when NodeCraft quits. At most [`MAX_HELD`] are held:
 //! once that many wait, every new job is refused before it is sent (see the run host's
 //! write-ahead), so a full store never drops a result. Jobs already in flight may still add theirs.
 use super::lock;
 use crate::Session;
 use crate::generate;
 use crate::held_cmds::{HELD_SERVICE, MAX_HELD};
+use crate::held_store::{HeldRecord, HeldStore, MAX_HELD_STORE_BYTES};
 use crate::history_cmds::source_kind;
 use nodecraft_exec::run::ResumeRecipe;
 use nodecraft_graph::{Node, Position};
@@ -49,6 +53,8 @@ pub struct HeldView {
     pub retry: bool,
     /// What it is waiting to have done, if asked.
     pub pending: Option<HeldAction>,
+    /// Whether it is saved, so it survives a restart (#614).
+    pub saved: bool,
 }
 
 /// A paid result and what recording or placing it needs.
@@ -66,10 +72,50 @@ pub(super) struct HeldResult {
     pub(super) recipe: Option<ResumeRecipe>,
 }
 
+impl HeldResult {
+    fn record(&self) -> HeldRecord {
+        HeldRecord {
+            project: self.project,
+            canvas: self.canvas,
+            node: self.node,
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            reason: self.reason.clone(),
+            completed: self.completed.clone(),
+            routes: self.routes.clone(),
+            recipe: self.recipe.clone(),
+        }
+    }
+}
+
+impl From<HeldRecord> for HeldResult {
+    fn from(r: HeldRecord) -> Self {
+        Self {
+            project: r.project,
+            canvas: r.canvas,
+            node: r.node,
+            provider: r.provider,
+            model: r.model,
+            reason: r.reason,
+            completed: r.completed,
+            routes: r.routes,
+            recipe: r.recipe,
+        }
+    }
+}
+
+/// A saved record: its number in the store, and its size.
+#[derive(Clone, Copy)]
+struct Saved {
+    record: u64,
+    bytes: u64,
+}
+
 struct Entry {
     id: u64,
     result: HeldResult,
     pending: Option<HeldAction>,
+    saved: Option<Saved>,
 }
 
 /// The held results, shared by the run host and its service.
@@ -77,6 +123,11 @@ struct Entry {
 pub(super) struct Held {
     next: u64,
     entries: Vec<Entry>,
+    store: Option<Arc<dyn HeldStore>>,
+    /// The bytes of every saved record, and of records being written.
+    stored: u64,
+    /// The highest record number in the store, used or set aside.
+    last_record: u64,
 }
 
 #[derive(Deserialize)]
@@ -96,17 +147,127 @@ struct Request {
     id: Option<u64>,
 }
 
+/// Holds `result` in `held`, saving it when there is a store and room. Never refuses: the bound is
+/// kept by refusing new jobs instead. The record is encoded and written outside the lock, so a
+/// large one doesn't stall the runner.
+pub(super) fn hold(held: &Mutex<Held>, result: HeldResult) -> u64 {
+    let bytes = lock(held).store.is_some().then(|| result.record().to_bytes().ok()).flatten();
+    let (id, reserved) = {
+        let mut held = lock(held);
+        let reserved = bytes.as_ref().and_then(|bytes| held.reserve(u64::try_from(bytes.len()).ok()?));
+        (held.push(result), reserved)
+    };
+    if let (Some(bytes), Some((store, saved))) = (bytes, reserved) {
+        let written = store.write(saved.record, &bytes);
+        let mut held = lock(held);
+        match written {
+            Ok(()) => held.saved(id, store.as_ref(), saved),
+            Err(_) => held.stored = held.stored.saturating_sub(saved.bytes),
+        }
+    }
+    id
+}
+
 impl Held {
     /// Whether new jobs must wait until a held result is dealt with.
     pub(super) fn is_full(&self) -> bool {
         self.entries.len() >= MAX_HELD
     }
 
-    /// Holds `result`. Never refuses: the bound is kept by refusing new jobs instead.
-    pub(super) fn hold(&mut self, result: HeldResult) -> u64 {
+    /// Holds `result` as a new entry, without saving it.
+    fn push(&mut self, result: HeldResult) -> u64 {
         self.next = self.next.saturating_add(1);
-        self.entries.push(Entry { id: self.next, result, pending: None });
+        self.entries.push(Entry { id: self.next, result, pending: None, saved: None });
         self.next
+    }
+
+    /// Reserves a record number and `size` bytes of the store for a new record, if it fits.
+    fn reserve(&mut self, size: u64) -> Option<(Arc<dyn HeldStore>, Saved)> {
+        let store = self.store.clone()?;
+        if self.stored.checked_add(size)? > MAX_HELD_STORE_BYTES {
+            return None;
+        }
+        let record = self.last_record.checked_add(1)?;
+        self.last_record = record;
+        self.stored = self.stored.saturating_add(size);
+        Some((store, Saved { record, bytes: size }))
+    }
+
+    /// Removes entry `index` and its saved record. A record that can't be removed comes back
+    /// after a restart, still held: placing or discarding it then never charges again.
+    fn let_go(&mut self, index: usize) {
+        if index >= self.entries.len() {
+            return;
+        }
+        let entry = self.entries.remove(index);
+        if let (Some(store), Some(saved)) = (&self.store, entry.saved) {
+            let _ = store.remove(saved.record);
+            self.stored = self.stored.saturating_sub(saved.bytes);
+        }
+    }
+
+    /// Keeps held results in `store` from now on, holding again the results it has saved (as new
+    /// entries, after any held already), up to [`MAX_HELD`] and the store's byte cap; the rest
+    /// stay saved, and count against the cap, until a later launch. Records that can't be read
+    /// are set aside, and ones from a newer NodeCraft left alone; the error says so, and the store
+    /// is used anyway. A store that can't be listed isn't used, and a host opens only one.
+    pub(super) fn open(&mut self, store: Box<dyn HeldStore>) -> Result<(), Error> {
+        if self.store.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "held results are already kept in a store"));
+        }
+        let listing = store.list().map_err(|e| Error::new(e.kind, format!("held results won't be kept across restarts: {}", e.message)))?;
+        self.last_record = self.last_record.max(listing.highest);
+        self.stored = self.stored.saturating_add(listing.bytes);
+        let mut problems: Vec<String> = Vec::new();
+        let mut restored = 0u64;
+        let mut waiting = listing.records.len();
+        for (record, size) in listing.records {
+            if self.is_full() || restored.saturating_add(size) > MAX_HELD_STORE_BYTES {
+                continue;
+            }
+            match store.read(record).and_then(|bytes| HeldRecord::from_bytes(&bytes)) {
+                Ok(result) => {
+                    restored = restored.saturating_add(size);
+                    waiting = waiting.saturating_sub(1);
+                    let id = self.push(result.into());
+                    if let Some(entry) = self.entries.last_mut().filter(|entry| entry.id == id) {
+                        entry.saved = Some(Saved { record, bytes: size });
+                    }
+                }
+                Err(error) if error.kind == ErrorKind::Unsupported => {
+                    waiting = waiting.saturating_sub(1);
+                    problems.push(format!("{} (left in place)", error.message));
+                }
+                Err(error) => {
+                    waiting = waiting.saturating_sub(1);
+                    self.stored = self.stored.saturating_sub(size);
+                    problems.push(match store.set_aside(record) {
+                        Ok(()) => format!("{} (set aside)", error.message),
+                        Err(aside) => format!("{}; {}", error.message, aside.message),
+                    });
+                }
+            }
+        }
+        self.store = Some(Arc::from(store));
+        if waiting > 0 {
+            problems.push(format!("{waiting} more are saved and come back at a later launch, once fewer than {MAX_HELD} are held"));
+        }
+        match problems.as_slice() {
+            [] => Ok(()),
+            _ => Err(Error::new(ErrorKind::InvalidInput, format!("some held results couldn't be restored: {}", problems.join("; ")))),
+        }
+    }
+
+    /// Records that `saved` was written for entry `id`; if the entry was let go meanwhile, the
+    /// record goes too.
+    fn saved(&mut self, id: u64, store: &dyn HeldStore, saved: Saved) {
+        match self.entries.iter_mut().find(|entry| entry.id == id) {
+            Some(entry) => entry.saved = Some(saved),
+            None => {
+                let _ = store.remove(saved.record);
+                self.stored = self.stored.saturating_sub(saved.bytes);
+            }
+        }
     }
 
     pub(super) fn views(&self) -> Vec<HeldView> {
@@ -125,7 +286,9 @@ impl Held {
     /// Ends a retry or placement: drops the result when it worked, keeps it otherwise.
     pub(super) fn settle(&mut self, id: u64, worked: bool) {
         if worked {
-            self.entries.retain(|e| e.id != id);
+            if let Some(index) = self.entries.iter().position(|e| e.id == id) {
+                self.let_go(index);
+            }
         } else if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
             entry.pending = None;
         }
@@ -156,7 +319,7 @@ impl Held {
                 Ok(json!({"id": id, "pending": "place"}))
             }
             Op::Discard => {
-                self.entries.remove(index);
+                self.let_go(index);
                 Ok(json!({"id": id, "discarded": true}))
             }
             Op::List => Ok(self.listing()),
@@ -176,6 +339,7 @@ fn view(e: &Entry) -> HeldView {
         outputs: r.completed.outputs.len(),
         retry: r.recipe.is_some(),
         pending: e.pending,
+        saved: e.saved.is_some(),
     }
 }
 
@@ -185,7 +349,7 @@ fn view_json(v: &HeldView) -> Value {
         HeldAction::Place => "place",
     });
     json!({"id": v.id, "canvas": v.canvas, "node": v.node, "provider": v.provider, "model": v.model, "reason": v.reason,
-        "outputs": v.outputs, "retry": v.retry, "pending": pending})
+        "outputs": v.outputs, "retry": v.retry, "pending": pending, "saved": v.saved})
 }
 
 fn invalid(message: &str) -> Error {

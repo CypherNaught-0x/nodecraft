@@ -343,6 +343,13 @@ impl RunHost {
         Ok(())
     }
 
+    /// Keeps held results (#369) in `store` across restarts (#614), holding again every result
+    /// it saved. A record that can't be read is set aside and reported; the store is used anyway.
+    /// An error that leaves the store unused says so. Call before any run starts.
+    pub fn open_held(&mut self, store: Box<dyn crate::held_store::HeldStore>) -> Result<(), Error> {
+        lock(&self.results).open(store)
+    }
+
     /// The adapters restored jobs of `project` are waiting for (see [`Self::resume`]).
     pub fn waiting_adapters(&self, project: ProjectId) -> BTreeSet<String> {
         self.parked.iter().filter(|entry| entry.project == project).map(|entry| entry.target.adapter().to_owned()).collect()
@@ -787,7 +794,7 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
             let awaiting = take_awaiting(&mut active.awaiting, |a| a.step == result.node);
             notices.push(match (record(session, canvas, result), awaiting) {
                 (RunNotice::Failed { canvas, node, reason }, Some(kept)) => {
-                    lock(held).hold(held::HeldResult { reason: reason.clone(), ..kept });
+                    held::hold(held, held::HeldResult { reason: reason.clone(), ..kept });
                     RunNotice::Failed { canvas, node, reason: format!("{reason}; {HELD_NOTE}") }
                 }
                 (notice, _) => notice,
@@ -801,11 +808,11 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
             notices.push(match awaiting {
                 // Cancelled with paid results already in: they are held, and the card shows the cancel.
                 Some(kept) if failure.reason == CANCELLED => {
-                    lock(held).hold(held::HeldResult { reason: failure.reason.clone(), ..kept });
+                    held::hold(held, held::HeldResult { reason: failure.reason.clone(), ..kept });
                     RunNotice::Cancelled { canvas, node: failure.node }
                 }
                 Some(kept) => {
-                    lock(held).hold(held::HeldResult { reason: failure.reason.clone(), ..kept });
+                    held::hold(held, held::HeldResult { reason: failure.reason.clone(), ..kept });
                     RunNotice::Failed { canvas, node: failure.node, reason: format!("{}; {HELD_NOTE}", failure.reason) }
                 }
                 None if failure.reason == CANCELLED => RunNotice::Cancelled { canvas, node: failure.node },
@@ -1114,7 +1121,7 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
             Ok((outputs, billed))
         }
         Err(reason) => {
-            lock(held).hold(kept(reason.clone(), delivery.completed));
+            held::hold(held, kept(reason.clone(), delivery.completed));
             Err(format!("{reason}; {HELD_NOTE}"))
         }
     }
@@ -1157,7 +1164,7 @@ fn hold_dropped(active: &mut Active, dropped: &[JobId], held: &Mutex<held::Held>
     let run = &active.run;
     for (step, result) in take_by_step(&mut active.awaiting, |job, _| dropped.contains(&job)) {
         let reason = if run.is_running(step) { "another job of its item didn't finish" } else { "it finished after its step had ended" };
-        lock(held).hold(held::HeldResult { reason: reason.into(), ..result });
+        held::hold(held, held::HeldResult { reason: reason.into(), ..result });
     }
 }
 
@@ -1169,7 +1176,7 @@ fn let_go_of_ended(active: &mut Active, held: &Mutex<held::Held>) {
     let run = &active.run;
     for (step, result) in take_by_step(&mut active.awaiting, |_, a| !run.is_running(a.step)) {
         if run.has_failed(step) {
-            lock(held).hold(held::HeldResult { reason: "its step failed".into(), ..result });
+            held::hold(held, held::HeldResult { reason: "its step failed".into(), ..result });
         }
     }
 }
