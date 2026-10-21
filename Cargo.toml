@@ -74,6 +74,9 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc", "zero
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
 # Plugin package signatures (#171): Ed25519, BSD-3-Clause, pure Rust (also wasm); verify only.
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+# Serve webhook signatures (#632): HMAC-SHA256, RustCrypto, MIT/Apache-2.0, pure Rust.
+hmac = "0.13"
+sha2 = { version = "0.11", default-features = false }
 
 # craft-pdf's reader and rasteriser use craft-libs' patched Hayro trees. Cargo ignores a git
 # dependency's own [patch] section, so its consumers repeat it at the same rev (crates/pdf/README.md,
