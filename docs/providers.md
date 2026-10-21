@@ -21,6 +21,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
+| **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
 ## Setting up catalog providers
 
@@ -38,6 +39,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `seedream` | `seedream` | — |
 | `tripo` | `tripo` | — |
 | `meshy` | `meshy` | — |
+| `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
@@ -586,4 +588,46 @@ never runs in CI:
 ```sh
 NODECRAFT_LIVE_MESHY=1 NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1 MESHY_API_KEY=… \
   cargo test -p nodecraft-providers --features http,meshy --test live_meshy -- --ignored
+```
+
+## Comfy Cloud workflows
+
+The optional `comfy-cloud` adapter (#16) runs ComfyUI workflows on Comfy's hosted GPUs through its
+versioned v2 API at the fixed base `https://cloud.comfy.org`. Its jobs have the same shape as the
+local ComfyUI adapter's: `params.workflow` in API format, `params.values` overrides keyed
+`<node>.<input>`, and media inputs whose role names an upload input such as `1.image`.
+
+- **Checked first:** the workflow and its overrides are checked against the cloud's
+  `/api/object_info` (cached for five minutes) before anything is uploaded, so a missing node or a
+  value the cloud doesn't offer costs nothing.
+- **Inputs** are sniffed (HDR inputs are refused as for local ComfyUI), capped at 100 MiB each,
+  uploaded to `POST /api/v2/assets` under content-hash names, and referenced from the workflow as
+  `core/ASSET` values. Uploads are free and deduplicated, so a failed upload proves no job exists.
+- **Submitting once:** `POST /api/v2/jobs` carries an `Idempotency-Key` derived from the run's own
+  key. Comfy takes the first request with a key and refuses any later one
+  (`idempotency_key_reuse`) without running it, so the same run is never charged twice. Comfy
+  Cloud can't look a job up by key, so a submit whose reply was lost is reported as possibly
+  billed and never retried automatically (`retry_ambiguous_submit` is false); a re-run gets a new
+  key.
+- **Progress and results:** polling `GET /api/v2/jobs/{id}` reports queue position, the progress
+  fraction and message, and failures with the node that failed. Finished outputs are downloaded
+  from `/api/v2/assets/{id}/content` with the key, and its redirect to a signed `https` storage
+  URL is followed without it (no request follows redirects on its own). Outputs are capped per
+  file (512 MiB), in total (2 GiB) and in count (256), sniffed, and latents are skipped; an
+  expired signed link is a retryable failure so the next poll fetches fresh ones, while Comfy's own
+  refusal of a download (a revoked key, an expired asset, blocked content) is reported as such.
+- **Cancel** posts to `/api/v2/jobs/{id}/cancel`.
+- **Not sent:** the key in `extra_data`. Partner (API) nodes bill extra credits that no NodeCraft
+  quote covers, so a workflow using one (`api_node` in the cloud's node list) is refused before
+  anything is uploaded or run.
+
+Comfy Cloud bills GPU time, which isn't known before a run. There are no catalog models for it
+yet: workflows reach it through the Workflow node and the servers panel (#9), which add it as a
+backend profile next to local servers.
+
+The live smoke test only reads the node list, so it spends no credits:
+
+```sh
+NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
+  cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```

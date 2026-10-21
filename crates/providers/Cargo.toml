@@ -31,6 +31,8 @@ seedream = ["dep:base64"]
 tripo = []
 # Meshy text, image and multi-image to 3D, retexture and remesh: one paid task, polling and the GLB download.
 meshy = ["dep:base64"]
+# Comfy Cloud: workflows on Comfy-hosted GPUs through its v2 jobs and assets API.
+comfy-cloud = ["comfyui"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 
