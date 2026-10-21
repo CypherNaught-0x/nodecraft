@@ -45,7 +45,8 @@
 - **Keep your keys yours**: an API keys panel over the OS keychain.
 - **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
   you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
-  dispatching the same 66 commands the UI uses.
+  dispatching the same 66 commands the UI uses. `nodecraft-cli inspect`, `quote` and `providers`
+  read a project's canvases, price a run as the canvas would, and say which providers can run.
 
 ## The canvas, frame by frame
 

@@ -2878,8 +2878,14 @@ version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-automation",
  "nodecraft-engine",
+ "nodecraft-exec",
+ "nodecraft-format",
+ "nodecraft-graph",
+ "nodecraft-nodes",
+ "nodecraft-providers",
  "nodecraft-types",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
