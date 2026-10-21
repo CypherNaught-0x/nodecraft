@@ -264,7 +264,7 @@ fn object_schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
 
-fn tools() -> Value {
+pub(crate) fn tools() -> Value {
     json!([
         {
             "name": "command_list",
@@ -369,7 +369,14 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
     Ok(json!({"commands": commands}))
 }
 
-pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, mut args: Map<String, Value>) -> Result<Value, Error> {
+pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, args: Map<String, Value>) -> Result<Value, Error> {
+    let (id, params) = admitted(host, args)?;
+    let result = host.dispatch(&id, &params)?;
+    Ok(json!({"result": result, "revision": host.session().revision()}))
+}
+
+/// The command and params `command_run` was asked for, once automation may run that command.
+pub(crate) fn admitted<H: crate::commands::CommandHost + ?Sized>(host: &H, mut args: Map<String, Value>) -> Result<(String, Value), Error> {
     let id = match args.remove("id") {
         Some(Value::String(id)) => id,
         _ => return Err(invalid("command_run needs the command `id`")),
@@ -379,9 +386,17 @@ pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H
         let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
         return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
     }
-    let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
-    let result = host.dispatch(&id, &params)?;
-    Ok(json!({"result": result, "revision": host.session().revision()}))
+    Ok((id, args.remove("params").unwrap_or(Value::Object(Map::new()))))
+}
+
+/// `count` fresh version-4 UUIDs from `new_id`.
+pub(crate) fn ids_new(new_id: &mut dyn FnMut() -> [u8; 16], args: &Map<String, Value>) -> Result<Value, Error> {
+    let count = match args.get("count") {
+        None => 1,
+        Some(v) => v.as_u64().filter(|n| (1..=MAX_NEW_IDS as u64).contains(n)).ok_or_else(|| invalid(format!("`count` must be 1–{MAX_NEW_IDS}")))?,
+    };
+    let ids: Vec<String> = (0..count).map(|_| NodeId::from_bytes(uuid_v4(new_id())).to_string()).collect();
+    Ok(json!({"ids": ids}))
 }
 
 pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Result<Value, Error> {
@@ -567,7 +582,7 @@ impl McpServer {
         };
         let unknown = || Err((INVALID_PARAMS, format!("unknown tool {}", name.chars().take(64).collect::<String>())));
         let result = match (&mut self.backend, name.as_str()) {
-            (_, "ids_new") => self.ids_new(&args),
+            (_, "ids_new") => ids_new(&mut self.new_id, &args),
             (Backend::Local(session), "command_list") => command_list(&mut **session, &args),
             (Backend::Local(session), "command_run") => command_run(&mut **session, args),
             (Backend::Local(session), "canvas_inspect") => canvas_inspect(session, &args),
@@ -617,15 +632,6 @@ impl McpServer {
             }));
         }
         list
-    }
-
-    fn ids_new(&mut self, args: &Map<String, Value>) -> Result<Value, Error> {
-        let count = match args.get("count") {
-            None => 1,
-            Some(v) => v.as_u64().filter(|n| (1..=MAX_NEW_IDS as u64).contains(n)).ok_or_else(|| invalid(format!("`count` must be 1–{MAX_NEW_IDS}")))?,
-        };
-        let ids: Vec<String> = (0..count).map(|_| NodeId::from_bytes(uuid_v4((self.new_id)())).to_string()).collect();
-        Ok(json!({"ids": ids}))
     }
 }
 

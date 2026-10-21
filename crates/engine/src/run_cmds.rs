@@ -463,6 +463,18 @@ impl PreparedRun {
     pub fn canvas_id(&self) -> CanvasId {
         self.run.canvas
     }
+    /// The accepted amounts per currency: the most the run may reserve.
+    pub fn ceiling(&self) -> Result<BTreeMap<nodecraft_types::Currency, u64>, Error> {
+        accepted_limits(&self.accept)
+    }
+    /// The caller accepted a price that is partly unknown.
+    pub fn partial(&self) -> bool {
+        self.accept.partial
+    }
+    /// How many jobs of unknown price the run may admit.
+    pub fn unpriced_jobs(&self) -> u64 {
+        self.accept.unpriced_jobs.unwrap_or(0)
+    }
 }
 /// The accepted amounts by currency: the run's ceiling (#366). A code that isn't a currency is
 /// refused rather than ignored, so the caller never believes it accepted an amount it didn't.

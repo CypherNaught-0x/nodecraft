@@ -219,3 +219,22 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
 }
 
 mod search;
+
+#[test]
+fn live_navigation_is_judged_a_read_and_moves_nothing() {
+    use nodecraft_automation::commands::CommandHost;
+    use nodecraft_engine::impact::Impact;
+    let mut app = NodeCraftApp::headless().unwrap();
+    let ctx = egui::Context::default();
+    draw(&mut app, &ctx);
+    let (view, revision) = (app.view, app.session.revision());
+    let mut live = LiveCommands { app: &mut app, ctx: &ctx };
+    assert_eq!(live.impact("canvas.pan_to", &json!({"x":1234,"y":-567})).unwrap(), Impact::Read);
+    assert_eq!(live.impact("canvas.minimap_toggle", &json!({})).unwrap(), Impact::Read);
+    assert_eq!(
+        live.impact("node.title", &json!({"canvas": live.app.canvas, "id": nodecraft_types::NodeId::from_bytes([9; 16]), "title": "x"})).unwrap_err().kind,
+        nodecraft_types::ErrorKind::NotFound
+    );
+    assert_eq!(app.view, view, "judging a pan doesn't pan");
+    assert_eq!(app.session.revision(), revision);
+}

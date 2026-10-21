@@ -655,6 +655,27 @@ impl Session {
         })
     }
 
+    /// What dispatching `id` with `params` would do, without doing it (#114). The handler runs
+    /// as dispatch would run it, so a run is classified by the run it would really start and
+    /// what it accepted; the effect is then dropped, never applied.
+    /// An edit is also prepared against the document (and dropped), so one that dispatch would
+    /// refuse is refused here.
+    pub fn impact(&self, id: &str, params: &Value) -> Result<crate::impact::Impact, Error> {
+        let spec = *self.registry.get(id)?;
+        let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;
+        let impact = crate::impact::Impact::of(&effect)?;
+        // As dispatch: only pure reads go past an open.
+        if matches!(self.pending, Some(PendingFile::Open(_)))
+            && !matches!(effect, Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile)
+        {
+            return Err(opening());
+        }
+        if matches!(effect, Effect::Edit { .. } | Effect::Undo | Effect::Redo) {
+            guard(|| self.prepare(effect))?;
+        }
+        Ok(impact)
+    }
+
     pub fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let before = self.file_status();
         // Capture commands don't time themselves.
