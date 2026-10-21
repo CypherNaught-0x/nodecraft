@@ -67,7 +67,13 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     // A technique node runs its version's nodes, inlined. One whose version can't be inlined, or
     // holds a model call, never refreshes live: not even from the cache, where its result would
     // be a model's.
-    let expanded = nodecraft_exec::technique::expand(session.document().canvases(), live, kinds).ok();
+    // Only a canvas holding a technique node pays for the inlined copy before the early return.
+    let expanded = live
+        .nodes()
+        .values()
+        .any(|node| node.kind == technique::ID)
+        .then(|| nodecraft_exec::technique::expand(session.document().canvases(), live, kinds).ok())
+        .flatten();
     let local_technique = |id: &NodeId| {
         expanded.as_ref().is_some_and(|expanded| {
             !expanded.blockers.iter().any(|b| b.node == *id)
