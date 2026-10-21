@@ -117,6 +117,12 @@ fn mcp() -> ExitCode {
     {
         eprintln!("warning: the technique library is unavailable: {}", e.message);
     }
+    // The person's agent skills (#168), shared with the app; the folder is made on the first change.
+    if let Some(dir) = nodecraft_engine::settings::settings_dir()
+        && let Err(e) = nodecraft_engine::skills::install(&mut session, std::rc::Rc::new(nodecraft_engine::skills::FileSkills::new(dir.join("skills"))))
+    {
+        eprintln!("warning: your skills are unavailable: {}", e.message);
+    }
     serve_stdio(&mut McpServer::new(session, Box::new(new_id)))
 }
 

@@ -31,7 +31,7 @@ every CI run, and fails on an unregistered crate.
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |
 | L3 | `gpu` | wgpu actions, custom WGSL actions, 3D preview renderer | actions |
 | L3 | `format` | `.ncraft` files, content-addressed asset store, atomic saves, migrations | graph |
-| L4 | `engine` | `Session`, command registry, undo stack, event bus, settings, library; `build_info` | exec, providers, gpu, format |
+| L4 | `engine` | `Session`, command registry, undo stack, event bus, settings, library, skills; `build_info` | exec, providers, gpu, format |
 | L5 | `agent` | in-canvas agent: sans-IO LLM tool loop over engine commands, assist and auto modes | engine, providers, types |
 | L5 | `automation` | control channel (JSON), MCP server, HTTP serve mode | engine |
 | L5 | `ui-egui` | egui shell: canvas widget, node cards, panels, editors, theme tokens | engine |

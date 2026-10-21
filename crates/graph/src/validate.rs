@@ -327,6 +327,7 @@ impl Project {
                 return Err(invalid("project exceeds entity limits"));
             }
         }
+        crate::skill::validate_skills(&self.skills)?;
         byte_budget(self, MAX_PROJECT_BYTES)
     }
 }

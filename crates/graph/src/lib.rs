@@ -7,6 +7,7 @@
 mod changes;
 pub mod layout;
 mod model;
+mod skill;
 mod technique;
 mod validate;
 
@@ -14,6 +15,10 @@ pub use changes::{Change, Changeset, NodeFieldAssignment, NodePosition, NodeTagA
 pub use model::{
     Canvas, CanvasKind, Comment, CommentPin, CommentReply, Edge, Endpoint, Field, FieldRect, Generation, Incomplete, ItemKey, ItemTag, JobInput, JobSettings,
     Missing, MissingItem, Node, Port, Position, Project, Tag,
+};
+pub use skill::{
+    MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_INSTRUCTIONS_BYTES, MAX_SKILL_NAME_BYTES, MAX_SKILL_ORIGIN_BYTES, MAX_SKILL_REQUIREMENTS, MAX_SKILLS, Requires,
+    Skill, Source as SkillSource, TechniqueRef, name_key as skill_name_key, validate_skills,
 };
 pub use technique::{
     MAX_TECHNIQUE_DESCRIPTION_BYTES, MAX_TECHNIQUE_NAME_BYTES, MAX_TECHNIQUE_NODES, MAX_TECHNIQUE_PORTS, MAX_TECHNIQUE_TAGS, Technique, TechniqueParam,

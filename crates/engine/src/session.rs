@@ -625,6 +625,7 @@ impl Session {
             document: &self.document,
             revision: self.revision,
             kinds: &self.kinds,
+            commands: &self.registry,
             can_undo: self.can_undo(),
             can_redo: self.can_redo(),
             resources: &self.resources,

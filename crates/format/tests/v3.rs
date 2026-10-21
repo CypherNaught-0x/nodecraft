@@ -84,6 +84,20 @@ fn v3_colours_fields_bulk_replay_and_comments_roundtrip_together() {
     let recovered = journal::recover(&torn).unwrap();
     assert!(recovered.truncated_tail);
     assert_eq!(recovered.snapshot, after);
+    // Project skills (#168) save, journal and undo like any v3 edit.
+    let skill: nodecraft_graph::Skill = serde_json::from_value(
+        serde_json::json!({"id": "05050505-0505-0505-0505-050505050505", "version": 1, "name": "Storyboard", "instructions": "Six panels."}),
+    )
+    .unwrap();
+    let put = Changeset::new(vec![Change::PutSkill { skill }]);
+    let unput = put.apply(&mut snapshot.project).unwrap();
+    let skilled = snapshot.clone();
+    assert_eq!(decode(&encode(&skilled).unwrap()).unwrap(), skilled);
+    bytes.extend(journal::frame(checkpoint.identity, 4, &put, &snapshot.assets, &Default::default()).unwrap());
+    assert_eq!(journal::recover(&bytes).unwrap().snapshot, skilled);
+    bytes.extend(journal::frame(checkpoint.identity, 5, &unput, &snapshot.assets, &Default::default()).unwrap());
+    assert_eq!(journal::recover(&bytes).unwrap().snapshot, after);
+    unput.apply(&mut snapshot.project).unwrap();
     // A valid node coordinate that sends its anchored pin out of range is atomic.
     let illegal = Change::MoveNodes { canvas: canvas(), positions: vec![NodePosition { node: node(), pos: Position { x: 10_000_000.0, y: 0.0 } }] };
     assert!(illegal.apply(&mut snapshot.project).is_err());

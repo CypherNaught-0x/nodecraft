@@ -1,7 +1,8 @@
 use nodecraft_graph::{
-    Canvas, Change, Changeset, Comment, Edge, Endpoint, Field, Generation, MAX_CHANGES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS, Node, Port, Position, Project, Tag,
+    Canvas, Change, Changeset, Comment, Edge, Endpoint, Field, Generation, MAX_CHANGES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS, Node, Port, Position, Project, Skill,
+    SkillSource, Tag,
 };
-use nodecraft_types::{CanvasId, CommentId, EdgeId, FieldId, GenerationId, Modality, NodeId, PortType, ProjectId, TagId, Value};
+use nodecraft_types::{CanvasId, CommentId, EdgeId, FieldId, GenerationId, Modality, NodeId, PortType, ProjectId, SkillId, TagId, Value};
 use proptest::prelude::*;
 
 fn canvas() -> CanvasId {
@@ -311,9 +312,53 @@ fn scalar_fast_path_still_enforces_parameter_count_and_atomicity() {
     assert_eq!(project, before);
 }
 
+fn skill(n: u8, name: String) -> Skill {
+    Skill {
+        id: SkillId::from_bytes([n; 16]),
+        version: u32::from(n),
+        name,
+        description: String::new(),
+        instructions: "Do the thing.".into(),
+        requires: Default::default(),
+        source: SkillSource::Written,
+        enabled: true,
+    }
+}
+
+#[test]
+fn skills_put_replace_and_remove_undoably_and_refuse_invalid_ones() {
+    let mut project = connected_project();
+    let start = project.clone();
+    let put = Changeset::new(vec![Change::PutSkill { skill: skill(1, "Storyboard".into()) }, Change::PutSkill { skill: skill(2, "Upscale".into()) }]);
+    let undo = put.apply(&mut project).unwrap();
+    assert_eq!(project.skills().len(), 2);
+    let replace = Change::PutSkill { skill: skill(1, "Boards".into()) }.apply(&mut project).unwrap();
+    assert_eq!(project.skills()[&SkillId::from_bytes([1; 16])].name, "Boards");
+    replace.apply(&mut project).unwrap();
+    assert_eq!(project.skills()[&SkillId::from_bytes([1; 16])].name, "Storyboard");
+    let before = project.clone();
+    for bad in [
+        Change::PutSkill { skill: skill(3, " upscale".into()) },
+        Change::PutSkill { skill: skill(3, String::new()) },
+        Change::PutSkill { skill: skill(0, "Zero".into()) },
+        Change::PutSkill { skill: Skill { instructions: " ".into(), ..skill(3, "Empty".into()) } },
+        Change::RemoveSkill { id: SkillId::from_bytes([9; 16]) },
+    ] {
+        assert!(bad.apply(&mut project).is_err(), "{bad:?}");
+        assert_eq!(project, before);
+    }
+    let removed = Change::RemoveSkill { id: SkillId::from_bytes([2; 16]) }.apply(&mut project).unwrap();
+    assert_eq!(project.skills().len(), 1);
+    removed.apply(&mut project).unwrap();
+    assert_eq!(project, before);
+    undo.apply(&mut project).unwrap();
+    assert_eq!(project, start);
+    assert!(!serde_json::to_string(&project).unwrap().contains("skills"), "a project without skills writes none");
+}
+
 fn arbitrary_change() -> impl Strategy<Value = Change> {
     // Deliberately tiny ID pools generate missing references, collisions, cycles and reuse.
-    (0u8..26, 1u8..5, 1u8..5, 1u8..3, ".{0,16}").prop_map(|(op, n, other, c, text)| {
+    (0u8..28, 1u8..5, 1u8..5, 1u8..3, ".{0,16}").prop_map(|(op, n, other, c, text)| {
         let canvas = CanvasId::from_bytes([c; 16]);
         let id = node_id(n);
         let generation = GenerationId::from_bytes([n; 16]);
@@ -357,7 +402,11 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
                 canvas,
                 comment: Comment { id: CommentId::from_bytes([n; 16]), text, pos: Position::default(), node: None, replies: vec![], resolved: false },
             },
-            _ => Change::RemoveComment { canvas, id: CommentId::from_bytes([n; 16]) },
+            24 => Change::RemoveComment { canvas, id: CommentId::from_bytes([n; 16]) },
+            // Names from the same short text collide, ids from a tiny pool replace each other.
+            25 => Change::PutSkill { skill: skill(n, text) },
+            26 => Change::PutSkill { skill: skill(n, format!("skill {other}")) },
+            _ => Change::RemoveSkill { id: SkillId::from_bytes([n; 16]) },
         }
     })
 }

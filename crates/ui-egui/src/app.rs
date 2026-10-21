@@ -635,6 +635,14 @@ impl NodeCraftApp {
         if let Err(error) = nodecraft_engine::library::install(&mut app.session, library) {
             log::warn!("technique library unavailable: {}", error.message);
         }
+        // The person's agent skills (#168), beside the library.
+        let skills: std::rc::Rc<dyn nodecraft_engine::skills::SkillStore> = match store.dir() {
+            Some(dir) => std::rc::Rc::new(nodecraft_engine::skills::FileSkills::new(dir.join("skills"))),
+            None => std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()),
+        };
+        if let Err(error) = nodecraft_engine::skills::install(&mut app.session, skills) {
+            log::warn!("your skills are unavailable: {}", error.message);
+        }
         if let Some(updates) = &mut updates
             && let Some(told) = updates.after_update.take()
         {
@@ -674,10 +682,12 @@ impl NodeCraftApp {
         Self::headless_with_library(Box::new(nodecraft_engine::library::MemoryLibrary::default()))
     }
 
-    /// [`Self::headless`] keeping its technique library (#96) in `store`.
+    /// [`Self::headless`] keeping its technique library (#96) in `store`, and the person's skills
+    /// (#168) in memory.
     pub fn headless_with_library(store: Box<dyn nodecraft_engine::library::LibraryStore>) -> Result<Self, Error> {
         let mut app = Self::with_services(nodecraft_engine::commands::Services::default())?;
         nodecraft_engine::library::install(&mut app.session, store)?;
+        nodecraft_engine::skills::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         Ok(app)
     }
 

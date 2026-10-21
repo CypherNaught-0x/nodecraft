@@ -122,4 +122,11 @@ or change the document.
 Paid operations (running generations) aren't exposed yet. When they arrive, they will show their
 cost first and respect the session's budget (plan §4.8, #207).
 
+**Skills** (#168): agents can find and read playbooks with `skill.list` and `skill.read`, and write
+them with `skill.create`, `skill.edit` and `skill.delete`. An edit carries the version it read and
+is refused as a conflict if the skill has changed since. `skill.export` returns a skill as a portable
+file. `skill.import` and `skill.enable` are human-only: what untrusted text comes in, and which
+skills are offered to the agent, are the person's call. A skill is guidance: reading one runs
+nothing, and it never overrides approvals, budgets or cost confirmations.
+
 Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available to agents. Tag-filter view commands remain human-only until the MCP live host routes their scoped view intents.

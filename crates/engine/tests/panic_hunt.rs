@@ -312,6 +312,13 @@ fn template(id: &str) -> (Session, Value) {
     if id.starts_with("library.") {
         nodecraft_engine::library::install(&mut session, Box::new(nodecraft_engine::library::MemoryLibrary::default())).unwrap();
     }
+    let skill = nodecraft_types::SkillId::from_bytes([0x69; 16]);
+    if id.starts_with("skill.") {
+        nodecraft_engine::skills::install(&mut session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default())).unwrap();
+        if !matches!(id, "skill.create" | "skill.import" | "skill.list") {
+            session.dispatch("skill.create", &json!({"scope":"project","id":skill,"name":"Storyboard","instructions":"Six panels."})).unwrap();
+        }
+    }
     let app_form = matches!(id, "app.form" | "app.input_set");
     if id.starts_with("technique.") || id.starts_with("library.") || app_form {
         let note = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(0x63), &std::collections::BTreeMap::new()).unwrap();
@@ -396,6 +403,16 @@ fn template(id: &str) -> (Session, Value) {
         "technique.list" => json!({}),
         "technique.show" | "technique.remove" => json!({"canvas":technique_canvas}),
         "technique.place" => json!({"canvas":canvas(),"version":technique_canvas,"id":node_id(0x65),"pos":{"x":0,"y":0}}),
+        "skill.list" => json!({"query":"story"}),
+        "skill.read" | "skill.export" => json!({"id":skill}),
+        "skill.create" => json!({"scope":"user","id":skill,"name":"Storyboard","instructions":"Six panels.","requires":{"commands":["node.add"]}}),
+        "skill.edit" => json!({"id":skill,"version":1,"instructions":"Eight panels."}),
+        "skill.enable" => json!({"id":skill,"version":1,"enabled":false}),
+        "skill.delete" => json!({"id":skill,"version":1}),
+        "skill.import" => {
+            let text = json!({"format":"nodecraft.skill","version":1,"skill":{"name":"Storyboard","instructions":"Six panels."}}).to_string();
+            json!({"scope":"user","id":skill,"text":text,"origin":"a file"})
+        }
         "library.list" => json!({}),
         "library.add" => json!({"canvas":technique_canvas}),
         "library.remove" => json!({"technique":technique,"version":1}),

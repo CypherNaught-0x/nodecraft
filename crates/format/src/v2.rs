@@ -7,6 +7,10 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), Error> {
     validate_value(&value)
 }
 pub(crate) fn validate_value(value: &Value) -> Result<(), Error> {
+    // Project skills (#168) are a v3 role; a v2 reader would drop them on save.
+    if value.get("project").and_then(|p| p.get("skills")).is_some() {
+        return Err(crate::invalid("project skills require format v3"));
+    }
     if let Some(canvases) = value.get("project").and_then(|p| p.get("canvases")).and_then(Value::as_object) {
         for canvas in canvases.values() {
             canvas_data(canvas)?;
@@ -122,6 +126,14 @@ mod tests {
             for payload in [snapshot, incoming, record] {
                 assert!(admit_frozen_v2(&payload).is_err(), "{collection}/{key}");
             }
+        }
+        let skill = json!({"id":"05050505-0505-0505-0505-050505050505","version":1,"name":"S","instructions":"x"});
+        for payload in [
+            json!({"version":2,"project":{"canvases":{},"skills":{}}}),
+            json!({"changes":{"changes":[{"type":"put_skill","skill":skill}]}}),
+            json!({"changes":{"changes":[{"type":"remove_skill","id":skill["id"]}]}}),
+        ] {
+            assert!(admit_frozen_v2(&payload).is_err(), "{payload}");
         }
         let future = json!({"changes":{"changes":[{"type":"future_operation"}]}});
         assert!(admit_frozen_v2(&future).is_err());
