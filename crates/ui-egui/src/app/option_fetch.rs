@@ -152,7 +152,8 @@ pub(super) fn notice(report: &Report) -> String {
     }
     let values: usize = report.installed.iter().map(|list| list.values).sum();
     let lists = report.installed.len();
-    // Lists of a provider that isn't set up are told only when they are all there was.
+    // Lists of a provider that isn't set up are told only when they are all there was (the
+    // catalog changed during the fetch; a fetch that asked no provider is an error).
     if lists == 0
         && report.refused.is_empty()
         && let Some(first) = report.unavailable.first()

@@ -198,7 +198,9 @@ pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Err
     // Nothing could be asked: one error says why, as before there was more than one provider.
     if asked > 0 && failed.len() == asked {
         let message = failed.iter().map(|f| f.error().message.as_str()).collect::<Vec<_>>().join("; ");
-        let kind = failed.first().map_or(ErrorKind::Internal, |f| f.error().kind);
+        // A provider that was asked and failed says more than one that isn't set up: a retry may work.
+        let first = failed.iter().find(|f| matches!(f, Failure::Failed(_))).or(failed.first());
+        let kind = first.map_or(ErrorKind::Internal, |f| f.error().kind);
         return Err(Error::new(kind, message));
     }
     for source in sources {

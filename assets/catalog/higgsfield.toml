@@ -122,7 +122,7 @@ control={type="choice",options=[{value="480p",label="480p"},{value="720p",label=
 default={type="text",value="720p"}
 
 # Restyle redraws the source in one of Higgsfield's presets, which its API lists; Refresh option
-# lists fetches them into the preset field, where the value sent is the preset's id.
+# lists fetches them as an option list whose values are preset ids and whose labels are their names.
 [[model]]
 id="higgsfield.genjutsu-restyle"
 provider="higgsfield"

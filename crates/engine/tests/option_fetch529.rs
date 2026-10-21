@@ -261,3 +261,27 @@ fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_
     assert!(preset("Watercolour").is_err(), "the name is a label, not a value");
     preset("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d").unwrap();
 }
+
+/// Higgsfield's host doesn't answer.
+struct Down;
+
+impl Http for Down {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("Higgsfield never follows redirects")
+    }
+    fn send_no_redirect(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        Box::pin(async { Err(ProviderError::new(WireKind::Network, "connection refused")) })
+    }
+}
+
+#[test]
+fn when_nothing_could_be_fetched_a_provider_that_failed_says_more_than_one_not_set_up() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: Arc::new(Down), settings: &settings, now_ms: Arc::new(|| 0) };
+    let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
+    let error = block_on(option_fetch::fetch(&env, &sources)).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Network, "{}", error.message);
+    assert!(error.message.contains("comfyui_url") && error.message.contains("restyle presets"), "{}", error.message);
+}

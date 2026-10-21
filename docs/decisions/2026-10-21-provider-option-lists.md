@@ -5,8 +5,10 @@
   The source id is fixed in `crates/engine/src/option_fetch.rs` like the ComfyUI ones, so a
   catalog row still can't point a source at an arbitrary endpoint.
 - **Each provider is asked on its own.** A fetch asks ComfyUI only for ComfyUI lists and
-  Higgsfield only for its presets. A provider that isn't set up, or doesn't answer, refuses its own
-  lists with its reason; the fetch as a whole fails only when no provider could be asked, so a
+  Higgsfield only for its presets. A provider that isn't set up (no server, no key) reports its
+  lists as unavailable, which the notice leaves out when anything else came back, since most
+  people use only some providers; one that doesn't answer refuses its own lists with its reason.
+  The fetch as a whole fails only when no provider could be asked, so a
   missing ComfyUI server never keeps the presets from loading. Both are built through
   `provider_setup` like their run adapters, reading the same key and settings.
 - **Values and labels are separate.** A preset's value is its id, which the request sends and the
