@@ -524,7 +524,7 @@ fn a_failed_item_inside_a_fanned_technique_is_kept_out_and_the_only_one_run_agai
         vec![Value::List(vec![Value::Text("FOX!".into()), Value::List(Vec::new())]), Value::List(vec![fox, Value::List(Vec::new())])]
     );
     let missing = &partial.generation.incomplete.as_ref().unwrap().missing;
-    assert_eq!(missing, &vec![nodecraft_graph::MissingItem { item: 1, why: nodecraft_graph::Missing::Failed }]);
+    assert_eq!(missing, &vec![nodecraft_graph::MissingItem::new(1, nodecraft_graph::Missing::Failed)]);
     assert_eq!(partial.generation.items.len(), 2);
     let [failure] = failed.as_slice() else { panic!("reported once, on the technique node: {failed:?}") };
     assert_eq!(failure.node, T);

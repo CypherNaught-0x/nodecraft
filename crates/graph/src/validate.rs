@@ -116,9 +116,32 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
         if !ascending || !in_range || incomplete.missing.len() >= generation.items.len() {
             return Err(invalid("a partial generation names some, not all, of its items, once each, in order"));
         }
+        for missing in &incomplete.missing {
+            sent_keys(missing)?;
+        }
     }
     Ok(())
 }
+
+/// A missing item's sent keys (#517): only on a failed item, one per job at most, in job order,
+/// each a short visible-ASCII key of NodeCraft's own (`nodecraft:…`).
+fn sent_keys(missing: &crate::MissingItem) -> Result<(), Error> {
+    if missing.keys.is_empty() {
+        return Ok(());
+    }
+    let ascending = missing.keys.windows(2).all(|pair| matches!(pair, [a, b] if a.job < b.job));
+    let well_formed = missing
+        .keys
+        .iter()
+        .all(|k| !k.key.is_empty() && k.key.len() <= crate::MAX_SENT_KEY && k.key.bytes().all(|b| b.is_ascii_graphic()) && k.key.starts_with("nodecraft:"));
+    if missing.why != crate::Missing::Failed || missing.keys.len() > MAX_JOBS_PER_ITEM || !ascending || !well_formed {
+        return Err(invalid("a missing item's sent keys are short ASCII keys of a failed item's jobs, once each, in order"));
+    }
+    Ok(())
+}
+
+/// More jobs than one item of a step can have.
+const MAX_JOBS_PER_ITEM: usize = 256;
 
 fn settings(generation: &Generation) -> Result<(), Error> {
     if generation.settings.len() > MAX_VALUE_ITEMS {

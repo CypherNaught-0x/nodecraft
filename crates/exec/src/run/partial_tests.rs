@@ -58,7 +58,7 @@ fn a_failed_item_keeps_the_others_and_running_again_runs_only_it() {
     assert_eq!(partial.node, id(2));
     assert_eq!(partial.generation.outputs, vec![Value::List(vec![text("FOX"), Value::List(Vec::new())])]);
     let incomplete = partial.generation.incomplete.clone().unwrap();
-    assert_eq!(incomplete.missing, vec![MissingItem { item: 1, why: Missing::Failed }]);
+    assert_eq!(incomplete.missing, vec![MissingItem::new(1, Missing::Failed)]);
     // It still says what went wrong, and what needs every item doesn't run.
     let reasons: Vec<_> = failed.iter().map(|f| (f.node, f.reason.as_str())).collect();
     assert!(reasons.contains(&(id(2), "1 of 2 items didn't finish: provider said no")), "{reasons:?}");
@@ -97,7 +97,7 @@ fn a_cancelled_item_is_shown_as_cancelled_and_runs_again_under_a_fresh_key() {
     let first_key = key_of(&run, &jobs, "OWL");
     assert_eq!(failed.iter().map(|f| f.reason.as_str()).collect::<Vec<_>>(), ["cancelled"], "shown as cancelled, not failed");
     let missing = &finished.first().unwrap().generation.incomplete.as_ref().unwrap().missing;
-    assert_eq!(missing, &[MissingItem { item: 1, why: Missing::Cancelled }]);
+    assert_eq!(missing, &[MissingItem::new(1, Missing::Cancelled)]);
     record(&mut p, &finished);
 
     let plan = plan_of(&p, &[2]);
@@ -185,7 +185,7 @@ fn an_item_with_several_jobs_fails_alone_and_its_siblings_results_are_let_go() {
     assert!(run.is_finished());
     let [result] = last.finished.as_slice() else { panic!("{last:?}") };
     let incomplete = result.generation.incomplete.as_ref().unwrap();
-    assert_eq!(incomplete.missing, vec![MissingItem { item: 0, why: Missing::Failed }]);
+    assert_eq!(incomplete.missing, vec![MissingItem::new(0, Missing::Failed)]);
     assert_eq!(result.generation.outputs, vec![Value::List(vec![Value::List(Vec::new()), Value::List(vec![text("0"), text("1"), text("2")])])]);
     assert_eq!(last.failed.iter().map(|f| f.reason.as_str()).collect::<Vec<_>>(), ["1 of 2 items didn't finish: provider said no"]);
 }

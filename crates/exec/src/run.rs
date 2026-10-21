@@ -17,7 +17,7 @@
 use crate::planner::{InputSource, MAX_LIST_ITEMS, MAX_PLAN_INPUT_BYTES, MAX_STEP_INPUT_BYTES, RunPlan, Step};
 use crate::scheduler::{self, JobId, Lane, Outcome, RetryPolicy, Start};
 use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
-use nodecraft_graph::{Canvas, Change, Generation, Incomplete, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Missing, MissingItem, Node};
+use nodecraft_graph::{Canvas, Change, Generation, Incomplete, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Missing, MissingItem, Node, SentKey};
 use nodecraft_nodes::{InputValue, JobSpec, PlanCtx, Registry};
 use nodecraft_types::{BillableUnits, CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -139,6 +139,12 @@ struct JobState {
     outputs: Vec<(String, Value)>,
     /// The units its provider said it billed (#437), recorded with its settings.
     billable_units: Option<BillableUnits>,
+    /// The key it may have been billed under without finishing (#517), kept with its item when
+    /// the item fails.
+    billed_key: Option<String>,
+    /// The key it is sent under, when it is not the run's own: a job of an item a partial result
+    /// lacks, sent again under the key it may have been billed under (#517).
+    key: Option<String>,
 }
 
 /// One run of a plan. See the module docs.
@@ -163,6 +169,8 @@ pub struct Run {
     produced: BTreeMap<NodeId, Vec<Value>>,
     open_steps: usize,
     next_job: u64,
+    /// The keys of earlier runs this run sends jobs under again (#517), each at most once.
+    sent_again: BTreeSet<String>,
     run_bytes: usize,
     #[cfg(test)]
     copied_input_bytes: std::cell::Cell<usize>,
@@ -347,6 +355,7 @@ impl Run {
             produced: BTreeMap::new(),
             open_steps,
             next_job: options.first_job,
+            sent_again: BTreeSet::new(),
             run_bytes: 0,
             #[cfg(test)]
             copied_input_bytes: std::cell::Cell::new(0),
@@ -392,7 +401,10 @@ impl Run {
 
     /// The idempotency key of a job of this run: `nodecraft:<run>:<job>` (ASCII, under 64).
     fn key(&self, job: JobId) -> String {
-        format!("nodecraft:{}:{}", hex(&self.id), job.0)
+        match self.jobs.get(&job).and_then(|state| state.key.clone()) {
+            Some(key) => key,
+            None => format!("nodecraft:{}:{}", hex(&self.id), job.0),
+        }
     }
 
     /// The generation id of `node`'s result in this run.
@@ -423,6 +435,20 @@ impl Run {
     pub fn job_billed(&mut self, job: JobId, units: BillableUnits) {
         if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done) {
             state.billable_units = Some(units);
+        }
+    }
+
+    /// `job` is about to fail although the provider may have billed it, under `key` (#517): a
+    /// reply lost on submit, or a job it accepted whose outputs failed here. A fanned step keeps
+    /// the key with the item, so running the item again sends the job under it rather than
+    /// charging for a new one. Call before [`Run::job_failed`]; a key that isn't one of NodeCraft's
+    /// own (`nodecraft:…`, short visible ASCII) is ignored.
+    pub fn job_may_be_billed(&mut self, job: JobId, key: &str) {
+        let valid = key.starts_with("nodecraft:") && key.len() <= nodecraft_graph::MAX_SENT_KEY && key.bytes().all(|b| b.is_ascii_graphic());
+        // A job already sent again under a kept key and failed again isn't kept a third time:
+        // its failure repeats (an output that can't be read here), so the next run sends it fresh.
+        if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done && state.key.is_none() && valid) {
+            state.billed_key = Some(key.to_owned());
         }
     }
 
@@ -688,12 +714,15 @@ impl Run {
         };
         let mut progress = Progress::default();
         let mut ids = Vec::with_capacity(jobs.len());
-        for (work, lane) in jobs.into_iter().zip(lanes) {
+        let reused = self.steps.get(&node).map(|s| reused_keys(&s.step, &job_items)).unwrap_or_default();
+        for (n, (work, lane)) in jobs.into_iter().zip(lanes).enumerate() {
             let id = JobId(self.next_job);
             let Some(next) = self.next_job.checked_add(1) else { return (self.fail(node, "the run ran out of job ids".into()), Vec::new()) };
             self.next_job = next;
+            // A key shared by two jobs would make them one charge: the second runs afresh.
+            let key = reused.get(&n).filter(|key| self.sent_again.insert((*key).clone())).cloned();
+            self.jobs.insert(id, JobState { step: node, work, done: false, reported: false, outputs: Vec::new(), billable_units: None, billed_key: None, key });
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane, retry: self.retry, idempotency_key: self.key(id) });
-            self.jobs.insert(id, JobState { step: node, work, done: false, reported: false, outputs: Vec::new(), billable_units: None });
             ids.push(id);
         }
         let left = ids.len();
@@ -1033,6 +1062,7 @@ impl Run {
             None => None,
         };
         let cells = items.as_ref().map_or(1, Vec::len);
+        let billed = self.billed_keys(&job_ids, &job_items);
         let mut per_cell: Vec<Vec<Vec<Value>>> = vec![vec![Vec::new(); target.outputs.len()]; cells];
         let mut settings: Vec<Vec<JobSettings>> = vec![Vec::new(); cells];
         for (n, job) in job_ids.into_iter().enumerate() {
@@ -1125,7 +1155,11 @@ impl Run {
         } else {
             let mut items = Vec::with_capacity(missing.len());
             for (item, (why, _)) in missing {
-                items.push(MissingItem { item: u32::try_from(*item).map_err(|_| "a job's item is out of range")?, why: *why });
+                let mut missing = MissingItem::new(u32::try_from(*item).map_err(|_| "a job's item is out of range")?, *why);
+                if *why == Missing::Failed {
+                    missing.keys = billed.get(item).cloned().unwrap_or_default();
+                }
+                items.push(missing);
             }
             Some(Incomplete { missing: items })
         };
@@ -1137,6 +1171,40 @@ impl Run {
         }
         Ok(StepResult { node, generation })
     }
+}
+
+impl Run {
+    /// Per item, the keys its jobs may have been billed under (#517), by position among the
+    /// item's jobs.
+    fn billed_keys(&self, jobs: &[JobId], job_items: &[usize]) -> BTreeMap<usize, Vec<SentKey>> {
+        let mut keys: BTreeMap<usize, Vec<SentKey>> = BTreeMap::new();
+        let mut position: BTreeMap<usize, u32> = BTreeMap::new();
+        for (job, item) in jobs.iter().zip(job_items) {
+            let at = position.entry(*item).or_insert(0);
+            if let Some(key) = self.jobs.get(job).and_then(|state| state.billed_key.clone()) {
+                keys.entry(*item).or_default().push(SentKey { job: *at, key });
+            }
+            *at = at.saturating_add(1);
+        }
+        keys
+    }
+}
+
+/// For a step completing a partial result (#517): by index into its planned jobs, the key each
+/// job that may have been billed last time is sent under again.
+fn reused_keys(step: &Step, job_items: &[usize]) -> BTreeMap<usize, String> {
+    let Some(resume) = step.fanout.as_ref().and_then(|f| f.resume.as_ref()) else { return BTreeMap::new() };
+    let mut reused = BTreeMap::new();
+    let mut position: BTreeMap<usize, u32> = BTreeMap::new();
+    for (n, item) in job_items.iter().enumerate() {
+        let at = position.entry(*item).or_insert(0);
+        let missing = u32::try_from(*item).ok().and_then(|item| resume.missing.iter().find(|m| m.item == item));
+        if let Some(sent) = missing.and_then(|m| m.keys.iter().find(|k| k.job == *at)) {
+            reused.insert(n, sent.key.clone());
+        }
+        *at = at.saturating_add(1);
+    }
+    reused
 }
 
 /// A result as it can be recorded. Settings too large to keep alongside it are dropped, like

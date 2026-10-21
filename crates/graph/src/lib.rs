@@ -14,7 +14,7 @@ mod validate;
 pub use changes::{Change, Changeset, NodeFieldAssignment, NodePosition, NodeTagAssignment, StagedChanges};
 pub use model::{
     Canvas, CanvasKind, Comment, CommentPin, CommentReply, Edge, Endpoint, Field, FieldRect, Generation, Incomplete, ItemKey, ItemTag, JobInput, JobSettings,
-    Missing, MissingItem, Node, Port, Position, Project, Tag,
+    MAX_SENT_KEY, Missing, MissingItem, Node, Port, Position, Project, SentKey, Tag,
 };
 pub use skill::{
     MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_INSTRUCTIONS_BYTES, MAX_SKILL_NAME_BYTES, MAX_SKILL_ORIGIN_BYTES, MAX_SKILL_REQUIREMENTS, MAX_SKILLS, Requires,
