@@ -156,3 +156,6 @@ mod capture371;
 mod save;
 
 mod regression152;
+// The app's live recompute, and so its look counter, is native-only.
+#[cfg(not(target_arch = "wasm32"))]
+mod param556;
