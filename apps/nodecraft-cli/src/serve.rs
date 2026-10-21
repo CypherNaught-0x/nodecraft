@@ -11,6 +11,7 @@
 //! the bounded parser in [`http`]: sizes, header counts, connections and waits are all capped.
 mod api;
 mod http;
+mod webhook;
 mod worker;
 
 use std::collections::BTreeMap;
@@ -23,7 +24,11 @@ use std::time::Duration;
 use nodecraft_automation::control::{Token, TokenFile};
 use nodecraft_types::{Error, ErrorKind};
 
+pub use webhook::{MIN_SECRET as MIN_WEBHOOK_SECRET, Settings as Webhooks, key as webhook_key, parse_allow as parse_webhook_allow};
 pub use worker::Loaded;
+
+/// The keychain account the webhook signing secret is kept under.
+pub const WEBHOOK_ACCOUNT: &str = webhook::ACCOUNT;
 
 /// Connections served at once; more are answered 503 and closed.
 const MAX_CONNECTIONS: usize = 8;
@@ -48,6 +53,8 @@ pub struct Config {
     /// Where the token file goes; `None` for `serve.json` in the app's private control folder.
     pub token_file: Option<PathBuf>,
     pub policy: Policy,
+    /// Where run-completion webhooks may go; `None` sends none.
+    pub webhooks: Option<Webhooks>,
 }
 
 /// A running server: its address and token. Dropping it doesn't stop it; [`Self::wait`] blocks
@@ -95,7 +102,9 @@ pub fn start(config: Config, load: impl FnOnce() -> Result<Loaded, Error> + Send
     let token = Token::generate()?;
     let (jobs, queue) = mpsc::sync_channel(MAX_QUEUED);
     let runs = Arc::new(worker::Runs::default());
-    let catalog = worker::spawn(load, queue, Arc::clone(&runs))?;
+    let webhooks = config.webhooks.map(Arc::new);
+    let hooks = webhooks.as_ref().map(|settings| webhook::spawn(Arc::clone(settings), Arc::clone(&runs))).transpose()?;
+    let catalog = worker::spawn(load, queue, Arc::clone(&runs), hooks)?;
     let listener = TcpListener::bind(config.listen).map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't listen on {}: {e}", config.listen)))?;
     let addr = listener.local_addr().map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't read the listening address: {e}")))?;
     let path = match config.token_file {
@@ -104,7 +113,7 @@ pub fn start(config: Config, load: impl FnOnce() -> Result<Loaded, Error> + Send
     };
     let file = TokenFile { port: addr.port(), token: token.to_hex(), pid: std::process::id() };
     file.write(&path)?;
-    let state = Arc::new(api::State::new(token.clone(), catalog, runs, jobs, config.policy));
+    let state = Arc::new(api::State::new(token.clone(), catalog, runs, jobs, config.policy, webhooks));
     let accept = std::thread::Builder::new()
         .name("nodecraft-serve".into())
         .spawn(move || accept_loop(&listener, &state))

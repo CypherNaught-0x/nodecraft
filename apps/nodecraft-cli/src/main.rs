@@ -3,7 +3,8 @@
 //! `mcp` serves the engine's commands to MCP clients over stdio. `commands`, `inspect`, `quote`
 //! and `providers` read projects and the engine without changing them; `run` runs a project's
 //! nodes and exports their results, leaving the project file as it was. `serve` offers a
-//! project's techniques as a local HTTP API. `batch` and `comfy` arrive with their milestones
+//! project's techniques as a local HTTP API, and `webhook-secret` keeps the secret its webhooks are
+//! signed with. `batch` and `comfy` arrive with their milestones
 //! (docs/plan.md §4.8).
 
 mod control;
@@ -47,12 +48,17 @@ commands:
                   project file is not changed. Stopping the CLI mid-run doesn't stop jobs a
                   provider already accepted; they may still be charged
   serve <project.ncraft> [--listen <addr>] [--token-file <path>] [--max-cost <CUR=amount>]...
-        [--allow-unpriced]
+        [--allow-unpriced] [--webhook-allow <url>]... [--webhook-allow-private]
                   offer the project's published techniques as a local HTTP API (default
                   127.0.0.1:7341); requests need the bearer token written to the token file
                   (default control/serve.json in the app's settings folder). A run may spend
                   only up to --max-cost per currency (nothing without it), and a run whose price
-                  isn't fully known needs --allow-unpriced. The project file is not changed
+                  isn't fully known needs --allow-unpriced. A run may name a webhook under a
+                  --webhook-allow URL, called when it ends and signed with the webhook secret;
+                  private addresses need --webhook-allow-private. The project file is not changed
+  webhook-secret [--delete]
+                  keep the secret `serve` signs webhooks with in the keychain, read from stdin
+                  (at least 32 characters; `whsec_<base64>` is decoded); --delete removes it
   providers       list the model providers and whether each can run (reads the keychain)
   --version, -V   print the version, commit and build date
   --help, -h      print this help
@@ -270,7 +276,9 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
 /// `serve`: offers the project's techniques until the process is stopped.
 fn serve_command(args: &[String]) -> ExitCode {
     let mut path = None;
-    let mut config = serve::Config { listen: std::net::SocketAddr::from(([127, 0, 0, 1], 7341)), token_file: None, policy: serve::Policy::default() };
+    let mut config =
+        serve::Config { listen: std::net::SocketAddr::from(([127, 0, 0, 1], 7341)), token_file: None, policy: serve::Policy::default(), webhooks: None };
+    let (mut allow, mut allow_private) = (Vec::new(), false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or_else(|| format!("`{flag}` needs a value"));
@@ -285,6 +293,11 @@ fn serve_command(args: &[String]) -> ExitCode {
                 config.policy.allow_unpriced = true;
                 Ok(())
             }
+            "--webhook-allow" => value("--webhook-allow").and_then(|v| serve::parse_webhook_allow(v)).map(|url| allow.push(url)),
+            "--webhook-allow-private" => {
+                allow_private = true;
+                Ok(())
+            }
             flag if flag.starts_with("--") => Err(format!("`serve` doesn't take `{flag}`")),
             project if path.is_none() => {
                 path = Some(std::path::PathBuf::from(project));
@@ -297,6 +310,21 @@ fn serve_command(args: &[String]) -> ExitCode {
         }
     }
     let Some(path) = path else { return fail(&format!("`serve` needs a project file\n\n{USAGE}")) };
+    if allow.is_empty() && allow_private {
+        return fail("`--webhook-allow-private` needs at least one `--webhook-allow`");
+    }
+    if !allow.is_empty() {
+        // Checked now, so a missing secret shows before the first run rather than in its webhook.
+        use nodecraft_engine::secrets::SecretStore;
+        let store = Arc::new(KeyringStore);
+        let present = nodecraft_engine::secrets::Account::new(serve::WEBHOOK_ACCOUNT).and_then(|account| store.get(&account));
+        match present {
+            Ok(Some(_)) => {}
+            Ok(None) => return fail("webhooks need a signing secret: run `nodecraft-cli webhook-secret` first"),
+            Err(error) => return fail(&format!("can't read the webhook secret: {error}")),
+        }
+        config.webhooks = Some(serve::Webhooks::new(allow, allow_private, store));
+    }
     match serve::start(config, move || serve::load(&path)) {
         Ok(server) => {
             let _ = writeln!(std::io::stderr(), "Serving on http://{}/ (token in {}). Stop with Ctrl-C.", server.addr, server.token_file.display());
@@ -304,6 +332,56 @@ fn serve_command(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => fail(&error.message),
+    }
+}
+
+/// `webhook-secret [--delete]`: keeps `serve`'s webhook signing secret, read from stdin, in the
+/// keychain, or removes it. The secret is never printed.
+fn webhook_secret(args: &[String]) -> ExitCode {
+    use nodecraft_engine::secrets::{Account, Secret, SecretStore};
+    use std::io::Read;
+    let account = match Account::new(serve::WEBHOOK_ACCOUNT) {
+        Ok(account) => account,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match args {
+        [] => {}
+        [flag] if flag == "--delete" => {
+            return match KeyringStore.delete(&account) {
+                Ok(true) => {
+                    let _ = writeln!(std::io::stderr(), "Removed the webhook secret.");
+                    ExitCode::SUCCESS
+                }
+                Ok(false) => {
+                    let _ = writeln!(std::io::stderr(), "No webhook secret was set.");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => fail(&error.to_string()),
+            };
+        }
+        _ => return fail(&format!("`webhook-secret` takes only `--delete`\n\n{USAGE}")),
+    }
+    let mut text = String::new();
+    // A little more than the longest secret, so an over-long one is refused rather than cut.
+    if std::io::stdin().take(4096).read_to_string(&mut text).is_err() {
+        return fail("the secret on stdin isn't text");
+    }
+    let secret = match Secret::new(&text) {
+        Ok(secret) => secret,
+        Err(error) => return fail(&error.to_string()),
+    };
+    if secret.expose().len() < serve::MIN_WEBHOOK_SECRET {
+        return fail(&format!("the webhook secret must be at least {} characters", serve::MIN_WEBHOOK_SECRET));
+    }
+    if serve::webhook_key(secret.expose()).is_none() {
+        return fail("the secret starts with `whsec_` but the rest isn't base64");
+    }
+    match KeyringStore.set(&account, &secret) {
+        Ok(()) => {
+            let _ = writeln!(std::io::stderr(), "Saved the webhook secret in the keychain; running servers use it from their next delivery.");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.to_string()),
     }
 }
 
@@ -383,6 +461,7 @@ fn main() -> ExitCode {
             }
         },
         Some("serve") => serve_command(args.get(1..).unwrap_or_default()),
+        Some("webhook-secret") => webhook_secret(args.get(1..).unwrap_or_default()),
         Some(command @ ("commands" | "inspect" | "quote" | "run" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");

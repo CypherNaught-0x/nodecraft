@@ -1,7 +1,7 @@
 //! The worker thread: loads the project, lists its techniques, then runs queued requests one at a
 //! time, each in a fresh session made from the loaded snapshot.
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, SyncSender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use nodecraft_engine::Session;
@@ -13,6 +13,7 @@ use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value as Output};
 use serde_json::{Value, json};
 
 use super::Policy;
+use super::webhook::{self, Delivery};
 use crate::quote::Maker;
 use crate::run::{Consent, Runner};
 
@@ -70,6 +71,8 @@ pub struct Job {
     /// Output names by port, from the technique's form.
     pub names: Vec<(String, String)>,
     pub policy: Policy,
+    /// Where to tell the client the run ended.
+    pub webhook: Option<url::Url>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +119,32 @@ pub enum Body {
     },
 }
 
+/// How a run's webhook delivery stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookStatus {
+    Pending,
+    Delivered,
+    Failed,
+}
+
+impl HookStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Delivered => "delivered",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A run's webhook: how its delivery stands, after how many attempts, and the last failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hook {
+    pub status: HookStatus,
+    pub attempts: usize,
+    pub error: Option<String>,
+}
+
 /// A run, as `GET /runs/{id}` reports it.
 pub struct Run {
     pub status: Status,
@@ -129,11 +158,24 @@ pub struct Run {
     /// Its files were let go to keep the server's memory bounded.
     pub expired: bool,
     pub error: Option<Error>,
+    /// Its webhook, if the request named one.
+    pub webhook: Option<Hook>,
 }
 
 impl Run {
     pub fn new(technique: String, version: u64, key: Option<(String, u64)>) -> Self {
-        Self { status: Status::Queued, technique, version, key, quote: None, steps: Vec::new(), outputs: Vec::new(), expired: false, error: None }
+        Self {
+            status: Status::Queued,
+            technique,
+            version,
+            key,
+            quote: None,
+            steps: Vec::new(),
+            outputs: Vec::new(),
+            expired: false,
+            error: None,
+            webhook: None,
+        }
     }
 
     fn kept_bytes(&self) -> u64 {
@@ -204,6 +246,13 @@ impl Book {
         }
     }
 
+    /// Records how a run's webhook delivery went.
+    pub fn hook(&mut self, id: &str, status: HookStatus, attempts: usize, error: Option<String>) {
+        if let Some(run) = self.runs.get_mut(id) {
+            run.webhook = Some(Hook { status, attempts, error });
+        }
+    }
+
     fn set_status(&mut self, id: &str, status: Status) {
         if let Some(run) = self.runs.get_mut(id) {
             run.status = status;
@@ -213,7 +262,14 @@ impl Book {
 
 /// Starts the worker: it loads the project with `load`, and once it has listed the techniques it
 /// takes jobs from `queue`. Returns the techniques, or why the project can't be served.
-pub fn spawn(load: impl FnOnce() -> Result<Loaded, Error> + Send + 'static, queue: Receiver<Job>, runs: Arc<Runs>) -> Result<Vec<Entry>, Error> {
+///
+/// A finished run whose request named a webhook is offered to `hooks`, the delivery thread.
+pub fn spawn(
+    load: impl FnOnce() -> Result<Loaded, Error> + Send + 'static,
+    queue: Receiver<Job>,
+    runs: Arc<Runs>,
+    hooks: Option<SyncSender<Delivery>>,
+) -> Result<Vec<Entry>, Error> {
     let (ready, listed) = channel();
     std::thread::Builder::new()
         .name("nodecraft-serve-runs".into())
@@ -235,7 +291,8 @@ pub fn spawn(load: impl FnOnce() -> Result<Loaded, Error> + Send + 'static, queu
                 // A bug in one run fails that run, not the server: it is reported, never left running.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(&job)))
                     .unwrap_or_else(|_| Err((Error::new(ErrorKind::Internal, "the run stopped on an internal error; the server keeps serving"), None)));
-                runs.lock().finish(&job.id, |run| match outcome {
+                let mut book = runs.lock();
+                book.finish(&job.id, |run| match outcome {
                     Ok(done) => {
                         run.status = if done.failed { Status::Failed } else { Status::Succeeded };
                         run.quote = Some(done.quote);
@@ -251,10 +308,32 @@ pub fn spawn(load: impl FnOnce() -> Result<Loaded, Error> + Send + 'static, queu
                         run.error = Some(error);
                     }
                 });
+                if let Some(url) = job.webhook {
+                    notify(&mut book, &job.id, url, hooks.as_ref());
+                }
             }
         })
         .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the run thread: {e}")))?;
     listed.recv().map_err(|_| Error::new(ErrorKind::Internal, "the run thread stopped while loading the project"))?
+}
+
+/// Offers a finished run's webhook to the delivery thread, as the run then stands.
+fn notify(book: &mut Book, id: &str, url: url::Url, hooks: Option<&SyncSender<Delivery>>) {
+    let Some(run) = book.runs.get(id) else { return };
+    let event = format!("evt_{id}");
+    let mut described = super::api::describe(id, run);
+    // The delivery's own state is no news to its receiver.
+    if let Some(described) = described.as_object_mut() {
+        described.remove("webhook");
+    }
+    let body = webhook::payload(&event, described);
+    let offered = match hooks {
+        Some(hooks) => webhook::offer(hooks, Delivery { run: id.to_owned(), url, event, body }),
+        None => Err("this server sends no webhooks"),
+    };
+    if let Err(why) = offered {
+        book.hook(id, HookStatus::Failed, 0, Some(why.into()));
+    }
 }
 
 /// What a run did.

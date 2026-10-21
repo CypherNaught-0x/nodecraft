@@ -52,10 +52,14 @@ struct Served {
 }
 
 fn serve(policy: Policy) -> Served {
+    serve_with(policy, None)
+}
+
+fn serve_with(policy: Policy, webhooks: Option<Webhooks>) -> Served {
     let dir = tempfile::tempdir().unwrap();
     // The token file is only written to a folder no one else can read.
     let file = nodecraft_automation::control::private_dir(dir.path()).unwrap().join("serve.json");
-    let config = Config { listen: SocketAddr::from(([127, 0, 0, 1], 0)), token_file: Some(file.clone()), policy };
+    let config = Config { listen: SocketAddr::from(([127, 0, 0, 1], 0)), token_file: Some(file.clone()), policy, webhooks };
     let server = start(config, loaded).unwrap();
     let written: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
     assert_eq!(written["port"], server.addr.port());
@@ -269,7 +273,7 @@ fn an_expired_file_keeps_its_place_and_answers_gone() {
     let token = nodecraft_automation::control::Token::generate().unwrap();
     let auth = format!("Bearer {}", token.to_hex());
     let (jobs, _queue) = std::sync::mpsc::sync_channel(1);
-    let state = api::State::new(token, Vec::new(), runs, jobs, Policy::default());
+    let state = api::State::new(token, Vec::new(), runs, jobs, Policy::default(), None);
     let get = |path: &str| {
         let request = http::Request { method: "GET".into(), path: path.into(), headers: vec![("authorization".into(), auth.clone())], body: Vec::new() };
         state.answer(&request)
@@ -309,4 +313,211 @@ fn the_parser_bounds_what_a_client_sends() {
     assert_eq!(status(b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nab"), 400);
     assert_eq!(status(b"GET / HTTP/1.1\r\nno colon\r\n\r\n"), 400);
     assert_eq!(status(b"GET / HTTP/1.1\r\nX-\xff: 1\r\n\r\n"), 400);
+}
+
+/// The test secret, as Standard Webhooks writes one: its key is the 32 bytes after `whsec_`.
+const SECRET: &str = "whsec_MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+/// One delivery as a receiver saw it.
+struct Received {
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Received {
+    fn header(&self, name: &str) -> &str {
+        self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str()).unwrap()
+    }
+}
+
+/// A receiver on loopback that answers each delivery with the next of `answers` (then 200),
+/// and hands what it got to the returned channel.
+fn receiver(answers: Vec<u16>) -> (SocketAddr, std::sync::mpsc::Receiver<Received>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (sent, got) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut answers = answers.into_iter();
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let request = read(&stream, Limits::DEFAULT, |_| Ok(()), || {}).unwrap();
+            // Recorded before answering, so the server can't see the answer before the test does.
+            if sent.send(Received { path: request.path, headers: request.headers, body: request.body }).is_err() {
+                return;
+            }
+            let status = answers.next().unwrap_or(200);
+            let _ = stream.write_all(format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        }
+    });
+    (addr, got)
+}
+
+fn webhooks(receiver: SocketAddr, schedule: &[u64]) -> Webhooks {
+    let store = nodecraft_engine::secrets::MemoryStore::default();
+    let account = nodecraft_engine::secrets::Account::new(WEBHOOK_ACCOUNT).unwrap();
+    nodecraft_engine::secrets::SecretStore::set(&store, &account, &nodecraft_engine::secrets::Secret::new(SECRET).unwrap()).unwrap();
+    let allow = parse_webhook_allow(&format!("http://{receiver}/hooks")).unwrap();
+    let mut settings = Webhooks::new(vec![allow], true, std::sync::Arc::new(store));
+    settings.schedule = schedule.iter().map(|&ms| Duration::from_millis(ms)).collect();
+    settings
+}
+
+/// Polls the run until its webhook is no longer pending.
+fn hooked(served: &Served, id: &str) -> Value {
+    for _ in 0..400 {
+        let (_, run) = served.json("GET", &format!("/runs/{id}"), &[], "");
+        if run["webhook"]["status"] != "pending" {
+            return run;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the webhook stayed pending");
+}
+
+fn swap_body(served: &Served) -> Value {
+    let (_, listed) = served.json("GET", "/techniques", &[], "");
+    let port = listed["techniques"][0]["inputs"][0]["port"].as_str().unwrap().to_owned();
+    json!({"inputs": {port: "a red fox"}})
+}
+
+#[test]
+fn a_finished_run_is_delivered_signed_and_retried_under_one_event_id() {
+    // The first attempt is answered 500; the retry gets through.
+    let (addr, got) = receiver(vec![500]);
+    let served = serve_with(Policy::default(), Some(webhooks(addr, &[50, 50])));
+    let mut body = swap_body(&served);
+    body["webhook"] = json!(format!("http://{addr}/hooks/runs?tag=1"));
+    let (status, queued) = served.submit(&body, None);
+    assert_eq!(status, 202, "{queued}");
+    assert_eq!(queued["webhook"]["status"], "pending", "{queued}");
+    let id = queued["id"].as_str().unwrap().to_owned();
+
+    let first = got.recv_timeout(Duration::from_secs(30)).unwrap();
+    let second = got.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(first.path, "/hooks/runs");
+    // A duplicate: the retry carries the same event id, so a receiver can drop it.
+    assert_eq!(first.header("webhook-id"), second.header("webhook-id"));
+    assert_eq!(first.body, second.body);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    for delivery in [&first, &second] {
+        let (event, timestamp, signature) = (delivery.header("webhook-id"), delivery.header("webhook-timestamp"), delivery.header("webhook-signature"));
+        assert_eq!(delivery.header("content-type"), "application/json");
+        assert!(delivery.header("user-agent").starts_with("NodeCraft/"));
+        webhook::verify(KEY, event, timestamp, signature, &delivery.body, now, 300).unwrap();
+        // An invalid signature: another body, another key, or another event id.
+        assert!(webhook::verify(KEY, event, timestamp, signature, b"{}", now, 300).is_err());
+        assert!(webhook::verify(b"another key, just as long as it is", event, timestamp, signature, &delivery.body, now, 300).is_err());
+        assert!(webhook::verify(KEY, "evt_other", timestamp, signature, &delivery.body, now, 300).is_err());
+        // A late delivery, replayed after the receiver's tolerance, is refused.
+        assert!(webhook::verify(KEY, event, timestamp, signature, &delivery.body, now + 600, 300).is_err());
+    }
+    let payload: Value = serde_json::from_slice(&first.body).unwrap();
+    assert_eq!((payload["type"].as_str(), payload["version"].as_u64()), (Some("run.completed"), Some(1)), "{payload}");
+    assert_eq!(payload["event"], first.header("webhook-id"), "{payload}");
+    assert_eq!(payload["run"]["id"], id.as_str(), "{payload}");
+    assert_eq!(payload["run"]["status"], "succeeded", "{payload}");
+    assert_eq!(payload["run"]["outputs"][0]["text"], "a red fox", "{payload}");
+    assert!(payload["run"].get("webhook").is_none(), "{payload}");
+
+    let run = hooked(&served, &id);
+    assert_eq!(run["webhook"], json!({"status": "delivered", "attempts": 2}), "{run}");
+}
+
+#[test]
+fn a_failed_callback_never_fails_the_run() {
+    let (addr, got) = receiver(vec![500, 503]);
+    let served = serve_with(Policy::default(), Some(webhooks(addr, &[20])));
+    let mut body = swap_body(&served);
+    body["webhook"] = json!(format!("http://{addr}/hooks"));
+    let (status, queued) = served.submit(&body, None);
+    assert_eq!(status, 202, "{queued}");
+    let id = queued["id"].as_str().unwrap().to_owned();
+    let run = hooked(&served, &id);
+    assert_eq!(run["status"], "succeeded", "{run}");
+    assert_eq!(run["webhook"]["status"], "failed", "{run}");
+    assert_eq!(run["webhook"]["attempts"], 2, "{run}");
+    assert_eq!(run["webhook"]["error"], "the receiver answered 503", "{run}");
+    assert_eq!(got.try_iter().count(), 2, "the attempts are bounded");
+    // The run's results are still there to poll for.
+    let (status, _, text) = served.request("GET", &format!("/runs/{id}/outputs/0"), &[], "");
+    assert_eq!((status, text.as_slice()), (200, b"a red fox".as_slice()));
+}
+
+#[test]
+fn webhooks_go_only_where_the_server_allows() {
+    // A server without webhooks refuses a request that names one.
+    let plain = serve(Policy::default());
+    let mut body = swap_body(&plain);
+    body["webhook"] = json!("https://hooks.example.com/x");
+    assert_eq!(plain.submit(&body, None).0, 422);
+
+    // Loopback is refused at delivery unless the server allows private addresses.
+    let (addr, got) = receiver(Vec::new());
+    let mut settings = webhooks(addr, &[]);
+    settings.allow_private = false;
+    let served = serve_with(Policy::default(), Some(settings));
+    let mut body = swap_body(&served);
+    body["webhook"] = json!(format!("http://{addr}/hooks"));
+    let (_, queued) = served.submit(&body, None);
+    let run = hooked(&served, queued["id"].as_str().unwrap());
+    assert_eq!((run["status"].as_str(), run["webhook"]["status"].as_str()), (Some("succeeded"), Some("failed")), "{run}");
+    assert!(run["webhook"]["error"].as_str().unwrap().contains("--webhook-allow-private"), "{run}");
+    assert!(got.try_recv().is_err(), "nothing was sent");
+
+    for refused in [
+        format!("http://{addr}/elsewhere"),
+        format!("http://{addr}/hooksmith"),
+        format!("https://{addr}/hooks"),
+        format!("http://user:pw@{addr}/hooks"),
+        format!("http://{addr}/hooks#frag"),
+        "http://127.0.0.2/hooks".into(),
+        "file:///etc/passwd".into(),
+        "not a url".into(),
+        format!("http://{addr}/hooks/{}", "a".repeat(3000)),
+    ] {
+        body["webhook"] = json!(refused);
+        let (status, answer) = served.submit(&body, None);
+        assert_eq!(status, 422, "{refused}: {answer}");
+    }
+    body["webhook"] = json!(7);
+    assert_eq!(served.submit(&body, None).0, 422);
+
+    for bad in ["ftp://x.example", "https://", "https://a@x.example", "https://x.example/?q=1", "nope"] {
+        assert!(parse_webhook_allow(bad).is_err(), "{bad}");
+    }
+    let public = |ip: &str| webhook::public(ip.parse().unwrap());
+    assert!(public("93.184.216.34") && public("2606:4700::1"));
+    for private in [
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "::1",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert!(!public(private), "{private}");
+    }
+}
+
+#[test]
+fn signatures_match_hmac_sha256_and_secrets_decode() {
+    // Computed independently (Python's hmac module) for this key, id, timestamp and body.
+    assert_eq!(webhook::sign(KEY, "evt_1", "1700000000", b"{\"a\":1}").unwrap(), "E91RjL3XwKNvhbIjLEB4Oo053Uu727CszikrY+6s9HE=");
+    assert_eq!(webhook::key(SECRET).unwrap(), KEY);
+    assert_eq!(webhook::key("plain-secret-used-as-it-is").unwrap(), b"plain-secret-used-as-it-is");
+    assert!(webhook::key("whsec_not*base64").is_none());
+    assert!(webhook::key("whsec_").is_none());
+    for bytes in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar", KEY] {
+        assert_eq!(api::base64(&webhook::encode(bytes)).unwrap(), bytes);
+    }
+    assert_eq!(webhook::encode(b"foobar"), "Zm9vYmFy");
+    assert_eq!(webhook::encode(b"fooba"), "Zm9vYmE=");
 }

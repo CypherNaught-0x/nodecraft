@@ -3105,6 +3105,7 @@ dependencies = [
 name = "nodecraft-cli"
 version = "0.2.0-rc.1"
 dependencies = [
+ "hmac",
  "nodecraft-automation",
  "nodecraft-catalog",
  "nodecraft-engine",
@@ -3116,9 +3117,12 @@ dependencies = [
  "nodecraft-providers",
  "nodecraft-testkit",
  "nodecraft-types",
+ "reqwest",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]

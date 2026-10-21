@@ -14,7 +14,8 @@ use serde_json::{Map, Value, json};
 
 use super::Policy;
 use super::http::{Body as HttpBody, Request, Response};
-use super::worker::{Body, Book, Entry, Given, Job, Run, Runs, Status};
+use super::webhook::Settings;
+use super::worker::{Body, Book, Entry, Given, Hook, HookStatus, Job, Run, Runs, Status};
 
 /// Longest `Idempotency-Key` taken.
 const MAX_KEY: usize = 128;
@@ -28,6 +29,8 @@ pub struct State {
     runs: Arc<Runs>,
     jobs: SyncSender<Job>,
     policy: Policy,
+    /// Where webhooks may go; `None` when the server sends none.
+    webhooks: Option<Arc<Settings>>,
     new_id: Mutex<Box<dyn FnMut() -> [u8; 16] + Send>>,
     /// Keys the request fingerprints; random, so a client can't aim for a collision.
     hasher: RandomState,
@@ -38,8 +41,8 @@ fn error(status: u16, kind: &str, message: impl Into<String>) -> Response {
 }
 
 impl State {
-    pub fn new(token: Token, entries: Vec<Entry>, runs: Arc<Runs>, jobs: SyncSender<Job>, policy: Policy) -> Self {
-        Self { token, entries, runs, jobs, policy, new_id: Mutex::new(Box::new(crate::random_bytes())), hasher: RandomState::new() }
+    pub fn new(token: Token, entries: Vec<Entry>, runs: Arc<Runs>, jobs: SyncSender<Job>, policy: Policy, webhooks: Option<Arc<Settings>>) -> Self {
+        Self { token, entries, runs, jobs, policy, webhooks, new_id: Mutex::new(Box::new(crate::random_bytes())), hasher: RandomState::new() }
     }
 
     /// Whether the request carries the server's token.
@@ -113,7 +116,10 @@ impl State {
         if let Some(replayed) = key.as_deref().and_then(|key| self.replay(&book, key, fingerprint)) {
             return replayed;
         }
-        let run = Run::new(entry.technique.clone(), entry.version, key.map(|k| (k, fingerprint)));
+        let mut run = Run::new(entry.technique.clone(), entry.version, key.map(|k| (k, fingerprint)));
+        if job.webhook.is_some() {
+            run.webhook = Some(Hook { status: HookStatus::Pending, attempts: 0, error: None });
+        }
         if book.add(id.clone(), run).is_none() {
             return error(429, "busy", "too many runs are unfinished; try again later").header("Retry-After", "5".into());
         }
@@ -129,7 +135,7 @@ impl State {
                 return error(503, "unavailable", "the run thread has stopped; restart the server");
             }
         }
-        let described = book.runs.get(&id).map_or_else(|| json!({"id": id}), |run| self.describe(&id, run));
+        let described = book.runs.get(&id).map_or_else(|| json!({"id": id}), |run| describe(&id, run));
         Response::json(202, &described).header("Location", format!("/runs/{id}"))
     }
 
@@ -139,13 +145,14 @@ impl State {
         if run.key.as_ref().is_some_and(|(_, seen)| *seen != fingerprint) {
             return Some(error(422, "idempotency_key_reuse", "this Idempotency-Key was used for a different request"));
         }
-        Some(Response::json(200, &self.describe(id, run)).header("Location", format!("/runs/{id}")))
+        Some(Response::json(200, &describe(id, run)).header("Location", format!("/runs/{id}")))
     }
 
     /// The job a run request asks for, checked against the technique's form.
     fn job(&self, technique: &str, body: &Value) -> Result<(&Entry, Job), Response> {
         let invalid = |message: String| error(422, "invalid_request", message);
-        if let Some(field) = body.as_object().into_iter().flatten().map(|(k, _)| k.as_str()).find(|k| !["version", "inputs", "params", "max_cost"].contains(k))
+        if let Some(field) =
+            body.as_object().into_iter().flatten().map(|(k, _)| k.as_str()).find(|k| !["version", "inputs", "params", "max_cost", "webhook"].contains(k))
         {
             return Err(invalid(format!("unknown field `{}`", clip(field))));
         }
@@ -184,65 +191,80 @@ impl State {
                 *limit = (*limit).min(asked);
             }
         }
-        Ok((entry, Job { id: String::new(), canvas: entry.canvas, inputs, params, names: entry.outputs.clone(), policy }))
+        let webhook = match (&body["webhook"], &self.webhooks) {
+            (Value::Null, _) => None,
+            (_, None) => return Err(invalid("this server sends no webhooks; start it with --webhook-allow, or poll the run".into())),
+            (Value::String(url), Some(webhooks)) => Some(webhooks.allows(url).map_err(invalid)?),
+            (_, Some(_)) => return Err(invalid("`webhook` must be a URL".into())),
+        };
+        Ok((entry, Job { id: String::new(), canvas: entry.canvas, inputs, params, names: entry.outputs.clone(), policy, webhook }))
     }
 
     fn run(&self, id: &str) -> Response {
         let book = self.runs.lock();
         match book.runs.get(id) {
-            Some(run) => Response::json(200, &self.describe(id, run)),
+            Some(run) => Response::json(200, &describe(id, run)),
             None => error(404, "not_found", "no such run; runs are forgotten when the server restarts, or the oldest when it holds too many"),
         }
     }
+}
 
-    fn describe(&self, id: &str, run: &Run) -> Value {
-        let outputs: Vec<Value> = run
-            .outputs
-            .iter()
-            .enumerate()
-            .map(|(n, o)| {
-                let mut shown = json!({"n": n, "name": o.name, "port": o.port});
-                if let Some(item) = o.item {
-                    shown["item"] = json!(item);
+/// A run as `GET /runs/{id}` and its webhook show it.
+pub fn describe(id: &str, run: &Run) -> Value {
+    let outputs: Vec<Value> = run
+        .outputs
+        .iter()
+        .enumerate()
+        .map(|(n, o)| {
+            let mut shown = json!({"n": n, "name": o.name, "port": o.port});
+            if let Some(item) = o.item {
+                shown["item"] = json!(item);
+            }
+            match &o.body {
+                Body::Text(text) => {
+                    shown["type"] = json!("text");
+                    shown["text"] = json!(text);
                 }
-                match &o.body {
-                    Body::Text(text) => {
-                        shown["type"] = json!("text");
-                        shown["text"] = json!(text);
-                    }
-                    Body::Media { mime, asset } => {
-                        shown["type"] = json!("media");
-                        shown["mime"] = json!(mime);
-                        shown["bytes"] = json!(asset.byte_len());
-                        shown["url"] = json!(format!("/runs/{id}/outputs/{n}"));
-                    }
-                    Body::Value(value) => {
-                        shown["type"] = json!("value");
-                        shown["value"] = value.clone();
-                    }
-                    Body::Expired { mime } => {
-                        shown["type"] = json!("media");
-                        shown["mime"] = json!(mime);
-                        shown["expired"] = json!(true);
-                    }
+                Body::Media { mime, asset } => {
+                    shown["type"] = json!("media");
+                    shown["mime"] = json!(mime);
+                    shown["bytes"] = json!(asset.byte_len());
+                    shown["url"] = json!(format!("/runs/{id}/outputs/{n}"));
                 }
-                shown
-            })
-            .collect();
-        let mut described =
-            json!({"id": id, "status": run.status.name(), "technique": run.technique, "version": run.version, "steps": run.steps, "outputs": outputs});
-        if let Some(quote) = &run.quote {
-            described["cost"] = json!({"totals": quote["totals"], "complete": quote["complete"]});
-        }
-        if run.expired {
-            described["expired"] = json!(true);
-        }
-        if let Some(error) = &run.error {
-            described["error"] = json!({"kind": error.kind, "message": error.message});
-        }
-        described
+                Body::Value(value) => {
+                    shown["type"] = json!("value");
+                    shown["value"] = value.clone();
+                }
+                Body::Expired { mime } => {
+                    shown["type"] = json!("media");
+                    shown["mime"] = json!(mime);
+                    shown["expired"] = json!(true);
+                }
+            }
+            shown
+        })
+        .collect();
+    let mut described =
+        json!({"id": id, "status": run.status.name(), "technique": run.technique, "version": run.version, "steps": run.steps, "outputs": outputs});
+    if let Some(quote) = &run.quote {
+        described["cost"] = json!({"totals": quote["totals"], "complete": quote["complete"]});
     }
+    if run.expired {
+        described["expired"] = json!(true);
+    }
+    if let Some(error) = &run.error {
+        described["error"] = json!({"kind": error.kind, "message": error.message});
+    }
+    if let Some(hook) = &run.webhook {
+        described["webhook"] = json!({"status": hook.status.name(), "attempts": hook.attempts});
+        if let Some(error) = &hook.error {
+            described["webhook"]["error"] = json!(error);
+        }
+    }
+    described
+}
 
+impl State {
     fn output(&self, id: &str, n: &str) -> Response {
         let book = self.runs.lock();
         let Some(run) = book.runs.get(id) else { return error(404, "not_found", "no such run") };

@@ -21,6 +21,11 @@ nodecraft-nodes = { workspace = true }
 nodecraft-providers = { workspace = true }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
+# Serve webhooks (#632): signed with HMAC-SHA256, sent with a pinned address and no redirects.
+hmac = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
 # Runs (#97): jobs are driven on a tokio runtime, as the app's are.
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
