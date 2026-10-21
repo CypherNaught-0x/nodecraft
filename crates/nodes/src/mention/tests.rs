@@ -67,4 +67,41 @@ fn mentions_are_bounded() {
     assert!(out.ends_with(&token("x", id(39))));
     let many = "@[".repeat(100_000);
     assert!(tokens(&many).is_empty());
+    assert!(too_many(&text), "40 cards");
+    assert!(!too_many(&ids.iter().map(|id| token("x", *id)).collect::<String>()), "16 cards");
+    let repeated = token("x", id(1)).repeat(MAX_TOKENS);
+    assert!(!too_many(&repeated));
+    assert!(too_many(&format!("{repeated}{}", token("x", id(1)))), "one token past the scan limit");
+}
+
+#[test]
+fn substitution_is_capped() {
+    let text = token("Big", id(1)).repeat(20);
+    let big = "x".repeat(MAX_PROMPT_BYTES / 10);
+    let error = substitute(&text, &BTreeMap::from([(id(1), big.as_str())])).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("longer than 1 MiB"), "{}", error.message);
+    let fits = substitute(&token("Big", id(1)).repeat(9), &BTreeMap::from([(id(1), big.as_str())])).unwrap();
+    assert_eq!(fits.len(), big.len() * 9);
+}
+
+#[test]
+fn an_edited_token_is_counted_as_broken() {
+    let whole = token("Story", id(1));
+    assert_eq!(broken(&format!("{whole} and {whole}")), 0);
+    let edited = whole.replacen("](", "] (", 1);
+    assert_eq!(broken(&format!("{whole} and {edited}")), 1);
+    assert_eq!(broken("plain text"), 0);
+}
+
+#[test]
+fn the_start_of_a_display_matches_the_whole_display() {
+    let text = format!("é {} and @[broken {} end", token("Story", id(1)), token("Ünï", id(2)));
+    let whole = display(&text);
+    for chars in 0..whole.chars().count() + 3 {
+        let start = display_start(&text, chars);
+        assert_eq!(start, whole.chars().take(chars).collect::<String>(), "{chars} chars");
+    }
+    let long = format!("{}{}", "x".repeat(MAX_PROMPT_BYTES), token("Late", id(3)));
+    assert_eq!(display_start(&long, 4), "xxxx");
 }

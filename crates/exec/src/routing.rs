@@ -220,11 +220,13 @@ pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>
                 next.entry(*from).or_default().insert(*target);
             }
         }
-        let mut budget = MAX_RESOLUTION_STEPS.saturating_sub(steps);
+        // A mention is a loop when the mentioning card is downstream of the card it mentions:
+        // with the mention's own edge, both are then in one component.
+        let components = crate::node_mentions::components(&next);
         for (target, feeds) in mentioned_nodes.feeds {
             let out = resolved.entry(target).or_default();
             for (from, from_port) in feeds {
-                if crate::node_mentions::reaches(&next, target, from, &mut budget).ok_or_else(too_large)? {
+                if from == target || components.get(&from).is_some_and(|c| components.get(&target) == Some(c)) {
                     mention_loops.insert((target, from));
                     continue;
                 }

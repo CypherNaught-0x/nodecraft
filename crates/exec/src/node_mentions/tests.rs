@@ -29,7 +29,7 @@ fn kinds() -> Registry {
         name: generation::PROMPT.into(),
         label: "Prompt".into(),
         description: None,
-        control: ParamControl::Text { multiline: true, max_bytes: 4096 },
+        control: ParamControl::Text { multiline: true, max_bytes: 64 * 1024 },
         required: false,
         default: None,
         visible_if: None,
@@ -85,13 +85,17 @@ fn project(nodes: Vec<Node>, wires: &[(u8, &str, u8, &str)]) -> Project {
     for node in nodes {
         Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
     }
+    let mut orders: BTreeMap<(u8, &str), u32> = BTreeMap::new();
     for (e, (from, out, to, port)) in wires.iter().enumerate() {
+        // Each input numbers its own wires from 0.
+        let order = orders.entry((*to, *port)).or_insert(0);
         let edge = Edge {
             id: EdgeId::from_bytes([u8::try_from(e).unwrap().wrapping_add(100); 16]),
             from: Endpoint { node: id(*from), port: (*out).into() },
             to: Endpoint { node: id(*to), port: (*port).into() },
-            order: u32::try_from(e).unwrap(),
+            order: *order,
         };
+        *order += 1;
         Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
     }
     project
@@ -187,4 +191,60 @@ fn editing_a_mentioned_card_makes_its_mentioner_stale() {
         crate::staleness::input_hash(canvas(&plain), &kinds(), id(3)).unwrap(),
         crate::staleness::input_hash(canvas(&plain_changed), &kinds(), id(3)).unwrap()
     );
+}
+
+fn batch(n: u8, items: &str) -> Node {
+    let mut node = kinds().get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(n), BTreeMap::new(), &Default::default()).unwrap();
+    node.params.insert("text".into(), Value::Text(items.into()));
+    node
+}
+
+#[test]
+fn a_card_with_several_texts_blocks_its_mention() {
+    // A batch, and a router (which passes on whatever reaches it), make no single text.
+    let p = project(vec![batch(1, "a\nb"), writer(3, &format!("about {}", token(1, "Lines")))], &[]);
+    assert_eq!(mentions(&p, 3), vec![("Lines".into(), Err(Problem::NotText))]);
+    let router = kinds().get(nodecraft_nodes::router::ID).unwrap().instantiate_instance(id(1), BTreeMap::new(), &Default::default()).unwrap();
+    let p = project(vec![router, writer(3, &format!("about {}", token(1, "Hub")))], &[]);
+    assert_eq!(mentions(&p, 3), vec![("Hub".into(), Err(Problem::NotText))]);
+    // A writer the batch runs once per item gives a text per item: only one fits the token.
+    let p = project(vec![batch(1, "a\nb"), writer(2, ""), writer(3, &format!("about {}", token(2, "Each")))], &[(1, "item", 2, generation::PROMPT)]);
+    assert_eq!(mentions(&p, 3), vec![("Each".into(), Ok("text".into()))]);
+    assert!(blocked_because(&p, 3, &[2, 3]).contains("@Each, which makes several texts"));
+}
+
+#[test]
+fn a_prompt_with_more_mentions_than_are_fed_blocks_the_run() {
+    let cards: Vec<Node> = (1..=17).map(|n| text_source(n, "t")).collect();
+    let prompt: String = (1..=17).map(|n| token(n, "C")).collect::<Vec<_>>().join(" ");
+    let p = project(cards.into_iter().chain([writer(30, &prompt)]).collect(), &[]);
+    assert!(blocked_because(&p, 30, &[30]).contains("more than 16 cards"));
+    // The same card mentioned past the token limit.
+    let p = project(vec![text_source(1, "t"), writer(30, &token(1, "C").repeat(mention::MAX_TOKENS + 1))], &[]);
+    assert!(blocked_because(&p, 30, &[30]).contains("mentions; mention fewer"));
+}
+
+#[test]
+fn a_loop_through_a_long_chain_is_found_without_a_budget() {
+    // 1 → 2 → … → 200 by wire; 1 mentions 200, which is made from it.
+    let nodes: Vec<Node> = (1..=200).map(|n| writer(n, "")).collect();
+    let wires: Vec<(u8, &str, u8, &str)> = (1..200).map(|n| (n, "text", n + 1, generation::PROMPT)).collect();
+    let mut p = project(nodes, &wires);
+    let first = writer(1, &format!("from {}", token(200, "End")));
+    Change::SetNode { canvas: C, node: first }.apply(&mut p).unwrap();
+    assert_eq!(mentions(&p, 1), vec![("End".into(), Err(Problem::Loop))]);
+    // Not a loop the other way round: 200 mentioning 1 is downstream use.
+    let incoming = crate::routing::incoming(canvas(&p), &kinds()).unwrap();
+    assert!(!incoming.mention_loops.contains(&(id(200), id(1))));
+}
+
+#[test]
+fn components_group_exactly_the_nodes_on_a_cycle() {
+    let next: BTreeMap<NodeId, BTreeSet<NodeId>> =
+        [(id(1), [id(2)].into()), (id(2), [id(3)].into()), (id(3), [id(1), id(4)].into()), (id(4), BTreeSet::new())].into_iter().collect();
+    let c = components(&next);
+    assert_eq!(c.get(&id(1)), c.get(&id(2)));
+    assert_eq!(c.get(&id(2)), c.get(&id(3)));
+    assert_ne!(c.get(&id(3)), c.get(&id(4)));
+    assert!(c.contains_key(&id(4)));
 }

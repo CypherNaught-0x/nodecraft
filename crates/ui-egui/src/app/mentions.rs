@@ -2,6 +2,33 @@
 use crate::card::{self, mention::Candidate};
 use nodecraft_graph::Canvas;
 use nodecraft_nodes::Registry;
+use nodecraft_types::{CanvasId, NodeId};
+use std::collections::BTreeMap;
+
+/// The open canvas's [`candidates`] and why each blocked card's mentions can't feed, rebuilt only
+/// when the document or the canvas changes rather than every frame.
+#[derive(Default)]
+pub(super) struct Cache {
+    key: Option<(u64, CanvasId)>,
+    pub cards: Vec<Candidate>,
+    pub blocked: BTreeMap<NodeId, String>,
+}
+
+impl Cache {
+    pub(super) fn refresh(&mut self, revision: u64, id: CanvasId, canvas: &Canvas, kinds: &Registry) {
+        if self.key == Some((revision, id)) {
+            return;
+        }
+        self.key = Some((revision, id));
+        self.cards = candidates(canvas, kinds);
+        // A routing error is the planner's to report; the hint then shows only what it reads.
+        self.blocked = if self.cards.is_empty() {
+            BTreeMap::new()
+        } else {
+            nodecraft_exec::routing::incoming(canvas, kinds).map(|incoming| incoming.mention_problems).unwrap_or_default()
+        };
+    }
+}
 
 /// Every card on `canvas` by title, text cards first in reading order (top to bottom, then left
 /// to right); none when no card has a prompt to mention them from.

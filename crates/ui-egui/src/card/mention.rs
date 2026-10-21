@@ -43,6 +43,8 @@ fn matches<'c>(candidates: &'c [Candidate], own: NodeId, query: &str) -> Vec<&'c
 struct Picker {
     /// The highlighted row.
     chosen: usize,
+    /// The search `chosen` was for, as (`@` byte, cursor byte): typing starts again at the top.
+    search: Option<(usize, usize)>,
     /// The `@` Escape closed the list at, so it stays closed until another is typed.
     closed: Option<usize>,
 }
@@ -72,17 +74,33 @@ fn place_cursor(ctx: &egui::Context, id: egui::Id, caret: usize) {
     state.store(ctx, id);
 }
 
-/// The open list's search over `draft`: the byte range it covers and the cards it matches.
-fn open<'c>(ctx: &egui::Context, id: egui::Id, draft: &str, candidates: &'c [Candidate], own: NodeId) -> Option<(usize, usize, Vec<&'c Candidate>)> {
+/// The open list over `draft`: what it shows and the byte range a pick replaces.
+struct Open<'c> {
+    at: usize,
+    end: usize,
+    found: Vec<&'c Candidate>,
+    picker: Picker,
+}
+
+/// The open list's search over `draft`. A pick replaces the search and the rest of the word the
+/// cursor is in, so picking inside `@sto|ry` leaves no `ry` behind.
+fn open<'c>(ctx: &egui::Context, id: egui::Id, draft: &str, candidates: &'c [Candidate], own: NodeId) -> Option<Open<'c>> {
     let caret = cursor(ctx, id)?;
     let (at, query) = search(draft, caret)?;
-    let picker: Picker = ctx.data(|data| data.get_temp(id.with("mention"))).unwrap_or_default();
+    let mut picker: Picker = ctx.data(|data| data.get_temp(id.with("mention"))).unwrap_or_default();
     if picker.closed == Some(at) {
         return None;
     }
     let found = matches(candidates, own, query);
-    let end = at.saturating_add(1).saturating_add(query.len());
-    (!found.is_empty()).then_some((at, end, found))
+    let typed = at.saturating_add(1).saturating_add(query.len());
+    let rest = draft.get(typed..)?;
+    let end = typed.saturating_add(rest.find(char::is_whitespace).unwrap_or(rest.len()));
+    if picker.search != Some((at, typed)) {
+        picker.search = Some((at, typed));
+        picker.chosen = 0;
+    }
+    picker.chosen = picker.chosen.min(found.len().saturating_sub(1));
+    (!found.is_empty()).then_some(Open { at, end, found, picker })
 }
 
 /// Before the prompt's text field takes this frame's keys: while the list is open, arrows,
@@ -90,11 +108,10 @@ fn open<'c>(ctx: &egui::Context, id: egui::Id, draft: &str, candidates: &'c [Can
 pub(super) fn keys(ui: &egui::Ui, id: egui::Id, draft: Option<&mut Draft>, candidates: &[Candidate], own: NodeId) {
     let Some(draft) = draft.filter(|draft| draft.was_focused) else { return };
     let ctx = ui.ctx();
-    let Some((at, end, found)) = open(ctx, id, &draft.text, candidates, own) else { return };
-    let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+    let Some(Open { at, end, found, mut picker }) = open(ctx, id, &draft.text, candidates, own) else { return };
+    // `consume_key` ignores Shift: Shift+Tab and Shift+Enter stay the field's.
+    let key = |key| ui.input_mut(|i| i.modifiers.is_none() && i.consume_key(egui::Modifiers::NONE, key));
     let state = id.with("mention");
-    let mut picker: Picker = ctx.data(|data| data.get_temp(state)).unwrap_or_default();
-    picker.chosen = picker.chosen.min(found.len().saturating_sub(1));
     if key(egui::Key::ArrowDown) {
         picker.chosen = picker.chosen.saturating_add(1) % found.len();
     }
@@ -143,10 +160,13 @@ pub(super) fn list(
         return false;
     }
     let Some(draft) = draft else { return false };
-    let Some((at, end, found)) = open(&ctx, id, &draft.text, candidates, own) else { return false };
-    let chosen = ctx.data(|data| data.get_temp::<Picker>(id.with("mention"))).unwrap_or_default().chosen.min(found.len().saturating_sub(1));
+    let Some(Open { at, end, found, picker }) = open(&ctx, id, &draft.text, candidates, own) else { return false };
+    let chosen = picker.chosen;
     let mut picked = None;
-    egui::Area::new(id.with("mention list")).order(egui::Order::Foreground).fixed_pos(Pos2::new(ui.min_rect().left(), below)).show(&ctx, |ui| {
+    // The card is drawn in the canvas's panned and zoomed layer; the list is on screen.
+    let at_field = Pos2::new(ui.min_rect().left(), below);
+    let pos = ctx.layer_transform_to_global(ui.layer_id()).map_or(at_field, |transform| transform * at_field);
+    egui::Area::new(id.with("mention list")).order(egui::Order::Foreground).fixed_pos(pos).show(&ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_max_width(ui.max_rect().width().min(t.card_width));
             for (row, candidate) in found.iter().enumerate() {
@@ -169,10 +189,20 @@ pub(super) fn list(
 }
 
 /// What the prompt's mentions read, under it: plain for text cards, in the danger colour for a
-/// mention that blocks the run.
-pub(super) fn hint(ui: &mut egui::Ui, prompt: &str, candidates: &[Candidate], own: NodeId, t: &Tokens) {
+/// mention that blocks the run. `blocked` is the planner's reason, when the canvas's wiring
+/// blocks the mentions (a loop, too many mentions); it stands for the per-mention problems.
+pub(super) fn hint(ui: &mut egui::Ui, prompt: &str, candidates: &[Candidate], own: NodeId, blocked: Option<&str>, t: &Tokens) {
     if !prompt.contains("@[") {
         return;
+    }
+    if let Some(reason) = blocked {
+        ui.label(egui::RichText::new(format!("Can't run: {reason}")).small().color(t.danger));
+    }
+    let broken = mention::broken(prompt);
+    if broken > 0 {
+        let what = if broken == 1 { "An edited mention is" } else { "Edited mentions are" };
+        ui.label(egui::RichText::new(format!("{what} read as typed text")).small().color(t.text_muted))
+            .on_hover_text("Type @ and pick the card again to mention it");
     }
     let tokens = mention::tokens(prompt);
     let mut used = Vec::new();
@@ -185,6 +215,7 @@ pub(super) fn hint(ui: &mut egui::Ui, prompt: &str, candidates: &[Candidate], ow
             Some(_) => None,
         };
         match problem {
+            Some(_) if blocked.is_some() => {}
             Some(problem) => {
                 ui.label(egui::RichText::new(format!("@{title} {problem}")).small().color(t.danger));
             }

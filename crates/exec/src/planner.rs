@@ -637,6 +637,7 @@ impl<'a> Graph<'a> {
             };
             for (_, up, up_port, _) in feeds {
                 let upstream = self.canvas.nodes().get(up);
+                let before = from.len();
                 if upstream.is_some_and(|u| u.kind == batch::ID) {
                     let items = state.batches.entry(*up).or_insert_with(|| self.batch_items(*up, run));
                     match items {
@@ -724,6 +725,20 @@ impl<'a> Graph<'a> {
                             }
                         }
                     }
+                }
+                // A mention puts one text where its token is (#505): a card giving several can't.
+                let several = || {
+                    upstream.is_some_and(|u| u.kind == batch::ID)
+                        || state.fanned.contains_key(up)
+                        || from.len().checked_sub(before) != Some(1)
+                        // A fanned feed's stand-in is an empty list.
+                        || matches!(from.last(), Some(InputSource::Step { list: true, .. } | InputSource::Item { .. } | InputSource::Value(Value::List(_))))
+                };
+                if port.name == mention::PORT && several() {
+                    let title = crate::node_mentions::title_of(node, *up);
+                    let reason = crate::node_mentions::reason(title, crate::node_mentions::Problem::Several);
+                    blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), Some(*up), Reason::Invalid(reason)));
+                    break;
                 }
                 origins.resize(from.len(), *up);
                 // A single input takes one value; through a router it could receive several.

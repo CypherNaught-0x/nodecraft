@@ -507,7 +507,10 @@ fn mentioned_texts<'v>(inputs: &[&'v InputValue]) -> Result<BTreeMap<NodeId, &'v
         }
         for (value, origin) in values.iter().zip(&input.origins) {
             let Value::Text(text) = value else { return Err(invalid("a mentioned card gives no text")) };
-            texts.insert(*origin, text.as_str());
+            // The planner feeds one text per card; several would leave a token ambiguous.
+            if texts.insert(*origin, text.as_str()).is_some() {
+                return Err(invalid("a mentioned card gave several texts; mention a card with one text"));
+            }
         }
     }
     Ok(texts)

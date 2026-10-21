@@ -16,7 +16,9 @@ pub const MAX_MENTIONS: usize = 16;
 /// Longest title a token keeps, in characters.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Tokens one prompt is scanned for, repeats included.
-const MAX_TOKENS: usize = 256;
+pub const MAX_TOKENS: usize = 256;
+/// Longest prompt substitution makes: a generation prompt's own limit.
+pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 /// A node id's text form: a hyphenated UUID.
 const ID_LEN: usize = 36;
 
@@ -36,11 +38,16 @@ pub fn token(title: &str, id: NodeId) -> String {
     format!("@[{}]({id})", if title.is_empty() { "card" } else { title })
 }
 
-/// The mention tokens in `text`, in order, repeats included (at most a few hundred).
+/// The mention tokens in `text`, in order, repeats included (at most [`MAX_TOKENS`]).
 pub fn tokens(text: &str) -> Vec<Token<'_>> {
+    scan(text, MAX_TOKENS)
+}
+
+/// Up to `limit` tokens of `text`.
+fn scan(text: &str, limit: usize) -> Vec<Token<'_>> {
     let mut found = Vec::new();
     let mut from = 0;
-    while found.len() < MAX_TOKENS {
+    while found.len() < limit {
         let Some(at) = text.get(from..).and_then(|rest| rest.find("@[")).map(|at| at.saturating_add(from)) else { break };
         from = at.saturating_add(2);
         let Some(token) = parse(text, at) else { continue };
@@ -48,6 +55,24 @@ pub fn tokens(text: &str) -> Vec<Token<'_>> {
         found.push(token);
     }
     found
+}
+
+/// Whether `text` mentions more than [`MAX_MENTIONS`] cards or holds more than [`MAX_TOKENS`]
+/// tokens: those past the limit would feed nothing.
+pub fn too_many(text: &str) -> bool {
+    let found = scan(text, MAX_TOKENS.saturating_add(1));
+    found.len() > MAX_TOKENS || {
+        let mut ids: Vec<NodeId> = found.iter().map(|token| token.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len() > MAX_MENTIONS
+    }
+}
+
+/// How many `@[` in `text` start no token: a mention edited by hand into plain text.
+pub fn broken(text: &str) -> usize {
+    let tokens = tokens(text);
+    text.match_indices("@[").take(MAX_TOKENS.saturating_mul(2)).filter(|(at, _)| !tokens.iter().any(|token| token.start == *at)).count()
 }
 
 /// The token starting at byte `at` (on `@[`), if one does.
@@ -99,27 +124,64 @@ pub fn display(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// The first `chars` characters of [`display`]`(text)`, without showing the rest: what a card
+/// title or preview draws every frame, however long the prompt.
+pub fn display_start(text: &str, chars: usize) -> String {
+    let mut out = String::new();
+    let mut left = chars;
+    let take = |out: &mut String, piece: &str, left: &mut usize| {
+        let end = piece.char_indices().nth(*left).map_or(piece.len(), |(at, _)| at);
+        let piece = piece.get(..end).unwrap_or_default();
+        *left = left.saturating_sub(piece.chars().count());
+        out.push_str(piece);
+    };
+    let (mut at, mut from) = (0, 0);
+    while left > 0 {
+        let Some(start) = text.get(from..).and_then(|rest| rest.find("@[")).map(|start| start.saturating_add(from)) else { break };
+        from = start.saturating_add(2);
+        let Some(token) = parse(text, start) else { continue };
+        take(&mut out, text.get(at..token.start).unwrap_or_default(), &mut left);
+        take(&mut out, "@", &mut left);
+        take(&mut out, token.title, &mut left);
+        at = token.end;
+        from = token.end;
+    }
+    take(&mut out, text.get(at..).unwrap_or_default(), &mut left);
+    out
+}
+
 /// `text` with each token replaced by the text of the card it mentions, from `values`. A card
-/// past [`MAX_MENTIONS`] isn't fed: its token stays as written.
+/// past [`MAX_MENTIONS`] isn't fed: its token stays as written. The result is at most
+/// [`MAX_PROMPT_BYTES`].
 pub fn substitute(text: &str, values: &BTreeMap<NodeId, &str>) -> Result<String, Error> {
     let fed = ids(text);
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::with_capacity(text.len().min(MAX_PROMPT_BYTES));
+    let push = |out: &mut String, piece: &str| {
+        if out.len().saturating_add(piece.len()) > MAX_PROMPT_BYTES {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("the prompt with its mentioned cards' text is longer than {} MiB; mention shorter texts", MAX_PROMPT_BYTES / (1024 * 1024)),
+            ));
+        }
+        out.push_str(piece);
+        Ok(())
+    };
     let mut at = 0;
     for token in tokens(text) {
-        out.push_str(text.get(at..token.start).unwrap_or_default());
+        push(&mut out, text.get(at..token.start).unwrap_or_default())?;
         match values.get(&token.id) {
-            Some(value) => out.push_str(value),
+            Some(value) => push(&mut out, value)?,
             None if fed.contains(&token.id) => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!("the prompt mentions @{}, but no text from it arrived; plan the card again", token.title),
                 ));
             }
-            None => out.push_str(text.get(token.start..token.end).unwrap_or_default()),
+            None => push(&mut out, text.get(token.start..token.end).unwrap_or_default())?,
         }
         at = token.end;
     }
-    out.push_str(text.get(at..).unwrap_or_default());
+    push(&mut out, text.get(at..).unwrap_or_default())?;
     Ok(out)
 }
 
