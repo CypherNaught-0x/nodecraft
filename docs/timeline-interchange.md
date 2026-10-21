@@ -12,8 +12,9 @@ media/02-<source>.<ext>
 ```
 
 The document names each file by its path relative to itself (`media/01-Fox.mp4`,
-percent-encoded). Unzip the archive anywhere and open the `.fcpxml`; nothing in it points
-outside the folder.
+percent-encoded), and nothing in it points outside the folder. Unzip the archive anywhere and
+open the `.fcpxml`. Whether every editor resolves a relative `src` this way **has not been
+verified** yet (#643).
 
 ## Commands
 
@@ -51,7 +52,7 @@ opens a dialog: the UI asks where to save first and then dispatches the command 
 |---|---|---|---|---|---|---|---|
 | CMX3600 EDL | one video and up to four sound channels per event list | yes | dissolve and wipe by number | no | 24/25/30 (29.97 drop-frame) | reel names only, no paths | Too narrow: no layering beyond V1, and media is matched by reel name rather than file. |
 | FCP7 XML (xmeml) | many | yes | yes | yes | yes | `pathurl`, usually absolute `file://` | Widely read, but legacy, and editors resolve relative `pathurl`s inconsistently. |
-| **FCPXML 1.10** | spine plus connected clips on lanes | yes | dissolves as `<transition>` | `adjust-volume` | rational frame durations | `media-rep src` resolved against the document | **Chosen.** Read by Final Cut Pro and DaVinci Resolve. Media is referenced relative to the document. |
+| **FCPXML 1.10** | spine plus connected clips on lanes | yes | dissolves as `<transition>` | `adjust-volume` | rational frame durations | `media-rep src` as a relative URL (resolution against the document unverified) | **Chosen.** Read by Final Cut Pro and DaVinci Resolve. Media is referenced relative to the document. |
 
 Other formats (an EDL for conform, OTIO) can be added beside it later. The engine commands
 already report the `format` and `version` they wrote.
@@ -85,8 +86,7 @@ holds, and the export never presents itself as a lossless round trip.
 - An existing file is only replaced with `overwrite`. The archive is staged next to its target and
   appears only once it is complete, so a failure, including a full disk, leaves nothing half
   written.
-- Every source is checked against its content hash before the archive is started and again as it
-  is copied. Entries are stored, not recompressed, and copied as streams.
+- Every source is checked against its content hash as it is copied into the staged archive. Entries are stored, not recompressed, and copied as streams.
 - At most 256 media files go in one archive. Entry names are at most 255 bytes, relative, and
   free of `..`, backslashes, colons and control characters. Names that differ only in case are
   refused. The document and report are capped at 16 MiB each.

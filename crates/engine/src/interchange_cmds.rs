@@ -6,7 +6,7 @@
 //! with no result yet is an error rather than a hole. See `docs/timeline-interchange.md`.
 use crate::commands::{CommandSpec, Context, Effect, params};
 use crate::timeline_cmds::{editor, inputs, stored};
-use nodecraft_format::interchange::{Bundle, MAX_MEDIA};
+use nodecraft_format::interchange::Bundle;
 use nodecraft_nodes::timeline::interchange::{self, Interchange, MediaKind, Sequence, Source};
 use nodecraft_nodes::timeline::{ID, Wire};
 use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId};
@@ -89,7 +89,8 @@ fn prepare(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Prepared, Er
     let titles: BTreeMap<String, &str> =
         c.document.canvases().get(&canvas).map(|canvas| canvas.nodes().values().map(|n| (n.id.to_string(), n.title.as_str())).collect()).unwrap_or_default();
     // Each asset once, numbered in the order it is first wired; a picture and a video are
-    // never the same bytes, but the kind is part of the key so a source has one kind.
+    // never the same bytes, but the kind is part of the key so a source has one kind. The
+    // archive's media limit applies to what the document uses, when the bundle is checked.
     let mut sources: Vec<(Source, AssetRef)> = Vec::new();
     let mut seen: BTreeMap<(nodecraft_types::Blake3, u8), usize> = BTreeMap::new();
     let mut media = Vec::with_capacity(wired.len());
@@ -103,9 +104,6 @@ fn prepare(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Prepared, Er
                 Some(match seen.get(&key) {
                     Some(index) => *index,
                     None => {
-                        if sources.len() >= MAX_MEDIA {
-                            return Err(Error::new(ErrorKind::InvalidInput, "the timeline names too many media files to export"));
-                        }
                         let title = titles.get(&wire.origin).copied().unwrap_or_default();
                         let name = if title.trim().is_empty() { format!("Source {}", sources.len().saturating_add(1)) } else { title.trim().to_owned() };
                         let file = format!("media/{:02}-{}.{}", sources.len().saturating_add(1), stem(&name, "source"), extension(asset.mime.essence()));
@@ -162,7 +160,7 @@ fn report(prepared: &Prepared) -> String {
         i.used.len()
     );
     if i.losses.is_empty() {
-        out.push_str("Nothing the timeline sets is left out.\n");
+        out.push_str("No losses detected.\n");
     } else {
         out.push_str("Left out or changed:\n");
         for loss in &i.losses {
@@ -172,7 +170,7 @@ fn report(prepared: &Prepared) -> String {
             }
         }
     }
-    out.push_str("\nOpening this document in another editor hasn't been checked for every editor; see NodeCraft's docs/timeline-interchange.md.\n");
+    out.push_str("\nImporting this document into other editors hasn't been verified yet; see NodeCraft's docs/timeline-interchange.md.\n");
     out
 }
 

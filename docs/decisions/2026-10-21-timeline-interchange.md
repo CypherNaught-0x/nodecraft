@@ -2,7 +2,8 @@
 
 - **FCPXML 1.10 is the first target.** CMX3600 EDL can't layer past one picture track and
   matches media by reel name. FCP7 XML usually points at absolute `file://` paths. FCPXML
-  resolves `media-rep src` against the document, so a relative path keeps the archive portable.
+  takes `media-rep src` as a URL, so a relative path should keep the archive portable;
+  whether each editor resolves it against the document is unverified (#643).
   The evaluation and the feature matrix are in `docs/timeline-interchange.md`.
 - **The writer is pure and lives in `nodes`** (`timeline::interchange`). It takes the clips, the
   wires and a list of sources and returns the XML, the losses and the sources it used, so it is

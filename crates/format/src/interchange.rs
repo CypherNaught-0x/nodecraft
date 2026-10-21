@@ -64,19 +64,6 @@ impl Bundle {
         Ok(())
     }
 
-    /// Opens every media asset, checking its bytes: before anything is written, so an archive
-    /// is never started for media that isn't here.
-    pub fn verify(&self, assets: &AssetStore, cancel: &TransferCancel) -> Result<u64, Error> {
-        self.check()?;
-        let mut total = 0u64;
-        for (_, asset) in &self.media {
-            cancel.check()?;
-            let verified = assets.open_verified(asset, cancel, &StreamMetrics::default())?;
-            total = total.saturating_add(verified.byte_len());
-        }
-        Ok(total)
-    }
-
     /// Writes the archive to `out` and hands it back. A failure part way leaves `out` partly
     /// written: callers write into a staged file they publish only on success.
     pub fn write_to<W: Write + Seek>(&self, assets: &AssetStore, out: W, cancel: &TransferCancel) -> Result<W, Error> {

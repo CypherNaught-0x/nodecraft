@@ -66,7 +66,7 @@ fn the_preview_names_each_file_once_and_writes_nothing() {
     let xml = preview["xml"].as_str().unwrap();
     assert_eq!(xml.matches("<asset-clip").count(), 3, "{xml}");
     assert!(xml.contains("src=\"media/01-F%C3%BCchse-Eulen.mp4\""), "{xml}");
-    assert!(preview["report"].as_str().unwrap().contains("Nothing the timeline sets is left out"));
+    assert!(preview["report"].as_str().unwrap().contains("No losses detected"));
 }
 
 #[test]

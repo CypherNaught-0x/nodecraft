@@ -17,7 +17,6 @@ fn the_archive_holds_the_document_the_report_and_each_media_file() {
     let fox = asset(&mut store, b"fox video", "text/plain");
     let owl = asset(&mut store, b"owl sound", "text/plain");
     let b = bundle(vec![("media/01-fox.mp4".into(), fox), ("media/02-éule.wav".into(), owl)]);
-    assert_eq!(b.verify(&store, &TransferCancel::default()).unwrap(), 18);
     let out = b.write_to(&store, Cursor::new(Vec::new()), &TransferCancel::default()).unwrap().into_inner();
     let mut zip = zip::ZipArchive::new(Cursor::new(out)).unwrap();
     let names: Vec<String> = zip.file_names().map(|name| name.unwrap().into_owned()).collect();
@@ -57,7 +56,6 @@ fn media_that_isnt_here_is_refused_before_anything_is_written() {
     let mut elsewhere = AssetStore::default();
     let missing = asset(&mut elsewhere, b"not in this store", "text/plain");
     let b = bundle(vec![("media/01.mp4".into(), missing)]);
-    assert!(b.verify(&store, &TransferCancel::default()).is_err());
     assert!(b.write_to(&store, Cursor::new(Vec::new()), &TransferCancel::default()).is_err());
 }
 
@@ -68,6 +66,5 @@ fn a_cancelled_export_stops() {
     let b = bundle(vec![("media/01.mp4".into(), fox)]);
     let cancel = TransferCancel::default();
     cancel.cancel();
-    assert!(b.verify(&store, &cancel).is_err());
     assert!(b.write_to(&store, Cursor::new(Vec::new()), &cancel).is_err());
 }

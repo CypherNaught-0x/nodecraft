@@ -239,3 +239,33 @@ fn a_sound_with_no_stored_clip_plays_on_the_sound_track_it_is_given() {
     assert!(out.xml.contains("lane=\"-1\""), "{}", out.xml);
     assert_eq!(out.used, [0, 1]);
 }
+
+#[test]
+fn rounding_never_runs_a_clip_past_the_end_of_its_media() {
+    let (mut timeline, wires, mut sources) = crossing();
+    if let Some(fox) = timeline.clips.first_mut() {
+        fox.transition_us = 0;
+    }
+    // 2.99 s is 89.7 frames at 30 fps: the nearest frame, 90, is past the last one the owl has.
+    sources[1].duration_us = Some(2_990_000);
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(out.xml.contains(r#"<asset-clip ref="r3" name="owl" offset="120/30s" start="0s" duration="89/30s"/>"#), "{}", out.xml);
+    assert_eq!(out.frames, 209);
+}
+
+#[test]
+fn media_of_unknown_length_is_as_long_as_its_clips_play_it() {
+    let (mut timeline, wires, mut sources) = crossing();
+    sources[1].duration_us = None;
+    if let Some(owl) = timeline.clips.get_mut(1) {
+        owl.out_us = Some(2_000_000);
+    }
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(out.xml.contains(r#"name="Owl" start="0s" duration="60/30s""#), "{}", out.xml);
+    assert!(out.losses.iter().any(|loss| loss.feature == "unknown media length" && loss.clip.is_none()), "{:?}", out.losses);
+}
+
+#[test]
+fn characters_xml_cannot_carry_become_spaces() {
+    assert_eq!(escape("a\u{FFFE}b\u{FFFF}c\u{1}d"), "a b c d");
+}

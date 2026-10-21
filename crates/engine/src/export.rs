@@ -52,10 +52,11 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
         return Err(Error::new(ErrorKind::NotFound, "the export folder doesn't exist"));
     }
     let cancel = TransferCancel::default();
-    // Verified before the file appears: a missing or damaged asset leaves nothing behind.
+    // Checked before the file appears. The archive checks each asset as it copies it, into a
+    // staged file, so a missing or damaged asset leaves nothing behind either way.
     match what {
         Exported::Asset(asset) => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
-        Exported::Bundle(bundle) => drop(bundle.verify(assets, &cancel)?),
+        Exported::Bundle(bundle) => bundle.check()?,
     }
     let mut copied: Result<u64, Error> = Ok(0);
     let mut failed = None;
@@ -93,14 +94,13 @@ struct Recording<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl std::io::Write for Recording<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        // Only the latest attempt counts: `write_all` retries an interrupted write.
         let written = self.file.write(bytes);
-        *self.failed = written.as_ref().err().map(std::io::Error::kind);
+        record(self.failed, &written);
         written
     }
     fn flush(&mut self) -> std::io::Result<()> {
         let flushed = self.file.flush();
-        *self.failed = flushed.as_ref().err().map(std::io::Error::kind);
+        record(self.failed, &flushed);
         flushed
     }
 }
@@ -108,8 +108,19 @@ impl std::io::Write for Recording<'_> {
 impl std::io::Seek for Recording<'_> {
     fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
         let sought = self.file.seek(to);
-        *self.failed = sought.as_ref().err().map(std::io::Error::kind);
+        record(self.failed, &sought);
         sought
+    }
+}
+
+/// Keeps the first real failure; `write_all` retries an interrupted write, so that isn't one.
+#[cfg(not(target_arch = "wasm32"))]
+fn record<T>(failed: &mut Option<std::io::ErrorKind>, result: &std::io::Result<T>) {
+    if let Err(error) = result
+        && error.kind() != std::io::ErrorKind::Interrupted
+        && failed.is_none()
+    {
+        *failed = Some(error.kind());
     }
 }
 

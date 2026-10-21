@@ -94,6 +94,11 @@ fn frames(us: u64, fps: u32) -> (u64, bool) {
     (u64::try_from(whole).unwrap_or(u64::MAX), scaled % 1_000_000 == 0)
 }
 
+/// Microseconds to the whole frames they hold, rounded down.
+fn floor_frames(us: u64, fps: u32) -> u64 {
+    u64::try_from(u128::from(us).saturating_mul(u128::from(fps)) / 1_000_000).unwrap_or(u64::MAX)
+}
+
 /// A time on the sequence's frame grid, as FCPXML writes one.
 fn time(frames: u64, fps: u32) -> String {
     if frames == 0 { "0s".into() } else { format!("{frames}/{fps}s") }
@@ -116,7 +121,7 @@ pub fn escape(text: &str) -> String {
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
             '\t' | '\n' | '\r' => out.push(' '),
-            c if c.is_control() => out.push(' '),
+            c if c.is_control() || matches!(c, '\u{FFFE}' | '\u{FFFF}') => out.push(' '),
             c => out.push(c),
         }
     }
@@ -184,6 +189,8 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         }
     }
     let mut used: Vec<usize> = Vec::new();
+    // The furthest frame any clip plays of each source, for media whose length isn't known.
+    let mut reach: Vec<u64> = vec![0; sequence.sources.len()];
     let (mut main, mut layers) = (Vec::new(), Vec::new());
     let resolved = timeline.resolve(sequence.wires);
     for (n, (input, clip)) in resolved.iter().enumerate() {
@@ -207,7 +214,15 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
             return Err(invalid(format!("clip {number} starts after its media ends")));
         }
         let (in_f, in_exact) = frames(clip.in_us, fps);
-        let (out_f, out_exact) = frames(out_us, fps);
+        let (mut out_f, out_exact) = frames(out_us, fps);
+        // Rounding never runs a clip past the end of its media: the last whole frame it has.
+        let last = match (source.duration_us, source.kind) {
+            (Some(length), MediaKind::Video | MediaKind::Audio) => Some(floor_frames(length, fps)),
+            _ => None,
+        };
+        if let Some(last) = last {
+            out_f = out_f.min(last);
+        }
         let (at_f, at_exact) = frames(clip.at_us, fps);
         let (transition_f, transition_exact) = frames(clip.transition_us, fps);
         let len_f = out_f.saturating_sub(in_f);
@@ -228,6 +243,9 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         let volume = if audible { decibels(clip.volume, clip.muted) } else { None };
         if !used.contains(&source_index) {
             used.push(source_index);
+        }
+        if let Some(slot) = reach.get_mut(source_index) {
+            *slot = (*slot).max(out_f);
         }
         let placed = Placed { id: &clip.id, number, source: source_index, kind: source.kind, in_f, len_f, volume };
         if clip.track == 0 {
@@ -295,7 +313,18 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
             MediaKind::Audio => (0, 1),
             MediaKind::Still => (1, 0),
         };
-        let duration = if source.kind == MediaKind::Still { "0s".into() } else { exact(source.duration_us.unwrap_or(0)) };
+        let duration = match (source.kind, source.duration_us) {
+            (MediaKind::Still, _) => "0s".into(),
+            (_, Some(length)) => exact(length),
+            (_, None) => {
+                losses.push(Loss {
+                    clip: None,
+                    feature: "unknown media length",
+                    detail: format!("{} is written as long as the furthest clip plays it; the other editor may find more", source.name),
+                });
+                time(reach.get(*index).copied().unwrap_or(0), fps)
+            }
+        };
         let _ = writeln!(
             xml,
             "    <asset id=\"{}\" name=\"{}\" start=\"0s\" duration=\"{duration}\" hasVideo=\"{video}\" hasAudio=\"{audio}\">",
