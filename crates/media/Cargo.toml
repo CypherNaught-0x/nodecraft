@@ -12,9 +12,11 @@ workspace = true
 
 [features]
 default = []
-video = ["dep:serde_json"]
+video = []
 
 [dependencies]
-serde_json = { workspace = true, optional = true }
+# glTF JSON (#111), and the video service's ffprobe output.
+serde = { workspace = true }
+serde_json = { workspace = true }
 blake3 = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }

@@ -2992,6 +2992,7 @@ version = "0.2.0-rc.1"
 dependencies = [
  "blake3",
  "image",
+ "serde",
  "serde_json",
 ]
 
