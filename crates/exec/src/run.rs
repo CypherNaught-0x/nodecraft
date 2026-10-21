@@ -380,6 +380,11 @@ impl Run {
         matches!(self.steps.get(&node), Some(StepState { status: Status::Failed, .. }))
     }
 
+    /// Whether `node`'s step is done or failed: it won't record anything more in this run.
+    pub fn has_ended(&self, node: NodeId) -> bool {
+        matches!(self.steps.get(&node), Some(StepState { status: Status::Done | Status::Failed, .. }))
+    }
+
     /// The canvas the run's results go on.
     pub fn canvas_id(&self) -> CanvasId {
         self.canvas_id

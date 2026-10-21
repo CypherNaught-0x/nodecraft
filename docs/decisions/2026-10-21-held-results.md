@@ -40,6 +40,8 @@
   result the step lets go is held on its own: a sibling in a failed fanned item, or a job that
   finished after its step had ended. The run reports these as `Progress::dropped`, and they are
   held before the step's own result is recorded, so a partial record can't take them along. A
-  cancelled step's results are held too; its card shows the cancel. A technique's inner steps let
-  go of their results once they're done, so a refused record of the technique node itself loses
-  them; holding those is a follow-up (#615).
+  cancelled step's results are held too; its card shows the cancel. A technique's inner steps keep
+  their results until the technique node records them (#615). If that record is refused, or the
+  technique node fails, each finished inner step's results are held as one entry beside the
+  technique node, to be placed or discarded. They are never retried alone, because an inner step
+  isn't on the canvas.
