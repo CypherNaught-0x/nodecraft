@@ -9,14 +9,7 @@ fn quad() -> MeshData<'static> {
 }
 
 fn view(yaw: f32, background: [f32; 4]) -> View {
-    View {
-        orbit: Orbit { yaw, pitch: 0.0, zoom: 1.0 },
-        style: Style::Unlit,
-        center: [0.0; 3],
-        radius: 2f32.sqrt(),
-        background,
-        line: [1.0; 4],
-    }
+    View { orbit: Orbit { yaw, pitch: 0.0, zoom: 1.0 }, style: Style::Unlit, center: [0.0; 3], radius: 2f32.sqrt(), background, line: [1.0; 4] }
 }
 
 fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
@@ -45,7 +38,7 @@ fn a_transparent_background_stays_transparent_and_views_repeat() {
     assert_eq!(pixel(&first, 32, 0, 0)[3], 0);
     assert_eq!(pixel(&first, 32, 16, 16), [255, 0, 0, 255]);
     // Edge pixels keep the model's colour rather than darkening towards black.
-    for p in first.chunks_exact(4).filter(|p| p[3] > 0 && p[3] < 255) {
+    for p in first.as_chunks::<4>().0.iter().filter(|p| p[3] > 0 && p[3] < 255) {
         assert!(p[0] > 200 && p[1] < 40 && p[2] < 40, "edge pixel {p:?}");
     }
     let other = capture.render(&mesh, &target, &view(1.2, [0.0; 4])).unwrap();

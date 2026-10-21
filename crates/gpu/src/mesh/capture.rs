@@ -183,15 +183,13 @@ pub fn unpremultiply(pixels: &mut [u8]) {
         let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
         (s * 255.0).round().clamp(0.0, 255.0) as u8
     };
-    for pixel in pixels.chunks_exact_mut(4) {
-        let [r, g, b, a] = [0, 1, 2, 3].map(|i| pixel.get(i).copied().unwrap_or(0));
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let [r, g, b, a] = *pixel;
         if a == 0 || a == 255 {
             continue;
         }
         let alpha = f32::from(a) / 255.0;
-        for (slot, value) in pixel.iter_mut().zip([r, g, b]) {
-            *slot = encode(decode(value) / alpha);
-        }
+        *pixel = [encode(decode(r) / alpha), encode(decode(g) / alpha), encode(decode(b) / alpha), a];
     }
 }
 

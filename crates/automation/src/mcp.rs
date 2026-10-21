@@ -131,6 +131,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.create",
     "mask.margins_set",
     "mask.edit",
+    // A 3D capture only adds and wires a card; the card runs through run.start.
+    "mesh.capture",
     // Layers only change the node's stored layers; nothing runs.
     "layers.list",
     "node.layers_set",
