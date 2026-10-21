@@ -164,6 +164,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "element.create",
     "element.sheet",
     "element.list",
+    // Styles only list, add and wire cards; styled generation runs (and is quoted) through run.start.
+    "style.list",
+    "style.use",
+    "style.card",
     "plugins.list",
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",

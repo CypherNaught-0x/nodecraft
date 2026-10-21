@@ -361,6 +361,7 @@ mod stale;
 mod stale_badges;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
+mod styles;
 mod tags;
 mod technique_menu;
 mod timeline_editor;
@@ -1287,6 +1288,7 @@ impl NodeCraftApp {
         let mut timeline_request = None;
         let mut element_request = false;
         let mut technique_request = None;
+        let mut style_request = None;
         let mut wire_command = None;
         let mut layout_mode = None;
         // The owning context menu may invoke layout; unrelated popups have no such route.
@@ -1299,6 +1301,7 @@ impl NodeCraftApp {
         let mut timeline_after = None;
         let mut element_after = false;
         let mut technique_after = None;
+        let mut style_after = None;
         let mut tag_action = None;
         let mut refresh = None;
         self.refresh_stale_badges();
@@ -1593,6 +1596,9 @@ impl NodeCraftApp {
                                     ui.close();
                                 }
                             }
+                            if let Some(action) = styles::menu(ui, canvas, self.session.generation_catalog().ok(), node) {
+                                style_request = Some(action);
+                            }
                             if let Some(action) = technique_menu::menu(ui, self.session.document(), node) {
                                 technique_request = Some(action);
                             }
@@ -1764,6 +1770,7 @@ impl NodeCraftApp {
             timeline_after = timeline_request;
             element_after = element_request;
             technique_after = technique_request;
+            style_after = style_request;
             if let Some(marquee) = &mut self.marquee
                 && !marquee.cancelled
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
@@ -1829,6 +1836,9 @@ impl NodeCraftApp {
         }
         if let Some(action) = technique_after {
             self.technique_action(action);
+        }
+        if let Some(action) = style_after {
+            self.style_action(action);
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
@@ -2680,6 +2690,8 @@ mod split_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod stream_tests;
+#[cfg(test)]
+mod styles_tests;
 #[cfg(test)]
 mod technique_menu_tests;
 #[cfg(test)]

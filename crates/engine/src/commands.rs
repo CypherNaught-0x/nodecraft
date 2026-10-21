@@ -229,6 +229,7 @@ impl Registry {
             .chain(crate::interchange_cmds::specs())
             .chain(crate::timeline_captions::specs())
             .chain(crate::element_cmds::specs())
+            .chain(crate::style_cmds::specs())
             .chain(crate::plugin_cmds::specs())
             .chain(crate::ownership_cmds::specs())
             .chain(crate::resolve_cmds::specs())
