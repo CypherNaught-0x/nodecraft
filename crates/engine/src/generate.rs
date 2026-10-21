@@ -380,7 +380,8 @@ fn index(kind: Modality) -> usize {
         Modality::Style => 6,
     }
 }
-struct Routes<'a>([Option<&'a str>; 7]);
+/// The first port for each modality, and the family a style port's trainer trains.
+struct Routes<'a>([Option<&'a str>; 7], Option<&'a str>);
 impl<'a> Routes<'a> {
     fn port(&self, kind: Modality) -> Result<&'a str, Error> {
         let label = match kind {
@@ -425,7 +426,11 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text:
     match item {
         Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
         Output::Bytes { mime: claimed, bytes } => {
-            let sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            let mut sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            // Text that merely starts like a style descriptor stays text where no style is expected.
+            if sniffed.kind == MediaKind::Style && routes.0.get(index(Modality::Style)).copied().flatten().is_none() {
+                sniffed = nodecraft_media::Sniffed { mime: "text/plain", kind: MediaKind::Text };
+            }
             if matches!(sniffed.mime, "image/x-exr" | "image/vnd.radiance") {
                 return Err(unsupported("HDR image outputs aren't supported yet; use PNG or JPEG"));
             }
@@ -451,6 +456,11 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text:
                 // names the family it was trained for, so a card can refuse it before a run.
                 let port = routes.port(Modality::Style)?;
                 let style = nodecraft_media::style::decode(bytes).map_err(|error| invalid(&format!("the provider returned a damaged style: {error}")))?;
+                // The catalog says which family a trainer trains; a style naming another is refused
+                // rather than offered to models it was never trained for.
+                if routes.1 != Some(style.family.as_str()) {
+                    return Err(invalid("the provider returned a style for a different model family than its trainer trains"));
+                }
                 Ok(BorrowedOutput::Media { port, mime: style_mime(&style.family).into(), bytes })
             } else {
                 Ok(BorrowedOutput::Media { port: routes.port(modality(sniffed.kind))?, mime: sniffed.mime.into(), bytes })
@@ -475,7 +485,7 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
         return Err(invalid("the provider result or route table has too many items"));
     }
     let mut budget = Budget(limits.outputs);
-    let mut routes = Routes([None; 7]);
+    let mut routes = Routes([None; 7], None);
     for output in outputs {
         budget.charge(64)?;
         budget.string(&output.port)?;
@@ -483,6 +493,10 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
             && slot.is_none()
         {
             *slot = Some(output.port.as_str());
+            if output.modality == Modality::Style {
+                budget.string(output.style_family.as_deref().unwrap_or_default())?;
+                routes.1 = output.style_family.as_deref();
+            }
         }
     }
     // Cheap entire-result size/work admission before semantic scans; every Arc occurrence counts.

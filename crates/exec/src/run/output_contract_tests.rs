@@ -36,7 +36,7 @@ impl NodeKind for Generator {
     }
 }
 fn route(port: &str, modality: Modality) -> GenerateOutput {
-    GenerateOutput { port: port.into(), modality }
+    GenerateOutput { port: port.into(), modality, style_family: None }
 }
 fn generate(node: NodeId, outputs: Vec<GenerateOutput>) -> JobSpec {
     JobSpec::Generate { instance: None, node, outputs, provider: "fixture".into(), model: "fixture".into(), params: Default::default(), inputs: vec![] }

@@ -213,7 +213,7 @@ impl GenerationKind {
                 || model.parameters.owner != ParamOwner::Model
                 || model.modes.is_empty()
                 || model.modes.len() > 32
-                || model.style_family.as_deref().is_some_and(|family| !nodecraft_types::model_namespace(family))
+                || model.style_family.as_deref().is_some_and(|family| !nodecraft_types::style_family(family))
             {
                 return Err(bad(output, "invalid {noun} model definition"));
             }
@@ -556,7 +556,11 @@ impl NodeKind for GenerationKind {
         params.retain(|name, _| mode.sends(name));
         Ok(vec![JobSpec::Generate {
             node: ctx.node.id,
-            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
+            outputs: vec![GenerateOutput {
+                port: "out".into(),
+                modality: self.output,
+                style_family: (self.output == Modality::Style).then(|| definition.model.style_family.clone()).flatten(),
+            }],
             provider: definition.model.provider.clone(),
             instance: target.instance(),
             model: definition.model.remote.clone(),

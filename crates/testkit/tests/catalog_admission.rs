@@ -68,7 +68,7 @@ impl NodeKind for Loose {
             model: "mock-text".into(),
             params,
             inputs: vec![],
-            outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text }],
+            outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }],
         }])
     }
 }

@@ -59,7 +59,7 @@ impl NodeKind for Gen {
             model: "model".into(),
             params: Default::default(),
             inputs: vec![GenerateInput { role: "user".into(), value: Value::Text("public fixture".into()) }],
-            outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text }],
+            outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }],
         }])
     }
 }

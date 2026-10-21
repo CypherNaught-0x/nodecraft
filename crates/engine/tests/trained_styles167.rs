@@ -185,6 +185,12 @@ fn quote(f: &mut Fixture, card: NodeId) -> Result<serde_json::Value, nodecraft_t
 
 /// Quotes, accepts and runs `card` at the quoted `micros`.
 fn run(f: &mut Fixture, card: NodeId, micros: u64) {
+    let notices = attempt(f, card, micros);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+}
+
+/// Quotes, accepts and runs `card`, returning what the run reported.
+fn attempt(f: &mut Fixture, card: NodeId, micros: u64) -> Vec<RunNotice> {
     let q = quote(f, card).unwrap();
     assert_eq!(q["allowed"], true, "{q}");
     assert_eq!(q["totals"]["USD"]["micros"], micros, "the cost is shown before the run: {q}");
@@ -202,7 +208,7 @@ fn run(f: &mut Fixture, card: NodeId, micros: u64) {
         assert!(Instant::now() < deadline, "the run never finished: {notices:?}");
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    notices
 }
 
 #[test]
@@ -277,4 +283,15 @@ fn a_retrained_style_keeps_the_first_in_history_survives_a_save_and_never_trains
     }
     let keys: std::collections::BTreeSet<_> = f.mock.requests().iter().map(|job| job.idempotency_key.clone()).collect();
     assert_eq!((keys.len(), f.mock.billed()), (2, 2), "one paid training per run");
+}
+
+#[test]
+fn a_trainer_returning_another_family_s_style_keeps_nothing() {
+    let mut f = fixture();
+    // The mock trains for whatever family it is told; the catalog says this trainer trains flux-1.
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":TRAIN,"name":"family","value":{"type":"text","value":"sdxl-1"}})).unwrap();
+    let notices = attempt(&mut f, TRAIN, 2_000_000);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { .. })), "{notices:?}");
+    assert!(format!("{notices:?}").contains("different model family"), "{notices:?}");
+    assert!(node(&f.session, TRAIN).active.is_none(), "no style of the wrong family is offered");
 }

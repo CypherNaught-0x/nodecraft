@@ -61,6 +61,12 @@ fn id(value: &str) -> bool {
         && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_' | b'/'))
 }
 
+/// A family: an id with no `/`, so it can be a MIME parameter unquoted. The same rule as
+/// `nodecraft_types::style_family`, which this crate can't depend on.
+fn family(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64 && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
+}
+
 /// Whether `url` is a plain `https` link: a host and path, with no user info, query or fragment,
 /// so a signed or keyed link is never kept.
 pub fn plain_https(url: &str) -> bool {
@@ -71,10 +77,13 @@ pub fn plain_https(url: &str) -> bool {
 
 impl Style {
     pub fn validate(&self) -> Result<(), MediaError> {
-        for (name, value) in [("provider", &self.provider), ("trainer", &self.trainer), ("family", &self.family)] {
+        for (name, value) in [("provider", &self.provider), ("trainer", &self.trainer)] {
             if !id(value) {
                 return Err(invalid(&format!("the {name} isn't an id")));
             }
+        }
+        if !family(&self.family) {
+            return Err(invalid("the family isn't a family id"));
         }
         if self.trigger.len() > MAX_TRIGGER_BYTES || self.trigger.chars().any(char::is_control) {
             return Err(invalid("the trigger is one line of at most 256 bytes"));
@@ -151,7 +160,9 @@ mod tests {
         ] {
             assert!(encode(&Style { weights: weights.into(), ..style() }).is_err(), "{weights}");
         }
-        assert!(encode(&Style { family: "Flux 1".into(), ..style() }).is_err());
+        for family in ["Flux 1", "flux/dev", "flux;x=y", ""] {
+            assert!(encode(&Style { family: family.into(), ..style() }).is_err(), "{family}");
+        }
         assert!(encode(&Style { trigger: "a\nb".into(), ..style() }).is_err());
         assert!(encode(&Style { weights: format!("https://files.example/{}", "a".repeat(MAX_URL_BYTES)), ..style() }).is_err());
     }

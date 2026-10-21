@@ -243,7 +243,7 @@ fn factory_routing_preserves_unknown_price_and_explicit_consent_before_network()
         fn plan(&self, context: &PlanCtx<'_>) -> Result<Vec<Work>, nodecraft_types::Error> {
             Ok(vec![Work::Generate {
                 node: context.node.id,
-                outputs: vec![GenerateOutput { port: "image".into(), modality: Modality::Image }],
+                outputs: vec![GenerateOutput { port: "image".into(), modality: Modality::Image, style_family: None }],
                 provider: "gemini-images".into(),
                 instance: None,
                 model: LITE.into(),

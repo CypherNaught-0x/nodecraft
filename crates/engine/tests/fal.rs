@@ -78,7 +78,7 @@ impl NodeKind for Kind {
         };
         Ok(vec![JobSpec::Generate {
             node: ctx.node.id,
-            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
+            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output, style_family: None }],
             provider: "fal".into(),
             instance: None,
             model: self.remote.into(),

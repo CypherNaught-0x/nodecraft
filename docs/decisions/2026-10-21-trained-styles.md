@@ -23,8 +23,14 @@
 - **Compatibility is data.** A catalog model names its `style_family`. A trainer (a mode whose
   output is `style`) trains for that family; an inference model with a `style` input role takes
   styles of that family. Running a card whose wired style was trained for another family fails
-  with both names, before anything is sent. Strength and other LoRA settings are ordinary
-  parameters of the inference model's schema.
+  with both names, before anything is sent. A trainer's result must name the family its
+  catalog entry trains, or it is refused rather than kept. The family travels as a MIME
+  parameter (`; family=flux-1`), so it is a short id with no `/`. Strength and other LoRA
+  settings are ordinary parameters of the inference model's schema.
+- **A style file is input like any other.** Importing a style is refused, so styles come from
+  Train style cards. But a hand-made project file can hold a descriptor; it is validated like
+  every asset, and the send-time check only proves the file matches its recorded family. Which
+  providers can reach another provider's weights is the adapter's to check, not the family's.
 - **Local LoRAs stay separate.** Choosing a LoRA installed in ComfyUI is a ComfyUI option list
   (#162). Neither path implies the other: a trained style feeds only models that declare a
   `style` role, and a ComfyUI LoRA name is never a style.

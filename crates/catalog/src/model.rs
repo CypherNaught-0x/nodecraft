@@ -150,7 +150,9 @@ impl ModelDescriptor {
         match &self.style_family {
             None if styled => return Err(invalid(id, "a model that trains or takes styles names its `style_family`")),
             Some(family) if !styled => return Err(invalid(id, &format!("`style_family` `{family}` is set, but no mode trains or takes a style"))),
-            Some(family) if !is_id(family) => return Err(invalid(id, "`style_family` must be a lowercase id")),
+            Some(family) if !nodecraft_types::style_family(family) => {
+                return Err(invalid(id, "`style_family` is 1-64 lowercase letters, digits, `.`, `-` or `_`"));
+            }
             _ => {}
         }
         self.params.validate().map_err(|error| invalid(id, &error.message))?;

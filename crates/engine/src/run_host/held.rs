@@ -366,7 +366,7 @@ pub(super) fn register(held: &Arc<Mutex<Held>>, services: &mut crate::commands::
 fn every_modality() -> Vec<GenerateOutput> {
     [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document, Modality::Style]
         .into_iter()
-        .map(|modality| GenerateOutput { port: modality_port(modality).to_owned(), modality })
+        .map(|modality| GenerateOutput { port: modality_port(modality).to_owned(), modality, style_family: None })
         .collect()
 }
 

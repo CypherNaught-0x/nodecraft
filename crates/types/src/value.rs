@@ -18,6 +18,12 @@ pub enum Modality {
 /// The MIME type of a style descriptor (#167).
 pub const STYLE_MIME: &str = "application/vnd.nodecraft.style+json";
 
+/// Whether `family` can name a style family: 1–64 lowercase letters, digits and `.`, `-`, `_`.
+/// It travels as a MIME parameter, so it has no `/` and needs no quoting.
+pub fn style_family(family: &str) -> bool {
+    !family.is_empty() && family.len() <= 64 && family.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
+}
+
 impl Modality {
     /// Whether an asset of this MIME essence (`image/png`) carries this modality.
     pub fn accepts_mime(self, essence: &str) -> bool {

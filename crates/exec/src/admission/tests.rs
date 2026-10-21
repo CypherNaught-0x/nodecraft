@@ -85,7 +85,7 @@ fn job(node: NodeId, params: ParamValues) -> JobSpec {
     JobSpec::Generate {
         instance: None,
         node,
-        outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text }],
+        outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }],
         provider: "mock".into(),
         model: "remote".into(),
         params,

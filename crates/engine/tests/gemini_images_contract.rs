@@ -27,7 +27,7 @@ fn image() -> Output {
     Output::Bytes { mime: "image/jpeg".into(), bytes: Arc::from(include_bytes!("../../providers/tests/fixtures/gemini_images/original-square.jpg").as_slice()) }
 }
 fn route(modality: Modality) -> GenerateOutput {
-    GenerateOutput { port: if modality == Modality::Text { "text" } else { "image" }.into(), modality }
+    GenerateOutput { port: if modality == Modality::Text { "text" } else { "image" }.into(), modality, style_family: None }
 }
 fn assemble(done: &Completed, text: bool, many: bool) -> nodecraft_exec::run::Progress {
     let cid = CanvasId::from_bytes([1; 16]);

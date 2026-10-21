@@ -214,7 +214,7 @@ fn job(media: Vec<Value>) -> JobSpec {
     inputs.extend(media.into_iter().map(|value| GenerateInput { role: "image".into(), value }));
     JobSpec::Generate {
         node: READER,
-        outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Text }],
+        outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }],
         provider: "mock".into(),
         instance: ProviderTarget::default_instance("mock").unwrap().instance(),
         model: "mock-text".into(),
