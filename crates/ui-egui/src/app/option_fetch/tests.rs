@@ -99,3 +99,127 @@ fn a_refused_list_is_named_in_the_notice() {
     let beside = Report { installed: vec![installed], ..alone };
     assert_eq!(notice(&beside), "Fetched 1 option list (2 values).");
 }
+
+// The card's picker over a fetched list (#676).
+mod picker {
+    use super::*;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use nodecraft_types::{CanvasId, Choice, NodeId, OptionKey, OptionLists, Value};
+
+    const C: CanvasId = CanvasId::from_bytes([81; 16]);
+    const N: NodeId = NodeId::from_bytes([82; 16]);
+
+    /// One SDXL card, holding `checkpoint` when given.
+    fn scene(checkpoint: Option<&str>) -> NodeCraftApp {
+        let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([83; 16]), "Option picker").unwrap();
+        nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+        let (kinds, _) = nodecraft_engine::generation_catalog::default_registry().unwrap();
+        let mut values: nodecraft_types::ParamValues =
+            [("model".into(), Value::Text("comfyui.sdxl".into())), ("prompt".into(), Value::Text("A pier".into()))].into();
+        if let Some(checkpoint) = checkpoint {
+            values.insert("checkpoint".into(), Value::Text(checkpoint.into()));
+        }
+        let node = kinds.get(nodecraft_nodes::generation::KIND).unwrap().instantiate_instance(N, Default::default(), &values).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+        NodeCraftApp::from_session(Session::new(project).unwrap(), C).unwrap()
+    }
+
+    fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
+        Harness::builder().with_size(egui::Vec2::new(1400.0, 1000.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
+    }
+
+    /// Installs a labelled checkpoint list, as a fetch would.
+    fn install(app: &mut NodeCraftApp) {
+        let mut lists = OptionLists::default();
+        let choices =
+            vec![Choice { value: "a.safetensors".into(), label: "Model A".into() }, Choice { value: "b.safetensors".into(), label: "Model B".into() }];
+        lists.set(OptionKey { owner: "comfyui.sdxl", source: "comfyui.checkpoints", scope: None }, choices).unwrap();
+        app.session.swap_resource(Some(lists));
+    }
+
+    fn checkpoint(app: &NodeCraftApp) -> Option<Value> {
+        app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().params.get("checkpoint").cloned()
+    }
+
+    /// What the checkpoint picker shows.
+    fn shown(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
+        h.get_by_role_and_label(Role::ComboBox, "Checkpoint").accesskit_node().value()
+    }
+
+    #[test]
+    fn picking_a_label_stores_its_value() {
+        let mut app = scene(None);
+        install(&mut app);
+        let mut h = harness(app);
+        h.run();
+        assert!(h.query_by_label(crate::card::listed::UNFETCHED_HINT).is_none());
+        h.get_by_role_and_label(Role::ComboBox, "Checkpoint").click();
+        h.run();
+        h.get_by_label("Model B").click();
+        h.run();
+        assert_eq!(checkpoint(h.state()), Some(Value::Text("b.safetensors".into())));
+        // The card shows the label, not the stored file name.
+        assert_eq!(shown(&h).as_deref(), Some("Model B"));
+    }
+
+    #[test]
+    fn a_value_off_the_list_is_shown_as_it_is_and_kept() {
+        let mut app = scene(Some("gone.safetensors"));
+        install(&mut app);
+        let before = app.session.document().clone();
+        let mut h = harness(app);
+        h.run();
+        assert_eq!(shown(&h).as_deref(), Some("gone.safetensors (not an option)"));
+        assert_eq!(h.state().session.document(), &before);
+    }
+
+    #[test]
+    fn before_a_fetch_the_field_is_text_with_a_hint_and_a_fetch_turns_it_into_a_picker() {
+        let mut h = harness(scene(None));
+        let (fetcher, mut service) = OptionFetcher::spawn(super::fetcher(Some(&["sdxl.safetensors", "juggernaut.safetensors"]))).unwrap();
+        let app = h.state_mut();
+        app.session.register_host_service(OPTION_SERVICE, move |request| service(request)).unwrap();
+        app.option_fetch = Some(fetcher);
+        h.run();
+        assert!(h.query_by_label(crate::card::listed::UNFETCHED_HINT).is_some());
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Checkpoint").is_none());
+        h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        answered(&mut h);
+        h.run();
+        assert!(h.query_by_label(crate::card::listed::UNFETCHED_HINT).is_none());
+        h.get_by_role_and_label(Role::ComboBox, "Checkpoint").click();
+        h.run();
+        h.get_by_label("juggernaut.safetensors").click();
+        h.run();
+        assert_eq!(checkpoint(h.state()), Some(Value::Text("juggernaut.safetensors".into())));
+    }
+
+    #[test]
+    fn lists_installed_after_the_card_was_cached_show_without_a_document_edit() {
+        let mut h = harness(scene(None));
+        h.run();
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Checkpoint").is_none());
+        // Installed behind the view cache's back: the card reads the lists live.
+        install(h.state_mut());
+        h.run();
+        assert_eq!(shown(&h).as_deref(), Some("Choose…"));
+    }
+
+    #[test]
+    fn a_stored_value_of_another_type_keeps_the_ordinary_control() {
+        let app = scene(None);
+        let mut node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().clone();
+        node.params.insert("checkpoint".into(), Value::Bool(true));
+        let mut project = app.session.document().clone();
+        nodecraft_graph::Change::RemoveNode { canvas: C, id: N }.apply(&mut project).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+        let mut app = NodeCraftApp::from_session(Session::new(project).unwrap(), C).unwrap();
+        install(&mut app);
+        let mut h = harness(app);
+        h.run();
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Checkpoint").is_none());
+        assert!(h.query_by_label(crate::card::listed::UNFETCHED_HINT).is_none());
+    }
+
+    use egui::accesskit::Role;
+}

@@ -36,6 +36,7 @@ struct CachedSchema {
     visible: BTreeSet<String>,
     enabled: Option<BTreeSet<String>>,
     roles: card::Roles,
+    listed: BTreeMap<String, card::Listed>,
     catalog: Option<nodecraft_engine::generation_catalog::GenerationCatalogStamp>,
     descriptor_bytes: usize,
     borrowed_identity: Option<usize>,
@@ -61,7 +62,16 @@ impl SchemaCache {
     fn own_bytes(entry: &CachedSchema) -> usize {
         let names = entry.visible.iter().chain(entry.enabled.iter().flatten()).map(|name| name.len().saturating_add(96)).fold(0usize, usize::saturating_add);
         let owned = if entry.borrowed_identity.is_none() { entry.descriptor_bytes } else { 0 };
-        256usize.saturating_add(names).saturating_add(owned).saturating_add(entry.roles.bytes())
+        let listed = entry.listed.iter().map(|(name, listed)| name.len().saturating_add(listed.bytes())).fold(0usize, usize::saturating_add);
+        256usize.saturating_add(names).saturating_add(owned).saturating_add(entry.roles.bytes()).saturating_add(listed)
+    }
+    /// Drops the entries drawing a run-time option list, after a fetch changed the lists
+    /// (#676); the document revision alone doesn't see that.
+    fn forget_listed(&mut self) {
+        let listed: Vec<_> = self.entries.iter().filter(|(_, entry)| !entry.listed.is_empty()).map(|(id, _)| *id).collect();
+        for id in listed {
+            self.remove(&id);
+        }
     }
     // Before geometry reads, invalidate only generation entries whose runtime resource/
     // definition binding changed. No document hashing or per-node payload walk in paint.
@@ -182,7 +192,7 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
         }
         return cache.get(&node.id);
     }
-    let admission::Admitted { descriptor, visible, enabled, roles, bytes } = admission::admit(session, node, Some(cache))?;
+    let admission::Admitted { descriptor, visible, enabled, roles, listed, bytes } = admission::admit(session, node, Some(cache))?;
     let (descriptor, borrowed_identity, bytes) = match descriptor {
         Cow::Borrowed(descriptor) => {
             // Safe pointer identity only: no raw-pointer dereference. Distinct borrowed variants
@@ -203,6 +213,7 @@ fn cached_schema<'a>(cache: &'a mut SchemaCache, session: &Session, node: &nodec
             visible,
             enabled,
             roles,
+            listed,
             catalog,
             descriptor_bytes: bytes,
             borrowed_identity,
@@ -1411,6 +1422,8 @@ impl NodeCraftApp {
                             (rows, columns, full)
                         }),
                         roles: schema.map(|cached| &cached.roles),
+                        listed: schema.map(|cached| &cached.listed),
+                        lists: self.session.option_lists(),
                         prompt_wired: prompt_wired.contains(&node.id),
                         elements: &element_names,
                         mentions: mention_cards,

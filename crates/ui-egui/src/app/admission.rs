@@ -6,6 +6,8 @@ pub(crate) struct Admitted<'a> {
     pub visible: BTreeSet<String>,
     pub enabled: Option<BTreeSet<String>>,
     pub roles: crate::card::Roles,
+    /// The enabled parameters whose values come from a run-time option list (#676).
+    pub listed: BTreeMap<String, crate::card::Listed>,
     pub bytes: usize,
 }
 pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&SchemaCache>) -> Option<Admitted<'a>> {
@@ -16,13 +18,31 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
     let enabled: Option<BTreeSet<String>>;
     let visible: BTreeSet<String>;
     let mut roles = crate::card::Roles::default();
+    let mut listed = BTreeMap::new();
     if nodecraft_nodes::generation::is_generation(&node.kind) {
         let catalog = session.generation_catalog().ok()?;
         let kind = session.kinds().get(&node.kind).ok()?;
         catalog.validate_definition_binding(kind).ok()?;
         let contract = kind.instance_contract(node).ok()?;
-        let resolution = contract.resolve(&node.params, false).ok()?;
+        let lookup: &dyn nodecraft_types::OptionLookup = match session.option_lists() {
+            Some(lists) => lists,
+            None => &nodecraft_types::NoOptions,
+        };
+        let resolution = contract.resolve_with(&node.params, false, lookup).ok()?;
         roles = crate::card::Roles::of(&contract);
+        for state in resolution.params.iter().filter(|state| state.enabled) {
+            let Some(options) = &state.options else { continue };
+            let owner = contract.parameter_groups().find(|group| group.schema.params.iter().any(|spec| spec.name == state.name));
+            if let Some(owner) = owner {
+                // Whether the list is fetched is read live when the card draws, so lists installed
+                // after this entry was cached show at once; a scoped source can't be fetched yet.
+                let scoped = owner.rules.iter().any(|rule| rule.param == state.name && rule.options.as_ref().is_some_and(|o| o.scope.is_some()));
+                listed.insert(
+                    state.name.clone(),
+                    crate::card::Listed { owner: owner.namespace.clone(), source: options.source.clone(), scope: options.scope.clone(), scoped },
+                );
+            }
+        }
         // A model setting the wired mode doesn't send is hidden (#559); the card's own stay.
         let mode = wired_mode(session, node, &contract);
         let shown = |state: &&nodecraft_types::ParamState| {
@@ -46,11 +66,12 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
         .iter()
         .chain(enabled.iter().flatten())
         .fold(256usize, |total, name| total.saturating_add(name.len().saturating_add(96)))
-        .saturating_add(roles.bytes());
+        .saturating_add(roles.bytes())
+        .saturating_add(listed.iter().fold(0usize, |total, (name, listed)| total.saturating_add(name.len()).saturating_add(listed.bytes())));
     if bytes.checked_add(overhead)? > MAX_SCHEMA_CACHE_BYTES {
         return None;
     }
-    Some(Admitted { descriptor, visible, enabled, roles, bytes })
+    Some(Admitted { descriptor, visible, enabled, roles, listed, bytes })
 }
 
 /// The mode `node`'s wiring chooses, when it chooses one; `None` while it fits none or several.
