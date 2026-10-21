@@ -686,7 +686,7 @@ parts of a later milestone already built ahead of their host — is tracked in
 | M | Name | Contents | Exit criterion |
 |---|---|---|---|
 | 0 | **Skeleton** | Workspace, lints, xtask layers/wasm, CI, AGENTS.md, empty crates, eframe window | `cargo run` opens a themed empty canvas on all three OSes |
-| 1 | **Canvas core** | Graph model + changesets + undo, command registry, canvas widget (pan/zoom/select/noodles/minimap), source nodes via drag-drop/paste, "Turn into" picker, shortcuts, `.ncraft` save/load | Build and save a 200-node graph at 60 fps; undo everything |
+| 1 | **Canvas core** | Graph model + changesets + undo, command registry, canvas widget (pan/zoom/select/noodles/minimap), source nodes via drag-drop/paste, "Turn into" picker, shortcuts, `.ncraft` save/load | Build and save a 200-node graph at 60 fps (as measured by [P1–P3](performance.md#the-60-fps-criterion)); undo everything |
 | 2 | **Organise** | Fields, tags, comments, search, auto-format, bulk panel, router node, input ordering | Workshop "organise" patterns work |
 | 3 | **Generation** | `exec` planner/scheduler, queue, status, history strip, variations, cost quotes, budgets, catalog, mock provider, keychain; **ComfyUI** (servers panel, workflow node, WebSocket progress), **LLM endpoints** (OpenAI-compatible, Anthropic, LiteLLM), **fal.ai**, **Replicate**, **OpenAI Images**, **Google Imagen + Gemini image**, **Seedream** | Combine → branch → prompt-helper workflows run end to end, both on cloud models and fully offline on ComfyUI + Ollama |
 | 4 | **Actions** | Image + text actions (CPU), live recompute, split into grid, GPU path, custom WGSL actions | Colour grade/blur/crop chains preview live |

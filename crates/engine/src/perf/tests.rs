@@ -64,7 +64,7 @@ fn nothing_is_recorded_while_stopped_and_no_clock_means_unsupported_not_zero() {
     assert_eq!((save.supported, save.samples, save.p50), (false, 0, None));
     assert!(report.workload.is_none());
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["schema"], "nodecraft.perf/2");
+    assert_eq!(json["schema"], "nodecraft.perf/3");
     assert!(json["metrics"][0]["p50"].is_null(), "unmeasured is null, never 0");
 }
 

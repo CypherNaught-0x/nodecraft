@@ -12,7 +12,7 @@ pub(super) fn fixture() -> Value {
             let metrics:Vec<_>=["frame_prepare","frame_interval","dispatch","graph_stage","graph_stage_refused","presentation","undo","redo","load","save"].into_iter().map(|name|{
                 let count=if name=="frame_prepare"{frames}else{0};let q=if count>0{json!(1)}else{Value::Null};
                 json!({"metric":name,"unit":"us","supported":name!="presentation","samples":count,"recorded":count,"invalid":0,"p50":q,"p95":q,"p99":q,"max":q,"unavailable_reason":if name=="presentation"{json!("presentation_timestamps_not_available")}else{Value::Null}})
-            }).collect();json!({"schema":"nodecraft.perf/2","clock":true,"metrics":metrics,"workload":{"total_nodes":nodes},"environment":{"profile":"release"}})
+            }).collect();json!({"schema":"nodecraft.perf/3","clock":true,"presentation_source":null,"metrics":metrics,"workload":{"total_nodes":nodes},"environment":{"profile":"release"}})
         }else{Value::Null};
         json!({"id":id,"measurement":kind,"shape":shape,"nodes":nodes,"edges":edges,"operation":op,"warmups":3,"samples_ns":vec![100u64;frames],"context":context,"perf2":perf})
     }).collect();

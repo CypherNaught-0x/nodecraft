@@ -229,6 +229,48 @@ fn graph_observations_respect_backwards_and_failed_clocks_without_changing_edit(
     }
 }
 #[test]
+fn a_host_with_a_presentation_source_records_presented_intervals_and_dropped_frames() {
+    let mut r = Recorder::default();
+    r.set_clock(Some(Box::new(|| 100)));
+    r.set_presentation_source(Some(PresentationSource::VsyncFramePump));
+    // Not recording yet: nothing is kept.
+    r.record(Metric::Presentation, 16_667);
+    r.set_enabled(true);
+    let empty = r.report();
+    let p = metric(&empty, Metric::Presentation);
+    assert!(p.supported, "a source with no pumped frames is supported with no samples, not zero");
+    assert_eq!((p.unavailable_reason, p.samples, p.p50, p.dropped_frames, p.longest_drop), (None, 0, None, Some(0), Some(0)));
+    // 16.7 and 25 ms show every frame; 33 ms misses one, 50 ms two, 100 ms five.
+    for us in [16_667, 16_600, 25_000, 33_333, 50_000, 100_000] {
+        r.record(Metric::Presentation, us);
+    }
+    r.record(Metric::Presentation, MAX_SAMPLE_US + 1);
+    // Presented intervals aren't idle gaps: a 300 ms stall is kept and counted.
+    r.record(Metric::Presentation, 300_000);
+    let report = r.report();
+    assert_eq!(report.presentation_source, Some(PresentationSource::VsyncFramePump));
+    let p = metric(&report, Metric::Presentation);
+    assert_eq!((p.samples, p.invalid, p.idle), (7, 1, None));
+    assert_eq!(p.over_frame_budget, Some(4));
+    assert_eq!((p.dropped_frames, p.longest_drop), (Some(1 + 2 + 5 + 17), Some(17)));
+    assert_eq!((p.p50, p.max), (Some(33_333), Some(300_000)));
+    // The source is the host's to withdraw: presentation is unsupported again, its samples unread.
+    r.set_presentation_source(None);
+    r.record(Metric::Presentation, 16_667);
+    let withdrawn = r.report();
+    let p = metric(&withdrawn, Metric::Presentation);
+    assert!(!p.supported);
+    assert_eq!(p.unavailable_reason, Some("presentation_timestamps_not_available"));
+    assert_eq!((p.dropped_frames, p.longest_drop), (None, None));
+}
+
+#[test]
+fn missed_frames_round_to_whole_60hz_frames() {
+    assert_eq!([0, 16_667, INTERVAL_BUDGET_US].map(missed_frames), [0, 0, 0]);
+    assert_eq!([INTERVAL_BUDGET_US + 1, 33_333, 41_000, 50_000, u64::MAX].map(missed_frames), [1, 1, 1, 2, u64::MAX / FRAME_BUDGET_US - 1]);
+}
+
+#[test]
 fn presentation_stays_unsupported_through_every_public_recording_route() {
     let mut r = Recorder::default();
     let calls = Rc::new(Cell::new(0));
@@ -242,13 +284,15 @@ fn presentation_stays_unsupported_through_every_public_recording_route() {
     r.record_since(Metric::Presentation, 0);
     assert_eq!(calls.get(), 0);
     let report = r.report();
-    assert_eq!(report.schema, "nodecraft.perf/2");
+    assert_eq!(report.schema, "nodecraft.perf/3");
+    assert_eq!(report.presentation_source, None);
     assert_eq!(report.metrics.len(), Metric::ALL.len());
     let p = metric(&report, Metric::Presentation);
     assert!(!p.supported);
     assert_eq!(p.unavailable_reason, Some("presentation_timestamps_not_available"));
     assert_eq!((p.samples, p.recorded, p.invalid), (0, 0, 0));
     assert_eq!((p.p50, p.p95, p.p99, p.max), (None, None, None, None));
+    assert_eq!((p.dropped_frames, p.longest_drop), (None, None));
     r.set_clock(None);
     assert_eq!(metric(&r.report(), Metric::Presentation).unavailable_reason, p.unavailable_reason);
 }
