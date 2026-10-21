@@ -32,8 +32,26 @@
   agent runs, not by the skill.
 - **The person decides trust.** Agents (MCP and the in-canvas agent) may list, read, create, edit,
   delete and export skills. Only a person runs `skill.import` (what untrusted text comes in) and
-  `skill.enable` (which skills are offered to the agent). `skill.edit` cannot change `enabled`.
-  Personal skills are outside undo, so a mistaken agent edit is recovered by editing again. The
-  version check keeps it from overwriting an edit it didn't see.
-- **Later (#168 part 2):** offering enabled skills to the in-canvas agent, explicit activation,
-  and recording which skill and version guided a run, without its input text.
+  `skill.enable` (which skills are offered to the agent). A skill made by `skill.create` starts
+  off, and a `skill.edit` that changes its name, description, instructions or requirements turns
+  it off again, so an agent can't write itself an enabled playbook. `skill.edit` cannot change
+  `enabled`. Personal skills are outside undo, so a mistaken agent edit is recovered by editing
+  again. The version check keeps it from overwriting an edit it didn't see.
+- **A project's skills are untrusted text.** They arrive with the project file, and anyone may
+  have written that file, including its `source` and `enabled` fields. So `skill.list` and
+  `skill.read` mark every project skill untrusted, and `skill.read` adds the untrusted note.
+  Before part 2 offers a project's enabled skills to the agent, the person approves them on this
+  machine, per project.
+- **Ids can clash across scopes.** A project file may carry a skill whose id matches one of the
+  person's. Without `scope`, the commands act on the project's skill. `skill.read`, `edit`,
+  `enable`, `delete` and `export` take an optional `scope` to pick the person's. If the person's
+  store can't be read, `skill.list` still lists the project's skills and reports the error as
+  `user_error`.
+- **Versions can repeat after undo.** Undoing a project skill edit brings back the earlier
+  version number with the earlier text, and an edit pinned to the undone version is refused. A
+  new edit after that undo takes the undone number again with different text, so a reader that
+  pinned the undone version would match it (ABA). We accept this for now: it takes an undo and a
+  fresh edit in between, and both are visible in the project's history.
+- **Later (#168 part 2):** offering enabled skills to the in-canvas agent, the per-machine
+  approval of a project's skills, explicit activation, and recording which skill and version
+  guided a run, without its input text. UI for import, enable and delete comes with it.

@@ -37,7 +37,8 @@ pub struct Skill {
     pub requires: Requires,
     #[serde(default)]
     pub source: Source,
-    /// A disabled skill is listed but never offered to the agent; imported skills start disabled.
+    /// A disabled skill is listed but never offered to the agent; new, rewritten and imported
+    /// skills start disabled.
     #[serde(default = "enabled")]
     pub enabled: bool,
 }
