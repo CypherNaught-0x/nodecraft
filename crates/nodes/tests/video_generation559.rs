@@ -32,6 +32,7 @@ fn model(longer: AudioOverrun) -> GenerationModel {
     .unwrap();
     let prompt = || role("prompt", Modality::Text, 1, 1);
     GenerationModel {
+        style_family: None,
         id: MODEL.into(),
         provider: "mock".into(),
         remote: "mock-video".into(),

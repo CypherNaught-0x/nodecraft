@@ -279,6 +279,7 @@ fn price_label(model: &ModelDescriptor) -> String {
                 Unit::Megapixel => "megapixel",
                 Unit::ThousandTokens => "1,000 tokens",
                 Unit::ThousandCharacters => "1,000 characters",
+                Unit::ThousandSteps => "1,000 training steps",
             }
         ),
     }
@@ -291,6 +292,7 @@ fn modality(modality: Modality) -> &'static str {
         Modality::Audio => "audio",
         Modality::Mesh => "3D",
         Modality::Document => "document",
+        Modality::Style => "style",
     }
 }
 fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {

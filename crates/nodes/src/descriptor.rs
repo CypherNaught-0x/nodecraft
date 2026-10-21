@@ -175,6 +175,10 @@ pub enum JobSpec {
 pub struct GenerateOutput {
     pub port: String,
     pub modality: Modality,
+    /// For a style output, the family its trainer trains (#167): a style of any other family is
+    /// refused rather than kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_family: Option<String>,
 }
 
 /// One input to a model call, in a role such as `prompt`, `system` or `image`.

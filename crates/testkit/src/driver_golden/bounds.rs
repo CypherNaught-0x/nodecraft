@@ -309,7 +309,7 @@ mod correction_tests {
     fn byte_aliases_and_repeated_route_names_cover_actual_converted_owners() {
         let body: Arc<[u8]> = Arc::from(&b"public utf8 body"[..]);
         let done = Completed::new((0..16).map(|_| Output::Bytes { mime: "text/plain".into(), bytes: body.clone() }).collect());
-        let routes = vec![GenerateOutput { port: "p".repeat(2048), modality: nodecraft_types::Modality::Text }];
+        let routes = vec![GenerateOutput { port: "p".repeat(2048), modality: nodecraft_types::Modality::Text, style_family: None }];
         let (_, charge) = completion(&done, &routes).unwrap();
         let produced = nodecraft_engine::generate::produced(&routes, &done).unwrap();
         let actual: usize = produced

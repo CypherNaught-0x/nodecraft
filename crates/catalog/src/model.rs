@@ -82,6 +82,11 @@ pub struct ModelDescriptor {
     pub latency_s: u32,
     /// 1 (draft) to 5 (best available).
     pub quality: u8,
+    /// The base-model family whose trained styles it uses or trains (#167): a trainer (a mode
+    /// that outputs a style) trains for it, a model with a style input takes styles of it. Set
+    /// exactly when a mode outputs or takes a style.
+    #[serde(default)]
+    pub style_family: Option<String>,
 }
 
 impl ModelDescriptor {
@@ -140,6 +145,15 @@ impl ModelDescriptor {
                     return Err(invalid(id, &format!("mode `{}`: `max_ms` is 1 to {MAX_AUDIO_MS}", mode.id)));
                 }
             }
+        }
+        let styled = self.modes.iter().any(|mode| mode.output == Modality::Style || mode.inputs.iter().any(|role| role.modality == Modality::Style));
+        match &self.style_family {
+            None if styled => return Err(invalid(id, "a model that trains or takes styles names its `style_family`")),
+            Some(family) if !styled => return Err(invalid(id, &format!("`style_family` `{family}` is set, but no mode trains or takes a style"))),
+            Some(family) if !nodecraft_types::style_family(family) => {
+                return Err(invalid(id, "`style_family` is 1-64 lowercase letters, digits, `.`, `-` or `_`"));
+            }
+            _ => {}
         }
         self.params.validate().map_err(|error| invalid(id, &error.message))?;
         if let Some(contract) = &self.parameter_contract {

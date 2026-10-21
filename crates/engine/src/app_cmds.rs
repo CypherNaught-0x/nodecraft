@@ -42,7 +42,7 @@ fn source_kind(port_type: PortType) -> Result<(&'static str, &'static str), Erro
         Modality::Video => Ok(("source.video", "asset")),
         Modality::Audio => Ok(("source.audio", "asset")),
         Modality::Document => Ok(("source.document", "asset")),
-        Modality::Mesh => Err(Error::new(ErrorKind::Unsupported, "a form can't fill this kind of input yet")),
+        Modality::Mesh | Modality::Style => Err(Error::new(ErrorKind::Unsupported, "a form can't fill this kind of input yet")),
     }
 }
 

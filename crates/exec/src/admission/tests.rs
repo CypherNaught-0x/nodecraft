@@ -40,6 +40,7 @@ fn catalog(count: u64) -> Catalog {
         usage: None,
         latency_s: 0,
         quality: 1,
+        style_family: None,
     };
     Catalog::from_models(vec![model]).unwrap()
 }
@@ -84,7 +85,7 @@ fn job(node: NodeId, params: ParamValues) -> JobSpec {
     JobSpec::Generate {
         instance: None,
         node,
-        outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text }],
+        outputs: vec![GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }],
         provider: "mock".into(),
         model: "remote".into(),
         params,
@@ -250,6 +251,7 @@ pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
         usage: None,
         latency_s: 0,
         quality: 1,
+        style_family: None,
     }])
     .unwrap()
 }

@@ -498,7 +498,7 @@ impl nodecraft_nodes::NodeKind for Multi {
                 model: def.provider_model.clone(),
                 params: def.params.resolve(&nodecraft_exec::cost::model_params(c.node, def), true)?.into_visible_values(),
                 inputs: c.inputs.iter().map(|i| nodecraft_nodes::GenerateInput { role: "prompt".into(), value: i.value.clone() }).collect(),
-                outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: nodecraft_types::Modality::Text }],
+                outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: nodecraft_types::Modality::Text, style_family: None }],
             });
         }
         Ok(jobs)
@@ -1304,7 +1304,7 @@ impl nodecraft_nodes::NodeKind for LocalGenerator {
             model: "mock-text".into(),
             params: Default::default(),
             inputs: c.inputs.iter().map(|i| nodecraft_nodes::GenerateInput { role: "prompt".into(), value: i.value.clone() }).collect(),
-            outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: nodecraft_types::Modality::Text }],
+            outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: nodecraft_types::Modality::Text, style_family: None }],
         }])
     }
 }

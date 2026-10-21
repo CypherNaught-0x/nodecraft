@@ -1,6 +1,6 @@
 //! Catalog-neutral production generation: image (`generation.image`), text (`generation.text`,
-//! #84), 3D (`generation.mesh`, #22) and video (`generation.video`, #559) cards over the same
-//! contract. Engine compiles the
+//! #84), 3D (`generation.mesh`, #22), video (`generation.video`, #559) and trained-style
+//! (`generation.style`, #167) cards over the same contract. Engine compiles the
 //! validated catalog into these immutable definitions; this L2 module never depends on catalog
 //! or a provider.
 use crate::{
@@ -24,6 +24,8 @@ pub const TEXT_KIND: &str = "generation.text";
 pub const MESH_KIND: &str = "generation.mesh";
 /// A video generation card: a prompt, frames or audio in, one clip out (#559).
 pub const VIDEO_KIND: &str = "generation.video";
+/// A style training card: images in, one trained style out (#167).
+pub const STYLE_KIND: &str = "generation.style";
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
 /// Longest typed prompt a generation card holds, in bytes.
@@ -32,7 +34,7 @@ const MAX_PROMPTS: usize = 1024;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
 pub fn is_generation(kind: &str) -> bool {
-    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND || kind == VIDEO_KIND
+    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND || kind == VIDEO_KIND || kind == STYLE_KIND
 }
 /// The generation kind whose cards make `output`, if there is one.
 pub fn kind_for(output: Modality) -> Option<&'static str> {
@@ -41,6 +43,7 @@ pub fn kind_for(output: Modality) -> Option<&'static str> {
         Modality::Text => Some(TEXT_KIND),
         Modality::Mesh => Some(MESH_KIND),
         Modality::Video => Some(VIDEO_KIND),
+        Modality::Style => Some(STYLE_KIND),
         _ => None,
     }
 }
@@ -76,6 +79,8 @@ pub struct GenerationModel {
     pub remote: String,
     pub parameters: Contract,
     pub modes: Vec<GenerationMode>,
+    /// The base-model family of the styles it trains or takes (#167).
+    pub style_family: Option<String>,
 }
 struct Definition {
     model: GenerationModel,
@@ -121,6 +126,7 @@ fn base(id: &'static str, output: Modality) -> NodeDescriptor {
             Modality::Text => "Generate text",
             Modality::Mesh => "Generate 3D",
             Modality::Video => "Generate video",
+            Modality::Style => "Train style",
             _ => "Generate image",
         }
         .into(),
@@ -151,6 +157,7 @@ fn noun(output: Modality) -> &'static str {
         Modality::Text => "text",
         Modality::Mesh => "3D",
         Modality::Video => "video",
+        Modality::Style => "style",
         _ => "image",
     }
 }
@@ -178,6 +185,10 @@ impl GenerationKind {
     pub fn video(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
         Self::making(Modality::Video, models, snapshot)
     }
+    /// Style training: each model's modes here all train one style from wired images (#167).
+    pub fn style(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        Self::making(Modality::Style, models, snapshot)
+    }
     /// What this kind's cards make.
     pub fn output(&self) -> Modality {
         self.output
@@ -202,6 +213,7 @@ impl GenerationKind {
                 || model.parameters.owner != ParamOwner::Model
                 || model.modes.is_empty()
                 || model.modes.len() > 32
+                || model.style_family.as_deref().is_some_and(|family| !nodecraft_types::style_family(family))
             {
                 return Err(bad(output, "invalid {noun} model definition"));
             }
@@ -453,6 +465,7 @@ impl NodeKind for GenerationKind {
             Modality::Text => "text-to-text",
             Modality::Mesh => "text-to-mesh",
             Modality::Video => "text-to-video",
+            Modality::Style => "text-to-style",
             _ => "text-to-image",
         };
         inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
@@ -521,6 +534,7 @@ impl NodeKind for GenerationKind {
             return Err(said(ErrorKind::Unsupported, self.output, "this {noun} model requires unsupported input roles"));
         }
         let media = self.media(mode, &inputs)?;
+        styles_fit(&definition.model, &media)?;
         if let Some(audio) = &mode.audio {
             audio_fits(audio, &media)?;
         }
@@ -542,7 +556,11 @@ impl NodeKind for GenerationKind {
         params.retain(|name, _| mode.sends(name));
         Ok(vec![JobSpec::Generate {
             node: ctx.node.id,
-            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
+            outputs: vec![GenerateOutput {
+                port: "out".into(),
+                modality: self.output,
+                style_family: (self.output == Modality::Style).then(|| definition.model.style_family.clone()).flatten(),
+            }],
             provider: definition.model.provider.clone(),
             instance: target.instance(),
             model: definition.model.remote.clone(),
@@ -591,6 +609,36 @@ impl GenerationKind {
         }
         Ok(prompt)
     }
+}
+
+/// Refuses a wired style trained for another base-model family than the model's (#167), naming
+/// both, before anything is quoted or sent. A style's asset carries its family as a MIME
+/// parameter; the engine checks that against the descriptor's own bytes when it sends one.
+fn styles_fit(model: &GenerationModel, media: &[GenerateInput]) -> Result<(), Error> {
+    for input in media {
+        let Value::Media(asset) = &input.value else { continue };
+        if asset.mime.essence() != nodecraft_types::STYLE_MIME {
+            continue;
+        }
+        let Some(family) = asset.mime.param("family") else {
+            return Err(Error::new(ErrorKind::InvalidInput, "this style doesn't say which models it was trained for; train it again"));
+        };
+        match model.style_family.as_deref() {
+            Some(wanted) if wanted == family => {}
+            Some(wanted) => {
+                let family: String = family.chars().take(64).collect();
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "this style was trained for {family} models; {} takes {wanted} styles. Choose a {family} model or train the style again for {wanted}",
+                        model.id
+                    ),
+                ));
+            }
+            None => return Err(Error::new(ErrorKind::Unsupported, format!("{} doesn't take trained styles", model.id))),
+        }
+    }
+    Ok(())
 }
 
 /// Refuses audio longer than the mode takes when the model can't trim it, before anything is

@@ -880,7 +880,7 @@ impl NodeKind for Calls {
         ModeId::new("calls").ok()
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
-        let outputs = vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Text }];
+        let outputs = vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }];
         Ok(vec![JobSpec::Generate {
             instance: None,
             node: ctx.node.id,

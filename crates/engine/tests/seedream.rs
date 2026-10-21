@@ -264,7 +264,7 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
     let mut project = Project::new(ProjectId::from_bytes([3; 16]), "Seedream fixture").unwrap();
     Change::AddCanvas { canvas: Canvas::new(c, "Canvas") }.apply(&mut project).unwrap();
     Change::AddNode { canvas: c, node: instance }.apply(&mut project).unwrap();
-    let routes = vec![GenerateOutput { port: "image".into(), modality: Modality::Image }];
+    let routes = vec![GenerateOutput { port: "image".into(), modality: Modality::Image, style_family: None }];
     let work = Work::Generate {
         instance: None,
         node: n,
@@ -279,7 +279,7 @@ fn actual_adapter_completed_routes_to_scalar_run_and_original_survives_refusal()
     let provider = Seedream::new(Secret::new("fixture").unwrap(), transport);
     let nodecraft_providers::Submission::Finished(original) = block_on(nodecraft_providers::Provider::submit(&provider, &request)).unwrap() else { panic!() };
     let preserved = original.clone();
-    assert!(nodecraft_engine::generate::produced(&[GenerateOutput { port: "text".into(), modality: Modality::Text }], &original).is_err());
+    assert!(nodecraft_engine::generate::produced(&[GenerateOutput { port: "text".into(), modality: Modality::Text, style_family: None }], &original).is_err());
     assert_eq!(original, preserved);
     let converted = nodecraft_engine::generate::produced(&routes, &original).unwrap();
     assert_eq!(converted.assets.len(), 1);

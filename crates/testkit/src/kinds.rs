@@ -30,7 +30,7 @@ impl NodeKind for MockGenerator {
         let params = definition.params.resolve(&nodecraft_exec::cost::model_params(ctx.node, definition), true)?.into_visible_values();
         let model = definition.provider_model.clone();
         let inputs = ctx.inputs.iter().map(|input| GenerateInput { role: "prompt".into(), value: input.value.clone() }).collect();
-        let outputs = vec![GenerateOutput { port: "out".into(), modality: self.1 }];
+        let outputs = vec![GenerateOutput { port: "out".into(), modality: self.1, style_family: None }];
         Ok(vec![JobSpec::Generate {
             instance: ctx.targets.get(ctx.node.id, PROVIDER).and_then(|target| target.instance()),
             node: ctx.node.id,

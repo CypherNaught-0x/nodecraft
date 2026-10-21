@@ -50,7 +50,7 @@ impl NodeKind for Gen {
             model: "img-v1".into(),
             params: ctx.node.params.iter().filter(|(name, _)| name.as_str() == "num_images").map(|(k, v)| (k.clone(), v.clone())).collect(),
             inputs: ctx.inputs.iter().map(|i| nodecraft_nodes::GenerateInput { role: "prompt".into(), value: i.value.clone() }).collect(),
-            outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Image }],
+            outputs: vec![nodecraft_nodes::GenerateOutput { port: "out".into(), modality: Modality::Image, style_family: None }],
         }])
     }
 }

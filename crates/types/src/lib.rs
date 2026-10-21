@@ -30,4 +30,4 @@ pub use provider::{EMPTY_TARGET_SELECTION, ProviderTarget, TargetChoice, TargetS
 pub use scalar::{Integer, Number, Unsigned};
 pub use schema::{BorrowedResolvedParams, Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, ValidatedParamSchema, VisibleIf};
 pub use units::BillableUnits;
-pub use value::{Modality, PortType, Value};
+pub use value::{Modality, PortType, STYLE_MIME, Value, style_family};

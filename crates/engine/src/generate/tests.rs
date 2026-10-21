@@ -3,7 +3,10 @@ use nodecraft_nodes::GenerateInput;
 use nodecraft_types::{Integer, NodeId, Number};
 
 fn routes() -> Vec<GenerateOutput> {
-    vec![GenerateOutput { port: "image".into(), modality: Modality::Image }, GenerateOutput { port: "caption".into(), modality: Modality::Text }]
+    vec![
+        GenerateOutput { port: "image".into(), modality: Modality::Image, style_family: None },
+        GenerateOutput { port: "caption".into(), modality: Modality::Text, style_family: None },
+    ]
 }
 
 fn spec(inputs: Vec<GenerateInput>) -> JobSpec {
@@ -67,7 +70,7 @@ fn results_are_sniffed_and_routed_by_modality() {
     assert_eq!(produced(&routes(), &text).unwrap().outputs, vec![("caption".to_owned(), Value::Text("hello".into()))]);
     let utf16 = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(&b"\xFF\xFEh\x00i\x00"[..]) }]);
     assert_eq!(produced(&routes(), &utf16).unwrap_err().kind, ErrorKind::Unsupported);
-    let image_only = [GenerateOutput { port: "image".into(), modality: Modality::Image }];
+    let image_only = [GenerateOutput { port: "image".into(), modality: Modality::Image, style_family: None }];
     assert!(produced(&image_only, &text).is_err(), "no port takes text");
     // A paid call that returned nothing is a failure.
     assert!(produced(&routes(), &Completed::new(vec![])).is_err());
@@ -206,7 +209,7 @@ fn request_metadata_and_late_unsupported_values_never_copy_prefixes() {
 
 #[test]
 fn text_output_exact_budget_and_aggregate_limits_are_pre_copy() {
-    let route = [GenerateOutput { port: "t".into(), modality: Modality::Text }];
+    let route = [GenerateOutput { port: "t".into(), modality: Modality::Text, style_family: None }];
     let done = Completed::new(vec![Output::Text("ab".into())]);
     // Route104 + record128 + proof64+32 + port40 + text46 =414 logical bytes.
     let mut conversion = Conversion::default();
@@ -261,7 +264,7 @@ fn late_semantic_output_failures_do_not_clone_hash_or_publish_valid_prefix() {
     let done = Completed::new(vec![image(png()), Output::Bytes { mime: "x".repeat(500), bytes: png() }]);
     no_output_copy(&done, Limits { outputs: 2000, ..Limits::default() });
     let mut route = routes();
-    route.push(GenerateOutput { port: "p".repeat(500), modality: Modality::Text });
+    route.push(GenerateOutput { port: "p".repeat(500), modality: Modality::Text, style_family: None });
     let mut conversion = Conversion::default();
     assert!(
         outputs_with_limits(&route, &Completed::new(vec![Output::Text("x".into())]), Limits { outputs: 2000, ..Limits::default() }, &mut conversion).is_err()
@@ -277,7 +280,7 @@ fn borrowed_text_bytes_bom_routes_and_graph_text_parity() {
     no_output_copy(&done, Limits { text: 1, ..Limits::default() });
     no_output_copy(&done, Limits { raw_outputs: 4, ..Limits::default() });
     let mut route = routes();
-    route.push(GenerateOutput { port: "second-text".into(), modality: Modality::Text });
+    route.push(GenerateOutput { port: "second-text".into(), modality: Modality::Text, style_family: None });
     assert_eq!(produced(&route, &Completed::new(vec![Output::Text("x".into())])).unwrap().outputs[0].0, "caption");
     let generation = |size| nodecraft_graph::Generation {
         id: nodecraft_types::GenerationId::from_bytes([1; 16]),
@@ -568,5 +571,66 @@ fn hdr394_provider_outputs_refuse_before_converting_any_paid_prefix() {
             assert_eq!(Arc::strong_count(&hdr), owners);
             assert_eq!(produced(&routes(), &done).unwrap_err().kind, ErrorKind::Unsupported);
         }
+    }
+}
+
+#[test]
+fn a_style_is_sent_only_when_its_bytes_match_the_family_its_card_records() {
+    let style = nodecraft_media::style::Style {
+        provider: "mock".into(),
+        trainer: "mock-style".into(),
+        family: "flux-1".into(),
+        trigger: String::new(),
+        weights: "https://mock.invalid/styles/a.safetensors".into(),
+    };
+    let bytes = nodecraft_media::style::encode(&style).unwrap();
+    let asset = |mime: &str| AssetRef { hash: Blake3::from_bytes([2; 32]), mime: mime.parse().unwrap(), meta: Default::default() };
+    assert!(style_matches(&asset(&style_mime("flux-1")), &bytes).is_ok());
+    let relabelled = style_matches(&asset(&style_mime("sdxl-1")), &bytes).unwrap_err();
+    assert!(relabelled.message.contains("doesn't match the family"), "{relabelled:?}");
+    assert!(style_matches(&asset(nodecraft_types::STYLE_MIME), &bytes).is_err(), "a style with no family is never sent");
+    assert!(style_matches(&asset(&style_mime("flux-1")), b"not a style").unwrap_err().message.contains("damaged"));
+}
+
+#[test]
+fn a_trainer_keeps_only_styles_of_the_family_its_catalog_entry_trains() {
+    let style = |family: &str| {
+        let style = nodecraft_media::style::Style {
+            provider: "mock".into(),
+            trainer: "mock-style".into(),
+            family: family.into(),
+            trigger: String::new(),
+            weights: "https://mock.invalid/styles/a.safetensors".into(),
+        };
+        Completed::new(vec![Output::Bytes { mime: "application/json".into(), bytes: Arc::from(nodecraft_media::style::encode(&style).unwrap()) }])
+    };
+    let trainer = |family: Option<&str>| vec![GenerateOutput { port: "out".into(), modality: Modality::Style, style_family: family.map(Into::into) }];
+    let kept = produced(&trainer(Some("flux-1")), &style("flux-1")).unwrap();
+    assert!(matches!(kept.outputs.as_slice(), [(_, Value::Media(asset))] if asset.mime.param("family") == Some("flux-1")));
+    for routes in [trainer(Some("flux-1")), trainer(None)] {
+        let refused = produced(&routes, &style("sdxl-1")).unwrap_err();
+        assert!(refused.message.contains("different model family"), "{refused:?}");
+    }
+    // Text that only starts like a descriptor is text where no style is expected.
+    let text = vec![GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }];
+    let mut lookalike = style("flux-1");
+    if let Some(Output::Bytes { mime, .. }) = lookalike.outputs.first_mut() {
+        *mime = "text/plain".into();
+    }
+    assert!(matches!(produced(&text, &lookalike).unwrap().outputs.as_slice(), [(_, Value::Text(_))]));
+}
+
+#[test]
+fn the_style_type_and_family_rule_agree_across_crates() {
+    assert_eq!(nodecraft_types::STYLE_MIME, nodecraft_media::style::MIME);
+    for family in ["flux-1", "sdxl_1.0", "flux/dev", "Flux", "", &"a".repeat(65)] {
+        let style = nodecraft_media::style::Style {
+            provider: "mock".into(),
+            trainer: "mock-style".into(),
+            family: family.into(),
+            trigger: String::new(),
+            weights: "https://mock.invalid/w".into(),
+        };
+        assert_eq!(nodecraft_types::style_family(family), style.validate().is_ok(), "{family}");
     }
 }

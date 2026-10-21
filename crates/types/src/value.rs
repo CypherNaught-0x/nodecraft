@@ -11,6 +11,17 @@ pub enum Modality {
     Audio,
     Mesh,
     Document,
+    /// A trained style (#167): a NodeCraft descriptor naming provider-held LoRA weights.
+    Style,
+}
+
+/// The MIME type of a style descriptor (#167).
+pub const STYLE_MIME: &str = "application/vnd.nodecraft.style+json";
+
+/// Whether `family` can name a style family: 1–64 lowercase letters, digits and `.`, `-`, `_`.
+/// It travels as a MIME parameter, so it has no `/` and needs no quoting.
+pub fn style_family(family: &str) -> bool {
+    !family.is_empty() && family.len() <= 64 && family.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 impl Modality {
@@ -23,6 +34,7 @@ impl Modality {
             Self::Audio => essence.starts_with("audio/"),
             Self::Mesh => essence.starts_with("model/"),
             Self::Document => essence == "application/pdf",
+            Self::Style => essence == STYLE_MIME,
         }
     }
 }
@@ -66,7 +78,7 @@ mod tests {
 
     #[test]
     fn modalities_ports_media_and_errors_round_trip() {
-        for modality in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document] {
+        for modality in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document, Modality::Style] {
             for many in [false, true] {
                 let port = PortType { modality, many };
                 assert_eq!(serde_json::from_str::<PortType>(&serde_json::to_string(&port).unwrap()).unwrap(), port);

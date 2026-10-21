@@ -1,5 +1,6 @@
 //! Paired immutable catalog/production-generation definitions (#465): one generation kind per
-//! output the catalog's modes make (image; text since #84, 3D since #22, video since #559),
+//! output the catalog's modes make (image; text since #84, 3D since #22, video since #559,
+//! trained styles since #167),
 //! each looked up by node kind.
 use crate::{Session, commands::Resources, run_cmds::RunCatalog};
 use nodecraft_catalog::Catalog;
@@ -22,7 +23,7 @@ struct Snapshot {
     kinds: Vec<GenerationKind>,
 }
 /// The outputs that get a generation kind, in registration order.
-const OUTPUTS: [Modality; 4] = [Modality::Image, Modality::Text, Modality::Mesh, Modality::Video];
+const OUTPUTS: [Modality; 5] = [Modality::Image, Modality::Text, Modality::Mesh, Modality::Video, Modality::Style];
 #[derive(Clone)]
 pub struct GenerationCatalogStamp(RunCatalog);
 impl GenerationCatalogStamp {
@@ -62,6 +63,7 @@ impl GenerationCatalog {
                 _ if models.is_empty() => {}
                 Modality::Text => kinds.push(GenerationKind::text(models, identity)?),
                 Modality::Video => kinds.push(GenerationKind::video(models, identity)?),
+                Modality::Style => kinds.push(GenerationKind::style(models, identity)?),
                 _ => kinds.push(GenerationKind::mesh(models, identity)?),
             }
         }
@@ -142,6 +144,7 @@ impl GenerationCatalog {
                 remote: m.provider_model.clone(),
                 parameters: m.parameter_contract.clone().unwrap_or_else(|| Contract::from_schema(m.id.clone(), ParamOwner::Model, m.params.clone())),
                 modes,
+                style_family: m.style_family.clone(),
             });
         }
         Ok(models)
@@ -297,6 +300,7 @@ pub(crate) fn validate_plan(
                     nodecraft_nodes::generation::TEXT_KIND => "selected text model is unavailable",
                     nodecraft_nodes::generation::MESH_KIND => "selected 3D model is unavailable",
                     nodecraft_nodes::generation::VIDEO_KIND => "selected video model is unavailable",
+                    nodecraft_nodes::generation::STYLE_KIND => "selected style trainer is unavailable",
                     _ => "selected image model is unavailable",
                 },
             )

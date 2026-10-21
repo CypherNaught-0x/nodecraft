@@ -297,3 +297,26 @@ fn unsupported_versions_are_rejected_before_graph_decode() {
         assert_eq!(decode(&zip(&[("project.json", &json)])).unwrap_err().kind, ErrorKind::Unsupported);
     }
 }
+
+#[test]
+fn text_that_starts_like_a_style_still_opens_as_text_and_styles_open_as_styles() {
+    let style = br#"{"nodecraft_style":1,"provider":"mock","trainer":"mock-style","family":"flux-1","trigger":"","weights":"https://mock.invalid/w"}"#;
+    let canvas = CanvasId::from_bytes([2; 16]);
+    for (n, mime) in ["text/plain", "application/json", "application/vnd.nodecraft.style+json; family=flux-1"].into_iter().enumerate() {
+        let mut s = snapshot();
+        let digest = s.assets.insert(style).unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Styles") }.apply(&mut s.project).unwrap();
+        let mut node = Node::new(NodeId::from_bytes([3; 16]), "source.text");
+        node.history.push(Generation {
+            id: GenerationId::from_bytes([4 + n as u8; 16]),
+            outputs: vec![Value::Media(AssetRef { hash: digest, mime: mime.parse().unwrap(), meta: MediaMeta::default() })],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        });
+        Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
+        let loaded = decode(&encode(&s).unwrap()).unwrap_or_else(|e| panic!("{mime}: {e:?}"));
+        assert_eq!(loaded.project, s.project, "{mime}");
+    }
+}

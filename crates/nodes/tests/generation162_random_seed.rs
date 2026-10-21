@@ -25,6 +25,7 @@ fn a_random_seed_model_plans_without_a_seed_for_the_run_to_draw() {
     parameters.rules.push(ParamRule { default: Some(DefaultPolicy::RandomSeed), ..ParamRule::implied("seed") });
     let kind = GenerationKind::new(
         vec![GenerationModel {
+            style_family: None,
             id: "fixture/model".into(),
             provider: "fal".into(),
             remote: "remote".into(),
