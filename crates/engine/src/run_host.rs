@@ -777,7 +777,11 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
     let canvas = active.canvas;
     let mut pending = VecDeque::from([progress]);
     while let Some(progress) = pending.pop_front() {
-        // Results first: a partial one (#480) is recorded, and its step then reports why it is
+        // Results the step let go first (a sibling in a failed fanned item, or a job that finished
+        // after its step had ended), so a partial record can't take them along. The step's card
+        // reports its own outcome.
+        hold_dropped(active, &progress.dropped, held);
+        // Then results: a partial one (#480) is recorded, and its step then reports why it is
         // partial.
         for result in progress.finished {
             let awaiting = take_awaiting(&mut active.awaiting, |a| a.step == result.node);
@@ -795,6 +799,11 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
             let run = &active.run;
             let awaiting = take_awaiting(&mut active.awaiting, |a| run.owner(a.step) == failure.node && run.has_failed(a.step));
             notices.push(match awaiting {
+                // Cancelled with paid results already in: they are held, and the card shows the cancel.
+                Some(kept) if failure.reason == CANCELLED => {
+                    lock(held).hold(held::HeldResult { reason: failure.reason.clone(), ..kept });
+                    RunNotice::Cancelled { canvas, node: failure.node }
+                }
                 Some(kept) => {
                     lock(held).hold(held::HeldResult { reason: failure.reason.clone(), ..kept });
                     RunNotice::Failed { canvas, node: failure.node, reason: format!("{}; {HELD_NOTE}", failure.reason) }
@@ -803,9 +812,6 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
                 None => RunNotice::Failed { canvas, node: failure.node, reason: failure.reason },
             });
         }
-        // Results their step let go: a sibling in a fanned item failed, or the step had already
-        // failed when they arrived. The step's card reports its own outcome.
-        hold_dropped(active, &progress.dropped, held);
         if active.cancelled {
             for spec in progress.jobs {
                 pending.push_back(active.run.job_cancelled(session.kinds(), spec.id, CANCELLED));
@@ -1101,7 +1107,10 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
     match converted {
         Ok(outputs) => {
             let billed = delivery.completed.usage.billable_units;
-            active.awaiting.insert(job, Awaiting { step, result: kept(String::new(), delivery.completed) });
+            // A result with nothing in it is nothing to hold.
+            if !outputs.is_empty() {
+                active.awaiting.insert(job, Awaiting { step, result: kept(String::new(), delivery.completed) });
+            }
             Ok((outputs, billed))
         }
         Err(reason) => {
@@ -1147,7 +1156,7 @@ fn hold_dropped(active: &mut Active, dropped: &[JobId], held: &Mutex<held::Held>
     }
     let run = &active.run;
     for (step, result) in take_by_step(&mut active.awaiting, |job, _| dropped.contains(&job)) {
-        let reason = if run.has_failed(step) { "it finished after its step had failed" } else { "another job of its item failed" };
+        let reason = if run.is_running(step) { "another job of its item didn't finish" } else { "it finished after its step had ended" };
         lock(held).hold(held::HeldResult { reason: reason.into(), ..result });
     }
 }
