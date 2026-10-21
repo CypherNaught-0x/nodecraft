@@ -48,7 +48,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   selected images into a named, reusable subject that prompts mention as `#name`, with a
   generated reference sheet (#104). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
-  writes a GLB or OBJ copy (#111).
+  writes a GLB or OBJ copy (#111). Typing `@` in a generation prompt mentions another card,
+  whose text goes into the prompt where it is mentioned and which runs first, like a wire (#505).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

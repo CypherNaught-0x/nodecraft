@@ -29,7 +29,7 @@
 //! result is never shown as fresh when we can't vouch for it.
 
 use nodecraft_graph::{Canvas, Node};
-use nodecraft_nodes::{Category, Registry};
+use nodecraft_nodes::{Category, Registry, mention};
 use nodecraft_types::{Blake3, Error, ErrorKind, NodeId, ParamValues, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -633,14 +633,17 @@ impl InputHasher {
             feeds.entry(port.clone()).or_default().push((*order, *from, from_port.clone()));
         }
         let fans_out = fans_out_ports(kinds, node);
-        for port in &node.inputs {
-            w.text(&port.name);
-            let mut list = feeds.remove(port.name.as_str()).unwrap_or_default();
+        // Cards the prompt `@mentions` feed a port the node doesn't have (#505); only hashed when
+        // there are some, so nodes without mentions keep their hashes.
+        let mentions = feeds.contains_key(mention::PORT).then_some(mention::PORT);
+        for name in node.inputs.iter().map(|port| port.name.as_str()).chain(mentions) {
+            w.text(name);
+            let mut list = feeds.remove(name).unwrap_or_default();
             list.sort();
             w.len(list.len());
             // A list port that runs once per item (#519) makes something else than one that
             // collects them: mark the ports a batch fans out.
-            if fans_out.contains(&port.name) {
+            if fans_out.contains(name) {
                 let mut fanned = false;
                 for (_, from, _) in &list {
                     fanned |= self.fans(canvas, kinds, *from)?;

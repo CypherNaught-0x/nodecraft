@@ -332,6 +332,7 @@ mod library_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
 mod mask_editor;
+mod mentions;
 mod metrics;
 mod models;
 mod navigation;
@@ -1240,6 +1241,7 @@ impl NodeCraftApp {
             let prompt_wired: BTreeSet<NodeId> =
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
             let element_names = elements::names(canvas);
+            let mention_cards = mentions::candidates(canvas, kinds);
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1313,6 +1315,7 @@ impl NodeCraftApp {
                         roles: schema.map(|cached| &cached.roles),
                         prompt_wired: prompt_wired.contains(&node.id),
                         elements: &element_names,
+                        mentions: &mention_cards,
                         #[cfg(not(target_arch = "wasm32"))]
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
                         #[cfg(target_arch = "wasm32")]
@@ -2524,6 +2527,8 @@ mod layer_editor_tests;
 mod library_view_tests;
 #[cfg(test)]
 mod mask_editor_tests;
+#[cfg(test)]
+mod mentions_tests;
 #[cfg(test)]
 mod mesh_tests;
 #[cfg(test)]

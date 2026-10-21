@@ -3,7 +3,7 @@
 //! inputs through [`incoming`], so a router adds no step, no cost and no hash of its own.
 
 use nodecraft_graph::Canvas;
-use nodecraft_nodes::{Registry, element, router};
+use nodecraft_nodes::{Registry, element, mention, router};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,6 +33,10 @@ pub struct Incoming<'a> {
     pub invalid_routers: BTreeMap<NodeId, &'static str>,
     /// Consumers whose prompt mentions a name several Elements share (#104).
     pub ambiguous: BTreeSet<NodeId>,
+    /// Consumers blocked by an `@node` mention (#505), with the reason.
+    pub mention_problems: BTreeMap<NodeId, String>,
+    /// (consumer, mentioned card) pairs left unfed because the card is made from the consumer.
+    pub mention_loops: BTreeSet<(NodeId, NodeId)>,
 }
 
 /// Whether `id` is a router.
@@ -198,7 +202,45 @@ pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>
             out.push((port, u32::try_from(in_port).unwrap_or(u32::MAX), from, from_port));
         }
     }
-    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers, ambiguous: mentioned.ambiguous })
+    // Cards a prompt `@mentions` feed their text on a port of their own (#505), unless the card is
+    // made from the consumer: that would be a loop.
+    let mentioned_nodes = crate::node_mentions::feeds(canvas);
+    let mut mention_problems: BTreeMap<NodeId, String> =
+        mentioned_nodes.problems.iter().map(|(id, (title, problem))| (*id, crate::node_mentions::reason(title, *problem))).collect();
+    let mut mention_loops = BTreeSet::new();
+    if !mentioned_nodes.feeds.is_empty() {
+        let mut next: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
+        for (target, feeds) in &resolved {
+            for feed in feeds {
+                next.entry(feed.2).or_default().insert(*target);
+            }
+        }
+        for (target, feeds) in &mentioned_nodes.feeds {
+            for (from, _) in feeds {
+                next.entry(*from).or_default().insert(*target);
+            }
+        }
+        let mut budget = MAX_RESOLUTION_STEPS.saturating_sub(steps);
+        for (target, feeds) in mentioned_nodes.feeds {
+            let out = resolved.entry(target).or_default();
+            for (from, from_port) in feeds {
+                if crate::node_mentions::reaches(&next, target, from, &mut budget).ok_or_else(too_large)? {
+                    mention_loops.insert((target, from));
+                    continue;
+                }
+                let in_port = out.iter().filter(|feed| feed.0 == mention::PORT).count();
+                out.push((mention::PORT, u32::try_from(in_port).unwrap_or(u32::MAX), from, from_port));
+            }
+            if let Some(from) = mention_loops.iter().find(|pair| pair.0 == target).map(|pair| pair.1) {
+                let node = canvas.nodes().get(&target);
+                let title = node
+                    .and_then(|node| crate::node_mentions::of(canvas, node, &mention_loops).into_iter().find(|found| found.id == from))
+                    .map_or("", |found| found.title);
+                mention_problems.entry(target).or_insert_with(|| crate::node_mentions::reason(title, crate::node_mentions::Problem::Loop));
+            }
+        }
+    }
+    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers, ambiguous: mentioned.ambiguous, mention_problems, mention_loops })
 }
 
 #[cfg(test)]

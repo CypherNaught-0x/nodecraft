@@ -13,6 +13,7 @@ pub mod cost;
 pub mod driver;
 pub mod fanout;
 pub mod mentions;
+pub mod node_mentions;
 pub mod planner;
 pub mod routing;
 pub mod run;

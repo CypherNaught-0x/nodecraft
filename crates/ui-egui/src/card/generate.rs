@@ -153,12 +153,14 @@ pub(super) struct Composer<'a> {
     pub enabled: Option<&'a BTreeSet<String>>,
     /// How many Elements go by each lowercased name.
     pub elements: &'a std::collections::BTreeMap<String, usize>,
+    /// The cards on the canvas, for `@` mentions (#505).
+    pub mentions: &'a [super::mention::Candidate],
 }
 
 /// Draws the composer at the top of `area` and returns the space left under it. The prompt and
 /// the count drawn here are left out of the card's parameter list.
 pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor: &mut EditorState, intents: &mut Vec<Intent>, t: &Tokens) -> Rect {
-    let Composer { node, wired, descriptor, roles, visible, enabled, elements } = composer;
+    let Composer { node, wired, descriptor, roles, visible, enabled, elements, mentions } = composer;
     let shown = |name: &str| visible.is_some_and(|names| names.contains(name));
     let editable = |name: &str| enabled.is_none_or(|names| names.contains(name));
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("composer").max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -180,8 +182,18 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 let focused = editor.text.get(PROMPT).is_some_and(|draft| draft.was_focused);
                 let run = focused && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
                 let open = editable(PROMPT) && !wired;
+                // The text field's id, as `control` makes it: `TextEdit::id_salt` wraps its salt.
+                let field = ui.make_persistent_id(egui::IdSalt::new("value"));
+                if open {
+                    super::mention::keys(ui, field, editor.text.get_mut(PROMPT), mentions, node.id);
+                }
                 let changed = if open {
-                    control(ui, &spec.control, value, PROMPT, editor, label.id, t)
+                    let changed = control(ui, &spec.control, value, PROMPT, editor, label.id, t);
+                    let below = ui.min_rect().bottom();
+                    let picked = super::mention::list(ui, field, focused, editor.text.get_mut(PROMPT), mentions, node.id, below, t);
+                    // The click on a row ended the field's focus, which commits the search; the
+                    // field has its focus back and commits the mention when it is done.
+                    changed.filter(|_| !picked)
                 } else {
                     ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, PROMPT, editor, label.id, t)).inner
                 };
@@ -191,6 +203,7 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 // A wired prompt replaces the text, so its mentions feed nothing.
                 if let (false, Some(Value::Text(prompt))) = (wired, value) {
                     mention_hint(ui, prompt, elements, t);
+                    super::mention::hint(ui, prompt, mentions, node.id, t);
                 }
                 if run {
                     intents.push(Intent::Generate);
