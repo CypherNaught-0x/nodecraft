@@ -124,6 +124,12 @@ fn wire(project: &mut Project, id: u8, from: NodeId, to: NodeId, port: &str) {
 /// A writer card with a local prompt; `connected` wires a text source into its prompt and
 /// `image` an image source into its image role.
 fn fixture(connected: Option<&str>, image: bool) -> Fixture {
+    fixture_saved(connected, image, false)
+}
+
+/// As [`fixture`]; `before_vision` saves the card with only its prompt port, as a card made
+/// before its model gained the image-reading mode was (#592).
+fn fixture_saved(connected: Option<&str>, image: bool, before_vision: bool) -> Fixture {
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([85; 16]), "Text generation").unwrap();
@@ -137,6 +143,11 @@ fn fixture(connected: Option<&str>, image: bool) -> Fixture {
             &[("model".into(), Value::Text(MODEL.into())), ("prompt".into(), Value::Text("Write a haiku".into()))].into(),
         )
         .unwrap();
+    let mut node = node;
+    if before_vision {
+        node.inputs.truncate(1);
+        assert_eq!(node.inputs[0].name, "prompt");
+    }
     Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
     if let Some(text) = connected {
         let source =
@@ -377,4 +388,19 @@ fn builtin_chat_models_read_images_on_a_text_card() {
         let port = node.inputs.iter().find(|p| p.name == "image").unwrap_or_else(|| panic!("{} card has no image port", model.id));
         assert_eq!(port.port_type.modality, Modality::Image);
     }
+}
+
+#[test]
+fn a_card_saved_before_its_model_read_images_still_runs_edits_and_takes_an_image() {
+    let mut f = fixture_saved(None, false, true);
+    assert!(answer(&run(&mut f)).starts_with("mock-text: Write a haiku #"));
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":WRITER,"name":"prompt","value":{"type":"text","value":"Name the sea"}})).unwrap();
+    assert_eq!(writer(&f.session).inputs.len(), 1, "editing keeps the saved ports");
+    // Wiring an image adds the new port in the same edit as the wire.
+    let source = f.session.kinds().get("source.image").unwrap().instantiate_instance(IMAGE, Default::default(), &Default::default()).unwrap();
+    f.session.dispatch("node.add", &json!({"canvas":C,"node":source})).unwrap();
+    let edge = json!({"id":EdgeId::from_bytes([9; 16]),"from":{"node":IMAGE,"port":"out"},"to":{"node":WRITER,"port":"image"},"order":0});
+    f.session.dispatch("edge.connect", &json!({"canvas":C,"edge":edge})).unwrap();
+    let ports: Vec<_> = writer(&f.session).inputs.iter().map(|p| p.name.clone()).collect();
+    assert_eq!(ports, ["prompt", "image"]);
 }
