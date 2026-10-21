@@ -1,6 +1,6 @@
 //! Catalog-neutral production generation: image (`generation.image`), text (`generation.text`,
-//! #84), 3D (`generation.mesh`, #22), video (`generation.video`, #559) and trained-style
-//! (`generation.style`, #167) cards over the same contract. Engine compiles the
+//! #84), 3D (`generation.mesh`, #22), video (`generation.video`, #559), trained-style
+//! (`generation.style`, #167) and audio (`generation.audio`, #672) cards over the same contract. Engine compiles the
 //! validated catalog into these immutable definitions; this L2 module never depends on catalog
 //! or a provider.
 use crate::{
@@ -26,6 +26,8 @@ pub const MESH_KIND: &str = "generation.mesh";
 pub const VIDEO_KIND: &str = "generation.video";
 /// A style training card: images in, one trained style out (#167).
 pub const STYLE_KIND: &str = "generation.style";
+/// An audio generation card: a prompt or a recording in, one sound out (#672).
+pub const AUDIO_KIND: &str = "generation.audio";
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
 /// Longest typed prompt a generation card holds, in bytes.
@@ -34,7 +36,7 @@ const MAX_PROMPTS: usize = 1024;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
 pub fn is_generation(kind: &str) -> bool {
-    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND || kind == VIDEO_KIND || kind == STYLE_KIND
+    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND || kind == VIDEO_KIND || kind == STYLE_KIND || kind == AUDIO_KIND
 }
 /// The generation kind whose cards make `output`, if there is one.
 pub fn kind_for(output: Modality) -> Option<&'static str> {
@@ -44,6 +46,7 @@ pub fn kind_for(output: Modality) -> Option<&'static str> {
         Modality::Mesh => Some(MESH_KIND),
         Modality::Video => Some(VIDEO_KIND),
         Modality::Style => Some(STYLE_KIND),
+        Modality::Audio => Some(AUDIO_KIND),
         _ => None,
     }
 }
@@ -129,6 +132,7 @@ fn base(id: &'static str, output: Modality) -> NodeDescriptor {
             Modality::Mesh => "Generate 3D",
             Modality::Video => "Generate video",
             Modality::Style => "Train style",
+            Modality::Audio => "Generate audio",
             _ => "Generate image",
         }
         .into(),
@@ -160,6 +164,7 @@ fn noun(output: Modality) -> &'static str {
         Modality::Mesh => "3D",
         Modality::Video => "video",
         Modality::Style => "style",
+        Modality::Audio => "audio",
         _ => "image",
     }
 }
@@ -190,6 +195,10 @@ impl GenerationKind {
     /// Style training: each model's modes here all train one style from wired images (#167).
     pub fn style(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
         Self::making(Modality::Style, models, snapshot)
+    }
+    /// Audio generation: each model's modes here all make one sound, from text or a recording.
+    pub fn audio(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        Self::making(Modality::Audio, models, snapshot)
     }
     /// What this kind's cards make.
     pub fn output(&self) -> Modality {
@@ -475,6 +484,7 @@ impl NodeKind for GenerationKind {
             Modality::Mesh => "text-to-mesh",
             Modality::Video => "text-to-video",
             Modality::Style => "text-to-style",
+            Modality::Audio => "text-to-audio",
             _ => "text-to-image",
         };
         inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
