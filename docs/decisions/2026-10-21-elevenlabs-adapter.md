@@ -6,8 +6,8 @@
 - **Speech is priced per 1,000 characters with no count**, so its quote is unknown until the run,
   as for token-priced chat; the result records the characters sent as billable units. Quoting
   from the prompt's length is a follow-up.
-- **Sound effects are estimated at 0.12 USD per call.** The pricing page lists the same figure
-  per minute and per generation; per generation is the higher for clips under a minute.
+- **Sound effects are priced per second of the chosen duration** (0.12 USD per minute), so the
+  quote is known before the run.
 - **The voice changer is by usage**, since its price follows the recording's length.
 - **Voices are a fixed list of premade ids plus a typed override** that must be ASCII letters and
   digits, so it can't reshape the request path. Loading the account's voices is a follow-up.

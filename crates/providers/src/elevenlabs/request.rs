@@ -38,7 +38,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared, Provider
         let mut body = Map::new();
         body.insert("text".into(), text.into());
         body.insert("model_id".into(), job.model.as_str().into());
-        body.insert("voice_settings".into(), settings(p, true)?);
+        body.insert("voice_settings".into(), settings(p, Some(&job.model))?);
         if let Some(seed) = seed(p)? {
             body.insert("seed".into(), seed.into());
         }
@@ -57,7 +57,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared, Provider
             let body = json!({
                 "text": description(job, l)?,
                 "model_id": SOUND_EFFECTS,
-                "duration_seconds": number(p, "duration_seconds", 1.0, 30.0, 5.0)?,
+                "duration_seconds": number(p, "duration_seconds", 0.5, 30.0, 5.0)?,
                 "prompt_influence": number(p, "prompt_influence", 0.0, 1.0, 0.3)?,
                 "loop": flag(p, "loop")?,
             });
@@ -80,7 +80,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared, Provider
             let (mime, bytes) = recording(job, l)?;
             let ext = RECORDINGS.iter().find(|(m, _)| *m == mime).map_or("bin", |(_, e)| e);
             let name = format!("input.{ext}");
-            let settings = serde_json::to_string(&settings(p, false)?).map_err(|_| invalid("ElevenLabs voice settings could not be encoded"))?;
+            let settings = serde_json::to_string(&settings(p, None)?).map_err(|_| invalid("ElevenLabs voice settings could not be encoded"))?;
             let denoise = if flag(p, "remove_background_noise")? { "true" } else { "false" };
             let seed = seed(p)?.map(|s| s.to_string());
             let mut fields = vec![("model_id", VOICE_CHANGER), ("voice_settings", settings.as_str()), ("remove_background_noise", denoise)];
@@ -144,15 +144,21 @@ fn voice(p: &Map<String, Value>) -> Result<&str, ProviderError> {
 fn language(p: &Map<String, Value>) -> Result<Option<&str>, ProviderError> {
     let Some(code) = text(p, "language_code")? else { return Ok(None) };
     if !(2..=3).contains(&code.len()) || !code.bytes().all(|b| b.is_ascii_lowercase()) {
-        return Err(invalid("ElevenLabs language codes are ISO 639-1 letters, like \"en\""));
+        return Err(invalid("ElevenLabs language codes are two or three lowercase ISO 639 letters, like \"en\""));
     }
     Ok(Some(code))
 }
-fn settings(p: &Map<String, Value>, speech: bool) -> Result<Value, ProviderError> {
+/// Voice settings; `speech` is the text-to-speech model, `None` for the voice changer.
+fn settings(p: &Map<String, Value>, speech: Option<&str>) -> Result<Value, ProviderError> {
     let mut s = Map::new();
-    s.insert("stability".into(), number(p, "stability", 0.0, 1.0, 0.5)?.into());
+    let stability = number(p, "stability", 0.0, 1.0, 0.5)?;
+    // Eleven v3 takes only its three named stabilities: creative, natural and robust.
+    if speech == Some(V3) && ![0.0, 0.5, 1.0].contains(&stability) {
+        return Err(invalid("Eleven v3 stability is 0 (creative), 0.5 (natural) or 1 (robust)"));
+    }
+    s.insert("stability".into(), stability.into());
     s.insert("similarity_boost".into(), number(p, "similarity_boost", 0.0, 1.0, 0.75)?.into());
-    if speech {
+    if speech.is_some() {
         s.insert("style".into(), number(p, "style", 0.0, 1.0, 0.0)?.into());
         s.insert("speed".into(), number(p, "speed", 0.7, 1.2, 1.0)?.into());
     }

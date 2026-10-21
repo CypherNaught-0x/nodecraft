@@ -78,7 +78,7 @@ fn check_auth(r: &HttpRequest) {
 #[test]
 fn speech_sends_the_documented_body_and_counts_the_characters() {
     let params =
-        json!({"voice": "JBFqnCBsd6RMkjVDRZzb", "stability": 0.4, "similarity_boost": 0.9, "style": 0.2, "speed": 1.1, "seed": 7, "language_code": "en"});
+        json!({"voice": "JBFqnCBsd6RMkjVDRZzb", "stability": 1.0, "similarity_boost": 0.9, "style": 0.2, "speed": 1.1, "seed": 7, "language_code": "en"});
     let (result, http) = run(&job(V3, params), audio());
     let completed = done(result);
     let [Output::Bytes { mime, bytes }] = completed.outputs.as_slice() else { panic!("one MP3") };
@@ -93,7 +93,7 @@ fn speech_sends_the_documented_body_and_counts_the_characters() {
     assert_eq!(
         body(&r),
         json!({"text": "Hello there, 雪.", "model_id": "eleven_v3", "seed": 7, "language_code": "en",
-            "voice_settings": {"stability": 0.4, "similarity_boost": 0.9, "style": 0.2, "speed": 1.1}})
+            "voice_settings": {"stability": 1.0, "similarity_boost": 0.9, "style": 0.2, "speed": 1.1}})
     );
 }
 
@@ -168,6 +168,7 @@ fn bad_inputs_and_parameters_are_refused_before_sending() {
         two,
         job("eleven_unknown", voice.clone()),
         job(V3, json!({"voice": "EXAVITQu4vr4xnSDxMaL", "stability": 1.5})),
+        job(V3, json!({"voice": "EXAVITQu4vr4xnSDxMaL", "stability": 0.4})),
         job(V3, json!({"voice": "EXAVITQu4vr4xnSDxMaL", "speed": 0.5})),
         job(V3, json!({"voice": "EXAVITQu4vr4xnSDxMaL", "style": "loud"})),
         job(V3, json!({"voice": "EXAVITQu4vr4xnSDxMaL", "seed": 4_294_967_296_u64})),
@@ -176,7 +177,7 @@ fn bad_inputs_and_parameters_are_refused_before_sending() {
         job(V3, json!({"voice": "EXAVITQu4vr4xnSDxMaL", "language_code": "en&x=1"})),
         job(V3, json!({"voice": 5})),
         job(SOUND_EFFECTS, json!({"duration_seconds": 31.0})),
-        job(SOUND_EFFECTS, json!({"duration_seconds": 0.5})),
+        job(SOUND_EFFECTS, json!({"duration_seconds": 0.4})),
         job(SOUND_EFFECTS, json!({"loop": "yes"})),
         job(MUSIC, json!({"duration": 2})),
         job(MUSIC, json!({"duration": 601})),

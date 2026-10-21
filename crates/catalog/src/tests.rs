@@ -106,7 +106,13 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                     assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
                     assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
                 }
-                "elevenlabs.sound-effects" => assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 120_000))),
+                // 0.12 USD a minute of sound, 5 seconds by default.
+                "elevenlabs.sound-effects" => {
+                    assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 10_000)));
+                    let mut long = ParamValues::new();
+                    long.insert("duration_seconds".into(), Value::Number(nodecraft_types::Number::new(30.0).unwrap()));
+                    assert_eq!(model.quote(&long).unwrap(), Some(Money::new(Currency::USD, 60_000)));
+                }
                 // 0.15 USD a minute, 30 seconds by default.
                 "elevenlabs.music" => {
                     assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 75_000)));

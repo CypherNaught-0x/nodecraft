@@ -795,16 +795,17 @@ Six catalog models share it, one per model or endpoint:
 | `elevenlabs.v3` | `POST /v1/text-to-speech/{voice}` | text, at most 5,000 characters | 0.08 USD per 1,000 characters |
 | `elevenlabs.multilingual-v2` | same | text, at most 10,000 characters | 0.08 USD per 1,000 characters |
 | `elevenlabs.flash-v2-5` | same | text, at most 40,000 characters | 0.04 USD per 1,000 characters |
-| `elevenlabs.sound-effects` | `POST /v1/sound-generation` | a description, 1–30 s, optional loop | 0.12 USD per call |
+| `elevenlabs.sound-effects` | `POST /v1/sound-generation` | a description, 0.5–30 s, optional loop | 0.002 USD per second (0.12 USD per minute) |
 | `elevenlabs.music` | `POST /v1/music` | a description, 3–600 s, optional instrumental-only | 0.0025 USD per second |
 | `elevenlabs.voice-changer` | `POST /v1/speech-to-speech/{voice}` (multipart) | one recording | by usage (0.12 USD per minute of input) |
 
 Prices are from the [API pricing page](https://elevenlabs.io/pricing/api), checked 2026-10-21.
 Speech is priced per character, so a speech run has no quote until the text is known: the catalog
 prices it per 1,000 characters with no count, like token-priced chat, and the result records the
-characters sent as its billable units. The pricing page lists sound effects at 0.12 USD both per
-minute and per generation; the estimate takes the per-generation reading, which is the higher
-for clips under a minute. Descriptions for sound effects and music are capped locally at 5,000
+characters sent as its billable units. Sound effects are 0.12 USD per minute of sound, so the
+quote follows the chosen duration. Eleven v3 takes only three stabilities, 0 (creative), 0.5
+(natural) and 1 (robust); its slider steps between them and any other value is refused before
+sending. Descriptions for sound effects and music are capped locally at 5,000
 characters.
 
 Speech and the voice changer take a voice: one of ten premade voices, or a voice id typed in to
