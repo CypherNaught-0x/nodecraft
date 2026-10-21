@@ -21,6 +21,7 @@ use crate::settings::ProviderSettings;
 use nodecraft_catalog::Catalog;
 use nodecraft_providers::Provider;
 use nodecraft_providers::http::Http;
+use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -55,7 +56,8 @@ impl Readiness {
 /// The keychain account holding the key for an adapter that needs one.
 pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
-        "openai-images" => Some("openai"),
+        "openai" | "openai-images" => Some("openai"),
+        "anthropic" => Some("anthropic"),
         "replicate" => Some("replicate"),
         "seedream" => Some("seedream"),
         "gemini-images" => Some("gemini"),
@@ -124,9 +126,16 @@ pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyP
     nodecraft_providers::comfyui::ComfyProvider::new(url, auth, &env.settings.install_salt, env.http.clone(), env.now_ms.clone()).map_err(adapter_error)
 }
 
+fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
+    LlmClient::new(endpoint, env.http.clone())
+}
+
 /// The host's maker: the adapter for `adapter`, built from its key and settings.
 pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
     let provider: Arc<dyn Provider> = match adapter {
+        // Chat models (#503): the LLM client, keyed by its endpoint id.
+        "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
+        "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
