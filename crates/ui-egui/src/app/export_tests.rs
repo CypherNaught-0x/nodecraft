@@ -71,3 +71,28 @@ fn only_media_results_offer_export() {
     let text = nodecraft_graph::Generation::new(IMAGE, vec![Value::Text("words".into())]);
     assert!(crate::history::export_targets(&node, &text).is_empty());
 }
+
+#[test]
+fn saving_every_item_numbers_them_in_a_folder_past_files_already_there() {
+    let (mut h, png) = with_image();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("result-2.png"), b"mine").unwrap();
+    let canvas = h.state().canvas;
+    let save_all = |h: &mut Harness<'static, NodeCraftApp>| {
+        h.state_mut().exports.answer = Some(dir.path().to_path_buf());
+        let targets = vec![(Some("out".to_owned()), None, "result.png".to_owned()); 2];
+        h.state_mut().start_export_all(canvas, NODE, IMAGE, targets);
+        h.run();
+        h.run();
+    };
+    save_all(&mut h);
+    assert_eq!(h.state().notice.as_deref(), Some("Exported 2 files."));
+    assert_eq!(std::fs::read(dir.path().join("result-1.png")).unwrap(), png);
+    assert_eq!(std::fs::read(dir.path().join("result-2.png")).unwrap(), b"mine", "a folder pick never replaces a file");
+    assert_eq!(std::fs::read(dir.path().join("result-3.png")).unwrap(), png);
+    // Saving into the same folder again adds files after the ones there.
+    save_all(&mut h);
+    assert_eq!(h.state().notice.as_deref(), Some("Exported 2 files."));
+    assert_eq!(std::fs::read(dir.path().join("result-5.png")).unwrap(), png);
+    assert_eq!(super::export::numbered("clip", 3), "clip-3");
+}

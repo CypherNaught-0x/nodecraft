@@ -342,6 +342,10 @@ impl NodeCraftApp {
         let assist = canvas.map(|canvas| assistable(canvas, node));
         let mut expand = false;
         let mut improve = false;
+        // The shown result's media, for Download (#581).
+        let shown_result = node.history.iter().find(|generation| Some(generation.id) == node.active);
+        let downloads = shown_result.map(|generation| crate::history::export_targets(node, generation)).unwrap_or_default();
+        let mut download = None;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
                 egui::Frame::new()
@@ -432,12 +436,44 @@ impl NodeCraftApp {
                             if nodecraft_engine::split::image_of(node).is_some() {
                                 expand = ui.button("Expand").on_hover_text("Show this image larger").clicked();
                             }
+                            match downloads.as_slice() {
+                                [] => {}
+                                [(_, port, item, name)] => {
+                                    if ui.button("Download").on_hover_text("Save this result to a file").clicked() {
+                                        download = Some(Download::One(port.clone(), *item, name.clone()));
+                                    }
+                                }
+                                many => {
+                                    ui.menu_button("Download", |ui| {
+                                        for (label, port, item, name) in many {
+                                            if ui.button(label).clicked() {
+                                                download = Some(Download::One(port.clone(), *item, name.clone()));
+                                                ui.close();
+                                            }
+                                        }
+                                        ui.separator();
+                                        if ui.button(format!("All {} to a folder…", many.len())).clicked() {
+                                            download = Some(Download::All);
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                            }
                         });
                     });
             });
         });
         if expand && interactive {
             self.viewer = Some(id);
+        }
+        if let (Some(download), Some(generation), true) = (download, node.active, interactive) {
+            match download {
+                Download::One(port, item, name) => self.start_export(self.canvas, id, generation, port, item, &name),
+                Download::All => {
+                    let targets = downloads.into_iter().map(|(_, port, item, name)| (port, item, name)).collect();
+                    self.start_export_all(self.canvas, id, generation, targets);
+                }
+            }
         }
         if improve && interactive {
             self.improve_prompt(id);
@@ -501,6 +537,14 @@ impl NodeCraftApp {
             self.viewer = None;
         }
     }
+}
+
+/// What the toolbar's Download asked to save.
+enum Download {
+    /// One output (port, item) under its suggested file name.
+    One(Option<String>, Option<usize>, String),
+    /// Every media output of the shown result, into a folder.
+    All,
 }
 
 /// A multi-mode model's mode, as the toolbar names it.
