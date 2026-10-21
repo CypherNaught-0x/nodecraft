@@ -1329,6 +1329,7 @@ fn composite(rgba: &[u8], rgb: &mut [u8], background: [u8; 3]) -> Result<()> {
 
 mod compose;
 mod extract;
+mod sound;
 #[cfg(test)]
 mod tests;
 

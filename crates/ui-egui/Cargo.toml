@@ -47,6 +47,10 @@ arboard = { version = "=3.7.0", default-features = false, features = ["image-dat
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 # Video playback on cards (#105), through installed ffmpeg/ffprobe the settings name.
 nodecraft-media = { workspace = true, features = ["video"] }
+# Sound playback on cards (#106): the platform's audio output (CoreAudio, WASAPI, ALSA) has no
+# safe std API, so this small audited crate wraps it. Pinned exactly: it owns a realtime callback
+# thread, and a new release should be tried before it plays through people's speakers.
+cpal = "=0.18.2"
 # Installing updates (#540): the zipped macOS app bundle (ditto deflates it) and the release keys.
 zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
 ed25519-dalek = { workspace = true }

@@ -52,6 +52,8 @@ pub struct Tokens {
     pub wire_mesh: Color32,
     pub wire_document: Color32,
     pub wire_style: Color32,
+    /// A sound card's waveform where it hasn't played yet; the played part is `wire_audio`.
+    pub waveform: Color32,
 
     pub tag_colors: [Color32; 8],
     pub tag_marker_width: f32,
@@ -188,6 +190,7 @@ pub const DARK: Tokens = Tokens {
     wire_mesh: Color32::from_rgb(0x8f, 0xc3, 0x5a),
     wire_document: Color32::from_rgb(0xa0, 0xa0, 0xa8),
     wire_style: Color32::from_rgb(0xe0, 0x6f, 0xa8),
+    waveform: Color32::from_rgb(0x5c, 0x5c, 0x66),
     tag_colors: [
         Color32::from_rgb(238, 112, 122),
         Color32::from_rgb(235, 162, 94),
@@ -304,6 +307,7 @@ pub const LIGHT: Tokens = Tokens {
     wire_mesh: Color32::from_rgb(0x4f, 0x8a, 0x1f),
     wire_document: Color32::from_rgb(0x6b, 0x6b, 0x74),
     wire_style: Color32::from_rgb(0xa8, 0x2f, 0x6c),
+    waveform: Color32::from_rgb(0xa8, 0xa8, 0xb2),
     tag_colors: [
         Color32::from_rgb(163, 45, 59),
         Color32::from_rgb(151, 79, 20),
@@ -411,6 +415,16 @@ mod tests {
             assert!(contrast(t.text, t.prompt_fill) >= 7.0, "{kind:?} prompt");
             assert!(contrast(t.text_muted, t.prompt_fill) >= 4.5, "{kind:?} prompt hint");
             assert!(contrast(t.text, t.mention_fill) >= 7.0, "{kind:?} mention chip");
+        }
+    }
+
+    #[test]
+    fn a_waveform_shows_on_the_canvas_and_what_played_stands_out() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            assert!(contrast(t.waveform, t.canvas_bg) >= 2.0, "{kind:?} waveform: {}", contrast(t.waveform, t.canvas_bg));
+            assert!(contrast(t.wire_audio, t.canvas_bg) >= 3.0, "{kind:?} played");
+            assert_ne!(t.waveform, t.wire_audio);
         }
     }
 

@@ -25,6 +25,8 @@ finish-args:
   - --share=ipc
   # GPU access for wgpu rendering (Vulkan, or GL as a fallback).
   - --device=dri
+  # Sound on cards: the runtime's ALSA plays through the PulseAudio (or PipeWire) socket.
+  - --socket=pulseaudio
   # Network: model providers, ComfyUI servers (also on localhost) and LLM endpoints.
   - --share=network
   # Open/Save dialogs go through the file-chooser portal and drag-and-drop through the document

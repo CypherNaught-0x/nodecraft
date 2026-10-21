@@ -1,5 +1,5 @@
 use super::*;
-fn wait<T>(job: &mut VideoJob<T>) -> Result<T> {
+pub(super) fn wait<T>(job: &mut VideoJob<T>) -> Result<T> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(r) = job.try_result()? {
@@ -12,7 +12,7 @@ fn wait<T>(job: &mut VideoJob<T>) -> Result<T> {
         thread::sleep(Duration::from_millis(5));
     }
 }
-fn service() -> VideoService {
+pub(super) fn service() -> VideoService {
     service_limits(VideoLimits::default())
 }
 fn service_limits(limits: VideoLimits) -> VideoService {

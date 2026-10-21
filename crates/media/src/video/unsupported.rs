@@ -125,6 +125,12 @@ impl VideoService {
     pub fn extract_audio(&self, _: &VideoAsset) -> Result<VideoJob<RenderedAudio>> {
         Err(VideoError::Unsupported)
     }
+    pub fn waveform(&self, _: &AudioAsset, _: usize) -> Result<VideoJob<Waveform>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn pcm(&self, _: &AudioAsset, _: u64, _: u64) -> Result<VideoJob<PcmChunk>> {
+        Err(VideoError::Unsupported)
+    }
     pub fn statistics(&self) -> (usize, usize) {
         (0, 0)
     }

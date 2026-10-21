@@ -3,7 +3,7 @@
 With the optional `nodecraft-media/video` feature, `video::VideoService` imports bounded media,
 decodes preview frames, supports latest-request-wins scrubbing, and encodes a stream of RGBA
 frames to VP9 WebM, and stitches staged clips into one WebM (see "Compose" below). The desktop
-app uses it to play videos on cards (see "On cards" below); the service itself is not an engine
+app uses it to play videos and sounds on cards (see "On cards" and "Sound on cards" below); the service itself is not an engine
 command. It does not call providers. The default media
 build is unchanged.
 
@@ -250,6 +250,28 @@ times it fell behind on. At most four frames, two imports and one asset read run
 staged clips stay under 768 MiB (least recently used are evicted). Posters are cached per
 content hash and size, up to 64. Only cards on screen ask for frames.
 
+## Sound on cards
+
+The same service shows and plays a sound on its card: a `source.audio` node's asset, or the first
+`audio/*` result of a generation card, with the tools set as above. The card draws the sound's
+waveform (512 peaks, made once per content hash and cached, up to 64), a play/pause button and
+the time; clicking or dragging along the waveform seeks. Like video, playing and seeking are view
+state, not commands.
+
+The desktop app plays through the system's default output device with
+[cpal](https://github.com/RustAudio/cpal). Sound is decoded by ffmpeg in 2 s stretches of 48 kHz
+stereo (a mono sound goes to both sides at full level), kept at most 8 s ahead in a bounded
+buffer that the device's callback resamples from; it plays silence, rather than stalling, when
+decoding falls behind. One card plays at a time: playing another pauses the first where it was.
+Playback stops when its card is deleted, when the sound device goes away (the card says so; play
+again to reopen it) and when the app quits. Without an output device the card says "No sound
+output device found". The browser build says playback needs the desktop app.
+
+On Linux the desktop app links ALSA (`libasound.so.2`): the deb and rpm packages depend on it,
+the AppImage uses the host's, and the Flatpak gets it from the freedesktop runtime and reaches
+the sound server through `--socket=pulseaudio` (PipeWire serves that socket too). Building from
+source needs `libasound2-dev` (Debian/Ubuntu) or `alsa-lib-devel` (Fedora).
+
 ## Validation
 
 Normal feature tests use Rust subprocess fixtures, with no installed tool or download required.
@@ -258,9 +280,13 @@ Real integration tests require explicit tool paths and run authored tiny media o
 ```sh
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-media --features video actual_ -- --ignored
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_video -- --ignored
+NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_sound -- --ignored
+cargo test -p nodecraft-ui-egui the_default_sound_device -- --ignored
 ```
 
-The second drives a real clip through a card: play, the end, and a seek.
+The second drives a real clip through a card: play, the end, and a seek. The third does the same
+for a sound (its waveform, seeking, and a second of playing when there is a device); the last
+opens the real default output device.
 
 These tests cost no provider budget. Native runtime proof and wasm compilation are distinct;
 Windows/Linux/browser behavior must not be inferred from a macOS run. No binary fixtures are
