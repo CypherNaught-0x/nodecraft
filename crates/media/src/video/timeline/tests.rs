@@ -131,8 +131,10 @@ fn without_layers_the_graph_is_unchanged_and_with_them_tracks_stack_and_mix() {
     let layers = [(Media::Audio(&music), &tune, 15u64), (still, &logo, 45u64), (Media::Video(&m), &s, 0u64)];
     let g = graph(FRAME, &[(Media::Video(&m), &s)], &layers).unwrap();
     assert!(g.contains("[0:0]") && g.contains("[ma];"), "the main track ends in its own labels: {g}");
-    // The tune runs 0.5 s to 3.5 s; the logo 1.5 s to 2.5 s; the main track only 2 s.
-    assert!(g.contains("[mv]tpad=stop_mode=add:stop_duration=3.500000:color=0x000000[b0];"), "{g}");
+    // The tune runs 0.5 s to 3.5 s; the logo 1.5 s to 2.5 s; the main track only 2 s: padded
+    // by the 1.5 s left, and a frame over.
+    assert!(g.contains("[mv]tpad=stop_mode=add:stop_duration=1.533333:color=0x000000[b0];"), "{g}");
+    assert!(!g.contains("[p2]"), "a layer's still keeps its alpha: {g}");
     assert!(g.contains("[2:0]setpts=PTS-STARTPTS,scale=720:720:flags=bicubic"), "the still is read raw: {g}");
     assert!(g.contains("format=yuva420p") && g.contains("color=black@0"), "a layer letterboxes to transparent: {g}");
     assert!(g.contains("fade=t=in:st=0:d=0.200000:color=0x000000:alpha=1,setpts=PTS+45[l1];"), "{g}");
@@ -152,4 +154,13 @@ fn layers_stay_bounded() {
         graph(card, &[(Media::Audio(&AudioMetadata { duration_us: 1, stream: 0, codec: "mp3", format_start: 0, stream_start: 0 }), &span(0, 1))], &[]),
         Err(VideoError::Invalid)
     );
+}
+
+#[test]
+fn a_still_on_the_main_track_shows_the_background_through_its_transparent_pixels() {
+    let still = Media::Still { width: 64, height: 32 };
+    let s = span(0, 1_000_000);
+    let g = graph(FRAME, &[(still, &s)], &[]).unwrap();
+    assert!(g.contains("format=rgba[p0];color=c=0x000000:s=1280x640:r=30/1:d=1.000000[q0];"), "{g}");
+    assert!(g.contains("[q0][p0]overlay,format=yuv420p,setparams=range=tv:color_primaries=bt709"), "{g}");
 }

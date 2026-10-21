@@ -220,7 +220,8 @@ pub(super) fn audio_demuxer(mime: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-/// A sound file's metadata, from ffprobe's JSON: its first audio stream with a codec we decode.
+/// A sound file's metadata, from ffprobe's JSON: its first audio stream, refused when that
+/// stream's codec isn't one we decode.
 /// Any picture (cover art, a video track) is ignored.
 pub(super) fn parse_audio(bytes: &[u8]) -> Result<AudioMetadata> {
     if bytes.len() > 262144 {

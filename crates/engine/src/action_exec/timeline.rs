@@ -204,10 +204,13 @@ mod native {
                     Source::Audio(wait(job, cancelled).map_err(message)?)
                 }
                 Input::Stills => {
-                    let picture =
-                        self.raster(value).map_err(|e| e.replace("connect an image first", "connect a picture to the timeline's stills input first"))?;
+                    let picture = self.raster(value).map_err(|e| {
+                        e.replace("connect an image first", "connect a picture to the timeline's stills input first")
+                            .replace("the input image", "a connected picture")
+                            .replace("the image", "a connected picture")
+                    })?;
                     let job = service.stage_still(Arc::from(picture.pixels()), picture.width(), picture.height()).map_err(|(error, _)| match error {
-                        VideoError::Invalid | VideoError::Limit => "a connected picture is larger than 8192 pixels a side".to_owned(),
+                        VideoError::Invalid => "a connected picture is larger than 8192 pixels a side".to_owned(),
                         other => message(closed(other)),
                     })?;
                     Source::Still(wait(job, cancelled).map_err(message)?)
@@ -219,6 +222,12 @@ mod native {
             let frame = frame(params)?;
             let wires = wires(params, inputs.len());
             let timeline = clips(params)?;
+            if timeline.unplaced_sound(&wires) {
+                return Err(format!(
+                    "a connected sound has no sound track to play on: remove one of the {} picture tracks",
+                    nodecraft_nodes::timeline::MAX_TRACKS
+                ));
+            }
             let listed = timeline.with_sources(&wires);
             let resolved = timeline.resolve(&wires);
             if resolved.is_empty() {

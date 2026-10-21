@@ -134,6 +134,10 @@ fn tracks_hold_sounds_and_pictures_at_their_own_time() {
     // With every track a video track, a sound has nowhere to go and isn't shown.
     let full = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS] };
     assert!(full.with_sources(&[Wire::new(Input::Audio, "m")]).clips.is_empty());
+    // ... which the run refuses, rather than drop the sound unheard.
+    assert!(full.unplaced_sound(&[Wire::video("v"), Wire::new(Input::Audio, "m")]));
+    assert!(!full.unplaced_sound(&[Wire::video("v"), Wire::new(Input::Stills, "p")]));
+    assert!(!Timeline::default().unplaced_sound(&[Wire::new(Input::Audio, "m")]));
 }
 
 #[test]
@@ -159,4 +163,20 @@ fn its_plan_names_each_inputs_port() {
     let [JobSpec::Action { params, inputs, .. }] = jobs.as_slice() else { panic!("{jobs:?}") };
     assert_eq!(inputs.len(), 2);
     assert_eq!(params.get(PORTS_PARAM), Some(&Value::List(vec![Value::Text(AUDIO_INPUT.into()), Value::Text(STILLS_INPUT.into())])));
+}
+
+#[test]
+fn a_card_made_before_sound_and_picture_inputs_still_plans_and_migrates() {
+    let kinds = Registry::builtins().unwrap();
+    let kind = kinds.get(ID).unwrap();
+    let mut node = kind.instantiate_instance(NodeId::from_bytes([5; 16]), Default::default(), &ParamValues::default()).unwrap();
+    node.inputs.truncate(1);
+    let input = InputValue { port: INPUT.into(), port_type: video(), value: Value::Text("x".into()), origins: vec![NodeId::from_bytes([1; 16])] };
+    assert_eq!(kind.plan(&PlanCtx { node: &node, inputs: &[input], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap().len(), 1);
+    let migrated = kind.prepare_migration(&node).unwrap().unwrap().node;
+    assert_eq!(migrated.inputs, kind.descriptor().inputs);
+    assert!(kind.prepare_migration(&migrated).unwrap().is_none());
+    // Ports that are not a prefix of today's are still refused.
+    node.inputs = vec![kind.descriptor().inputs[1].clone()];
+    assert!(kind.validate_instance(&node, false).is_err());
 }

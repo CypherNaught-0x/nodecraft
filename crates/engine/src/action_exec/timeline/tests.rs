@@ -147,6 +147,7 @@ fn sounds_and_pictures_play_on_their_own_tracks() {
     let png = nodecraft_media::encode_png(8, 6, &[255; 8 * 6 * 4], &Default::default()).unwrap();
     let mut assets = AssetStore::default();
     let (film, tone, logo) = (assets.insert(&clip(&ffmpeg, 2)).unwrap(), assets.insert(&std::fs::read(wav).unwrap()).unwrap(), assets.insert(&png).unwrap());
+    let clear = assets.insert(&nodecraft_media::encode_png(8, 6, &[0; 8 * 6 * 4], &Default::default()).unwrap()).unwrap();
     let media = |hash, mime: &str| Value::Media(AssetRef { hash, mime: mime.parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets).with_video_tools(Some((ffmpeg, ffprobe)));
     // The sound starts at 1.5 s, past the main track's 2 s, so the output runs to 2.5 s.
@@ -168,4 +169,14 @@ fn sounds_and_pictures_play_on_their_own_tracks() {
     let wrong = planned_on(nodecraft_nodes::timeline::EMPTY, &[(INPUT, "n3")]);
     let error = actions.execute(nodecraft_nodes::timeline::ID, &wrong, &[media(logo, "image/png")]).unwrap_err();
     assert!(error.contains("clips input"), "{error}");
+
+    // A see-through picture alone on the main track renders over the background.
+    let alone = planned_on(nodecraft_nodes::timeline::EMPTY, &[(STILLS_INPUT, "n3")]);
+    let out = actions.execute(nodecraft_nodes::timeline::ID, &alone, &[media(clear, "image/png")]).unwrap();
+    let Value::Media(asset) = out else { panic!("{out:?}") };
+    assert_eq!(asset.meta.duration_ms, Some(3000));
+    // A picture that isn't there says so about the picture, not an "input image".
+    let missing = media(Blake3::from_bytes([9; 32]), "image/png");
+    let error = actions.execute(nodecraft_nodes::timeline::ID, &alone, &[missing]).unwrap_err();
+    assert!(error.contains("a connected picture"), "{error}");
 }

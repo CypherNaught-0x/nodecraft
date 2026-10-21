@@ -7,10 +7,11 @@
 //! are set (`timeline.*` commands) and again, against each video's length, before it renders;
 //! this kind only carries them, with the node each connected video came from, so a clip stays
 //! with its video when wires are reordered.
-use crate::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
+use crate::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx, descriptor::invalid};
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{Choice, Error, ErrorKind, Modality, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, Value};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// The kind's id.
 pub const ID: &str = "video.timeline";
@@ -353,6 +354,13 @@ impl Timeline {
         shown
     }
 
+    /// Whether a wired sound has no clip and no room for the sound track it would get: every
+    /// extra track is a picture track. The run refuses it rather than drop the sound unseen.
+    pub fn unplaced_sound(&self, wires: &[Wire]) -> bool {
+        let shown = self.with_sources(wires);
+        source_keys(wires).into_iter().any(|(input, origin, nth)| input == Input::Audio && !shown.names(input, &origin, nth))
+    }
+
     /// The clips to render, each with the input it plays: the enabled clips whose media is
     /// connected, track by track (the main track first, in playing order; then each track in
     /// turn, a higher one on top). The main track's last clip plays out with no transition.
@@ -481,6 +489,24 @@ pub fn kind() -> TimelineKind {
 impl NodeKind for TimelineKind {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
+    }
+    /// A card made before the sound and picture inputs (#576) has only its clips port, the
+    /// first of today's: it keeps running with that.
+    fn instance<'a>(&'a self, node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
+        if node.inputs.is_empty() || node.inputs.len() >= self.descriptor.inputs.len() || !self.descriptor.inputs.starts_with(&node.inputs) {
+            return Ok(Cow::Borrowed(&self.descriptor));
+        }
+        let mut descriptor = self.descriptor.clone();
+        descriptor.inputs.truncate(node.inputs.len());
+        Ok(Cow::Owned(descriptor))
+    }
+    fn migrate(&self, node: &Node) -> Result<Option<NodeMigration>, Error> {
+        if node.inputs == self.descriptor.inputs || !self.descriptor.inputs.starts_with(&node.inputs) {
+            return Ok(None);
+        }
+        let mut node = node.clone();
+        node.inputs = self.descriptor.inputs.clone();
+        Ok(Some(NodeMigration { node, warnings: Vec::new() }))
     }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
         inputs.iter().all(|t| matches!(t.modality, Modality::Video | Modality::Audio | Modality::Image)).then(|| ModeId::new("action").ok()).flatten()

@@ -345,15 +345,23 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
         Media::Still { width, height } => {
             let (w, h) = fit_display(u64::from(width), u64::from(height), frame.width, frame.height);
             write!(g, "[{k}:0]setpts=PTS-STARTPTS,scale={w}:{h}:flags=bicubic:out_color_matrix=bt709:out_range=tv,").map_err(|_| VideoError::Limit)?;
+            if layer.is_none() {
+                // On the main track a transparent pixel shows the background, not the colour it
+                // hides: the picture goes over a plain frame as long as it is shown.
+                write!(g, "format=rgba[p{k}];color=c={color}:s={w}x{h}:r={rate}:d={length}[q{k}];[q{k}][p{k}]overlay,").map_err(|_| VideoError::Limit)?;
+            }
             (w, h)
         }
         Media::Audio(_) => return Err(VideoError::Invalid),
     };
     let x = (frame.width.saturating_sub(w) / 2) & !1;
     let y = (frame.height.saturating_sub(h) / 2) & !1;
+    // A still has no colour of its own to pass on: tagged as the videos are, so a render of
+    // stills alone still declares its colour.
+    let tag = if matches!(media, Media::Still { .. }) { "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709," } else { "" };
     write!(
         g,
-        "format={format},setsar=1,pad={W}:{H}:{x}:{y}:color={pad},fps={rate},tpad=stop_mode=clone:stop_duration={length},trim=end_frame={count},setpts=PTS-STARTPTS",
+        "format={format},{tag}setsar=1,pad={W}:{H}:{x}:{y}:color={pad},fps={rate},tpad=stop_mode=clone:stop_duration={length},trim=end_frame={count},setpts=PTS-STARTPTS",
         W = frame.width,
         H = frame.height,
     )
@@ -450,8 +458,14 @@ pub(super) fn graph(frame: Frame, parts: &[(Media<'_>, &Span)], layers: &[(Media
         for (_, span, at) in layers {
             total = total.max(frame_us(*at, frame.fps).saturating_add(shown_us(span.length_us(), frame.fps)));
         }
-        // The main track holds its background colour until the last layer ends.
-        write!(g, "[mv]tpad=stop_mode=add:stop_duration={}:color={}[b0];", seconds(total), hex(frame.background)).map_err(|_| VideoError::Limit)?;
+        // The main track holds its background colour until the last layer ends (a frame over, for rounding).
+        write!(
+            g,
+            "[mv]tpad=stop_mode=add:stop_duration={}:color={}[b0];",
+            seconds(total.saturating_sub(length).saturating_add(frame_us(1, frame.fps))),
+            hex(frame.background)
+        )
+        .map_err(|_| VideoError::Limit)?;
         let mut base = 0usize;
         let mut mixed = vec![String::from("[ma]")];
         for (j, (media, span, at)) in layers.iter().enumerate() {

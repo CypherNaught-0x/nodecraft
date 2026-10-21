@@ -224,3 +224,24 @@ fn sounds_and_pictures_get_clips_and_tracks_hold_them_at_their_own_time() {
     }
     assert!(s.dispatch("timeline.track_add", &json!({"canvas": CANVAS, "id": EDITOR, "kind": "video"})).is_err());
 }
+
+#[test]
+fn a_card_made_before_sound_and_picture_inputs_runs_and_takes_them_when_wired() {
+    let mut project = nodecraft_graph::Project::new(ProjectId::from_bytes([2; 16]), "P").unwrap();
+    Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
+    let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    let mut legacy = kinds.get(ID).unwrap().instantiate_instance(EDITOR, Default::default(), &Default::default()).unwrap();
+    legacy.inputs.truncate(1);
+    Change::AddNode { canvas: CANVAS, node: legacy.clone() }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": A, "kind": "source.audio", "pos": {"x": 0, "y": 0}})).unwrap();
+    assert!(s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).is_ok());
+    let edge =
+        json!({"id": EdgeId::from_bytes([1; 16]), "from": {"node": A, "port": "out"}, "to": {"node": EDITOR, "port": timeline::AUDIO_INPUT}, "order": 0});
+    s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    assert_eq!(node(&s).inputs, kinds.get(ID).unwrap().descriptor().inputs);
+    assert_eq!(list(&mut s).len(), 1);
+    // One edit: undo takes the wire and the upgrade back together.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(node(&s).inputs, legacy.inputs);
+}
