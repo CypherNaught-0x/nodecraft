@@ -2,8 +2,10 @@ use std::collections::BTreeMap;
 
 use nodecraft_types::{
     BillableUnits, Blake3, CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, ItemId, NodeId, ParamValues, PortType, ProjectId, ProviderInstanceId,
-    TagId, Value,
+    SkillId, TagId, Value,
 };
+
+use crate::Skill;
 use serde::{Deserialize, Serialize};
 
 /// World coordinates, independent of the UI toolkit. Validation rejects non-finite values.
@@ -445,6 +447,9 @@ pub struct Project {
     pub(crate) id: ProjectId,
     pub(crate) title: String,
     pub(crate) canvases: BTreeMap<CanvasId, Canvas>,
+    /// The project's own agent skills (#168), which travel with the file.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) skills: BTreeMap<SkillId, Skill>,
 }
 
 #[derive(Deserialize)]
@@ -454,12 +459,14 @@ struct ProjectData {
     title: String,
     #[serde(default)]
     canvases: BTreeMap<CanvasId, Canvas>,
+    #[serde(default)]
+    skills: BTreeMap<SkillId, Skill>,
 }
 
 impl TryFrom<ProjectData> for Project {
     type Error = Error;
     fn try_from(data: ProjectData) -> Result<Self, Self::Error> {
-        let project = Self { id: data.id, title: data.title, canvases: data.canvases };
+        let project = Self { id: data.id, title: data.title, canvases: data.canvases, skills: data.skills };
         project.validate()?;
         Ok(project)
     }
@@ -467,7 +474,7 @@ impl TryFrom<ProjectData> for Project {
 
 impl Project {
     pub fn new(id: ProjectId, title: impl Into<String>) -> Result<Self, Error> {
-        let project = Self { id, title: title.into(), canvases: BTreeMap::new() };
+        let project = Self { id, title: title.into(), canvases: BTreeMap::new(), skills: BTreeMap::new() };
         project.validate()?;
         Ok(project)
     }
@@ -480,5 +487,8 @@ impl Project {
     }
     pub fn canvases(&self) -> &BTreeMap<CanvasId, Canvas> {
         &self.canvases
+    }
+    pub fn skills(&self) -> &BTreeMap<SkillId, Skill> {
+        &self.skills
     }
 }

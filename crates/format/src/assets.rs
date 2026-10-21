@@ -172,7 +172,9 @@ impl AssetStore {
                 | Change::SetCommentResolved { .. }
                 | Change::InsertCommentReply { .. }
                 | Change::RemoveCommentReply { .. }
-                | Change::SetCommentReplyText { .. } => {}
+                | Change::SetCommentReplyText { .. }
+                | Change::PutSkill { .. }
+                | Change::RemoveSkill { .. } => {}
             }
         }
         for (id, nodes) in touched {

@@ -99,6 +99,8 @@ pub struct Context<'a> {
     /// The document's revision: bumped by every edit, undo and redo.
     pub revision: u64,
     pub kinds: &'a nodecraft_nodes::Registry,
+    /// The session's commands, so a command can say which others exist (`skill.list`).
+    pub commands: &'a Registry,
     pub can_undo: bool,
     pub can_redo: bool,
     pub resources: &'a Resources,
@@ -234,6 +236,7 @@ impl Registry {
             .chain(crate::turn_into_cmds::specs())
             .chain(crate::tag_cmds::specs())
             .chain(crate::tag_filter_cmds::specs())
+            .chain(crate::skill_cmds::specs())
         {
             registry.register(spec)?;
         }
@@ -255,6 +258,10 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> Result<&CommandSpec, Error> {
         self.commands.get(id).ok_or_else(|| Error::new(ErrorKind::NotFound, "unknown command id"))
+    }
+
+    pub fn has(&self, id: &str) -> bool {
+        self.commands.contains_key(id)
     }
 }
 

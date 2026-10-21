@@ -1,7 +1,7 @@
-use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, ErrorKind, FieldId, GenerationId, NodeId, TagId, Value};
+use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, ErrorKind, FieldId, GenerationId, NodeId, SkillId, TagId, Value};
 use serde::{Deserialize, Serialize};
 
-use crate::{Canvas, Comment, CommentPin, CommentReply, Edge, Field, Generation, Node, Position, Project, Tag, validate};
+use crate::{Canvas, Comment, CommentPin, CommentReply, Edge, Field, Generation, Node, Position, Project, Skill, Tag, validate};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -158,6 +158,13 @@ pub enum Change {
     RemoveComment {
         canvas: CanvasId,
         id: CommentId,
+    },
+    /// Adds a project skill, or replaces the one with its id (#168).
+    PutSkill {
+        skill: Skill,
+    },
+    RemoveSkill {
+        id: SkillId,
     },
 }
 
@@ -484,6 +491,7 @@ impl Change {
             }
             Self::PutField { field, .. } => field.validate(),
             Self::PutTag { tag, .. } => tag.validate(),
+            Self::PutSkill { skill } => skill.validate(),
             Self::SetNodeFields { assignments, .. } => validate_bulk_ids(assignments.iter().map(|a| a.node), assignments.len()),
             Self::MoveNodes { positions, .. } => {
                 validate_bulk_ids(positions.iter().map(|a| a.node), positions.len())?;
@@ -717,6 +725,11 @@ impl Change {
                 None => Self::RemoveTag { canvas: *canvas, id: tag.id },
             },
             Self::RemoveTag { canvas, id } => Self::PutTag { canvas: *canvas, tag: canvas_mut(project, *canvas)?.tags.remove(id).ok_or_else(missing)? },
+            Self::PutSkill { skill } => match project.skills.insert(skill.id, skill.clone()) {
+                Some(skill) => Self::PutSkill { skill },
+                None => Self::RemoveSkill { id: skill.id },
+            },
+            Self::RemoveSkill { id } => Self::PutSkill { skill: project.skills.remove(id).ok_or_else(missing)? },
             Self::PutComment { canvas, comment } => {
                 let target = canvas_mut(project, *canvas)?;
                 if let Some(old) = target.comments.get(&comment.id) {
@@ -879,6 +892,7 @@ fn preflight_inverse(change: &Change, project: &Project, anchors: &Anchors, budg
         SetCommentText { canvas: CanvasId, id: CommentId, text: &'a str },
         SetCommentReplyText { canvas: CanvasId, id: CommentId, reply: CommentId, text: &'a str },
         InsertCommentReply { canvas: CanvasId, id: CommentId, index: usize, reply: &'a CommentReply },
+        PutSkill { skill: &'a Skill },
     }
     let canvas = |id| project.canvases.get(&id).ok_or_else(missing);
     let node = |c, id| canvas(c)?.nodes.get(&id).ok_or_else(missing);
@@ -926,6 +940,8 @@ fn preflight_inverse(change: &Change, project: &Project, anchors: &Anchors, budg
             let index = root.replies.iter().position(|item| item.id == *reply).ok_or_else(missing)?;
             Some(Borrowed::InsertCommentReply { canvas: *canvas, id: *id, index, reply: root.replies.get(index).ok_or_else(missing)? })
         }
+        Change::RemoveSkill { id } => Some(Borrowed::PutSkill { skill: project.skills.get(id).ok_or_else(missing)? }),
+        Change::PutSkill { skill: incoming } => project.skills.get(&incoming.id).map(|skill| Borrowed::PutSkill { skill }),
         _ => None,
     };
     if let Some(inverse) = inverse {

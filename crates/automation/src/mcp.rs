@@ -162,6 +162,13 @@ pub const AGENT_COMMANDS: &[&str] = &[
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",
     "plugins.forget",
+    // Skills are guidance text: reading runs nothing, and edits are versioned (a project's undoable).
+    "skill.list",
+    "skill.read",
+    "skill.create",
+    "skill.edit",
+    "skill.delete",
+    "skill.export",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
@@ -176,6 +183,10 @@ pub const HUMAN_ONLY: &[&str] = &[
     // The library is shared by every project and outside undo, so only a person changes it.
     "library.add",
     "library.remove",
+    // What untrusted skill text comes in, and which skills are offered to the agent, is the
+    // person's call (#168).
+    "skill.import",
+    "skill.enable",
     "plugins.import",
     "plugins.update",
     "plugins.enable",

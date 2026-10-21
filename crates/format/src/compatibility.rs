@@ -17,6 +17,10 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 fn project_data(project: &Value) -> Result<(), Error> {
+    // Project skills (#168) are unknown to version 1.
+    if project.get("skills").is_some() {
+        return Err(unsupported());
+    }
     if let Some(canvases) = project.get("canvases").and_then(Value::as_object) {
         for canvas in canvases.values() {
             canvas_data(canvas)?;
@@ -250,6 +254,9 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
             Value::Text(_) | Value::Media(_) => Ok(()),
         }
     }
+    if !project.skills().is_empty() {
+        return Err(unsupported());
+    }
     for canvas in project.canvases().values() {
         // Sheets (#163) would open as a plain canvas in version 1.
         if !canvas.comments().is_empty() || !canvas.kind().is_canvas() {
@@ -368,6 +375,18 @@ mod tests {
         assert!(validate(raw.as_bytes()).is_ok(), "genuine old bytes remain valid even though current typed serialization emits v2 defaults");
         let recovered = crate::journal::recover(include_bytes!("../tests/fixtures/v1/comments-v1.ncrj")).unwrap();
         assert!(project(&recovered.snapshot.project).is_err());
+    }
+
+    #[test]
+    fn skills_are_never_written_or_read_as_version_1() {
+        let mut skilled = Project::new(ProjectId::from_bytes([4; 16]), "Skills").unwrap();
+        let skill = serde_json::json!({"id": "05050505-0505-0505-0505-050505050505", "version": 1, "name": "S", "instructions": "x"});
+        Change::PutSkill { skill: serde_json::from_value(skill.clone()).unwrap() }.apply(&mut skilled).unwrap();
+        assert!(project(&skilled).is_err(), "a version-1 reader would drop the skill");
+        assert!(validate(&serde_json::to_vec(&serde_json::json!({ "project": skilled })).unwrap()).is_err());
+        for change in [serde_json::json!({"type": "put_skill", "skill": skill}), serde_json::json!({"type": "remove_skill", "id": skill["id"]})] {
+            assert!(validate(&serde_json::to_vec(&serde_json::json!({"changes": {"changes": [change]}})).unwrap()).is_err());
+        }
     }
 
     #[test]
