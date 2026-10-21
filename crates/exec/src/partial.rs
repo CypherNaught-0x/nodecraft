@@ -8,6 +8,12 @@
 //! (#517): that job's key is kept with the item ([`nodecraft_graph::SentKey`]) and the job is
 //! sent under it again, so a provider that keeps jobs by key answers with the one it ran.
 //!
+//! A fanned step fed by the same run can't know its inputs before they are made. When they are
+//! (#518), the run hashes them and, when they are the ones its node's partial result was made
+//! from, plans only the missing items the same way ([`completing`]): a **Run all** that re-runs
+//! an unchanged upstream doesn't charge the finished items again. Its quote, made before, counts
+//! every item: an upper bound.
+//!
 //! A technique node fanned out by a batch (#533) keeps its finished items the same way (#536).
 //! Its inlined nodes have no results of their own, so running it again plans only the missing
 //! items of the inlined steps fanned over its items ([`resume_techniques`]); the rest are copied
@@ -40,8 +46,8 @@ impl Resume {
 }
 
 /// Plans only the missing items of fanned steps whose node shows a partial result made from
-/// the inputs it has now. Only steps whose jobs are known up front qualify: a step fed by this
-/// run can't know its inputs are unchanged until they are made. Anything that doesn't match
+/// the inputs it has now, for steps whose jobs are known up front; a step fed by this run is
+/// decided by the run once its inputs are made ([`completing`]). Anything that doesn't match
 /// exactly (other items, another port layout, inputs that can't be hashed) runs in full.
 pub(crate) fn resume_partials(canvas: &Canvas, kinds: &Registry, steps: &mut [Step]) {
     let mut hasher = Hashed::default();
@@ -129,14 +135,28 @@ impl Hashed {
 /// Completing `node`'s active result, when it is a partial one over `items` made from the
 /// inputs the node has now.
 fn partial(canvas: &Canvas, kinds: &Registry, hasher: &mut Hashed, node: NodeId, items: &[nodecraft_graph::ItemTag]) -> Option<Resume> {
+    // Hash only a node with a partial result to complete: hashing walks its upstream.
+    completable(canvas, node, items)?;
+    completing(canvas, node, items, hasher.now(canvas, kinds, node)?)
+}
+
+/// Completing `node`'s active result, when it is a partial one over `items` made from inputs
+/// that hash to `now`.
+pub(crate) fn completing(canvas: &Canvas, node: NodeId, items: &[nodecraft_graph::ItemTag], now: Blake3) -> Option<Resume> {
+    let (partial, incomplete) = completable(canvas, node, items)?;
+    (partial.input_hash? == now).then(|| Resume { generation: Some(partial.id), missing: incomplete.missing.clone() })
+}
+
+/// `node`'s active result when it is a partial one over `items`, with what it lacks.
+pub(crate) fn completable<'a>(
+    canvas: &'a Canvas,
+    node: NodeId,
+    items: &[nodecraft_graph::ItemTag],
+) -> Option<(&'a nodecraft_graph::Generation, &'a nodecraft_graph::Incomplete)> {
     let node_ref = canvas.nodes().get(&node)?;
     let partial = node_ref.active.and_then(|active| node_ref.history.iter().find(|g| g.id == active))?;
     let incomplete = partial.incomplete.as_ref()?;
-    if partial.items != items || partial.outputs.len() != node_ref.outputs.len() {
-        return None;
-    }
-    let recorded = partial.input_hash?;
-    (hasher.now(canvas, kinds, node)? == recorded).then(|| Resume { generation: Some(partial.id), missing: incomplete.missing.clone() })
+    (partial.items == items && partial.outputs.len() == node_ref.outputs.len()).then_some((partial, incomplete))
 }
 
 /// Keeps only the jobs of the items `resume` runs; the others' counts become zero.

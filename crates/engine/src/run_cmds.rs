@@ -341,7 +341,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             // Admission diagnostics never copy native hook messages, node titles or
             // unknown model values into a report. One hundred fixed UUID/code records.
             let reasons = blocked_reasons(&blockers);
-            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": []});
+            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": []});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
@@ -359,7 +359,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         Err(error) => {
             let reason = admission_reason(&error);
             return Ok(Priced {
-                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[]}),
+                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[]}),
                 totals: BTreeMap::new(),
                 complete: false,
                 allowed: false,
@@ -376,6 +376,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let owned =
         |nodes: &mut dyn Iterator<Item = NodeId>| nodes.map(|id| expanded.owner(id)).collect::<BTreeSet<_>>().into_iter().take(MAX_LISTED).collect::<Vec<_>>();
     let estimated = owned(&mut priced.estimated());
+    let resumable = owned(&mut run_plan.resumable(canvas));
     let provisional = owned(&mut admission.provisional.iter().copied());
     let response = json!({
         "steps": priced.steps.iter().take(MAX_LISTED).map(|step| step_json(step, expanded.owner(step.node))).collect::<Vec<_>>(),
@@ -386,6 +387,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         "blocks": admission.blocks.iter().take(MAX_LISTED).map(|b| b.message()).collect::<Vec<_>>(),
         "provisional": provisional,
         "estimated": estimated,
+        "resumable": resumable,
         "token": token,
     });
     Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token })
@@ -776,7 +778,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, blocked?, token}. `nodes` is used by selected and with_upstream. Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, blocked?, token}. `nodes` is used by selected and with_upstream. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },

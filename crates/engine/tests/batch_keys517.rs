@@ -256,13 +256,19 @@ fn fixture() -> Fixture {
 
 /// Quotes and accepts a run of the painter.
 fn start(f: &mut Fixture) {
-    let request = json!({"canvas":C,"mode":"selected","nodes":[PAINTER]});
+    start_nodes(f, &[PAINTER]);
+}
+
+/// Quotes and accepts a run of `nodes`, returning the quote.
+fn start_nodes(f: &mut Fixture, nodes: &[NodeId]) -> serde_json::Value {
+    let request = json!({"canvas":C,"mode":"selected","nodes":nodes});
     let q = f.session.dispatch("run.quote", &request).unwrap();
     assert_eq!(q["allowed"], true, "{q}");
     let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
     let mut start = request;
     start["accept"] = json!({"token":q["token"],"partial":q["complete"] != true,"unpriced_jobs":0,"amounts":amounts});
     f.session.dispatch("run.start", &start).unwrap();
+    q
 }
 
 /// Pumps like a frame loop until the host is idle.
@@ -426,4 +432,61 @@ fn an_output_that_fails_here_every_time_is_bought_again_on_the_third_run() {
     assert!(active(&f).incomplete.is_none());
     assert_ne!(f.keeper.sent().last(), Some(key), "a fresh job");
     assert_eq!(f.keeper.billed(), 3);
+}
+
+const STEP: NodeId = NodeId::from_bytes([3; 16]);
+
+/// Like [`fixture`], with a free Replace text step between the batch and the painter, so the
+/// painter's jobs are planned from what the step makes in the same run.
+fn fixture_with_step() -> Fixture {
+    let mut f = fixture();
+    let mut step = f.session.kinds().get("text.replace").unwrap().instantiate_instance(STEP, Default::default(), &Default::default()).unwrap();
+    step.params.insert("find".into(), Value::Text("zebra".into()));
+    f.session.dispatch("node.add", &json!({"canvas": C, "node": step})).unwrap();
+    f.session.dispatch("edge.disconnect", &json!({"canvas": C, "id": EdgeId::from_bytes([10; 16])})).unwrap();
+    for (id, from, to) in [(11, (BATCH, "item"), (STEP, "text")), (12, (STEP, "out"), (PAINTER, "prompt"))] {
+        let edge = json!({"id": EdgeId::from_bytes([id; 16]), "from": {"node": from.0, "port": from.1}, "to": {"node": to.0, "port": to.1}, "order": 0});
+        f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    }
+    f
+}
+
+/// Runs the step and the painter with the owl's reply lost, so the painter keeps a partial result.
+fn partial_behind_the_step(f: &mut Fixture) -> String {
+    f.keeper.set("an owl", Mode::LoseReply);
+    start_nodes(f, &[STEP, PAINTER]);
+    drive(f);
+    let (_, keys) = missing_owl(f);
+    let [key] = keys.as_slice() else { panic!("the owl's key is kept: {keys:?}") };
+    key.clone()
+}
+
+#[test]
+fn a_rerun_upstream_that_comes_out_the_same_sends_only_the_missing_item() {
+    // #518: with the step in the run, the painter's jobs are planned from what the step makes.
+    let mut f = fixture_with_step();
+    let key = partial_behind_the_step(&mut f);
+    let fox = f.keeper.sent().first().cloned().unwrap();
+    f.keeper.set("an owl", Mode::Answer);
+    let q = start_nodes(&mut f, &[STEP, PAINTER]);
+    assert_eq!(q["resumable"], json!([PAINTER]), "priced for every item, it may run fewer: {q}");
+    drive(&mut f);
+    assert!(active(&f).incomplete.is_none(), "the owl completes the result");
+    assert_eq!(f.keeper.sent().len(), 3, "the fox isn't sent again: {:?}", f.keeper.sent());
+    assert_eq!(f.keeper.sent().last(), Some(&key), "the owl goes under its kept key");
+    assert_eq!(f.keeper.billed(), 2, "nothing new is billed");
+    assert_eq!((charges_under(&f, &fox), charges_under(&f, &key)), (1, 1), "one charge each in the usage log");
+}
+
+#[test]
+fn a_rerun_upstream_that_comes_out_different_runs_every_item() {
+    let mut f = fixture_with_step();
+    partial_behind_the_step(&mut f);
+    f.session.dispatch("node.param_set", &json!({"canvas": C, "id": STEP, "name": "find", "value": {"type": "text", "value": "fox"}})).unwrap();
+    f.session.dispatch("node.param_set", &json!({"canvas": C, "id": STEP, "name": "replacement", "value": {"type": "text", "value": "hen"}})).unwrap();
+    f.keeper.set("an owl", Mode::Answer);
+    start_nodes(&mut f, &[STEP, PAINTER]);
+    drive(&mut f);
+    assert!(active(&f).incomplete.is_none());
+    assert_eq!(f.keeper.sent().len(), 2 + 2, "every item of the changed input is sent: {:?}", f.keeper.sent());
 }

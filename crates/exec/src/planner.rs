@@ -109,6 +109,21 @@ pub struct RunPlan {
     pub inner: BTreeMap<NodeId, NodeId>,
 }
 
+impl RunPlan {
+    /// Fanned steps planned during the run whose node has a partial result it may complete
+    /// (#518): when what feeds them is made again unchanged, only their missing items run, so the
+    /// quote, which counts every item, is an upper bound for them.
+    pub fn resumable<'a>(&'a self, canvas: &'a Canvas) -> impl Iterator<Item = NodeId> + 'a {
+        self.steps
+            .iter()
+            .filter(|step| step.jobs.is_none() && !self.inner.contains_key(&step.node) && !self.inner.values().any(|owner| *owner == step.node))
+            .filter(move |step| {
+                step.fanout.as_ref().is_some_and(|fanout| fanout.resume.is_none() && crate::partial::completable(canvas, step.node, &fanout.items).is_some())
+            })
+            .map(|step| step.node)
+    }
+}
+
 /// Static target-selection failures; never contains provider or native hook text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetReason {

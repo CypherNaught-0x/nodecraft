@@ -124,6 +124,8 @@ struct StepState {
     gaps: BTreeMap<usize, (Missing, String)>,
     /// The items of `missing` copied from an earlier step's gaps, whose reason already names it.
     inherited: BTreeSet<usize>,
+    /// The input hash taken when the step began (#518), recorded with its result as compared.
+    hashed: Option<nodecraft_types::Blake3>,
     /// Steps that come after this one.
     dependents: Vec<NodeId>,
 }
@@ -334,6 +336,7 @@ impl Run {
                     missing: BTreeMap::new(),
                     gaps: BTreeMap::new(),
                     inherited: BTreeSet::new(),
+                    hashed: None,
                     dependents: Vec::new(),
                 },
             );
@@ -662,7 +665,10 @@ impl Run {
         let planned = match self.steps.get_mut(&node) {
             Some(state) => match state.step.jobs.take() {
                 Some(jobs) => Ok((jobs, state.step.fanout.as_ref().map(|f| f.jobs.clone()).unwrap_or_default())),
-                None => self.materialise(kinds, node),
+                None => {
+                    self.resume_deferred(kinds, node);
+                    self.materialise(kinds, node)
+                }
             },
             None => return (Progress::default(), Vec::new()),
         };
@@ -737,6 +743,25 @@ impl Run {
             return (progress, ready);
         }
         (progress, Vec::new())
+    }
+
+    /// A deferred fanned step whose node shows a partial result made from the inputs this run
+    /// has just made for it (#518) completes that result: only its missing items are planned,
+    /// and the others are copied from it ([`crate::partial`]). Steps inlined from a technique,
+    /// and technique nodes, keep what the planner decided.
+    fn resume_deferred(&mut self, kinds: &Registry, node: NodeId) {
+        if self.inner.contains_key(&node) || self.inner.values().any(|owner| *owner == node) {
+            return;
+        }
+        let Some(fanout) = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref()).filter(|f| f.resume.is_none()) else { return };
+        if crate::partial::completable(&self.canvas, node, &fanout.items).is_none() {
+            return;
+        }
+        let Ok(Some(now)) = self.hasher.hash(&self.canvas, kinds, node, &self.produced) else { return };
+        let Some(state) = self.steps.get_mut(&node) else { return };
+        state.hashed = Some(now);
+        let Some(fanout) = state.step.fanout.as_mut() else { return };
+        fanout.resume = crate::partial::completing(&self.canvas, node, &fanout.items, now);
     }
 
     /// Plans a deferred step from this run's outputs, within [`RunLimits`] (#210): its jobs and,
@@ -1148,8 +1173,13 @@ impl Run {
             }
         };
         // What it was made from: the planned canvas, with this run's upstream outputs. An
-        // over-budget hash is recorded as unknown rather than failing a paid result.
-        let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
+        // over-budget hash is recorded as unknown rather than failing a paid result. One taken when
+        // the step began is reused: it is the one compared, and hashing again costs budget.
+        let hashed = self.steps.get(&node).and_then(|state| state.hashed);
+        let input_hash = match hashed {
+            Some(hash) => Some(hash),
+            None => self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten(),
+        };
         let incomplete = if missing.is_empty() {
             None
         } else {

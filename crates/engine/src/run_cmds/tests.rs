@@ -283,6 +283,7 @@ fn job_counts_known_only_at_run_time_need_a_partial_acceptance() {
     let q = s.dispatch("run.quote", &request(&[4, 2])).unwrap();
     assert_eq!(q["complete"], false, "{q}");
     assert_eq!(q["estimated"], json!([id(2)]));
+    assert_eq!(q["resumable"], json!([]), "2 holds no partial result to finish");
     let strict = start_params(&mut s, &[4, 2], json!({"USD": 1_000_000}), false);
     assert!(s.dispatch("run.start", &strict).is_err(), "one job's price was quoted for an unknown count");
     let partial = start_params(&mut s, &[4, 2], json!({"USD": 1_000_000}), true);
