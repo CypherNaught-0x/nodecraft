@@ -45,6 +45,11 @@ pub fn open_with_assets(path: &Path) -> Result<Session, Error> {
     Session::with_storage(read(path)?, Box::new(nodecraft_format::MemoryStorage::default()))
 }
 
+/// The project at `path`, decoded: its document and assets, read-only.
+pub fn snapshot(path: &Path) -> Result<nodecraft_format::Snapshot, Error> {
+    read(path)
+}
+
 fn read(path: &Path) -> Result<nodecraft_format::Snapshot, Error> {
     // Checked first, so a typo reads as one rather than as a format error.
     if !path.is_file() {

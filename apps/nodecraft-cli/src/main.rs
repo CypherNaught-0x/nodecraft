@@ -2,8 +2,9 @@
 //!
 //! `mcp` serves the engine's commands to MCP clients over stdio. `commands`, `inspect`, `quote`
 //! and `providers` read projects and the engine without changing them; `run` runs a project's
-//! nodes and exports their results, leaving the project file as it was. Techniques' inputs,
-//! `batch`, `comfy` and `serve` arrive with their milestones (docs/plan.md §4.8).
+//! nodes and exports their results, leaving the project file as it was. `serve` offers a
+//! project's techniques as a local HTTP API. `batch` and `comfy` arrive with their milestones
+//! (docs/plan.md §4.8).
 
 mod control;
 mod inspect;
@@ -11,6 +12,7 @@ mod project;
 mod providers;
 mod quote;
 mod run;
+mod serve;
 
 use std::hash::{BuildHasher, RandomState};
 use std::io::Write;
@@ -44,6 +46,13 @@ commands:
                   whose price isn't fully known, needs --yes (check it with `quote` first). The
                   project file is not changed. Stopping the CLI mid-run doesn't stop jobs a
                   provider already accepted; they may still be charged
+  serve <project.ncraft> [--listen <addr>] [--token-file <path>] [--max-cost <CUR=amount>]...
+        [--allow-unpriced]
+                  offer the project's published techniques as a local HTTP API (default
+                  127.0.0.1:7341); requests need the bearer token written to the token file
+                  (default control/serve.json in the app's settings folder). A run may spend
+                  only up to --max-cost per currency (nothing without it), and a run whose price
+                  isn't fully known needs --allow-unpriced. The project file is not changed
   providers       list the model providers and whether each can run (reads the keychain)
   --version, -V   print the version, commit and build date
   --help, -h      print this help
@@ -258,6 +267,46 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
     }
 }
 
+/// `serve`: offers the project's techniques until the process is stopped.
+fn serve_command(args: &[String]) -> ExitCode {
+    let mut path = None;
+    let mut config = serve::Config { listen: std::net::SocketAddr::from(([127, 0, 0, 1], 7341)), token_file: None, policy: serve::Policy::default() };
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = |flag: &str| args.next().ok_or_else(|| format!("`{flag}` needs a value"));
+        let parsed: Result<(), String> = match arg.as_str() {
+            "--listen" => value("--listen")
+                .and_then(|v| v.parse().map(|addr| config.listen = addr).map_err(|_| format!("`--listen` takes an address like 127.0.0.1:7341, not `{v}`"))),
+            "--token-file" => value("--token-file").map(|v| config.token_file = Some(v.into())),
+            "--max-cost" => value("--max-cost").and_then(|v| serve::parse_max_cost(v)).map(|(code, micros)| {
+                config.policy.max_cost.insert(code, micros);
+            }),
+            "--allow-unpriced" => {
+                config.policy.allow_unpriced = true;
+                Ok(())
+            }
+            flag if flag.starts_with("--") => Err(format!("`serve` doesn't take `{flag}`")),
+            project if path.is_none() => {
+                path = Some(std::path::PathBuf::from(project));
+                Ok(())
+            }
+            _ => Err("`serve` takes one project file".into()),
+        };
+        if let Err(message) = parsed {
+            return fail(&format!("{message}\n\n{USAGE}"));
+        }
+    }
+    let Some(path) = path else { return fail(&format!("`serve` needs a project file\n\n{USAGE}")) };
+    match serve::start(config, move || serve::load(&path)) {
+        Ok(server) => {
+            let _ = writeln!(std::io::stderr(), "Serving on http://{}/ (token in {}). Stop with Ctrl-C.", server.addr, server.token_file.display());
+            server.wait();
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.message),
+    }
+}
+
 /// `run`: quotes, runs once the price is agreed to, then exports the results.
 fn run(path: &std::path::Path, options: &Options) -> ExitCode {
     let mut new_id = random_bytes();
@@ -333,6 +382,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("serve") => serve_command(args.get(1..).unwrap_or_default()),
         Some(command @ ("commands" | "inspect" | "quote" | "run" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");
