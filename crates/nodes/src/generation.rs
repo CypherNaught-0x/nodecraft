@@ -4,8 +4,8 @@
 //! validated catalog into these immutable definitions; this L2 module never depends on catalog
 //! or a provider.
 use crate::{
-    Category, GenerateInput, GenerateOutput, InputContract, InputValue, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx,
-    PortCount, descriptor::invalid, mention,
+    Category, GenerateInput, GenerateOutput, InputContract, InputValue, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, NodeMigration,
+    PlanCtx, PortCount, descriptor::invalid, mention,
 };
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
@@ -131,6 +131,19 @@ fn base(id: &'static str, output: Modality) -> NodeDescriptor {
         params: local_schema(None),
         quick_add: None,
     }
+}
+/// The ports a text card was saved with before its model read images (#592): the prompt alone,
+/// where the model now also takes an image. None for any other ports, so a lost port still fails.
+fn earlier(output: Modality, base: &NodeDescriptor, descriptor: &NodeDescriptor, node: &Node) -> Option<NodeDescriptor> {
+    if !saved_earlier(output, &base.inputs, &descriptor.inputs, &node.inputs) {
+        return None;
+    }
+    let mut earlier = descriptor.clone();
+    earlier.inputs.truncate(node.inputs.len());
+    Some(earlier)
+}
+fn saved_earlier(output: Modality, base: &[Port], current: &[Port], saved: &[Port]) -> bool {
+    output == Modality::Text && saved == base && saved.len() < current.len() && current.starts_with(saved)
 }
 /// What a kind's messages call its output, so image wording stays exactly as it was.
 fn noun(output: Modality) -> &'static str {
@@ -370,7 +383,19 @@ impl NodeKind for GenerationKind {
     }
     fn instance<'a>(&'a self, node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
         Self::version(node)?;
-        Ok(Cow::Borrowed(self.definition(node).map_or(&self.base, |d| &d.descriptor)))
+        let Ok(d) = self.definition(node) else { return Ok(Cow::Borrowed(&self.base)) };
+        Ok(earlier(self.output, &self.base, &d.descriptor, node).map_or(Cow::Borrowed(&d.descriptor), Cow::Owned))
+    }
+    /// A card saved before its model gained an input role (a vision mode, #592) takes the new
+    /// ports; the inputs it had keep their place and wires.
+    fn migrate(&self, node: &Node) -> Result<Option<NodeMigration>, Error> {
+        let Ok(d) = self.definition(node) else { return Ok(None) };
+        if earlier(self.output, &self.base, &d.descriptor, node).is_none() {
+            return Ok(None);
+        }
+        let mut node = node.clone();
+        node.inputs = d.descriptor.inputs.clone();
+        Ok(Some(NodeMigration { node, warnings: Vec::new() }))
     }
     fn instance_contract(&self, node: &Node) -> Result<NodeContract, Error> {
         node.validate_payload()?;
@@ -384,7 +409,8 @@ impl NodeKind for GenerationKind {
         node.validate_payload()?;
         Self::version(node)?;
         let d = self.definition(node)?;
-        if node.kind != self.id || node.inputs != d.descriptor.inputs || node.outputs != d.descriptor.outputs {
+        let inputs = node.inputs == d.descriptor.inputs || saved_earlier(self.output, &self.base.inputs, &d.descriptor.inputs, &node.inputs);
+        if node.kind != self.id || !inputs || node.outputs != d.descriptor.outputs {
             return Err(invalid("generation ports do not match the selected model"));
         }
         // Generation submits through submission() in plan; visible is only its identity.

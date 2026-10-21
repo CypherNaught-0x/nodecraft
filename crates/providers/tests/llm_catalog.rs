@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
 use nodecraft_catalog::{Catalog, ModelDescriptor};
-use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient};
+use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient, MAX_IMAGES};
 use nodecraft_providers::{BoxFuture, Http, HttpRequest, HttpResponse, JobInput, Output, Provider, ProviderError, ProviderJob, Submission};
 use nodecraft_types::{Modality, Number, ParamValues, Unsigned, Value};
 use serde_json::{Value as Json, json};
@@ -93,11 +93,16 @@ fn every_builtin_chat_model_builds_a_request_the_adapter_sends() {
         ]
     );
     for model in models {
-        // One text-to-text mode with an inline prompt: a generation.text card runs it unwired.
-        let [mode] = model.modes.as_slice() else { panic!("{}: one mode", model.id) };
+        // A text-to-text mode with an inline prompt, so a generation.text card runs it unwired, and
+        // an image-to-text mode reading up to the adapter's image cap beside the prompt (#592).
+        let [mode, vision] = model.modes.as_slice() else { panic!("{}: two modes", model.id) };
         assert_eq!((mode.id.as_str(), mode.output), ("text-to-text", Modality::Text), "{}", model.id);
         let [prompt] = mode.inputs.as_slice() else { panic!("{}: one input role", model.id) };
         assert_eq!((prompt.role.as_str(), prompt.modality, prompt.min, prompt.max, prompt.inline), ("prompt", Modality::Text, 1, 1, true));
+        assert_eq!((vision.id.as_str(), vision.output), ("image-to-text", Modality::Text), "{}", model.id);
+        let [prompt, image] = vision.inputs.as_slice() else { panic!("{}: a prompt and an image role", model.id) };
+        assert_eq!((image.role.as_str(), image.modality, image.min, image.max), ("image", Modality::Image, 1, MAX_IMAGES as u8));
+        assert_eq!((prompt.role.as_str(), prompt.inline), ("prompt", true));
 
         let job = job(model, &ParamValues::new());
         assert_eq!(job.params.get("max_tokens"), Some(&json!(16_000)), "{}: the quoted default is what is sent", model.id);
@@ -158,4 +163,20 @@ fn temperature_is_offered_and_sent_only_where_the_model_accepts_it() {
     let mut long = ParamValues::new();
     long.insert("max_tokens".into(), Value::Unsigned(Unsigned(32_769)));
     assert!(mini.effective_params(&long, true).is_err(), "GPT-4.1 mini writes at most 32,768 tokens");
+}
+
+#[test]
+fn every_builtin_chat_model_sends_the_prompt_and_its_images_in_one_message() {
+    let catalog = Catalog::builtin().unwrap();
+    for model in chat_models(&catalog) {
+        let mut job = job(model, &ParamValues::new());
+        // The engine sends the prompt first, then the wired images, all in one user message.
+        job.inputs.push(JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(&b"PNG"[..]) });
+        let (request, _) = send(model, &job);
+        let body: Json = serde_json::from_slice(&request.body).unwrap();
+        let content = body["messages"][0]["content"].as_array().unwrap_or_else(|| panic!("{}: parts", model.id));
+        let kinds: Vec<&str> = content.iter().map(|p| p["type"].as_str().unwrap()).collect();
+        let expected = if model.provider == "openai" { ["text", "image_url"] } else { ["text", "image"] };
+        assert_eq!(kinds, expected, "{}", model.id);
+    }
 }

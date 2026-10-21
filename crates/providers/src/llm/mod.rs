@@ -35,6 +35,8 @@ use crate::{ErrorKind, ProviderError};
 /// Cap on images per request and on their total size (before base64).
 pub const MAX_IMAGES: usize = 16;
 pub const MAX_IMAGE_BYTES_TOTAL: usize = 20 * 1024 * 1024;
+/// Anthropic refuses an image over 10 MB once base64-encoded: about 7.5 MB of raw bytes (#592).
+pub const ANTHROPIC_MAX_IMAGE_BYTES: usize = 7_500_000;
 /// Default reply length when the job doesn't say.
 pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 /// Cap on a whole (non-streamed) reply.
@@ -360,6 +362,11 @@ impl ChatRequest {
         }
         if let Some((mime, _)) = images.iter().find(|(m, _)| !IMAGE_TYPES.contains(&m.as_str())) {
             return bad(format!("{mime} images can't be sent to chat models; use PNG, JPEG, GIF or WebP"));
+        }
+        if dialect == Dialect::Anthropic
+            && let Some((_, n)) = images.iter().find(|(_, n)| *n > ANTHROPIC_MAX_IMAGE_BYTES)
+        {
+            return bad(format!("an image of {n} bytes is more than the {ANTHROPIC_MAX_IMAGE_BYTES} Anthropic accepts; send it smaller"));
         }
         let total: usize = images.iter().map(|(_, n)| *n).fold(0, usize::saturating_add);
         if total > MAX_IMAGE_BYTES_TOTAL {
@@ -870,6 +877,14 @@ pub(crate) mod tests {
         let mut r = request();
         r.messages[0].parts = (0..=MAX_IMAGES).map(|_| Part::Image { mime: "image/png".into(), bytes: Arc::from(&b"x"[..]) }).collect();
         assert!(r.validate(oa).is_err());
+        // Anthropic caps each image (10 MB once base64-encoded); OpenAI sets no per-image size.
+        let mut r = request();
+        r.messages[0].parts.push(Part::Image { mime: "image/png".into(), bytes: Arc::from(vec![0u8; ANTHROPIC_MAX_IMAGE_BYTES + 1]) });
+        assert!(r.validate(oa).is_ok());
+        assert_eq!(r.validate(Dialect::Anthropic).unwrap_err().kind, ErrorKind::UnsupportedInput);
+        r.messages[0].parts.pop();
+        r.messages[0].parts.push(Part::Image { mime: "image/png".into(), bytes: Arc::from(vec![0u8; ANTHROPIC_MAX_IMAGE_BYTES]) });
+        assert!(r.validate(Dialect::Anthropic).is_ok());
         // Empty text is dropped; a message left empty is refused.
         let mut r = request();
         r.messages[0].parts = vec![Part::Text("  ".into())];

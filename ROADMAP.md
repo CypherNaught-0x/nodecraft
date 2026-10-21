@@ -54,7 +54,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   4/8/16-view sheet card that draws the model from the current view as an image (#112). PDFs become PDF cards showing the
   first page and page count; PDF to images draws a page range as images and PDF to text reads
   the text the pages draw (#113). A PDF reader pages through a PDF, sets a node's page range, and extracts a page or
-  its text into new nodes (#590).
+  its text into new nodes (#590). Scanned pages are recognised by a vision-capable text model: PDF to
+  text headings mark pages that draw no text, PDF to images can draw only those, and the built-in
+  chat models take up to 16 images on a text card (#592).
   Improve prompt on the generation toolbar puts a text card, which rewrites the card's typed
   prompt, in front of it and wires the rewrite in; it runs, and is priced, like any other card (#582).
   The builtin catalog lists chat models on the OpenAI and Anthropic endpoints (GPT-6.1 Sol,
