@@ -89,6 +89,15 @@ mod web {
         ) -> VideoView {
             VideoView::Unavailable("Video playback needs the desktop app")
         }
+        pub fn still(
+            &mut self,
+            _: &egui::Context,
+            _: &nodecraft_types::AssetRef,
+            _: f32,
+            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
+        ) -> (Option<u64>, Option<(egui::TextureId, [u32; 2])>) {
+            (None, None)
+        }
         pub fn act(&mut self, _: &egui::Context, _: NodeId, _: VideoIntent) {}
         pub fn retain(&mut self, _: impl Fn(NodeId) -> bool) {}
     }
@@ -653,20 +662,8 @@ mod native {
             edge: f32,
             read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
         ) -> VideoView {
-            let Some((ffmpeg, ffprobe)) = &self.tools else {
-                return VideoView::Unavailable(UNCONFIGURED);
-            };
-            if matches!(self.service, Service::Off) {
-                let config =
-                    ToolPaths::new(ffmpeg.clone(), ffprobe.clone()).and_then(|tools| ServiceConfig::new(tools, std::env::temp_dir(), VideoLimits::default()));
-                self.service = match config.and_then(VideoService::begin_open) {
-                    Ok(opening) => Service::Opening(opening),
-                    Err(error) => Service::Failed(message(error)),
-                };
-                ctx.request_repaint_after(POLL);
-            }
-            if let Service::Failed(why) = self.service {
-                return VideoView::Unavailable(why);
+            if let Err(view) = self.open(ctx) {
+                return view;
             }
             let hash = asset.hash;
             let edge = crate::preview::bucket(edge);
@@ -695,6 +692,45 @@ mod native {
                 None if matches!(self.posters.get(&(hash, edge)).map(|p| &p.state), Some(Poster::Failed)) => VideoView::Unavailable("Can't play this video"),
                 None => VideoView::Pending,
             }
+        }
+
+        /// Starts the service the first time a video is wanted; what to show while it can't.
+        fn open(&mut self, ctx: &egui::Context) -> Result<(), VideoView> {
+            let Some((ffmpeg, ffprobe)) = &self.tools else {
+                return Err(VideoView::Unavailable(UNCONFIGURED));
+            };
+            if matches!(self.service, Service::Off) {
+                let config =
+                    ToolPaths::new(ffmpeg.clone(), ffprobe.clone()).and_then(|tools| ServiceConfig::new(tools, std::env::temp_dir(), VideoLimits::default()));
+                self.service = match config.and_then(VideoService::begin_open) {
+                    Ok(opening) => Service::Opening(opening),
+                    Err(error) => Service::Failed(message(error)),
+                };
+                ctx.request_repaint_after(POLL);
+            }
+            match self.service {
+                Service::Failed(why) => Err(VideoView::Unavailable(why)),
+                _ => Ok(()),
+            }
+        }
+
+        /// A video's length in microseconds and its first frame at about `edge` pixels, each once
+        /// known, without a card playing it: for editors that lay videos out. `read` is as for
+        /// `view`.
+        pub fn still(
+            &mut self,
+            ctx: &egui::Context,
+            asset: &AssetRef,
+            edge: f32,
+            read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
+        ) -> (Option<u64>, Option<(egui::TextureId, [u32; 2])>) {
+            if self.open(ctx).is_err() {
+                return (None, None);
+            }
+            let Ok(video) = self.source(ctx, asset.hash, read) else {
+                return (None, None);
+            };
+            (Some(video.metadata().duration_us), self.poster(asset.hash, crate::preview::bucket(edge)))
         }
 
         /// The imported video `hash`, or what to show instead; starts reading it when it's new.

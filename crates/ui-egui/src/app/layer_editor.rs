@@ -359,14 +359,14 @@ fn shape_label(shape: ShapeKind) -> &'static str {
     }
 }
 
-fn param_json(value: Value) -> Json {
+pub(super) fn param_json(value: Value) -> Json {
     serde_json::to_value(value).unwrap_or_default()
 }
 
 /// A number field that applies when it lets go (drag released, focus lost), so a gesture is
 /// one change.
 #[allow(clippy::too_many_arguments)]
-fn number(
+pub(super) fn number(
     ui: &mut egui::Ui,
     draft: &mut Option<(String, String)>,
     key: &str,
@@ -397,7 +397,7 @@ fn number(
 }
 
 /// A text field that applies when it loses focus.
-fn text_field(ui: &mut egui::Ui, draft: &mut Option<(String, String)>, key: &str, label: &str, value: &str, multiline: bool) -> Option<String> {
+pub(super) fn text_field(ui: &mut egui::Ui, draft: &mut Option<(String, String)>, key: &str, label: &str, value: &str, multiline: bool) -> Option<String> {
     let mut text = match draft {
         Some((k, text)) if k == key => text.clone(),
         _ => value.to_owned(),
@@ -417,7 +417,14 @@ fn text_field(ui: &mut egui::Ui, draft: &mut Option<(String, String)>, key: &str
 }
 
 /// A `#rrggbb` field with a swatch; empty means none where `optional`.
-fn colour_field(ui: &mut egui::Ui, draft: &mut Option<(String, String)>, key: &str, label: &str, value: Option<&str>, t: &Tokens) -> Option<Option<String>> {
+pub(super) fn colour_field(
+    ui: &mut egui::Ui,
+    draft: &mut Option<(String, String)>,
+    key: &str,
+    label: &str,
+    value: Option<&str>,
+    t: &Tokens,
+) -> Option<Option<String>> {
     let mut out = None;
     ui.horizontal(|ui| {
         let swatch = value.and_then(|v| layers::parse_color(v).ok());
@@ -442,7 +449,7 @@ impl NodeCraftApp {
         self.layer_editor = Some(LayerEditor::new(self.canvas, node));
     }
 
-    fn layer_dispatch(&mut self, command: &str, params: &Json) -> bool {
+    pub(super) fn layer_dispatch(&mut self, command: &str, params: &Json) -> bool {
         match self.session.dispatch(command, params) {
             Ok(_) => {
                 self.notice = None;

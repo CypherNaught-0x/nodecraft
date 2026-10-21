@@ -42,7 +42,8 @@ points across; the generation toolbar is 32 high, 10 above its card; the image v
 Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
 properties panels are 250 wide; a dragged layer snaps within 6 points of a guide, and its rotate
 handle sits 24 points above it. App mode's form is 640 wide, and its media and result
-thumbnails 120 across.
+thumbnails 120 across. The Timeline editor shares the Layer Editor's panel width; its clip track
+is 84 high under a 22-high time ruler, and a clip's edge trims within 6 points.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the

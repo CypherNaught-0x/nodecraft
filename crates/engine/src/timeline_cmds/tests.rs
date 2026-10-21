@@ -81,9 +81,11 @@ fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
 fn a_split_plays_one_video_twice_and_a_wired_videos_last_clip_stays() {
     let mut s = session();
     let a = timeline::auto_id(&A.to_string(), 0);
-    // The automatic clip's end isn't known until its video has a length.
-    let unknown = s.dispatch("timeline.split", &with(on(&a), json!({"at_us": 1_000_000}))).unwrap_err();
-    assert!(unknown.message.contains("end"), "{}", unknown.message);
+    // A clip whose end isn't known yet splits too: its second part plays to the video's end.
+    s.dispatch("timeline.split", &with(on(&a), json!({"at_us": 1_000_000}))).unwrap();
+    let clips = list(&mut s);
+    assert_eq!((&clips[0]["out_us"], &clips[1]["in_us"], &clips[1]["out_us"]), (&json!(1_000_000), &json!(1_000_000), &Json::Null));
+    s.dispatch("edit.undo", &json!({})).unwrap();
     s.dispatch(
         "timeline.update",
         &with(on(&a), json!({"set": {"out_us": 3_000_000, "fade_in_us": 100_000, "fade_out_us": 200_000, "transition_us": 300_000}})),

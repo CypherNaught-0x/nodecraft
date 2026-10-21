@@ -272,8 +272,9 @@ fn split(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let mut timeline = stored(node)?.with_sources(&sources);
     let at = index_of(&timeline, &p.clip)?;
     let first = timeline.clips.get(at).ok_or_else(|| not_found("clip"))?.clone();
-    let end =
-        first.out_us.or_else(|| video_length(&inputs, &first)).ok_or_else(|| invalid("the clip's end isn't known yet: run its video first, or set its end"))?;
+    // Without a known end the second part plays to the video's end; a cut past it is reported
+    // by the run, which probes the video.
+    let end = first.out_us.or_else(|| video_length(&inputs, &first)).unwrap_or(u64::MAX);
     if p.at_us <= first.in_us || p.at_us >= end {
         return Err(invalid("split a clip between its start and its end"));
     }
