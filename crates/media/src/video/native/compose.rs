@@ -173,7 +173,7 @@ impl Context {
 }
 
 /// The VP9 encoding every output uses, at `quality`.
-fn encoding(quality: timeline::Quality) -> Vec<&'static str> {
+pub(super) fn encoding(quality: timeline::Quality) -> Vec<&'static str> {
     let (crf, bits) = quality.vp9();
     let mut name = "";
     VP9.iter()

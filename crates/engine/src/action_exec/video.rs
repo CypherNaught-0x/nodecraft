@@ -104,7 +104,7 @@ fn edit(action: &str, params: &ParamValues, inputs: usize) -> Result<Edit, Strin
 
 #[cfg(not(target_arch = "wasm32"))]
 /// The render quality the action asks for; a job planned before it had one renders at Standard.
-fn quality(params: &ParamValues) -> Result<nodecraft_media::video::Quality, String> {
+pub(super) fn quality(params: &ParamValues) -> Result<nodecraft_media::video::Quality, String> {
     use nodecraft_media::video::Quality;
     match word(params, "quality").unwrap_or("standard") {
         "draft" => Ok(Quality::Draft),
@@ -118,7 +118,7 @@ fn quality(params: &ParamValues) -> Result<nodecraft_media::video::Quality, Stri
 /// The output picture for a video `width`×`height` pixels of aspect `sar`, turned `rotation`
 /// degrees, at `rate`: its upright shape, fitted within 4096 a side and rounded to even sides
 /// of at least 16, at its own rate when the renderer takes it and 30 a second otherwise.
-fn frame_for(width: u32, height: u32, sar: (u32, u32), rotation: u16, rate: Option<(u64, u64)>) -> ((u32, u32), (u32, u32)) {
+pub(super) fn frame_for(width: u32, height: u32, sar: (u32, u32), rotation: u16, rate: Option<(u64, u64)>) -> ((u32, u32), (u32, u32)) {
     use nodecraft_nodes::timeline::{MAX_FRAME, MIN_FRAME};
     let wide = if sar.0 == 0 || sar.1 == 0 { u64::from(width) } else { u64::from(width).saturating_mul(u64::from(sar.0)) / u64::from(sar.1) };
     let (w, h) = if rotation % 180 == 90 { (u64::from(height), wide) } else { (wide, u64::from(height)) };
@@ -170,7 +170,13 @@ mod native {
     use nodecraft_types::{ParamValues, Value};
 
     impl LocalActions {
-        fn import_video(&self, service: &VideoService, value: Option<&Value>, unconnected: &str, cancelled: &dyn Fn() -> bool) -> Result<VideoAsset, String> {
+        pub(in crate::action_exec) fn import_video(
+            &self,
+            service: &VideoService,
+            value: Option<&Value>,
+            unconnected: &str,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<VideoAsset, String> {
             let job = service.import(self.video_bytes(value, false, unconnected)?, ColorPolicy::default()).map_err(|(error, _)| message(closed(error)))?;
             wait(job, cancelled).map_err(message)
         }

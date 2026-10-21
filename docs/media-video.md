@@ -125,8 +125,29 @@ run live: a render takes too long to redo on every edit, so they run when asked
 
 Every kind has a Quality choice (Draft, Standard, High). Settings are checked before any video is
 imported, so a bad trim or too many stitched videos costs no import. Without `[media]` tools the
-actions say so; in a browser they say they need the desktop app. Reverse, frame and sound
-extraction, contact sheets, grading and the other operations #108 lists come in later parts.
+actions say so; in a browser they say they need the desktop app.
+
+### Frame-based actions
+
+The frame-based kinds (`crates/nodes/src/video_frames.rs`, executor
+`crates/engine/src/action_exec/video_frames.rs`) work a frame at a time instead of through one
+composition. Pictures are decoded with `VideoService::frame` (at most 2048 a side) and staged as
+PNG. Videos are drawn here and pushed through `VideoService::render` with a `FrameSender`, so
+memory holds one frame, never the whole video; they have no sound. A frame is asked for by its
+start, rounded down to the video's frame rate, because the service returns the first frame at
+or after a time; a time past the last frame takes the last frame. Like the other video actions
+they never run live.
+
+| Kind | Inputs | Does |
+|---|---|---|
+| `video.frames` Extract frames | a video | One frame at a time, 2 to 64 evenly spaced, or one every few seconds (at most 64), as a list of pictures. |
+| `video.contact_sheet` Contact sheet | a video | Up to 64 evenly spaced frames in a grid of columns and rows, with a gap and a background, as one picture within the image limits. |
+| `video.long_exposure` Long exposure | a video | 2 to 64 frames from a stretch averaged (motion blur), or their lightest or darkest values kept (light trails). |
+| `video.reverse` Reverse video | a video | Plays it backwards, or forwards then backwards without showing either end twice. At most 600 source frames (20 s at 30 a second); trim a longer video first. |
+| `video.ken_burns` Pan and zoom | a picture | 1 to 30 s at 24, 30 or 60 frames a second: zooms from one factor to another while panning across, steadily or easing in and out, at most 1920 a side. |
+
+Every run checks for a cancel between frames, and the settings are checked before any video is
+imported. Sound extraction, grading and the other operations #108 lists come in later parts.
 
 ## Limits, cancellation and cleanup
 

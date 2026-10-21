@@ -1239,7 +1239,7 @@ impl Context {
             "-vf",
             "scale=iw:ih:flags=bilinear:in_range=pc:out_range=pc:out_color_matrix=bt709,format=yuv444p,colorspace=iall=bt709:itrc=srgb:irange=pc:all=bt709:range=tv:format=yuv420p:fast=0:dither=none",
         ]);
-        args.extend(process::args(VP9));
+        args.extend(process::args(&compose::encoding(spec.quality)));
         args.extend(process::args(&["-fps_mode", "passthrough", "-frames:v", &spec.count.to_string()]));
         args.extend(process::args(TAGS));
         args.extend(process::args(&["-fs", &quota.to_string()]));

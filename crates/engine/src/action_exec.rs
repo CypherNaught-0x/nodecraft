@@ -316,6 +316,7 @@ mod mesh_capture;
 mod shader_state;
 pub(crate) mod timeline;
 mod video;
+mod video_frames;
 
 impl LocalActions {
     fn shader(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
@@ -362,7 +363,7 @@ impl LocalActions {
 
 impl ActionExecutor for LocalActions {
     fn long_running(&self, action: &str) -> bool {
-        action == nodecraft_nodes::timeline::ID || nodecraft_nodes::video_edit::IDS.contains(&action)
+        action == nodecraft_nodes::timeline::ID || nodecraft_nodes::video_edit::IDS.contains(&action) || nodecraft_nodes::video_frames::IDS.contains(&action)
     }
 
     fn execute_cancellable(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
@@ -371,6 +372,9 @@ impl ActionExecutor for LocalActions {
         }
         if nodecraft_nodes::video_edit::IDS.contains(&action) {
             return self.video_edit(action, params, inputs, cancelled);
+        }
+        if nodecraft_nodes::video_frames::IDS.contains(&action) {
+            return self.video_frames(action, params, inputs, cancelled);
         }
         self.execute(action, params, inputs)
     }
@@ -381,6 +385,9 @@ impl ActionExecutor for LocalActions {
         }
         if nodecraft_nodes::video_edit::IDS.contains(&action) {
             return self.video_edit(action, params, inputs, &|| false);
+        }
+        if nodecraft_nodes::video_frames::IDS.contains(&action) {
+            return self.video_frames(action, params, inputs, &|| false);
         }
         if action == nodecraft_nodes::shader::ID {
             return self.shader(params, inputs);

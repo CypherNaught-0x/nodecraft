@@ -107,8 +107,14 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.tint",
     ];
     let mut image_one: Vec<&str> = image_actions.to_vec();
-    // A picture can be a still on a timeline (#576).
-    image_one.extend([nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::element::ID, nodecraft_nodes::timeline::ID]);
+    // A picture can be a still on a timeline (#576) or panned and zoomed into a video (#108).
+    image_one.extend([
+        nodecraft_nodes::batch::ID,
+        router::ID,
+        nodecraft_nodes::element::ID,
+        nodecraft_nodes::timeline::ID,
+        nodecraft_nodes::video_frames::KEN_BURNS,
+    ]);
     image_one.sort();
     let mut got = ids(PortType { modality: Modality::Image, many: false });
     got.sort();
@@ -125,10 +131,11 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "an Element, the Layer Editor and a Timeline take a list of images"
     );
     use nodecraft_nodes::video_edit::{REPLACE_AUDIO, SPEED, STITCH, TRIM};
+    use nodecraft_nodes::video_frames::{CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REVERSE};
     let (batch, timeline) = (nodecraft_nodes::batch::ID, nodecraft_nodes::timeline::ID);
     assert_eq!(
         ids(PortType { modality: Modality::Video, many: false }),
-        [batch, router::ID, REPLACE_AUDIO, SPEED, STITCH, timeline, TRIM],
+        [batch, router::ID, CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REPLACE_AUDIO, REVERSE, SPEED, STITCH, timeline, TRIM],
         "a Timeline and the video actions take a video"
     );
     assert_eq!(

@@ -236,6 +236,7 @@ pub struct RenderSpec {
     pub(crate) fps: (u32, u32),
     pub(crate) count: u32,
     pub(crate) background: [u8; 3],
+    pub(crate) quality: Quality,
 }
 impl RenderSpec {
     pub fn new(width: u32, height: u32, fps: (u32, u32), count: u32, background: [u8; 3]) -> Result<Self> {
@@ -258,7 +259,11 @@ impl RenderSpec {
         {
             return Err(VideoError::Invalid);
         }
-        Ok(Self { width, height, fps, count, background })
+        Ok(Self { width, height, fps, count, background, quality: Quality::default() })
+    }
+    pub fn with_quality(mut self, quality: Quality) -> Self {
+        self.quality = quality;
+        self
     }
     pub(crate) fn bytes(self) -> Result<usize> {
         usize::try_from(u64::from(self.width) * u64::from(self.height) * 4).map_err(|_| VideoError::Limit)
