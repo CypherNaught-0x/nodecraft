@@ -9,7 +9,13 @@ impl LocalActions {
     /// The bytes of the model `value` names: one of the project's, or one an earlier action in
     /// this run made.
     pub(super) fn model_bytes(&self, value: Option<&Value>) -> Result<Vec<u8>, String> {
-        let Some(Value::Media(source)) = value else { return Err("connect a 3D model first".into()) };
+        self.media_bytes(value, "3D model")
+    }
+
+    /// The bytes of the media `value` names (a `noun`, for messages): one of the project's, or
+    /// one an earlier action in this run made.
+    pub(super) fn media_bytes(&self, value: Option<&Value>, noun: &str) -> Result<Vec<u8>, String> {
+        let Some(Value::Media(source)) = value else { return Err(format!("connect a {noun} first")) };
         if let Some(staged) = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash) {
             return Ok(staged.to_vec());
         }
@@ -17,11 +23,11 @@ impl LocalActions {
             return Ok(resident.to_vec());
         }
         let input = self.assets.preview_read(source).map_err(|error| match error {
-            nodecraft_format::PreviewReadError::Missing => "the input model isn't in this project",
-            nodecraft_format::PreviewReadError::TooLarge => "the input model is too large to convert",
-            _ => "the input model can't be read",
+            nodecraft_format::PreviewReadError::Missing => format!("the input {noun} isn't in this project"),
+            nodecraft_format::PreviewReadError::TooLarge => format!("the input {noun} is too large to read"),
+            _ => format!("the input {noun} can't be read"),
         })?;
-        input.read_verified(&Default::default(), &Default::default()).map_err(|_| "the input model can't be read".to_owned())
+        input.read_verified(&Default::default(), &Default::default()).map_err(|_| format!("the input {noun} can't be read"))
     }
 
     pub(super) fn convert_mesh(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {

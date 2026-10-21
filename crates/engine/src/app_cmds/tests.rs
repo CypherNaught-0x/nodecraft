@@ -176,3 +176,11 @@ fn an_empty_source_is_not_the_forms() {
     assert_eq!(fill(&mut s, json!([])).unwrap_err().kind, ErrorKind::Conflict);
     assert!(s.document().canvases().get(&C).unwrap().nodes().contains_key(&id(7)));
 }
+
+#[test]
+fn a_form_fills_a_pdf_input_with_a_pdf_source() {
+    use nodecraft_types::{Modality, PortType};
+    let port = |modality| PortType { modality, many: false };
+    assert_eq!(super::source_kind(port(Modality::Document)).unwrap(), (nodecraft_nodes::document::SOURCE, "asset"));
+    assert_eq!(super::source_kind(port(Modality::Mesh)).unwrap_err().kind, ErrorKind::Unsupported);
+}

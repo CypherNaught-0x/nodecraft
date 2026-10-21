@@ -4,7 +4,7 @@
 use crate::theme::Tokens;
 use egui::{RichText, Sense};
 use nodecraft_graph::{Generation, Node};
-use nodecraft_types::{GenerationId, Modality, Value};
+use nodecraft_types::{GenerationId, Value};
 
 /// Rows of controls the strip draws: the step controls, then the results.
 pub const ROWS: usize = 2;
@@ -82,9 +82,8 @@ pub const MAX_EXTRACT_ITEMS: usize = 12;
 /// [`MAX_EXTRACT_ITEMS`], a batch-fanned result's media counted one by one), labelled for the menu.
 pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
     let mut targets = Vec::new();
-    // Only what a source node can hold (text, image, video, audio, 3D).
-    let extractable = |port: &nodecraft_graph::Port| port.port_type.modality != Modality::Document;
-    for (port, value) in node.outputs.iter().zip(&generation.outputs).filter(|(port, _)| extractable(port)) {
+    // Every modality has a source node to hold it (PDFs since #113).
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
         match value {
             Value::List(items) => {
                 let count = nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).count();
@@ -318,7 +317,7 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
 mod tests {
     use super::*;
     use nodecraft_graph::Port;
-    use nodecraft_types::{NodeId, PortType};
+    use nodecraft_types::{Modality, NodeId, PortType};
 
     fn result(outputs: Vec<Value>) -> Generation {
         Generation::new(GenerationId::from_bytes([1; 16]), outputs)
@@ -349,14 +348,15 @@ mod tests {
         assert_eq!(targets[1], ("takes: item 1 of 20".into(), Some("takes".into()), Some(0)));
         node.outputs.push(Port { name: "report".into(), port_type: PortType { modality: Modality::Document, many: false } });
         let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), Value::List(vec![]), Value::Text("m".into())]));
-        assert_eq!(targets.len(), 1, "an empty list and a document output offer nothing");
+        assert_eq!(targets.len(), 2, "an empty list offers nothing; a document output is offered");
+        assert_eq!(targets[1], ("report".into(), Some("report".into()), None));
         // A batch-fanned result offers its values one by one, not each item's list (#519).
         let texts = |t: &[&str]| t.iter().map(|t| Value::Text((*t).into())).collect::<Vec<_>>();
         let fanned = Value::List(vec![Value::List(texts(&["a", "b"])), Value::List(texts(&["c"]))]);
         let key = |n: u8| nodecraft_graph::ItemKey { batch: NodeId::from_bytes([30; 16]), item: nodecraft_types::ItemId::from_bytes([n; 16]) };
         let by_items = |outputs: Vec<Value>| Generation { items: vec![vec![key(1)], vec![key(2)]], ..result(outputs) };
         let targets = extract_targets(&node, &by_items(vec![Value::Text("c".into()), fanned.clone(), Value::Text("m".into())]));
-        assert_eq!(targets.last(), Some(&("takes: item 3 of 3".into(), Some("takes".into()), Some(2))));
+        assert_eq!(targets.iter().rev().nth(1), Some(&("takes: item 3 of 3".into(), Some("takes".into()), Some(2))), "the last item, then the document");
         assert_eq!(preview(&by_items(vec![fanned.clone()]), &crate::theme::DARK), "3 items");
         // A list of lists no batch made is two values.
         assert_eq!(preview(&result(vec![fanned]), &crate::theme::DARK), "2 items");

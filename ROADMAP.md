@@ -21,7 +21,7 @@ an agent can actually do today.
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557) | 2/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105) | 2/15 |
-| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22) | 3/7 |
+| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113) | 4/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/26 |
@@ -51,7 +51,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   writes a GLB or OBJ copy (#111). Typing `@` in a generation prompt mentions another card,
   whose text goes into the prompt where it is mentioned and which runs first, like a wire (#505).
   The viewer's Photo and Views buttons add a 3D photo or a
-  4/8/16-view sheet card that draws the model from the current view as an image (#112).
+  4/8/16-view sheet card that draws the model from the current view as an image (#112). PDFs become PDF cards showing the
+  first page and page count; PDF to images draws a page range as images and PDF to text reads
+  the text the pages draw (#113).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
