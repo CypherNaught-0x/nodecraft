@@ -37,6 +37,20 @@ output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 
 [[model]]
+id = "mock-round"
+provider = "mock"
+provider_model = "mock-image"
+label = "Mock round image"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.04 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
 id = "other-writer"
 provider = "other"
 provider_model = "other-text"
@@ -287,6 +301,48 @@ fn an_edited_card_shows_a_stale_badge_and_refreshing_runs_it_again() {
     h.run();
     assert_eq!(mock.requests().len(), 2);
     assert!(h.query_by_label(BADGE).is_none(), "the refreshed result matches its inputs");
+}
+
+#[test]
+fn a_model_change_marks_the_result_stale() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock.clone()));
+    generated(&mut h);
+    h.run();
+    assert!(h.query_by_label(BADGE).is_none());
+    let session = &mut h.state_mut().session;
+    let preview = session.dispatch("node.model_preview", &json!({"canvas": C, "nodes": [N], "model": "mock-round"})).unwrap();
+    let revision = session.revision();
+    session
+        .dispatch(
+            "node.set_model",
+            &json!({"canvas": C, "nodes": [N], "model": "mock-round", "expected_revision": revision, "preview_binding": preview["binding"]}),
+        )
+        .unwrap();
+    for _ in 0..3 {
+        h.run();
+    }
+    assert!(h.query_by_label(BADGE).is_some(), "the result was made by the other model");
+    assert_eq!(mock.requests().len(), 1, "marking stale runs nothing");
+}
+
+#[test]
+fn the_toolbar_expands_a_result_into_the_viewer() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock));
+    generated(&mut h);
+    h.state_mut().selection.only(N);
+    h.run();
+    press(&mut h, Role::Button, "Expand");
+    h.run();
+    assert_eq!(h.state().viewer, Some(N));
+    assert!(h.query_by_label("Image").is_some(), "the viewer window is open");
+    h.state_mut().selection.clear();
+    let canvas = C;
+    h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": N})).unwrap();
+    h.run();
+    h.run();
+    assert_eq!(h.state().viewer, None, "the viewer closes with its node");
 }
 
 #[test]

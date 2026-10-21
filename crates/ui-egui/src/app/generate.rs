@@ -336,6 +336,7 @@ impl NodeCraftApp {
         let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
         let shown = |name: &str| cached.visible.contains(name);
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
+        let mode = self.session.document().canvases().get(&self.canvas).map(|canvas| mode_of(&self.session, canvas, node));
         let mut expand = false;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
@@ -361,6 +362,16 @@ impl NodeCraftApp {
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), format!("Model {short}")));
                             if r.clicked() {
                                 intents.push((id, Intent::Model));
+                            }
+                            match &mode {
+                                Some(Ok(Some(mode))) => {
+                                    ui.label(egui::RichText::new(mode).color(t.text_muted))
+                                        .on_hover_text("The model's mode, chosen by what is wired in: connect reference images to edit from them");
+                                }
+                                Some(Err(why)) => {
+                                    ui.label(egui::RichText::new("No mode fits").color(t.danger)).on_hover_text(why);
+                                }
+                                _ => {}
                             }
                             if let Some(spec) = cached
                                 .roles
@@ -389,6 +400,13 @@ impl NodeCraftApp {
                                 });
                                 if selected != current {
                                     intents.push((id, Intent::Parameter { name: spec.name.clone(), value: Some(Value::Text(selected)) }));
+                                }
+                            }
+                            for name in [&cached.roles.strength, &cached.roles.style_strength].into_iter().flatten().filter(|name| shown(name)) {
+                                if let Some(spec) = cached.descriptor.params.params.iter().find(|spec| spec.name == *name)
+                                    && let Some(value) = strength(ui, id, node, spec, editable(name), t)
+                                {
+                                    intents.push((id, Intent::Parameter { name: spec.name.clone(), value: Some(value) }));
                                 }
                             }
                             if nodecraft_engine::split::image_of(node).is_some() {
@@ -442,6 +460,64 @@ impl NodeCraftApp {
             self.viewer = None;
         }
     }
+}
+
+/// The mode `node`'s model runs in with what is wired to it now, for the toolbar: its name
+/// for people (`Edit`, `Text to image`), none for a model with one way to run, or why no mode
+/// fits the wires.
+fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Result<Option<String>, String> {
+    let contract = session.kinds().get(&node.kind).and_then(|kind| kind.instance_contract(node)).map_err(|error| error.message)?;
+    if contract.modes.len() < 2 {
+        return Ok(None);
+    }
+    let mut wires: BTreeMap<&str, usize> = BTreeMap::new();
+    for edge in canvas.edges().values().filter(|edge| edge.to.node == node.id) {
+        if contract.inputs.iter().any(|input| input.port == edge.to.port) {
+            let count = wires.entry(edge.to.port.as_str()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+    let mode = contract.resolve_mode(&wires, false).map_err(|error| error.message)?;
+    Ok(mode.map(|mode| {
+        let words = mode.as_str().replace(['-', '_'], " ");
+        let mut chars = words.chars();
+        chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+    }))
+}
+
+/// A strength slider in the toolbar. A drag is one edit, made when it ends: the value being
+/// dragged lives in egui memory until then. Returns the value to set.
+fn strength(ui: &mut egui::Ui, id: NodeId, node: &Node, spec: &nodecraft_types::ParamSpec, editable: bool, t: &Tokens) -> Option<Value> {
+    let ParamControl::Slider { min, max, step } = &spec.control else { return None };
+    let (low, high) = (min.map_or(0.0, |n| n.get()), max.map_or(1.0, |n| n.get()));
+    if !(low.is_finite() && high.is_finite() && low < high) {
+        return None;
+    }
+    let stored = match node.params.get(&spec.name).or(spec.default.as_ref()) {
+        Some(Value::Number(n)) => n.get(),
+        _ => low,
+    };
+    let memory = egui::Id::new(("toolbar_strength", id, spec.name.as_str()));
+    let mut value: f64 = ui.data(|data| data.get_temp(memory)).unwrap_or(stored);
+    let mut out = None;
+    ui.add_enabled_ui(editable, |ui| {
+        let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
+        let step = step.get();
+        let mut slider = egui::Slider::new(&mut value, low..=high).show_value(true);
+        if step.is_finite() && step > 0.0 {
+            slider = slider.step_by(step);
+        }
+        let r = ui.add(slider).labelled_by(label.id);
+        if r.dragged() {
+            ui.data_mut(|data| data.insert_temp(memory, value));
+        } else {
+            ui.data_mut(|data| data.remove::<f64>(memory));
+            if (r.drag_stopped() || r.changed()) && value != stored {
+                out = nodecraft_types::Number::new(value).ok().map(Value::Number);
+            }
+        }
+    });
+    out
 }
 
 #[cfg(test)]
