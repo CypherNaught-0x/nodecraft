@@ -1,8 +1,9 @@
-//! The Timeline's executor (#109): imports each connected video into the video service, checks
-//! the clips against the videos' lengths, renders them into one WebM (VP9 picture, Opus sound)
-//! and stages it. The tools are the ones the settings name (`[media]`), never a project's.
+//! The Timeline's executor (#109, #576): imports each connected video, sound and picture into
+//! the video service, checks the clips against their media's lengths, renders the main track and
+//! the tracks over it into one WebM (VP9 picture, Opus sound) and stages it. The tools are the ones the settings name (`[media]`), never a project's.
 //! Natively only: browsers have no video service.
 use super::{LocalActions, whole, word};
+use nodecraft_nodes::timeline::{Input, Wire};
 use nodecraft_types::{ParamValues, Value};
 
 /// Most bytes a rendered timeline may have: it is held in memory until the host imports it.
@@ -35,12 +36,23 @@ pub(crate) fn frame(params: &ParamValues) -> Result<Frame, String> {
     Ok(Frame { width: edge("width")?, height: edge("height")?, fps: (fps, 1), background: [r, g, b] })
 }
 
-/// Each input's origin node, as planned (empty where it isn't known).
-pub(crate) fn sources(params: &ParamValues) -> Vec<String> {
-    match params.get(nodecraft_nodes::timeline::SOURCES_PARAM) {
+fn texts(params: &ParamValues, name: &str) -> Vec<String> {
+    match params.get(name) {
         Some(Value::List(items)) => items.iter().map(|v| if let Value::Text(t) = v { t.clone() } else { String::new() }).collect(),
         _ => Vec::new(),
     }
+}
+
+/// Each of `count` inputs' port and origin node, as planned: an origin that isn't known is
+/// empty, and a port that isn't (a job planned before #576) is `clips`.
+pub(crate) fn wires(params: &ParamValues, count: usize) -> Vec<Wire> {
+    let (origins, ports) = (texts(params, nodecraft_nodes::timeline::SOURCES_PARAM), texts(params, nodecraft_nodes::timeline::PORTS_PARAM));
+    (0..count)
+        .map(|i| {
+            let input = ports.get(i).and_then(|p| Input::from_port(p)).unwrap_or_default();
+            Wire::new(input, origins.get(i).cloned().unwrap_or_default())
+        })
+        .collect()
 }
 
 /// The clips a planned job carries, checked.
@@ -69,10 +81,10 @@ impl LocalActions {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use super::{LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, sources};
+    use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
-        ColorPolicy, ComposeClip, ComposeSpec, MAX_CLIPS, ServiceConfig, ToolPaths, VideoAsset, VideoError, VideoJob, VideoLimits, VideoService,
+        ColorPolicy, ComposeClip, ComposeSpec, MAX_CLIPS, ServiceConfig, Source, ToolPaths, VideoError, VideoJob, VideoLimits, VideoService,
     };
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
     use std::path::PathBuf;
@@ -94,7 +106,7 @@ mod native {
         match error {
             VideoError::Unavailable => "can't run ffmpeg or ffprobe; check [media] in settings",
             VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter), or a video's format isn't supported",
-            VideoError::InvalidMetadata => "a connected video's format isn't supported",
+            VideoError::InvalidMetadata => "a connected video's or sound's format isn't supported",
             VideoError::Limit => "the videos or the render are too large; make the timeline shorter or smaller",
             VideoError::Timeout => "the render took too long",
             VideoError::Cancelled => "the render was cancelled",
@@ -156,11 +168,12 @@ mod native {
     }
 
     impl LocalActions {
-        /// The bytes of the video `value` names: one an earlier action in this run made, or the
-        /// project's.
-        fn video_bytes(&self, value: Option<&Value>) -> Result<Arc<[u8]>, String> {
-            let Some(Value::Media(source)) = value.filter(|v| matches!(v, Value::Media(a) if a.mime.essence().starts_with("video/"))) else {
-                return Err("connect a video to the timeline first".into());
+        /// The bytes of the video (or, for `audio`, the sound) `value` names: one an earlier
+        /// action in this run made, or the project's.
+        fn video_bytes(&self, value: Option<&Value>, audio: bool) -> Result<Arc<[u8]>, String> {
+            let (kind, what) = if audio { ("audio/", "sound") } else { ("video/", "video") };
+            let Some(Value::Media(source)) = value.filter(|v| matches!(v, Value::Media(a) if a.mime.essence().starts_with(kind))) else {
+                return Err(format!("connect a {what} to the timeline's {} input first", if audio { "audio" } else { "clips" }));
             };
             if let Some(bytes) = self.videos.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash) {
                 return Ok(Arc::clone(bytes));
@@ -169,67 +182,117 @@ mod native {
                 return Ok(Arc::from(bytes));
             }
             let input = self.assets.preview_read(source).map_err(|error| match error {
-                nodecraft_format::PreviewReadError::Missing => "a connected video isn't in this project",
-                _ => "a connected video can't be read",
+                nodecraft_format::PreviewReadError::Missing => format!("a connected {what} isn't in this project"),
+                _ => format!("a connected {what} can't be read"),
             })?;
             if input.byte_len() > MAX_INPUT_BYTES {
-                return Err(format!("a connected video is larger than {} MiB", MAX_INPUT_BYTES / (1024 * 1024)));
+                return Err(format!("a connected {what} is larger than {} MiB", MAX_INPUT_BYTES / (1024 * 1024)));
             }
-            let bytes = input.read_verified(&TransferCancel::default(), &Default::default()).map_err(|_| "a connected video can't be read")?;
+            let bytes = input.read_verified(&TransferCancel::default(), &Default::default()).map_err(|_| format!("a connected {what} can't be read"))?;
             Ok(Arc::from(bytes))
+        }
+
+        /// `value` staged in the video service as the port `input` says.
+        fn import(&self, service: &VideoService, input: Input, value: Option<&Value>, cancelled: &dyn Fn() -> bool) -> Result<Source, String> {
+            Ok(match input {
+                Input::Clips => {
+                    let job = service.import(self.video_bytes(value, false)?, ColorPolicy::default()).map_err(|(error, _)| message(closed(error)))?;
+                    Source::Video(wait(job, cancelled).map_err(message)?)
+                }
+                Input::Audio => {
+                    let job = service.import_audio(self.video_bytes(value, true)?).map_err(|(error, _)| message(closed(error)))?;
+                    Source::Audio(wait(job, cancelled).map_err(message)?)
+                }
+                Input::Stills => {
+                    let picture = self.raster(value).map_err(|e| {
+                        e.replace("connect an image first", "connect a picture to the timeline's stills input first")
+                            .replace("the input image", "a connected picture")
+                            .replace("the image", "a connected picture")
+                    })?;
+                    let job = service.stage_still(Arc::from(picture.pixels()), picture.width(), picture.height()).map_err(|(error, _)| match error {
+                        VideoError::Invalid => "a connected picture is larger than 8192 pixels a side".to_owned(),
+                        other => message(closed(other)),
+                    })?;
+                    Source::Still(wait(job, cancelled).map_err(message)?)
+                }
+            })
         }
 
         pub(in crate::action_exec) fn timeline(&self, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
             let frame = frame(params)?;
-            let mut sources = sources(params);
-            sources.resize(inputs.len(), String::new());
+            let wires = wires(params, inputs.len());
             let timeline = clips(params)?;
-            let listed = timeline.with_sources(&sources);
-            let resolved = timeline.resolve(&sources);
-            if resolved.is_empty() {
-                return Err("the timeline has no clips to render: connect a video, or enable a clip".into());
+            if timeline.unplaced_sound(&wires) {
+                return Err(format!(
+                    "a connected sound has no sound track to play on: remove one of the {} picture tracks",
+                    nodecraft_nodes::timeline::MAX_TRACKS
+                ));
             }
-            // Before any video is imported: each can be hundreds of megabytes.
+            let listed = timeline.with_sources(&wires);
+            let resolved = timeline.resolve(&wires);
+            if resolved.is_empty() {
+                return Err("the timeline has no clips to render: connect a video, sound or picture, or enable a clip".into());
+            }
+            if !resolved.iter().any(|(_, c)| c.track == 0) {
+                return Err("the main track has no clips to play: connect a video or picture, or enable one of its clips".into());
+            }
+            // Before any media is imported: each can be hundreds of megabytes.
             if resolved.len() > MAX_CLIPS {
                 return Err(format!("the timeline has {} enabled clips; it renders at most {MAX_CLIPS}: disable or remove some", resolved.len()));
             }
             let tools = self.video.as_ref().ok_or("set ffmpeg and ffprobe under [media] in settings to render timelines")?;
             let service = service(tools, cancelled)?;
-            // One video at a time: its bytes are dropped once the service holds its own copy.
-            let mut imported: Vec<Option<VideoAsset>> = vec![None; inputs.len()];
+            // One input at a time: its bytes are dropped once the service holds its own copy.
+            let mut imported: Vec<Option<Source>> = vec![None; inputs.len()];
             for (input, _) in &resolved {
-                let Some(slot) = imported.get_mut(*input) else { return Err("a clip names a video that isn't connected".into()) };
-                if slot.is_some() {
-                    continue;
+                let port = wires.get(*input).map(|w| w.input);
+                let (Some(slot), Some(port)) = (imported.get_mut(*input), port) else { return Err("a clip names an input that isn't connected".into()) };
+                if slot.is_none() {
+                    *slot = Some(self.import(&service, port, inputs.get(*input), cancelled)?);
                 }
-                let bytes = self.video_bytes(inputs.get(*input))?;
-                let job = service.import(bytes, ColorPolicy::default()).map_err(|(error, _)| message(closed(error)))?;
-                *slot = Some(wait(job, cancelled).map_err(message)?);
             }
-            let mut composed = Vec::with_capacity(resolved.len());
+            let (mut main, mut layers) = (Vec::new(), Vec::new());
             for (n, (input, clip)) in resolved.iter().enumerate() {
                 // Numbered as the editor lists them, disabled clips included.
                 let number = listed.clips.iter().position(|c| c.id == clip.id).unwrap_or(n).saturating_add(1);
-                let asset = imported.get(*input).and_then(Option::as_ref).ok_or("a clip names a video that isn't connected")?;
-                let duration = asset.metadata().duration_us;
-                let out = clip.out_us.unwrap_or(duration);
-                if out > duration {
-                    return Err(format!("clip {number} ends after its video does ({})", seconds(duration)));
+                let source = imported.get(*input).and_then(Option::as_ref).ok_or("a clip names an input that isn't connected")?;
+                // The end of a video or sound, checked against its length.
+                let end = |duration: u64, what: &str| {
+                    let out = clip.out_us.unwrap_or(duration);
+                    if out > duration {
+                        return Err(format!("clip {number} ends after its {what} does ({})", seconds(duration)));
+                    }
+                    if clip.in_us >= out {
+                        return Err(format!("clip {number} starts after its {what} ends ({})", seconds(duration)));
+                    }
+                    Ok(out)
+                };
+                let made = match source {
+                    Source::Video(video) => ComposeClip::new(video.clone(), clip.in_us, end(video.metadata().duration_us, "video")?),
+                    Source::Audio(sound) => ComposeClip::audio(sound.clone(), clip.in_us, end(sound.metadata().duration_us, "sound")?),
+                    Source::Still(still) => {
+                        ComposeClip::still(still.clone(), clip.out_us.unwrap_or(nodecraft_nodes::timeline::DEFAULT_STILL_US).saturating_sub(clip.in_us))
+                    }
                 }
-                if clip.in_us >= out {
-                    return Err(format!("clip {number} starts after its video ends ({})", seconds(duration)));
-                }
-                let made = ComposeClip::new(asset.clone(), clip.in_us, out)
-                    .and_then(|c| c.with_fades(clip.fade_in_us, clip.fade_out_us))
+                .map_err(|_| format!("clip {number} is longer than an hour"))?;
+                let made = made
+                    .with_fades(clip.fade_in_us, clip.fade_out_us)
                     .and_then(|c| c.with_volume(clip.volume, clip.muted))
                     .and_then(|c| c.with_transition(clip.transition_us))
                     .map_err(|_| format!("clip {number}'s fades or transition are longer than the clip"))?;
-                composed.push(made);
+                if clip.track == 0 {
+                    main.push(made);
+                } else {
+                    layers.push((made, clip.at_us));
+                }
             }
-            let spec = ComposeSpec::new(frame.width, frame.height, frame.fps, frame.background, composed).map_err(|error| match error {
-                VideoError::Limit => "the timeline is longer than an hour".to_owned(),
-                _ => "a transition is longer than the clips on either side of it allow".to_owned(),
-            })?;
+            let spec = ComposeSpec::new(frame.width, frame.height, frame.fps, frame.background, main)
+                .map_err(|error| match error {
+                    VideoError::Limit => "the timeline is longer than an hour".to_owned(),
+                    _ => "a transition is longer than the clips on either side of it allow".to_owned(),
+                })?
+                .with_layers(layers)
+                .map_err(|_| "the timeline is longer than an hour".to_owned())?;
             let duration_us = spec.duration_us();
             let started = Instant::now();
             let job = loop {

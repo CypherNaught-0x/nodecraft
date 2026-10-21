@@ -68,7 +68,7 @@ fn ids(h: &mut Harness<'static, NodeCraftApp>) -> Vec<String> {
 }
 
 fn auto(node: NodeId) -> String {
-    nodecraft_nodes::timeline::auto_id(&node.to_string(), 0)
+    nodecraft_nodes::timeline::auto_id(nodecraft_nodes::timeline::Input::Clips, &node.to_string(), 0)
 }
 
 fn dispatch(h: &mut Harness<'static, NodeCraftApp>, command: &str, mut params: serde_json::Value) {
@@ -214,6 +214,47 @@ fn fields_change_the_selected_clip_and_the_output_frame() {
     h.run_steps(2);
     assert_eq!(list(&mut h)[1]["enabled"], json!(false));
     assert!(h.query_by_label(&format!("Trim start of {two}")).is_none());
+}
+
+#[test]
+fn tracks_are_added_hold_clips_dragged_onto_them_and_remove_once_empty() {
+    let mut h = opened();
+    let one = clip_label(&h, ONE);
+    h.get_by_label("Add picture track").click();
+    h.run_steps(2);
+    let canvas = h.state().canvas;
+    let listed = h.state_mut().session.dispatch("timeline.list", &json!({"canvas": canvas, "id": EDITOR})).unwrap();
+    assert_eq!(listed["tracks"], json!([{"kind": "video"}, {"kind": "video"}]), "{:?}", h.state().notice);
+
+    // Dragged down onto the new lane and right by a second, it plays from there over the main track.
+    let block = h.get_by_label(&format!("{one} on the track")).rect();
+    let to = block.center() + Vec2::new(screen_x(&h, 1_000_000) - screen_x(&h, 0), block.height() + 4.0);
+    drag(&mut h, block.center(), to);
+    let clips = list(&mut h);
+    let moved = clips.iter().find(|c| c["id"] == json!(auto(ONE))).unwrap();
+    assert_eq!(moved["track"], json!(1), "{:?}", h.state().notice);
+    let at = moved["at_us"].as_u64().unwrap();
+    assert!(at.abs_diff(1_000_000) <= 50_000, "{at}");
+    // Then along its lane, by another second.
+    let block = h.get_by_label(&format!("{one} on the track")).rect();
+    let second = screen_x(&h, 1_000_000) - screen_x(&h, 0);
+    drag(&mut h, block.center(), block.center() + Vec2::new(second, 0.0));
+    let later = list(&mut h).iter().find(|c| c["id"] == json!(auto(ONE))).unwrap()["at_us"].as_u64().unwrap();
+    assert!(later.abs_diff(at + 1_000_000) <= 50_000, "{later}");
+
+    // A track with clips stays; undone back to the main track, it removes.
+    let remove = h.get_by_label("Remove Picture track 1");
+    remove.click();
+    h.run_steps(2);
+    assert_eq!(list(&mut h).iter().filter(|c| c["track"] == json!(1)).count(), 1);
+    for _ in 0..2 {
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    }
+    h.run_steps(2);
+    h.get_by_label("Remove Picture track 1").click();
+    h.run_steps(2);
+    let listed = h.state_mut().session.dispatch("timeline.list", &json!({"canvas": canvas, "id": EDITOR})).unwrap();
+    assert_eq!(listed["tracks"], json!([{"kind": "video"}]), "{:?}", h.state().notice);
 }
 
 /// Real lengths and thumbnails through installed tools: opt in with

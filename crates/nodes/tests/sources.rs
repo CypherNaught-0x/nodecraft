@@ -70,7 +70,7 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
             let port = PortType { modality: input, many: false };
             assert!(kind.mode(&[port]).is_none());
             // Routers and batches take a wire of any modality (they are created with the wire's);
-            // action kinds (#410) take their own modality.
+            // action kinds (#410) take their own modality on one of their inputs.
             let structure = [nodecraft_nodes::router::ID, nodecraft_nodes::batch::ID];
             let compatible: Vec<&str> = registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| !structure.contains(id)).collect();
             for id in structure {
@@ -79,7 +79,7 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
             for id in compatible {
                 let action = registry.get(id).unwrap().descriptor();
                 assert_eq!(action.category, nodecraft_nodes::Category::Action, "{id}");
-                assert_eq!(action.inputs.first().map(|p| p.port_type.modality), Some(input), "{id}");
+                assert!(action.inputs.iter().any(|p| p.port_type.modality == input), "{id}");
             }
             let node = descriptor.instantiate(NodeId::from_bytes([0; 16]), &ParamValues::new()).unwrap();
             let inputs = [InputValue { port: "in".into(), port_type: port, value: Value::Text("ignored".into()), origins: vec![] }];

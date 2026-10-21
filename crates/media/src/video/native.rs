@@ -144,6 +144,50 @@ impl VideoAsset {
         self.hash
     }
 }
+/// An immutable staged sound-only file, tied to one service.
+#[derive(Clone)]
+pub struct AudioAsset {
+    pin: Arc<Pin>,
+    metadata: Arc<AudioMetadata>,
+    hash: ContentHash,
+    demuxer: &'static str,
+}
+impl AudioAsset {
+    pub fn metadata(&self) -> &AudioMetadata {
+        &self.metadata
+    }
+    pub fn hash(&self) -> ContentHash {
+        self.hash
+    }
+}
+/// An immutable staged still picture: raw RGBA the caller decoded, so FFmpeg never parses an image.
+#[derive(Clone)]
+pub struct StillAsset {
+    pin: Arc<Pin>,
+    width: u32,
+    height: u32,
+    hash: ContentHash,
+}
+impl StillAsset {
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    pub fn hash(&self) -> ContentHash {
+        self.hash
+    }
+}
+impl Source {
+    fn pin(&self) -> &Arc<Pin> {
+        match self {
+            Self::Video(a) => &a.pin,
+            Self::Audio(a) => &a.pin,
+            Self::Still(s) => &s.pin,
+        }
+    }
+}
 /// One bounded asynchronously read artifact chunk. Clones share its accounted storage.
 #[derive(Clone)]
 pub struct VideoChunk {
@@ -362,6 +406,28 @@ impl VideoService {
         }
     }
     pub fn import(&self, source: Arc<[u8]>, policy: ColorPolicy) -> std::result::Result<VideoJob<VideoAsset>, (VideoError, Arc<[u8]>)> {
+        self.stage(source, move |ctx, bytes, c, deadline| ctx.import(bytes, policy, c, deadline))
+    }
+    /// Stage a sound-only file (WAV, Ogg, FLAC, MP3, AAC, M4A, or the sound of a video file).
+    pub fn import_audio(&self, source: Arc<[u8]>) -> std::result::Result<VideoJob<AudioAsset>, (VideoError, Arc<[u8]>)> {
+        self.stage(source, |ctx, bytes, c, deadline| ctx.import_audio(bytes, c, deadline))
+    }
+    /// Stage a decoded `width`×`height` RGBA picture to hold on a timeline.
+    pub fn stage_still(&self, rgba: Arc<[u8]>, width: u32, height: u32) -> std::result::Result<VideoJob<StillAsset>, (VideoError, Arc<[u8]>)> {
+        let expected = u64::from(width).checked_mul(u64::from(height)).and_then(|p| p.checked_mul(4));
+        if width == 0 || height == 0 || width > 8192 || height > 8192 || expected != u64::try_from(rgba.len()).ok() {
+            return Err((VideoError::Invalid, rgba));
+        }
+        self.stage(rgba, move |ctx, bytes, c, deadline| {
+            let (pin, _, hash) = ctx.write_staged(bytes, &[b"still", &width.to_le_bytes(), &height.to_le_bytes()], c, deadline)?;
+            Ok(StillAsset { pin, width, height, hash })
+        })
+    }
+    fn stage<T: Send + 'static>(
+        &self,
+        source: Arc<[u8]>,
+        work: impl FnOnce(&mut Context, &[u8], &Arc<AtomicBool>, Instant) -> Result<T> + Send + 'static,
+    ) -> std::result::Result<VideoJob<T>, (VideoError, Arc<[u8]>)> {
         if source.len() > self.control.budget.limits.input {
             return Err((VideoError::Limit, source));
         }
@@ -376,7 +442,7 @@ impl VideoService {
         let retained = Arc::clone(&source);
         match self.submit(move |ctx, c| {
             let _input = lease;
-            ctx.import(&retained, policy, c, deadline)
+            work(ctx, &retained, c, deadline)
         }) {
             Ok(job) => Ok(job),
             Err(e) => Err((e, source)),
@@ -422,7 +488,10 @@ impl VideoService {
         self.submit(move |ctx, c| ctx.frame(&asset, request, c, deadline))
     }
     fn check(&self, a: &VideoAsset) -> Result<()> {
-        if !Arc::ptr_eq(&a.pin.control, &self.control) {
+        self.check_pin(&a.pin)
+    }
+    fn check_pin(&self, pin: &Pin) -> Result<()> {
+        if !Arc::ptr_eq(&pin.control, &self.control) {
             return Err(VideoError::Invalid);
         }
         Ok(())
@@ -827,12 +896,15 @@ impl Context {
         Ok((pin, path))
     }
     fn path(&self, a: &VideoAsset) -> Result<PathBuf> {
+        self.pin_path(&a.pin)
+    }
+    pub(super) fn pin_path(&self, pin: &Pin) -> Result<PathBuf> {
         self.registry
             .lock()
             .map_err(|_| VideoError::Closed)?
             .records
             .iter()
-            .find(|r| r.id == a.pin.id && a.pin.control.id == self.control.id)
+            .find(|r| r.id == pin.id && pin.control.id == self.control.id)
             .and_then(|r| r.payload.as_ref().map(|(path, _)| path.clone()))
             .ok_or(VideoError::Invalid)
     }
@@ -855,9 +927,39 @@ impl Context {
             Some("video/webm" | "video/x-matroska") => false,
             _ => return Err(VideoError::Unsupported),
         };
+        let (pin, path, hash) = self.write_staged(source, &[], cancel, deadline)?;
+        let metadata = self.probe(&path, mov, policy, false, cancel, deadline)?;
+        check_deadline(deadline)?;
+        Ok(VideoAsset { pin, metadata: Arc::new(metadata), hash, mov })
+    }
+    fn import_audio(&mut self, source: &[u8], cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<AudioAsset> {
+        let demuxer = crate::sniff(source).and_then(|s| probe::audio_demuxer(s.mime)).ok_or(VideoError::Unsupported)?;
+        let (pin, path, hash) = self.write_staged(source, &[], cancel, deadline)?;
+        let _parse = self.control.budget.reserve(Usage { bytes: 2 * 1024 * 1024, ..Usage::default() })?;
+        let mut args = process::args(&["-v", "error", "-max_alloc", "134217728"]);
+        args.extend(probe::audio_input_args(demuxer));
+        args.extend(process::args(&[
+            "-show_entries",
+            "stream=index,codec_name,codec_type,sample_rate,channels,start_time,duration:format=start_time,duration",
+            "-of",
+            "json",
+            "-i",
+        ]));
+        args.push(path.as_os_str().to_owned());
+        let tool = self.config.tools.ffprobe.clone();
+        let bytes = self.run(&tool, &args, None, 262144, cancel, deadline)?;
+        let metadata = probe::parse_audio(&bytes)?;
+        check_deadline(deadline)?;
+        Ok(AudioAsset { pin, metadata: Arc::new(metadata), hash, demuxer })
+    }
+    /// Copy `source` into a fresh scratch record, hashing `salt` and then the bytes.
+    fn write_staged(&mut self, source: &[u8], salt: &[&[u8]], cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<(Arc<Pin>, PathBuf, ContentHash)> {
         let (pin, path) = self.record(u64::try_from(source.len()).map_err(|_| VideoError::Limit)?)?;
         let mut f = OpenOptions::new().write(true).open(&path).map_err(|_| VideoError::Io)?;
         let mut hash = blake3::Hasher::new();
+        for part in salt {
+            hash.update(part);
+        }
         for chunk in source.chunks(65536) {
             if cancel.load(Ordering::Acquire) || self.control.closed.load(Ordering::Acquire) {
                 return Err(VideoError::Cancelled);
@@ -867,9 +969,7 @@ impl Context {
             hash.update(chunk);
         }
         drop(f);
-        let metadata = self.probe(&path, mov, policy, false, cancel, deadline)?;
-        check_deadline(deadline)?;
-        Ok(VideoAsset { pin, metadata: Arc::new(metadata), hash: ContentHash(*hash.finalize().as_bytes()), mov })
+        Ok((pin, path, ContentHash(*hash.finalize().as_bytes())))
     }
     fn frame(&mut self, asset: &VideoAsset, r: FrameRequest, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<VideoFrame> {
         check_deadline(deadline)?;

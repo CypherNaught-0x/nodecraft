@@ -832,3 +832,78 @@ fn actual_compose_stitches_four_clips_with_fades_crosses_and_sound() {
     drop(video);
     assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
 }
+/// A half-second beep FFmpeg writes as 16-bit WAV.
+fn beep() -> Vec<u8> {
+    let id = SERVICE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nodecraft-beep-fixture-{}-{id}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("beep.wav");
+    let tool = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let args = process::args(&["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.5", "-c:a", "pcm_s16le", "-ar", "44100"]);
+    let status = std::process::Command::new(tool).args(&args).arg(&path).status().unwrap();
+    assert!(status.success());
+    let bytes = fs::read(&path).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    bytes
+}
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_layers_align_sound_to_picture() {
+    let service = service();
+    let mut job = service.import(Arc::from(generated("main", "64x48", "2", false, false)), ColorPolicy::default()).ok().unwrap();
+    let card = wait(&mut job).unwrap();
+    let mut job = service.import_audio(Arc::from(beep())).ok().unwrap();
+    let sound = wait(&mut job).unwrap();
+    assert!(sound.metadata().duration_us.abs_diff(500_000) < 30_000, "{}", sound.metadata().duration_us);
+    let mut job = service.stage_still(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).ok().unwrap();
+    let white = wait(&mut job).unwrap();
+    let mut job = service.import_audio(Arc::from(vec![0u8; 64])).ok().unwrap();
+    assert_eq!(wait(&mut job).err(), Some(VideoError::Unsupported), "not a sound file");
+    // A black main track of 1 s, then the beep and a white square both at 1.5 s; the output runs to 2 s.
+    let black = ComposeClip::new(card, 0, 1_000_000).unwrap().with_fades(1_000_000, 0).unwrap();
+    let spec = ComposeSpec::new(64, 48, (10, 1), [0, 0, 0], vec![black])
+        .unwrap()
+        .with_layers(vec![(ComposeClip::audio(sound, 0, 500_000).unwrap(), 1_500_000), (ComposeClip::still(white, 500_000).unwrap(), 1_500_000)])
+        .unwrap();
+    assert_eq!(spec.duration_us(), 2_000_000);
+    let mut job = service.compose(spec).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let video = loop {
+        if let Some(video) = job.try_result().unwrap() {
+            break video;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(video.frames().abs_diff(20) <= 1, "{} frames", video.frames());
+    let luma = |time_us: u64| {
+        let mut job = service.frame(video.asset(), FrameRequest::new(time_us, 64, 48).unwrap()).unwrap();
+        let frame = wait(&mut job).unwrap();
+        frame.pixels().chunks(4).map(|p| u64::from(p[0]) + u64::from(p[1]) + u64::from(p[2])).sum::<u64>() / (64 * 48)
+    };
+    assert!(luma(1_400_000) < 20, "nothing shows before 1.5 s");
+    assert!(luma(1_600_000) > 100, "the white square shows at 1.5 s");
+    // Decode the render's sound and find where the beep starts.
+    let mut bytes = Vec::new();
+    while (bytes.len() as u64) < video.bytes() {
+        let length = usize::try_from((video.bytes() - bytes.len() as u64).min(1024 * 1024)).unwrap();
+        let mut job = service.read_chunk(video.asset(), bytes.len() as u64, length).unwrap();
+        bytes.extend_from_slice(wait(&mut job).unwrap().bytes());
+    }
+    let dir = std::env::temp_dir().join(format!("nodecraft-align-{}-{}", std::process::id(), SERVICE_ID.fetch_add(1, Ordering::Relaxed)));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("out.webm");
+    fs::write(&path, &bytes).unwrap();
+    let tool = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let out = std::process::Command::new(tool).args(["-v", "error", "-i"]).arg(&path).args(["-f", "s16le", "-ac", "1", "-ar", "48000", "-"]).output().unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    assert!(out.status.success());
+    let samples: Vec<i16> = out.stdout.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
+    let onset = samples.iter().position(|s| s.unsigned_abs() > 2000).unwrap();
+    let onset_us = onset as u64 * 1_000_000 / 48_000;
+    assert!(onset_us.abs_diff(1_500_000) < 30_000, "the beep starts with the picture: {onset_us}");
+    let end_us = samples.iter().rposition(|s| s.unsigned_abs() > 2000).unwrap() as u64 * 1_000_000 / 48_000;
+    assert!(end_us.abs_diff(2_000_000) < 40_000, "{end_us}");
+    drop(video);
+    assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
+}

@@ -1,5 +1,7 @@
-//! The Timeline editor (#109): a full-screen view of a Timeline card's clips on one track, where
-//! they are trimmed, reordered, split, faded and muted. It changes the document only through
+//! The Timeline editor (#109, #576): a full-screen view of a Timeline card's clips on their
+//! tracks, where they are trimmed, reordered, moved, split, faded and muted. The main track plays
+//! its clips one after another; every other track holds its clips at their own start time,
+//! pictures over the main track and sounds under it. It changes the document only through
 //! commands: each finished drag is one `timeline.update` or `timeline.move`, each field one
 //! `timeline.update`, so every gesture is one undo step. Lengths and thumbnails come from the
 //! shell's video player, which probes each wired video with the settings' tools; a clip whose
@@ -8,7 +10,7 @@ use super::NodeCraftApp;
 use super::layer_editor::{colour_field, number, param_json};
 use crate::theme::Tokens;
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
-use nodecraft_nodes::timeline::{self, Clip};
+use nodecraft_nodes::timeline::{self, Clip, Input, TrackKind};
 use nodecraft_types::{AssetRef, CanvasId, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -45,14 +47,15 @@ impl TimelineEditor {
     }
 }
 
-/// One listed clip and what the editor knows of its video.
+/// One listed clip and what the editor knows of its media.
 #[derive(Clone, Debug)]
 struct Shown {
     clip: Clip,
-    /// Its video is wired in now.
+    /// Its media is wired in now.
     wired: bool,
-    /// The video's length, from its asset or the player's probe.
-    video_us: Option<u64>,
+    /// The video's or sound's length, from its asset or the player's probe.
+    media_us: Option<u64>,
+    /// Its video, for the player to probe and show; none for sounds and stills.
     video: Option<AssetRef>,
 }
 
@@ -61,40 +64,45 @@ impl Shown {
         self.clip.enabled && self.wired
     }
 
-    /// Where the clip ends in its video, when known.
+    /// Where the clip ends in its media, when known.
     fn end_us(&self) -> Option<u64> {
-        self.clip.out_us.or(self.video_us)
+        self.clip.out_us.or(self.media_us)
     }
 }
 
 #[derive(Deserialize)]
-struct Input {
+struct Wired {
     origin: String,
-    video: Option<AssetRef>,
+    input: Input,
+    media: Option<AssetRef>,
 }
 
 struct Listing {
     clips: Vec<Shown>,
-    /// The nodes videos are wired in from, in wire order.
+    /// The nodes media is wired in from, in wire order.
     origins: Vec<String>,
+    /// What each track holds, the main track first.
+    tracks: Vec<TrackKind>,
 }
 
-/// `timeline.list`'s answer: each clip with its video, if it is wired in.
+/// `timeline.list`'s answer: each clip with its media, if it is wired in, and the tracks.
 fn parse(listed: Json) -> Option<Listing> {
-    let inputs: Vec<Input> = serde_json::from_value(listed.get("inputs")?.clone()).ok()?;
+    let inputs: Vec<Wired> = serde_json::from_value(listed.get("inputs")?.clone()).ok()?;
+    let tracks: Vec<TrackKind> =
+        listed.get("tracks")?.as_array()?.iter().map(|t| serde_json::from_value(t.get("kind")?.clone()).ok()).collect::<Option<_>>()?;
     let mut out = Vec::new();
     for entry in listed.get("clips")?.as_array()? {
         let mut entry = entry.clone();
         let fields = entry.as_object_mut()?;
         let wired = fields.remove("wired").and_then(|w| w.as_bool()).unwrap_or(false);
-        let video_us = fields.remove("video_us").and_then(|v| v.as_u64());
+        let media_us = fields.remove("media_us").and_then(|v| v.as_u64());
         let clip: Clip = serde_json::from_value(entry).ok()?;
         let video = usize::try_from(clip.nth)
             .ok()
-            .and_then(|nth| inputs.iter().filter(|i| i.origin == clip.origin).nth(nth))
-            .and_then(|i| i.video.clone())
-            .filter(|_| wired);
-        out.push(Shown { clip, wired, video_us, video });
+            .and_then(|nth| inputs.iter().filter(|i| i.input == clip.input && i.origin == clip.origin).nth(nth))
+            .and_then(|i| i.media.clone())
+            .filter(|_| wired && clip.input == Input::Clips);
+        out.push(Shown { clip, wired, media_us, video });
     }
     let mut origins: Vec<String> = Vec::new();
     for input in inputs {
@@ -102,14 +110,30 @@ fn parse(listed: Json) -> Option<Listing> {
             origins.push(input.origin);
         }
     }
-    Some(Listing { clips: out, origins })
+    Some(Listing { clips: out, origins, tracks })
 }
 
-/// A playing clip's place on the track.
+/// Whether `track` (of `tracks`, the main one first) takes the clip's media: pictures go on
+/// video tracks, sounds on audio tracks.
+fn fits(tracks: &[TrackKind], track: u8, input: Input) -> bool {
+    tracks.get(usize::from(track)).is_some_and(|kind| (*kind == TrackKind::Video) == input.visual())
+}
+
+/// What a track is called: the main one, then each by its number.
+fn track_name(tracks: &[TrackKind], track: u8) -> String {
+    match tracks.get(usize::from(track)) {
+        _ if track == 0 => "Main track".to_owned(),
+        Some(TrackKind::Audio) => format!("Sound track {track}"),
+        _ => format!("Picture track {track}"),
+    }
+}
+
+/// A playing clip's place on its track.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Placed {
     /// Its index among the listed clips.
     index: usize,
+    track: u8,
     start_us: u64,
     length_us: u64,
     /// False while the length is the stand-in.
@@ -118,18 +142,16 @@ struct Placed {
     overlap_us: u64,
 }
 
-/// The playing clips one after another, each crossing `transition_us` into the next (no more
-/// than either is long), and the output's length.
+/// The playing clips: the main track's one after another, each crossing `transition_us` into the
+/// next (no more than either is long), the other tracks' at their own start; and the output's
+/// length, to the last end on any track.
 fn place(clips: &[Shown]) -> (Vec<Placed>, u64) {
-    let mut placed: Vec<Placed> = clips
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.playing())
-        .map(|(index, s)| {
-            let length = s.end_us().map(|end| end.saturating_sub(s.clip.in_us));
-            Placed { index, start_us: 0, length_us: length.unwrap_or(UNKNOWN_US).max(1), known: length.is_some(), overlap_us: 0 }
-        })
-        .collect();
+    let at_place = |(index, s): (usize, &Shown)| {
+        let length = s.end_us().map(|end| end.saturating_sub(s.clip.in_us));
+        let start_us = if s.clip.track == 0 { 0 } else { s.clip.at_us };
+        Placed { index, track: s.clip.track, start_us, length_us: length.unwrap_or(UNKNOWN_US).max(1), known: length.is_some(), overlap_us: 0 }
+    };
+    let mut placed: Vec<Placed> = clips.iter().enumerate().filter(|(_, s)| s.playing() && s.clip.track == 0).map(at_place).collect();
     let mut at = 0u64;
     for k in 0..placed.len() {
         let next = placed.get(k.saturating_add(1)).map(|p| p.length_us);
@@ -139,12 +161,24 @@ fn place(clips: &[Shown]) -> (Vec<Placed>, u64) {
         p.overlap_us = next.map_or(0, |next| transition.min(p.length_us).min(next));
         at = at.saturating_add(p.length_us).saturating_sub(p.overlap_us);
     }
-    (placed, at)
+    let mut total = at;
+    for p in clips.iter().enumerate().filter(|(_, s)| s.playing() && s.clip.track > 0).map(at_place) {
+        total = total.max(p.start_us.saturating_add(p.length_us));
+        placed.push(p);
+    }
+    (placed, total)
 }
 
-/// The clip under output time `us` and how far into its video that is, when strictly inside it.
-fn cut_at(clips: &[Shown], placed: &[Placed], us: u64) -> Option<(usize, u64)> {
-    placed.iter().rev().find(|p| p.start_us < us && us < p.start_us.saturating_add(p.length_us)).and_then(|p| {
+fn inside(p: &Placed, us: u64) -> bool {
+    p.start_us < us && us < p.start_us.saturating_add(p.length_us)
+}
+
+/// The clip to split at output time `us`, and how far into its media that is: the selected clip
+/// when `us` is strictly inside it, else the main track's. Stills don't split.
+fn cut_at(clips: &[Shown], placed: &[Placed], us: u64, selected: Option<&str>) -> Option<(usize, u64)> {
+    let splits = |p: &&Placed| inside(p, us) && clips.get(p.index).is_some_and(|s| s.clip.input != Input::Stills);
+    let chosen = placed.iter().filter(splits).find(|p| clips.get(p.index).is_some_and(|s| Some(s.clip.id.as_str()) == selected));
+    chosen.or_else(|| placed.iter().rev().filter(|p| p.track == 0).find(splits)).and_then(|p| {
         let clip = &clips.get(p.index)?.clip;
         Some((p.index, clip.in_us.saturating_add(us.saturating_sub(p.start_us))))
     })
@@ -178,37 +212,58 @@ struct Drag {
     grip: Grip,
     /// Where the pointer went down, in screen points.
     from_x: f32,
+    /// Where on the output the clip started when the drag began.
+    from_us: u64,
     before: Clip,
-    video_us: Option<u64>,
+    media_us: Option<u64>,
     now: Clip,
-    /// For a move: the index in playing order it would land at.
+    /// For a move along the main track: the index in playing order it would land at.
     to: Option<usize>,
 }
 
 impl Drag {
-    /// Trims by the pointer's travel since it went down, `dx` points at `scale` points a second.
-    fn trim(&mut self, dx: f32, scale: f32) {
+    /// Trims or moves by the pointer's travel since it went down, `dx` points at `scale` points a
+    /// second, onto `track`. Off the main track a move shifts the clip's start, and a start trim
+    /// keeps its end where it was.
+    fn trim(&mut self, dx: f32, scale: f32, track: u8) {
         self.now = self.before.clone();
         let travel = if scale > 0.0 && dx.is_finite() { f64::from(dx) / f64::from(scale) * 1e6 } else { 0.0 };
         let dt = (travel.round() as i128 / STEP_US) * STEP_US;
-        let limit = i128::from(self.video_us.unwrap_or(timeline::MAX_US));
+        let limit = i128::from(self.media_us.unwrap_or(timeline::MAX_US));
         let at = |t: u64| i128::from(t).saturating_add(dt);
         let fit = |v: i128, lo: i128, hi: i128| u64::try_from(v.clamp(lo, hi.max(lo))).unwrap_or(0);
+        let most = i128::from(timeline::MAX_US);
         match self.grip {
             Grip::Start => {
-                let end = i128::from(self.before.out_us.or(self.video_us).unwrap_or(timeline::MAX_US));
-                self.now.in_us = fit(at(self.before.in_us), 0, end - i128::from(MIN_US));
-            }
-            Grip::End => {
-                if let Some(end) = self.before.out_us.or(self.video_us) {
-                    let out = fit(at(end), i128::from(self.before.in_us.saturating_add(MIN_US)), limit);
-                    // Back to the video's end plays to its end, wherever that is.
-                    self.now.out_us = (Some(out) != self.video_us).then_some(out);
+                let end = i128::from(self.before.out_us.or(self.media_us).unwrap_or(timeline::MAX_US));
+                // Off the main track the start can't trim to before the output does.
+                let earliest = if self.before.track == 0 { 0 } else { i128::from(self.before.in_us) - i128::from(self.before.at_us) };
+                self.now.in_us = fit(at(self.before.in_us), earliest.max(0), end - i128::from(MIN_US));
+                if self.before.track > 0 {
+                    let shift = i128::from(self.now.in_us) - i128::from(self.before.in_us);
+                    self.now.at_us = fit(i128::from(self.before.at_us) + shift, 0, most);
                 }
             }
-            Grip::Move => {}
+            Grip::End => {
+                if let Some(end) = self.before.out_us.or(self.media_us) {
+                    let out = fit(at(end), i128::from(self.before.in_us.saturating_add(MIN_US)), limit);
+                    // Back to the media's end plays to its end, wherever that is.
+                    self.now.out_us = (Some(out) != self.media_us).then_some(out);
+                }
+            }
+            Grip::Move => {
+                self.now.track = track;
+                if track > 0 {
+                    self.now.at_us = fit(at(self.from_us), 0, most);
+                    if self.before.track == 0 {
+                        self.now.transition_us = 0;
+                    }
+                } else {
+                    self.now.at_us = 0;
+                }
+            }
         }
-        let length = self.now.out_us.or(self.video_us).map(|end| end.saturating_sub(self.now.in_us));
+        let length = self.now.out_us.or(self.media_us).map(|end| end.saturating_sub(self.now.in_us));
         // Fades shrink with the clip, as `Clip::check` requires.
         if let Some(length) = length
             && self.now.fade_in_us.saturating_add(self.now.fade_out_us) > length
@@ -252,6 +307,7 @@ impl NodeCraftApp {
             return false;
         };
         let titles = titles(self.session.document().canvases().get(&self.canvas), self.session.kinds(), &listing);
+        let tracks = listing.tracks.clone();
         let clips = &mut listing.clips;
         let t = *self.theme.tokens();
         let ctx = ui.ctx().clone();
@@ -266,7 +322,7 @@ impl NodeCraftApp {
             if let Some(asset) = &s.video {
                 let assets = self.session.assets();
                 let (length, poster) = self.videos.still(&ctx, asset, edge, || assets.preview_read(asset));
-                s.video_us = s.video_us.or(length);
+                s.media_us = s.media_us.or(length);
                 if let Some(poster) = poster {
                     posters.insert(s.clip.id.clone(), poster);
                 }
@@ -298,6 +354,12 @@ impl NodeCraftApp {
                 ui.label(egui::RichText::new(format!("{}{}", if unknown { "at least " } else { "" }, duration(total))).color(t.text_muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close |= ui.button("Done").clicked();
+                    let room = tracks.len() <= timeline::MAX_TRACKS;
+                    for (kind, label) in [("audio", "Add sound track"), ("video", "Add picture track")] {
+                        if ui.add_enabled(room, egui::Button::new(label)).clicked() {
+                            commands.push(("timeline.track_add", json!({"canvas": editor.canvas, "id": editor.node, "kind": kind})));
+                        }
+                    }
                     if ui.button("Redo").clicked() {
                         commands.push(("edit.redo", json!({})));
                     }
@@ -314,14 +376,14 @@ impl NodeCraftApp {
             let left = Rect::from_min_size(body.min, Vec2::new(side, body.height()));
             let right = Rect::from_min_max(Pos2::new(body.max.x - side, body.min.y), body.max);
             let centre = Rect::from_min_max(Pos2::new(left.max.x + gap, body.min.y), Pos2::new(right.min.x - gap, body.max.y));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| clips_panel(ui, &mut editor, &shown, &placed, &titles, &t, &mut commands));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| clips_panel(ui, &mut editor, &shown, &placed, &tracks, &titles, &t, &mut commands));
             ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("timeline_properties")
-                    .show(ui, |ui| properties(ui, &mut editor, &shown, &node, &titles, &t, &mut commands));
+                    .show(ui, |ui| properties(ui, &mut editor, &shown, &node, &tracks, &titles, &t, &mut commands));
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(centre), |ui| {
-                track(ui, &mut editor, &shown, &placed, total, &posters, &titles, &t, &mut commands);
+                track(ui, &mut editor, &shown, &placed, &tracks, total, &posters, &titles, &t, &mut commands);
             });
             ui.allocate_rect(body, Sense::hover());
         });
@@ -356,7 +418,7 @@ fn update(editor: &TimelineEditor, clip: &str, set: Json) -> (&'static str, Json
     ("timeline.update", params)
 }
 
-/// Each video card's title, by node id, numbered in wire order where titles repeat.
+/// Each wired card's title, by node id, numbered in wire order where titles repeat.
 fn titles(canvas: Option<&nodecraft_graph::Canvas>, kinds: &nodecraft_nodes::Registry, listing: &Listing) -> HashMap<String, String> {
     let mut origins: Vec<&str> = listing.origins.iter().map(String::as_str).collect();
     for s in &listing.clips {
@@ -369,7 +431,7 @@ fn titles(canvas: Option<&nodecraft_graph::Canvas>, kinds: &nodecraft_nodes::Reg
         .map(|origin| {
             canvas
                 .and_then(|c| c.nodes().values().find(|n| n.id.to_string() == *origin))
-                .map_or_else(|| "Missing video".to_owned(), |n| crate::card::title(n, kinds.get(&n.kind).ok().map(|k| k.descriptor())))
+                .map_or_else(|| "Missing input".to_owned(), |n| crate::card::title(n, kinds.get(&n.kind).ok().map(|k| k.descriptor())))
         })
         .collect();
     let mut out = HashMap::new();
@@ -384,12 +446,19 @@ fn titles(canvas: Option<&nodecraft_graph::Canvas>, kinds: &nodecraft_nodes::Reg
     out
 }
 
-/// What the clip is called: the title of the card its video comes from, and which of its videos.
+/// What the clip is called: the title of the card its media comes from, and which of its outputs.
 fn name(titles: &HashMap<String, String>, shown: &[Shown], s: &Shown) -> String {
-    let title = titles.get(&s.clip.origin).map_or("Missing video", String::as_str);
+    let title = titles.get(&s.clip.origin).map_or("Missing input", String::as_str);
     let title = if s.clip.nth > 0 { format!("{title} · {}", s.clip.nth.saturating_add(1)) } else { title.to_owned() };
-    // Parts of a split video are numbered in playing order.
-    let parts: Vec<&Shown> = shown.iter().filter(|o| o.clip.origin == s.clip.origin && o.clip.nth == s.clip.nth).collect();
+    // A card wired into two inputs says which one this is.
+    let title = match s.clip.input {
+        Input::Clips => title,
+        Input::Audio if shown.iter().any(|o| o.clip.origin == s.clip.origin && o.clip.input != Input::Audio) => format!("{title} (sound)"),
+        Input::Stills if shown.iter().any(|o| o.clip.origin == s.clip.origin && o.clip.input != Input::Stills) => format!("{title} (still)"),
+        _ => title,
+    };
+    // Parts of a split clip are numbered in playing order.
+    let parts: Vec<&Shown> = shown.iter().filter(|o| o.clip.origin == s.clip.origin && o.clip.input == s.clip.input && o.clip.nth == s.clip.nth).collect();
     match parts.iter().position(|o| o.clip.id == s.clip.id) {
         Some(at) if parts.len() > 1 => format!("{title} (part {})", at.saturating_add(1)),
         _ => title,
@@ -425,17 +494,22 @@ fn keys(ui: &egui::Ui, editor: &mut TimelineEditor, commands: &mut Commands) -> 
     close
 }
 
-/// The clips in playing order, with buttons to reorder, split and delete.
+/// The clips, the main track's in playing order, with buttons to reorder, split and delete, and
+/// the tracks with a button to remove each empty one.
+#[allow(clippy::too_many_arguments)]
 fn clips_panel(
     ui: &mut egui::Ui,
     editor: &mut TimelineEditor,
     shown: &[Shown],
     placed: &[Placed],
+    tracks: &[TrackKind],
     titles: &HashMap<String, String>,
     t: &Tokens,
     commands: &mut Commands,
 ) {
-    let index = editor.selected.as_ref().and_then(|id| shown.iter().position(|s| &s.clip.id == id));
+    // Earlier and Later reorder the main track; elsewhere a clip's start says where it plays.
+    let main: Vec<&str> = shown.iter().filter(|s| s.clip.track == 0).map(|s| s.clip.id.as_str()).collect();
+    let index = editor.selected.as_ref().and_then(|id| main.iter().position(|m| *m == id));
     ui.horizontal_wrapped(|ui| {
         if ui.add_enabled(index.is_some_and(|i| i > 0), egui::Button::new("Earlier")).clicked()
             && let (Some(id), Some(i)) = (&editor.selected, index)
@@ -444,14 +518,14 @@ fn clips_panel(
             params["index"] = json!(i.saturating_sub(1));
             commands.push(("timeline.move", params));
         }
-        if ui.add_enabled(index.is_some_and(|i| i.saturating_add(1) < shown.len()), egui::Button::new("Later")).clicked()
+        if ui.add_enabled(index.is_some_and(|i| i.saturating_add(1) < main.len()), egui::Button::new("Later")).clicked()
             && let (Some(id), Some(i)) = (&editor.selected, index)
         {
             let mut params = on(editor, id);
             params["index"] = json!(i.saturating_add(1));
             commands.push(("timeline.move", params));
         }
-        let cut = cut_at(shown, placed, editor.playhead_us);
+        let cut = cut_at(shown, placed, editor.playhead_us, editor.selected.as_deref());
         let split = ui.add_enabled(cut.is_some(), egui::Button::new("Split at playhead"));
         let split = if cut.is_some() { split } else { split.on_disabled_hover_text("Put the playhead inside a clip") };
         if split.clicked()
@@ -471,7 +545,7 @@ fn clips_panel(
     ui.separator();
     egui::ScrollArea::vertical().id_salt("timeline_clips").show(ui, |ui| {
         if shown.is_empty() {
-            ui.label(egui::RichText::new("Wire videos into the card's clips input.").color(t.text_muted));
+            ui.label(egui::RichText::new("Wire videos, sounds or pictures into the card's inputs.").color(t.text_muted));
         }
         for s in shown {
             let label = name(titles, shown, s);
@@ -494,18 +568,39 @@ fn clips_panel(
                 } else {
                     s.end_us().map_or_else(|| "length unknown".to_owned(), |end| duration(end.saturating_sub(s.clip.in_us)))
                 };
+                let note = if s.clip.track == 0 { note } else { format!("{note} · {}", track_name(tracks, s.clip.track)) };
                 ui.label(egui::RichText::new(note).color(t.text_muted).small());
+            });
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Tracks").color(t.text_muted));
+        for track in (0..tracks.len()).filter_map(|k| u8::try_from(k).ok()) {
+            let label = track_name(tracks, track);
+            ui.horizontal(|ui| {
+                ui.label(&label);
+                if track == 0 {
+                    return;
+                }
+                let empty = !shown.iter().any(|s| s.clip.track == track);
+                let remove = ui.add_enabled(empty, egui::Button::new("Remove").small());
+                let remove = if empty { remove } else { remove.on_disabled_hover_text("Move or delete its clips first") };
+                remove.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, empty, format!("Remove {label}")));
+                if remove.clicked() {
+                    commands.push(("timeline.track_remove", json!({"canvas": editor.canvas, "id": editor.node, "track": track})));
+                }
             });
         }
     });
 }
 
 /// The selected clip's fields, or (with none selected) the output frame's.
+#[allow(clippy::too_many_arguments)]
 fn properties(
     ui: &mut egui::Ui,
     editor: &mut TimelineEditor,
     shown: &[Shown],
     node: &nodecraft_graph::Node,
+    tracks: &[TrackKind],
     titles: &HashMap<String, String>,
     t: &Tokens,
     commands: &mut Commands,
@@ -521,30 +616,55 @@ fn properties(
     let key = |field: &str| format!("{}.{field}", clip.id);
     ui.label(egui::RichText::new(name(titles, shown, s)).strong());
     if !s.wired {
-        ui.label(egui::RichText::new("Its video isn't wired in, so it doesn't play. Wire it in again, or delete the clip.").color(t.text_muted).small());
+        ui.label(egui::RichText::new("Its media isn't wired in, so it doesn't play. Wire it in again, or delete the clip.").color(t.text_muted).small());
     }
+    let still = clip.input == Input::Stills;
     let end = s.end_us();
-    let limit = seconds(s.video_us.unwrap_or(timeline::MAX_US));
+    let limit = seconds(s.media_us.unwrap_or(timeline::MAX_US));
     egui::Grid::new("timeline_clip").num_columns(2).show(ui, |ui| {
-        let top = end.map_or(limit, |e| seconds(e.saturating_sub(MIN_US)));
-        if let Some(v) = number(ui, &mut editor.draft, &key("in"), "Start (s)", seconds(clip.in_us), 0.0..=top, 0.05, 2) {
-            commands.push(update(editor, &clip.id, json!({"in_us": micros(v)})));
-        }
-        ui.end_row();
-        match end {
-            Some(e) => {
-                let bottom = seconds(clip.in_us.saturating_add(MIN_US));
-                if let Some(v) = number(ui, &mut editor.draft, &key("out"), "End (s)", seconds(e), bottom..=limit, 0.05, 2) {
-                    let out = micros(v);
-                    commands.push(update(editor, &clip.id, json!({"out_us": (Some(out) != s.video_us).then_some(out)})));
+        ui.label("Track");
+        let current = track_name(tracks, clip.track);
+        egui::ComboBox::from_id_salt("timeline_clip_track").selected_text(&current).show_ui(ui, |ui| {
+            for track in (0..tracks.len()).filter_map(|k| u8::try_from(k).ok()).filter(|k| fits(tracks, *k, clip.input)) {
+                if ui.selectable_label(track == clip.track, track_name(tracks, track)).clicked() && track != clip.track {
+                    commands.push(update(editor, &clip.id, json!({"track": track})));
                 }
             }
-            None => {
-                ui.label("End");
-                ui.label(egui::RichText::new("the video's end").color(t.text_muted));
-            }
-        }
+        });
         ui.end_row();
+        if clip.track > 0 {
+            if let Some(v) = number(ui, &mut editor.draft, &key("at"), "Plays at (s)", seconds(clip.at_us), 0.0..=seconds(timeline::MAX_US), 0.05, 2) {
+                commands.push(update(editor, &clip.id, json!({"at_us": micros(v)})));
+            }
+            ui.end_row();
+        }
+        if still {
+            let shows = end.unwrap_or(timeline::DEFAULT_STILL_US);
+            if let Some(v) = number(ui, &mut editor.draft, &key("out"), "Shows for (s)", seconds(shows), seconds(MIN_US)..=limit, 0.05, 2) {
+                commands.push(update(editor, &clip.id, json!({"out_us": micros(v).max(MIN_US)})));
+            }
+            ui.end_row();
+        } else {
+            let top = end.map_or(limit, |e| seconds(e.saturating_sub(MIN_US)));
+            if let Some(v) = number(ui, &mut editor.draft, &key("in"), "Start (s)", seconds(clip.in_us), 0.0..=top, 0.05, 2) {
+                commands.push(update(editor, &clip.id, json!({"in_us": micros(v)})));
+            }
+            ui.end_row();
+            match end {
+                Some(e) => {
+                    let bottom = seconds(clip.in_us.saturating_add(MIN_US));
+                    if let Some(v) = number(ui, &mut editor.draft, &key("out"), "End (s)", seconds(e), bottom..=limit, 0.05, 2) {
+                        let out = micros(v);
+                        commands.push(update(editor, &clip.id, json!({"out_us": (Some(out) != s.media_us).then_some(out)})));
+                    }
+                }
+                None => {
+                    ui.label("End");
+                    ui.label(egui::RichText::new("the media's end").color(t.text_muted));
+                }
+            }
+            ui.end_row();
+        }
         let length = end.map_or(limit, |e| seconds(e.saturating_sub(clip.in_us)));
         for (field, label, value) in [("fade_in_us", "Fade in (s)", clip.fade_in_us), ("fade_out_us", "Fade out (s)", clip.fade_out_us)] {
             if let Some(v) = number(ui, &mut editor.draft, &key(field), label, seconds(value), 0.0..=length, 0.05, 2) {
@@ -552,31 +672,37 @@ fn properties(
             }
             ui.end_row();
         }
-        if let Some(v) = number(ui, &mut editor.draft, &key("transition"), "Into next (s)", seconds(clip.transition_us), 0.0..=length, 0.05, 2) {
-            // Under the shortest transition is a cut.
-            let us = micros(v);
-            commands.push(update(editor, &clip.id, json!({"transition_us": if us < timeline::MIN_TRANSITION_US { 0 } else { us }})));
+        // Only the main track crosses one clip into the next.
+        if clip.track == 0 {
+            if let Some(v) = number(ui, &mut editor.draft, &key("transition"), "Into next (s)", seconds(clip.transition_us), 0.0..=length, 0.05, 2) {
+                // Under the shortest transition is a cut.
+                let us = micros(v);
+                commands.push(update(editor, &clip.id, json!({"transition_us": if us < timeline::MIN_TRANSITION_US { 0 } else { us }})));
+            }
+            ui.end_row();
         }
-        ui.end_row();
-        let most = f64::from(timeline::MAX_VOLUME) / 10.0;
-        if let Some(v) = number(ui, &mut editor.draft, &key("volume"), "Volume (%)", f64::from(clip.volume) / 10.0, 0.0..=most, 1.0, 0) {
-            let volume = (v * 10.0).round().clamp(0.0, f64::from(timeline::MAX_VOLUME)) as u16;
-            commands.push(update(editor, &clip.id, json!({"volume": volume})));
+        if !still {
+            let most = f64::from(timeline::MAX_VOLUME) / 10.0;
+            if let Some(v) = number(ui, &mut editor.draft, &key("volume"), "Volume (%)", f64::from(clip.volume) / 10.0, 0.0..=most, 1.0, 0) {
+                let volume = (v * 10.0).round().clamp(0.0, f64::from(timeline::MAX_VOLUME)) as u16;
+                commands.push(update(editor, &clip.id, json!({"volume": volume})));
+            }
+            ui.end_row();
         }
-        ui.end_row();
     });
     let mut muted = clip.muted;
-    if ui.checkbox(&mut muted, "Mute").changed() {
+    if !still && ui.checkbox(&mut muted, "Mute").changed() {
         commands.push(update(editor, &clip.id, json!({"muted": muted})));
     }
-    if end.is_some() && clip.out_us.is_some() && ui.button("Play to the video's end").clicked() {
+    if !still && end.is_some() && clip.out_us.is_some() && ui.button("Play to the media's end").clicked() {
         commands.push(update(editor, &clip.id, json!({"out_us": null})));
     }
-    ui.label(
-        egui::RichText::new("Times are seconds into the clip's own video. Into next cross-fades into the clip after it; the last clip's is ignored.")
-            .color(t.text_muted)
-            .small(),
-    );
+    let help = if clip.track == 0 {
+        "Times are seconds into the clip's own media. Into next cross-fades into the clip after it; the last clip's is ignored."
+    } else {
+        "Times are seconds into the clip's own media; it plays from its start time over the main track."
+    };
+    ui.label(egui::RichText::new(help).color(t.text_muted).small());
 }
 
 fn frame_properties(ui: &mut egui::Ui, editor: &mut TimelineEditor, node: &nodecraft_graph::Node, t: &Tokens, commands: &mut Commands) {
@@ -625,14 +751,16 @@ fn tick_us(scale: f32, min: f32) -> u64 {
     STEPS.into_iter().find(|step| seconds(*step) as f32 * scale >= min).unwrap_or(600_000_000)
 }
 
-/// The ruler with its playhead, and the playing clips laid along it: drag a clip to reorder it,
-/// its edges to trim it, and the ruler to move the playhead.
+/// The ruler with its playhead, and a lane per track with its playing clips laid along it: drag
+/// a clip to reorder it on the main track, to move it in time elsewhere or onto another lane
+/// that takes its media, its edges to trim it, and the ruler to move the playhead.
 #[allow(clippy::too_many_arguments)]
 fn track(
     ui: &mut egui::Ui,
     editor: &mut TimelineEditor,
     shown: &[Shown],
     placed: &[Placed],
+    tracks: &[TrackKind],
     total: u64,
     posters: &HashMap<String, (egui::TextureId, [u32; 2])>,
     titles: &HashMap<String, String>,
@@ -640,21 +768,26 @@ fn track(
     commands: &mut Commands,
 ) {
     let area = ui.available_rect_before_wrap();
-    let height = t.timeline_ruler_height + t.timeline_track_height;
+    // Lanes share at most two thirds of the height, each no taller than the main track's.
+    let count = tracks.len().max(1) as f32;
+    let row = (t.timeline_track_height).min(((area.height() * 2.0 / 3.0 - t.timeline_ruler_height) / count).max(t.timeline_trim_grip * 4.0));
+    let height = t.timeline_ruler_height + row * count;
     let preview = Rect::from_min_max(area.min, Pos2::new(area.max.x, (area.max.y - height - t.control_gap * 2.0).max(area.min.y)));
     let ruler = Rect::from_min_size(Pos2::new(area.min.x, preview.max.y + t.control_gap), Vec2::new(area.width(), t.timeline_ruler_height));
-    let lane = Rect::from_min_size(Pos2::new(area.min.x, ruler.max.y), Vec2::new(area.width(), t.timeline_track_height));
+    let lane_of = |track: u8| Rect::from_min_size(Pos2::new(area.min.x, ruler.max.y + row * f32::from(track)), Vec2::new(area.width(), row));
+    let lane = Rect::from_min_max(ruler.left_bottom(), Pos2::new(area.max.x, ruler.max.y + row * count));
     let painter = ui.painter_at(area);
 
-    // What the playhead is over: the clip's thumbnail, as a still.
-    let under = cut_at(shown, placed, editor.playhead_us.max(1)).or_else(|| placed.first().map(|p| (p.index, 0)));
-    if let Some((texture, size)) = under.and_then(|(i, _)| shown.get(i)).and_then(|s| posters.get(&s.clip.id)) {
+    // What the playhead is over on the main track: the clip's thumbnail, as a still.
+    let head_us = editor.playhead_us.max(1);
+    let under = placed.iter().rev().find(|p| p.track == 0 && inside(p, head_us)).or_else(|| placed.first()).map(|p| p.index);
+    if let Some((texture, size)) = under.and_then(|i| shown.get(i)).and_then(|s| posters.get(&s.clip.id)) {
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         let fit = Vec2::new(preview.height() * aspect, preview.height());
         let fit = if fit.x > preview.width() { Vec2::new(preview.width(), preview.width() / aspect.max(0.01)) } else { fit };
         painter.image(*texture, Rect::from_center_size(preview.center(), fit), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
     } else {
-        let why = if placed.is_empty() { "Nothing plays yet: wire videos in and enable a clip." } else { "Run the card to render the timeline." };
+        let why = if placed.is_empty() { "Nothing plays yet: wire media in and enable a clip." } else { "Run the card to render the timeline." };
         painter.text(preview.center(), egui::Align2::CENTER_CENTER, why, egui::FontId::proportional(t.body_size), t.text_muted);
     }
 
@@ -683,14 +816,20 @@ fn track(
         painter.text(Pos2::new(at + 2.0, ruler.min.y), egui::Align2::LEFT_TOP, duration(tick), egui::FontId::proportional(t.label_size), t.text_muted);
         tick = tick.saturating_add(step);
     }
-    painter.rect_filled(lane, f32::from(t.card_radius) / 2.0, t.card_fill);
+    for track in (0..tracks.len()).filter_map(|k| u8::try_from(k).ok()) {
+        let at = lane_of(track).shrink2(Vec2::new(0.0, 1.0));
+        painter.rect_filled(at, f32::from(t.card_radius) / 2.0, t.card_fill);
+        let name = track_name(tracks, track);
+        painter.text(at.right_top() + Vec2::new(-t.control_gap, 2.0), egui::Align2::RIGHT_TOP, name, egui::FontId::proportional(t.label_size), t.text_muted);
+    }
 
     // The clips, with grips at their edges. The dragged one draws where it is now.
     let grip = t.timeline_trim_grip;
     for p in placed {
         let Some(s) = shown.get(p.index) else { continue };
-        let label = name(titles, shown, s);
-        let block = Rect::from_min_max(Pos2::new(x(p.start_us), lane.min.y + 2.0), Pos2::new(x(p.start_us.saturating_add(p.length_us)), lane.max.y - 2.0));
+        let (label, start_us) = (name(titles, shown, s), p.start_us);
+        let row = lane_of(p.track);
+        let block = Rect::from_min_max(Pos2::new(x(p.start_us), row.min.y + 2.0), Pos2::new(x(p.start_us.saturating_add(p.length_us)), row.max.y - 2.0));
         let selected = editor.selected.as_ref() == Some(&s.clip.id);
         let id = ui.id().with(("timeline_clip", &s.clip.id));
         let r = ui.interact(block, id, Sense::click_and_drag());
@@ -698,8 +837,8 @@ fn track(
         let mut grips = vec![(Grip::Move, r)];
         let edges = [(Grip::Start, block.min.x, "Trim start of"), (Grip::End, block.max.x, "Trim end of")];
         for (kind, at, what) in edges {
-            // An end only trims once it is known.
-            if kind == Grip::End && s.end_us().is_none() {
+            // An end only trims once it is known; a still's start is always its start.
+            if (kind == Grip::End && s.end_us().is_none()) || (kind == Grip::Start && s.clip.input == Input::Stills) {
                 continue;
             }
             // Inside the clip, so where two clips meet each grip trims its own.
@@ -716,7 +855,16 @@ fn track(
                 && let Some(p) = ui.input(|i| i.pointer.press_origin()).or_else(|| r.interact_pointer_pos())
             {
                 let before = s.clip.clone();
-                editor.drag = Some(Drag { clip: s.clip.id.clone(), grip: *kind, from_x: p.x, now: before.clone(), before, video_us: s.video_us, to: None });
+                editor.drag = Some(Drag {
+                    clip: s.clip.id.clone(),
+                    grip: *kind,
+                    from_x: p.x,
+                    from_us: start_us,
+                    now: before.clone(),
+                    before,
+                    media_us: s.media_us,
+                    to: None,
+                });
                 editor.selected = Some(s.clip.id.clone());
             }
         }
@@ -724,7 +872,12 @@ fn track(
             editor.selected = Some(s.clip.id.clone());
         }
 
-        let stroke = if selected { egui::Stroke::new(2.0, t.card_stroke_selected) } else { egui::Stroke::new(1.0, t.wire_video) };
+        let colour = match s.clip.input {
+            Input::Clips => t.wire_video,
+            Input::Audio => t.wire_audio,
+            Input::Stills => t.wire_image,
+        };
+        let stroke = if selected { egui::Stroke::new(2.0, t.card_stroke_selected) } else { egui::Stroke::new(1.0, colour) };
         painter.rect_filled(block, f32::from(t.card_radius) / 3.0, t.panel_fill);
         if let Some((texture, size)) = posters.get(&s.clip.id) {
             let aspect = size[0] as f32 / size[1].max(1) as f32;
@@ -761,22 +914,41 @@ fn track(
     if let Some(drag) = &mut editor.drag {
         let pointer = ui.input(|i| i.pointer.interact_pos());
         if let Some(p) = pointer {
-            drag.trim(p.x - drag.from_x, editor.scale);
-            if drag.grip == Grip::Move {
-                // Lands before the first other playing clip whose middle is right of the pointer.
-                let others: Vec<&Placed> = placed.iter().filter(|q| shown.get(q.index).is_some_and(|s| s.clip.id != drag.clip)).collect();
-                let before = others.iter().find(|q| x(q.start_us.saturating_add(q.length_us / 2)) > p.x).map(|q| q.index);
-                let order: Vec<usize> = (0..shown.len()).filter(|i| shown.get(*i).is_some_and(|s| s.clip.id != drag.clip)).collect();
+            // A move goes onto the lane under the pointer when that lane takes its media.
+            let over = (0..tracks.len()).filter_map(|k| u8::try_from(k).ok()).find(|k| lane_of(*k).y_range().contains(p.y));
+            let onto = over.filter(|k| drag.grip == Grip::Move && fits(tracks, *k, drag.before.input)).unwrap_or(drag.before.track);
+            drag.trim(p.x - drag.from_x, editor.scale, onto);
+            drag.to = None;
+            if drag.grip == Grip::Move && onto == 0 && drag.before.track == 0 {
+                // Lands before the first other playing main-track clip whose middle is right of the pointer.
+                let main = |q: &&Placed| q.track == 0 && shown.get(q.index).is_some_and(|s| s.clip.id != drag.clip);
+                let before = placed.iter().filter(main).find(|q| x(q.start_us.saturating_add(q.length_us / 2)) > p.x).map(|q| q.index);
+                let order: Vec<usize> = (0..shown.len()).filter(|i| shown.get(*i).is_some_and(|s| s.clip.track == 0 && s.clip.id != drag.clip)).collect();
                 drag.to = Some(before.and_then(|b| order.iter().position(|i| *i == b)).unwrap_or(order.len()));
-                let at = before.and_then(|b| placed.iter().find(|q| q.index == b)).map_or(x(total), |q| x(q.start_us));
-                painter.line_segment([Pos2::new(at, lane.min.y), Pos2::new(at, lane.max.y)], egui::Stroke::new(2.0, t.accent));
+                let end = placed.iter().filter(main).map(|q| q.start_us.saturating_add(q.length_us).saturating_sub(q.overlap_us)).max().unwrap_or(0);
+                let at = before.and_then(|b| placed.iter().find(|q| q.index == b)).map_or(x(end), |q| x(q.start_us));
+                let main_lane = lane_of(0);
+                painter.line_segment([Pos2::new(at, main_lane.min.y), Pos2::new(at, main_lane.max.y)], egui::Stroke::new(2.0, t.accent));
             }
         }
         if !ui.input(|i| i.pointer.any_down()) {
             let (id, before, now) = (drag.clip.clone(), drag.before.clone(), drag.now.clone());
             match drag.grip {
+                Grip::Move if now.track != before.track => {
+                    let mut set = serde_json::Map::new();
+                    set.insert("track".into(), json!(now.track));
+                    if now.track > 0 {
+                        set.insert("at_us".into(), json!(now.at_us));
+                    }
+                    commands.push(update(editor, &id, Json::Object(set)));
+                }
+                Grip::Move if now.track > 0 => {
+                    if now.at_us != before.at_us {
+                        commands.push(update(editor, &id, json!({"at_us": now.at_us})));
+                    }
+                }
                 Grip::Move => {
-                    let from = shown.iter().position(|s| s.clip.id == id);
+                    let from = shown.iter().filter(|s| s.clip.track == 0).position(|s| s.clip.id == id);
                     if let Some(to) = drag.to
                         && Some(to) != from
                     {
@@ -798,6 +970,9 @@ fn track(
                     if now.out_us != before.out_us {
                         set.insert("out_us".into(), json!(now.out_us));
                     }
+                    if now.at_us != before.at_us {
+                        set.insert("at_us".into(), json!(now.at_us));
+                    }
                     commands.push(update(editor, &id, Json::Object(set)));
                 }
                 _ => {}
@@ -817,7 +992,7 @@ mod tests {
 
     fn shown(id: &str, in_us: u64, out_us: Option<u64>, video_us: Option<u64>, transition_us: u64) -> Shown {
         let clip = Clip { in_us, out_us, transition_us, ..Clip::whole(id.into(), "n".into(), 0) };
-        Shown { clip, wired: true, video_us, video: None }
+        Shown { clip, wired: true, media_us: video_us, video: None }
     }
 
     #[test]
@@ -833,28 +1008,82 @@ mod tests {
         clips[2].wired = false;
         let (placed, total) = place(&clips);
         assert_eq!((placed.len(), total), (1, 1_500_000));
-        assert_eq!(cut_at(&clips, &placed, 1_000_000), Some((0, 1_500_000)));
-        assert_eq!(cut_at(&clips, &placed, 0), None, "a cut is strictly inside a clip");
+        assert_eq!(cut_at(&clips, &placed, 1_000_000, None), Some((0, 1_500_000)));
+        assert_eq!(cut_at(&clips, &placed, 0, None), None, "a cut is strictly inside a clip");
     }
 
     #[test]
     fn trims_stay_inside_the_video_and_keep_the_clip_long_enough() {
         let clip = Clip { fade_in_us: 400_000, fade_out_us: 400_000, ..Clip::whole("a".into(), "n".into(), 0) };
-        let drag = |grip| Drag { clip: "a".into(), grip, from_x: 0.0, before: clip.clone(), video_us: Some(1_000_000), now: clip.clone(), to: None };
+        let drag =
+            |grip| Drag { clip: "a".into(), grip, from_x: 0.0, from_us: 0, before: clip.clone(), media_us: Some(1_000_000), now: clip.clone(), to: None };
         let mut start = drag(Grip::Start);
-        start.trim(-50.0, 100.0);
+        start.trim(-50.0, 100.0, 0);
         assert_eq!(start.now.in_us, 0, "not before the video starts");
-        start.trim(30.0, 100.0);
+        start.trim(30.0, 100.0, 0);
         assert_eq!((start.now.in_us, start.now.fade_in_us, start.now.fade_out_us), (300_000, 350_000, 350_000), "fades shrink to fit");
-        start.trim(500.0, 100.0);
+        start.trim(500.0, 100.0, 0);
         assert_eq!(start.now.in_us, 900_000, "at least MIN_US long");
         let mut end = drag(Grip::End);
-        end.trim(-25.0, 100.0);
+        end.trim(-25.0, 100.0, 0);
         assert_eq!(end.now.out_us, Some(750_000));
-        end.trim(80.0, 100.0);
+        end.trim(80.0, 100.0, 0);
         assert_eq!(end.now.out_us, None, "back at the video's end plays to the end");
-        end.trim(f32::NAN, 0.0);
+        end.trim(f32::NAN, 0.0, 0);
         assert_eq!(end.now.out_us, None);
+    }
+
+    #[test]
+    fn other_tracks_play_at_their_own_start_and_the_output_runs_to_the_last_end() {
+        let mut sound = shown("s", 0, Some(1_000_000), Some(4_000_000), 0);
+        (sound.clip.input, sound.clip.track, sound.clip.at_us) = (Input::Audio, 2, 3_000_000);
+        let mut still = shown("p", 0, Some(500_000), None, 0);
+        (still.clip.input, still.clip.track, still.clip.at_us) = (Input::Stills, 1, 200_000);
+        let clips = vec![shown("a", 0, None, Some(2_000_000), 0), sound, still];
+        let (placed, total) = place(&clips);
+        let at: Vec<(u8, u64, u64)> = placed.iter().map(|p| (p.track, p.start_us, p.length_us)).collect();
+        assert_eq!(at, [(0, 0, 2_000_000), (2, 3_000_000, 1_000_000), (1, 200_000, 500_000)]);
+        assert_eq!(total, 4_000_000, "past the main track, to the sound's end");
+        // The selected clip splits where it is under the playhead, else the main track's; stills don't.
+        assert_eq!(cut_at(&clips, &placed, 300_000, Some("p")), Some((0, 300_000)));
+        assert_eq!(cut_at(&clips, &placed, 3_500_000, Some("s")), Some((1, 500_000)));
+        assert_eq!(cut_at(&clips, &placed, 3_500_000, None), None);
+        let tracks = [TrackKind::Video, TrackKind::Video, TrackKind::Audio];
+        assert!(fits(&tracks, 0, Input::Stills) && fits(&tracks, 2, Input::Audio) && !fits(&tracks, 1, Input::Audio) && !fits(&tracks, 3, Input::Clips));
+        assert_eq!((track_name(&tracks, 0), track_name(&tracks, 2)), ("Main track".to_owned(), "Sound track 2".to_owned()));
+    }
+
+    #[test]
+    fn moves_off_the_main_track_shift_the_start_and_start_trims_keep_the_end() {
+        let clip = Clip { track: 1, at_us: 1_000_000, in_us: 500_000, ..Clip::whole("a".into(), "n".into(), 0) };
+        let drag = |grip| Drag {
+            clip: "a".into(),
+            grip,
+            from_x: 0.0,
+            from_us: 1_000_000,
+            before: clip.clone(),
+            media_us: Some(3_000_000),
+            now: clip.clone(),
+            to: None,
+        };
+        let mut moving = drag(Grip::Move);
+        moving.trim(50.0, 100.0, 1);
+        assert_eq!((moving.now.track, moving.now.at_us), (1, 1_500_000));
+        moving.trim(-500.0, 100.0, 1);
+        assert_eq!(moving.now.at_us, 0, "not before the output starts");
+        moving.trim(10.0, 100.0, 0);
+        assert_eq!((moving.now.track, moving.now.at_us), (0, 0), "the main track plays in order");
+        let mut start = drag(Grip::Start);
+        start.trim(20.0, 100.0, 1);
+        assert_eq!((start.now.in_us, start.now.at_us), (700_000, 1_200_000), "the end stays put");
+        start.trim(-200.0, 100.0, 1);
+        assert_eq!((start.now.in_us, start.now.at_us), (0, 500_000), "back to the media's start");
+        // From the main track, a clip moved onto another starts where it was, plus the travel.
+        let main = Clip { transition_us: 300_000, ..Clip::whole("b".into(), "n".into(), 0) };
+        let mut lifted =
+            Drag { clip: "b".into(), grip: Grip::Move, from_x: 0.0, from_us: 2_000_000, before: main.clone(), media_us: None, now: main, to: None };
+        lifted.trim(100.0, 100.0, 1);
+        assert_eq!((lifted.now.track, lifted.now.at_us, lifted.now.transition_us), (1, 3_000_000, 0));
     }
 
     #[test]

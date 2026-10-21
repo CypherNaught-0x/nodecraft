@@ -103,7 +103,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
   maps reference-to-video yet.
-  The Timeline (#109) renders one track of clips with fades and cross-fades.
+  The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
+  tracks over it and sound tracks mixed under it (#576).
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
   batch, Techniques, app mode, library, Layer editor, Elements, PDF,
   collaboration, and 33 of the 41 tracked provider adapters (ComfyUI, fal.ai and
