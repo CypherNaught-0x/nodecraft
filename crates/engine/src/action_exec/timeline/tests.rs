@@ -64,3 +64,50 @@ fn a_timeline_without_tools_or_clips_says_what_to_do() {
     assert!(untooled.contains("desktop"), "{untooled}");
     assert!(actions.staged_videos().is_empty());
 }
+
+/// A small test-pattern MP4 with a tone, made by the ffmpeg under test.
+#[cfg(not(target_arch = "wasm32"))]
+fn clip(ffmpeg: &std::path::Path, seconds: u32) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("in.mp4");
+    let length = seconds.to_string();
+    let status = std::process::Command::new(ffmpeg)
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=10", "-f", "lavfi", "-i", "sine=frequency=440"])
+        .args(["-t", &length, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::read(path).unwrap()
+}
+
+/// Opt in with NODECRAFT_VIDEO_TEST_FFMPEG and NODECRAFT_VIDEO_TEST_FFPROBE (absolute paths).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "runs a real ffmpeg"]
+fn a_timeline_renders_its_clips_into_one_webm() {
+    let ffmpeg = std::path::PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = std::path::PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    let mut assets = AssetStore::default();
+    let (one, two) = (assets.insert(&clip(&ffmpeg, 2)).unwrap(), assets.insert(&clip(&ffmpeg, 1)).unwrap());
+    let video = |hash| Value::Media(AssetRef { hash, mime: "video/mp4".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets).with_video_tools(Some((ffmpeg, ffprobe)));
+    let clips = r#"{"clips":[{"id":"a","origin":"n1","in_us":500000,"fade_in_us":200000,"transition_us":300000},{"id":"b","origin":"n2","volume":500}]}"#;
+    let mut params = planned(clips, &["n1", "n2"]);
+    params.insert("width".into(), Value::Unsigned(Unsigned(64)));
+    params.insert("height".into(), Value::Unsigned(Unsigned(48)));
+    let out = actions.execute(nodecraft_nodes::timeline::ID, &params, &[video(one), video(two)]).unwrap();
+    let Value::Media(asset) = out else { panic!("{out:?}") };
+    assert_eq!((asset.mime.essence(), asset.meta.width, asset.meta.height), ("video/webm", Some(64), Some(48)));
+    // 1.5 s and 1 s, overlapping by 0.3 s.
+    assert_eq!(asset.meta.duration_ms, Some(2200));
+    let staged = actions.staged_videos();
+    let [(hash, bytes)] = staged.as_slice() else { panic!("{} staged", staged.len()) };
+    assert_eq!(*hash, asset.hash);
+    assert_eq!(bytes.get(..4), Some([0x1a, 0x45, 0xdf, 0xa3].as_slice()), "a Matroska/WebM file");
+
+    // A clip past its video's end says which clip and how long the video is.
+    let long = r#"{"clips":[{"id":"n2-0","origin":"n2","out_us":5000000}]}"#;
+    let error = actions.execute(nodecraft_nodes::timeline::ID, &planned(long, &["n1", "n2"]), &[video(one), video(two)]).unwrap_err();
+    assert!(error.contains("clip 1 ends after its video does (1.0 s)"), "{error}");
+}
