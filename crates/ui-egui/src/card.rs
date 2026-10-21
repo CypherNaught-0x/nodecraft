@@ -14,6 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
 };
 
+mod chips;
 pub(crate) mod generate;
 pub(crate) mod mention;
 pub use generate::Roles;
@@ -748,9 +749,20 @@ pub(crate) fn control_with_mode(
                 _ => 512,
             };
             let char_limit = remaining_draft_chars.map_or(max, |limit| max.min(limit));
+            // A prompt's `@` mentions are chips while it is edited (#579).
+            let chips = multiline && name == nodecraft_nodes::generation::PROMPT;
+            let old = (chips && draft.text.contains("@[")).then(|| draft.text.clone());
+            let before = old.as_ref().and_then(|_| {
+                egui::TextEdit::load_state(ui.ctx(), ui.make_persistent_id(egui::IdSalt::new("value"))).and_then(|state| state.cursor.char_range())
+            });
+            let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| chips::layout(ui, text.as_str(), wrap, t);
             let widget =
                 if multiline { egui::TextEdit::multiline(&mut draft.text).desired_rows(t.text_rows) } else { egui::TextEdit::singleline(&mut draft.text) };
+            let widget = if chips { widget.layouter(&mut layouter) } else { widget };
             let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(char_limit)).labelled_by(label);
+            if let Some(old) = old {
+                chips::settle(ui, r.id, &old, &mut draft.text, before);
+            }
             if editor.draft_limit.is_some() {
                 editor.text_ids.insert(name.to_owned(), r.id);
             }
