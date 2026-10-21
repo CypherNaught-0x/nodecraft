@@ -369,6 +369,93 @@ fn intake_reads_only_first_thirty_two_paths_without_retaining_original_handles()
     drop(ticket);
     idle(&worker.service);
 }
+/// Holds the service mailbox lock until it is dropped, so a `start` the test makes is rejected at
+/// the handoff for a reason the test controls instead of one it has to race for. Another thread
+/// owns the lock, because `Mutex::try_lock` is unspecified on a mutex the calling thread already
+/// holds and this gate has to behave the same on every CI leg.
+struct MailboxGate {
+    release: SyncSender<()>,
+    holder: Option<std::thread::JoinHandle<()>>,
+}
+impl MailboxGate {
+    /// Takes the mailbox and returns only once it is held.
+    fn hold(service: &Service) -> Self {
+        let (held, is_held) = sync_channel(1);
+        let (release, wait_release) = sync_channel(1);
+        let shared = Arc::clone(&service.0);
+        let holder = std::thread::Builder::new()
+            .name("nodecraft-drop485-gate".into())
+            .spawn(move || {
+                let slot = shared.mailbox.lock().unwrap_or_else(PoisonError::into_inner);
+                // Held until the release arrives, so nothing can be admitted meanwhile.
+                held.try_send(()).ok();
+                let _ = wait_release.recv_timeout(Duration::from_secs(10));
+                drop(slot);
+            })
+            .unwrap();
+        is_held.recv_timeout(Duration::from_secs(10)).expect("gate took the mailbox");
+        Self { release, holder: Some(holder) }
+    }
+}
+impl Drop for MailboxGate {
+    fn drop(&mut self) {
+        // Released and joined here so the bounded worker cleanup in `TestService::drop` can never
+        // be waiting on a lock this fixture took, on the passing path and on a failing one.
+        let _ = self.release.try_send(());
+        if let Some(holder) = self.holder.take() {
+            let _ = holder.join();
+        }
+    }
+}
+#[test]
+fn a_busy_handoff_still_reads_every_admitted_path_and_the_retry_counts_one_pass() {
+    // #485: the macOS flake counted 64 `path()` reads where the intake test expects 32. Pinned
+    // here without a race, as the #474 root cause and nothing else: `Service::start` reads every
+    // handle it admits BEFORE the mailbox handoff, so the attempt a `Busy` rejects has already
+    // cost a whole pass. The pass a retry reports is 32 only because the fixture restarts its
+    // counter per attempt; delete that restart and the retried admission reads 64 again. The
+    // rejected-attempt half pins that ordering as it stands: a change that hands the job over
+    // before reading would move that expectation, never the 32-rather-than-64 one.
+    struct CountedPath {
+        path: PathBuf,
+        calls: Arc<AtomicUsize>,
+    }
+    impl std::fmt::Debug for CountedPath {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("counted")
+        }
+    }
+    impl egui::DroppedFile for CountedPath {
+        fn path(&self) -> &Path {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            &self.path
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            panic!("never read handle bytes")
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let files: Vec<egui::DroppedFileHandle> =
+        (0..1000).map(|_| Arc::new(CountedPath { path: "somewhere".into(), calls: calls.clone() }) as egui::DroppedFileHandle).collect();
+    let backend = Arc::new(Generate { len: 1, opens: AtomicUsize::new(0), calls: Arc::default() });
+    let worker = TestService { service: Service::spawn(backend.clone(), Arc::new(Monotonic)).unwrap() };
+    let gate = MailboxGate::hold(&worker.service);
+    // The rejected attempt, forced: the worker is alive and the occupied lease is free, so this
+    // `Busy` can only have come from the mailbox `try_lock`, which sits after the admitted paths.
+    assert!(matches!(worker.service.start(&files), Err(Failure::Busy)), "a busy mailbox refuses admission");
+    assert_eq!(calls.load(Ordering::SeqCst), MAX_FILES, "a rejected admission has already cost a full pass over the admitted handles");
+    assert_eq!(backend.opens.load(Ordering::SeqCst), 0, "the rejected pass opens nothing; the job never reached the worker");
+    drop(gate);
+    // The retry, with the gate gone. Exactly one pass, never the 64 #485 reported.
+    let mut ticket = start_counting(&worker.service, &files, || calls.store(0, Ordering::SeqCst));
+    assert_eq!(calls.load(Ordering::SeqCst), MAX_FILES, "#485: a retried admission reports its own pass, not the rejected one too");
+    let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
+    assert_eq!(batch.files.len(), MAX_FILES);
+    assert_eq!(batch.skipped.count, files.len() - MAX_FILES);
+    drop(batch);
+    drop(ticket);
+    idle(&worker.service);
+}
 #[test]
 fn oversized_and_non_utf8_native_names_are_bounded_without_truncating_the_path() {
     let backend = Arc::new(Generate { len: 1, opens: AtomicUsize::new(0), calls: Arc::default() });
