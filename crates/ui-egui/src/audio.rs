@@ -130,6 +130,8 @@ mod native {
     const MAX_WAVES: usize = 64;
     /// How much sound one request decodes.
     const CHUNK_US: u64 = 2_000_000;
+    /// How many frames short of [`CHUNK_US`] a chunk may come back and not be the end.
+    const SHORT_FRAMES: u64 = 64;
     /// Asks for more once less than this is waiting to be played.
     const LOW_US: u64 = 3_000_000;
     const POLL: std::time::Duration = std::time::Duration::from_millis(30);
@@ -429,7 +431,9 @@ mod native {
                         playback.job = None;
                         playback.retry = None;
                         let frames = u64::try_from(chunk.frames()).unwrap_or(u64::MAX);
-                        let full = us(frames).saturating_add(1) >= CHUNK_US;
+                        // A chunk a few frames short of its length isn't the end: resampling
+                        // rounds. One that comes back empty is.
+                        let full = frames > 0 && us(frames.saturating_add(SHORT_FRAMES)) >= CHUNK_US;
                         playback.output.push(chunk.samples());
                         playback.next_us = playback.next_us.saturating_add(us(frames));
                         if !full || playback.next_us >= duration {
@@ -595,7 +599,9 @@ mod native {
                 }
                 None => Some(None),
             };
-            if let (Some(retry), Service::Ready(service)) = (start, &self.service) {
+            // One waveform at a time, so the service's other worker is always free for sound.
+            let making = self.waves.values().any(|entry| matches!(entry.state, Wave::Making { .. }));
+            if let (Some(retry), Service::Ready(service), false) = (start, &self.service, making) {
                 let state = match service.waveform(sound, BUCKETS) {
                     Ok(job) => Some(Wave::Making { job, retry }),
                     Err(VideoError::Busy) => None,

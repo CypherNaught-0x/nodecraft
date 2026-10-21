@@ -470,6 +470,7 @@ fn isolated_context() -> Context {
         }),
         registry: Arc::new(Mutex::new(RecordRegistry { records: Vec::with_capacity(1024), next: 0 })),
         cache: Arc::new(Mutex::new(FrameCache::default())),
+        present: Arc::new(Mutex::new(BTreeSet::new())),
     }
 }
 #[test]

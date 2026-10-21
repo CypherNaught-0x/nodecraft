@@ -7,6 +7,8 @@ const MAX_WAVEFORM_SAMPLES: u64 = 16 * 1024 * 1024;
 const WAVEFORM_RATE: u64 = 8_000;
 /// Below this a waveform would miss too much; the sound's too long for one.
 const MIN_WAVEFORM_RATE: u64 = 1_000;
+/// The most `ffmpeg -h` answers remembered.
+const MAX_PRESENT: usize = 64;
 const PCM_FRAME_BYTES: usize = 2 * PCM_CHANNELS as usize;
 
 impl VideoService {
@@ -73,9 +75,18 @@ impl Context {
             needs.push(("filter=pan".to_owned(), "Filter pan".to_owned()));
         }
         for (topic, required) in needs {
+            if self.present.lock().is_ok_and(|present| present.contains(&topic)) {
+                continue;
+            }
             let reply = self.run(&tool, &process::args(&["-hide_banner", "-h", &topic]), None, 65536, cancel, deadline)?;
             if !reply.windows(required.len()).any(|b| b == required.as_bytes()) {
                 return Err(VideoError::Unsupported);
+            }
+            // Codec and demuxer names are few, but keep the set small whatever comes in.
+            if let Ok(mut present) = self.present.lock()
+                && present.len() < MAX_PRESENT
+            {
+                present.insert(topic);
             }
         }
         Ok(())

@@ -265,7 +265,10 @@ buffer that the device's callback resamples from; it plays silence, rather than 
 decoding falls behind. One card plays at a time: playing another pauses the first where it was.
 Playback stops when its card is deleted, when the sound device goes away (the card says so; play
 again to reopen it) and when the app quits. Without an output device the card says "No sound
-output device found". The browser build says playback needs the desktop app.
+output device found". The browser build says playback needs the desktop app. The next stretch
+is asked for from the app's frames, so a minimized window falls silent once its buffer runs out
+and carries on when it's shown again (#666). Waveforms are made one at a time, leaving the
+service's other worker free for sound.
 
 On Linux the desktop app links ALSA (`libasound.so.2`): the deb and rpm packages depend on it,
 the AppImage uses the host's, and the Flatpak gets it from the freedesktop runtime and reaches

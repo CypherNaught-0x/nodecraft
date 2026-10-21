@@ -38,7 +38,7 @@ pub(crate) struct Ring {
 impl Ring {
     pub(crate) fn new(device_rate: u32) -> Self {
         let step = if device_rate == 0 { 1.0 } else { f64::from(PCM_RATE) / f64::from(device_rate) };
-        Self { frames: VecDeque::new(), step, frac: 0.0, played: 0 }
+        Self { frames: VecDeque::with_capacity(MAX_FRAMES), step, frac: 0.0, played: 0 }
     }
 
     /// Adds the whole frames of interleaved stereo `samples`, as many as there's room for.
