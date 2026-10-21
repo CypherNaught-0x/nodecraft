@@ -124,6 +124,8 @@ struct StepState {
     gaps: BTreeMap<usize, (Missing, String)>,
     /// The items of `missing` copied from an earlier step's gaps, whose reason already names it.
     inherited: BTreeSet<usize>,
+    /// The input hash taken when the step began (#518), recorded with its result as compared.
+    hashed: Option<nodecraft_types::Blake3>,
     /// Steps that come after this one.
     dependents: Vec<NodeId>,
 }
@@ -334,6 +336,7 @@ impl Run {
                     missing: BTreeMap::new(),
                     gaps: BTreeMap::new(),
                     inherited: BTreeSet::new(),
+                    hashed: None,
                     dependents: Vec::new(),
                 },
             );
@@ -756,6 +759,7 @@ impl Run {
         }
         let Ok(Some(now)) = self.hasher.hash(&self.canvas, kinds, node, &self.produced) else { return };
         let Some(state) = self.steps.get_mut(&node) else { return };
+        state.hashed = Some(now);
         let Some(fanout) = state.step.fanout.as_mut() else { return };
         fanout.resume = crate::partial::completing(&self.canvas, node, &fanout.items, now);
     }
@@ -1169,8 +1173,13 @@ impl Run {
             }
         };
         // What it was made from: the planned canvas, with this run's upstream outputs. An
-        // over-budget hash is recorded as unknown rather than failing a paid result.
-        let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
+        // over-budget hash is recorded as unknown rather than failing a paid result. One taken when
+        // the step began is reused: it is the one compared, and hashing again costs budget.
+        let hashed = self.steps.get(&node).and_then(|state| state.hashed);
+        let input_hash = match hashed {
+            Some(hash) => Some(hash),
+            None => self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten(),
+        };
         let incomplete = if missing.is_empty() {
             None
         } else {

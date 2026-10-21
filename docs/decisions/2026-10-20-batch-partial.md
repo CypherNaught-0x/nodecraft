@@ -15,9 +15,8 @@
   was made from the inputs the node has now (same input hash, same items, same output layout),
   the planner keeps the finished items and plans jobs only for the missing ones; the quote
   counts only those. The finished items are copied, with their job settings, into the completed
-  result, which keeps every item's id. Anything that doesn't match exactly runs in full. Only
-  steps whose jobs are known up front qualify: a step fed by this run can't know its inputs are
-  unchanged until they are made.
+  result, which keeps every item's id. Anything that doesn't match exactly runs in full. A step
+  fed by this run is decided once its inputs are made (see below).
 - **A missing item runs under a fresh key unless it may have been billed** (#517, revised
   2026-10-21). What a provider holds under an item's old keys is the outcome being retried: a job
   it reported failed answers with that failure, a provider-side cancel with `Cancelled`. So those
@@ -44,10 +43,12 @@
   - A recovered item's recorded settings and seed are the new run's. Older builds ignore the field
     and use fresh keys, so the format version is unchanged. Keys are validated on load: only a
     failed item's, in job order, each a visible-ASCII `nodecraft:` key of at most 64 bytes.
-- **Inputs made in the same run run in full.** A step resumes only when its inputs are known at
-  planning time. Re-running an upstream node together with the partial one runs every item, even
-  when the upstream turns out unchanged; comparing hashes once the inputs are made is tracked as
-  #518.
+- **Inputs made in the same run are compared once they are made** (#518, revised 2026-10-21). A
+  fanned step fed by this run is hashed when its upstream has finished, and when the hash is the
+  one its partial result was made from, only the missing items run, as above. The comparison is of
+  the whole input hash: one changed item runs every item. Its quote, made before, counts every
+  item, so for these steps it is an upper bound; `run.quote` lists them as `resumable`, and the
+  run dialog and the CLI preview say so. Technique nodes and their inlined steps keep #536's rule.
 - **A re-run that is itself cut short replaces the active result** with its own partial, which
   still carries the items kept from before, so nothing already paid for is lost.
 - **Order in the run host.** A step's finished result is recorded before its failure is reported,

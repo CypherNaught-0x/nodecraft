@@ -163,6 +163,9 @@ pub fn quote_text(session: &Session, canvas: CanvasId, quote: &Value) -> String 
         (false, false) => format!("{} so far; some steps are priced during the run", totals.join(" + ")),
     };
     out.push_str(&format!("Total: {total}\n"));
+    if quote["resumable"].as_array().is_some_and(|nodes| !nodes.is_empty()) {
+        out.push_str("Some batches may run only the items they lack, so this total is an upper bound\n");
+    }
     for reason in strings("blocked").into_iter().chain(strings("blocks")) {
         out.push_str(&format!("Blocked: {reason}\n"));
     }

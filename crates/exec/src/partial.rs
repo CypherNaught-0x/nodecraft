@@ -46,8 +46,8 @@ impl Resume {
 }
 
 /// Plans only the missing items of fanned steps whose node shows a partial result made from
-/// the inputs it has now. Only steps whose jobs are known up front qualify: a step fed by this
-/// run can't know its inputs are unchanged until they are made. Anything that doesn't match
+/// the inputs it has now, for steps whose jobs are known up front; a step fed by this run is
+/// decided by the run once its inputs are made ([`completing`]). Anything that doesn't match
 /// exactly (other items, another port layout, inputs that can't be hashed) runs in full.
 pub(crate) fn resume_partials(canvas: &Canvas, kinds: &Registry, steps: &mut [Step]) {
     let mut hasher = Hashed::default();
