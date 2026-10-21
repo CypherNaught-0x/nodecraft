@@ -419,6 +419,8 @@ pub struct NodeCraftApp {
     title: String,
     /// Image previews on cards (#386).
     previews: crate::preview::Previews,
+    /// Video posters and players on cards (#105).
+    videos: crate::video::Videos,
     /// When the last timed frame started, for the frame interval (#151).
     last_frame: Option<u64>,
     frame_workload: Option<nodecraft_engine::perf::Workload>,
@@ -630,6 +632,7 @@ impl NodeCraftApp {
         };
         self.canvas_prefs = settings.canvas.clone();
         self.key_accounts = settings.keys.clone();
+        self.videos.configure(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
@@ -782,6 +785,7 @@ impl NodeCraftApp {
             recorded_location: None,
             title: String::new(),
             previews: crate::preview::Previews::default(),
+            videos: crate::video::Videos::default(),
             last_frame: None,
             frame_workload: None,
             split_size: (2, 2),
@@ -886,6 +890,7 @@ impl NodeCraftApp {
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
+        self.videos.poll(ui.ctx());
         let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
         let changed_session = self.marquee_geometry.prepare(&mut self.session, self.canvas, self.theme);
@@ -1204,6 +1209,7 @@ impl NodeCraftApp {
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
+            self.videos.retain(|id| canvas.nodes().contains_key(&id));
             self.schemas.retain(|id| canvas.nodes().contains_key(id));
             self.selection.retain_existing(canvas);
             // Selected cards draw last, on top.
@@ -1240,6 +1246,13 @@ impl NodeCraftApp {
                 } else {
                     (Vec::new(), 0)
                 };
+                // Videos likewise; the player is view state, kept per card (#105).
+                let video =
+                    (self.view.zoom >= card::BODY_MIN_ZOOM).then(|| crate::video::video_of(node)).flatten().filter(|_| images.0.is_empty()).map(|asset| {
+                        let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
+                        let assets = self.session.assets();
+                        self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
+                    });
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
@@ -1274,6 +1287,7 @@ impl NodeCraftApp {
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
                         #[cfg(target_arch = "wasm32")]
                         partial: None,
+                        video,
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -1701,6 +1715,10 @@ impl NodeCraftApp {
                     None => continue,
                 },
                 Intent::Model => continue,
+                Intent::Video(intent) => {
+                    self.videos.act(ui.ctx(), id, intent);
+                    continue;
+                }
                 Intent::KeepPartial | Intent::DiscardPartial => {
                     self.partial_intent(id, matches!(intent, Intent::KeepPartial));
                     continue;
@@ -2491,6 +2509,8 @@ mod technique_menu_tests;
 mod tests;
 #[cfg(test)]
 mod text_card_tests;
+#[cfg(test)]
+mod video_tests;
 
 #[cfg(test)]
 mod marquee_tests;

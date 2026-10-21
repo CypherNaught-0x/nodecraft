@@ -2,8 +2,9 @@
 
 With the optional `nodecraft-media/video` feature, `video::VideoService` imports bounded media,
 decodes preview frames, supports latest-request-wins scrubbing, and encodes a stream of RGBA
-frames to VP9 WebM. This is a usable library service, not a timeline UI or an engine command.
-It does not call providers. The default media build is unchanged.
+frames to VP9 WebM. The desktop app uses it to play videos on cards (see "On cards" below); it
+is not a timeline and not an engine command. It does not call providers. The default media
+build is unchanged.
 
 ## Tools and platforms
 
@@ -110,6 +111,29 @@ release are not lock-free or hard-real-time promises. Failed unlink retains its 
 owner, retrying with exponential backoff from 100 milliseconds to 5 seconds. A host retaining pins forever retains one bounded service worker; release pins and await
 final cleanup before replacing services without bound.
 
+## On cards
+
+The desktop app compiles the service in and plays a video on its card: a `source.video` node's
+asset, or the first `video/*` result of a generation card. Set both tools, as absolute paths, in
+the settings file:
+
+```toml
+[media]
+ffmpeg = "/opt/homebrew/bin/ffmpeg"
+ffprobe = "/opt/homebrew/bin/ffprobe"
+```
+
+They come from settings only, never from a project. Without them, or in the browser build, the
+card says what is missing instead of a frame. A card shows a poster frame from the start of the
+clip, a play/pause button, a position slider and the time. Playing and scrubbing are view state:
+they change nothing in the document and are not commands.
+
+Each frame is one ffmpeg run, so playback shows the newest frame the tools can deliver rather
+than every frame at the clip's rate: each card has at most one frame in flight and drops the
+times it fell behind on. At most four frames, two imports and one asset read run at once, and
+staged clips stay under 768 MiB (least recently used are evicted). Posters are cached per
+content hash and size, up to 64. Only cards on screen ask for frames.
+
 ## Validation
 
 Normal feature tests use Rust subprocess fixtures, with no installed tool or download required.
@@ -117,7 +141,10 @@ Real integration tests require explicit tool paths and run authored tiny media o
 
 ```sh
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-media --features video actual_ -- --ignored
+NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_video -- --ignored
 ```
+
+The second drives a real clip through a card: play, the end, and a seek.
 
 These tests cost no provider budget. Native runtime proof and wasm compilation are distinct;
 Windows/Linux/browser behavior must not be inferred from a macOS run. No binary fixtures are

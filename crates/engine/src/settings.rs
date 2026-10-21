@@ -37,6 +37,27 @@ pub struct NodeCraftSettings {
     pub providers: ProviderSettings,
     pub projects: ProjectSettings,
     pub updates: UpdateSettings,
+    pub media: MediaSettings,
+}
+
+/// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
+/// their paths from a project: only this file names them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaSettings {
+    /// The installed `ffmpeg`, as an absolute path. Read through [`MediaSettings::tools`].
+    pub ffmpeg: Option<std::path::PathBuf>,
+    /// The installed `ffprobe`, as an absolute path.
+    pub ffprobe: Option<std::path::PathBuf>,
+}
+
+impl MediaSettings {
+    /// Both tools when both are set to absolute paths; video playback needs the pair.
+    pub fn tools(&self) -> Option<(&std::path::Path, &std::path::Path)> {
+        let ffmpeg = self.ffmpeg.as_deref().filter(|p| p.is_absolute())?;
+        let ffprobe = self.ffprobe.as_deref().filter(|p| p.is_absolute())?;
+        Some((ffmpeg, ffprobe))
+    }
 }
 
 /// Checking for a newer release (#123). Only notifies: nothing is downloaded or installed.
@@ -290,6 +311,20 @@ mod tests {
         assert_eq!(again.get().appearance.theme, Theme::Light);
         assert_eq!(again.get().canvas.scroll, ScrollAction::Zoom);
         assert_eq!(again.get().canvas.zoom_speed(), 2.0);
+    }
+
+    #[test]
+    fn video_tools_need_two_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = dir.path().join("ffmpeg");
+        let ffprobe = dir.path().join("ffprobe");
+        write_config(dir.path(), &format!("schema_version = 1\n[media]\nffmpeg = '{}'\nffprobe = '{}'\n", ffmpeg.display(), ffprobe.display()));
+        let (store, report) = open_in(dir.path());
+        assert!(describe_problems(&report).is_empty(), "{report:?}");
+        assert_eq!(store.get().media.tools(), Some((ffmpeg.as_path(), ffprobe.as_path())));
+        let relative = MediaSettings { ffmpeg: Some("ffmpeg".into()), ffprobe: Some(ffprobe.clone()) };
+        assert_eq!(relative.tools(), None);
+        assert_eq!(MediaSettings { ffmpeg: Some(ffmpeg), ffprobe: None }.tools(), None);
     }
 
     #[test]

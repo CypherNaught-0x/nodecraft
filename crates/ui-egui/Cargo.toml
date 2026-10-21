@@ -37,6 +37,8 @@ rfd = "=0.17.2"
 # Runs (#409): provider adapters over reqwest, driven on a tokio runtime the app owns.
 nodecraft-providers = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+# Video playback on cards (#105), through installed ffmpeg/ffprobe the settings name.
+nodecraft-media = { workspace = true, features = ["video"] }
 # Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
