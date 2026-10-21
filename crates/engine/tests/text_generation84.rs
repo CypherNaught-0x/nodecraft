@@ -359,3 +359,22 @@ fn builtin_text_models_are_offered_on_a_text_card() {
     let text: Vec<_> = snapshot.models(TEXT_KIND).map(|m| m.id.clone()).collect();
     assert_eq!(kinds.get(TEXT_KIND).is_ok(), !text.is_empty(), "a text card exists exactly when it has a model to choose");
 }
+
+#[test]
+fn builtin_chat_models_read_images_on_a_text_card() {
+    // Every built-in Anthropic and OpenAI text model documents image input (#592), so its card
+    // offers an image port beside the prompt, capped at the adapter's per-request limit.
+    let snapshot = GenerationCatalog::builtin().unwrap();
+    let kinds = snapshot.registry().unwrap();
+    let chat: Vec<_> = snapshot.models(TEXT_KIND).filter(|m| m.provider == "anthropic" || m.provider == "openai").cloned().collect();
+    assert!(!chat.is_empty());
+    for model in chat {
+        let mode = model.modes.iter().find(|m| m.id.as_str() == "image-to-text").unwrap_or_else(|| panic!("{} has no image-to-text mode", model.id));
+        let image = mode.inputs.iter().find(|r| r.role == "image").unwrap();
+        assert_eq!((image.modality, image.max), (Modality::Image, nodecraft_providers::llm::MAX_IMAGES as u16), "{}", model.id);
+        let node =
+            kinds.get(TEXT_KIND).unwrap().instantiate_instance(WRITER, Default::default(), &[("model".into(), Value::Text(model.id.clone()))].into()).unwrap();
+        let port = node.inputs.iter().find(|p| p.name == "image").unwrap_or_else(|| panic!("{} card has no image port", model.id));
+        assert_eq!(port.port_type.modality, Modality::Image);
+    }
+}

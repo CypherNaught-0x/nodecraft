@@ -1,6 +1,8 @@
 # Anthropic Messages API (`providers::llm`, Anthropic dialect), checked 2026-10-21.
 # Models, ids and limits: https://platform.claude.com/docs/en/about-claude/models/overview
 # Prices: https://platform.claude.com/docs/en/about-claude/pricing (standard, global routing; verified 2026-10-21)
+# Image input (all these models): https://platform.claude.com/docs/en/build-with-claude/vision (checked
+# 2026-10-21): PNG, JPEG, GIF, WebP; 10 MB base64 per image, 32 MB per request.
 # The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
 # the reply (adaptive thinking counts as output and toward max_tokens). Input tokens are billed on
 # top and are NOT in the quote; the run's measured usage is what the provider charges.
@@ -26,6 +28,13 @@ usage = { input = "0.004 USD", output = "0.02 USD" }
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+# Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
+# both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
+[[model.modes]]
+id = "image-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
 
 [[model.params.params]]
 name = "max_tokens"
@@ -70,6 +79,13 @@ usage = { input = "0.002 USD", output = "0.01 USD" }
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+# Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
+# both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
+[[model.modes]]
+id = "image-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
 
 [[model.params.params]]
 name = "max_tokens"
@@ -116,6 +132,13 @@ usage = { input = "0.0001 USD", output = "0.0005 USD", long = { above = 100000, 
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+# Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
+# both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
+[[model.modes]]
+id = "image-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
 
 [[model.params.params]]
 name = "max_tokens"
