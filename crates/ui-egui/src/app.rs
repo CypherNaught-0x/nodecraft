@@ -356,7 +356,7 @@ pub mod storage;
 mod tags;
 mod technique_menu;
 #[cfg(not(target_arch = "wasm32"))]
-mod updates;
+pub(crate) mod updates;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -550,7 +550,8 @@ impl NodeCraftApp {
                 None
             }
         };
-        let updates = match updates::UpdateChecker::new(&mut services) {
+        // Updates are staged in, and their outcome recorded in, the settings folder (#540).
+        let mut updates = match updates::UpdateChecker::new(&mut services, store.dir().map(|d| d.join("updates"))) {
             Ok(checker) => Some(checker),
             Err(e) => {
                 log::warn!("updates can't be checked: {}", e.message);
@@ -614,6 +615,11 @@ impl NodeCraftApp {
         };
         if let Err(error) = nodecraft_engine::library::install(&mut app.session, library) {
             log::warn!("technique library unavailable: {}", error.message);
+        }
+        if let Some(updates) = &mut updates
+            && let Some(told) = updates.after_update.take()
+        {
+            app.notice = Some(app.notice.map_or(told.clone(), |notice| format!("{told} {notice}")));
         }
         app.updates = updates;
         app.check_updates_at_startup(&settings.updates);
@@ -2456,6 +2462,15 @@ impl eframe::App for NodeCraftApp {
             && let Err(e) = store.flush()
         {
             log::warn!("settings not saved on exit: {e}");
+        }
+        // Last: the project and settings are closed before the updated copy opens them (#540).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(updates) = &self.updates {
+            let project = match self.session.file_status().location {
+                Some(nodecraft_format::StorageLocation::Path(path)) => Some(path),
+                _ => None,
+            };
+            updates.relaunch(project.as_deref());
         }
     }
 

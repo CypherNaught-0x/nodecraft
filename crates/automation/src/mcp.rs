@@ -168,6 +168,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     "plugins.rollback",
     "plugins.uninstall",
     "plugins.prune",
+    // Replacing the app and restarting it stays the person's choice (#540).
+    "app.install_update",
+    "app.restart_to_update",
     "keys.set",
     "keys.remove",
     "file.open",

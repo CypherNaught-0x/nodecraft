@@ -5,6 +5,7 @@
 #   $DIST/nodecraft-cli-<version>-macos-<arch>.zip   unpacked here; the binary inside must be
 #                                                    Developer ID signed with the hardened runtime,
 #                                                    timestamped and notarized
+#   $DIST/nodecraft-<version>-macos-<arch>.app.zip   the update payload: only NodeCraft.app, intact
 #
 # Usage: packaging/macos/verify.sh [--arch universal|aarch64|x86_64]
 #
@@ -39,6 +40,7 @@ esac
 
 DMG="$DIST/nodecraft-$VERSION-macos-$ARCH.dmg"
 CLI_ZIP="$DIST/nodecraft-cli-$VERSION-macos-$ARCH.zip"
+APP_ZIP="$DIST/nodecraft-$VERSION-macos-$ARCH.app.zip"
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 STRICT=0
 if [ "$IDENTITY" != "-" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
@@ -70,7 +72,7 @@ assess() {
   return 1
 }
 
-for f in "$DMG" "$CLI_ZIP"; do
+for f in "$DMG" "$CLI_ZIP" "$APP_ZIP"; do
   if [ ! -f "$f" ]; then
     echo "error: missing $f" >&2
     exit 1
@@ -79,6 +81,22 @@ done
 
 WORK="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/nodecraft-verify.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+
+# ---- update payload ----------------------------------------------------------------------------
+# What the app unpacks when it updates itself (#540): one intact, signed NodeCraft.app.
+echo "==> $(basename "$APP_ZIP")"
+if zipinfo -1 "$APP_ZIP" | grep -Eq '(^|/)(\._|__MACOSX)'; then
+  echo "error: $(basename "$APP_ZIP") holds macOS metadata (._* or __MACOSX); the app refuses it" >&2
+  exit 1
+fi
+# Unpacked as plain files, as the app does (not ditto -x, which restores extended attributes).
+mkdir -p "$WORK/update"
+unzip -q "$APP_ZIP" -d "$WORK/update"
+if [ "$(ls -A "$WORK/update")" != "NodeCraft.app" ]; then
+  echo "error: $(basename "$APP_ZIP") must hold only NodeCraft.app (has: $(ls -A "$WORK/update" | tr '\n' ' '))" >&2
+  exit 1
+fi
+codesign --verify --deep --strict --verbose=2 "$WORK/update/NodeCraft.app"
 
 # ---- CLI zip -----------------------------------------------------------------------------------
 echo "==> $(basename "$CLI_ZIP")"

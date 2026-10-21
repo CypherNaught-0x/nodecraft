@@ -67,6 +67,7 @@ pub mod technique_cmds;
 pub mod technique_node_cmds;
 pub mod turn_into_cmds;
 pub mod update_check;
+pub mod update_install;
 
 pub use session::{DocChanged, PreparedImports, Session};
 

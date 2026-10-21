@@ -6,6 +6,7 @@
 mod decisions;
 mod layers;
 mod perf;
+mod update_feed;
 mod version;
 mod workspace;
 
@@ -25,6 +26,10 @@ commands:
                   `test` includes catalog-check, `layers` includes decisions)
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
+  update-key <secret file>
+                  make an update signing key pair: the public key goes in packaging/update-key.pub
+  update-feed <artifact folder> <version>
+                  write and sign the release's update feed (NODECRAFT_UPDATE_SIGNING_KEY)
 ";
 
 fn main() -> ExitCode {
@@ -48,7 +53,7 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "version")) => root().and_then(|root| {
+        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "version" | "update-key" | "update-feed")) => root().and_then(|root| {
             eprintln!("xtask workspace: {}", root.display());
             match command {
                 "layers" => cmd_layers(&root),
@@ -56,6 +61,8 @@ fn main() -> ExitCode {
                 "ci" => cmd_ci(&root),
                 "catalog-check" => cmd_catalog_check(&root),
                 "decisions" => decisions::check(&root),
+                "update-key" => update_feed::key(&root, &rest),
+                "update-feed" => update_feed::feed(&root, &rest),
                 _ => version::run(&root, &rest),
             }
         }),
