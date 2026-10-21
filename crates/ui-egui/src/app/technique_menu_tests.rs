@@ -24,7 +24,18 @@ fn with_technique() -> Harness<'static, NodeCraftApp> {
     app.session.dispatch("technique.publish", &publish(V1, 40)).unwrap();
     app.session.dispatch("technique.place", &json!({"canvas": canvas, "version": V1, "id": PLACED, "pos": {"x": 260.0, "y": -110.0}})).unwrap();
     h.run();
-    h
+    // The placed node runs live on a worker (#532): wait for its result, so a test's document
+    // snapshot can't be taken before it lands (#650).
+    for _ in 0..400 {
+        h.step();
+        let app = h.state();
+        if app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&PLACED).unwrap().active.is_some() {
+            h.run();
+            return h;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the placed technique didn't run live");
 }
 
 fn publish_v2(h: &mut Harness<'static, NodeCraftApp>) {
