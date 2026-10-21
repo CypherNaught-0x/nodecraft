@@ -99,12 +99,15 @@ A run that names a `webhook` is POSTed to it once it has succeeded or failed:
 ```
 
 `version` is the payload's version; it changes only when the payload changes incompatibly.
-Outputs' `url`s are paths on this server: fetch the files from there with the token.
+Outputs' `url`s are paths on this server: fetch the files from there with the token. A payload
+is 256 KiB at most: past that, outputs' `text` and `value` are left out, and if it is still too
+big only the run's `id`, `status`, `technique`, `version`, `cost` and `error` are sent. Either
+way the run is marked `"truncated": true`; fetch the rest from `GET /runs/{id}`.
 
 ### Setting the secret
 
-Deliveries are signed with a secret kept in the OS keychain. Give it on stdin, at least 32
-characters; the receiver needs the same one:
+Deliveries are signed with a secret kept in the OS keychain. Give it on stdin; the receiver
+needs the same one:
 
 ```sh
 printf 'whsec_%s' "$(openssl rand -base64 32)" | nodecraft-cli webhook-secret
@@ -112,9 +115,13 @@ nodecraft-cli webhook-secret --delete     # remove it
 ```
 
 A secret starting with `whsec_` is the Standard Webhooks form: the signing key is the base64
-after the prefix. Any other secret is used as its own bytes. The server reads the secret for
-every delivery, so setting a new one rotates it without a restart; a receiver can accept both
-during the change. `serve --webhook-allow` refuses to start without a secret.
+after the prefix, at least 24 bytes once decoded. Any other secret is used as its own bytes and
+must be at least 32 characters.
+
+The server reads the secret for every attempt, so setting a new one rotates it without a
+restart. Retries are signed with the key current when they are sent, so a delivery that began
+under the old key may arrive signed with the new one: during a change, have the receiver accept
+either key. `serve --webhook-allow` refuses to start without a secret.
 
 ### Verifying a delivery
 
@@ -146,8 +153,10 @@ An attempt succeeds on a `2xx` answer within 10 seconds. Anything else is retrie
 30 s, 2 min, 10 min and 30 min, then the delivery is given up as `failed`. Redirects aren't
 followed. Before each attempt the host is resolved and its address checked: loopback, private,
 link-local and other non-public addresses are refused unless the server runs with
-`--webhook-allow-private`, and the request goes to the address that was checked. At most 256
-deliveries wait at once.
+`--webhook-allow-private`, and the request goes to the address that was checked. Deliveries
+run side by side, so a slow receiver doesn't hold up others; at most 256 are in progress
+(sending or waiting to retry), and a run that finishes beyond that records its delivery as
+`failed`.
 
 A delivery never changes the run: a run that succeeded stays succeeded whatever its webhook
 did. `GET /runs/{id}` is the source of truth, so a client that misses a delivery (or doesn't

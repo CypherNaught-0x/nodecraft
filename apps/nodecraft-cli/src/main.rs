@@ -370,11 +370,8 @@ fn webhook_secret(args: &[String]) -> ExitCode {
         Ok(secret) => secret,
         Err(error) => return fail(&error.to_string()),
     };
-    if secret.expose().len() < serve::MIN_WEBHOOK_SECRET {
-        return fail(&format!("the webhook secret must be at least {} characters", serve::MIN_WEBHOOK_SECRET));
-    }
-    if serve::webhook_key(secret.expose()).is_none() {
-        return fail("the secret starts with `whsec_` but the rest isn't base64");
+    if let Err(error) = serve::webhook_key(secret.expose()) {
+        return fail(&error);
     }
     match KeyringStore.set(&account, &secret) {
         Ok(()) => {

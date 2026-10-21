@@ -24,7 +24,7 @@ use std::time::Duration;
 use nodecraft_automation::control::{Token, TokenFile};
 use nodecraft_types::{Error, ErrorKind};
 
-pub use webhook::{MIN_SECRET as MIN_WEBHOOK_SECRET, Settings as Webhooks, key as webhook_key, parse_allow as parse_webhook_allow};
+pub use webhook::{Settings as Webhooks, key as webhook_key, parse_allow as parse_webhook_allow};
 pub use worker::Loaded;
 
 /// The keychain account the webhook signing secret is kept under.

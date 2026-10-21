@@ -1,7 +1,7 @@
 //! The worker thread: loads the project, lists its techniques, then runs queued requests one at a
 //! time, each in a fresh session made from the loaded snapshot.
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, SyncSender, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use nodecraft_engine::Session;
@@ -13,6 +13,8 @@ use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value as Output};
 use serde_json::{Value, json};
 
 use super::Policy;
+use tokio::sync::mpsc::Sender;
+
 use super::webhook::{self, Delivery};
 use crate::quote::Maker;
 use crate::run::{Consent, Runner};
@@ -268,7 +270,7 @@ pub fn spawn(
     load: impl FnOnce() -> Result<Loaded, Error> + Send + 'static,
     queue: Receiver<Job>,
     runs: Arc<Runs>,
-    hooks: Option<SyncSender<Delivery>>,
+    hooks: Option<Sender<Delivery>>,
 ) -> Result<Vec<Entry>, Error> {
     let (ready, listed) = channel();
     std::thread::Builder::new()
@@ -318,7 +320,7 @@ pub fn spawn(
 }
 
 /// Offers a finished run's webhook to the delivery thread, as the run then stands.
-fn notify(book: &mut Book, id: &str, url: url::Url, hooks: Option<&SyncSender<Delivery>>) {
+fn notify(book: &mut Book, id: &str, url: url::Url, hooks: Option<&Sender<Delivery>>) {
     let Some(run) = book.runs.get(id) else { return };
     let event = format!("evt_{id}");
     let mut described = super::api::describe(id, run);

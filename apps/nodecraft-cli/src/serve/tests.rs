@@ -489,6 +489,7 @@ fn webhooks_go_only_where_the_server_allows() {
     }
     let public = |ip: &str| webhook::public(ip.parse().unwrap());
     assert!(public("93.184.216.34") && public("2606:4700::1"));
+    assert!(public("64:ff9b::5db8:d822") && public("2002:5db8:d822::1"));
     for private in [
         "127.0.0.1",
         "10.1.2.3",
@@ -502,6 +503,13 @@ fn webhooks_go_only_where_the_server_allows() {
         "fd00::1",
         "fe80::1",
         "::ffff:10.0.0.1",
+        "::10.0.0.1",
+        "64:ff9b::7f00:1",
+        "64:ff9b:1::a00:1",
+        "2002:a00:1::1",
+        "fec0::1",
+        "192.0.0.8",
+        "198.18.0.1",
     ] {
         assert!(!public(private), "{private}");
     }
@@ -512,12 +520,37 @@ fn signatures_match_hmac_sha256_and_secrets_decode() {
     // Computed independently (Python's hmac module) for this key, id, timestamp and body.
     assert_eq!(webhook::sign(KEY, "evt_1", "1700000000", b"{\"a\":1}").unwrap(), "E91RjL3XwKNvhbIjLEB4Oo053Uu727CszikrY+6s9HE=");
     assert_eq!(webhook::key(SECRET).unwrap(), KEY);
-    assert_eq!(webhook::key("plain-secret-used-as-it-is").unwrap(), b"plain-secret-used-as-it-is");
-    assert!(webhook::key("whsec_not*base64").is_none());
-    assert!(webhook::key("whsec_").is_none());
+    let plain = "a plain secret, used as it is, 32+";
+    assert_eq!(webhook::key(plain).unwrap(), plain.as_bytes());
+    assert!(webhook::key("too short").is_err());
+    assert!(webhook::key("whsec_not*base64").is_err());
+    assert!(webhook::key("whsec_").is_err());
+    // 16 bytes of key: valid base64, but too little key.
+    assert!(webhook::key("whsec_MDEyMzQ1Njc4OWFiY2RlZg==").is_err());
     for bytes in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar", KEY] {
         assert_eq!(api::base64(&webhook::encode(bytes)).unwrap(), bytes);
     }
     assert_eq!(webhook::encode(b"foobar"), "Zm9vYmFy");
     assert_eq!(webhook::encode(b"fooba"), "Zm9vYmE=");
+}
+
+#[test]
+fn a_big_payload_leaves_out_outputs_then_all_but_the_summary() {
+    let read = |body: Vec<u8>| -> serde_json::Value {
+        assert!(body.len() <= webhook::MAX_PAYLOAD, "{}", body.len());
+        serde_json::from_slice(&body).unwrap()
+    };
+    let small = json!({"id": "1", "status": "succeeded", "outputs": [{"n": 0, "text": "hi"}]});
+    assert_eq!(read(webhook::payload("evt_1", small.clone()))["run"], small);
+
+    let text = "x".repeat(webhook::MAX_PAYLOAD);
+    let big = json!({"id": "1", "status": "succeeded", "cost": {"totals": {}}, "outputs": [{"n": 0, "name": "t", "text": text}]});
+    let run = read(webhook::payload("evt_1", big))["run"].clone();
+    assert_eq!(run["truncated"], true);
+    assert_eq!(run["outputs"], json!([{"n": 0, "name": "t"}]));
+
+    let steps: Vec<_> = (0..20_000).map(|i| json!({"step": i, "note": "a long enough note"})).collect();
+    let huge = json!({"id": "1", "status": "failed", "error": "no", "steps": steps, "outputs": []});
+    let run = read(webhook::payload("evt_1", huge))["run"].clone();
+    assert_eq!(run, json!({"id": "1", "status": "failed", "error": "no", "truncated": true}));
 }
