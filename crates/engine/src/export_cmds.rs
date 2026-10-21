@@ -32,7 +32,7 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         return Err(Error::new(ErrorKind::Unsupported, "only image, video, audio, 3D and document results export to a file; copy text instead"));
     };
     c.validate_asset(asset)?;
-    Ok(Effect::Export { asset: asset.clone(), path: p.path, overwrite: p.overwrite })
+    Ok(Effect::Export { what: crate::export::Exported::Asset(asset.clone()), path: p.path, overwrite: p.overwrite })
 }
 
 fn enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {

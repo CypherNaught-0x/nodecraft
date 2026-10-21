@@ -156,9 +156,10 @@ pub enum Effect {
     },
     Undo,
     Redo,
-    /// Write one asset's bytes to a file (`history.export`); never over one unless `overwrite`.
+    /// Write one asset's bytes (`history.export`) or an interchange archive to a file; never
+    /// over one unless `overwrite`.
     Export {
-        asset: nodecraft_types::AssetRef,
+        what: crate::export::Exported,
         path: std::path::PathBuf,
         overwrite: bool,
     },
@@ -225,6 +226,7 @@ impl Registry {
             .chain(crate::document_cmds::specs())
             .chain(crate::layer_cmds::specs())
             .chain(crate::timeline_cmds::specs())
+            .chain(crate::interchange_cmds::specs())
             .chain(crate::element_cmds::specs())
             .chain(crate::plugin_cmds::specs())
             .chain(crate::ownership_cmds::specs())

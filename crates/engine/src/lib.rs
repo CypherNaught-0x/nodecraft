@@ -21,7 +21,7 @@ pub mod document_cmds;
 pub mod edge_cmds;
 pub mod element_cmds;
 mod execution_identity;
-mod export;
+pub mod export;
 pub mod export_cmds;
 pub mod file_cmds;
 pub mod generate;
@@ -56,6 +56,7 @@ pub mod resolve_cmds;
 pub mod search_cmds;
 
 pub mod generation_catalog;
+pub mod interchange_cmds;
 pub mod run_ceiling;
 pub mod run_cmds;
 pub mod run_host;

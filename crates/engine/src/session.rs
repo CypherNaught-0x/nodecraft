@@ -819,8 +819,8 @@ impl Session {
                 }
                 return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
-            Effect::Export { asset, path, overwrite } => {
-                let bytes = guard(|| crate::export::write(&self.assets, &asset, &path, overwrite))?;
+            Effect::Export { what, path, overwrite } => {
+                let bytes = guard(|| crate::export::write(&self.assets, &what, &path, overwrite))?;
                 return Ok(serde_json::json!({"bytes": bytes}));
             }
             Effect::Service { capability, request } => {

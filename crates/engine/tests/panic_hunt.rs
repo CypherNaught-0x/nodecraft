@@ -524,6 +524,8 @@ fn template(id: &str) -> (Session, Value) {
         "layers.reorder" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","index":0}),
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
         "timeline.list" => json!({"canvas":canvas(),"id":node_id(9)}),
+        "timeline.interchange" => json!({"canvas":canvas(),"id":node_id(9)}),
+        "timeline.export_interchange" => json!({"canvas":canvas(),"id":node_id(9),"path":"/nodecraft-panic-hunt/cut.zip"}),
         "node.timeline_set" => json!({"canvas":canvas(),"id":node_id(9),"clips":[{"id":"t1","origin":"n1","out_us":1_000_000}]}),
         "timeline.update" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1","set":{"fade_in_us":500_000,"out_us":null}}),
         "timeline.move" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1","index":0}),
@@ -614,7 +616,10 @@ fn typed_template_panic_hunt() {
             if (id.starts_with("layers.") || id == "node.layers_set") && params == valid {
                 assert!(result.is_ok(), "the valid {id} template reaches the layer code: {result:?}");
             }
-            if (id.starts_with("timeline.") || id == "node.timeline_set") && params == valid {
+            // The interchange commands need media the template's Timeline doesn't have; their
+            // own tests cover a valid export.
+            let needs_media = matches!(id, "timeline.interchange" | "timeline.export_interchange");
+            if (id.starts_with("timeline.") || id == "node.timeline_set") && params == valid && !needs_media {
                 assert!(result.is_ok(), "the valid {id} template reaches the clip code: {result:?}");
             }
             match result {
