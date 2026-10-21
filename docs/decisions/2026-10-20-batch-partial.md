@@ -22,19 +22,28 @@
   2026-10-21). What a provider holds under an item's old keys is the outcome being retried: a job
   it reported failed answers with that failure, a provider-side cancel with `Cancelled`. So those
   items, and cancelled ones, run under new keys; not resubmitting the finished items is what
-  saves the money. Two kinds of failure may have been billed without the provider saying the
-  job failed: a reply lost on submit (an uncertain failure, counted only for providers whose
-  policy allows sending such a job again) and a job the provider accepted that didn't finish
-  here (a failed download, an invalid output, a deadline). Their missing item keeps each such
-  job's exact sent key (`keys`, a list of `{job, key}`, omitted when empty), and running again
-  sends that job under it, at most once per run, so a provider that keeps jobs by key (ComfyUI,
-  the mock) answers with the job it ran and the usage log keeps one charge. The provider's
-  handle is kept for the session only (at most 256), so the same session polls it instead of
-  submitting; after a restart the job is submitted under its key. Limits: providers that ignore
-  keys (fal, Replicate and most cloud APIs) bill again regardless, and a recovered item's
-  recorded settings and seed are the new run's. Older builds ignore the field and use fresh keys,
-  so the format version is unchanged. Keys are validated on load: only a failed item's, in job
-  order, each a visible-ASCII `nodecraft:` key of at most 64 bytes.
+  saves the money. At a provider whose policy allows sending a job again under its key (ComfyUI,
+  the mock: those with `retry_ambiguous_submit`), two kinds of failure may have been billed
+  without the provider saying the job failed: a reply lost on submit (an uncertain failure) and a
+  job the provider accepted whose download or output check failed. Their missing item keeps each
+  such job's exact sent key (`keys`, a list of `{job, key}`, omitted when empty), and running
+  again sends that job under it, at most once per run, so the provider answers with the job it
+  ran and the usage log keeps one charge. The provider's handle is kept for the session only (at
+  most 256), so the same session polls it instead of submitting; after a restart the job is
+  submitted under its key.
+  - **Not for providers that ignore keys** (fal, Replicate, Meshy, Tripo, Seedream, OpenAI and
+    Gemini images): sending the job under its old key would bill it again while the usage log
+    settled the old charge, under-reporting spend and skipping the budget check. Their items run
+    under fresh keys, with their own charges.
+  - **A failure that repeats is followed once.** A job sent again under a kept key that fails the
+    same way isn't kept again, so the next run sends it fresh (an output too large or gone).
+  - **Deadlines and cancels run fresh:** the provider was asked to stop the job.
+  - **Only provider-side failures.** A job that finished but whose outputs can't be converted or
+    fit here is held as a paid result instead (#369), and technique nodes' inlined steps always
+    run under fresh keys: the technique node has no jobs of its own to key them.
+  - A recovered item's recorded settings and seed are the new run's. Older builds ignore the field
+    and use fresh keys, so the format version is unchanged. Keys are validated on load: only a
+    failed item's, in job order, each a visible-ASCII `nodecraft:` key of at most 64 bytes.
 - **Inputs made in the same run run in full.** A step resumes only when its inputs are known at
   planning time. Re-running an upstream node together with the partial one runs every item, even
   when the upstream turns out unchanged; comparing hashes once the inputs are made is tracked as

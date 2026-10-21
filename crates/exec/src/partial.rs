@@ -87,7 +87,10 @@ pub(crate) fn resume_techniques(canvas: &Canvas, kinds: &Registry, steps: &mut [
         }
         for s in steps.iter_mut().filter(|s| fanned.contains(&s.node)) {
             let Some(fanout) = &mut s.fanout else { continue };
-            let resume = Resume { generation: if s.node == owner { resume.generation } else { None }, missing: resume.missing.clone() };
+            // The technique node's own keys aren't its inlined steps' (its jobs aren't theirs),
+            // so they run under fresh keys.
+            let missing = resume.missing.iter().map(|m| nodecraft_graph::MissingItem::new(m.item, m.why)).collect();
+            let resume = Resume { generation: if s.node == owner { resume.generation } else { None }, missing };
             if let Some(jobs) = &mut s.jobs {
                 prune(jobs, &mut fanout.jobs, &resume);
             }

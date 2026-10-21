@@ -84,6 +84,8 @@ enum Mode {
     LoseReply,
     /// Queues it; the first poll fails with a reply that can't be read, later ones find it done.
     SpoilFirstPoll,
+    /// Queues it; every poll fails with a reply that can't be read.
+    SpoilAlways,
     /// Queues it and reports it failed.
     Fail,
     /// Queues it and never finishes.
@@ -106,6 +108,8 @@ struct Keeper {
     jobs: Arc<Mutex<BTreeMap<String, Held>>>,
     /// Every key a submit was sent under, in order.
     sent: Arc<Mutex<Vec<String>>>,
+    /// Says sending a job again under its key isn't safe, as providers that ignore keys do.
+    ignores_keys: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Keeper {
@@ -145,6 +149,9 @@ impl Provider for Keeper {
     fn id(&self) -> &str {
         "mock"
     }
+    fn retry_ambiguous_submit(&self) -> bool {
+        !self.ignores_keys.load(std::sync::atomic::Ordering::SeqCst)
+    }
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         let key = job.idempotency_key.clone();
         self.sent.lock().unwrap().push(key.clone());
@@ -162,7 +169,7 @@ impl Provider for Keeper {
                     self.hold(&key, &prompt, false);
                     Err(ProviderError::new(ErrorKind::Network, "the connection dropped"))
                 }
-                Mode::SpoilFirstPoll | Mode::Hang => {
+                Mode::SpoilFirstPoll | Mode::SpoilAlways | Mode::Hang => {
                     self.hold(&key, &prompt, false);
                     Ok(queued(&key))
                 }
@@ -185,6 +192,7 @@ impl Provider for Keeper {
                     match self.modes.lock().unwrap().get(&held.prompt).copied() {
                         Some(Mode::Hang) => Ok(JobProgress::Running { fraction: None, message: None, partial: None }),
                         Some(Mode::SpoilFirstPoll) if held.polls == 1 => Err(ProviderError::new(ErrorKind::Malformed, "the reply can't be read")),
+                        Some(Mode::SpoilAlways) => Err(ProviderError::new(ErrorKind::Malformed, "the reply can't be read")),
                         _ => Ok(JobProgress::Done(Completed::new(vec![image()]))),
                     }
                 }
@@ -377,4 +385,44 @@ fn a_cancelled_item_runs_under_a_fresh_key() {
     run(&mut f);
     assert!(active(&f).incomplete.is_none());
     assert_ne!(f.keeper.sent().last(), Some(&cancelled));
+}
+
+#[test]
+fn a_provider_that_ignores_keys_runs_the_item_under_a_fresh_key() {
+    // Sending the job again under its key would bill it again while the usage log kept one charge.
+    let mut f = fixture();
+    f.keeper.ignores_keys.store(true, std::sync::atomic::Ordering::SeqCst);
+    f.keeper.set("an owl", Mode::SpoilFirstPoll);
+    run(&mut f);
+    let (why, keys) = missing_owl(&f);
+    assert_eq!((why, keys.len()), (Missing::Failed, 0));
+    let spoiled = f.keeper.sent().last().cloned().unwrap();
+
+    f.keeper.set("an owl", Mode::Answer);
+    run(&mut f);
+    assert!(active(&f).incomplete.is_none());
+    assert_ne!(f.keeper.sent().last(), Some(&spoiled));
+    assert_eq!(f.keeper.billed(), 3);
+    assert_eq!(f.budget.log.lock().unwrap().entries().count(), 3, "each job the provider billed has its charge");
+}
+
+#[test]
+fn an_output_that_fails_here_every_time_is_bought_again_on_the_third_run() {
+    let mut f = fixture();
+    f.keeper.set("an owl", Mode::SpoilAlways);
+    run(&mut f);
+    let (_, keys) = missing_owl(&f);
+    let [key] = keys.as_slice() else { panic!("the owl's key is kept: {keys:?}") };
+
+    // Followed again, and it fails the same way: the key isn't kept again.
+    run(&mut f);
+    let (why, keys) = missing_owl(&f);
+    assert_eq!((why, keys.len()), (Missing::Failed, 0), "a failure that repeats isn't followed forever");
+    assert_eq!(f.keeper.billed(), 2);
+
+    f.keeper.set("an owl", Mode::Answer);
+    run(&mut f);
+    assert!(active(&f).incomplete.is_none());
+    assert_ne!(f.keeper.sent().last(), Some(key), "a fresh job");
+    assert_eq!(f.keeper.billed(), 3);
 }

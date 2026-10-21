@@ -270,9 +270,10 @@ impl KeptHandles {
         self.0.push_back((at, handle));
     }
 
-    fn take(&mut self, at: &(nodecraft_types::ProviderTarget, String)) -> Option<JobHandle> {
-        let n = self.0.iter().position(|(kept, _)| kept == at)?;
-        self.0.remove(n).map(|(_, handle)| handle)
+    /// The handle kept for `at`. It stays kept: a run refused before it follows the handle
+    /// (by its budget, say) leaves it for the next run.
+    fn find(&self, at: &(nodecraft_types::ProviderTarget, String)) -> Option<JobHandle> {
+        self.0.iter().find(|(kept, _)| kept == at).map(|(_, handle)| handle.clone())
     }
 }
 
@@ -749,7 +750,6 @@ impl ProviderRunner {
         s.handles.insert((provider, key), handle);
     }
 
-    /// Drops a finished job's registration and handle (call when the scheduler forgets it).
     /// The key `id` was last sent under, when its last attempt failed although the provider may
     /// have billed it (#517): a reply lost on submit by a provider whose policy allows sending
     /// it again, or a job the provider accepted that didn't finish here (a failed download, an
@@ -767,6 +767,7 @@ impl ProviderRunner {
         Some(key)
     }
 
+    /// Drops a finished job's registration and handle (call when the scheduler forgets it).
     pub fn forget(&self, id: JobId) {
         self.settle(id);
         let mut s = self.lock();
@@ -882,7 +883,7 @@ impl JobRunner for ProviderRunner {
                 match s.handles.get(&at).cloned() {
                     Some(handle) => Some(handle),
                     None => {
-                        let kept = kept.lock().unwrap_or_else(PoisonError::into_inner).take(&at);
+                        let kept = kept.lock().unwrap_or_else(PoisonError::into_inner).find(&at);
                         if let Some(handle) = &kept {
                             s.handles.insert(at, handle.clone());
                         }
@@ -1188,13 +1189,16 @@ impl JobRunner for ProviderRunner {
                         // registration was replaced while awaiting the response.
                         let will_retry = failure.error.is_transient()
                             && (failure.handle.is_some() || !failure.uncertain || queued.provider.provider().retry_ambiguous_submit());
-                        // May have been billed although it didn't finish (#517). A provider that
-                        // reported the job failed, or a cancel, is over: neither is sent again
-                        // under this key. A lost submit counts only where the provider's policy
-                        // allows sending it again.
-                        let billed = !failure.finished
-                            && failure.error.kind != ErrorKind::Cancelled
-                            && (failure.handle.is_some() || (failure.uncertain && queued.provider.provider().retry_ambiguous_submit()));
+                        // May have been billed although it didn't finish (#517), at a provider
+                        // whose policy allows sending a job again under its key: one that ignores
+                        // keys would bill the job again while the usage log kept one charge. A
+                        // provider that reported the job failed, a cancel, or a deadline (the
+                        // provider was asked to stop it) is over: none is sent again under this
+                        // key.
+                        let billed = queued.provider.provider().retry_ambiguous_submit()
+                            && !failure.finished
+                            && !matches!(failure.error.kind, ErrorKind::Cancelled | ErrorKind::Expired)
+                            && (failure.handle.is_some() || failure.uncertain);
                         {
                             let mut s = lock();
                             if billed {

@@ -445,7 +445,9 @@ impl Run {
     /// own (`nodecraft:…`, short visible ASCII) is ignored.
     pub fn job_may_be_billed(&mut self, job: JobId, key: &str) {
         let valid = key.starts_with("nodecraft:") && key.len() <= nodecraft_graph::MAX_SENT_KEY && key.bytes().all(|b| b.is_ascii_graphic());
-        if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done && valid) {
+        // A job already sent again under a kept key and failed again isn't kept a third time:
+        // its failure repeats (an output that can't be read here), so the next run sends it fresh.
+        if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done && state.key.is_none() && valid) {
             state.billed_key = Some(key.to_owned());
         }
     }
