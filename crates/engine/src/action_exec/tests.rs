@@ -549,6 +549,7 @@ fn pdf_to_images_caps_the_scans_it_draws() {
     params.insert("only".into(), Value::Text("without_text".into()));
     let err = actions.execute(nodecraft_nodes::document::PAGES, &params, std::slice::from_ref(&document)).unwrap_err();
     assert!(err.contains("narrow the page range"), "{err}");
+    assert_eq!(actions.take_staged().len(), 0, "the scans are counted before any is drawn");
 }
 
 #[test]

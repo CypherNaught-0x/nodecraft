@@ -54,20 +54,25 @@ impl LocalActions {
         };
         let document = self.document(inputs)?;
         let reader = document.reader();
-        let mut images = Vec::new();
-        // Picking scans reads every page's text first, so the drawing cap applies to the pages drawn.
+        // Picking scans reads every page's text first and counts them before drawing any, so the drawing
+        // cap applies to the pages drawn and a range with too many scans fails before it costs anything.
         let range = self.pages(params, &document, if scans_only { MAX_TEXT_PAGES } else { MAX_IMAGE_PAGES })?;
+        let mut drawn = Vec::new();
         for index in range {
-            let number = index.saturating_add(1);
             if scans_only {
-                let text = reader.text(index).map_err(|e| format!("page {number} can't be read: {e}"))?;
+                let text = reader.text(index).map_err(|e| format!("page {} can't be read: {e}", index.saturating_add(1)))?;
                 if !text.trim().is_empty() {
                     continue;
                 }
-                if images.len() as u64 >= MAX_IMAGE_PAGES {
+                if drawn.len() as u64 >= MAX_IMAGE_PAGES {
                     return Err(format!("more than {MAX_IMAGE_PAGES} pages in the range draw no text; narrow the page range"));
                 }
             }
+            drawn.push(index);
+        }
+        let mut images = Vec::with_capacity(drawn.len());
+        for index in drawn {
+            let number = index.saturating_add(1);
             let page = reader.render(index, size, background).map_err(|e| format!("page {number} can't be drawn: {e}"))?;
             let raster = Raster::new(page.width, page.height, page.rgba, ImageLimits::default()).map_err(|e| format!("page {number} can't be used: {e}"))?;
             // Staging fails once the run's pages outgrow what a project holds; say what to change.
@@ -89,8 +94,9 @@ impl LocalActions {
         let mut out = String::new();
         for index in self.pages(params, &document, MAX_TEXT_PAGES)? {
             let text = reader.text(index).map_err(|e| format!("page {} can't be read: {e}", index.saturating_add(1)))?;
+            let empty = text.trim().is_empty();
             // Without headings a page with no text (a scan, a blank page) adds nothing, not a gap.
-            if !headings && text.is_empty() {
+            if !headings && empty {
                 continue;
             }
             let mut part = String::new();
@@ -100,9 +106,11 @@ impl LocalActions {
             if headings {
                 let number = index.saturating_add(1);
                 // A page with no text is marked, not passed over: it may be a scan to recognise.
-                part.push_str(&if text.trim().is_empty() { format!("[Page {number}: no text read]") } else { format!("[Page {number}]\n") });
+                part.push_str(&if empty { format!("[Page {number}: no text read]") } else { format!("[Page {number}]\n") });
             }
-            part.push_str(&text);
+            if !empty {
+                part.push_str(&text);
+            }
             if !append(&mut out, &part) {
                 break;
             }
