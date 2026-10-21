@@ -152,10 +152,17 @@ pub(super) fn notice(report: &Report) -> String {
     }
     let values: usize = report.installed.iter().map(|list| list.values).sum();
     let lists = report.installed.len();
+    // Lists of a provider that isn't set up are told only when they are all there was.
+    if lists == 0
+        && report.refused.is_empty()
+        && let Some(first) = report.unavailable.first()
+    {
+        return format!("Option lists weren't fetched: {}", first.reason);
+    }
     let mut line = format!("Fetched {lists} option list{} ({values} value{}).", plural(lists), plural(values));
     if let Some(first) = report.refused.first() {
         let others = report.refused.len().saturating_sub(1);
-        line.push_str(&format!(" {} for {} wasn't installed: {}", first.source, first.owner, first.reason));
+        line.push_str(&format!(" {} for {} wasn't installed: {}", first.source, first.owner, first.reason.trim_end_matches('.')));
         if others > 0 {
             line.push_str(&format!(" (and {others} more)"));
         }

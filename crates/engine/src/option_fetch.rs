@@ -1,6 +1,7 @@
 //! Fetching run-time option lists (#529): the checkpoints, LoRAs and samplers a ComfyUI server
-//! has, for the catalog models whose parameter contracts name them (docs/descriptor-contract.md,
-//! Option sources).
+//! has, and the restyle presets Higgsfield lists (#179), for the catalog models whose parameter
+//! contracts name them (docs/descriptor-contract.md, Option sources). Each provider is asked on
+//! its own, so one that isn't set up doesn't keep the others' lists from being fetched.
 //!
 //! `options.refresh` asks the host's [`OPTION_SERVICE`] to fetch every list the catalog names;
 //! the host runs [`fetch`] off the UI thread and hands the outcome to [`finish`], which installs
@@ -36,6 +37,11 @@ fn comfy_source(id: &str) -> Option<(&'static str, &'static str)> {
     COMFY_SOURCES.iter().find(|(source, _, _)| *source == id).map(|(_, class, input)| (*class, *input))
 }
 
+/// Whether NodeCraft knows where to fetch source `id`.
+fn known(id: &str) -> bool {
+    comfy_source(id).is_some() || id == nodecraft_providers::higgsfield::RESTYLE_PRESETS
+}
+
 /// A list a catalog model's contract names.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Wanted {
@@ -66,17 +72,17 @@ fn wanted_in(resources: &Resources) -> Vec<Wanted> {
 
 /// The source ids among `wanted` a host can fetch.
 fn fetchable(wanted: &[Wanted]) -> Vec<String> {
-    let ids: BTreeSet<&str> = wanted.iter().filter(|w| w.scope.is_none() && comfy_source(&w.source).is_some()).map(|w| w.source.as_str()).collect();
+    let ids: BTreeSet<&str> = wanted.iter().filter(|w| w.scope.is_none() && known(&w.source)).map(|w| w.source.as_str()).collect();
     ids.into_iter().map(str::to_owned).collect()
 }
 
 /// One source's values as the server listed them, or why they can't be used.
 type Listed = Result<Values, String>;
 
-/// A source's usable values, in the server's order.
+/// A source's usable values, in the server's order, with the labels a person reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Values {
-    values: Vec<String>,
+    values: Vec<Choice>,
     /// Empty, oversized or repeated values left out.
     skipped: usize,
 }
@@ -86,6 +92,39 @@ pub struct Values {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fetched {
     lists: BTreeMap<String, Listed>,
+    /// Lists whose provider isn't set up (no server, no key), and why: not a failure, since most
+    /// people use only some providers.
+    unavailable: BTreeMap<String, String>,
+}
+
+impl Fetched {
+    /// Records why the lists `ids` of one provider weren't read.
+    fn fail<'a>(&mut self, ids: impl IntoIterator<Item = &'a String>, failure: &Failure) {
+        for id in ids {
+            match failure {
+                Failure::NotSetUp(error) => {
+                    self.unavailable.insert(id.clone(), error.message.clone());
+                }
+                Failure::Failed(error) => {
+                    self.lists.insert(id.clone(), Err(error.message.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// Why a provider's lists weren't read: it isn't set up, or asking it failed.
+enum Failure {
+    NotSetUp(Error),
+    Failed(Error),
+}
+
+impl Failure {
+    fn error(&self) -> &Error {
+        match self {
+            Self::NotSetUp(error) | Self::Failed(error) => error,
+        }
+    }
 }
 
 /// What a fetch's request asks for.
@@ -95,52 +134,110 @@ pub struct FetchRequest {
     pub sources: Vec<String>,
 }
 
-/// Reads one combo input's choices, refusing a list past [`MAX_OPTIONS`] values or the store's
-/// [`MAX_OPTION_BYTES`] rather than truncating it (a truncated list would refuse values the server
-/// has). Blank, oversized and repeated values are left out and counted: the store refuses a whole
-/// list for one of them.
-fn values(options: &[String]) -> Listed {
+/// Reads a list's `(value, label)` pairs, refusing a list past [`MAX_OPTIONS`] values or the
+/// store's [`MAX_OPTION_BYTES`] rather than truncating it (a truncated list would refuse values
+/// the server has). Blank, oversized and repeated values are left out and counted with the
+/// `skipped` the provider already left out: the store refuses a whole list for one of them.
+fn values<'a>(options: impl IntoIterator<Item = (&'a str, &'a str)>, skipped: usize) -> Listed {
     let mut seen = BTreeSet::new();
     let mut values = Vec::new();
-    let mut skipped = 0usize;
-    // As the store counts it: each value is kept as a value and as its label.
+    let mut skipped = skipped;
+    // As the store counts it: the value twice, once as the value and once in its key, and the label.
     let mut bytes = 0usize;
-    for value in options {
-        if value.trim().is_empty() || value.len() > MAX_VALUE_BYTES || !seen.insert(value.as_str()) {
+    for (value, label) in options {
+        let bad = |s: &str| s.trim().is_empty() || s.len() > MAX_VALUE_BYTES;
+        if bad(value) || bad(label) || !seen.insert(value) {
             skipped = skipped.saturating_add(1);
             continue;
         }
         if values.len() >= MAX_OPTIONS {
             return Err(format!("the server lists more than {MAX_OPTIONS} values"));
         }
-        bytes = bytes.saturating_add(value.len().saturating_mul(3));
+        bytes = bytes.saturating_add(value.len().saturating_mul(2)).saturating_add(label.len());
         if bytes > MAX_OPTION_BYTES {
             return Err("the server's list is larger than 16 MiB".into());
         }
-        values.push(value.clone());
+        values.push(Choice { value: value.to_owned(), label: label.to_owned() });
     }
     Ok(Values { values, skipped })
 }
 
-/// Fetches `sources` from the ComfyUI server in `env`'s settings. The host calls it off the UI
-/// thread: it reads the server's token from the keychain and calls the server.
+/// Fetches `sources` from the providers in `env`'s settings: the ComfyUI server's lists from its
+/// node catalog, the Higgsfield presets from its API. The host calls it off the UI thread: it
+/// reads keys from the keychain and calls the providers. A provider that can't be asked refuses
+/// its own lists; the fetch fails only when none could be.
 pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Error> {
-    let provider = crate::provider_setup::comfyui(env)
-        .map_err(|readiness| Error::new(ErrorKind::Unsupported, readiness.message("ComfyUI").unwrap_or_else(|| "ComfyUI isn't set up".into())))?;
-    let catalog =
-        provider.catalog().await.map_err(|error| Error::new(provider_kind(error.kind), format!("ComfyUI's node list couldn't be read: {}", error.message)))?;
-    let mut lists = BTreeMap::new();
-    for source in sources.iter().take(MAX_OPTION_LISTS) {
-        let listed = match comfy_source(source) {
-            Some((class, input)) => match catalog.options(class, input) {
-                Some(options) => values(options),
-                None => Err(format!("the server has no {class} node with a {input} list")),
-            },
-            None => Err("NodeCraft doesn't know where to fetch this list".into()),
-        };
-        lists.insert(source.clone(), listed);
+    let sources: Vec<&String> = sources.iter().take(MAX_OPTION_LISTS).collect();
+    let mut fetched = Fetched::default();
+    let mut failed: Vec<Failure> = Vec::new();
+    let mut asked = 0usize;
+    let comfy: Vec<(&String, (&str, &str))> = sources.iter().filter_map(|s| comfy_source(s).map(|at| (*s, at))).collect();
+    if !comfy.is_empty() {
+        asked += 1;
+        match comfy_lists(env, &comfy).await {
+            Ok(listed) => fetched.lists.extend(listed),
+            Err(failure) => {
+                fetched.fail(comfy.iter().map(|(id, _)| *id), &failure);
+                failed.push(failure);
+            }
+        }
     }
-    Ok(Fetched { lists })
+    let presets = nodecraft_providers::higgsfield::RESTYLE_PRESETS;
+    if let Some(id) = sources.iter().find(|s| **s == presets) {
+        asked += 1;
+        match restyle_presets(env).await {
+            Ok(listed) => {
+                fetched.lists.insert(presets.to_owned(), values(listed.presets.iter().map(|p| (p.id.as_str(), p.name.as_str())), listed.skipped));
+            }
+            Err(failure) => {
+                fetched.fail([*id], &failure);
+                failed.push(failure);
+            }
+        }
+    }
+    // Nothing could be asked: one error says why, as before there was more than one provider.
+    if asked > 0 && failed.len() == asked {
+        let message = failed.iter().map(|f| f.error().message.as_str()).collect::<Vec<_>>().join("; ");
+        let kind = failed.first().map_or(ErrorKind::Internal, |f| f.error().kind);
+        return Err(Error::new(kind, message));
+    }
+    for source in sources {
+        if !fetched.unavailable.contains_key(source.as_str()) {
+            fetched.lists.entry(source.clone()).or_insert_with(|| Err("NodeCraft doesn't know where to fetch this list".into()));
+        }
+    }
+    Ok(fetched)
+}
+
+fn not_set_up(adapter: &str) -> impl FnOnce(crate::provider_setup::Readiness) -> Failure + '_ {
+    move |readiness| Failure::NotSetUp(Error::new(ErrorKind::Unsupported, readiness.message(adapter).unwrap_or_else(|| format!("{adapter} isn't set up"))))
+}
+
+/// The ComfyUI lists in `wanted`, read from the server's node catalog.
+async fn comfy_lists(env: &HostEnv<'_>, wanted: &[(&String, (&str, &str))]) -> Result<Vec<(String, Listed)>, Failure> {
+    let provider = crate::provider_setup::comfyui(env).map_err(not_set_up("ComfyUI"))?;
+    let catalog = provider
+        .catalog()
+        .await
+        .map_err(|error| Failure::Failed(Error::new(provider_kind(error.kind), format!("ComfyUI's node list couldn't be read: {}", error.message))))?;
+    Ok(wanted
+        .iter()
+        .map(|(id, (class, input))| {
+            let listed = match catalog.options(class, input) {
+                Some(options) => values(options.iter().map(|o| (o.as_str(), o.as_str())), 0),
+                None => Err(format!("the server has no {class} node with a {input} list")),
+            };
+            ((*id).clone(), listed)
+        })
+        .collect())
+}
+
+async fn restyle_presets(env: &HostEnv<'_>) -> Result<nodecraft_providers::higgsfield::Presets, Failure> {
+    let provider = crate::provider_setup::higgsfield(env).map_err(not_set_up("Higgsfield"))?;
+    provider
+        .restyle_presets()
+        .await
+        .map_err(|error| Failure::Failed(Error::new(provider_kind(error.kind), format!("Higgsfield's restyle presets couldn't be read: {}", error.message))))
 }
 
 fn provider_kind(kind: nodecraft_providers::ErrorKind) -> ErrorKind {
@@ -186,6 +283,8 @@ pub struct Report {
     pub id: u64,
     pub installed: Vec<Installed>,
     pub refused: Vec<Refused>,
+    /// Lists whose provider isn't set up, and why; what was installed before stays.
+    pub unavailable: Vec<Refused>,
     /// Why nothing could be fetched (no server, a server that didn't answer).
     pub error: Option<String>,
 }
@@ -199,7 +298,7 @@ struct LastFetch(Report);
 pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -> Report {
     let wanted = session.generation_catalog().map(wanted).unwrap_or_default();
     let mut lists = session.swap_resource::<OptionLists>(None).unwrap_or_default();
-    let mut report = Report { id, installed: Vec::new(), refused: Vec::new(), error: None };
+    let mut report = Report { id, installed: Vec::new(), refused: Vec::new(), unavailable: Vec::new(), error: None };
     match &fetched {
         Err(error) => report.error = Some(error.message.clone()),
         Ok(fetched) => {
@@ -209,14 +308,13 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
                     report.refused.push(refuse(format!("lists narrowed by another parameter ({scope}) can't be fetched yet")));
                     continue;
                 }
+                if let Some(reason) = fetched.unavailable.get(&want.source) {
+                    report.unavailable.push(refuse(reason.clone()));
+                    continue;
+                }
                 let listed = fetched.lists.get(&want.source).cloned().unwrap_or_else(|| {
                     // The catalog changed while the fetch ran and now names a list it didn't ask for.
-                    Err(if comfy_source(&want.source).is_some() {
-                        "not part of this fetch; refresh again"
-                    } else {
-                        "NodeCraft doesn't know where to fetch this list"
-                    }
-                    .into())
+                    Err(if known(&want.source) { "not part of this fetch; refresh again" } else { "NodeCraft doesn't know where to fetch this list" }.into())
                 });
                 let Values { values, skipped } = match listed {
                     Ok(values) => values,
@@ -226,8 +324,7 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
                     }
                 };
                 let count = values.len();
-                let choices = values.into_iter().map(|value| Choice { label: value.clone(), value }).collect();
-                match lists.set(OptionKey { owner: &want.owner, source: &want.source, scope: None }, choices) {
+                match lists.set(OptionKey { owner: &want.owner, source: &want.source, scope: None }, values) {
                     Ok(()) => report.installed.push(Installed { owner: want.owner.clone(), source: want.source.clone(), values: count, skipped }),
                     Err(error) => report.refused.push(refuse(error.message)),
                 }
@@ -286,7 +383,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {pending: id}; fetches every run-time option list the catalog's models name (the checkpoints, LoRAs, VAEs, upscale models, samplers and schedulers the ComfyUI server in settings has) and installs them, so node.options and edits see them. The host answers later: read the outcome with options.status. A list that can't be fetched keeps what was installed before. Refused when no model names a fetchable list, or the host can't fetch (the CLI).",
+            params_doc: "{} -> {pending: id}; fetches every run-time option list the catalog's models name (the checkpoints, LoRAs, VAEs, upscale models, samplers and schedulers the ComfyUI server in settings has, and Higgsfield's restyle presets, whose labels are the preset names) and installs them, so node.options and edits see them. The host answers later: read the outcome with options.status. A list that can't be fetched keeps what was installed before. Refused when no model names a fetchable list, or the host can't fetch (the CLI).",
             enabled: enabled_refresh,
             run: refresh,
         },
@@ -296,7 +393,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {last: {id, installed: [{owner, source, values, skipped}], refused: [{owner, source, reason}], error} | null}; the outcome of the last options.refresh, or null before one finishes. Read-only.",
+            params_doc: "{} -> {last: {id, installed: [{owner, source, values, skipped}], refused: [{owner, source, reason}], unavailable: [{owner, source, reason}], error} | null}; the outcome of the last options.refresh (unavailable: lists whose provider has no server or key set up), or null before one finishes. Read-only.",
             enabled: enabled_status,
             run: status,
         },

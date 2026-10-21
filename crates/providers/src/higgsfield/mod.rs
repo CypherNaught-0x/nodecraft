@@ -1,5 +1,5 @@
 //! Higgsfield (#177): SOUL 2 text to image, Kling 2.5 Turbo Pro image to video and the Genjutsu
-//! source video edits (#179: motion transfer, object swap) on Higgsfield's queue API. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
+//! source video edits (#179: motion transfer, object swap, restyle) on Higgsfield's queue API. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
 //! submit is the paid step. It carries the job's idempotency key, and the exact body sent under a
 //! key is kept for this process, so a retry after a lost reply replays it byte for byte and gets
 //! the original request back instead of paying for a second one. Higgsfield keeps results for at
@@ -25,6 +25,10 @@ pub const KLING_I2V: &str = "kling-video/v2.5-turbo/pro/image-to-video";
 pub const MOTION_TRANSFER: &str = "higgsfield/genjutsu/motion-transfer/v1.0";
 /// Genjutsu object swap: an object in the source video replaced by the reference images' one.
 pub const OBJECT_SWAP: &str = "higgsfield/genjutsu/object-swap/v1.0";
+/// Genjutsu restyle: the source video redrawn in one of Higgsfield's preset styles.
+pub const RESTYLE: &str = "higgsfield/genjutsu/restyle/v1.0";
+/// The restyle presets Higgsfield lists, as the `preset_id` option list.
+pub const RESTYLE_PRESETS: &str = "higgsfield.restyle_presets";
 const API: &str = "https://api.higgsfield.ai";
 const MIB: usize = 1024 * 1024;
 /// Bodies kept for exact replay; the oldest goes first.
@@ -99,6 +103,20 @@ pub struct Estimate {
     /// Higgsfield credits, as the decimal it returned.
     pub credits: String,
     pub usd: nodecraft_types::Money,
+}
+
+/// One restyle preset: the id a request names, and the name a person reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preset {
+    pub id: String,
+    pub name: String,
+}
+
+/// The presets Higgsfield lists, in its order, and how many unusable entries were left out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Presets {
+    pub presets: Vec<Preset>,
+    pub skipped: usize,
 }
 
 /// One staged body: what was sent, or is about to be sent, under an idempotency key.
@@ -232,6 +250,12 @@ impl Higgsfield {
         let reply = self.send(quote, false, None).await?;
         response::estimate(&reply.body)
     }
+    /// The restyle presets Higgsfield lists today. Free, and sends nothing but the key.
+    pub async fn restyle_presets(&self) -> Result<Presets, ProviderError> {
+        let list = HttpRequest::get(format!("{API}/models/{RESTYLE}/presets")).timeout_ms(30_000);
+        let reply = self.send(list, false, None).await?;
+        response::presets(&reply.body, |s| self.leaks(s))
+    }
     fn handle(handle: &JobHandle) -> Result<(&'static str, u64), ProviderError> {
         request_id(&handle.remote_id)?;
         let model = match handle.data.get("model").and_then(serde_json::Value::as_str) {
@@ -239,6 +263,7 @@ impl Higgsfield {
             Some(KLING_I2V) => KLING_I2V,
             Some(MOTION_TRANSFER) => MOTION_TRANSFER,
             Some(OBJECT_SWAP) => OBJECT_SWAP,
+            Some(RESTYLE) => RESTYLE,
             _ => return Err(invalid("Higgsfield handle record refused")),
         };
         let count = handle.data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));

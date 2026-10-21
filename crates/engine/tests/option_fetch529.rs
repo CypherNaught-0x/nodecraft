@@ -7,9 +7,11 @@ use nodecraft_engine::generation_catalog::default_registry;
 use nodecraft_engine::option_fetch::{self, OPTION_SERVICE};
 use nodecraft_engine::provider_setup::HostEnv;
 use nodecraft_engine::secrets::MemoryStore;
+use nodecraft_engine::secrets::{Account, SecretStore};
 use nodecraft_engine::settings::ProviderSettings;
 use nodecraft_graph::{Canvas, Change, Project};
-use nodecraft_nodes::generation::KIND;
+use nodecraft_nodes::generation::{KIND, VIDEO_KIND};
+use nodecraft_providers::secrets::Secret;
 use nodecraft_providers::{BoxFuture, ErrorKind as WireKind, Http, HttpRequest, HttpResponse, ProviderError};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId, Value};
 use serde_json::json;
@@ -19,6 +21,7 @@ use std::sync::{Arc, Mutex};
 
 const C: CanvasId = CanvasId::from_bytes([51; 16]);
 const N: NodeId = NodeId::from_bytes([52; 16]);
+const RESTYLE: NodeId = NodeId::from_bytes([55; 16]);
 
 /// `/object_info`'s cap, as the ComfyUI client sets it (`nodecraft_comfy::MAX_OBJECT_INFO_BYTES`).
 const OBJECT_INFO_CAP: usize = 128 * 1024 * 1024;
@@ -77,13 +80,16 @@ fn fetch(http: Arc<Server>, settings: &ProviderSettings, sources: &[String]) -> 
     block_on(option_fetch::fetch(&env, sources))
 }
 
-/// A session with one SDXL card and an options service that records what it was asked.
+/// A session with an SDXL card, a Genjutsu restyle card and an options service that records what it was asked.
 fn session() -> (Session, Rc<RefCell<Vec<serde_json::Value>>>) {
     let mut project = Project::new(ProjectId::from_bytes([53; 16]), "Option fetch").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
     let (kinds, _) = default_registry().unwrap();
     let values = [("model".into(), Value::Text("comfyui.sdxl".into())), ("prompt".into(), Value::Text("A pier".into()))].into();
     let node = kinds.get(KIND).unwrap().instantiate_instance(N, Default::default(), &values).unwrap();
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let values = [("model".into(), Value::Text("higgsfield.genjutsu-restyle".into()))].into();
+    let node = kinds.get(VIDEO_KIND).unwrap().instantiate_instance(RESTYLE, Default::default(), &values).unwrap();
     Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
     let mut session = Session::new(project).unwrap();
     let asked = Rc::new(RefCell::new(Vec::new()));
@@ -114,15 +120,20 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // Before a fetch any checkpoint is accepted: the list is unknown, not empty.
     checkpoint(&mut session, "anything.safetensors").unwrap();
     let sources = refresh(&mut session, &asked);
-    assert_eq!(sources, ["comfyui.checkpoints"]);
+    assert_eq!(sources, ["comfyui.checkpoints", "higgsfield.restyle_presets"]);
     let http = server(&["sdxl.safetensors", "juggernaut.safetensors", "", "sdxl.safetensors"]);
     let fetched = fetch(http.clone(), &settings(), &sources);
+    // Higgsfield has no key here: it isn't asked, and the ComfyUI lists still come.
     assert_eq!(http.urls(), ["http://127.0.0.1:8188/object_info"]);
     // The reply's size is capped explicitly, not by the client's default.
     assert_eq!(http.asked.lock().unwrap()[0].1, OBJECT_INFO_CAP);
     let report = option_fetch::finish(&mut session, 1, fetched);
     assert_eq!(report.error, None);
     assert_eq!(report.installed.len(), 1, "{report:?}");
+    // Higgsfield isn't set up: its list is unavailable, not refused.
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert_eq!(report.unavailable.len(), 1, "{report:?}");
+    assert!(report.unavailable[0].source == "higgsfield.restyle_presets" && report.unavailable[0].reason.contains("key"), "{report:?}");
     assert_eq!((report.installed[0].owner.as_str(), report.installed[0].values, report.installed[0].skipped), ("comfyui.sdxl", 2, 2));
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": N, "param": "checkpoint"})).unwrap();
     assert_eq!(listed["known"], true);
@@ -193,4 +204,60 @@ fn without_a_server_or_a_fetching_host_the_error_says_what_to_do() {
     assert_eq!(error.kind, ErrorKind::Unsupported);
     assert!(error.message.contains("desktop app"), "{}", error.message);
     assert!(session.dispatch("options.refresh", &json!({"extra": 1})).is_err());
+}
+
+/// Answers Higgsfield's restyle preset list, and nothing else.
+struct Presets(Mutex<Vec<HttpRequest>>);
+
+impl Http for Presets {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("Higgsfield never follows redirects")
+    }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let answer = if request.url == "https://api.higgsfield.ai/models/higgsfield/genjutsu/restyle/v1.0/presets" {
+            let body = json!({"model": "higgsfield/genjutsu/restyle/v1.0", "items": [
+                {"id": "6F1E2D3C-4B5A-4968-8776-A5B4C3D2E1F0", "name": "Watercolour", "preview_url": "https://example.com/a.mp4"},
+                {"id": "not-a-uuid", "name": "Broken"},
+                {"id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": " Ink wash "},
+            ]});
+            Ok(HttpResponse { status: 200, headers: vec![("content-type".into(), "application/json".into())], body: serde_json::to_vec(&body).unwrap() })
+        } else {
+            Err(ProviderError::new(WireKind::Network, "connection refused"))
+        };
+        self.0.lock().unwrap().push(request);
+        Box::pin(async move { answer })
+    }
+}
+
+#[test]
+fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_comfyui() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
+    let http = Arc::new(Presets(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+    let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
+    let fetched = block_on(option_fetch::fetch(&env, &sources));
+    let asked = http.0.lock().unwrap();
+    assert_eq!(asked.len(), 1, "only Higgsfield is asked; ComfyUI isn't set up: {fetched:?}");
+    assert!(asked[0].body.is_empty());
+    drop(asked);
+    let (mut session, _) = session();
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    let installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.source.as_str(), i.values, i.skipped)).collect();
+    assert_eq!(installed, [("higgsfield.genjutsu-restyle", "higgsfield.restyle_presets", 2, 1)]);
+    // The ComfyUI list is unavailable with the reason, and what it had stays.
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("comfyui_url")), "{report:?}");
+    // The restyle card offers the presets by name; the id is what it keeps and sends.
+    let listed = session.dispatch("node.options", &json!({"canvas": C, "id": RESTYLE, "param": "preset_id"})).unwrap();
+    assert_eq!(
+        listed["options"],
+        json!([{"value": "6f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0", "label": "Watercolour"}, {"value": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "label": "Ink wash"}])
+    );
+    let mut preset =
+        |value: &str| session.dispatch("node.param_set", &json!({"canvas": C, "id": RESTYLE, "name": "preset_id", "value": {"type": "text", "value": value}}));
+    assert!(preset("Watercolour").is_err(), "the name is a label, not a value");
+    preset("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d").unwrap();
 }

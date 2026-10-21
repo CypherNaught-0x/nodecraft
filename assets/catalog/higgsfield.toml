@@ -120,3 +120,54 @@ name="resolution"
 label="Resolution"
 control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
 default={type="text",value="720p"}
+
+# Restyle redraws the source in one of Higgsfield's presets, which its API lists; Refresh option
+# lists fetches them into the preset field, where the value sent is the preset's id.
+[[model]]
+id="higgsfield.genjutsu-restyle"
+provider="higgsfield"
+provider_model="higgsfield/genjutsu/restyle/v1.0"
+label="Genjutsu restyle (Higgsfield)"
+description="Redraws the source video in a Higgsfield preset style, optionally guided by up to five reference images, and keeps its sound. The source is an MP4 of at least 4 s and, with the images, at most 64 MiB; only its first 30 s is used. Priced per second of source at Higgsfield's list price, the most a run can cost."
+latency_s=300
+quality=4
+pricing={type="per_source_second",param="resolution",prices={"480p"="0.318 USD","720p"="0.681 USD","1080p"="1.632 USD"}}
+
+[[model.modes]]
+id="restyle"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="source",modality="video",min=1,max=1},{role="image",modality="image",min=0,max=5}]
+edit={operation="restyle",role="source",min_ms=4000,uses_ms=30000,formats=["video/mp4"],sound="source"}
+
+[[model.params.params]]
+name="preset_id"
+label="Preset"
+description="The Higgsfield restyle preset; Refresh option lists fetches them."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="higgsfield.genjutsu-restyle"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="preset_id"
+options={id="higgsfield.restyle_presets"}
+
+[[model.parameter_contract.schema.params]]
+name="preset_id"
+label="Preset"
+description="The Higgsfield restyle preset; Refresh option lists fetches them."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}

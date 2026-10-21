@@ -625,7 +625,7 @@ NODECRAFT_LIVE_MESHY=1 NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1 MESHY_API_KEY=…
 
 The optional `higgsfield` adapter (#177) drives the
 [Higgsfield platform API](https://docs.higgsfield.ai/docs) at the fixed base
-`https://api.higgsfield.ai`. Four catalog models share it:
+`https://api.higgsfield.ai`. Five catalog models share it:
 
 | Catalog model | Endpoint | Inputs | Settings |
 |---|---|---|---|
@@ -633,6 +633,7 @@ The optional `higgsfield` adapter (#177) drives the
 | `higgsfield.kling-2.5-turbo-i2v` | `kling-video/v2.5-turbo/pro/image-to-video` | a prompt, an optional negative prompt, one image | 5 or 10 seconds, prompt adherence 0–1 |
 | `higgsfield.genjutsu-motion-transfer` | `higgsfield/genjutsu/motion-transfer/v1.0` | an optional prompt, one MP4 source, 1–8 ordered reference images | 480p, 720p or 1080p |
 | `higgsfield.genjutsu-object-swap` | `higgsfield/genjutsu/object-swap/v1.0` | an optional prompt, one MP4 source, 1–8 ordered reference images | 480p, 720p or 1080p |
+| `higgsfield.genjutsu-restyle` | `higgsfield/genjutsu/restyle/v1.0` | an optional prompt, one MP4 source, 0–5 ordered reference images | a preset, 480p, 720p or 1080p |
 
 Every setting is sent explicitly, defaults included, so a request means the same thing if
 Higgsfield's defaults change. Higgsfield's key is two parts; store them in the keychain as one
@@ -647,15 +648,23 @@ with it and checking budgets against it is a follow-up.
 
 **Genjutsu edits (#179).** Each mode declares its source video edit in the catalog (`edit`: the
 operation, the source role, the shortest source, how much of a longer one is used, the smallest
-frame and what happens to the sound). Both take sources of at least 4 s and use only the first
-30 s; object swap also needs frames of at least 409,600 pixels. A wired source whose length or
+frame and what happens to the sound). All three take sources of at least 4 s and use only the
+first 30 s; object swap also needs frames of at least 409,600 pixels. A wired source whose length or
 frame size is known (imported MP4 and QuickTime files have theirs read from the headers) is
-checked before anything is sent. Higgsfield doesn't document what happens to the source's sound,
-so the picker says so. The price is Higgsfield's list price per started second of the part of the
+checked before anything is sent. Restyle keeps the source's sound; Higgsfield doesn't document what
+motion transfer and object swap do with it, so the picker says so. The price is Higgsfield's list price per started second of the part of the
 source that is used: 0.318 USD at 480p, 0.681 USD at 720p and 1.632 USD at 1080p (checked
 2026-10-21). An account's credits can make it cheaper, so the quote is the most a run can cost. A
 source made earlier in the same run, or whose length couldn't be read, leaves the step unpriced
-until it is known. Restyle, whose style presets are a live list, is the next part of #179.
+until it is known.
+
+**Restyle presets.** Restyle needs one of Higgsfield's style presets, which its API lists
+(`GET /models/higgsfield/genjutsu/restyle/v1.0/presets`, free). **Refresh option lists** fetches
+them into the card's Preset field as `higgsfield.restyle_presets`: the name is shown, the id is
+stored and sent. Entries whose id isn't a UUID, or whose name is blank, over 256 bytes, has
+control characters or echoes the key, are left out and counted; a list over 1,024 presets is
+refused whole. A restyle without a preset, or with one that isn't a UUID, is refused before
+anything is uploaded or paid, and a preset the latest list doesn't have is reported on the card.
 
 **Inputs.** Kling's image (PNG, JPEG or WebP whose bytes match their type, at most 20 MiB) is
 staged through Higgsfield's upload grant: the adapter asks for an upload link with the key, then

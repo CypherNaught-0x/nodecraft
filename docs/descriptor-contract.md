@@ -303,14 +303,17 @@ admitted by the rules it already had, and a blocked run names the code rather th
 
 **Fetching (#529).** `options.refresh {}` asks the host's `options.fetch` service for every
 unscoped list the catalog's contracts name; the handler does no I/O and the host answers
-`{pending: id}`. The desktop app fetches the ComfyUI server's `/object_info` off the UI thread
-(the adapter's own settings and optional token) and installs each list once per model that names
+`{pending: id}`. The desktop app fetches the ComfyUI server's `/object_info` and Higgsfield's preset list off
+the UI thread (each adapter's own settings and key) and installs each list once per model that names
 it, in the server's order, without blank, oversized (over 4 KiB) or repeated values. A list over
 16,384 values or 16 MiB is refused whole rather than truncated. `options.status {}` reports the last fetch:
 `{id, installed: [{owner, source, values, skipped}], refused: [{owner, source, reason}], error}`.
 A failed fetch and every refused list keep what was installed before. The source ids a ComfyUI
 server answers are `comfyui.checkpoints`, `comfyui.loras`, `comfyui.vaes`,
-`comfyui.upscale_models`, `comfyui.samplers` and `comfyui.schedulers`; scoped sources are refused
+`comfyui.upscale_models`, `comfyui.samplers` and `comfyui.schedulers`. Higgsfield answers
+`higgsfield.restyle_presets` (#179), whose values are preset ids and whose labels are the preset
+names; each provider is asked on its own, so one that isn't set up refuses only its own lists.
+Scoped sources are refused
 with a reason until a fetch can narrow them. The built-in SDXL row's `checkpoint` names
 `comfyui.checkpoints`.
 

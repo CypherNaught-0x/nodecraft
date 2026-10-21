@@ -425,15 +425,22 @@ fn the_catalog_and_the_adapter_agree() {
         let inputs = if model == SOUL { vec![prompt("x")] } else { vec![prompt("x"), image()] };
         request::prepare(&job(model, Value::Object(params), inputs), Limits::HARD).unwrap();
     }
-    for (id, model) in [("higgsfield.genjutsu-motion-transfer", MOTION_TRANSFER), ("higgsfield.genjutsu-object-swap", OBJECT_SWAP)] {
+    for (id, model) in
+        [("higgsfield.genjutsu-motion-transfer", MOTION_TRANSFER), ("higgsfield.genjutsu-object-swap", OBJECT_SWAP), ("higgsfield.genjutsu-restyle", RESTYLE)]
+    {
         let entry = catalog.get(id).unwrap();
         assert_eq!((entry.provider.as_str(), entry.provider_model.as_str()), ("higgsfield", model));
         // Every resolution the catalog prices is one the adapter sends.
         let nodecraft_catalog::Pricing::PerSourceSecond { prices, .. } = &entry.pricing else { panic!("priced per source second") };
         for resolution in prices.keys() {
-            request::prepare(&genjutsu(model, json!({"resolution": resolution}), vec![source(), image()]), Limits::HARD).unwrap();
+            let params = if model == RESTYLE { json!({"resolution": resolution, "preset_id": PRESET}) } else { json!({"resolution": resolution}) };
+            request::prepare(&genjutsu(model, params, vec![source(), image()]), Limits::HARD).unwrap();
         }
     }
+    // The preset list the restyle contract names is the one the adapter fetches.
+    let restyle = catalog.get("higgsfield.genjutsu-restyle").unwrap();
+    let contract = restyle.parameter_contract.as_ref().unwrap();
+    assert!(contract.rules.iter().any(|r| r.param == "preset_id" && r.options.as_ref().is_some_and(|o| o.id == RESTYLE_PRESETS)));
 }
 
 fn source() -> JobInput {
@@ -519,4 +526,67 @@ fn uploads_get_longer_the_larger_they_are() {
     // The engine's 64 MiB media cap at 1 Mbit/s, with two minutes to spare.
     assert_eq!(super::upload_timeout_ms(64 << 20), 120_000 + 524_288);
     assert_eq!(super::upload_timeout_ms(usize::MAX), 120_000u64.saturating_add(u64::try_from(usize::MAX / 1024).unwrap().saturating_mul(8)));
+}
+
+const PRESET: &str = "6f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+
+#[test]
+fn a_restyle_names_its_preset_and_sends_references_only_when_wired() {
+    // No references: no `image_urls` at all, since restyle refuses nulls.
+    let t = Transport::new(vec![video_grant(), empty(200), receipt()]);
+    block_on(adapter(&t).submit(&genjutsu(RESTYLE, json!({"preset_id": PRESET.to_uppercase()}), vec![prompt(""), source()]))).unwrap();
+    let requests = t.requests();
+    assert_eq!(requests[2].url, "https://api.higgsfield.ai/higgsfield/genjutsu/restyle/v1.0");
+    assert_eq!(body(&requests[2]), json!({"video_url": "https://upload.cdn.example.com/inputs/source.mp4", "preset_id": PRESET, "resolution": "720p"}));
+    // References follow the source, in order.
+    let t = Transport::new(vec![video_grant(), empty(200), image_grant(1), empty(200), receipt()]);
+    block_on(adapter(&t).submit(&genjutsu(RESTYLE, json!({"preset_id": PRESET, "resolution": "480p"}), vec![source(), image()]))).unwrap();
+    assert_eq!(body(&t.requests()[4])["image_urls"], json!(["https://upload.cdn.example.com/inputs/ref1.png"]));
+    // A finished restyle downloads its MP4.
+    let done = json!({"request_id": REQUEST, "status": "completed", "video": {"url": "https://cdn.example.com/out.mp4"}});
+    let t = Transport::new(vec![ok(done), file(&mp4())]);
+    assert!(matches!(block_on(adapter(&t).poll(&queued(RESTYLE, 1))).unwrap(), JobProgress::Done(_)));
+}
+
+#[test]
+fn restyle_jobs_are_checked_before_anything_is_sent() {
+    let bad = [
+        genjutsu(RESTYLE, json!({}), vec![source()]),
+        genjutsu(RESTYLE, json!({"preset_id": "not-a-preset"}), vec![source()]),
+        genjutsu(RESTYLE, json!({"preset_id": 7}), vec![source()]),
+        genjutsu(RESTYLE, json!({"preset_id": PRESET}), vec![image()]),
+        genjutsu(RESTYLE, json!({"preset_id": PRESET}), [vec![source()], vec![image(); 6]].concat()),
+        // Only restyle takes a preset.
+        genjutsu(MOTION_TRANSFER, json!({"preset_id": PRESET}), vec![source(), image()]),
+    ];
+    for j in bad {
+        let t = Transport::new(vec![]);
+        assert_eq!(block_on(adapter(&t).submit(&j)).unwrap_err().kind, ErrorKind::UnsupportedInput, "{:?}", j.params);
+        assert!(t.requests().is_empty());
+    }
+}
+
+#[test]
+fn the_preset_list_keeps_usable_entries_in_order() {
+    let list = json!({"model": RESTYLE, "items": [
+        {"id": PRESET, "name": " Watercolor ", "preview_url": "https://cdn.example.com/w.mp4"},
+        {"id": "not-a-uuid", "name": "Broken"},
+        {"id": "0a1b2c3d-4e5f-4061-8273-94a5b6c7d8e9", "name": ""},
+        {"id": PRESET.to_uppercase(), "name": "Watercolor again"},
+        {"id": "0a1b2c3d-4e5f-4061-8273-94a5b6c7d8e9", "name": format!("leaks {SECRET}")},
+        {"id": "11111111-2222-4333-8444-555555555555", "name": "Claymation"},
+    ]});
+    let t = Transport::new(vec![ok(list)]);
+    let presets = block_on(adapter(&t).restyle_presets()).unwrap();
+    let request = &t.requests()[0];
+    assert_eq!((request.method, request.url.as_str()), (HttpMethod::Get, "https://api.higgsfield.ai/models/higgsfield/genjutsu/restyle/v1.0/presets"));
+    let names: Vec<(&str, &str)> = presets.presets.iter().map(|p| (p.id.as_str(), p.name.as_str())).collect();
+    assert_eq!(names, [(PRESET, "Watercolor"), ("11111111-2222-4333-8444-555555555555", "Claymation")]);
+    assert_eq!(presets.skipped, 4);
+    // A reply that isn't a list, or a list past the cap, is an error.
+    for reply in [ok(json!({"items": "no"})), ok(json!({"items": vec![json!({}); 1025]})), status(401, json!({"detail": "bad key"}))] {
+        let t = Transport::new(vec![reply]);
+        let e = block_on(adapter(&t).restyle_presets()).unwrap_err();
+        no_secret(&e);
+    }
 }
