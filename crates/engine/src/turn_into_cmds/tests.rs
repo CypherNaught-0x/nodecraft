@@ -107,7 +107,8 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.tint",
     ];
     let mut image_one: Vec<&str> = image_actions.to_vec();
-    image_one.extend([nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::element::ID]);
+    // A picture can be a still on a timeline (#576).
+    image_one.extend([nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::element::ID, nodecraft_nodes::timeline::ID]);
     image_one.sort();
     let mut got = ids(PortType { modality: Modality::Image, many: false });
     got.sort();
@@ -120,13 +121,17 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     assert_eq!(text_many, [nodecraft_nodes::batch::ID, router::ID, "text.concat", "text.template"], "only list inputs take a list");
     assert_eq!(
         ids(PortType { modality: Modality::Image, many: true }),
-        [nodecraft_nodes::element::ID, nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID],
-        "an Element and the Layer Editor take a list of images"
+        [nodecraft_nodes::element::ID, nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::timeline::ID],
+        "an Element, the Layer Editor and a Timeline take a list of images"
     );
     for many in [false, true] {
         let video = ids(PortType { modality: Modality::Video, many });
         assert_eq!(video, [nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::timeline::ID], "a Timeline takes videos");
-        assert_eq!(ids(PortType { modality: Modality::Audio, many }), [nodecraft_nodes::batch::ID, router::ID], "a router takes a list too");
+        assert_eq!(
+            ids(PortType { modality: Modality::Audio, many }),
+            [nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::timeline::ID],
+            "a Timeline takes sounds"
+        );
     }
     assert!(compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Text, many: true }));
     assert!(!compatible(PortType { modality: Modality::Text, many: true }, PortType { modality: Modality::Text, many: false }));

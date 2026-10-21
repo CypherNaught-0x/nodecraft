@@ -15,7 +15,8 @@ fn session() -> Session {
         s.dispatch("node.create", &json!({"canvas": CANVAS, "id": id, "kind": kind, "pos": {"x": x, "y": 0}})).unwrap();
     }
     for (n, from) in [(1u8, A), (2, B)] {
-        let edge = json!({"id": EdgeId::from_bytes([n; 16]), "from": {"node": from, "port": "out"}, "to": {"node": EDITOR, "port": INPUT}, "order": n});
+        let edge =
+            json!({"id": EdgeId::from_bytes([n; 16]), "from": {"node": from, "port": "out"}, "to": {"node": EDITOR, "port": timeline::INPUT}, "order": n});
         s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
     }
     s
@@ -47,13 +48,17 @@ fn with(mut base: Json, extra: Json) -> Json {
 #[test]
 fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
     let mut s = session();
-    let (a, b) = (timeline::auto_id(&A.to_string(), 0), timeline::auto_id(&B.to_string(), 0));
+    let (a, b) = (timeline::auto_id(Input::Clips, &A.to_string(), 0), timeline::auto_id(Input::Clips, &B.to_string(), 0));
     assert_eq!(ids(&mut s), [a.clone(), b.clone()]);
     let listed = s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap();
-    assert_eq!(listed["inputs"], json!([{"origin": A.to_string(), "video": null}, {"origin": B.to_string(), "video": null}]));
+    assert_eq!(
+        listed["inputs"],
+        json!([{"origin": A.to_string(), "input": "clips", "media": null}, {"origin": B.to_string(), "input": "clips", "media": null}])
+    );
     let first = list(&mut s).remove(0);
-    assert_eq!((&first["wired"], &first["video_us"], &first["volume"], &first["enabled"]), (&json!(true), &Json::Null, &json!(1000), &json!(true)));
+    assert_eq!((&first["wired"], &first["media_us"], &first["volume"], &first["enabled"]), (&json!(true), &Json::Null, &json!(1000), &json!(true)));
     assert!(first.get("out_us").is_none());
+    assert_eq!((&first["track"], &first["at_us"], &listed["tracks"]), (&json!(0), &json!(0), &json!([{"kind": "video"}])));
     assert_eq!(stored(&node(&s)).unwrap().clips.len(), 0);
 
     // Changing one stores both, in place; the video and id don't change.
@@ -80,7 +85,7 @@ fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
 #[test]
 fn a_split_plays_one_video_twice_and_a_wired_videos_last_clip_stays() {
     let mut s = session();
-    let a = timeline::auto_id(&A.to_string(), 0);
+    let a = timeline::auto_id(Input::Clips, &A.to_string(), 0);
     // A clip whose end isn't known yet splits too: its second part plays to the video's end.
     s.dispatch("timeline.split", &with(on(&a), json!({"at_us": 1_000_000}))).unwrap();
     let clips = list(&mut s);
@@ -133,7 +138,7 @@ fn a_split_plays_one_video_twice_and_a_wired_videos_last_clip_stays() {
     s.dispatch("edge.disconnect", &json!({"canvas": CANVAS, "id": EdgeId::from_bytes([1; 16])})).unwrap();
     assert_eq!(list(&mut s)[0]["wired"], json!(false));
     s.dispatch("timeline.remove", &on(&a)).unwrap();
-    assert_eq!(ids(&mut s), [timeline::auto_id(&B.to_string(), 0)]);
+    assert_eq!(ids(&mut s), [timeline::auto_id(Input::Clips, &B.to_string(), 0)]);
 }
 
 #[test]
@@ -143,7 +148,7 @@ fn set_replaces_the_clips_and_refuses_bad_ones() {
     assert_eq!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": clips})).unwrap(), json!({"changed": true}));
     let listed = list(&mut s);
     let wired: Vec<(&str, bool)> = listed.iter().map(|c| (c["id"].as_str().unwrap(), c["wired"].as_bool().unwrap())).collect();
-    let a = timeline::auto_id(&A.to_string(), 0);
+    let a = timeline::auto_id(Input::Clips, &A.to_string(), 0);
     assert_eq!(wired, [("intro", true), ("gone", false), (a.as_str(), true)]);
     assert_eq!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": clips})).unwrap(), json!({"changed": false}));
     let twice = json!([{"id": "x", "origin": "n"}, {"id": "x", "origin": "m"}]);
@@ -152,4 +157,70 @@ fn set_replaces_the_clips_and_refuses_bad_ones() {
         assert!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": bad})).is_err());
     }
     assert!(s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": A})).is_err(), "only a Timeline has clips");
+}
+
+const SOUND: NodeId = NodeId::from_bytes([6; 16]);
+const PICTURE: NodeId = NodeId::from_bytes([7; 16]);
+
+#[test]
+fn sounds_and_pictures_get_clips_and_tracks_hold_them_at_their_own_time() {
+    let mut s = session();
+    for (n, id, kind, port) in [(3u8, SOUND, "source.audio", timeline::AUDIO_INPUT), (4, PICTURE, "source.image", timeline::STILLS_INPUT)] {
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": id, "kind": kind, "pos": {"x": 0, "y": 200}})).unwrap();
+        let edge = json!({"id": EdgeId::from_bytes([n; 16]), "from": {"node": id, "port": "out"}, "to": {"node": EDITOR, "port": port}, "order": 0});
+        s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    }
+    let (a, b) = (timeline::auto_id(Input::Clips, &A.to_string(), 0), timeline::auto_id(Input::Clips, &B.to_string(), 0));
+    let (sound, still) = (timeline::auto_id(Input::Audio, &SOUND.to_string(), 0), timeline::auto_id(Input::Stills, &PICTURE.to_string(), 0));
+    assert_eq!(ids(&mut s), [a.clone(), b.clone(), sound.clone(), still.clone()]);
+    let listed = s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap();
+    // The sound gets an audio track of its own; the picture shows on the main track for 3 s.
+    assert_eq!(listed["tracks"], json!([{"kind": "video"}, {"kind": "audio"}]));
+    let clips = listed["clips"].as_array().unwrap();
+    assert_eq!((&clips[2]["input"], &clips[2]["track"]), (&json!("audio"), &json!(1)));
+    assert_eq!(
+        (&clips[3]["input"], &clips[3]["track"], &clips[3]["out_us"], &clips[3]["media_us"]),
+        (&json!("stills"), &json!(0), &json!(3_000_000), &Json::Null)
+    );
+    assert_eq!(listed["inputs"][2], json!({"origin": SOUND.to_string(), "input": "audio", "media": null}));
+
+    // Within its track a clip moves among the clips on it.
+    s.dispatch("timeline.move", &with(on(&still), json!({"index": 0}))).unwrap();
+    assert_eq!(ids(&mut s), [still.clone(), a.clone(), b.clone(), sound.clone()]);
+
+    // A video track over the rest takes the picture at its own time.
+    let added = s.dispatch("timeline.track_add", &json!({"canvas": CANVAS, "id": EDITOR, "kind": "video"})).unwrap();
+    assert_eq!(added, json!({"changed": true, "track": 2}));
+    s.dispatch("timeline.update", &with(on(&still), json!({"set": {"track": 2, "at_us": 500_000}}))).unwrap();
+    let placed = list(&mut s).remove(0);
+    assert_eq!((&placed["track"], &placed["at_us"], &placed["transition_us"]), (&json!(2), &json!(500_000), &json!(0)));
+    for bad in [json!({"track": 0, "at_us": 5}), json!({"track": 1}), json!({"track": 3}), json!({"input": "clips"})] {
+        assert!(s.dispatch("timeline.update", &with(on(&still), json!({"set": bad}))).is_err(), "{bad}");
+    }
+    assert!(s.dispatch("timeline.update", &with(on(&sound), json!({"set": {"track": 0}}))).is_err(), "a sound goes on an audio track");
+    assert!(s.dispatch("timeline.split", &with(on(&still), json!({"at_us": 1_000_000}))).is_err(), "a still doesn't split");
+    // The sound splits on its track: the second part starts where the first ends.
+    s.dispatch("timeline.update", &with(on(&sound), json!({"set": {"at_us": 1_000_000, "out_us": 2_000_000}}))).unwrap();
+    let tail = s.dispatch("timeline.split", &with(on(&sound), json!({"at_us": 500_000}))).unwrap()["clip"].as_str().unwrap().to_owned();
+    let tail = list(&mut s).into_iter().find(|c| c["id"] == json!(tail)).unwrap();
+    assert_eq!((&tail["track"], &tail["at_us"], &tail["in_us"]), (&json!(1), &json!(1_500_000), &json!(500_000)));
+    s.dispatch("edit.undo", &json!({})).unwrap();
+
+    // Only an empty track goes, never the main one; the ones above it move down.
+    let track = |n: u8| json!({"canvas": CANVAS, "id": EDITOR, "track": n});
+    for n in [0, 2, 3] {
+        assert!(s.dispatch("timeline.track_remove", &track(n)).is_err(), "{n}");
+    }
+    s.dispatch("timeline.update", &with(on(&still), json!({"set": {"track": 0}}))).unwrap();
+    assert_eq!(list(&mut s).remove(0)["at_us"], json!(0), "back on the main track it plays in order");
+    s.dispatch("timeline.track_add", &json!({"canvas": CANVAS, "id": EDITOR, "kind": "audio"})).unwrap();
+    s.dispatch("timeline.update", &with(on(&sound), json!({"set": {"track": 3}}))).unwrap();
+    s.dispatch("timeline.track_remove", &track(2)).unwrap();
+    let timeline = stored(&node(&s)).unwrap();
+    assert_eq!(timeline.tracks, [Track { kind: TrackKind::Audio }, Track { kind: TrackKind::Audio }]);
+    assert_eq!(timeline.get(&sound).map(|c| c.track), Some(2));
+    for _ in 0..MAX_TRACKS - 2 {
+        s.dispatch("timeline.track_add", &json!({"canvas": CANVAS, "id": EDITOR, "kind": "video"})).unwrap();
+    }
+    assert!(s.dispatch("timeline.track_add", &json!({"canvas": CANVAS, "id": EDITOR, "kind": "video"})).is_err());
 }

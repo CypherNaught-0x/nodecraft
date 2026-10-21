@@ -13,7 +13,7 @@ fn its_plan_carries_the_clips_and_where_each_video_came_from() {
     let mut node = kind.instantiate_instance(NodeId::from_bytes([5; 16]), Default::default(), &ParamValues::default()).unwrap();
     assert_eq!(stored(&node).unwrap(), EMPTY);
     assert!(kind.mode(&[video()]).is_some() && kind.mode(&[]).is_some());
-    assert!(kind.mode(&[PortType { modality: Modality::Image, many: false }]).is_none());
+    assert!(kind.mode(&[PortType { modality: Modality::Text, many: false }]).is_none());
     let (a, b) = (NodeId::from_bytes([1; 16]), NodeId::from_bytes([2; 16]));
     let input =
         InputValue { port: INPUT.into(), port_type: video(), value: Value::List(vec![Value::Text("x".into()), Value::Text("y".into())]), origins: vec![a, b] };
@@ -54,7 +54,7 @@ fn clips_are_checked_where_they_are_read() {
     ] {
         assert!(Timeline::parse(bad).is_err(), "{bad}");
     }
-    let many = Timeline { clips: (0..=MAX_CLIPS).map(|i| Clip::whole(format!("c{i}"), "n".into(), 0)).collect() };
+    let many = Timeline { clips: (0..=MAX_CLIPS).map(|i| Clip::whole(format!("c{i}"), "n".into(), 0)).collect(), tracks: vec![] };
     assert!(many.encode().is_err());
     assert!(Timeline::parse(&" ".repeat(MAX_ENCODED_BYTES + 1)).is_err());
 }
@@ -69,8 +69,9 @@ fn wired_videos_get_whole_clips_and_resolve_to_their_inputs() {
             // A taken automatic id makes the automatic clip pick another.
             Clip { transition_us: 50_000, ..Clip::whole("a-0".into(), "b".into(), 0) },
         ],
+        tracks: vec![],
     };
-    let sources = ["a".to_owned(), "b".into(), "a".into(), String::new()];
+    let sources = [Wire::video("a"), Wire::video("b"), Wire::video("a"), Wire::video("")];
     let shown = stored.with_sources(&sources);
     let ids: Vec<&str> = shown.clips.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, ["cut", "off", "gone", "a-0", "a-0-2", "input3-0"]);
@@ -83,4 +84,79 @@ fn wired_videos_get_whole_clips_and_resolve_to_their_inputs() {
     assert_eq!(resolved.last().map(|(_, c)| c.transition_us), Some(0));
     assert!(Timeline::is_wired(&stored.clips[0], &sources) && !Timeline::is_wired(&stored.clips[2], &sources));
     assert!(Timeline::default().resolve(&[]).is_empty());
+}
+
+#[test]
+fn tracks_hold_sounds_and_pictures_at_their_own_time() {
+    let wires = [Wire::video("v"), Wire::new(Input::Audio, "m"), Wire::new(Input::Stills, "p"), Wire::new(Input::Stills, "p")];
+    let shown = Timeline::default().with_sources(&wires);
+    let placed: Vec<(&str, Input, u8, Option<u64>)> = shown.clips.iter().map(|c| (c.id.as_str(), c.input, c.track, c.out_us)).collect();
+    // Videos and stills join the main track; the sound gets an audio track of its own.
+    assert_eq!(
+        placed,
+        [
+            ("v-0", Input::Clips, 0, None),
+            ("m-a0", Input::Audio, 1, None),
+            ("p-s0", Input::Stills, 0, Some(DEFAULT_STILL_US)),
+            ("p-s1", Input::Stills, 0, Some(DEFAULT_STILL_US))
+        ]
+    );
+    assert_eq!(shown.tracks, [Track { kind: TrackKind::Audio }]);
+    assert!(shown.check().is_ok());
+    assert_eq!(Timeline::parse(&shown.encode().unwrap()).unwrap(), shown);
+
+    // A still laid over the picture on a video track, after the audio track.
+    let mut layered = shown.clone();
+    layered.tracks.push(Track { kind: TrackKind::Video });
+    layered.clips.retain(|c| c.id != "p-s1");
+    layered.clips.insert(0, Clip { track: 2, at_us: 500_000, ..Clip::wired("logo".into(), Input::Stills, "p".into(), 1, 2) });
+    assert!(layered.check().is_ok());
+    let resolved = layered.resolve(&wires);
+    let order: Vec<(usize, &str)> = resolved.iter().map(|(i, c)| (*i, c.id.as_str())).collect();
+    // The main track first, in order, then each track in turn; "p-s1" is named by "logo".
+    assert_eq!(order, [(0, "v-0"), (2, "p-s0"), (1, "m-a0"), (3, "logo")]);
+
+    for bad in [
+        // A sound on the main track, a picture on an audio track, a missing track.
+        r#"{"clips":[{"id":"a","origin":"n","input":"audio"}]}"#,
+        r#"{"clips":[{"id":"a","origin":"n","track":1}],"tracks":[{"kind":"audio"}]}"#,
+        r#"{"clips":[{"id":"a","origin":"n","track":1}]}"#,
+        // A placed clip on the main track, a transition off it, a still with no length.
+        r#"{"clips":[{"id":"a","origin":"n","at_us":5}]}"#,
+        r#"{"clips":[{"id":"a","origin":"n","track":1,"transition_us":100000,"out_us":1000000}],"tracks":[{"kind":"video"}]}"#,
+        r#"{"clips":[{"id":"a","origin":"n","input":"stills"}]}"#,
+        r#"{"clips":[],"tracks":[{"kind":"subtitle"}]}"#,
+    ] {
+        assert!(Timeline::parse(bad).is_err(), "{bad}");
+    }
+    let crowded = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS + 1] };
+    assert!(crowded.check().is_err());
+    // With every track a video track, a sound has nowhere to go and isn't shown.
+    let full = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS] };
+    assert!(full.with_sources(&[Wire::new(Input::Audio, "m")]).clips.is_empty());
+}
+
+#[test]
+fn its_plan_names_each_inputs_port() {
+    let kinds = Registry::builtins().unwrap();
+    let kind = kinds.get(ID).unwrap();
+    let node = kind.instantiate_instance(NodeId::from_bytes([5; 16]), Default::default(), &ParamValues::default()).unwrap();
+    assert!(kind.mode(&[PortType { modality: Modality::Audio, many: false }, PortType { modality: Modality::Image, many: false }]).is_some());
+    let (a, b) = (NodeId::from_bytes([1; 16]), NodeId::from_bytes([2; 16]));
+    let sound = InputValue {
+        port: AUDIO_INPUT.into(),
+        port_type: PortType { modality: Modality::Audio, many: true },
+        value: Value::Text("s".into()),
+        origins: vec![a],
+    };
+    let still = InputValue {
+        port: STILLS_INPUT.into(),
+        port_type: PortType { modality: Modality::Image, many: true },
+        value: Value::Text("p".into()),
+        origins: vec![b],
+    };
+    let jobs = kind.plan(&PlanCtx { node: &node, inputs: &[sound, still], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap();
+    let [JobSpec::Action { params, inputs, .. }] = jobs.as_slice() else { panic!("{jobs:?}") };
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(params.get(PORTS_PARAM), Some(&Value::List(vec![Value::Text(AUDIO_INPUT.into()), Value::Text(STILLS_INPUT.into())])));
 }
