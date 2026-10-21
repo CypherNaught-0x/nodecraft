@@ -591,6 +591,7 @@ fn the_toolbar_downloads_the_shown_result_once_there_is_one() {
     let mut h = scene(making(mock));
     h.state_mut().selection.only(N);
     h.run();
+    assert!(h.query_by_label_contains("Model ").is_some(), "the toolbar is up");
     assert!(h.query_by_label("Download").is_none(), "nothing to save before a result");
     generated(&mut h);
     h.state_mut().selection.only(N);

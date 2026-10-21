@@ -26,9 +26,12 @@ struct Pending {
 
 enum Target {
     File(serde_json::Value),
-    /// `history.export` params with the file name each gets in the folder.
+    /// `history.export` params with the suggested file name each is numbered from.
     Folder(Vec<(serde_json::Value, String)>),
 }
+
+/// Most numbers tried for one file before a folder export gives up on it.
+const MAX_NUMBERS: usize = 1000;
 
 /// The `history.export` params for item `item` of output `port` of a result.
 fn export_params(canvas: CanvasId, id: NodeId, generation: GenerationId, port: Option<String>, item: Option<usize>) -> serde_json::Value {
@@ -77,13 +80,9 @@ impl NodeCraftApp {
     }
 
     /// Asks for a folder and saves each of `targets` (output port, item, suggested name) of
-    /// result `generation` of node `id` into it, numbered in order.
+    /// result `generation` of node `id` into it, numbered in order past files already there.
     pub(super) fn start_export_all(&mut self, canvas: CanvasId, id: NodeId, generation: GenerationId, targets: Vec<(Option<String>, Option<usize>, String)>) {
-        let files = targets
-            .into_iter()
-            .enumerate()
-            .map(|(at, (port, item, name))| (export_params(canvas, id, generation, port, item), numbered(&name, at.saturating_add(1))))
-            .collect();
+        let files = targets.into_iter().map(|(port, item, name)| (export_params(canvas, id, generation, port, item), name)).collect();
         self.pick_export(Target::Folder(files), "");
     }
 
@@ -167,13 +166,27 @@ impl NodeCraftApp {
                 let total = files.len();
                 let mut written = 0usize;
                 let mut failed = None;
-                for (mut params, name) in files {
-                    // A folder pick never agreed to replace anything, so a file there is kept.
-                    params["path"] = json!(path.join(&name));
-                    match self.session.dispatch("history.export", &params) {
-                        Ok(_) => written = written.saturating_add(1),
-                        Err(error) => {
-                            failed.get_or_insert(format!("{name}: {}", error.message));
+                // One counter for the whole folder: a name already taken moves on to the next
+                // number, so saving into the same folder again adds files instead of failing.
+                let mut next = 1usize;
+                for (mut params, base) in files {
+                    let mut outcome = Err(format!("{base}: no free number left for it"));
+                    for _ in 0..MAX_NUMBERS {
+                        let name = numbered(&base, next);
+                        next = next.saturating_add(1);
+                        // A folder pick never agreed to replace anything, so a file there is kept.
+                        params["path"] = json!(path.join(&name));
+                        match self.session.dispatch("history.export", &params) {
+                            Ok(_) => outcome = Ok(()),
+                            Err(error) if error.kind == nodecraft_types::ErrorKind::Conflict => continue,
+                            Err(error) => outcome = Err(format!("{name}: {}", error.message)),
+                        }
+                        break;
+                    }
+                    match outcome {
+                        Ok(()) => written = written.saturating_add(1),
+                        Err(why) => {
+                            failed.get_or_insert(why);
                         }
                     }
                 }
