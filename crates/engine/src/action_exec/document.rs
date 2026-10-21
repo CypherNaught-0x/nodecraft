@@ -1,6 +1,7 @@
 //! PDF to images and PDF to text (#113): the connected PDF read within the media limits, a page
 //! range at a time. Pages are drawn on the action worker and staged as PNG like any other image
-//! result; text is what the pages draw (a scan has none, there is no OCR).
+//! result; text is what the pages draw. A scan draws none: PDF to text marks such pages and PDF to
+//! images can draw just them, for a vision model to recognise (#592).
 use super::{LocalActions, whole, word};
 use nodecraft_actions::image::{ImageLimits, Raster};
 use nodecraft_media::{Document, DocumentLimits};
@@ -46,11 +47,27 @@ impl LocalActions {
     pub(super) fn document_pages(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
         let size = u32::try_from(whole(params, "size")?.clamp(1, MAX_PAGE_SIDE)).map_err(|_| "the size is too large".to_owned())?;
         let background = rgba(word(params, "background")?)?;
+        let scans_only = match word(params, "only")? {
+            "all" => false,
+            "without_text" => true,
+            other => return Err(format!("{other} isn't a choice of pages")),
+        };
         let document = self.document(inputs)?;
         let reader = document.reader();
         let mut images = Vec::new();
-        for index in self.pages(params, &document, MAX_IMAGE_PAGES)? {
+        // Picking scans reads every page's text first, so the drawing cap applies to the pages drawn.
+        let range = self.pages(params, &document, if scans_only { MAX_TEXT_PAGES } else { MAX_IMAGE_PAGES })?;
+        for index in range {
             let number = index.saturating_add(1);
+            if scans_only {
+                let text = reader.text(index).map_err(|e| format!("page {number} can't be read: {e}"))?;
+                if !text.trim().is_empty() {
+                    continue;
+                }
+                if images.len() as u64 >= MAX_IMAGE_PAGES {
+                    return Err(format!("more than {MAX_IMAGE_PAGES} pages in the range draw no text; narrow the page range"));
+                }
+            }
             let page = reader.render(index, size, background).map_err(|e| format!("page {number} can't be drawn: {e}"))?;
             let raster = Raster::new(page.width, page.height, page.rgba, ImageLimits::default()).map_err(|e| format!("page {number} can't be used: {e}"))?;
             // Staging fails once the run's pages outgrow what a project holds; say what to change.
@@ -81,7 +98,9 @@ impl LocalActions {
                 part.push_str("\n\n");
             }
             if headings {
-                part.push_str(&format!("[Page {}]\n", index.saturating_add(1)));
+                let number = index.saturating_add(1);
+                // A page with no text is marked, not passed over: it may be a scan to recognise.
+                part.push_str(&if text.trim().is_empty() { format!("[Page {number}: no text read]") } else { format!("[Page {number}]\n") });
             }
             part.push_str(&text);
             if !append(&mut out, &part) {

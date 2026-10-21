@@ -30,16 +30,19 @@ fn range() -> Vec<nodecraft_types::ParamSpec> {
 }
 
 /// Each page in the range drawn as an image whose longer side is `size` pixels, over
-/// `background` (white by default; transparent keeps the page's own transparency).
+/// `background` (white by default; transparent keeps the page's own transparency). `only` picks
+/// every page, or just the ones that draw no text (scans), to send those to a vision model (#592).
 pub fn pages_kind() -> ActionKind {
     let mut params = range();
+    params.push(choice("only", "Pages", &[("all", "All pages"), ("without_text", "Pages without text (scans)")], "all"));
     params.push(count("size", "Size", 64, MAX_PAGE_SIDE, 1600));
     params.push(color("background", "Background", "#ffffffff"));
     kind(PAGES, "PDF to images", vec![port("document", Modality::Document, false)], vec![port("out", Modality::Image, true)], params)
 }
 
 /// The text the pages in the range show, in reading order as the PDF draws it, one page after
-/// another with a blank line or a page heading between them.
+/// another with a blank line or a page heading between them. With headings, a page that draws no
+/// text is still listed and marked as not read, so a scan's place is visible (#592).
 pub fn text_kind() -> ActionKind {
     let mut params = range();
     params.push(choice("separator", "Between pages", &[("blank", "Blank line"), ("heading", "Page heading")], "blank"));

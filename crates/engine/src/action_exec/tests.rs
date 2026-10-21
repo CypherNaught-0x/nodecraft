@@ -517,6 +517,41 @@ fn pdf_to_images_draws_each_page_in_the_range_at_its_size() {
 }
 
 #[test]
+fn pdf_to_images_can_draw_only_the_pages_without_text() {
+    // A scan draws no text: only those pages go on to a vision model (#592).
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let document = pdf_value(&mut assets, &[PAGE, "", PAGE, ""]);
+    let actions = LocalActions::new(assets);
+    let mut params = defaults(&kinds, nodecraft_nodes::document::PAGES);
+    assert_eq!(params.get("only"), Some(&Value::Text("all".into())), "every page by default, as before");
+    params.insert("size".into(), Value::Unsigned(nodecraft_types::Unsigned(64)));
+    params.insert("only".into(), Value::Text("without_text".into()));
+    let run = |params: &ParamValues| actions.execute(nodecraft_nodes::document::PAGES, params, std::slice::from_ref(&document));
+    let Value::List(scans) = run(&params).unwrap() else { panic!("a list") };
+    assert_eq!(scans.len(), 2);
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(1)));
+    params.insert("last".into(), Value::Unsigned(nodecraft_types::Unsigned(1)));
+    assert_eq!(run(&params).unwrap(), Value::List(vec![]), "a range with no scans draws nothing");
+    params.insert("only".into(), Value::Text("odd".into()));
+    assert!(run(&params).is_err());
+}
+
+#[test]
+fn pdf_to_images_caps_the_scans_it_draws() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let blank = vec![""; usize::try_from(nodecraft_nodes::document::MAX_IMAGE_PAGES).unwrap() + 1];
+    let document = pdf_value(&mut assets, &blank);
+    let actions = LocalActions::new(assets);
+    let mut params = defaults(&kinds, nodecraft_nodes::document::PAGES);
+    params.insert("size".into(), Value::Unsigned(nodecraft_types::Unsigned(64)));
+    params.insert("only".into(), Value::Text("without_text".into()));
+    let err = actions.execute(nodecraft_nodes::document::PAGES, &params, std::slice::from_ref(&document)).unwrap_err();
+    assert!(err.contains("narrow the page range"), "{err}");
+}
+
+#[test]
 fn pdf_to_text_reads_the_range_with_the_chosen_separator() {
     let kinds = Registry::builtins().unwrap();
     let mut assets = AssetStore::default();
@@ -527,7 +562,8 @@ fn pdf_to_text_reads_the_range_with_the_chosen_separator() {
     assert_eq!(run(&params).unwrap(), Value::Text("Hello\n\nTwo\n\nThree".into()), "pages without text leave no gap");
     params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(4)));
     params.insert("separator".into(), Value::Text("heading".into()));
-    assert_eq!(run(&params).unwrap(), Value::Text("[Page 4]\nTwo\n\n[Page 5]\n\n\n[Page 6]\nThree\n\n[Page 7]\n".into()));
+    // Headings list every page, and mark the ones that drew no text (#592).
+    assert_eq!(run(&params).unwrap(), Value::Text("[Page 4]\nTwo\n\n[Page 5: no text read]\n\n[Page 6]\nThree\n\n[Page 7: no text read]".into()));
     params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
     params.insert("last".into(), Value::Unsigned(nodecraft_types::Unsigned(1)));
     assert!(run(&params).unwrap_err().contains("comes before"));
