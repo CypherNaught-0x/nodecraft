@@ -49,13 +49,14 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
 #[test]
 fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
     let registry = Registry::builtins().unwrap();
-    assert_eq!(registry.descriptors().filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 4);
-    assert_eq!(registry.compatible(&[]).filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 4);
+    assert_eq!(registry.descriptors().filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 5);
+    assert_eq!(registry.compatible(&[]).filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 5);
     for (id, modality, key) in [
         ("source.text", Modality::Text, "T"),
         ("source.image", Modality::Image, "I"),
         ("source.video", Modality::Video, "V"),
         ("source.audio", Modality::Audio, "A"),
+        ("source.mesh", Modality::Mesh, "3"),
     ] {
         let kind = registry.get(id).unwrap();
         let descriptor = kind.descriptor();
@@ -102,7 +103,7 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(result.unwrap().is_empty());
             }
             "structure.router" | "structure.batch" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
-            "source.image" | "source.video" | "source.audio" => {
+            "source.image" | "source.video" | "source.audio" | "source.mesh" => {
                 assert!(node.params.is_empty());
                 assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
             }

@@ -21,7 +21,7 @@ an agent can actually do today.
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540) | 2/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105) | 2/15 |
-| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | ⬜ not started | 0/7 |
+| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111) | 1/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/26 |
@@ -46,7 +46,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   A Layer Editor card composites its wired images with text and shape layers into one frame;
   its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101). Elements turn
   selected images into a named, reusable subject that prompts mention as `#name`, with a
-  generated reference sheet (#104).
+  generated reference sheet (#104). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
+  the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
+  writes a GLB or OBJ copy (#111).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -78,7 +80,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   (#411). There is no audio playback (#106), no video actions (#108), no Timeline (#109) and no
   video generation modes yet.
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
-  batch, Techniques, app mode, library, Layer/Timeline editors, Elements, 3D, PDF,
+  batch, Techniques, app mode, library, Layer/Timeline editors, Elements, 3D generation and capture, PDF,
   collaboration, and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
   Tripo, Meshy and the 25 `future` names have no work started).

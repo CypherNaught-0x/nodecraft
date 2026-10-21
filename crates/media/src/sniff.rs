@@ -81,7 +81,13 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
     } else if at(0, b"glTF") {
         Sniffed::new("model/gltf-binary", Model3d)
     } else if looks_like_text(head, bytes.len() > head.len()) {
-        Sniffed::new("text/plain", Text)
+        if looks_like_gltf_json(head) {
+            Sniffed::new("model/gltf+json", Model3d)
+        } else if looks_like_obj(head, bytes.len() > head.len()) {
+            Sniffed::new("model/obj", Model3d)
+        } else {
+            Sniffed::new("text/plain", Text)
+        }
     } else {
         return None;
     };
@@ -134,6 +140,47 @@ fn sniff_mpeg_frame(head: &[u8]) -> Option<Sniffed> {
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// glTF JSON: an object with an `asset` naming version 2 and one of the keys a scene needs, all
+/// in the window (exporters write `asset` first). Other JSON stays text.
+fn looks_like_gltf_json(head: &[u8]) -> bool {
+    let body = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head).trim_ascii_start();
+    body.starts_with(b"{")
+        && contains(body, b"\"asset\"")
+        && contains(body, b"\"version\"")
+        && contains(body, b"\"2.")
+        && [b"\"scenes\"".as_slice(), b"\"nodes\"", b"\"meshes\"", b"\"buffers\"", b"\"accessors\""].iter().any(|key| contains(body, key))
+}
+
+/// Wavefront OBJ: every complete line in the window is blank, a comment or an OBJ statement, and
+/// at least one is a vertex with three numbers. Prose doesn't pass that.
+fn looks_like_obj(head: &[u8], truncated: bool) -> bool {
+    let mut lines: Vec<&[u8]> = head.split(|&b| b == b'\n').collect();
+    if truncated {
+        lines.pop();
+    }
+    let mut vertex = false;
+    for line in lines {
+        let line = line.trim_ascii();
+        if line.is_empty() || line.starts_with(b"#") {
+            continue;
+        }
+        let Ok(line) = std::str::from_utf8(line) else { return false };
+        let mut words = line.split_ascii_whitespace();
+        match words.next() {
+            Some("v") => {
+                let numbers = words.map(|w| w.parse::<f32>()).collect::<Result<Vec<_>, _>>();
+                if !numbers.is_ok_and(|n| matches!(n.len(), 3 | 4 | 6 | 7)) {
+                    return false;
+                }
+                vertex = true;
+            }
+            Some("vn" | "vt" | "vp" | "f" | "o" | "g" | "s" | "mtllib" | "usemtl" | "l" | "p") => {}
+            _ => return false,
+        }
+    }
+    vertex
 }
 
 /// UTF-8 without NULs or control characters other than tab, CR, LF and form feed. `truncated`
@@ -197,6 +244,18 @@ mod tests {
         assert_eq!(mime(b"\xFF\xF1\x50\x80"), Some("audio/aac"));
         assert_eq!(mime(b"%PDF-1.7\n"), Some("application/pdf"));
         assert_eq!(mime(b"glTF\x02\0\0\0"), Some("model/gltf-binary"));
+    }
+
+    #[test]
+    fn recognises_obj_and_gltf_json_but_not_prose_or_other_json() {
+        assert_eq!(mime(b"# Blender\nmtllib cube.mtl\no Cube\nv 1 1 -1\nv 1 -1 -1\nvn 0 1 0\nf 1//1 2//1 3//1\n"), Some("model/obj"));
+        assert_eq!(mime(b"v 0 0 0\r\nv 1 0 0 0.5 0.5 0.5\r\n"), Some("model/obj"));
+        assert_eq!(mime(b"v is a letter\n"), Some("text/plain"));
+        assert_eq!(mime(b"# just a comment\n"), Some("text/plain"));
+        assert_eq!(mime(b"o object\ng group\n"), Some("text/plain"), "OBJ needs a vertex");
+        assert_eq!(mime(br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}]}"#), Some("model/gltf+json"));
+        assert_eq!(mime(br#"{"asset":"logo.png","version":"2.1"}"#), Some("text/plain"));
+        assert_eq!(mime(br#"{"name":"cube"}"#), Some("text/plain"));
     }
 
     #[test]

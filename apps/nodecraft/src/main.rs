@@ -103,6 +103,7 @@ fn main() -> ExitCode {
             if let Some(render) = cc.wgpu_render_state.as_ref() {
                 let info = render.adapter.get_info();
                 app.set_renderer(format!("{} ({:?})", info.name, info.backend));
+                app.install_mesh_renderer(render);
             }
             if control {
                 // Without the channel the app still opens; the log says why.

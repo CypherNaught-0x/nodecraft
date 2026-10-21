@@ -124,6 +124,12 @@ pub struct MediaMeta {
     pub channels: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_count: Option<u32>,
+    /// A 3D model's vertex count, after decoding (shared corners count once).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vertices: Option<u32>,
+    /// A 3D model's triangle count, after its faces are split into triangles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triangles: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

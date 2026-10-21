@@ -14,7 +14,7 @@ pub struct Registry {
 impl Registry {
     pub fn builtins() -> Result<Self, Error> {
         let mut registry = Self::default();
-        for kind in [crate::text::kind(), crate::image::kind(), crate::video::kind(), crate::audio::kind()] {
+        for kind in [crate::text::kind(), crate::image::kind(), crate::video::kind(), crate::audio::kind(), crate::mesh::kind_source()] {
             registry.register(Box::new(kind))?;
         }
         registry.register(Box::new(crate::router::kind()))?;
@@ -26,6 +26,7 @@ impl Registry {
         }
         registry.register(Box::new(crate::shader::kind()?))?;
         registry.register(Box::new(crate::mask::kind()))?;
+        registry.register(Box::new(crate::mesh::convert_kind()))?;
         registry.register(Box::new(crate::layers::kind()))?;
         registry.register(Box::new(crate::element::kind()))?;
         Ok(registry)
