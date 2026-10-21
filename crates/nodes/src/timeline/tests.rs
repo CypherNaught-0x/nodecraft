@@ -54,7 +54,7 @@ fn clips_are_checked_where_they_are_read() {
     ] {
         assert!(Timeline::parse(bad).is_err(), "{bad}");
     }
-    let many = Timeline { clips: (0..=MAX_CLIPS).map(|i| Clip::whole(format!("c{i}"), "n".into(), 0)).collect(), tracks: vec![] };
+    let many = Timeline { clips: (0..=MAX_CLIPS).map(|i| Clip::whole(format!("c{i}"), "n".into(), 0)).collect(), tracks: vec![], ..Timeline::default() };
     assert!(many.encode().is_err());
     assert!(Timeline::parse(&" ".repeat(MAX_ENCODED_BYTES + 1)).is_err());
 }
@@ -69,7 +69,7 @@ fn wired_videos_get_whole_clips_and_resolve_to_their_inputs() {
             // A taken automatic id makes the automatic clip pick another.
             Clip { transition_us: 50_000, ..Clip::whole("a-0".into(), "b".into(), 0) },
         ],
-        tracks: vec![],
+        ..Timeline::default()
     };
     let sources = [Wire::video("a"), Wire::video("b"), Wire::video("a"), Wire::video("")];
     let shown = stored.with_sources(&sources);
@@ -129,10 +129,10 @@ fn tracks_hold_sounds_and_pictures_at_their_own_time() {
     ] {
         assert!(Timeline::parse(bad).is_err(), "{bad}");
     }
-    let crowded = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS + 1] };
+    let crowded = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS + 1], ..Timeline::default() };
     assert!(crowded.check().is_err());
     // With every track a video track, a sound has nowhere to go and isn't shown.
-    let full = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS] };
+    let full = Timeline { clips: vec![], tracks: vec![Track { kind: TrackKind::Video }; MAX_TRACKS], ..Timeline::default() };
     assert!(full.with_sources(&[Wire::new(Input::Audio, "m")]).clips.is_empty());
     // ... which the run refuses, rather than drop the sound unheard.
     assert!(full.unplaced_sound(&[Wire::video("v"), Wire::new(Input::Audio, "m")]));
@@ -179,4 +179,58 @@ fn a_card_made_before_sound_and_picture_inputs_still_plans_and_migrates() {
     // Ports that are not a prefix of today's are still refused.
     node.inputs = vec![kind.descriptor().inputs[1].clone()];
     assert!(kind.validate_instance(&node, false).is_err());
+}
+
+#[test]
+fn captions_are_stored_with_the_clips_and_checked() {
+    // A timeline stored before captions reads, and stores, as it did.
+    let old =
+        r#"{"clips":[{"id":"c","origin":"n","nth":0,"in_us":0,"fade_in_us":0,"fade_out_us":0,"volume":1000,"muted":false,"transition_us":0,"enabled":true}]}"#;
+    let parsed = Timeline::parse(old).unwrap();
+    assert!(parsed.captions.is_empty());
+    assert_eq!(parsed.encode().unwrap(), old);
+
+    let caption = Caption::new("hello".into(), "Hello\nworld".into(), 500_000, 2_000_000);
+    let with = Timeline { captions: vec![caption.clone()], ..parsed.clone() };
+    let json = with.encode().unwrap();
+    assert!(json.contains(r##""captions":[{"id":"hello","text":"Hello\nworld","start_us":500000,"end_us":2000000,"font":"lato","size":48,"align":"center","position":"bottom","color":"#ffffff","stroke":"#000000","stroke_width":0,"enabled":true}]"##), "{json}");
+    assert_eq!(Timeline::parse(&json).unwrap(), with);
+    // Fields left out take their defaults.
+    let short = r#"{"clips":[],"captions":[{"id":"a","text":"Hi","start_us":0,"end_us":1}]}"#;
+    assert_eq!(Timeline::parse(short).unwrap().captions, vec![Caption::new("a".into(), "Hi".into(), 0, 1)]);
+
+    let bad = [
+        Caption { id: "".into(), ..caption.clone() },
+        Caption { text: "  ".into(), ..caption.clone() },
+        Caption { text: "x".repeat(caption::MAX_CAPTION_BYTES + 1), ..caption.clone() },
+        Caption { text: "a\tb".into(), ..caption.clone() },
+        Caption { text: "a\n".repeat(caption::MAX_CAPTION_LINES), ..caption.clone() },
+        Caption { end_us: 500_000, ..caption.clone() },
+        Caption { end_us: MAX_US + 1, ..caption.clone() },
+        Caption { font: "".into(), ..caption.clone() },
+        Caption { font: "f".repeat(caption::MAX_FONT_BYTES + 1), ..caption.clone() },
+        Caption { size: caption::MIN_CAPTION_SIZE - 1, ..caption.clone() },
+        Caption { size: caption::MAX_CAPTION_SIZE + 1, ..caption.clone() },
+        Caption { color: "white".into(), ..caption.clone() },
+        Caption { stroke: "#12345".into(), ..caption.clone() },
+        Caption { stroke: "#gggggg".into(), ..caption.clone() },
+        Caption { stroke_width: caption::MAX_CAPTION_STROKE + 1, ..caption.clone() },
+    ];
+    for b in bad {
+        assert!(Timeline { captions: vec![b.clone()], ..Timeline::default() }.check().is_err(), "{b:?}");
+    }
+    assert!(Caption { text: "a\n".repeat(caption::MAX_CAPTION_LINES - 1), color: "#11223344".into(), ..caption.clone() }.check().is_ok());
+    let twice = Timeline { captions: vec![caption.clone(), caption.clone()], ..Timeline::default() };
+    assert_eq!(twice.check().unwrap_err().kind, ErrorKind::Conflict);
+    let many = Timeline { captions: (0..=MAX_CAPTIONS).map(|i| Caption::new(format!("c{i}"), "x".into(), 0, 1)).collect(), ..Timeline::default() };
+    assert!(many.check().is_err());
+    // The most captions, each as long as it may be, still store.
+    let full = Timeline {
+        captions: (0..MAX_CAPTIONS).map(|i| Caption::new(format!("c{i}"), "\"".repeat(caption::MAX_CAPTION_BYTES), 0, 1)).collect(),
+        ..Timeline::default()
+    };
+    assert!(full.encode().is_ok());
+    assert_eq!(Caption::fresh_id(&with.captions), "caption-1");
+    let taken = [Caption::new("caption-1".into(), "x".into(), 0, 1)];
+    assert_eq!(Caption::fresh_id(&taken), "caption-2");
 }

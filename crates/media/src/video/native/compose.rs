@@ -20,6 +20,9 @@ impl VideoService {
         for clip in spec.inputs() {
             self.check_pin(clip.source.pin())?;
         }
+        for (caption, _) in spec.shown_captions() {
+            self.check_pin(&caption.still.pin)?;
+        }
         // Generous for a slow machine; an hour of output may take a few hours to encode.
         let budget = 120u64.saturating_add(spec.duration_us().div_ceil(1_000_000).saturating_mul(6));
         let deadline = deadline_after(Duration::from_secs(budget))?;
@@ -44,6 +47,7 @@ impl VideoService {
 impl Context {
     fn compose(&mut self, spec: &ComposeSpec, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<RenderedVideo> {
         let mut needs: Vec<(String, String)> = NEEDS.iter().map(|(topic, required)| ((*topic).to_owned(), (*required).to_owned())).collect();
+        let captions = spec.shown_captions();
         if !spec.layers.is_empty() {
             needs.extend(LAYER_NEEDS.iter().map(|(topic, required)| ((*topic).to_owned(), (*required).to_owned())));
         }
@@ -71,6 +75,10 @@ impl Context {
                 Source::Still(_) => need("demuxer=rawvideo".to_owned(), "pixel_format".to_owned()),
             }
         }
+        if !captions.is_empty() {
+            need("filter=overlay".to_owned(), "eof_action".to_owned());
+            need("demuxer=rawvideo".to_owned(), "pixel_format".to_owned());
+        }
         let tool = self.config.tools.ffmpeg.clone();
         for (topic, required) in &needs {
             let reply = self.run(&tool, &process::args(&["-hide_banner", "-h", topic]), None, 65536, cancel, deadline)?;
@@ -78,7 +86,7 @@ impl Context {
                 return Err(VideoError::Unsupported);
             }
         }
-        let graph = timeline::graph(spec.frame, &spec.parts(), &spec.layer_parts())?;
+        let graph = timeline::graph(spec.frame, &spec.parts(), &spec.layer_parts(), &spec.caption_parts())?;
         let quota = self.config.limits.output;
         let mut args = process::args(&[
             "-hide_banner",
@@ -107,21 +115,14 @@ impl Context {
                     args.extend(process::args(&["-ss", &timeline::seek_audio(asset.metadata(), &clip.span), "-t", &length, "-i"]));
                 }
                 // One raw frame: nothing to probe, and the graph holds it for the clip's length.
-                Source::Still(still) => args.extend(process::args(&[
-                    "-protocol_whitelist",
-                    "file",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgba",
-                    "-video_size",
-                    &format!("{}x{}", still.width, still.height),
-                    "-framerate",
-                    &rate,
-                    "-i",
-                ])),
+                Source::Still(still) => args.extend(still_input(still, &rate)),
             }
             args.push(self.pin_path(clip.source.pin())?.into_os_string());
+        }
+        // Each caption's picture, one raw frame the graph holds while the caption shows.
+        for (caption, _) in &captions {
+            args.extend(still_input(&caption.still, &rate));
+            args.push(self.pin_path(&caption.still.pin)?.into_os_string());
         }
         args.extend(process::args(&["-filter_complex", &graph, "-map", "[vout]", "-map", "[aout]", "-sn", "-dn"]));
         args.extend(process::args(VP9));
@@ -154,4 +155,21 @@ impl Context {
         let asset = self.seal(pin, &path, metadata, size, cancel, deadline)?;
         Ok(RenderedVideo { asset, frames, bytes: size })
     }
+}
+
+/// The arguments before `-i` that read a staged still: one raw RGBA frame at the output's rate.
+fn still_input(still: &StillAsset, rate: &str) -> Vec<std::ffi::OsString> {
+    process::args(&[
+        "-protocol_whitelist",
+        "file",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "rgba",
+        "-video_size",
+        &format!("{}x{}", still.width, still.height),
+        "-framerate",
+        rate,
+        "-i",
+    ])
 }

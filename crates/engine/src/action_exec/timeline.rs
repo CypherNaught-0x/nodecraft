@@ -1,6 +1,7 @@
 //! The Timeline's executor (#109, #576): imports each connected video, sound and picture into
 //! the video service, checks the clips against their media's lengths, renders the main track and
-//! the tracks over it into one WebM (VP9 picture, Opus sound) and stages it. The tools are the ones the settings name (`[media]`), never a project's.
+//! the tracks over it into one WebM (VP9 picture, Opus sound), with its captions drawn over
+//! them all (#574), and stages it. The tools are the ones the settings name (`[media]`), never a project's.
 //! Natively only: browsers have no video service.
 use super::{LocalActions, whole, word};
 use nodecraft_nodes::timeline::{Input, Wire};
@@ -84,8 +85,9 @@ mod native {
     use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
-        ColorPolicy, ComposeClip, ComposeSpec, MAX_CLIPS, ServiceConfig, Source, ToolPaths, VideoError, VideoJob, VideoLimits, VideoService,
+        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, ServiceConfig, Source, ToolPaths, VideoError, VideoJob, VideoLimits, VideoService,
     };
+    use nodecraft_nodes::timeline::{Timeline, caption};
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, PoisonError};
@@ -218,6 +220,49 @@ mod native {
             })
         }
 
+        /// Each enabled caption that starts before `duration_us`, drawn for a `frame` and staged.
+        fn captions(
+            &self,
+            service: &VideoService,
+            timeline: &Timeline,
+            frame: super::Frame,
+            duration_us: u64,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<Vec<ComposeCaption>, String> {
+            use nodecraft_actions::layers::{Align, caption as draw, parse_color};
+            let mut out = Vec::new();
+            for (n, c) in timeline.captions.iter().enumerate().filter(|(_, c)| c.enabled && c.start_us < duration_us) {
+                let number = n.saturating_add(1);
+                let color = |text: &str| parse_color(text).map_err(|_| format!("caption {number}'s colours are #rrggbb or #rrggbbaa"));
+                let style = draw::CaptionStyle {
+                    text: &c.text,
+                    font: &c.font,
+                    size: f64::from(c.size),
+                    align: match c.align {
+                        caption::Align::Left => Align::Left,
+                        caption::Align::Center => Align::Center,
+                        caption::Align::Right => Align::Right,
+                    },
+                    vertical: match c.position {
+                        caption::Position::Top => draw::Vertical::Top,
+                        caption::Position::Middle => draw::Vertical::Middle,
+                        caption::Position::Bottom => draw::Vertical::Bottom,
+                    },
+                    color: color(&c.color)?,
+                    stroke: if c.stroke_width > 0 { Some((color(&c.stroke)?, f64::from(c.stroke_width))) } else { None },
+                };
+                let placed = draw::caption(&style, frame.width, frame.height, nodecraft_actions::image::ImageLimits::default())
+                    .map_err(|e| format!("caption {number} can't be drawn: {e}"))?;
+                let Some(placed) = placed else { continue };
+                let job = service
+                    .stage_still(Arc::from(placed.raster.pixels()), placed.raster.width(), placed.raster.height())
+                    .map_err(|(error, _)| message(closed(error)))?;
+                let still = wait(job, cancelled).map_err(message)?;
+                out.push(ComposeCaption::new(still, placed.x, placed.y, c.start_us, c.end_us).map_err(|_| format!("caption {number} can't be placed"))?);
+            }
+            Ok(out)
+        }
+
         pub(in crate::action_exec) fn timeline(&self, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
             let frame = frame(params)?;
             let wires = wires(params, inputs.len());
@@ -294,6 +339,8 @@ mod native {
                 .with_layers(layers)
                 .map_err(|_| "the timeline is longer than an hour".to_owned())?;
             let duration_us = spec.duration_us();
+            let captions = self.captions(&service, &timeline, frame, duration_us, cancelled)?;
+            let spec = spec.with_captions(captions).map_err(|_| "the captions can't be drawn over the picture".to_owned())?;
             let started = Instant::now();
             let job = loop {
                 match service.compose(spec.clone()) {
