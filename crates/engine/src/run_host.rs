@@ -195,11 +195,17 @@ struct Active {
     templates: BTreeMap<JobId, Submitted>,
     /// Model jobs the provider accepted and that haven't ended, as saved.
     journal: BTreeMap<JobId, Submitted>,
-    /// The paid result of each single-job step converted this pump and not yet recorded, held
-    /// if recording it is refused (#369).
-    awaiting: BTreeMap<NodeId, held::HeldResult>,
+    /// The paid result of each model job converted and not yet used, until its step is recorded
+    /// or ends: held if recording it is refused or its step can't use it (#369, #611).
+    awaiting: BTreeMap<JobId, Awaiting>,
     /// `journal` changed since the last save.
     journal_changed: bool,
+}
+
+/// A model job's paid result waiting for its step.
+struct Awaiting {
+    step: NodeId,
+    result: held::HeldResult,
 }
 
 /// See the module docs.
@@ -774,7 +780,7 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
         // Results first: a partial one (#480) is recorded, and its step then reports why it is
         // partial.
         for result in progress.finished {
-            let awaiting = active.awaiting.remove(&result.node);
+            let awaiting = take_awaiting(&mut active.awaiting, |a| a.step == result.node);
             notices.push(match (record(session, canvas, result), awaiting) {
                 (RunNotice::Failed { canvas, node, reason }, Some(kept)) => {
                     lock(held).hold(held::HeldResult { reason: reason.clone(), ..kept });
@@ -786,7 +792,8 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
         // A step can still fail after its paid result was admitted (assembling or checking it):
         // that result is held too.
         for failure in progress.failed {
-            let awaiting = active.awaiting.remove(&failure.node);
+            let run = &active.run;
+            let awaiting = take_awaiting(&mut active.awaiting, |a| run.owner(a.step) == failure.node && run.has_failed(a.step));
             notices.push(match awaiting {
                 Some(kept) => {
                     lock(held).hold(held::HeldResult { reason: failure.reason.clone(), ..kept });
@@ -796,6 +803,9 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
                 None => RunNotice::Failed { canvas, node: failure.node, reason: failure.reason },
             });
         }
+        // Results their step let go: a sibling in a fanned item failed, or the step had already
+        // failed when they arrived. The step's card reports its own outcome.
+        hold_dropped(active, &progress.dropped, held);
         if active.cancelled {
             for spec in progress.jobs {
                 pending.push_back(active.run.job_cancelled(session.kinds(), spec.id, CANCELLED));
@@ -998,8 +1008,7 @@ fn absorb(
         advance(session, active, progress, notices, runtime, held);
     }
     active.jobs.absorb_reports(&mut reports);
-    // Every step that could record one has: a step that failed instead holds nothing more.
-    active.awaiting.clear();
+    let_go_of_ended(active, held);
     if active.run.is_finished() {
         // Dropping the last handle lets the driver drain and return.
         active.handle = None;
@@ -1057,7 +1066,7 @@ type Finished = (Vec<(String, nodecraft_types::Value)>, Option<nodecraft_types::
 
 /// A finished job's outputs, with any assets it made imported into the project. A model job's
 /// result that can't be converted, imported or fitted to its node's ports is held (#369); one
-/// that fills a step alone waits in `awaiting` until its step is recorded.
+/// that converts waits in `awaiting` until its step is recorded.
 fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<held::Held>) -> Result<Finished, String> {
     if !active.provider_jobs.contains(&job) {
         // Staged images stay staged: a later action in the run may read them (chains).
@@ -1074,7 +1083,8 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
         return Ok((take_outputs(&active.runner.sources.outputs, job), None));
     }
     let delivery = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
-    let Some(JobSpec::Generate { outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
+    let Some(JobSpec::Generate { node: step, outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
+    let step = *step;
     let converted = convert(session, &active.run, job, routes, &delivery.completed);
     let Some(template) = active.templates.get(&job) else { return converted.map(|outputs| (outputs, delivery.completed.usage.billable_units)) };
     let kept = |reason: String, completed: Completed| held::HeldResult {
@@ -1091,15 +1101,64 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
     match converted {
         Ok(outputs) => {
             let billed = delivery.completed.usage.billable_units;
-            if let Some(recipe) = &template.recipe {
-                let node = recipe.node;
-                active.awaiting.insert(node, kept(String::new(), delivery.completed));
-            }
+            active.awaiting.insert(job, Awaiting { step, result: kept(String::new(), delivery.completed) });
             Ok((outputs, billed))
         }
         Err(reason) => {
             lock(held).hold(kept(reason.clone(), delivery.completed));
             Err(format!("{reason}; {HELD_NOTE}"))
+        }
+    }
+}
+
+/// Takes the awaiting results of the first step `matches` picks, as one held result. Another step
+/// it would pick stays awaiting: [`let_go_of_ended`] holds it.
+fn take_awaiting(awaiting: &mut BTreeMap<JobId, Awaiting>, matches: impl Fn(&Awaiting) -> bool) -> Option<held::HeldResult> {
+    let step = awaiting.values().find(|a| matches(a))?.step;
+    take_by_step(awaiting, |_, a| a.step == step).into_values().next()
+}
+
+/// Takes the awaiting results that `matches`, one held result per step: one job's result as it
+/// came, or several jobs' outputs in job order (placed or discarded, never retried alone).
+fn take_by_step(awaiting: &mut BTreeMap<JobId, Awaiting>, matches: impl Fn(JobId, &Awaiting) -> bool) -> BTreeMap<NodeId, held::HeldResult> {
+    let jobs: Vec<JobId> = awaiting.iter().filter(|(job, a)| matches(**job, a)).map(|(job, _)| *job).collect();
+    let mut steps: BTreeMap<NodeId, held::HeldResult> = BTreeMap::new();
+    for job in jobs {
+        let Some(Awaiting { step, result }) = awaiting.remove(&job) else { continue };
+        match steps.entry(step) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(result);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let merged = slot.get_mut();
+                merged.recipe = None;
+                merged.completed.usage = nodecraft_providers::Usage::default();
+                merged.completed.outputs.extend(result.completed.outputs);
+            }
+        }
+    }
+    steps
+}
+
+/// Holds the awaiting results of `dropped` jobs, one per step.
+fn hold_dropped(active: &mut Active, dropped: &[JobId], held: &Mutex<held::Held>) {
+    if dropped.is_empty() {
+        return;
+    }
+    let run = &active.run;
+    for (step, result) in take_by_step(&mut active.awaiting, |job, _| dropped.contains(&job)) {
+        let reason = if run.has_failed(step) { "it finished after its step had failed" } else { "another job of its item failed" };
+        lock(held).hold(held::HeldResult { reason: reason.into(), ..result });
+    }
+}
+
+/// Lets go of the awaiting results of steps that ended: one inlined in a technique used its
+/// result; one that failed without reporting it (its technique node reported another) holds them.
+fn let_go_of_ended(active: &mut Active, held: &Mutex<held::Held>) {
+    let run = &active.run;
+    for (step, result) in take_by_step(&mut active.awaiting, |_, a| !run.is_running(a.step)) {
+        if run.has_failed(step) {
+            lock(held).hold(held::HeldResult { reason: "its step failed".into(), ..result });
         }
     }
 }

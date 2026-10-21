@@ -61,7 +61,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   GPT-6 Luna, GPT-4.1 mini; Claude Opus, Sonnet and Haiku 5.5), quoted up to their max output
   tokens, so a Generate text card has models to pick (#503).
   A paid result that doesn't fit its card or can't be recorded is held in the queue panel,
-  to retry, put on the canvas as source nodes, or discard, without paying again (#369).
+  to retry, put on the canvas as source nodes, or discard, without paying again (#369), and so
+  are a fanned step's results, as one (#611).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
   project as evidence of what was billed; it is never turned into money (#437).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;

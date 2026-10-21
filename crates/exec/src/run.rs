@@ -76,13 +76,17 @@ pub struct StepFailure {
 }
 
 /// What changed after an event: jobs to add to the scheduler, jobs to cancel (unfinished jobs
-/// of a step that failed), and steps that finished or failed.
+/// of a step that failed), steps that finished or failed, and jobs whose results were let go.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Progress {
     pub jobs: Vec<scheduler::JobSpec>,
     pub cancel: Vec<JobId>,
     pub finished: Vec<StepResult>,
     pub failed: Vec<StepFailure>,
+    /// Jobs that finished with a result their step won't use (#611): the job finished after its
+    /// step had failed, or another job of its fanned item failed. A host that paid for the
+    /// result holds it rather than losing it.
+    pub dropped: Vec<JobId>,
 }
 
 impl Progress {
@@ -91,6 +95,7 @@ impl Progress {
         self.cancel.extend(other.cancel);
         self.finished.extend(other.finished);
         self.failed.extend(other.failed);
+        self.dropped.extend(other.dropped);
     }
 }
 
@@ -128,6 +133,8 @@ struct JobState {
     step: NodeId,
     work: JobSpec,
     done: bool,
+    /// It reported its result (a repeated report is no result let go).
+    reported: bool,
     /// Its outputs, `(port, value)`, until the step assembles them.
     outputs: Vec<(String, Value)>,
     /// The units its provider said it billed (#437), recorded with its settings.
@@ -363,6 +370,16 @@ impl Run {
         self.open_steps == 0
     }
 
+    /// Whether `node`'s step has jobs out that haven't all finished.
+    pub fn is_running(&self, node: NodeId) -> bool {
+        matches!(self.steps.get(&node), Some(StepState { status: Status::Running(_), .. }))
+    }
+
+    /// Whether `node`'s step failed (a partly finished fanned step also counts once it reports why).
+    pub fn has_failed(&self, node: NodeId) -> bool {
+        matches!(self.steps.get(&node), Some(StepState { status: Status::Failed, .. }))
+    }
+
     /// The canvas the run's results go on.
     pub fn canvas_id(&self) -> CanvasId {
         self.canvas_id
@@ -452,12 +469,16 @@ impl Run {
     /// What the run's own steps did, before [`Run::outward`].
     fn job_finished(&mut self, kinds: &Registry, job: JobId, outputs: Vec<(String, Value)>) -> Progress {
         let Some(state) = self.jobs.get_mut(&job) else { return Progress::default() };
+        // A result its step can no longer use (its step failed, or cancelled the job) is let go
+        // for the host to deal with; a repeated report changes nothing.
+        let late = Progress { dropped: if outputs.is_empty() || state.reported { Vec::new() } else { vec![job] }, ..Progress::default() };
+        state.reported = true;
         if state.done {
-            return Progress::default();
+            return late;
         }
         state.done = true;
         let node = state.step;
-        let Some(StepState { status: Status::Running(left), .. }) = self.steps.get_mut(&node) else { return Progress::default() };
+        let Some(StepState { status: Status::Running(left), .. }) = self.steps.get_mut(&node) else { return late };
         // Keep outputs only while their step can still use them.
         if let Some(state) = self.jobs.get_mut(&job) {
             state.outputs = outputs;
@@ -547,7 +568,9 @@ impl Run {
                 continue;
             }
             if let Some(state) = self.jobs.get_mut(other) {
-                state.outputs = Vec::new();
+                if !std::mem::take(&mut state.outputs).is_empty() {
+                    progress.dropped.push(*other);
+                }
                 if !state.done {
                     state.done = true;
                     progress.cancel.push(*other);
@@ -665,7 +688,7 @@ impl Run {
             let Some(next) = self.next_job.checked_add(1) else { return (self.fail(node, "the run ran out of job ids".into()), Vec::new()) };
             self.next_job = next;
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane, retry: self.retry, idempotency_key: self.key(id) });
-            self.jobs.insert(id, JobState { step: node, work, done: false, outputs: Vec::new(), billable_units: None });
+            self.jobs.insert(id, JobState { step: node, work, done: false, reported: false, outputs: Vec::new(), billable_units: None });
             ids.push(id);
         }
         let left = ids.len();

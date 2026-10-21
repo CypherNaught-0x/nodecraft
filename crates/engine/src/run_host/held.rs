@@ -2,7 +2,8 @@
 //! imported, fitted to its node's ports or recorded, the exact result the provider returned is
 //! held here instead of being dropped, with what its step needed. A person (or agent) then
 //! retries recording it, puts its outputs on the canvas as source nodes, or discards it; none of
-//! these calls the provider again or charges again.
+//! these calls the provider again or charges again. A fanned or multi-job step's results are held
+//! as one, outputs in job order, and can only be placed or discarded (#611).
 //!
 //! Held results live in memory and are lost when NodeCraft quits. At most [`MAX_HELD`] are held:
 //! once that many wait, every new job is refused before it is sent (see the run host's
