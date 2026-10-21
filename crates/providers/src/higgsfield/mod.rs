@@ -189,7 +189,8 @@ impl Higgsfield {
         let grant = HttpRequest::post_json(format!("{API}/files/generate-upload-url"), &serde_json::json!({"content_type": mime}))?.timeout_ms(30_000);
         let reply = self.send(grant, false, None).await?;
         let grant = response::upload_grant(&reply.body, mime, |s| self.leaks(s))?;
-        let mut put = HttpRequest { method: HttpMethod::Put, body: bytes.to_vec(), ..HttpRequest::get(grant.upload_url) }.timeout_ms(120_000);
+        let mut put =
+            HttpRequest { method: HttpMethod::Put, body: bytes.to_vec(), ..HttpRequest::get(grant.upload_url) }.timeout_ms(upload_timeout_ms(bytes.len()));
         for (name, value) in grant.headers {
             put = put.header(name, value);
         }
@@ -332,4 +333,10 @@ impl Provider for Higgsfield {
             _ => 3_000,
         }
     }
+}
+
+/// How long an upload may take: two minutes, plus enough for a slow 1 Mbit/s uplink (8 ms a
+/// KiB), so a large source video isn't cut off every time.
+fn upload_timeout_ms(bytes: usize) -> u64 {
+    120_000u64.saturating_add(u64::try_from(bytes / 1024).unwrap_or(u64::MAX).saturating_mul(8))
 }

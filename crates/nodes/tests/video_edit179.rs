@@ -27,6 +27,7 @@ fn kind() -> GenerationKind {
         min_ms: Some(4_000),
         uses_ms: Some(30_000),
         min_pixels: Some(409_600),
+        formats: vec!["video/mp4".into()],
         sound: EditSound::Unknown,
     };
     let mode = GenerationMode {
@@ -91,4 +92,12 @@ fn a_source_too_short_or_too_small_is_refused_with_its_reason() {
     assert!(short.message.contains("the source video is 3.9 s long and object swap needs at least 4 s"), "{}", short.message);
     let small = plan("", &[source(Some(5_000), Some((640, 480))), picture()]).unwrap_err();
     assert!(small.message.contains("is 640×480 and object swap needs frames of at least 409600 pixels"), "{}", small.message);
+}
+
+#[test]
+fn a_source_in_a_format_the_model_doesnt_take_is_refused_before_anything_is_sent() {
+    let meta = MediaMeta { duration_ms: Some(5_000), ..Default::default() };
+    let mov = plan("", &[asset("source", 7, Modality::Video, "video/quicktime", meta), picture()]).unwrap_err();
+    assert_eq!(mov.kind, ErrorKind::InvalidInput);
+    assert!(mov.message.contains("the source video is video/quicktime and object swap takes MP4"), "{}", mov.message);
 }

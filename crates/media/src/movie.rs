@@ -30,6 +30,15 @@ type Atom<'a> = ([u8; 4], &'a [u8]);
 /// The boxes directly inside `b`.
 fn boxes<'a>(b: &'a [u8], seen: &mut usize) -> Result<Vec<Atom<'a>>, MediaError> {
     let mut out = Vec::new();
+    walk(b, seen, |atom| {
+        out.push(atom);
+        false
+    })?;
+    Ok(out)
+}
+
+/// Visits the boxes directly inside `b` until `stop` says so; nothing after that box is read.
+fn walk<'a>(b: &'a [u8], seen: &mut usize, mut stop: impl FnMut(Atom<'a>) -> bool) -> Result<(), MediaError> {
     let mut at = 0usize;
     while at < b.len() {
         *seen = seen.saturating_add(1);
@@ -45,10 +54,12 @@ fn boxes<'a>(b: &'a [u8], seen: &mut usize) -> Result<Vec<Atom<'a>>, MediaError>
         };
         let end = at.checked_add(len).filter(|end| len >= header && *end <= b.len()).ok_or_else(damaged)?;
         let payload = b.get(at.saturating_add(header)..end).ok_or_else(damaged)?;
-        out.push((kind, payload));
+        if stop((kind, payload)) {
+            break;
+        }
         at = end;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The movie length from `mvhd`: its duration in its own timescale.
@@ -62,7 +73,8 @@ fn movie_ms(mvhd: &[u8]) -> Option<u64> {
     if timescale == 0 || duration == 0 {
         return None;
     }
-    u64::try_from(u128::from(duration) * 1000 / u128::from(timescale)).ok()
+    // Rounded up: providers bill a started second, so a quote must never read 5.0004 s as 5 s.
+    u64::try_from((u128::from(duration) * 1000).div_ceil(u128::from(timescale))).ok()
 }
 
 /// A track's frame size from `tkhd`: two 16.16 fixed-point numbers closing the header.
@@ -93,7 +105,14 @@ fn is_video(trak: &[u8], seen: &mut usize) -> Result<bool, MediaError> {
 /// Reads an MP4 or QuickTime movie's length and frame size from its headers.
 pub fn probe_movie(bytes: &[u8]) -> Result<MovieInfo, MediaError> {
     let mut seen = 0;
-    let moov = boxes(bytes, &mut seen)?.into_iter().find(|(kind, _)| kind == b"moov").map(|(_, moov)| moov).ok_or(MediaError::Unrecognized)?;
+    // Stop at `moov`: a long fragmented file has thousands of boxes after it, and trailing bytes
+    // that aren't boxes don't make its headers unreadable.
+    let mut moov = None;
+    walk(bytes, &mut seen, |(kind, payload)| {
+        moov = (&kind == b"moov").then_some(payload);
+        moov.is_some()
+    })?;
+    let moov = moov.ok_or(MediaError::Unrecognized)?;
     let mut info = MovieInfo::default();
     for (kind, payload) in boxes(moov, &mut seen)? {
         match &kind {
@@ -146,6 +165,33 @@ mod tests {
         assert_eq!(probe_movie(&movie(&[mvhd(600, 0)])).unwrap().duration_ms, None);
         assert_eq!(probe_movie(&movie(&[mvhd(0, 10)])).unwrap().duration_ms, None);
         assert_eq!(probe_movie(&movie(&[mvhd(600, u32::MAX)])).unwrap().duration_ms, None);
+    }
+
+    #[test]
+    fn version_one_headers_large_boxes_and_open_ended_boxes_are_read() {
+        let mut mvhd1 = vec![1; 112];
+        mvhd1[20..24].copy_from_slice(&1000u32.to_be_bytes());
+        mvhd1[24..32].copy_from_slice(&5_000_400u64.to_be_bytes());
+        let mut tkhd1 = vec![1; 96];
+        tkhd1[88..92].copy_from_slice(&(1280u32 << 16).to_be_bytes());
+        tkhd1[92..96].copy_from_slice(&(720u32 << 16).to_be_bytes());
+        let mut hdlr = vec![0; 24];
+        hdlr[8..12].copy_from_slice(b"vide");
+        let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd1), boxed(b"mdia", &boxed(b"hdlr", &hdlr))].concat());
+        // A 64-bit `moov` size, then an `mdat` of size 0 that runs to the end of the file.
+        let inner = [boxed(b"mvhd", &mvhd1), trak].concat();
+        let mut file = [&1u32.to_be_bytes()[..], b"moov", &u64::try_from(inner.len() + 16).unwrap().to_be_bytes()].concat();
+        file.extend_from_slice(&inner);
+        file.extend_from_slice(&[0, 0, 0, 0]);
+        file.extend_from_slice(b"mdat0123");
+        assert_eq!(probe_movie(&file).unwrap(), MovieInfo { duration_ms: Some(5_000_400), width: Some(1280), height: Some(720) });
+        // A third of a second rounds up, so a started second is never lost from a quote.
+        assert_eq!(probe_movie(&movie(&[mvhd(3, 1)])).unwrap().duration_ms, Some(334));
+        // Junk after `moov` isn't read.
+        let mut tail = movie(&[mvhd(600, 2_700)]);
+        tail.truncate(tail.len() - 9);
+        tail.extend_from_slice(b"junk");
+        assert_eq!(probe_movie(&tail).unwrap().duration_ms, Some(4_500));
     }
 
     #[test]

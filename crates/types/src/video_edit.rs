@@ -66,6 +66,9 @@ pub struct VideoEdit {
     /// The fewest pixels (width × height) a source frame may have.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_pixels: Option<u64>,
+    /// The file types (MIME essences) the source may be; empty takes any video.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<String>,
     pub sound: EditSound,
 }
 
@@ -83,6 +86,9 @@ impl VideoEdit {
         }
         if self.min_pixels.is_some_and(|px| px == 0 || px > 1 << 30) {
             return Err("`min_pixels` is 1 to 2^30".into());
+        }
+        if self.formats.len() > 8 || self.formats.iter().any(|f| f.len() > 64 || !f.starts_with("video/") || f.len() == "video/".len()) {
+            return Err("`formats` lists at most 8 video MIME types, such as \"video/mp4\"".into());
         }
         Ok(())
     }
@@ -103,9 +109,18 @@ impl VideoEdit {
         format!("{} of {}{length}; {sound}", self.operation.label(), self.role)
     }
 
-    /// Refuses a source the model won't take, before anything is sent or charged. A length or
-    /// size that isn't known goes through; the provider still checks it.
-    pub fn fits(&self, duration_ms: Option<u64>, size: Option<(u32, u32)>) -> Result<(), Error> {
+    /// Refuses a source the model won't take, before anything is sent or charged: `mime` is the
+    /// source's MIME essence. A length or size that isn't known goes through; the provider still
+    /// checks it.
+    pub fn fits(&self, mime: &str, duration_ms: Option<u64>, size: Option<(u32, u32)>) -> Result<(), Error> {
+        if !self.formats.is_empty() && !self.formats.iter().any(|f| f.eq_ignore_ascii_case(mime)) {
+            let wanted = self.formats.iter().map(|f| f.strip_prefix("video/").unwrap_or(f).to_uppercase()).collect::<Vec<_>>().join(" or ");
+            let mime: String = mime.chars().take(64).collect();
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("the {} video is {mime} and {} takes {wanted}; convert it first", self.role, self.operation.label().to_lowercase()),
+            ));
+        }
         if let (Some(min), Some(ms)) = (self.min_ms, duration_ms)
             && ms < min
         {
@@ -153,6 +168,7 @@ mod tests {
             min_ms: Some(4000),
             uses_ms: Some(30_000),
             min_pixels: Some(409_600),
+            formats: vec!["video/mp4".into()],
             sound: EditSound::Unknown,
         }
     }
@@ -160,10 +176,13 @@ mod tests {
     #[test]
     fn short_or_small_sources_are_refused_and_unknown_ones_pass() {
         let edit = swap();
-        assert!(edit.fits(Some(3_990), None).unwrap_err().message.contains("is 3.9 s long and object swap needs at least 4 s"));
-        assert!(edit.fits(None, Some((640, 480))).unwrap_err().message.contains("640×480"));
-        edit.fits(Some(4000), Some((854, 480))).unwrap();
-        edit.fits(None, None).unwrap();
+        assert!(edit.fits("video/mp4", Some(3_990), None).unwrap_err().message.contains("is 3.9 s long and object swap needs at least 4 s"));
+        assert!(edit.fits("video/mp4", None, Some((640, 480))).unwrap_err().message.contains("640×480"));
+        edit.fits("video/mp4", Some(4000), Some((854, 480))).unwrap();
+        edit.fits("video/mp4", None, None).unwrap();
+        let mov = edit.fits("video/quicktime", Some(9000), None).unwrap_err().message;
+        assert_eq!(mov, "the source video is video/quicktime and object swap takes MP4; convert it first");
+        VideoEdit { formats: vec![], ..swap() }.fits("video/quicktime", None, None).unwrap();
         assert_eq!((edit.used_ms(42_000), edit.used_ms(7_200)), (30_000, 7_200));
         assert_eq!(edit.summary(), "Object swap of source; sources of at least 4 s, only the first 30 s is used; sound not documented");
     }
@@ -173,6 +192,8 @@ mod tests {
         assert!(VideoEdit { min_ms: Some(40_000), ..swap() }.validate().is_err());
         assert!(VideoEdit { min_pixels: Some(0), ..swap() }.validate().is_err());
         assert!(VideoEdit { uses_ms: Some(0), ..swap() }.validate().is_err());
+        assert!(VideoEdit { formats: vec!["image/png".into()], ..swap() }.validate().is_err());
+        assert!(VideoEdit { formats: vec!["video/".into()], ..swap() }.validate().is_err());
         swap().validate().unwrap();
         assert_eq!(EditOperation::Restyle.id(), "video.restyle");
     }

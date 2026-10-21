@@ -512,3 +512,11 @@ fn genjutsu_jobs_are_checked_before_anything_is_sent() {
     assert!(e.message.contains("source video must be under"), "{e:?}");
     assert!(Higgsfield::with_limits(key(), Transport::new(vec![]), Limits { video_bytes: 201 * MIB, ..Limits::HARD }).is_err());
 }
+
+#[test]
+fn uploads_get_longer_the_larger_they_are() {
+    assert_eq!(super::upload_timeout_ms(0), 120_000);
+    // The engine's 64 MiB media cap at 1 Mbit/s, with two minutes to spare.
+    assert_eq!(super::upload_timeout_ms(64 << 20), 120_000 + 524_288);
+    assert_eq!(super::upload_timeout_ms(usize::MAX), 120_000u64.saturating_add(u64::try_from(usize::MAX / 1024).unwrap().saturating_mul(8)));
+}

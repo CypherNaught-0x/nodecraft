@@ -686,7 +686,7 @@ fn edit_fits(edit: &VideoEdit, media: &[GenerateInput]) -> Result<(), Error> {
     for input in media.iter().filter(|input| input.role == edit.role) {
         if let Value::Media(asset) = &input.value {
             let size = asset.meta.width.zip(asset.meta.height);
-            edit.fits(asset.meta.duration_ms, size)?;
+            edit.fits(asset.mime.essence(), asset.meta.duration_ms, size)?;
         }
     }
     Ok(())

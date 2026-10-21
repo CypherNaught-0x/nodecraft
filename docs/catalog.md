@@ -51,13 +51,15 @@ default = { type = "unsigned", value = "1" }
   The picker shows this per mode. A track's length is only checked when it's known; unknown
   lengths go to the provider.
 - **Source video edits (#179).** `edit = { operation = "object_swap", role = "source",
-  min_ms = 4000, uses_ms = 30000, min_pixels = 409600, sound = "unknown" }` says a mode edits
+  min_ms = 4000, uses_ms = 30000, min_pixels = 409600, formats = ["video/mp4"],
+  sound = "unknown" }` says a mode edits
   its wired video. `operation` is `motion_transfer`, `object_swap` or `restyle`, the same for
   every provider that does that edit. `role` must be the mode's one required video input, and
   the mode must make a video. `min_ms` is the shortest source it takes, `uses_ms` how much of a
   longer one the provider uses from the start, `min_pixels` the smallest frame (width × height),
-  and `sound` is `source`, `silent` or `unknown`. A source that is too short or too small stops
-  the run before anything is sent, when its length or size is known.
+  `formats` the file types the source may be (any video when left out), and `sound` is
+  `source`, `silent` or `unknown`. A source of another type, or one too short or too small,
+  stops the run before anything is sent, when its length or size is known.
 - **Trained styles (#167).** A mode whose output is `style` trains one from its wired images;
   a role whose modality is `style` takes one. Such a model names `style_family = "flux-1"`, the
   base-model family a trainer trains for or an inference model takes, and only such models may
