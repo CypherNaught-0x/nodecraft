@@ -1,6 +1,7 @@
 //! Video actions (#108): trim, speed, stitch and replace a video's sound. Each runs locally on the
 //! host's video service and makes a new WebM (VP9 picture, Opus sound); the source videos are never
-//! changed. The output keeps the first video's picture size and frame rate.
+//! changed. The output keeps the first video's upright shape (its rotation and pixel aspect applied)
+//! and its frame rate.
 use crate::action::{ActionKind, choice, kind, port, slider, when};
 use nodecraft_types::{Error, Modality, ParamSpec};
 

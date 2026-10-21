@@ -28,6 +28,7 @@ fn thousandths(params: &ParamValues, name: &str, min: u16, max: u16) -> Result<u
 
 /// The settings an action runs with, checked before any video is imported.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Edit {
     /// `[start, end)`; an `end` of 0 is the video's end.
     Trim {
@@ -63,7 +64,12 @@ fn edit(action: &str, params: &ParamValues, inputs: usize) -> Result<Edit, Strin
         }
         SPEED => {
             needs(1, "a video")?;
-            Edit::Speed { speed: thousandths(params, "speed", MIN_SPEED, MAX_SPEED)?, mute: word(params, "sound")? == "mute" }
+            let mute = match word(params, "sound")? {
+                "keep" => false,
+                "mute" => true,
+                _ => return Err("the sound is kept or silenced".into()),
+            };
+            Edit::Speed { speed: thousandths(params, "speed", MIN_SPEED, MAX_SPEED)?, mute }
         }
         STITCH => {
             needs(1, "the videos to stitch")?;
@@ -72,7 +78,13 @@ fn edit(action: &str, params: &ParamValues, inputs: usize) -> Result<Edit, Strin
             }
             let crossfade = match word(params, "transition")? {
                 "cut" => 0,
-                "crossfade" => micros(params, "transition_length")?,
+                "crossfade" => {
+                    let length = micros(params, "transition_length")?;
+                    if length < nodecraft_nodes::timeline::MIN_TRANSITION_US {
+                        return Err("the crossfade is at least 0.01 seconds".into());
+                    }
+                    length
+                }
                 _ => return Err("the transition is a cut or a crossfade".into()),
             };
             Edit::Stitch { crossfade }
@@ -154,7 +166,7 @@ mod native {
     use super::super::timeline::native::{closed, message, service, wait};
     use super::super::timeline::seconds;
     use super::{Edit, LocalActions, edit, frame_for, quality};
-    use nodecraft_media::video::{AudioAsset, ColorPolicy, ComposeClip, ComposeSpec, VideoAsset, VideoError, VideoService};
+    use nodecraft_media::video::{AudioAsset, ColorPolicy, ComposeClip, ComposeSpec, VideoAsset, VideoError, VideoService, layer_room_us};
     use nodecraft_types::{ParamValues, Value};
 
     impl LocalActions {
@@ -181,10 +193,12 @@ mod native {
             let quality = quality(params)?;
             let tools = self.video.as_ref().ok_or("set ffmpeg and ffprobe under [media] in settings to edit videos")?;
             let service = service(tools, cancelled)?;
-            let first = self.import_video(&service, inputs.first(), "connect a video first", cancelled)?;
-            let whole = |video: &VideoAsset| {
-                ComposeClip::new(video.clone(), 0, video.metadata().duration_us).map_err(|_| "a connected video is longer than an hour".to_owned())
-            };
+            let unconnected = if matches!(edit, Edit::Stitch { .. }) { "input 1 isn't a video" } else { "connect a video first" };
+            let first = self.import_video(&service, inputs.first(), unconnected, cancelled)?;
+            let whole =
+                |video: &VideoAsset| ComposeClip::new(video.clone(), 0, video.metadata().duration_us).map_err(|_| "a connected video has no length".to_owned());
+            let m = first.metadata();
+            let (size, fps) = frame_for(m.width, m.height, m.sar, m.rotation, m.frame_rate);
             let (mut main, mut layers) = (Vec::new(), Vec::new());
             match edit {
                 Edit::Trim { start, end } => {
@@ -200,7 +214,7 @@ mod native {
                 }
                 Edit::Speed { speed, mute } => {
                     let clip = whole(&first)?.with_speed(speed).and_then(|c| c.with_volume(1000, mute));
-                    main.push(clip.map_err(|_| "the video is too short to play at that speed".to_owned())?);
+                    main.push(clip.map_err(|_| "the speed can't be used".to_owned())?);
                 }
                 Edit::Stitch { crossfade } => {
                     let mut videos = vec![first.clone()];
@@ -217,23 +231,27 @@ mod native {
                 Edit::ReplaceAudio { keep_own, volume, offset } => {
                     let sound = self.import_sound(&service, inputs.get(1), cancelled)?;
                     let length = first.metadata().duration_us;
-                    if offset >= length {
-                        return Err(format!("the new sound starts ({}) after the video ends ({})", seconds(offset), seconds(length)));
-                    }
-                    // The sound plays until the video ends; a shorter one leaves silence after it.
-                    let out = sound.metadata().duration_us.min(length.saturating_sub(offset));
+                    // The sound plays until the video ends, counted in the frames the render shows,
+                    // so it never makes the output longer; a shorter one leaves silence after it.
+                    let room = layer_room_us(length, offset, fps)
+                        .ok_or_else(|| format!("the new sound starts ({}) after the video ends ({})", seconds(offset), seconds(length)))?;
+                    let out = sound.metadata().duration_us.min(room);
                     main.push(whole(&first)?.with_volume(1000, !keep_own).map_err(|_| "the video's sound can't be set".to_owned())?);
                     let under = ComposeClip::audio(sound, 0, out).and_then(|c| c.with_volume(volume, false));
                     layers.push((under.map_err(|_| "the new sound can't be used".to_owned())?, offset));
                 }
             }
-            let m = first.metadata();
-            let (size, fps) = frame_for(m.width, m.height, m.sar, m.rotation, m.frame_rate);
+            let short = match edit {
+                Edit::Trim { .. } => "the trimmed video is shorter than one frame",
+                Edit::Speed { .. } => "at this speed the video is shorter than one frame",
+                Edit::Stitch { .. } => "a crossfade is longer than the videos on either side of it allow",
+                Edit::ReplaceAudio { .. } => "the video or the new sound is shorter than one frame",
+            };
             let spec = ComposeSpec::new(size.0, size.1, fps, [0; 3], main)
                 .and_then(|s| s.with_layers(layers))
                 .map_err(|error| match error {
                     VideoError::Limit => "the output would be longer than an hour".to_owned(),
-                    _ => "a crossfade is longer than the videos on either side of it allow".to_owned(),
+                    _ => short.to_owned(),
                 })?
                 .with_quality(quality);
             self.render(&service, spec, size, cancelled)

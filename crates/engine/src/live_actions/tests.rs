@@ -435,3 +435,26 @@ mod techniques {
         assert_eq!(output(&s, copy), None);
     }
 }
+
+#[test]
+fn a_video_action_renders_only_when_asked() {
+    let mut s = session();
+    connect(&mut s);
+    let (video, trim) = (NodeId::from_bytes([60; 16]), NodeId::from_bytes([61; 16]));
+    let hash = s.import_asset(b"not really a video").unwrap();
+    let asset = AssetRef { hash, mime: "video/mp4".parse().unwrap(), meta: MediaMeta::default() };
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": video, "kind": "source.video", "pos": {"x": 0, "y": 600}})).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": video, "name": "asset", "value": Value::Media(asset)})).unwrap();
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": trim, "kind": nodecraft_nodes::video_edit::TRIM, "pos": {"x": 400, "y": 600}})).unwrap();
+    let edge = nodecraft_types::EdgeId::from_bytes([62; 16]);
+    s.dispatch(
+        "edge.connect",
+        &json!({"canvas": CANVAS, "edge": {"id": edge, "from": {"node": video, "port": "out"}, "to": {"node": trim, "port": "video"}, "order": 0}}),
+    )
+    .unwrap();
+    // The blur beside it still runs live; the trim waits to be run.
+    assert!(settle(&mut s));
+    assert!(result(&s).is_some());
+    assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none());
+    assert!(s.document().canvases().get(&CANVAS).unwrap().nodes().get(&trim).unwrap().active.is_none());
+}

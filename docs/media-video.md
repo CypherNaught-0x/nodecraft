@@ -111,7 +111,10 @@ executor (`crates/engine/src/action_exec/video.rs`) builds one `ComposeSpec` and
 the Timeline does, on the same shared service, render slot, limits and cancellation. Each makes a
 new WebM; the connected videos are never changed. The output keeps the first video's upright
 shape (sample aspect and rotation applied, fitted within 4096 a side, even sides) and its frame
-rate when the renderer takes it, else 30 a second.
+rate when the renderer takes it (a reduced rate with a denominator of at most 1001, which a
+variable-rate recording's average often isn't), else 30 a second. Like the Timeline, they never
+run live: a render takes too long to redo on every edit, so they run when asked
+(`engine::live_actions` leaves them, and techniques containing them, out).
 
 | Kind | Inputs | Does |
 |---|---|---|

@@ -47,6 +47,14 @@ fn settings_are_read_and_checked_before_any_video_is_imported() {
         params.insert(name.into(), bad);
         assert!(edit(TRIM, &params, 1).is_err(), "{name}");
     }
+    let mut params = planned(SPEED, &[]);
+    params.insert("sound".into(), text("loud"));
+    assert!(edit(SPEED, &params, 1).is_err());
+    let short = planned(STITCH, &[("transition", text("crossfade")), ("transition_length", n(0.1))]);
+    let mut params = short.clone();
+    params.insert("transition_length".into(), n(0.005));
+    assert!(edit(STITCH, &params, 2).unwrap_err().contains("at least"));
+    assert_eq!(edit(STITCH, &short, 2), Ok(Edit::Stitch { crossfade: 100_000 }));
     for bad in [n(0.0), n(100.0), n(f64::MAX)] {
         let mut params = planned(SPEED, &[]);
         params.insert("speed".into(), bad);
