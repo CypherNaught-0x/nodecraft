@@ -2883,6 +2883,7 @@ dependencies = [
  "nodecraft-graph",
  "nodecraft-nodes",
  "nodecraft-providers",
+ "nodecraft-testkit",
  "nodecraft-types",
  "serde_json",
  "tempfile",
