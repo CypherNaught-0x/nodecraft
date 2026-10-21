@@ -20,8 +20,23 @@ const C: CanvasId = CanvasId::from_bytes([81; 16]);
 const N: NodeId = NodeId::from_bytes([82; 16]);
 type Runs = Arc<Mutex<Vec<PreparedRun>>>;
 
-/// A public mock image model: a priced call with an inline prompt and an aspect choice.
+/// A public mock image model: a priced call with an inline prompt and an aspect choice; an image
+/// model with an edit mode; and a text model for Improve prompt (#582).
 const MOCK_IMAGE: &str = r#"
+[[model]]
+id = "mock-writer"
+provider = "mock"
+provider_model = "mock-text"
+label = "Mock writer"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.01 USD" }
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
 [[model]]
 id = "mock-square"
 provider = "mock"
@@ -428,4 +443,47 @@ fn generate83_visual() {
     h.render().unwrap().save(dir.join("generate83-card.png")).unwrap();
     press(&mut h, Role::Button, "Generate");
     h.render().unwrap().save(dir.join("generate83-confirm.png")).unwrap();
+}
+
+#[test]
+fn improve_prompt_adds_a_wired_text_card_and_selects_it() {
+    let (mut h, runs) = scene("mock-square");
+    h.state_mut().selection.only(N);
+    h.run();
+    let shots = std::env::var_os("NODECRAFT_ASSIST_TEST_SHOTS").map(std::path::PathBuf::from);
+    if let Some(dir) = &shots {
+        h.render().unwrap().save(dir.join("assist582-before.png")).unwrap();
+    }
+    press(&mut h, Role::Button, "Improve prompt");
+    assert_eq!(h.state().notice, None);
+    if let Some(dir) = &shots {
+        h.render().unwrap().save(dir.join("assist582-after.png")).unwrap();
+    }
+    let canvas = h.state().session.document().canvases().get(&C).unwrap();
+    let assist = canvas.nodes().values().find(|node| node.kind == nodecraft_nodes::generation::TEXT_KIND).unwrap();
+    assert_eq!(assist.params.get("model"), Some(&Value::Text("mock-writer".into())));
+    assert!(canvas.edges().values().any(|edge| edge.from.node == assist.id && edge.to == Endpoint { node: N, port: "prompt".into() }));
+    assert_eq!(h.state().selection.nodes().iter().copied().collect::<Vec<_>>(), [assist.id], "the new card is selected, ready to run");
+    assert!(runs.lock().unwrap().is_empty(), "adding the card spends nothing");
+
+    // Now the prompt is wired: the image card's toolbar says why it can't improve it again.
+    h.state_mut().selection.only(N);
+    h.run();
+    assert!(h.get_by_role_and_label(Role::Button, "Improve prompt").accesskit_node().is_disabled());
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run();
+    let canvas = h.state().session.document().canvases().get(&C).unwrap();
+    assert_eq!(canvas.nodes().len(), 1, "one undo removes the card and its wire");
+    assert!(canvas.edges().is_empty());
+}
+
+#[test]
+fn improve_prompt_waits_for_a_typed_prompt() {
+    let (mut h, _) = scene("mock-square");
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas":C,"id":N,"name":"prompt","value":{"type":"text","value":"  "}})).unwrap();
+    h.state_mut().selection.only(N);
+    h.run();
+    assert!(h.get_by_role_and_label(Role::Button, "Improve prompt").accesskit_node().is_disabled());
+    press(&mut h, Role::Button, "Improve prompt");
+    assert_eq!(h.state().session.document().canvases().get(&C).unwrap().nodes().len(), 1);
 }

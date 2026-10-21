@@ -52,6 +52,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.params_set_bulk",
     "node.model_preview",
     "node.set_model",
+    "node.prompt_assist",
     "edge.connect",
     "edge.disconnect",
     "edge.rewire",

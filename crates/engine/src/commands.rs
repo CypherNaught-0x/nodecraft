@@ -191,6 +191,7 @@ impl Registry {
         for spec in crate::graph_cmds::specs()
             .into_iter()
             .chain(crate::node_cmds::specs())
+            .chain(crate::assist_cmds::specs())
             .chain(crate::bulk_cmds::specs())
             .chain(crate::model_cmds::specs())
             .chain(crate::edge_cmds::specs())

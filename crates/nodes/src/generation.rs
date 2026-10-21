@@ -23,6 +23,8 @@ pub const TEXT_KIND: &str = "generation.text";
 pub const MESH_KIND: &str = "generation.mesh";
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
+/// Longest typed prompt a generation card holds, in bytes.
+pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 const MAX_PROMPTS: usize = 1024;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
@@ -90,7 +92,7 @@ fn local_schema(model: Option<&str>) -> ParamSchema {
                 name: PROMPT.into(),
                 label: "Prompt".into(),
                 description: None,
-                control: ParamControl::Text { multiline: true, max_bytes: 1024 * 1024 },
+                control: ParamControl::Text { multiline: true, max_bytes: MAX_PROMPT_BYTES },
                 required: false,
                 default: Some(Value::Text(String::new())),
                 visible_if: None,
