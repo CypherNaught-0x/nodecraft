@@ -21,6 +21,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
+| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images; Kling 2.5 Turbo Pro image → video | Credits priced by plan, so catalog prices are unknown; the adapter can ask Higgsfield for an estimate. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
 ## Image facts on inputs and outputs
@@ -48,6 +49,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `seedream` | `seedream` | — |
 | `tripo` | `tripo` | — |
 | `meshy` | `meshy` | — |
+| `higgsfield` | `higgsfield` (the key id and secret joined as `id:secret`) | — |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
@@ -617,6 +619,74 @@ never runs in CI:
 ```sh
 NODECRAFT_LIVE_MESHY=1 NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1 MESHY_API_KEY=… \
   cargo test -p nodecraft-providers --features http,meshy --test live_meshy -- --ignored
+```
+
+## Higgsfield requests
+
+The optional `higgsfield` adapter (#177) drives the
+[Higgsfield platform API](https://docs.higgsfield.ai/docs) at the fixed base
+`https://api.higgsfield.ai`. Two catalog models share it:
+
+| Catalog model | Endpoint | Inputs | Settings |
+|---|---|---|---|
+| `higgsfield.soul-2` | `higgsfield-ai/soul/v2/standard` | a prompt | aspect ratio (seven), 720p or 1080p, 1 or 4 images, prompt enhancement, an optional seed (1–1,000,000) |
+| `higgsfield.kling-2.5-turbo-i2v` | `kling-video/v2.5-turbo/pro/image-to-video` | a prompt, an optional negative prompt, one image | 5 or 10 seconds, prompt adherence 0–1 |
+
+Every setting is sent explicitly, defaults included, so a request means the same thing if
+Higgsfield's defaults change. Higgsfield's key is two parts; store them in the keychain as one
+secret, `<key id>:<key secret>`. A credential that isn't in that shape is refused before anything
+is sent, and a provider message that echoes either part is withheld.
+
+**Cost.** Higgsfield bills in credits whose price depends on the account's plan, so the catalog
+prices these models as unknown before execution rather than baking in a plan's rate.
+`Higgsfield::estimate` asks Higgsfield's estimate endpoint about the exact body a submit would
+send (credits and USD, rounded up to the micro). The run engine doesn't call it yet: quoting runs
+with it and checking budgets against it is a follow-up.
+
+**Inputs.** Kling's image (PNG, JPEG or WebP whose bytes match their type, at most 20 MiB) is
+staged through Higgsfield's upload grant: the adapter asks for an upload link with the key, then
+PUTs the bytes to the storage host **without** the key, with only the grant's content type and
+storage headers (`x-amz-*`, `x-goog-*`). Both links must be public `https`, and the grant must
+name the type asked for. The request names the public link.
+
+**Idempotency and replay.** Each submit carries the run's idempotency key (hashed if Higgsfield
+wouldn't accept it as is). The staged body is kept per key and job, so a retry after a lost reply
+sends the same bytes under the same key without uploading again, and Higgsfield returns the
+original request instead of starting a second one; the engine therefore retries an ambiguous submit.
+A different job under the same key is staged afresh. The cache is in memory only: after a restart a
+replay restages the image, its link changes, and Higgsfield answers that the key was used with
+different parameters. That reply is reported as "may have been billed" and never retried, so a
+second charge can't happen silently.
+
+**Errors.** Replies that prove nothing was accepted (400 including "too many concurrent requests",
+which waits 15 s, 401 key, 403 credits, 404, 422 validation, 423 blocked, 503 disabled), each with
+Higgsfield's reason, release the reservation; anything else, including 5xx and unreadable bodies,
+keeps it as possibly billed.
+
+**Status and results.** Polling is every five seconds while queued and three while running. The
+status reply must name the request it was asked about. Status and cancel links in replies are
+ignored: the key only goes to links the adapter builds from the checked request id. Completed SOUL requests return one to four images and Kling one
+MP4; each is downloaded without the key from a public `https` host, checked against the expected
+media type and capped (256 MiB each, 512 MiB together), and saved into the project. Higgsfield keeps
+results for at least seven days, so a failed download is retried on the next poll. Failed,
+moderated (`nsfw`) and cancelled requests report as such.
+
+**Cancel** works only while a request is queued; once it has started, Higgsfield's 400 with its
+reason is reported as "runs on and is billed". Any other 400 is an ordinary error.
+
+Higgsfield is native only, like the other storage-backed adapters. Genjutsu video editing waits for
+a catalog model that takes a video input; identity training is #180.
+
+**Not verified live yet:** the request shapes come from Higgsfield's public docs; whether the
+account can use each model, and the exact upload header set, are untested here.
+
+The ignored live test requires `NODECRAFT_LIVE_HIGGSFIELD=1`,
+`NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1` and `HIGGSFIELD_API_KEY` (`id:secret`), plus separate
+explicit human spending authorization (one SOUL image). It never runs in CI:
+
+```sh
+NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFIELD_API_KEY=… \
+  cargo test -p nodecraft-providers --features http,higgsfield --test live_higgsfield -- --ignored
 ```
 
 ## Comfy Cloud workflows

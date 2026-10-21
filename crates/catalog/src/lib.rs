@@ -35,6 +35,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
     ("tripo.toml", include_str!("../../../assets/catalog/tripo.toml")),
     ("meshy.toml", include_str!("../../../assets/catalog/meshy.toml")),
+    ("higgsfield.toml", include_str!("../../../assets/catalog/higgsfield.toml")),
 ];
 
 #[derive(Deserialize)]

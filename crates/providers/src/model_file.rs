@@ -1,5 +1,5 @@
-//! Generated 3D models fetched from a provider's storage (Tripo, Meshy): the pre-signed result link
-//! and the binary glTF it must hold.
+//! Results fetched from a provider's storage (Tripo, Meshy, Higgsfield): the pre-signed result link
+//! and, for 3D models, the binary glTF it must hold.
 use crate::{ErrorKind, ProviderError};
 
 fn refused(provider: &str) -> ProviderError {
@@ -25,6 +25,7 @@ pub(crate) fn public_link(url: &str, provider: &str) -> Result<String, ProviderE
 }
 
 /// A whole binary glTF container: magic, version 2 and a length that matches the bytes.
+#[cfg(any(feature = "tripo", feature = "meshy"))]
 pub(crate) fn glb(bytes: &[u8], provider: &str) -> Result<(), ProviderError> {
     let word = |at: usize| bytes.get(at..at.saturating_add(4)).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_le_bytes);
     let whole = word(8).and_then(|n| usize::try_from(n).ok()) == Some(bytes.len());

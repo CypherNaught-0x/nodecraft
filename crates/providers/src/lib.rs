@@ -26,6 +26,8 @@ mod error;
 pub mod fal;
 #[cfg(feature = "gemini-images")]
 pub mod gemini_images;
+#[cfg(feature = "higgsfield")]
+pub mod higgsfield;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
@@ -34,7 +36,7 @@ pub mod meshy;
 /// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
 #[cfg(any(test, feature = "testkit"))]
 pub mod mock;
-#[cfg(any(feature = "tripo", feature = "meshy"))]
+#[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield"))]
 mod model_file;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
