@@ -22,6 +22,8 @@ description = "OpenAI reasoning model. Quoted up to max output tokens at 15 USD 
 latency_s = 20
 quality = 4
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.015 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.002 USD", output = "0.01 USD", long = { above = 272000, input = "0.003 USD", output = "0.015 USD" } }
 
 [[model.modes]]
 id = "text-to-text"
@@ -67,6 +69,8 @@ description = "Small, inexpensive OpenAI reasoning model. Quoted up to max outpu
 latency_s = 8
 quality = 3
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.00075 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0001 USD", output = "0.0005 USD", long = { above = 272000, input = "0.00015 USD", output = "0.00075 USD" } }
 
 [[model.modes]]
 id = "text-to-text"
@@ -111,6 +115,8 @@ description = "Quick non-reasoning OpenAI model with a temperature control. Quot
 latency_s = 5
 quality = 2
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0016 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0004 USD", output = "0.0016 USD" }
 
 [[model.modes]]
 id = "text-to-text"

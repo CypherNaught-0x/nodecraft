@@ -19,6 +19,8 @@ description = "Anthropic's recommended model for most work. Quoted up to max out
 latency_s = 30
 quality = 5
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.02 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.004 USD", output = "0.02 USD" }
 
 [[model.modes]]
 id = "text-to-text"
@@ -61,6 +63,8 @@ description = "Fast and capable. Quoted up to max output tokens at 10 USD per mi
 latency_s = 15
 quality = 4
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.01 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.002 USD", output = "0.01 USD" }
 
 [[model.modes]]
 id = "text-to-text"
@@ -105,6 +109,8 @@ description = "Fastest, for short high-volume tasks. Quoted up to max output tok
 latency_s = 5
 quality = 3
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0025 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0001 USD", output = "0.0005 USD", long = { above = 100000, input = "0.0005 USD", output = "0.0025 USD" } }
 
 [[model.modes]]
 id = "text-to-text"
