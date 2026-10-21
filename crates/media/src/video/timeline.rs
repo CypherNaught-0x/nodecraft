@@ -428,6 +428,14 @@ pub(crate) fn shown_us(us: u64, fps: (u32, u32)) -> u64 {
     u64::try_from(exact.saturating_add(rate / 2) / rate).unwrap_or(u64::MAX)
 }
 
+/// The longest, in microseconds, a layer placed at `at_us` can last and still end with a main track
+/// `length_us` long at `fps`, counted in the whole frames the render shows; `None` when the layer
+/// would start at or after that end.
+pub fn layer_room_us(length_us: u64, at_us: u64, fps: (u32, u32)) -> Option<u64> {
+    let room = frames(length_us, fps).checked_sub(frames_at(at_us, fps)).filter(|n| *n > 0)?;
+    Some(frame_us(room, fps))
+}
+
 /// The whole frame nearest `us`, counting from 0.
 fn frames_at(us: u64, fps: (u32, u32)) -> u64 {
     let unit = u128::from(fps.1).saturating_mul(1_000_000).max(1);

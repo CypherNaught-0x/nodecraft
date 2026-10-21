@@ -104,6 +104,30 @@ returns the same verified `RenderedVideo` as a render. It shares the single rend
 - **Command line.** Every number on it is formatted from validated integers. No project or caller
   string reaches FFmpeg.
 
+## Video actions
+
+The video action nodes (#108) are ordinary action kinds (`crates/nodes/src/video_edit.rs`) whose
+executor (`crates/engine/src/action_exec/video.rs`) builds one `ComposeSpec` and renders it like
+the Timeline does, on the same shared service, render slot, limits and cancellation. Each makes a
+new WebM; the connected videos are never changed. The output keeps the first video's upright
+shape (sample aspect and rotation applied, fitted within 4096 a side, even sides) and its frame
+rate when the renderer takes it (a reduced rate with a denominator of at most 1001, which a
+variable-rate recording's average often isn't), else 30 a second. Like the Timeline, they never
+run live: a render takes too long to redo on every edit, so they run when asked
+(`engine::live_actions` leaves them, and techniques containing them, out).
+
+| Kind | Inputs | Does |
+|---|---|---|
+| `video.trim` Trim video | a video | Keeps `[start, end)`; an end of 0 is the video's end. |
+| `video.speed` Change speed | a video | 0.25× to 4×; the sound keeps its pitch (`atempo`) or is silenced. |
+| `video.stitch` Stitch videos | 1 to 32 videos | Plays them in the order connected, cut or crossfaded. |
+| `video.replace_audio` Replace sound | a video and a sound | Replaces or mixes the video's sound with the new one, from an offset, at a volume. The output is the video's length: a longer sound is cut at its end, a shorter one leaves silence. |
+
+Every kind has a Quality choice (Draft, Standard, High). Settings are checked before any video is
+imported, so a bad trim or too many stitched videos costs no import. Without `[media]` tools the
+actions say so; in a browser they say they need the desktop app. Reverse, frame and sound
+extraction, contact sheets, grading and the other operations #108 lists come in later parts.
+
 ## Limits, cancellation and cleanup
 
 Each service has one cleanup coordinator and two operation workers, with at most two direct

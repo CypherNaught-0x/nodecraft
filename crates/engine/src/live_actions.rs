@@ -78,16 +78,22 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
         expanded.as_ref().is_some_and(|expanded| {
             !expanded.blockers.iter().any(|b| b.node == *id)
                 && expanded.inner.iter().filter(|(_, owner)| *owner == id).all(|(inner, _)| {
-                    expanded.canvas.nodes().get(inner).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category != Category::Generation)
+                    expanded.canvas.nodes().get(inner).is_some_and(|n| !renders_video(&n.kind))
+                        && expanded
+                            .canvas
+                            .nodes()
+                            .get(inner)
+                            .and_then(|n| kinds.get(&n.kind).ok())
+                            .is_some_and(|k| k.descriptor().category != Category::Generation)
                 })
         })
     };
-    // Stale action and technique nodes, and ones with no result yet. A Timeline renders a video,
-    // which takes too long to redo on every edit: it runs when asked.
+    // Stale action and technique nodes, and ones with no result yet. A Timeline or a video action
+    // renders a video, which takes too long to redo on every edit: it runs when asked.
     let wanted: BTreeSet<NodeId> = live
         .nodes()
         .iter()
-        .filter(|(_, node)| node.kind != nodecraft_nodes::timeline::ID)
+        .filter(|(_, node)| !renders_video(&node.kind))
         .filter(|(id, node)| refreshes(&node.kind, kinds) && !skip.contains(id) && (node.active.is_none() || stale.contains(id)))
         .filter(|(id, node)| node.kind != technique::ID || local_technique(id))
         .map(|(id, _)| *id)
@@ -150,6 +156,11 @@ impl Settled {
             && !session.file_status().read_only
             && session.document().canvases().get(&canvas).is_some_and(|live| live.same_but_layout(&self.live))
     }
+}
+
+/// Whether nodes of `kind` render a video, which never runs live.
+fn renders_video(kind: &str) -> bool {
+    kind == nodecraft_nodes::timeline::ID || nodecraft_nodes::video_edit::IDS.contains(&kind)
 }
 
 /// Whether nodes of `kind` refresh live: actions, and technique nodes made only of local work.

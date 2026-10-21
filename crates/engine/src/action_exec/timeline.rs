@@ -67,7 +67,7 @@ pub(crate) fn clips(params: &ParamValues) -> Result<nodecraft_nodes::timeline::T
 }
 
 /// `S.s` seconds, for messages.
-fn seconds(us: u64) -> String {
+pub(super) fn seconds(us: u64) -> String {
     format!("{:.1} s", us as f64 / 1_000_000.0)
 }
 
@@ -81,7 +81,7 @@ impl LocalActions {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod native {
+pub(super) mod native {
     use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
@@ -123,23 +123,25 @@ mod native {
         Placement { pos_x: p.pos_x, pos_y: p.pos_y, scale: p.scale, crop: p.crop, rotation: p.rotation, opacity: p.opacity }
     }
 
-    fn message(error: VideoError) -> String {
+    pub(in crate::action_exec) fn message(error: VideoError) -> String {
         match error {
             VideoError::Unavailable => "can't run ffmpeg or ffprobe; check [media] in settings",
-            VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter, and rotate, lutyuv, color and atempo for placed or sped-up clips), or a video's format isn't supported",
+            VideoError::Unsupported => {
+                "this ffmpeg can't render the video (it needs VP9, Opus and the xfade filter, and rotate, lutyuv, color and atempo for placed or sped-up clips), or a connected video's format isn't supported"
+            }
             VideoError::InvalidMetadata => "a connected video's or sound's format isn't supported",
-            VideoError::Limit => "the videos or the render are too large; make the timeline shorter or smaller",
+            VideoError::Limit => "the videos or the render are too large; make the output shorter or smaller",
             VideoError::Timeout => "the render took too long",
             VideoError::Cancelled => "the render was cancelled",
             VideoError::Busy => "another video is rendering; try again when it's done",
-            VideoError::Invalid => "the timeline can't be rendered as set",
+            VideoError::Invalid => "the video can't be rendered as set",
             _ => "the render failed",
         }
         .to_owned()
     }
 
     /// The shared service for `tools`, opened on first use (or when the tools change).
-    fn service(tools: &Tools, cancelled: &dyn Fn() -> bool) -> Result<Arc<VideoService>, String> {
+    pub(in crate::action_exec) fn service(tools: &Tools, cancelled: &dyn Fn() -> bool) -> Result<Arc<VideoService>, String> {
         let mut slot = SERVICE.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((open, service)) = slot.as_ref()
             && open == tools
@@ -166,7 +168,7 @@ mod native {
     }
 
     /// Forgets the shared service when `error` says it is gone, so the next render opens another.
-    fn closed(error: VideoError) -> VideoError {
+    pub(in crate::action_exec) fn closed(error: VideoError) -> VideoError {
         if matches!(error, VideoError::Closed) {
             *SERVICE.lock().unwrap_or_else(PoisonError::into_inner) = None;
         }
@@ -175,7 +177,7 @@ mod native {
 
     /// `job`'s result; cancels the job once `cancelled` says so. The service bounds every job by
     /// a deadline of its own, so this ends.
-    fn wait<T>(mut job: VideoJob<T>, cancelled: &dyn Fn() -> bool) -> Result<T, VideoError> {
+    pub(in crate::action_exec) fn wait<T>(mut job: VideoJob<T>, cancelled: &dyn Fn() -> bool) -> Result<T, VideoError> {
         loop {
             if let Some(value) = job.try_result().map_err(closed)? {
                 return Ok(value);
@@ -190,11 +192,11 @@ mod native {
 
     impl LocalActions {
         /// The bytes of the video (or, for `audio`, the sound) `value` names: one an earlier
-        /// action in this run made, or the project's.
-        fn video_bytes(&self, value: Option<&Value>, audio: bool) -> Result<Arc<[u8]>, String> {
+        /// action in this run made, or the project's. `unconnected` says what to do without one.
+        pub(in crate::action_exec) fn video_bytes(&self, value: Option<&Value>, audio: bool, unconnected: &str) -> Result<Arc<[u8]>, String> {
             let (kind, what) = if audio { ("audio/", "sound") } else { ("video/", "video") };
             let Some(Value::Media(source)) = value.filter(|v| matches!(v, Value::Media(a) if a.mime.essence().starts_with(kind))) else {
-                return Err(format!("connect a {what} to the timeline's {} input first", if audio { "audio" } else { "clips" }));
+                return Err(unconnected.to_owned());
             };
             if let Some(bytes) = self.videos.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash) {
                 return Ok(Arc::clone(bytes));
@@ -217,11 +219,15 @@ mod native {
         fn import(&self, service: &VideoService, input: Input, value: Option<&Value>, cancelled: &dyn Fn() -> bool) -> Result<Source, String> {
             Ok(match input {
                 Input::Clips => {
-                    let job = service.import(self.video_bytes(value, false)?, ColorPolicy::default()).map_err(|(error, _)| message(closed(error)))?;
+                    let job = service
+                        .import(self.video_bytes(value, false, "connect a video to the timeline's clips input first")?, ColorPolicy::default())
+                        .map_err(|(error, _)| message(closed(error)))?;
                     Source::Video(wait(job, cancelled).map_err(message)?)
                 }
                 Input::Audio => {
-                    let job = service.import_audio(self.video_bytes(value, true)?).map_err(|(error, _)| message(closed(error)))?;
+                    let job = service
+                        .import_audio(self.video_bytes(value, true, "connect a sound to the timeline's audio input first")?)
+                        .map_err(|(error, _)| message(closed(error)))?;
                     Source::Audio(wait(job, cancelled).map_err(message)?)
                 }
                 Input::Stills => {
@@ -369,6 +375,19 @@ mod native {
             let duration_us = spec.duration_us();
             let captions = self.captions(&service, &timeline, frame, duration_us, cancelled)?;
             let spec = spec.with_captions(captions).map_err(|_| "the captions can't be drawn over the picture".to_owned())?;
+            self.render(&service, spec, (frame.width, frame.height), cancelled)
+        }
+
+        /// `spec` rendered on `service` (waiting for its one render slot), read back and staged
+        /// as a `size` WebM: what the Timeline and every video action output.
+        pub(in crate::action_exec) fn render(
+            &self,
+            service: &VideoService,
+            spec: ComposeSpec,
+            size: (u32, u32),
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<Value, String> {
+            let duration_us = spec.duration_us();
             let started = Instant::now();
             let job = loop {
                 match service.compose(spec.clone()) {
@@ -377,14 +396,16 @@ mod native {
                 }
             };
             let rendered = wait(job, cancelled).map_err(message)?;
-            let size = rendered.bytes();
-            if size > MAX_RENDER_BYTES {
-                return Err(format!("the rendered video is larger than {} MiB; make the timeline shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
+            let bytes_len = rendered.bytes();
+            if bytes_len > MAX_RENDER_BYTES {
+                return Err(format!("the rendered video is larger than {} MiB; make it shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
             }
             let mut bytes = Vec::new();
-            bytes.try_reserve_exact(usize::try_from(size).map_err(|_| "the rendered video is too large")?).map_err(|_| "the rendered video is too large")?;
-            while (bytes.len() as u64) < size {
-                let length = usize::try_from(CHUNK.min(size.saturating_sub(bytes.len() as u64))).map_err(|_| "the rendered video is too large")?;
+            bytes
+                .try_reserve_exact(usize::try_from(bytes_len).map_err(|_| "the rendered video is too large")?)
+                .map_err(|_| "the rendered video is too large")?;
+            while (bytes.len() as u64) < bytes_len {
+                let length = usize::try_from(CHUNK.min(bytes_len.saturating_sub(bytes.len() as u64))).map_err(|_| "the rendered video is too large")?;
                 let chunk = wait(service.read_chunk(rendered.asset(), bytes.len() as u64, length).map_err(message)?, cancelled).map_err(message)?;
                 bytes.extend_from_slice(chunk.bytes());
             }
@@ -392,8 +413,8 @@ mod native {
             self.videos.lock().unwrap_or_else(PoisonError::into_inner).insert(hash, Arc::from(bytes));
             let mime = "video/webm".parse().map_err(|_| "video/webm isn't a media type".to_owned())?;
             let meta = MediaMeta {
-                width: Some(frame.width),
-                height: Some(frame.height),
+                width: Some(size.0),
+                height: Some(size.1),
                 duration_ms: Some(duration_us / 1000),
                 sample_rate: Some(48_000),
                 channels: Some(2),

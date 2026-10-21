@@ -255,3 +255,18 @@ fn qualities_pick_their_own_vp9_settings() {
     assert_eq!(Quality::Standard.vp9(), ("32", "4000000"), "standard is the encoding used before qualities");
     assert_ne!(Quality::Draft.vp9(), Quality::High.vp9());
 }
+
+#[test]
+fn a_layer_fits_in_the_frames_the_main_track_shows() {
+    // A 10 s video at 30 a second with a sound from 0.25 s: the start rounds to frame 8, so the
+    // sound gets 292 frames and ends with the video at frame 300, not a frame after it.
+    let room = layer_room_us(10_000_000, 250_000, (30, 1)).unwrap();
+    assert_eq!((frames_at(250_000, (30, 1)), frames(room, (30, 1))), (8, 292));
+    assert_eq!(layer_room_us(10_000_000, 20_000, (25, 1)).map(|us| frames(us, (25, 1))), Some(249));
+    assert_eq!(layer_room_us(10_000_000, 0, (30000, 1001)).map(|us| frames(us, (30000, 1001))), Some(frames(10_000_000, (30000, 1001))));
+    // Starting at or past the end leaves no room.
+    assert_eq!(layer_room_us(1_000_000, 1_000_000, (30, 1)), None);
+    assert_eq!(layer_room_us(1_000_000, 990_000, (30, 1)), None);
+    assert_eq!(layer_room_us(0, 0, (30, 1)).map(|us| frames(us, (30, 1))), Some(1));
+    assert_eq!(layer_room_us(u64::MAX, u64::MAX, (120_000, 1)), None);
+}
