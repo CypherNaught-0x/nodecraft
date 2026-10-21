@@ -51,6 +51,67 @@ impl Placement {
     }
 }
 
+/// How a video clip's picture looks: graded, with one effect, and keyed, in that order. Every
+/// amount is in thousandths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    /// Added to every pixel's brightness, from -1000 (black) to 1000 (white).
+    pub brightness: i16,
+    /// 1000 is unchanged, 0 flat grey, up to 3000.
+    pub contrast: u16,
+    /// 1000 is unchanged, 0 grey, up to 3000.
+    pub saturation: u16,
+    /// 1000 is unchanged; 100 to 4000.
+    pub gamma: u16,
+    pub effect: Effect,
+    /// Make a colour transparent: only on a layer, which keeps the picture's alpha.
+    pub key: Option<Key>,
+}
+impl Look {
+    /// The picture as it is.
+    pub const NONE: Self = Self { brightness: 0, contrast: 1000, saturation: 1000, gamma: 1000, effect: Effect::None, key: None };
+    fn valid(&self) -> bool {
+        (-1000..=1000).contains(&self.brightness)
+            && self.contrast <= 3000
+            && self.saturation <= 3000
+            && (100..=4000).contains(&self.gamma)
+            && match self.effect {
+                Effect::None | Effect::Grayscale | Effect::Sepia | Effect::Invert => true,
+                Effect::Blur(sigma) => (1..=MAX_BLUR).contains(&sigma),
+                Effect::Sharpen(amount) => (1..=3000).contains(&amount),
+                Effect::Vignette(strength) => (1..=1000).contains(&strength),
+            }
+            && self.key.is_none_or(|k| (10..=1000).contains(&k.similarity) && k.blend <= 1000)
+    }
+}
+/// Most blur, in thousandths of a pixel (50 px).
+pub const MAX_BLUR: u16 = 50_000;
+/// One effect over a whole picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    None,
+    /// Black and white.
+    Grayscale,
+    /// Black and white, tinted warm brown.
+    Sepia,
+    /// A negative.
+    Invert,
+    /// A Gaussian blur this many thousandths of a pixel across.
+    Blur(u16),
+    /// Sharpened by this many thousandths.
+    Sharpen(u16),
+    /// Edges darkened by this many thousandths.
+    Vignette(u16),
+}
+/// The colour a key takes out: how close a pixel must be to go (`similarity`, thousandths) and
+/// how softly the edge between kept and taken out blends (`blend`, thousandths).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Key {
+    pub color: [u8; 3],
+    pub similarity: u16,
+    pub blend: u16,
+}
+
 /// When and how loudly one clip plays, in the clip's own microseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Span {
@@ -64,6 +125,7 @@ pub(crate) struct Span {
     /// Playback rate, in thousandths.
     pub(crate) speed: u16,
     pub(crate) placement: Placement,
+    pub(crate) look: Look,
 }
 impl Span {
     /// How long the clip plays in the output, at its speed.
@@ -135,8 +197,18 @@ impl ComposeClip {
         if in_us >= out_us || out_us > duration {
             return Err(VideoError::Invalid);
         }
-        let span =
-            Span { in_us, out_us, fade_in_us: 0, fade_out_us: 0, volume: 1000, muted: false, transition_us: 0, speed: 1000, placement: Placement::IDENTITY };
+        let span = Span {
+            in_us,
+            out_us,
+            fade_in_us: 0,
+            fade_out_us: 0,
+            volume: 1000,
+            muted: false,
+            transition_us: 0,
+            speed: 1000,
+            placement: Placement::IDENTITY,
+            look: Look::NONE,
+        };
         Ok(Self { source, span })
     }
     pub fn source(&self) -> &Source {
@@ -179,6 +251,15 @@ impl ComposeClip {
             return Err(VideoError::Invalid);
         }
         self.span.placement = placement;
+        Ok(self)
+    }
+    /// Grade, add an effect to or key a video's picture. A key only shows on a layer: on the
+    /// main track nothing is behind the picture to show through.
+    pub fn with_look(mut self, look: Look) -> Result<Self> {
+        if !look.valid() || (look != Look::NONE && !matches!(self.source, Source::Video(_))) {
+            return Err(VideoError::Invalid);
+        }
+        self.span.look = look;
         Ok(self)
     }
     /// Fade from and to the background colour (and silence) over the clip's own ends.
@@ -287,7 +368,7 @@ impl ComposeSpec {
     /// The main track: video and still clips, played in order. Sound-only clips go on layers.
     pub fn new(width: u32, height: u32, fps: (u32, u32), background: [u8; 3], clips: Vec<ComposeClip>) -> Result<Self> {
         let frame = Frame { width, height, fps, background };
-        if clips.iter().any(|c| !c.source.media().visual()) {
+        if clips.iter().any(|c| !c.source.media().visual() || c.span.look.key.is_some()) {
             return Err(VideoError::Invalid);
         }
         let spans: Vec<Span> = clips.iter().map(|c| c.span).collect();
@@ -519,9 +600,10 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
             write!(
                 g,
                 "[{k}:{stream}]{pts},colorspace=ispace={p}:iprimaries={p}:itrc={t}:irange={range}:all=bt709:range=tv:format=yuv444p:fast=0:dither=none,\
-                 {rotate}{crop}scale={w}:{h}:flags=bicubic:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv,",
+                 {look}{rotate}{crop}scale={w}:{h}:flags=bicubic:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv,",
                 stream = m.stream,
                 pts = timestamps(span.speed),
+                look = look(&span.look),
                 crop = crop(span.placement),
             )
             .map_err(|_| VideoError::Limit)?;
@@ -569,6 +651,47 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
         write!(g, ",setpts=PTS+{at}").map_err(|_| VideoError::Limit)?;
     }
     write!(g, "[{out}];").map_err(|_| VideoError::Limit)
+}
+/// The filters that give a BT.709 `yuv444p` picture its look, each followed by a comma; none for
+/// [`Look::NONE`]. Brightness goes through RGB
+/// (`lutrgb`, converted with the BT.709 matrix the picture is tagged with); the rest work on YUV.
+fn look(look: &Look) -> String {
+    let mut chain = String::new();
+    if look.brightness != 0 {
+        // Added to red, green and blue (the lut clips), so -1000 is black and 1000 white: eq's
+        // brightness moves only the luma, which leaves a red red.
+        let b = i32::from(look.brightness);
+        let offset = format!("val{:+}", (b * 255 + b.signum() * 500) / 1000);
+        chain.push_str(&format!("lutrgb=r={offset}:g={offset}:b={offset},"));
+    }
+    if (look.contrast, look.saturation, look.gamma) != (1000, 1000, 1000) {
+        chain.push_str(&format!(
+            "eq=contrast={}:saturation={}:gamma={},",
+            thousandths(look.contrast.into()),
+            thousandths(look.saturation.into()),
+            thousandths(look.gamma.into())
+        ));
+    }
+    match look.effect {
+        Effect::None => {}
+        Effect::Grayscale => chain.push_str("hue=s=0,"),
+        // Brown chroma (about RGB 112, 66, 20 in BT.709) under the picture's own brightness.
+        Effect::Sepia => chain.push_str("hue=s=0,lutyuv=u=108:v=146,"),
+        Effect::Invert => chain.push_str("negate,"),
+        Effect::Blur(sigma) => chain.push_str(&format!("gblur=sigma={},", thousandths(sigma.into()))),
+        Effect::Sharpen(amount) => chain.push_str(&format!("unsharp=lx=5:ly=5:la={}:cx=5:cy=5:ca=0,", thousandths(amount.into()))),
+        // The vignette's angle: wider (darker edges) the stronger it is, PI/2 at most.
+        Effect::Vignette(strength) => chain.push_str(&format!("vignette=angle=PI*{}/2,", thousandths(strength.into()))),
+    }
+    if let Some(key) = look.key {
+        chain.push_str(&format!(
+            "format=yuva444p,chromakey=color={}:similarity={}:blend={},",
+            hex(key.color),
+            thousandths(key.similarity.into()),
+            thousandths(key.blend.into())
+        ));
+    }
+    chain
 }
 /// The rest of a placed picture's chain, once it is scaled to `size`: turned, faded to its
 /// opacity and drawn onto a frame-sized plain picture (transparent on a layer) with its centre

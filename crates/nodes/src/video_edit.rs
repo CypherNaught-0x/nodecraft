@@ -21,7 +21,7 @@ pub const MAX_SECONDS: f64 = 3600.0;
 pub const MAX_STITCHED: usize = 32;
 
 /// The render quality every video action offers.
-fn quality() -> ParamSpec {
+pub(crate) fn quality() -> ParamSpec {
     choice("quality", "Quality", &[("draft", "Draft (smallest file)"), ("standard", "Standard"), ("high", "High (largest file)")], "standard")
 }
 

@@ -85,7 +85,10 @@ returns the same verified `RenderedVideo` as a render. It shares the single rend
 - **Clips.** `ComposeClip::new(asset, in_us, out_us)` takes a span of an imported asset. Add
   `with_fades` (to and from the background colour, and silence), `with_volume` (thousandths, up to
   4.0×, or muted) and `with_transition` (a cross-dissolve of picture and sound into the next clip,
-  at least 10 ms).
+  at least 10 ms). `with_look` grades a video clip's picture (brightness as an RGB offset,
+  so -1 is black; contrast, saturation and gamma through `eq`), gives it one effect (black and
+  white, sepia, negative, blur, sharpen or vignette) and, on a layer only, keys a colour out with
+  `chromakey`, all before it is turned and fitted.
 - **Spec.** `ComposeSpec::new` uses the frame rules of `RenderSpec`. It takes 1 to 32 clips and at
   most an hour of output. Every clip must show for at least one frame outside the transitions it
   takes part in, and the last clip has no transition.
@@ -147,7 +150,25 @@ they never run live.
 | `video.ken_burns` Pan and zoom | a picture | 1 to 30 s at 24, 30 or 60 frames a second: zooms from one factor to another while panning across, steadily or easing in and out, at most 1920 a side. |
 
 Every run checks for a cancel between frames, and the settings are checked before any video is
-imported. Sound extraction, grading and the other operations #108 lists come in later parts.
+imported.
+
+### Looks and marks
+
+The look kinds (`crates/nodes/src/video_look.rs`, executor
+`crates/engine/src/action_exec/video_look.rs`) render one composition, as the edit actions do,
+and keep the video's sound. Key and Watermark take a picture on an optional second port: the
+action planner lets a kind's last port go unconnected when the kind says so (`optional_last`),
+and such a kind is offered in Turn into only when its required ports' media are there.
+
+| Kind | Inputs | Does |
+|---|---|---|
+| `video.grade` Grade video | a video | Brightness (-1 to 1), contrast and saturation (0 to 3) and gamma (0.1 to 4). |
+| `video.filter` Video effect | a video | Black and white, sepia, negative, blur (up to 50 px), sharpen or vignette. |
+| `video.key` Key out a colour | a video, and a picture behind | Takes a colour out (similarity and edge softness) and shows the picture, fitted, behind it, or a plain colour when none is connected. |
+| `video.watermark` Watermark video | a video, and a picture | Text (drawn with the caption renderer, its size a share of the height) or the connected picture (its width a share of the video's) at a corner, an edge or the centre, a margin in, at an opacity, for the whole video. |
+| `video.duplicate` Duplicate video | a video | The same video 2 to 16 times as a list, for branching; nothing is rendered, so it runs anywhere. |
+
+Splitting a video and extracting its sound come in a later part.
 
 ## Limits, cancellation and cleanup
 
