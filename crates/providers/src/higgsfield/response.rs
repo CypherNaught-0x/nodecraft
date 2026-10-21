@@ -1,5 +1,5 @@
-//! Higgsfield's replies: `{detail}` errors, receipts, request status, upload grants, estimates
-//! and the restyle preset list.
+//! Higgsfield's replies: `{detail}` errors, receipts, request status, upload grants, estimates,
+//! the restyle preset list and Soul IDs.
 use super::*;
 use serde_json::Value;
 
@@ -235,7 +235,7 @@ pub(super) fn presets(body: &[u8], leaks: impl Fn(&str) -> bool) -> Result<Prese
     let mut out = Presets::default();
     let mut seen = std::collections::BTreeSet::new();
     for item in items {
-        let id = item.get("id").and_then(Value::as_str).filter(|id| request::preset_id(id)).map(str::to_ascii_lowercase);
+        let id = item.get("id").and_then(Value::as_str).filter(|id| request::uuid(id)).map(str::to_ascii_lowercase);
         let name = item
             .get("name")
             .and_then(Value::as_str)
@@ -247,4 +247,59 @@ pub(super) fn presets(body: &[u8], leaks: impl Fn(&str) -> bool) -> Result<Prese
         }
     }
     Ok(out)
+}
+/// A Soul ID's fields as Higgsfield documents its reference object; `None` for one that doesn't
+/// read as one.
+fn reference_fields<'a>(item: &'a Value, leaks: &impl Fn(&str) -> bool) -> Option<(String, &'a str, &'a str, &'a str)> {
+    let id = item.get("id").and_then(Value::as_str).filter(|id| request::uuid(id))?.to_ascii_lowercase();
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && n.chars().count() <= 100 && !n.chars().any(char::is_control) && !leaks(n))?;
+    let version = item.get("model_version").and_then(Value::as_str).filter(|v| v.len() <= 32)?;
+    let status = item.get("status").and_then(Value::as_str).filter(|s| s.len() <= 32)?;
+    Some((id, name, version, status))
+}
+/// One Soul ID, read with `GET /v1/custom-references/{id}`: what SOUL version it was trained
+/// for, and where its training stands.
+pub(super) fn reference(body: &[u8], id: &str, leaks: impl Fn(&str) -> bool) -> Result<Reference, ProviderError> {
+    let v = json(body)?;
+    let (got, _, version, status) = reference_fields(&v, &leaks).ok_or_else(|| malformed("Higgsfield's Soul ID reply isn't the documented reference"))?;
+    if got != id.to_ascii_lowercase() {
+        return Err(malformed("Higgsfield answered for a different Soul ID"));
+    }
+    let training = match status {
+        "completed" => Training::Completed,
+        "not_ready" | "queued" | "in_progress" => Training::Pending,
+        "failed" => Training::Failed(v.get("fail_reason").and_then(Value::as_str).filter(|r| !r.trim().is_empty()).map(|r| said(r, &leaks))),
+        // An undocumented state is never taken for ready.
+        _ => Training::Pending,
+    };
+    Ok(Reference { v2: version == "v2", training })
+}
+/// One page of `GET /v1/custom-references/list`, whose shape Higgsfield doesn't document: a
+/// list of reference objects, bare or under `items` as its other lists are. Anything else is
+/// refused rather than guessed at. Returns the ready SOUL 2 entries, how many entries the page
+/// had, and how many didn't read as a reference.
+pub(super) fn soul_page(body: &[u8], page_size: usize, leaks: impl Fn(&str) -> bool) -> Result<(Vec<SoulId>, usize, usize), ProviderError> {
+    let v = json(body)?;
+    let items = match &v {
+        Value::Array(items) => items,
+        _ => v.get("items").and_then(Value::as_array).ok_or_else(|| malformed("Higgsfield's Soul ID list isn't a list NodeCraft reads"))?,
+    };
+    if items.len() > page_size {
+        return Err(malformed("Higgsfield's Soul ID list page is longer than asked for"));
+    }
+    let mut ready = Vec::new();
+    let mut skipped = 0usize;
+    for item in items {
+        match reference_fields(item, &leaks) {
+            Some((id, name, "v2", "completed")) => ready.push(SoulId { id, name: name.to_owned() }),
+            // Another SOUL version's, or one still training or failed: real, but not usable here.
+            Some(_) => {}
+            None => skipped = skipped.saturating_add(1),
+        }
+    }
+    Ok((ready, items.len(), skipped))
 }

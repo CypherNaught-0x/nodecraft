@@ -1,5 +1,5 @@
 //! Fetching run-time option lists (#529): the checkpoints, LoRAs and samplers a ComfyUI server
-//! has, and the restyle presets Higgsfield lists (#179), for the catalog models whose parameter
+//! has, and the restyle presets (#179) and the account's Soul IDs (#180) Higgsfield lists, for the catalog models whose parameter
 //! contracts name them (docs/descriptor-contract.md, Option sources). Each provider is asked on
 //! its own, so one that isn't set up doesn't keep the others' lists from being fetched.
 //!
@@ -37,9 +37,12 @@ fn comfy_source(id: &str) -> Option<(&'static str, &'static str)> {
     COMFY_SOURCES.iter().find(|(source, _, _)| *source == id).map(|(_, class, input)| (*class, *input))
 }
 
+/// The lists Higgsfield answers.
+const HIGGSFIELD_SOURCES: [&str; 2] = [nodecraft_providers::higgsfield::RESTYLE_PRESETS, nodecraft_providers::higgsfield::SOUL_IDS];
+
 /// Whether NodeCraft knows where to fetch source `id`.
 fn known(id: &str) -> bool {
-    comfy_source(id).is_some() || id == nodecraft_providers::higgsfield::RESTYLE_PRESETS
+    comfy_source(id).is_some() || HIGGSFIELD_SOURCES.contains(&id)
 }
 
 /// A list a catalog model's contract names.
@@ -163,7 +166,7 @@ fn values<'a>(options: impl IntoIterator<Item = (&'a str, &'a str)>, skipped: us
 }
 
 /// Fetches `sources` from the providers in `env`'s settings: the ComfyUI server's lists from its
-/// node catalog, the Higgsfield presets from its API. The host calls it off the UI thread: it
+/// node catalog, the Higgsfield presets and Soul IDs from its API. The host calls it off the UI thread: it
 /// reads keys from the keychain and calls the providers. A provider that can't be asked refuses
 /// its own lists; the fetch fails only when none could be.
 pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Error> {
@@ -182,15 +185,13 @@ pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Err
             }
         }
     }
-    let presets = nodecraft_providers::higgsfield::RESTYLE_PRESETS;
-    if let Some(id) = sources.iter().find(|s| **s == presets) {
+    let higgsfield: Vec<&String> = sources.iter().copied().filter(|s| HIGGSFIELD_SOURCES.contains(&s.as_str())).collect();
+    if !higgsfield.is_empty() {
         asked += 1;
-        match restyle_presets(env).await {
-            Ok(listed) => {
-                fetched.lists.insert(presets.to_owned(), values(listed.presets.iter().map(|p| (p.id.as_str(), p.name.as_str())), listed.skipped));
-            }
+        match higgsfield_lists(env, &higgsfield).await {
+            Ok(listed) => fetched.lists.extend(listed),
             Err(failure) => {
-                fetched.fail([*id], &failure);
+                fetched.fail(higgsfield.iter().copied(), &failure);
                 failed.push(failure);
             }
         }
@@ -234,12 +235,40 @@ async fn comfy_lists(env: &HostEnv<'_>, wanted: &[(&String, (&str, &str))]) -> R
         .collect())
 }
 
-async fn restyle_presets(env: &HostEnv<'_>) -> Result<nodecraft_providers::higgsfield::Presets, Failure> {
+/// The Higgsfield lists in `wanted`, each asked for on its own. Fails only when none could be
+/// read, with the first list's error.
+async fn higgsfield_lists(env: &HostEnv<'_>, wanted: &[&String]) -> Result<Vec<(String, Listed)>, Failure> {
+    use nodecraft_providers::higgsfield::{RESTYLE_PRESETS, SOUL_IDS};
     let provider = crate::provider_setup::higgsfield(env).map_err(not_set_up("Higgsfield"))?;
-    provider
-        .restyle_presets()
-        .await
-        .map_err(|error| Failure::Failed(Error::new(provider_kind(error.kind), format!("Higgsfield's restyle presets couldn't be read: {}", error.message))))
+    let failed = |what: &str, error: nodecraft_providers::ProviderError| {
+        Error::new(provider_kind(error.kind), format!("Higgsfield's {what} couldn't be read: {}", error.message))
+    };
+    let mut listed = Vec::new();
+    let mut first = None;
+    for id in wanted {
+        let read = match id.as_str() {
+            RESTYLE_PRESETS => provider
+                .restyle_presets()
+                .await
+                .map(|p| values(p.presets.iter().map(|p| (p.id.as_str(), p.name.as_str())), p.skipped))
+                .map_err(|e| failed("restyle presets", e)),
+            SOUL_IDS => {
+                provider.soul_ids().await.map(|s| values(s.ids.iter().map(|s| (s.id.as_str(), s.name.as_str())), s.skipped)).map_err(|e| failed("Soul IDs", e))
+            }
+            _ => continue,
+        };
+        match read {
+            Ok(values) => listed.push(((*id).clone(), values)),
+            Err(error) => {
+                listed.push(((*id).clone(), Err(error.message.clone())));
+                first.get_or_insert(error);
+            }
+        }
+    }
+    match first {
+        Some(error) if listed.iter().all(|(_, l)| l.is_err()) => Err(Failure::Failed(error)),
+        _ => Ok(listed),
+    }
 }
 
 fn provider_kind(kind: nodecraft_providers::ErrorKind) -> ErrorKind {
@@ -385,7 +414,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {pending: id}; fetches every run-time option list the catalog's models name (the checkpoints, LoRAs, VAEs, upscale models, samplers and schedulers the ComfyUI server in settings has, and Higgsfield's restyle presets, whose labels are the preset names) and installs them, so node.options and edits see them. The host answers later: read the outcome with options.status. A list that can't be fetched keeps what was installed before. Refused when no model names a fetchable list, or the host can't fetch (the CLI).",
+            params_doc: "{} -> {pending: id}; fetches every run-time option list the catalog's models name (the checkpoints, LoRAs, VAEs, upscale models, samplers and schedulers the ComfyUI server in settings has, Higgsfield's restyle presets, whose labels are the preset names, and the Higgsfield account's ready SOUL 2 Soul IDs, labelled by name) and installs them, so node.options and edits see them. The host answers later: read the outcome with options.status. A list that can't be fetched keeps what was installed before. Refused when no model names a fetchable list, or the host can't fetch (the CLI).",
             enabled: enabled_refresh,
             run: refresh,
         },

@@ -323,7 +323,7 @@ A failed fetch and every refused list keep what was installed before. The source
 server answers are `comfyui.checkpoints`, `comfyui.loras`, `comfyui.vaes`,
 `comfyui.upscale_models`, `comfyui.samplers` and `comfyui.schedulers`. Higgsfield answers
 `higgsfield.restyle_presets` (#179), whose values are preset ids and whose labels are the preset
-names; each provider is asked on its own, so one that isn't set up, or doesn't answer, affects
+names, and `higgsfield.soul_ids` (#180), the account's ready SOUL 2 Soul IDs labelled by name; each provider is asked on its own, so one that isn't set up, or doesn't answer, affects
 only its own lists.
 Scoped sources are refused
 with a reason until a fetch can narrow them. The built-in SDXL row's `checkpoint` names
