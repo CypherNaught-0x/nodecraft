@@ -132,6 +132,13 @@ fn decode(bytes: &[u8], edge: u32) -> Result<DecodedPreview, &'static str> {
 }
 
 fn decode_unguarded(bytes: &[u8], edge: u32) -> Result<DecodedPreview, &'static str> {
+    // A PDF's preview is its first page (#113), drawn over white at the thumbnail's size.
+    if bytes.starts_with(b"%PDF-") {
+        let document = nodecraft_media::Document::open(bytes, &Default::default()).map_err(|_| "Can't preview this PDF")?;
+        let page = document.render(0, edge, [255, 255, 255, 255]).map_err(|_| "Can't preview this PDF")?;
+        let size = [usize::try_from(page.width).map_err(|_| "Can't preview this PDF")?, usize::try_from(page.height).map_err(|_| "Can't preview this PDF")?];
+        return Ok(DecodedPreview { image: ColorImage::from_rgba_unmultiplied(size, &page.rgba), source_size: [page.width, page.height] });
+    }
     let (meta, image) = decode_image(bytes, &limits()).map_err(|_| "Can't preview this image")?;
     let thumb = thumbnail(&image, edge).map_err(|_| "Can't preview this image")?;
     let size =

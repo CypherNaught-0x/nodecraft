@@ -180,7 +180,7 @@ fn source_kind(modality: Modality) -> Result<(&'static str, &'static str), Error
         Modality::Video => Ok(("source.video", "asset")),
         Modality::Audio => Ok(("source.audio", "asset")),
         Modality::Mesh => Ok(("source.mesh", "asset")),
-        Modality::Document => Err(Error::new(ErrorKind::Unsupported, "results of this kind can't be extracted to the canvas yet")),
+        Modality::Document => Ok(("source.document", "asset")),
     }
 }
 

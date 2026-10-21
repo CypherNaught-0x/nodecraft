@@ -9,7 +9,7 @@
 use crate::Session;
 use nodecraft_format::{MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES};
 use nodecraft_graph::Position;
-use nodecraft_media::{Limits, MediaKind, MeshLimits, Sniffed, probe_image, probe_mesh, sniff};
+use nodecraft_media::{DocumentLimits, Limits, MediaKind, MeshLimits, Sniffed, probe_document, probe_image, probe_mesh, sniff};
 use nodecraft_types::{CanvasId, Error, MediaMeta, Mime, NodeId};
 
 /// Most files one drop adds; the rest are reported as skipped.
@@ -110,7 +110,7 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
         MediaKind::Video => "source.video",
         MediaKind::Audio => "source.audio",
         MediaKind::Model3d => "source.mesh",
-        MediaKind::Document => return Err("documents can't be added yet".into()),
+        MediaKind::Document => "source.document",
     };
     if file.bytes.len() > MAX_ASSET_BYTES {
         return Err(format!("media over {} MiB can't be added to a project yet", MAX_ASSET_BYTES / (1024 * 1024)));
@@ -132,6 +132,14 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
         let info = probe_mesh(file.bytes, &MeshLimits::default()).map_err(|error| format!("the 3D model can't be read: {error}"))?;
         meta.vertices = u32::try_from(info.vertices).ok();
         meta.triangles = u32::try_from(info.triangles).ok();
+    }
+    if sniffed.kind == MediaKind::Document {
+        // Open it now, so a damaged or password-protected PDF is refused with its reason.
+        let info = probe_document(file.bytes, &DocumentLimits::default()).map_err(|error| format!("the PDF can't be read: {error}"))?;
+        if info.pages == 0 {
+            return Err("the PDF has no pages".into());
+        }
+        meta.page_count = Some(info.pages);
     }
     let mime = sniffed.mime.parse().map_err(|_| "the file type isn't supported".to_owned())?;
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })

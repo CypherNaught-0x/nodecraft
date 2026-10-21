@@ -233,3 +233,22 @@ fn models_become_3d_nodes_and_unreadable_ones_are_refused_with_a_reason() {
     assert_eq!(name, "split.gltf");
     assert!(why.contains("3D model can't be read") && why.contains(".glb"), "{why}");
 }
+
+#[test]
+fn pdfs_become_document_nodes_with_their_page_count_and_damaged_ones_are_refused() {
+    let mut s = session();
+    let pdf = nodecraft_media::pdf_fixture::pdf(&["", "", ""]);
+    let damaged = b"%PDF-1.7\nnot really".to_vec();
+    let empty = nodecraft_media::pdf_fixture::pdf(&[]);
+    let files = [Incoming { name: "paper.pdf", bytes: &pdf }, Incoming { name: "damaged.pdf", bytes: &damaged }, Incoming { name: "empty.pdf", bytes: &empty }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
+    assert_eq!(imported.nodes, ids(1));
+    let document = node(&s, ids(1)[0]);
+    assert_eq!(document.kind, nodecraft_nodes::document::SOURCE);
+    let Some(Value::Media(asset)) = document.params.get("asset") else { panic!("an asset parameter") };
+    assert_eq!((asset.mime.essence(), asset.meta.page_count), ("application/pdf", Some(3)));
+    let [(name, why), (empty_name, empty_why)] = imported.skipped.as_slice() else { panic!("two skipped: {:?}", imported.skipped) };
+    assert_eq!(name, "damaged.pdf");
+    assert!(why.contains("PDF can't be read"), "{why}");
+    assert_eq!((empty_name.as_str(), empty_why.as_str()), ("empty.pdf", "the PDF has no pages"));
+}

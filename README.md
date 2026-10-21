@@ -145,7 +145,7 @@ now is connecting it to the window. The target:
   Replicate and Seedream are written; fal.ai, Google Imagen/Gemini image/Veo/TTS, ElevenLabs,
   Seedance, Kling, Tripo and Meshy are tracked as issues.
 - **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text and
-  video operations — recompute live, with custom actions authored as GPU shaders.
+  video operations, PDF pages and text — recompute live, with custom actions authored as GPU shaders.
 - **Editors inside nodes**: a Layer Editor, a Timeline, Mask/Inpaint, and a 3D viewer that captures
   photos, turntables and multi-view sheets.
 - **Reuse**: Batch and Router nodes, Elements, and a Technique Builder that turns a workflow into

@@ -1,6 +1,6 @@
 use super::super::tests::harness;
 use super::*;
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::Queryable};
 use nodecraft_engine::import::MAX_FILES;
 use std::{path::PathBuf, sync::Arc};
 
@@ -156,4 +156,18 @@ fn hdr394_drop_shows_an_actionable_notice_without_adding_nodes() {
     assert_eq!(h.state().notice.as_deref(), Some("sample.hdr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
     assert_eq!(nodes(&h).len(), count);
     assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn a_dropped_pdf_becomes_a_pdf_card_showing_its_page_count() {
+    let (mut h, _worker) = drop_harness();
+    let before = nodes(&h);
+    let scratch = Scratch::new("pdf");
+    let paper = scratch.write("paper.pdf", &nodecraft_media::pdf_fixture::pdf(&["BT /F1 12 Tf 20 150 Td (Hello) Tj ET", ""]));
+    drop_at(&mut h, Pos2::new(700.0, 150.0), &[paper]);
+    let added: Vec<_> = nodes(&h).into_iter().filter(|n| !before.iter().any(|b| b.id == n.id)).collect();
+    let [document] = added.as_slice() else { panic!("one node: {:?}", h.state().notice) };
+    assert_eq!(document.kind, nodecraft_nodes::document::SOURCE);
+    h.run();
+    assert!(h.query_by_label("PDF, 2 pages").is_some(), "the card says how many pages the PDF has");
 }

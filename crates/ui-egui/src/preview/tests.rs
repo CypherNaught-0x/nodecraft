@@ -268,3 +268,15 @@ fn native_worker_keeps_decoded_source_dimensions_in_ready_and_fallback() {
     drop((previews, store));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn a_pdf_previews_as_its_first_page_and_a_broken_one_says_so() {
+    let ctx = egui::Context::default();
+    let pdf = nodecraft_media::pdf_fixture::pdf(&["BT /F1 12 Tf 20 150 Td (Hello) Tj ET", ""]);
+    let hash = Blake3::from_bytes([6; 32]);
+    let mut previews = Previews::inline(&ctx, hash, 128, &pdf);
+    // The fixture's pages are 300 × 200 points.
+    assert!(matches!(previews.request(&ctx, hash, 100.0, || None), Preview::Ready { size: [128, 85], .. }));
+    let broken = Blake3::from_bytes([7; 32]);
+    assert!(matches!(previews.request(&ctx, broken, 100.0, || Some(b"%PDF-1.7 broken".to_vec())), Preview::Unavailable("Can't preview this PDF")));
+}

@@ -666,7 +666,11 @@ pub(crate) fn control_with_mode(
         }
         ParamControl::Asset { modality } => {
             ui.label(match value {
-                Some(Value::Media(asset)) => format!("{} asset", asset.mime.essence()),
+                Some(Value::Media(asset)) => match asset.meta.page_count {
+                    Some(1) if *modality == nodecraft_types::Modality::Document => "PDF, 1 page".to_owned(),
+                    Some(pages) if *modality == nodecraft_types::Modality::Document => format!("PDF, {pages} pages"),
+                    _ => format!("{} asset", asset.mime.essence()),
+                },
                 _ => format!(
                     "No {} selected",
                     match modality {

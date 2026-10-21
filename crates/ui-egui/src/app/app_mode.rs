@@ -158,7 +158,7 @@ impl NodeCraftApp {
         let results = node.history.iter().rev().filter_map(|g| first_output(g).cloned());
         for value in shown.chain(results) {
             if let Value::Media(asset) = value
-                && asset.mime.essence().starts_with("image/")
+                && (asset.mime.essence().starts_with("image/") || asset.mime.essence() == "application/pdf")
             {
                 let assets = self.session.assets();
                 let preview = self.previews.request_asset(&ctx, asset.hash, edge, || assets.preview_read(&asset));

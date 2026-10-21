@@ -3,6 +3,13 @@ use nodecraft_nodes::{Category, Registry};
 use nodecraft_types::NodeId;
 
 const OBJ: &[u8] = b"v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n";
+const PAGE: &str = "BT /F1 12 Tf 20 150 Td (Hello) Tj ET";
+
+/// A PDF of `pages` in `assets`, as a source holds it.
+fn pdf_value(assets: &mut AssetStore, pages: &[&str]) -> Value {
+    let hash = assets.insert(&nodecraft_media::pdf_fixture::pdf(pages)).unwrap();
+    Value::Media(AssetRef { hash, mime: "application/pdf".parse().unwrap(), meta: MediaMeta::default() })
+}
 
 fn png(width: u32, height: u32) -> Vec<u8> {
     let pixels: Vec<u8> = (0..width * height).flat_map(|i| [(i % 251) as u8, 80, 160, 255]).collect();
@@ -28,6 +35,7 @@ fn every_action_kind_runs_with_its_defaults() {
     let hash = assets.insert(&png(8, 6)).unwrap();
     let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
     let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    let document = pdf_value(&mut assets, &[PAGE]);
     let actions = LocalActions::new(assets);
     let mut ran = 0;
     // The custom shader and 3D captures need a GPU: their own tests run them. An Element plans
@@ -38,6 +46,8 @@ fn every_action_kind_runs_with_its_defaults() {
             image.clone()
         } else if descriptor.id.starts_with("mesh.") {
             model.clone()
+        } else if descriptor.id.starts_with("document.") {
+            document.clone()
         } else {
             Value::Text("a, b\\nc".into())
         };
@@ -48,7 +58,7 @@ fn every_action_kind_runs_with_its_defaults() {
             ran += 1;
             continue;
         }
-        match (&out, descriptor.id.starts_with("image.")) {
+        match (&out, descriptor.id.starts_with("image.") || descriptor.id == nodecraft_nodes::document::PAGES) {
             (Value::Media(asset), true) => assert!(asset.meta.width.is_some(), "{}", descriptor.id),
             (Value::List(items), true) => assert!(items.iter().all(|i| matches!(i, Value::Media(_))), "{}", descriptor.id),
             (Value::Text(_) | Value::List(_), false) => {}
@@ -56,7 +66,7 @@ fn every_action_kind_runs_with_its_defaults() {
         }
         ran += 1;
     }
-    assert_eq!(ran, 21);
+    assert_eq!(ran, 23);
     // Every new image and model is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());
@@ -475,5 +485,70 @@ fn each_tile_of_a_view_sheet_is_the_photo_from_its_angle_in_reading_order() {
             let differing = tile.iter().zip(&photo).filter(|(a, b)| a.abs_diff(**b) > 8).count();
             assert!(differing * 100 < tile.len(), "{direction} tile {index}: {differing} bytes differ");
         }
+    }
+}
+
+#[test]
+fn pdf_to_images_draws_each_page_in_the_range_at_its_size() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let document = pdf_value(&mut assets, &[PAGE, "", PAGE]);
+    let actions = LocalActions::new(assets);
+    let mut params = defaults(&kinds, nodecraft_nodes::document::PAGES);
+    params.insert("size".into(), Value::Unsigned(nodecraft_types::Unsigned(150)));
+    let Value::List(pages) = actions.execute(nodecraft_nodes::document::PAGES, &params, std::slice::from_ref(&document)).unwrap() else { panic!("a list") };
+    assert_eq!(pages.len(), 3);
+    for page in &pages {
+        let Value::Media(asset) = page else { panic!("an image") };
+        // The fixture's pages are 300 × 200 points.
+        assert_eq!((asset.mime.essence(), asset.meta.width, asset.meta.height), ("image/png", Some(150), Some(100)));
+    }
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
+    params.insert("last".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
+    let Value::List(one) = actions.execute(nodecraft_nodes::document::PAGES, &params, std::slice::from_ref(&document)).unwrap() else { panic!("a list") };
+    assert_eq!(one.len(), 1);
+    // The staged pages are PNGs the host imports.
+    let staged = actions.take_staged();
+    let Some(Value::Media(asset)) = one.first() else { panic!("an image") };
+    assert!(nodecraft_media::probe_image(staged.get(&asset.hash).unwrap(), &Default::default()).is_ok());
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(4)));
+    params.insert("last".into(), Value::Unsigned(nodecraft_types::Unsigned(0)));
+    assert!(actions.execute(nodecraft_nodes::document::PAGES, &params, std::slice::from_ref(&document)).unwrap_err().contains("has 3 pages"));
+}
+
+#[test]
+fn pdf_to_text_reads_the_range_with_the_chosen_separator() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let document = pdf_value(&mut assets, &["", PAGE, "", "BT /F1 12 Tf 20 150 Td (Two) Tj ET", "", "BT /F1 12 Tf 20 150 Td (Three) Tj ET", ""]);
+    let actions = LocalActions::new(assets);
+    let mut params = defaults(&kinds, nodecraft_nodes::document::TEXT);
+    let run = |params: &ParamValues| actions.execute(nodecraft_nodes::document::TEXT, params, std::slice::from_ref(&document));
+    assert_eq!(run(&params).unwrap(), Value::Text("Hello\n\nTwo\n\nThree".into()), "pages without text leave no gap");
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(4)));
+    params.insert("separator".into(), Value::Text("heading".into()));
+    assert_eq!(run(&params).unwrap(), Value::Text("[Page 4]\nTwo\n\n[Page 5]\n\n\n[Page 6]\nThree\n\n[Page 7]\n".into()));
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
+    params.insert("last".into(), Value::Unsigned(nodecraft_types::Unsigned(1)));
+    assert!(run(&params).unwrap_err().contains("comes before"));
+    params.insert("separator".into(), Value::Text("nope".into()));
+    assert!(run(&params).is_err());
+}
+
+#[test]
+fn a_document_action_without_a_readable_pdf_is_a_message() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    let junk =
+        Value::Media(AssetRef { hash: assets.insert(b"%PDF-1.7 not really").unwrap(), mime: "application/pdf".parse().unwrap(), meta: MediaMeta::default() });
+    let image = Value::Media(AssetRef { hash: assets.insert(&png(4, 4)).unwrap(), mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    for action in [nodecraft_nodes::document::PAGES, nodecraft_nodes::document::TEXT] {
+        let params = defaults(&kinds, action);
+        assert!(actions.execute(action, &params, &[]).unwrap_err().contains("connect a PDF"), "{action}");
+        assert!(actions.execute(action, &params, &[Value::Text("x".into())]).unwrap_err().contains("connect a PDF"), "{action}");
+        assert!(actions.execute(action, &params, std::slice::from_ref(&junk)).unwrap_err().contains("can't be read"), "{action}");
+        assert!(actions.execute(action, &params, std::slice::from_ref(&image)).unwrap_err().contains("can't be read"), "{action}");
+        assert!(actions.execute(action, &ParamValues::new(), std::slice::from_ref(&junk)).is_err(), "{action}");
     }
 }

@@ -1269,7 +1269,11 @@ impl NodeCraftApp {
                 }
                 // Only cards on screen at a readable zoom ask for their image (#386).
                 let images = if self.view.zoom >= card::BODY_MIN_ZOOM {
-                    let (rows, count) = nodecraft_engine::split::image_rows(node);
+                    let (rows, count) = match node.params.get("asset") {
+                        // A PDF source shows its first page (#113).
+                        Some(nodecraft_types::Value::Media(pdf)) if node.kind == nodecraft_nodes::document::SOURCE => (vec![vec![pdf]], 1),
+                        _ => nodecraft_engine::split::image_rows(node),
+                    };
                     // A tile's edge: the card's width shared by the widest row (#519).
                     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1) as f32;
                     let edge = t.card_width / columns * self.view.zoom * ui.ctx().pixels_per_point();

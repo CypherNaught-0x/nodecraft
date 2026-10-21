@@ -75,6 +75,15 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 # Plugin package signatures (#171): Ed25519, BSD-3-Clause, pure Rust (also wasm); verify only.
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
 
+# craft-pdf's reader and rasteriser use craft-libs' patched Hayro trees. Cargo ignores a git
+# dependency's own [patch] section, so its consumers repeat it at the same rev (crates/pdf/README.md,
+# "Backend provenance and consumer pins"). Bump together with the craft-pdf pin.
+[patch.crates-io]
+hayro = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

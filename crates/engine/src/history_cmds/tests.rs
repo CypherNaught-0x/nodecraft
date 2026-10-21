@@ -239,7 +239,8 @@ fn extract_picks_a_port_and_a_list_item_and_refuses_what_it_cannot_hold() {
     assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "that output is a list: choose an item"));
     assert_eq!(extract(&mut s, json!({"port": "variants", "item": 5})).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(extract(&mut s, json!({"item": 0})).unwrap_err().kind, ErrorKind::InvalidInput);
-    assert_eq!(extract(&mut s, json!({"port": "report"})).unwrap_err().kind, ErrorKind::Unsupported);
+    // A PDF output extracts to a PDF source (#113); one that holds text can't fill it.
+    assert_eq!(extract(&mut s, json!({"port": "report"})).unwrap_err().kind, ErrorKind::InvalidInput);
     assert_eq!(extract(&mut s, json!({"port": "nope"})).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(extract(&mut s, json!({"pos": {"x": 1e30, "y": 0}})).unwrap_err().kind, ErrorKind::InvalidInput);
     extract(&mut s, json!({"port": "variants", "item": 1})).unwrap();

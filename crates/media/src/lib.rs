@@ -25,6 +25,14 @@ pub use thumb::{Thumbnail, ThumbnailCache, fit_within, thumbnail};
 /// The `image` crate this API is built on, so callers use the same version of [`image::DynamicImage`].
 pub use image;
 
+/// PDF documents: page count, pages as images, page text (#113).
+#[cfg(feature = "pdf")]
+mod document;
+#[cfg(feature = "fixtures")]
+pub use document::fixture as pdf_fixture;
+#[cfg(feature = "pdf")]
+pub use document::{Document, DocumentInfo, DocumentLimits, PageImage, probe_document};
+
 /// Bounded native FFmpeg service (external tools are never bundled).
 #[cfg(feature = "video")]
 pub mod video;
