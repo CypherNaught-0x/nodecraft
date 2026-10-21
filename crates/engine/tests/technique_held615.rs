@@ -1,7 +1,9 @@
-//! A technique's inner paid results are held when its technique node's record is refused (#615):
-//! a writer and an editor inlined from a technique both finish, the technique node is removed
-//! before it records, and both paid results are held, to be put on the canvas or discarded. None
-//! of this calls the provider again. A canned provider only; no live calls.
+//! A technique's inner paid results are held when its technique node's record is refused, or when
+//! it fails (#615): a writer and an editor inlined from a technique both finish, the technique node
+//! is removed before it records, and both paid results are held, to be put on the canvas or
+//! discarded. A writer that finished before its editor failed, or a branch that finished after
+//! another failed, is held too. None of this calls the provider again. A canned provider only; no
+//! live calls.
 #![cfg(not(target_arch = "wasm32"))]
 use nodecraft_catalog::Catalog;
 use nodecraft_engine::{
@@ -20,7 +22,7 @@ use nodecraft_exec::{
 };
 use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Project};
 use nodecraft_nodes::generation::TEXT_KIND;
-use nodecraft_providers::{BoxFuture, Completed, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
+use nodecraft_providers::{BoxFuture, Completed, ErrorKind, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission};
 use nodecraft_types::{CanvasId, EdgeId, NodeId, ProjectId, TechniqueId, Value};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,14 +37,17 @@ const EDITOR: NodeId = NodeId::from_bytes([3; 16]);
 const PLACED: NodeId = NodeId::from_bytes([5; 16]);
 const MOON: NodeId = NodeId::from_bytes([6; 16]);
 const MODEL: &str = "fixture.writer";
+/// A second model, so the canned provider can tell two branches with one prompt apart.
+const ASIDE: &str = "fixture.aside";
 
 fn catalog() -> Catalog {
-    Catalog::from_toml(&format!(
-        r#"[[model]]
-id = "{MODEL}"
+    let model = |id: &str, provider_model: &str| {
+        format!(
+            r#"[[model]]
+id = "{id}"
 provider = "mock"
-provider_model = "canned-text"
-label = "Fixture writer"
+provider_model = "{provider_model}"
+label = "Fixture {provider_model}"
 description = "Public deterministic test fixture"
 quality = 1
 latency_s = 0
@@ -52,8 +57,9 @@ id = "text-to-text"
 output = "text"
 inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}]
 "#
-    ))
-    .unwrap()
+        )
+    };
+    Catalog::from_toml(&format!("{}{}", model(MODEL, "canned-text"), model(ASIDE, "canned-aside"))).unwrap()
 }
 
 /// Each task on its own thread; sleeps on a timer thread. Real concurrency, like the app's.
@@ -78,34 +84,46 @@ impl Runtime for Threads {
 }
 
 /// Answers a prompt with "edited: <prompt>" once it starts with "draft", and with "draft: <prompt>"
-/// otherwise, counting requests. A prompt starting with `stuck` keeps running until it is cleared.
+/// otherwise, counting requests. A call whose provider model or prompt starts with `stuck` keeps
+/// running until it is cleared; one matching `fails` fails for good.
 #[derive(Clone, Default)]
 struct Canned {
     requests: Arc<AtomicUsize>,
     stuck: Arc<Mutex<Option<String>>>,
+    fails: Arc<Mutex<Option<String>>>,
+}
+
+/// Whether `rule` picks the call `call` (`<provider model>|<prompt>`).
+fn picks(rule: &Mutex<Option<String>>, call: &str) -> bool {
+    let (model, prompt) = call.split_once('|').unwrap_or_default();
+    rule.lock().unwrap().as_deref().is_some_and(|rule| model.starts_with(rule) || prompt.starts_with(rule))
 }
 
 impl Canned {
     fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
     }
-    fn waits(&self, prompt: &str) -> bool {
-        self.stuck.lock().unwrap().as_deref().is_some_and(|stuck| prompt.starts_with(stuck))
+    fn waits(&self, call: &str) -> bool {
+        picks(&self.stuck, call)
     }
-    fn result(prompt: &str) -> Completed {
+    fn result(call: &str) -> Completed {
+        let prompt = call.split_once('|').map_or(call, |(_, prompt)| prompt);
         let answer = if prompt.starts_with("draft") { format!("edited: {prompt}") } else { format!("draft: {prompt}") };
         Completed::new(vec![Output::Text(answer)])
     }
 }
 
-fn prompt_of(job: &ProviderJob) -> String {
-    job.inputs
+/// `<provider model>|<prompt>`.
+fn call_of(job: &ProviderJob) -> String {
+    let prompt = job
+        .inputs
         .iter()
         .find_map(|i| match i {
             nodecraft_providers::JobInput::Text { text, .. } => Some(text.clone()),
             _ => None,
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    format!("{}|{prompt}", job.model)
 }
 
 impl Provider for Canned {
@@ -114,11 +132,14 @@ impl Provider for Canned {
     }
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         self.requests.fetch_add(1, Ordering::SeqCst);
-        let prompt = prompt_of(job);
-        let submission = if self.waits(&prompt) {
-            Submission::Queued(JobHandle { remote_id: prompt, data: serde_json::Value::Null })
+        let call = call_of(job);
+        if picks(&self.fails, &call) {
+            return Box::pin(async { Err(ProviderError::new(ErrorKind::BlockedContent, "the fixture refuses this call")) });
+        }
+        let submission = if self.waits(&call) {
+            Submission::Queued(JobHandle { remote_id: call, data: serde_json::Value::Null })
         } else {
-            Submission::Finished(Self::result(&prompt))
+            Submission::Finished(Self::result(&call))
         };
         Box::pin(async move { Ok(submission) })
     }
@@ -147,14 +168,20 @@ struct Fixture {
 /// Source → writer → editor on C, published as a technique (Subject in, Answer out), placed on C
 /// again and fed by its own source asking about the moon.
 fn fixture() -> Fixture {
+    fixture_with(false)
+}
+
+/// [`fixture`], or, `parallel`, with the editor beside the writer instead of after it: it reads
+/// the source with the other model, and the technique answers with both.
+fn fixture_with(parallel: bool) -> Fixture {
     let canned = Canned::default();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([63; 16]), "Technique held").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
-    let model = [("model".into(), Value::Text(MODEL.into()))].into();
     let mut out = String::new();
-    for id in [WRITER, EDITOR] {
+    for (id, model) in [(WRITER, MODEL), (EDITOR, if parallel { ASIDE } else { MODEL })] {
+        let model = [("model".into(), Value::Text(model.into()))].into();
         let writer = kinds.get(TEXT_KIND).unwrap().instantiate_instance(id, Default::default(), &model).unwrap();
         out = writer.outputs[0].name.clone();
         Change::AddNode { canvas: C, node: writer }.apply(&mut project).unwrap();
@@ -164,7 +191,8 @@ fn fixture() -> Fixture {
             kinds.get("source.text").unwrap().instantiate_instance(id, Default::default(), &[("text".into(), Value::Text(text.into()))].into()).unwrap();
         Change::AddNode { canvas: C, node: source }.apply(&mut project).unwrap();
     }
-    for (n, (from, port, to)) in [(SOURCE, "out", WRITER), (WRITER, out.as_str(), EDITOR)].into_iter().enumerate() {
+    let editor_reads = if parallel { (SOURCE, "out") } else { (WRITER, out.as_str()) };
+    for (n, (from, port, to)) in [(SOURCE, "out", WRITER), (editor_reads.0, editor_reads.1, EDITOR)].into_iter().enumerate() {
         let edge = Edge {
             id: EdgeId::from_bytes([10 + n as u8; 16]),
             from: Endpoint { node: from, port: port.into() },
@@ -188,8 +216,10 @@ fn fixture() -> Fixture {
     let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     session.set_provider_routing(routing(&canned, &[WRITER, EDITOR])).unwrap();
     host.install(&mut session);
+    let outputs =
+        if parallel { json!([{"node": WRITER, "name": "Answer"}, {"node": EDITOR, "name": "Aside"}]) } else { json!([{"node": EDITOR, "name": "Answer"}]) };
     let publish = json!({"canvas": C, "published": VERSION, "seed": NodeId::from_bytes([7; 16]), "technique": TechniqueId::from_bytes([8; 16]), "name": "Describe",
-        "inputs": [{"node": SOURCE, "name": "Subject"}], "outputs": [{"node": EDITOR, "name": "Answer"}]});
+        "inputs": [{"node": SOURCE, "name": "Subject"}], "outputs": outputs});
     session.dispatch("technique.publish", &publish).unwrap();
     session.dispatch("technique.place", &json!({"canvas": C, "version": VERSION, "id": PLACED, "pos": {"x": 400.0, "y": 0.0}})).unwrap();
     let edge = json!({"id": EdgeId::from_bytes([9; 16]), "from": {"node": MOON, "port": "out"}, "to": {"node": PLACED, "port": "subject"}, "order": 0});
@@ -309,5 +339,54 @@ fn a_refused_technique_records_inner_results_can_be_discarded() {
     }
     pump_until(&mut f, "discarding never settled", |f| f.host.held_results().is_empty());
     assert!(placed(&f).is_empty());
+    assert_eq!(f.canned.requests(), 2);
+}
+
+fn failed(notices: &[RunNotice]) -> Option<String> {
+    notices.iter().find_map(|n| match n {
+        RunNotice::Failed { node, reason, .. } if *node == PLACED => Some(reason.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_writer_that_finished_before_its_editor_failed_is_held() {
+    let mut f = fixture();
+    *f.canned.fails.lock().unwrap() = Some("draft".into());
+    start(&mut f);
+    let notices = pump_until(&mut f, "the run never finished", |f| !f.host.is_busy());
+    assert!(failed(&notices).is_some_and(|reason| reason.contains("held")), "{notices:?}");
+    let held = f.host.held_results();
+    let [view] = held.as_slice() else { panic!("the writer's result alone: {held:?}") };
+    assert!(view.node == PLACED && view.outputs == 1 && !view.retry, "{view:?}");
+    assert!(view.reason.starts_with("its technique failed: "), "{}", view.reason);
+    f.session.dispatch("run.held_place", &json!({"id": view.id})).unwrap();
+    pump_until(&mut f, "placing never settled", |f| f.host.held_results().is_empty());
+    assert_eq!(placed(&f), vec!["draft: Describe the moon".to_owned()]);
+    assert_eq!(f.canned.requests(), 2, "nothing is sent again");
+}
+
+#[test]
+fn a_branch_that_finishes_after_another_failed_is_held() {
+    let mut f = fixture_with(true);
+    *f.canned.stuck.lock().unwrap() = Some("canned-aside".into());
+    *f.canned.fails.lock().unwrap() = Some("canned-text".into());
+    start(&mut f);
+    let mut notices = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while failed(&notices).is_none() {
+        notices.extend(f.host.pump(&mut f.session));
+        assert!(Instant::now() < deadline && f.host.is_busy(), "the writer never failed: {notices:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(f.host.held_results().is_empty(), "nothing is paid for yet");
+    *f.canned.stuck.lock().unwrap() = None;
+    notices.extend(pump_until(&mut f, "the run never finished", |f| !f.host.is_busy()));
+    assert!(failed(&notices).is_some(), "{notices:?}");
+    let held = f.host.held_results();
+    let [view] = held.as_slice() else { panic!("the aside's result: {held:?}") };
+    assert_eq!((view.node, view.outputs, view.reason.as_str()), (PLACED, 1, "its technique failed"));
+    f.session.dispatch("run.held_discard", &json!({"id": view.id})).unwrap();
+    pump_until(&mut f, "discarding never settled", |f| f.host.held_results().is_empty());
     assert_eq!(f.canned.requests(), 2);
 }
