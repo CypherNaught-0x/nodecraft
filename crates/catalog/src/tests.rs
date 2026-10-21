@@ -66,6 +66,28 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 _ => 200_000,
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
+        } else if model.provider == "openai" || model.provider == "anthropic" {
+            // Chat models (#503): the output price per 1000 tokens, counted on max_tokens (16000 by default).
+            let Pricing::PerUnit { unit: Unit::ThousandTokens, price, count: Some(count), default_count: None } = &model.pricing else {
+                panic!("{}: {:?}", model.id, model.pricing)
+            };
+            assert_eq!(count, "max_tokens", "{}", model.id);
+            // Output USD per 1000 tokens from the providers' pricing pages, checked 2026-10-21.
+            let per_thousand = match model.id.as_str() {
+                "anthropic.claude-opus-5-5" => 20_000,
+                "anthropic.claude-sonnet-5-5" => 10_000,
+                // GPT-6.1 Sol and GPT-6 Luna at their rate for prompts over 272K tokens (1.5x).
+                "openai.gpt-6.1-sol" => 15_000,
+                "anthropic.claude-haiku-5-5" => 2_500,
+                "openai.gpt-6-luna" => 750,
+                "openai.gpt-4.1-mini" => 1_600,
+                other => panic!("{other}: no verified price in this test"),
+            };
+            assert_eq!(price.0, Money::new(Currency::USD, per_thousand), "{}", model.id);
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, per_thousand * 16)), "{}", model.id);
+            let mut short = ParamValues::new();
+            short.insert("max_tokens".into(), Value::Unsigned(Unsigned(1000)));
+            assert_eq!(model.quote(&short).unwrap(), Some(Money::new(Currency::USD, per_thousand)), "{}", model.id);
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -122,6 +144,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
             ("seedream.4_5", true),
+            ("anthropic.claude-opus-5-5", false),
+            ("anthropic.claude-sonnet-5-5", false),
+            ("anthropic.claude-haiku-5-5", false),
             ("fal.esrgan", false),
             ("fal.kokoro", false),
             ("fal.trellis2", false),
@@ -132,6 +157,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("meshy.retexture", false),
             ("meshy.retexture-image", false),
             ("meshy.text-to-3d", false),
+            ("openai.gpt-6.1-sol", false),
+            ("openai.gpt-6-luna", false),
+            ("openai.gpt-4.1-mini", false),
             ("replicate.hello", false),
             ("test.video", false),
             ("tripo.image-to-3d", false),

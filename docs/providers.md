@@ -6,7 +6,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
-| **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. |
+| **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text, quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and direct-adapter reference editing | Three stable Gemini models, unknown usage price; canvas resolver/mixed/list routing limitations below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
@@ -15,7 +15,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
-| **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
+| **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text, quoted at the output price on `max_tokens` (input billed on top). Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
@@ -31,6 +31,8 @@ to do, and a node routed to it is refused before planning, so no request is sent
 
 | Catalog provider | Keychain account | Also needs |
 |---|---|---|
+| `openai` (chat) | `openai` | — |
+| `anthropic` (chat) | `anthropic` | — |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |

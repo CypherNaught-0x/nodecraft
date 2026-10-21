@@ -1,0 +1,159 @@
+# OpenAI Chat Completions (`providers::llm`, OpenAI dialect), checked 2026-10-21.
+# Models and limits: https://developers.openai.com/api/docs/models (each model's page)
+# Prices: https://developers.openai.com/api/docs/pricing (Standard tier; verified 2026-10-21)
+# The quote is the output-token price per 1000 tokens counted on `max_tokens`, sent as
+# `max_completion_tokens`, which caps visible and reasoning tokens together: an upper bound on the
+# reply. Input tokens are billed on top and are NOT in the quote.
+# Reasoning models (GPT-6 family) reject temperature unless reasoning effort is `none`, and the
+# adapter never sets an effort (their default is `medium`), so they offer no temperature.
+# https://developers.openai.com/api/docs/guides/latest-model
+
+# GPT-6.1 Sol: 2 USD / 1M input, 10 USD / 1M output; max output 128,000; Chat Completions
+# supported without tools. https://developers.openai.com/api/docs/models/gpt-6.1-sol (verified 2026-10-21)
+# A prompt over 272K input tokens bills the whole request at 1.5x (output 15 USD / 1M); the quote
+# uses that rate so it stays an upper bound.
+[[model]]
+id = "openai.gpt-6.1-sol"
+provider = "openai"
+provider_model = "gpt-6.1-sol"
+label = "GPT-6.1 Sol"
+description = "OpenAI reasoning model. Quoted up to max output tokens at 15 USD per million output tokens (the rate for prompts over 272K tokens); input billed on top."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 20
+quality = 4
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.015 USD", count = "max_tokens" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included (sent as max_completion_tokens). The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "openai.gpt-6.1-sol"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included (sent as max_completion_tokens). The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+# GPT-6 Luna: 0.10 USD / 1M input, 0.50 USD / 1M output; max output 128,000; Chat Completions
+# supported. https://developers.openai.com/api/docs/models/gpt-6-luna (verified 2026-10-21)
+# A prompt over 272K input tokens bills the whole request at 1.5x (output 0.75 USD / 1M); the
+# quote uses that rate so it stays an upper bound.
+[[model]]
+id = "openai.gpt-6-luna"
+provider = "openai"
+provider_model = "gpt-6-luna"
+label = "GPT-6 Luna"
+description = "Small, inexpensive OpenAI reasoning model. Quoted up to max output tokens at 0.75 USD per million output tokens (the rate for prompts over 272K tokens); input billed on top."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 8
+quality = 3
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.00075 USD", count = "max_tokens" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included (sent as max_completion_tokens). The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "openai.gpt-6-luna"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included (sent as max_completion_tokens). The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+# GPT-4.1 mini (snapshot gpt-4.1-mini-2025-04-14): 0.40 USD / 1M input, 1.60 USD / 1M output;
+# max output 32,768; non-reasoning, so temperature (0..2, Chat Completions) applies.
+# https://developers.openai.com/api/docs/models/gpt-4.1-mini (verified 2026-10-21)
+[[model]]
+id = "openai.gpt-4.1-mini"
+provider = "openai"
+provider_model = "gpt-4.1-mini-2025-04-14"
+label = "GPT-4.1 mini"
+description = "Quick non-reasoning OpenAI model with a temperature control. Quoted up to max output tokens at 1.60 USD per million output tokens; input billed on top."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 5
+quality = 2
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0016 USD", count = "max_tokens" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included (sent as max_completion_tokens). The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "32768" }
+default = { type = "unsigned", value = "16000" }
+
+[[model.params.params]]
+name = "temperature"
+label = "Temperature"
+description = "Sampling randomness from 0 to 2: lower is more focused, higher more varied. Unset leaves the model's default."
+control = { type = "slider", min = 0.0, max = 2.0, step = 0.1 }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "openai.gpt-4.1-mini"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.rules]]
+param = "temperature"
+meaning = "sampling_temperature"
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included (sent as max_completion_tokens). The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "32768" }
+default = { type = "unsigned", value = "16000" }
+
+[[model.parameter_contract.schema.params]]
+name = "temperature"
+label = "Temperature"
+description = "Sampling randomness from 0 to 2: lower is more focused, higher more varied. Unset leaves the model's default."
+control = { type = "slider", min = 0.0, max = 2.0, step = 0.1 }
