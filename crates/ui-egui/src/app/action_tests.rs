@@ -132,3 +132,36 @@ fn render_frame_action_review_evidence() {
     h.run();
     h.render().unwrap().save(folder.join("frame-actions.png")).unwrap();
 }
+
+fn with_look_actions() -> NodeCraftApp {
+    let look = nodecraft_nodes::video_look::IDS.iter().copied().chain([nodecraft_nodes::video_look::DUPLICATE]).collect::<Vec<_>>();
+    with_kinds(&look, 3, 640.0)
+}
+
+#[test]
+fn look_action_cards_show_their_generated_controls() {
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1800.0, 1200.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), with_look_actions());
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.step();
+    for label in ["Grade video", "Video effect", "Key out a colour", "Watermark video", "Duplicate video", "Saturation", "Similarity", "Copies"] {
+        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+    }
+    // The blur's size shows only once Blur is the effect, and the mark's width only for a picture.
+    assert!(h.query_by_label_contains("Blur (px)").is_none());
+    assert!(h.query_by_label_contains("Width (% of").is_none());
+}
+
+#[test]
+#[ignore = "manual public-safe PR evidence"]
+fn render_look_action_review_evidence() {
+    let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut h =
+        Harness::builder().wgpu().with_size(egui::Vec2::new(1800.0, 1200.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), with_look_actions());
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.run();
+    h.render().unwrap().save(folder.join("look-actions.png")).unwrap();
+}

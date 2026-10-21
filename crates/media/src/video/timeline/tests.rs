@@ -17,7 +17,18 @@ fn meta(width: u32, height: u32, rotation: u16, audio: bool) -> VideoMetadata {
     }
 }
 fn span(in_us: u64, out_us: u64) -> Span {
-    Span { in_us, out_us, fade_in_us: 0, fade_out_us: 0, volume: 1000, muted: false, transition_us: 0, speed: 1000, placement: Placement::IDENTITY }
+    Span {
+        in_us,
+        out_us,
+        fade_in_us: 0,
+        fade_out_us: 0,
+        volume: 1000,
+        muted: false,
+        transition_us: 0,
+        speed: 1000,
+        placement: Placement::IDENTITY,
+        look: Look::NONE,
+    }
 }
 const FRAME: Frame = Frame { width: 1280, height: 720, fps: (30, 1), background: [0, 0, 0] };
 
@@ -269,4 +280,53 @@ fn a_layer_fits_in_the_frames_the_main_track_shows() {
     assert_eq!(layer_room_us(1_000_000, 990_000, (30, 1)), None);
     assert_eq!(layer_room_us(0, 0, (30, 1)).map(|us| frames(us, (30, 1))), Some(1));
     assert_eq!(layer_room_us(u64::MAX, u64::MAX, (120_000, 1)), None);
+}
+#[test]
+fn a_look_grades_adds_its_effect_and_keys_before_the_picture_is_scaled() {
+    let m = meta(1280, 720, 0, false);
+    let plain = graph(FRAME, &[(Media::Video(&m), &span(0, 1_000_000))], &[], &[]).unwrap();
+    assert!(!plain.contains("eq=") && !plain.contains("chromakey"), "no look, no filters: {plain}");
+    let graded = Look { brightness: -250, contrast: 1500, saturation: 0, gamma: 1200, effect: Effect::Sepia, key: None };
+    let s = Span { look: graded, ..span(0, 1_000_000) };
+    let g = graph(FRAME, &[(Media::Video(&m), &s)], &[], &[]).unwrap();
+    assert!(
+        g.contains("dither=none,lutrgb=r=val-64:g=val-64:b=val-64,eq=contrast=1.500:saturation=0.000:gamma=1.200,hue=s=0,lutyuv=u=108:v=146,scale="),
+        "{g}"
+    );
+    for (effect, filter) in [
+        (Effect::Grayscale, "hue=s=0,"),
+        (Effect::Invert, "negate,"),
+        (Effect::Blur(2500), "gblur=sigma=2.500,"),
+        (Effect::Sharpen(1000), "unsharp=lx=5:ly=5:la=1.000:cx=5:cy=5:ca=0,"),
+        (Effect::Vignette(500), "vignette=angle=PI*0.500/2,"),
+    ] {
+        let s = Span { look: Look { effect, ..Look::NONE }, ..span(0, 1_000_000) };
+        let g = graph(FRAME, &[(Media::Video(&m), &s)], &[], &[]).unwrap();
+        assert!(g.contains(&format!("dither=none,{filter}scale=")), "{effect:?}: {g}");
+    }
+    let keyed = Look { key: Some(Key { color: [0, 255, 0], similarity: 150, blend: 50 }), ..Look::NONE };
+    let layer = Span { look: keyed, ..span(0, 1_000_000) };
+    let g = graph(FRAME, &[(Media::Video(&m), &span(0, 1_000_000))], &[(Media::Video(&m), &layer, 0)], &[]).unwrap();
+    assert!(g.contains("format=yuva444p,chromakey=color=0x00ff00:similarity=0.150:blend=0.050,scale="), "{g}");
+    assert!(g.contains("format=yuva420p"), "the keyed layer keeps its alpha: {g}");
+}
+#[test]
+fn looks_stay_bounded_and_keys_only_go_on_layers() {
+    for look in [
+        Look { brightness: 1001, ..Look::NONE },
+        Look { contrast: 3001, ..Look::NONE },
+        Look { saturation: 3001, ..Look::NONE },
+        Look { gamma: 99, ..Look::NONE },
+        Look { effect: Effect::Blur(0), ..Look::NONE },
+        Look { effect: Effect::Blur(MAX_BLUR + 1), ..Look::NONE },
+        Look { effect: Effect::Sharpen(3001), ..Look::NONE },
+        Look { effect: Effect::Vignette(1001), ..Look::NONE },
+        Look { key: Some(Key { color: [0; 3], similarity: 9, blend: 0 }), ..Look::NONE },
+        Look { key: Some(Key { color: [0; 3], similarity: 100, blend: 1001 }), ..Look::NONE },
+    ] {
+        assert!(!look.valid(), "{look:?}");
+    }
+    assert!(Look::NONE.valid());
+    assert_eq!(look(&Look::NONE), "");
+    assert_eq!(look(&Look { brightness: 1000, ..Look::NONE }), "lutrgb=r=val+255:g=val+255:b=val+255,");
 }

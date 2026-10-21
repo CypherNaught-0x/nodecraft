@@ -1722,7 +1722,7 @@ fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clicka
     assert!(h.state().palette.is_some());
     h.event(egui::Event::Text("vid".into()));
     h.run();
-    h.get_by_label_contains("Video").click();
+    h.get_by_label_contains("Video    V").click();
     h.run();
     assert_eq!(nodes_of(&h, "source.video").len(), 1);
     assert!(h.state().palette.is_none());

@@ -10,6 +10,16 @@ use nodecraft_types::{Choice, Error, Modality, Number, ParamControl, ParamSchema
 /// An action node kind.
 pub struct ActionKind {
     descriptor: NodeDescriptor,
+    /// The last input port may be left unconnected: the action then gets one input fewer.
+    optional_last: bool,
+}
+
+impl ActionKind {
+    /// Lets the last input port stay unconnected (a watermark's picture, a key's background).
+    pub(crate) fn optional_last(mut self) -> Self {
+        self.optional_last = true;
+        self
+    }
 }
 
 pub(crate) fn port(name: &str, modality: Modality, many: bool) -> Port {
@@ -56,7 +66,7 @@ fn toggle(name: &str, label: &str, default: bool) -> ParamSpec {
     }
 }
 
-fn text(name: &str, label: &str, default: &str) -> ParamSpec {
+pub(crate) fn text(name: &str, label: &str, default: &str) -> ParamSpec {
     ParamSpec {
         name: name.into(),
         label: label.into(),
@@ -116,6 +126,7 @@ pub(crate) fn kind(id: &str, label: &str, inputs: Vec<Port>, outputs: Vec<Port>,
             params: ParamSchema { params },
             quick_add: None,
         },
+        optional_last: false,
     }
 }
 
@@ -333,16 +344,23 @@ impl NodeKind for ActionKind {
         let ports = &self.descriptor.inputs;
         let room = ports.iter().any(|p| p.port_type.many) || inputs.len() <= ports.len();
         let fits = !inputs.is_empty() && room && inputs.iter().all(|t| ports.iter().any(|p| p.port_type.modality == t.modality));
+        // A kind with an optional last port needs the rest: a picture alone isn't a Key's video.
+        let required = if self.optional_last { ports.len().saturating_sub(1) } else { 0 };
+        let fits = fits && ports.iter().take(required).all(|p| inputs.iter().any(|t| t.modality == p.port_type.modality));
         fits.then(|| ModeId::new("action").ok()).flatten()
     }
 
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         let params = self.validate_instance(ctx.node, true)?.into_visible_values();
         // One value per input port, in the order the kind declares them (a list port's values
-        // all go in, in order); every port must be connected.
+        // all go in, in order); every port must be connected, but an optional last one.
         let mut inputs: Vec<Value> = Vec::new();
-        for port in &self.descriptor.inputs {
-            let mut values = ctx.inputs.iter().filter(|i| i.port == port.name).map(|i| i.value.clone());
+        let last = self.descriptor.inputs.len().saturating_sub(1);
+        for (n, port) in self.descriptor.inputs.iter().enumerate() {
+            let mut values = ctx.inputs.iter().filter(|i| i.port == port.name).map(|i| i.value.clone()).peekable();
+            if self.optional_last && n == last && values.peek().is_none() {
+                break;
+            }
             if port.port_type.many {
                 let all: Vec<Value> = values.collect();
                 if all.is_empty() {

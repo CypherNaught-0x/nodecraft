@@ -132,12 +132,30 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     );
     use nodecraft_nodes::video_edit::{REPLACE_AUDIO, SPEED, STITCH, TRIM};
     use nodecraft_nodes::video_frames::{CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REVERSE};
+    use nodecraft_nodes::video_look::{DUPLICATE, FILTER, GRADE, KEY, WATERMARK};
     let (batch, timeline) = (nodecraft_nodes::batch::ID, nodecraft_nodes::timeline::ID);
-    assert_eq!(
-        ids(PortType { modality: Modality::Video, many: false }),
-        [batch, router::ID, CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REPLACE_AUDIO, REVERSE, SPEED, STITCH, timeline, TRIM],
-        "a Timeline and the video actions take a video"
-    );
+    let mut video_one = ids(PortType { modality: Modality::Video, many: false });
+    video_one.sort();
+    let mut want = vec![
+        batch,
+        router::ID,
+        CONTACT_SHEET,
+        FRAMES,
+        LONG_EXPOSURE,
+        REPLACE_AUDIO,
+        REVERSE,
+        SPEED,
+        STITCH,
+        timeline,
+        TRIM,
+        DUPLICATE,
+        FILTER,
+        GRADE,
+        KEY,
+        WATERMARK,
+    ];
+    want.sort();
+    assert_eq!(video_one, want, "a Timeline and the video actions take a video");
     assert_eq!(
         ids(PortType { modality: Modality::Video, many: true }),
         [batch, router::ID, STITCH, timeline],

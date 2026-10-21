@@ -17,7 +17,7 @@ fn micros(params: &ParamValues, name: &str) -> Result<u64, String> {
 }
 
 /// A factor setting (1 is as it is) in thousandths, from `min` to `max` thousandths.
-fn thousandths(params: &ParamValues, name: &str, min: u16, max: u16) -> Result<u16, String> {
+pub(super) fn thousandths(params: &ParamValues, name: &str, min: u16, max: u16) -> Result<u16, String> {
     let factor = number(params, name)?;
     let value = (factor * 1000.0).round();
     if !(f64::from(min)..=f64::from(max)).contains(&value) {

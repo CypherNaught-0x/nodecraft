@@ -160,7 +160,10 @@ impl Settled {
 
 /// Whether nodes of `kind` work on the video service (rendering or decoding a video), which never runs live.
 fn renders_video(kind: &str) -> bool {
-    kind == nodecraft_nodes::timeline::ID || nodecraft_nodes::video_edit::IDS.contains(&kind) || nodecraft_nodes::video_frames::IDS.contains(&kind)
+    kind == nodecraft_nodes::timeline::ID
+        || nodecraft_nodes::video_edit::IDS.contains(&kind)
+        || nodecraft_nodes::video_frames::IDS.contains(&kind)
+        || nodecraft_nodes::video_look::IDS.contains(&kind)
 }
 
 /// Whether nodes of `kind` refresh live: actions, and technique nodes made only of local work.

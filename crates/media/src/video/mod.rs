@@ -18,8 +18,8 @@ mod native;
 mod probe;
 mod timeline;
 pub use timeline::{
-    ComposeCaption, ComposeClip, ComposeSpec, MAX_CAPTIONS, MAX_CLIPS, MAX_DURATION_US, MAX_PLACED_SIDE, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MIN_TRANSITION_US,
-    Placement, Quality, Source, layer_room_us,
+    ComposeCaption, ComposeClip, ComposeSpec, Effect, Key, Look, MAX_BLUR, MAX_CAPTIONS, MAX_CLIPS, MAX_DURATION_US, MAX_PLACED_SIDE, MAX_SPEED, MAX_VOLUME,
+    MIN_SPEED, MIN_TRANSITION_US, Placement, Quality, Source, layer_room_us,
 };
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
