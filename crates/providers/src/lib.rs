@@ -39,6 +39,8 @@ pub mod secrets;
 #[cfg(feature = "seedream")]
 pub mod seedream;
 mod task;
+#[cfg(feature = "tripo")]
+pub mod tripo;
 
 pub use delivery::{HttpFailure, MAX_STREAMED_TEXT, MAX_TEXT_DELTA, RequestContext, SubmitContext};
 pub use error::{ErrorKind, ProviderError};

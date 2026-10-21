@@ -55,6 +55,9 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
         } else if model.id == "fal.trellis2" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.provider == "tripo" {
+            let micros = if model.id == "tripo.text-to-3d" { 200_000 } else { 300_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -116,7 +119,10 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.trellis2", false),
             ("fal.wan22", false),
             ("replicate.hello", false),
-            ("test.video", false)
+            ("test.video", false),
+            ("tripo.image-to-3d", false),
+            ("tripo.multiview-to-3d", false),
+            ("tripo.text-to-3d", false)
         ]
     );
     // Wiring an image narrows it to image-to-image models.

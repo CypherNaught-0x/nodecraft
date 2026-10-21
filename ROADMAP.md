@@ -83,10 +83,11 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   (#411). There is no audio playback (#106), no video actions (#108), no Timeline (#109) and no
   video generation modes yet.
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
-  batch, Techniques, app mode, library, Layer/Timeline editors, Elements, 3D generation and capture, PDF,
+  batch, Techniques, app mode, library, Layer/Timeline editors, Elements, PDF,
   collaboration, and 34 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
-  Tripo, Meshy and the 25 `future` names have no work started).
+  Meshy and the 25 `future` names have no work started). 3D generation has a Generate 3D card
+  with Tripo text, image and multiview models and fal's Trellis (#22).
 
 ## Next up
 

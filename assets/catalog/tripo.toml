@@ -1,0 +1,119 @@
+# Tripo official API and pricing verified 2026-10-21.
+# https://docs.tripo3d.ai (generation: text, image and multiview to model)
+# https://docs.tripo3d.ai (billing: credits per task)
+# Estimates for one textured PBR model at standard quality (1 credit = 0.01 USD); the adapter
+# always asks for texture and PBR, so the price covers what is sent. Not a provider-reported charge.
+
+[[model]]
+id="tripo.text-to-3d"
+provider="tripo"
+provider_model="text_to_model"
+label="Tripo text to 3D"
+description="Generate one textured GLB model from a prompt. Dated 0.20 USD estimate (20 credits)."
+latency_s=90
+quality=4
+pricing={type="per_call",price="0.20 USD"}
+
+[[model.modes]]
+id="text-to-mesh"
+output="mesh"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="model_version"
+label="Model version"
+control={type="choice",options=[{value="v2.5-20250123",label="v2.5"},{value="v3.0-20250812",label="v3.0"},{value="v3.1-20260211",label="v3.1"}]}
+default={type="text",value="v2.5-20250123"}
+
+[[model.params.params]]
+name="model_seed"
+label="Shape seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model.params.params]]
+name="texture_seed"
+label="Texture seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model.params.params]]
+name="face_limit"
+label="Face limit (optional)"
+control={type="unsigned",min="1000",max="1500000",step="1000"}
+
+[[model.params.params]]
+name="negative_prompt"
+label="Negative prompt"
+control={type="text",multiline=false,max_bytes=1020}
+default={type="text",value=""}
+
+[[model]]
+id="tripo.image-to-3d"
+provider="tripo"
+provider_model="image_to_model"
+label="Tripo image to 3D"
+description="Generate one textured GLB model from one image. Dated 0.30 USD estimate (30 credits)."
+latency_s=90
+quality=4
+pricing={type="per_call",price="0.30 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="model_version"
+label="Model version"
+control={type="choice",options=[{value="v2.5-20250123",label="v2.5"},{value="v3.0-20250812",label="v3.0"},{value="v3.1-20260211",label="v3.1"}]}
+default={type="text",value="v2.5-20250123"}
+
+[[model.params.params]]
+name="model_seed"
+label="Shape seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model.params.params]]
+name="texture_seed"
+label="Texture seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model.params.params]]
+name="face_limit"
+label="Face limit (optional)"
+control={type="unsigned",min="1000",max="1500000",step="1000"}
+
+[[model]]
+id="tripo.multiview-to-3d"
+provider="tripo"
+provider_model="multiview_to_model"
+label="Tripo multiview to 3D"
+description="Generate one textured GLB model from a front view and up to three more. Dated 0.30 USD estimate (30 credits)."
+latency_s=90
+quality=4
+pricing={type="per_call",price="0.30 USD"}
+
+[[model.modes]]
+id="multiview-to-mesh"
+output="mesh"
+inputs=[{role="front",modality="image",min=1,max=1},{role="left",modality="image",min=0,max=1},{role="back",modality="image",min=0,max=1},{role="right",modality="image",min=0,max=1}]
+
+[[model.params.params]]
+name="model_version"
+label="Model version"
+control={type="choice",options=[{value="v2.5-20250123",label="v2.5"},{value="v3.0-20250812",label="v3.0"},{value="v3.1-20260211",label="v3.1"}]}
+default={type="text",value="v2.5-20250123"}
+
+[[model.params.params]]
+name="model_seed"
+label="Shape seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model.params.params]]
+name="texture_seed"
+label="Texture seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model.params.params]]
+name="face_limit"
+label="Face limit (optional)"
+control={type="unsigned",min="1000",max="1500000",step="1000"}

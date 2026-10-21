@@ -1,6 +1,7 @@
-//! Catalog-neutral production generation: image (`generation.image`) and text
-//! (`generation.text`, #84) cards over the same contract. Engine compiles the validated catalog
-//! into these immutable definitions; this L2 module never depends on catalog or a provider.
+//! Catalog-neutral production generation: image (`generation.image`), text (`generation.text`,
+//! #84) and 3D (`generation.mesh`, #22) cards over the same contract. Engine compiles the
+//! validated catalog into these immutable definitions; this L2 module never depends on catalog
+//! or a provider.
 use crate::{
     Category, GenerateInput, GenerateOutput, InputContract, InputValue, JobSpec, ModeContract, ModeId, NodeContract, NodeDescriptor, NodeKind, PlanCtx,
     PortCount, descriptor::invalid, mention,
@@ -18,19 +19,22 @@ use std::{
 pub const KIND: &str = "generation.image";
 /// A text generation card: an instruction in, a model's answer out (#84).
 pub const TEXT_KIND: &str = "generation.text";
+/// A 3D generation card: a prompt or images in, one 3D model out (#22).
+pub const MESH_KIND: &str = "generation.mesh";
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
 const MAX_PROMPTS: usize = 1024;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
 pub fn is_generation(kind: &str) -> bool {
-    kind == KIND || kind == TEXT_KIND
+    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND
 }
 /// The generation kind whose cards make `output`, if there is one.
 pub fn kind_for(output: Modality) -> Option<&'static str> {
     match output {
         Modality::Image => Some(KIND),
         Modality::Text => Some(TEXT_KIND),
+        Modality::Mesh => Some(MESH_KIND),
         _ => None,
     }
 }
@@ -97,18 +101,27 @@ fn local_schema(model: Option<&str>) -> ParamSchema {
 fn base(id: &'static str, output: Modality) -> NodeDescriptor {
     NodeDescriptor {
         id: id.into(),
-        label: if output == Modality::Text { "Generate text" } else { "Generate image" }.into(),
+        label: match output {
+            Modality::Text => "Generate text",
+            Modality::Mesh => "Generate 3D",
+            _ => "Generate image",
+        }
+        .into(),
         category: Category::Generation,
         inputs: vec![Port { name: PROMPT.into(), port_type: PortType { modality: Modality::Text, many: true } }],
-        // One answer per text run; an image run can make several.
-        outputs: vec![Port { name: "out".into(), port_type: PortType { modality: output, many: output != Modality::Text } }],
+        // One answer or model per run; an image run can make several.
+        outputs: vec![Port { name: "out".into(), port_type: PortType { modality: output, many: output == Modality::Image } }],
         params: local_schema(None),
         quick_add: None,
     }
 }
 /// What a kind's messages call its output, so image wording stays exactly as it was.
 fn noun(output: Modality) -> &'static str {
-    if output == Modality::Text { "text" } else { "image" }
+    match output {
+        Modality::Text => "text",
+        Modality::Mesh => "3D",
+        _ => "image",
+    }
 }
 fn said(kind: ErrorKind, output: Modality, message: &str) -> Error {
     Error::new(kind, message.replace("{noun}", noun(output)))
@@ -125,6 +138,10 @@ impl GenerationKind {
     /// Text generation over the same rules: each model's modes here all answer in text.
     pub fn text(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
         Self::making(Modality::Text, models, snapshot)
+    }
+    /// 3D generation: each model's modes here all make one 3D model.
+    pub fn mesh(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        Self::making(Modality::Mesh, models, snapshot)
     }
     /// What this kind's cards make.
     pub fn output(&self) -> Modality {
@@ -371,7 +388,11 @@ impl NodeKind for GenerationKind {
         Ok(node)
     }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
-        let mode = if self.output == Modality::Text { "text-to-text" } else { "text-to-image" };
+        let mode = match self.output {
+            Modality::Text => "text-to-text",
+            Modality::Mesh => "text-to-mesh",
+            _ => "text-to-image",
+        };
         inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
     }
     /// Wired media is accepted when one of the model's modes declares a role of every connected
@@ -437,12 +458,35 @@ impl NodeKind for GenerationKind {
         {
             return Err(said(ErrorKind::Unsupported, self.output, "this {noun} model requires unsupported input roles"));
         }
-        let prompt_role = mode
-            .inputs
-            .iter()
-            .find(|r| r.role == PROMPT && r.modality == Modality::Text)
-            .ok_or_else(|| Error::new(ErrorKind::Unsupported, "model has no supported prompt role"))?;
         let media = self.media(mode, &inputs)?;
+        let prompt = match mode.inputs.iter().find(|r| r.role == PROMPT && r.modality == Modality::Text) {
+            Some(role) => Some(self.prompt(role, ctx, &inputs, &mentioned)?),
+            // A mode without a prompt (image to 3D) takes its media alone; its declared counts
+            // already refuse wired prompts, and a mode with no inputs at all has nothing to send.
+            None if media.is_empty() => return Err(Error::new(ErrorKind::Unsupported, "model has no supported prompt role")),
+            None if !mentioned.is_empty() => return Err(bad(self.output, "this {noun} model takes no prompt, so it can't use @mentions")),
+            None => None,
+        };
+        let target = ctx
+            .targets
+            .get(ctx.node.id, &definition.model.provider)
+            .ok_or_else(|| said(ErrorKind::Unsupported, self.output, "{noun} provider route is not configured"))?;
+        let params = definition.model.parameters.resolve_selected(&ctx.node.params, true)?.submission()?;
+        Ok(vec![JobSpec::Generate {
+            node: ctx.node.id,
+            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
+            provider: definition.model.provider.clone(),
+            instance: target.instance(),
+            model: definition.model.remote.clone(),
+            params,
+            inputs: prompt.map(|text| GenerateInput { role: PROMPT.into(), value: Value::Text(text) }).into_iter().chain(media).collect(),
+        }])
+    }
+}
+impl GenerationKind {
+    /// The prompt a run sends: wired text replaces the card's own where the role is inline, and
+    /// @mentioned cards' text replaces their tokens.
+    fn prompt(&self, prompt_role: &GenerationRole, ctx: &PlanCtx<'_>, inputs: &[InputValue], mentioned: &[&InputValue]) -> Result<String, Error> {
         let mut texts = Vec::new();
         for input in inputs.iter().filter(|input| input.port == PROMPT) {
             if texts.len() >= MAX_PROMPTS {
@@ -471,26 +515,13 @@ impl NodeKind for GenerationKind {
             None => "",
             _ => return Err(bad(self.output, "{noun} prompt must be text")),
         };
-        let local = if mentioned.is_empty() { Cow::Borrowed(local) } else { Cow::Owned(mention::substitute(local, &mentioned_texts(&mentioned)?)?) };
+        let local = if mentioned.is_empty() { Cow::Borrowed(local) } else { Cow::Owned(mention::substitute(local, &mentioned_texts(mentioned)?)?) };
         let local = local.as_ref();
         let prompt = compose_text(TextPrecedence::ConnectedReplaces, prompt_role.inline.then_some(local), &texts, "\n")?;
         if prompt.trim().is_empty() {
             return Err(bad(self.output, "{noun} generation needs a prompt"));
         }
-        let target = ctx
-            .targets
-            .get(ctx.node.id, &definition.model.provider)
-            .ok_or_else(|| said(ErrorKind::Unsupported, self.output, "{noun} provider route is not configured"))?;
-        let params = definition.model.parameters.resolve_selected(&ctx.node.params, true)?.submission()?;
-        Ok(vec![JobSpec::Generate {
-            node: ctx.node.id,
-            outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
-            provider: definition.model.provider.clone(),
-            instance: target.instance(),
-            model: definition.model.remote.clone(),
-            params,
-            inputs: std::iter::once(GenerateInput { role: PROMPT.into(), value: Value::Text(prompt) }).chain(media).collect(),
-        }])
+        Ok(prompt)
     }
 }
 
