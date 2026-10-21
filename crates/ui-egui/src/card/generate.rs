@@ -25,8 +25,8 @@ pub struct Roles {
     pub count: Option<String>,
     /// The output aspect: tagged `aspect_ratio`, or else a choice whose every option is `W:H`.
     pub aspect: Option<String>,
-    /// Image strength: a slider tagged `image_strength`, or else one named `strength`,
-    /// `image_strength` or `prompt_strength` in a schema without a semantic contract.
+    /// Image strength: a slider tagged `image_strength`, or else an untagged slider named
+    /// `strength`, `image_strength` or `prompt_strength`.
     pub strength: Option<String>,
     /// Style strength: a slider tagged `style_strength`, or else one named `style_strength`.
     pub style_strength: Option<String>,
@@ -123,10 +123,15 @@ pub fn step_count(control: &ParamControl, current: u64, up: bool) -> Option<Valu
             let next = Value::Unsigned(Unsigned(next));
             control.validate_value(&next).is_ok().then_some(next)
         }
+        // By count, not option order, so unordered or repeated options still step one way.
         ParamControl::Choice { options } => {
-            let at = options.iter().position(|option| choice_count(&option.value) == Some(current))?;
-            let next = if up { at.checked_add(1)? } else { at.checked_sub(1)? };
-            options.get(next).map(|option| Value::Text(option.value.clone()))
+            let counted = options.iter().filter_map(|option| choice_count(&option.value).map(|count| (count, option)));
+            let next = if up {
+                counted.filter(|(count, _)| *count > current).min_by_key(|(count, _)| *count)
+            } else {
+                counted.filter(|(count, _)| *count < current).max_by_key(|(count, _)| *count)
+            };
+            next.map(|(_, option)| Value::Text(option.value.clone()))
         }
         _ => None,
     }
@@ -392,7 +397,11 @@ mod tests {
         assert_eq!(step_count(&control, 2, false), Some(Value::Text("1".into())));
         assert_eq!(step_count(&control, 4, true), None);
         assert_eq!(step_count(&control, 1, false), None);
-        assert_eq!(step_count(&control, 3, true), None, "not an option");
+        assert_eq!(step_count(&control, 3, true), Some(Value::Text("4".into())), "between options: the next one that way");
+        let shuffled = ParamControl::Choice { options: vec![option("4"), option("1"), option("1"), option("2")] };
+        assert_eq!(step_count(&shuffled, 1, true), Some(Value::Text("2".into())), "by count, not option order");
+        assert_eq!(step_count(&shuffled, 4, false), Some(Value::Text("2".into())));
+        assert_eq!(step_count(&shuffled, 2, false), Some(Value::Text("1".into())), "a repeated option is no step");
         assert_eq!(count_of(Some(&Value::Text("4".into()))), Some(4));
         assert_eq!(count_of(Some(&Value::Text("four".into()))), None);
         let words = ParamControl::Choice { options: vec![option("1"), option("many")] };

@@ -67,7 +67,7 @@ default = { type = "text", value = "1" }
 name = "strength"
 label = "Strength"
 control = { type = "slider", min = 0.0, max = 1.0, step = 0.05 }
-default = { type = "number", value = 0.5 }
+default = { type = "number", value = 0.7 }
 [model.parameter_contract]
 version = { major = 1, minor = 0 }
 namespace = "mock-edit"
@@ -88,7 +88,7 @@ default = { type = "text", value = "1" }
 name = "strength"
 label = "Strength"
 control = { type = "slider", min = 0.0, max = 1.0, step = 0.05 }
-default = { type = "number", value = 0.5 }
+default = { type = "number", value = 0.7 }
 "#;
 
 fn scene(model: &str) -> (Harness<'static, NodeCraftApp>, Runs) {
@@ -347,17 +347,55 @@ fn a_counter_steps_through_a_choice_of_counts() {
     assert!(runs.lock().unwrap().is_empty());
 }
 
+fn toolbar_slider(h: &Harness<'static, NodeCraftApp>) -> egui::Rect {
+    h.get_all_by_role(Role::Slider)
+        .filter(|node| node.accesskit_node().label().as_deref() == Some("Strength"))
+        .min_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+        .unwrap()
+        .rect()
+}
+
+#[test]
+fn showing_a_strength_the_slider_snaps_edits_nothing() {
+    // 0.7 snaps to 0.7000000000000001 on a 0.05 step.
+    let (mut h, _) = scene("mock-edit");
+    let revision = h.state().session.revision();
+    h.state_mut().selection.only(N);
+    for _ in 0..4 {
+        h.run();
+    }
+    toolbar_slider(&h);
+    assert_eq!(h.state().session.revision(), revision, "selecting the card never edits it");
+    assert_eq!(node(h.state()).params.get("strength").and_then(|v| if let Value::Number(n) = v { Some(n.get()) } else { None }), Some(0.7));
+}
+
+#[test]
+fn escape_during_a_strength_drag_sets_nothing() {
+    let (mut h, _) = scene("mock-edit");
+    h.state_mut().selection.only(N);
+    h.run();
+    let slider = toolbar_slider(&h);
+    let revision = h.state().session.revision();
+    let (from, to) = (slider.center(), egui::pos2(slider.right() - 1.0, slider.center().y));
+    h.hover_at(from);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.hover_at(to);
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert_eq!(h.state().session.revision(), revision, "Escape cancels the drag");
+}
+
 #[test]
 fn the_toolbar_strength_slider_sets_the_strength_once_a_drag_ends() {
     let (mut h, runs) = scene("mock-edit");
     h.state_mut().selection.only(N);
     h.run();
-    let slider = h
-        .get_all_by_role(Role::Slider)
-        .filter(|node| node.accesskit_node().label().as_deref() == Some("Strength"))
-        .min_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
-        .unwrap()
-        .rect();
+    let slider = toolbar_slider(&h);
     let revision = h.state().session.revision();
     let (from, to) = (slider.center(), egui::pos2(slider.right() - 1.0, slider.center().y));
     h.hover_at(from);
