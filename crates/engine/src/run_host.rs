@@ -625,6 +625,9 @@ impl RunHost {
             journal_changed |= std::mem::take(&mut active.journal_changed);
             keep_recent(recent, active.jobs.ended.drain(..));
             if ended {
+                // A run torn down before its steps ended (its runtime stopped) holds what it had.
+                let rest = take_by_step(&mut active.awaiting, |_, _| true);
+                hold_all(&self.results, rest, |_| "the run stopped before it was recorded".into());
                 notices.push(RunNotice::Finished { canvas: active.canvas });
             }
             !ended
@@ -799,34 +802,35 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
         // reports its own outcome.
         hold_dropped(active, &progress.dropped, held);
         // Then results: a partial one (#480) is recorded, and its step then reports why it is
-        // partial.
+        // partial. A technique node's record takes its inner steps' results along (#615).
         for result in progress.finished {
-            let awaiting = take_awaiting(&mut active.awaiting, |a| a.step == result.node);
-            notices.push(match (record(session, canvas, result), awaiting) {
-                (RunNotice::Failed { canvas, node, reason }, Some(kept)) => {
-                    held::hold(held, held::HeldResult { reason: reason.clone(), ..kept });
-                    RunNotice::Failed { canvas, node, reason: format!("{reason}; {HELD_NOTE}") }
+            let run = &active.run;
+            let node = result.node;
+            let awaiting = take_by_step(&mut active.awaiting, |_, a| run.owner(a.step) == node && (a.step == node || !run.is_running(a.step)));
+            let notice = record(session, canvas, result);
+            notices.push(match notice {
+                RunNotice::Failed { canvas, node, reason } => {
+                    let kept = hold_all(held, awaiting, |_| reason.clone());
+                    RunNotice::Failed { canvas, node, reason: if kept { format!("{reason}; {HELD_NOTE}") } else { reason } }
                 }
-                (notice, _) => notice,
+                // Recorded: the step's results, and its inner steps', were used.
+                notice => notice,
             });
         }
         // A step can still fail after its paid result was admitted (assembling or checking it):
-        // that result is held too.
+        // that result is held too, and so are those of a failed technique node's inner steps.
         for failure in progress.failed {
             let run = &active.run;
-            let awaiting = take_awaiting(&mut active.awaiting, |a| run.owner(a.step) == failure.node && run.has_failed(a.step));
-            notices.push(match awaiting {
+            let failed = |step: NodeId| run.owner(step) == failure.node && !run.is_running(step) && (run.has_failed(step) || run.has_failed(failure.node));
+            let awaiting = take_by_step(&mut active.awaiting, |_, a| failed(a.step));
+            // An inner step that finished says its technique failed, and why.
+            let reason = |step: NodeId| if run.has_failed(step) { failure.reason.clone() } else { format!("its technique failed: {}", failure.reason) };
+            let kept = hold_all(held, awaiting, reason);
+            notices.push(match failure.reason == CANCELLED {
                 // Cancelled with paid results already in: they are held, and the card shows the cancel.
-                Some(kept) if failure.reason == CANCELLED => {
-                    held::hold(held, held::HeldResult { reason: failure.reason.clone(), ..kept });
-                    RunNotice::Cancelled { canvas, node: failure.node }
-                }
-                Some(kept) => {
-                    held::hold(held, held::HeldResult { reason: failure.reason.clone(), ..kept });
-                    RunNotice::Failed { canvas, node: failure.node, reason: format!("{}; {HELD_NOTE}", failure.reason) }
-                }
-                None if failure.reason == CANCELLED => RunNotice::Cancelled { canvas, node: failure.node },
-                None => RunNotice::Failed { canvas, node: failure.node, reason: failure.reason },
+                true => RunNotice::Cancelled { canvas, node: failure.node },
+                false if kept => RunNotice::Failed { canvas, node: failure.node, reason: format!("{}; {HELD_NOTE}", failure.reason) },
+                false => RunNotice::Failed { canvas, node: failure.node, reason: failure.reason },
             });
         }
         if active.cancelled {
@@ -1150,11 +1154,13 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
     }
 }
 
-/// Takes the awaiting results of the first step `matches` picks, as one held result. Another step
-/// it would pick stays awaiting: [`let_go_of_ended`] holds it.
-fn take_awaiting(awaiting: &mut BTreeMap<JobId, Awaiting>, matches: impl Fn(&Awaiting) -> bool) -> Option<held::HeldResult> {
-    let step = awaiting.values().find(|a| matches(a))?.step;
-    take_by_step(awaiting, |_, a| a.step == step).into_values().next()
+/// Holds `results`, one per step, each saying the `reason` for its step; whether there were any.
+fn hold_all(held: &Mutex<held::Held>, results: BTreeMap<NodeId, held::HeldResult>, reason: impl Fn(NodeId) -> String) -> bool {
+    let any = !results.is_empty();
+    for (step, result) in results {
+        held::hold(held, held::HeldResult { reason: reason(step), ..result });
+    }
+    any
 }
 
 /// Takes the awaiting results that `matches`, one held result per step: one job's result as it
@@ -1191,15 +1197,18 @@ fn hold_dropped(active: &mut Active, dropped: &[JobId], held: &Mutex<held::Held>
     }
 }
 
-/// Lets go of the awaiting results of steps that ended: one inlined in a technique used its
-/// result; one that failed without reporting it (its technique node reported another) holds them.
-/// An inlined step's results are let go even if its technique node's record is refused later
-/// (#615).
+/// Lets go of the awaiting results of steps that ended. An inlined step's results wait until its
+/// technique node ends too (#615), because that node's record may still be refused, which holds
+/// them. Results whose step or technique node failed without taking them (it reported another
+/// step's failure) are held. A recorded technique node used the rest.
 fn let_go_of_ended(active: &mut Active, held: &Mutex<held::Held>) {
     let run = &active.run;
-    for (step, result) in take_by_step(&mut active.awaiting, |_, a| !run.is_running(a.step)) {
+    let ended = |step: NodeId| !run.is_running(step) && run.has_ended(run.owner(step));
+    for (step, result) in take_by_step(&mut active.awaiting, |_, a| ended(a.step)) {
         if run.has_failed(step) {
             held::hold(held, held::HeldResult { reason: "its step failed".into(), ..result });
+        } else if run.has_failed(run.owner(step)) {
+            held::hold(held, held::HeldResult { reason: "its technique failed".into(), ..result });
         }
     }
 }
