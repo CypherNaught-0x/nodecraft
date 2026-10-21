@@ -240,6 +240,8 @@ pub struct RunHost {
     checked_at: u64,
     /// Paid results that couldn't be kept, waiting for a decision (#369).
     results: Arc<Mutex<held::Held>>,
+    /// ffmpeg and ffprobe for timeline renders (#109), from the settings.
+    video_tools: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 /// The journal's store and the submitted jobs as last saved, for the write-ahead: a runner saves
@@ -278,7 +280,15 @@ impl RunHost {
             save_failed: None,
             checked_at: 0,
             results: Arc::default(),
+            video_tools: None,
         }
+    }
+
+    /// The ffmpeg and ffprobe later runs render timelines with (`[media]` in the settings,
+    /// through `MediaSettings::tools`); `None` makes timeline renders fail with a message
+    /// saying so. Runs already going keep the tools they started with.
+    pub fn set_video_tools(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {
+        self.video_tools = tools.map(|(ffmpeg, ffprobe)| (ffmpeg.to_path_buf(), ffprobe.to_path_buf()));
     }
 
     /// Keeps the usage log and submitted jobs in `store` (see the module docs), restoring what it
@@ -672,7 +682,7 @@ impl RunHost {
         )
         .with_budget(self.budget.clone())
         .with_write_ahead(self.write_ahead());
-        let actions = Arc::new(LocalActions::new(session.assets().clone()));
+        let actions = Arc::new(LocalActions::new(session.assets().clone()).with_video_tools(self.video_tools.clone()));
         let sources = SourceRunner::default().with_actions(actions.clone());
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
         let (driver, handle) = driver(Scheduler::new(Default::default()));
@@ -1091,6 +1101,19 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
             let imported = session.import_asset(bytes).map_err(|e| e.message)?;
             if imported != *hash {
                 return Err("an action's image changed while it was imported".into());
+            }
+        }
+        // Rendered videos may be over the resident limit: they stream in.
+        for (hash, bytes) in active.actions.staged_videos() {
+            if session.assets().contains(&hash) {
+                continue;
+            }
+            let length = bytes.len() as u64;
+            let range = nodecraft_format::asset_source::AssetRange::new(Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes)), 0, length)
+                .map_err(|e| e.message)?;
+            let imported = session.import_asset_from(&range, &Default::default(), &Default::default()).map_err(|e| e.message)?;
+            if imported != hash {
+                return Err("a rendered video changed while it was imported".into());
             }
         }
         return Ok((take_outputs(&active.runner.sources.outputs, job), None));

@@ -185,6 +185,14 @@ fn template(id: &str) -> (Session, Value) {
         }
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: editor }.apply(&mut document).unwrap();
     }
+    if id.starts_with("timeline.") || id == "node.timeline_set" {
+        // A Timeline (node 9) holding a clip `t1` with a known end, so the valid templates reach
+        // the clip code rather than the kind check.
+        let mut editor = nodecraft_nodes::timeline::kind().descriptor().instantiate(node_id(9), &std::collections::BTreeMap::new()).unwrap();
+        let stored = json!({"clips": [{"id":"t1","origin":"n1","in_us":0,"out_us":2_000_000}]});
+        editor.config.insert(nodecraft_nodes::timeline::CONFIG.into(), nodecraft_types::Value::Text(stored.to_string()));
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: editor }.apply(&mut document).unwrap();
+    }
     let root = nodecraft_types::CommentId::from_bytes([10; 16]);
     let reply = nodecraft_types::CommentId::from_bytes([11; 16]);
     if id.starts_with("comment.") {
@@ -498,6 +506,12 @@ fn template(id: &str) -> (Session, Value) {
         "layers.remove" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1"}),
         "layers.reorder" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","index":0}),
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
+        "timeline.list" => json!({"canvas":canvas(),"id":node_id(9)}),
+        "node.timeline_set" => json!({"canvas":canvas(),"id":node_id(9),"clips":[{"id":"t1","origin":"n1","out_us":1_000_000}]}),
+        "timeline.update" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1","set":{"fade_in_us":500_000,"out_us":null}}),
+        "timeline.move" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1","index":0}),
+        "timeline.split" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1","at_us":1_000_000}),
+        "timeline.remove" => json!({"canvas":canvas(),"id":node_id(9),"clip":"t1"}),
         "element.create" => json!({"canvas":canvas(),"id":node_id(6),"name":"hero","category":"character","guidelines":"red scarf",
             "from":[{"node":node_id(5),"port":"out"}],"edges":[nodecraft_types::EdgeId::from_bytes([0x76; 16])],"pos":{"x":1,"y":2}}),
         "element.sheet" => json!({"canvas":canvas(),"element":node_id(6),"id":node_id(7),
@@ -580,6 +594,9 @@ fn typed_template_panic_hunt() {
             let result = session.dispatch(id, &params);
             if (id.starts_with("layers.") || id == "node.layers_set") && params == valid {
                 assert!(result.is_ok(), "the valid {id} template reaches the layer code: {result:?}");
+            }
+            if (id.starts_with("timeline.") || id == "node.timeline_set") && params == valid {
+                assert!(result.is_ok(), "the valid {id} template reaches the clip code: {result:?}");
             }
             match result {
                 Err(error) => {

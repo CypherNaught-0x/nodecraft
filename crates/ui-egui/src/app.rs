@@ -658,6 +658,10 @@ impl NodeCraftApp {
         self.videos.configure(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // Timelines render with the same tools the cards play with.
+            if let Some(runs) = self.runs.as_mut() {
+                runs.set_video_tools(settings.media.tools());
+            }
             self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
         }
         theme::apply(ctx, self.theme);

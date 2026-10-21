@@ -24,6 +24,7 @@ pub mod shader;
 mod source;
 pub mod technique;
 pub mod text;
+pub mod timeline;
 pub mod video;
 
 pub use contract::{InputContract, ModeContract, NodeContract, OutputContract, PortCount};

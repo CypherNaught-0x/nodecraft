@@ -1054,3 +1054,36 @@ fn settings_too_large_to_keep_are_dropped_but_a_result_too_large_still_fails() {
     let outputs = (0..9).map(|_| Value::Text("x".repeat(1_000_000))).collect();
     assert!(super::recordable(Generation { outputs, ..small }).is_err());
 }
+
+/// Names the thread each action ran on; `slow` is a long one.
+struct Threads;
+impl ActionExecutor for Threads {
+    fn execute(&self, action: &str, _: &nodecraft_types::ParamValues, _: &[Value]) -> Result<Value, String> {
+        if action == "boom" {
+            panic!("the action broke");
+        }
+        Ok(Value::Text(std::thread::current().name().unwrap_or("").into()))
+    }
+    fn long_running(&self, action: &str) -> bool {
+        action != "quick"
+    }
+}
+
+#[test]
+fn a_long_action_runs_on_a_thread_of_its_own_and_its_panic_fails_only_its_job() {
+    use crate::driver::JobRunner;
+    let runner = SourceRunner::default().with_actions(Arc::new(Threads));
+    let node = NodeId::from_bytes([1; 16]);
+    let ran = |action: &str, job: u64| {
+        runner.register(JobId(job), JobSpec::Action { node, action: action.into(), params: Default::default(), inputs: vec![], output: "out".into() });
+        let start = scheduler::Start { job: JobId(job), lane: scheduler::Lane("local".into()), attempt: 1, idempotency_key: String::new() };
+        let outcome = futures::executor::block_on(runner.run(start, crate::driver::CancelToken::default()));
+        (outcome, take_outputs(&runner.outputs, JobId(job)))
+    };
+    let (outcome, outputs) = ran("slow", 1);
+    assert_eq!((outcome, outputs), (Outcome::Done, vec![("out".into(), Value::Text("nodecraft-action".into()))]));
+    let (_, outputs) = ran("quick", 2);
+    assert_ne!(outputs, vec![("out".into(), Value::Text("nodecraft-action".into()))], "a quick action runs in place");
+    let (outcome, _) = ran("boom", 3);
+    assert!(matches!(outcome, Outcome::Failed { transient: false, .. }), "{outcome:?}");
+}

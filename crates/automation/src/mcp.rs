@@ -147,6 +147,13 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "layers.remove",
     "layers.reorder",
     "layers.align",
+    // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
+    "timeline.list",
+    "node.timeline_set",
+    "timeline.update",
+    "timeline.move",
+    "timeline.split",
+    "timeline.remove",
     // Elements only add and wire cards; the sheet card runs (and is quoted) through run.start.
     "element.create",
     "element.sheet",
