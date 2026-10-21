@@ -123,6 +123,8 @@ pub struct Tokens {
     /// The prompt composer on a generation card (#83): its fill, and the submit arrow's size.
     pub prompt_fill: Color32,
     pub submit_size: f32,
+    /// Behind an `@` mention chip in a prompt being edited (#579).
+    pub mention_fill: Color32,
     /// The toolbar over a selected generation card: its height and gap above the card (screen
     /// points), and the default width of the image viewer it opens.
     pub toolbar_height: f32,
@@ -234,6 +236,7 @@ pub const DARK: Tokens = Tokens {
     drop_ring_width: 1.5,
     prompt_fill: Color32::from_rgb(0x1a, 0x1a, 0x1d),
     submit_size: 28.0,
+    mention_fill: Color32::from_rgb(0x23, 0x36, 0x2d),
     toolbar_height: 32.0,
     toolbar_gap: 10.0,
     viewer_width: 720.0,
@@ -283,6 +286,7 @@ pub const LIGHT: Tokens = Tokens {
         Color32::from_rgb(154, 53, 120),
     ],
     prompt_fill: Color32::from_rgb(0xf4, 0xf4, 0xf5),
+    mention_fill: Color32::from_rgb(0xd5, 0xee, 0xe1),
     ..DARK
 };
 
@@ -376,6 +380,7 @@ mod tests {
             assert!(contrast(t.handle_glyph, t.handle_fill) >= 7.0, "{kind:?} handle");
             assert!(contrast(t.text, t.prompt_fill) >= 7.0, "{kind:?} prompt");
             assert!(contrast(t.text_muted, t.prompt_fill) >= 4.5, "{kind:?} prompt hint");
+            assert!(contrast(t.text, t.mention_fill) >= 7.0, "{kind:?} mention chip");
         }
     }
 

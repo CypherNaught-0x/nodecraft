@@ -201,3 +201,75 @@ fn too_many_mentions_block_the_card_and_say_so() {
     assert!(h.query_by_label_contains("Can't run: its prompt mentions more than 16 cards").is_some());
     assert!(h.query_by_label_contains("is no longer on this canvas").is_none(), "the reason stands for the per-mention lines");
 }
+
+/// `key` pressed with Shift held, `times` times, one frame each.
+fn shift(h: &mut Harness<'static, NodeCraftApp>, key: egui::Key, times: usize) {
+    for _ in 0..times {
+        h.key_press_modifiers(egui::Modifiers::SHIFT, key);
+        h.run();
+    }
+}
+
+/// Picks "Story" after `before`, then types `after`: the field holds `before`, the chip, a space
+/// and `after`, the caret at its end. Returns the token.
+fn chip(h: &mut Harness<'static, NodeCraftApp>, story: NodeId, before: &str, after: &str) -> String {
+    type_text(h, &format!("{before}@st"));
+    press(h, egui::Key::Enter);
+    type_text(h, after);
+    nodecraft_nodes::mention::token("Story", story)
+}
+
+#[test]
+fn the_caret_steps_over_a_chip_and_typing_beside_it_keeps_it() {
+    let (mut h, story) = editing();
+    let token = chip(&mut h, story, "", "x");
+    // From after `x`: before `x`, before the space, then over the chip in one press.
+    for _ in 0..3 {
+        press(&mut h, egui::Key::ArrowLeft);
+    }
+    type_text(&mut h, "y");
+    press(&mut h, egui::Key::ArrowRight);
+    type_text(&mut h, "z");
+    click_away(&mut h);
+    assert_eq!(prompt(&h), format!("y{token}z x"), "typed before the chip and, one press later, after it");
+    assert_eq!(nodecraft_nodes::mention::broken(&prompt(&h)), 0);
+}
+
+#[test]
+fn backspace_deletes_a_chip_whole_and_undo_brings_it_back() {
+    let (mut h, story) = editing();
+    let token = chip(&mut h, story, "", "!");
+    // The field keeps an undo point once its text has been still for a second.
+    for _ in 0..90 {
+        h.step();
+    }
+    press(&mut h, egui::Key::ArrowLeft);
+    press(&mut h, egui::Key::ArrowLeft);
+    press(&mut h, egui::Key::Backspace);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    click_away(&mut h);
+    assert_eq!(prompt(&h), format!("{token} !"), "the field's undo restores the whole chip");
+
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Prompt").focus();
+    h.run();
+    press(&mut h, egui::Key::End);
+    press(&mut h, egui::Key::ArrowLeft);
+    press(&mut h, egui::Key::ArrowLeft);
+    press(&mut h, egui::Key::Backspace);
+    click_away(&mut h);
+    assert_eq!(prompt(&h), " !", "one Backspace took the whole chip");
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(prompt(&h), format!("{token} !"), "one undo step brings it back");
+}
+
+#[test]
+fn a_selection_reaching_into_a_chip_takes_all_of_it() {
+    let (mut h, story) = editing();
+    chip(&mut h, story, "a ", "b");
+    // `b`, the space, then into the chip: the selection takes the chip whole.
+    shift(&mut h, egui::Key::ArrowLeft, 3);
+    type_text(&mut h, "Z");
+    click_away(&mut h);
+    assert_eq!(prompt(&h), "a Z");
+}
