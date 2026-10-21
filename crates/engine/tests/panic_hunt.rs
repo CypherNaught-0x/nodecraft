@@ -148,7 +148,7 @@ fn template(id: &str) -> (Session, Value) {
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.mesh","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
     }
-    if matches!(id, "node.model_preview" | "node.set_model") {
+    if matches!(id, "node.model_preview" | "node.set_model" | "node.prompt_assist") {
         let seed = Session::new(document.clone()).unwrap();
         let supplied = [
             ("model".into(), nodecraft_types::Value::Text("openai-images.sunburst".into())),
@@ -353,6 +353,7 @@ fn template(id: &str) -> (Session, Value) {
         "node.param_set" => json!({"canvas":canvas(),"id":node_id(3),"name":"text","value":null}),
         "node.params_set_bulk" => json!({"canvas":canvas(),"ids":[node_id(3),node_id(4)],"revision":0,"name":"text","value":null}),
         "node.model_preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"}),
+        "node.prompt_assist" => json!({"canvas":canvas(),"node":node_id(7),"id":node_id(0x58),"edge":nodecraft_types::EdgeId::from_bytes([0x58; 16])}),
         "node.set_model" => {
             let mut request = json!({"canvas":canvas(),"nodes":[node_id(7)],"model":"openai-images.flare"});
             let preview = session.dispatch("node.model_preview", &request).unwrap();

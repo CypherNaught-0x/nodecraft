@@ -305,8 +305,9 @@ impl NodeCraftApp {
         true
     }
 
-    /// The toolbar over the one selected generation card: its model, aspect ratio and image
-    /// viewer. Edits go through the card intents, so they share the card's dispatch path.
+    /// The toolbar over the one selected generation card: its model and mode, aspect ratio,
+    /// strengths, Improve prompt and the image viewer. Edits go through the card intents, so they
+    /// share the card's dispatch path.
     pub(super) fn generation_toolbar(&mut self, ui: &mut egui::Ui, viewport: Rect, interactive: bool) -> Vec<(NodeId, Intent)> {
         let mut intents = Vec::new();
         let ids = self.selection.nodes();
@@ -336,8 +337,11 @@ impl NodeCraftApp {
         let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
         let shown = |name: &str| cached.visible.contains(name);
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
-        let mode = self.session.document().canvases().get(&self.canvas).and_then(|canvas| mode_of(&self.session, canvas, node));
+        let canvas = self.session.document().canvases().get(&self.canvas);
+        let mode = canvas.and_then(|canvas| mode_of(&self.session, canvas, node));
+        let assist = canvas.map(|canvas| assistable(canvas, node));
         let mut expand = false;
+        let mut improve = false;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
                 egui::Frame::new()
@@ -413,6 +417,18 @@ impl NodeCraftApp {
                                     intents.push((id, Intent::Parameter { name: spec.name.clone(), value: Some(value) }));
                                 }
                             }
+                            if let Some(assist) = &assist {
+                                let r = ui.add_enabled(assist.is_ok(), egui::Button::new("Improve prompt"));
+                                improve = match assist {
+                                    Ok(()) => {
+                                        r.on_hover_text("Add a text card that rewrites this prompt and feeds the rewrite in. Run it to see the rewrite; edit the prompt there from then on").clicked()
+                                    }
+                                    Err(why) => {
+                                        r.on_disabled_hover_text(*why);
+                                        false
+                                    }
+                                };
+                            }
                             if nodecraft_engine::split::image_of(node).is_some() {
                                 expand = ui.button("Expand").on_hover_text("Show this image larger").clicked();
                             }
@@ -423,7 +439,28 @@ impl NodeCraftApp {
         if expand && interactive {
             self.viewer = Some(id);
         }
+        if improve && interactive {
+            self.improve_prompt(id);
+        }
         if interactive { intents } else { Vec::new() }
+    }
+
+    /// Puts a text card that rewrites `id`'s prompt in front of it (#582), selects it, and reports
+    /// a refusal as a notice. Nothing runs until the person runs the new card.
+    fn improve_prompt(&mut self, id: NodeId) {
+        let document = self.session.document();
+        let seed = ("prompt-assist", id, self.session.revision());
+        let (Some(node), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
+            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            return;
+        };
+        match self.session.dispatch("node.prompt_assist", &json!({"canvas": self.canvas, "node": id, "id": node, "edge": edge})) {
+            Ok(_) => {
+                self.notice = None;
+                self.selection.only(node);
+            }
+            Err(error) => self.notice = Some(error.message),
+        }
     }
 
     /// The image viewer the toolbar's Expand opens. It closes when its node or image goes.
@@ -472,6 +509,21 @@ enum Mode {
     Chosen { label: String, references: bool },
     /// No mode takes what is wired, and why.
     NoFit(String),
+}
+
+/// Whether Improve prompt can act on `node`, or why not, cheaply enough for every frame; the
+/// command checks the rest (the model takes a prompt, a text model is installed) when clicked.
+fn assistable(canvas: &Canvas, node: &Node) -> Result<(), &'static str> {
+    use nodecraft_nodes::generation::PROMPT;
+    if canvas.edges().values().any(|edge| edge.to.node == node.id && edge.to.port == PROMPT) {
+        return Err("The prompt comes from a connected card");
+    }
+    match node.params.get(PROMPT) {
+        Some(Value::Text(text)) if text.trim().is_empty() => Err("Write a prompt first"),
+        Some(Value::Text(text)) if !nodecraft_engine::assist_cmds::fits(&node.kind, text) => Err("The prompt is too long to improve"),
+        Some(Value::Text(_)) => Ok(()),
+        _ => Err("Write a prompt first"),
+    }
 }
 
 /// The mode `node`'s inputs choose, counted as the planner counts them: the items each wired
