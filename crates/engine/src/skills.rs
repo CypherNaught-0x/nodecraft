@@ -101,7 +101,12 @@ struct Portable {
 
 /// `skill` as an exported file's text.
 pub fn export(skill: &Skill) -> Result<String, Error> {
-    let portable = Portable { name: skill.name.clone(), description: skill.description.clone(), instructions: skill.instructions.clone(), requires: skill.requires.clone() };
+    let portable = Portable {
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        instructions: skill.instructions.clone(),
+        requires: skill.requires.clone(),
+    };
     serde_json::to_string_pretty(&Exported { format: SKILL_FORMAT.into(), version: SKILL_FORMAT_VERSION, skill: portable })
         .map_err(|_| Error::new(ErrorKind::Internal, "the skill couldn't be exported"))
 }
@@ -248,8 +253,14 @@ pub fn name_taken(skills: &Skills, skill: &Skill) -> Result<(), Error> {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     /// Adds `skill` (its JSON), or replaces the one with its id when that is at `expect`.
-    Put { skill: String, expect: Option<u32> },
-    Remove { id: SkillId, expect: Option<u32> },
+    Put {
+        skill: String,
+        expect: Option<u32>,
+    },
+    Remove {
+        id: SkillId,
+        expect: Option<u32>,
+    },
 }
 
 /// Answers one `skills.store` request against `store`.

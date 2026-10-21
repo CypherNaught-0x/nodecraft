@@ -186,7 +186,10 @@ mod tests {
             Skill { instructions: "x".repeat(MAX_SKILL_INSTRUCTIONS_BYTES + 1), ..skill() },
             Skill { requires: Requires { commands: vec!["Node Add".into()], ..Requires::default() }, ..skill() },
             Skill { requires: Requires { commands: vec!["node.add".into(); MAX_SKILL_REQUIREMENTS + 1], ..Requires::default() }, ..skill() },
-            Skill { requires: Requires { techniques: vec![TechniqueRef { id: TechniqueId::from_bytes([2; 16]), version: Some(0) }], ..Requires::default() }, ..skill() },
+            Skill {
+                requires: Requires { techniques: vec![TechniqueRef { id: TechniqueId::from_bytes([2; 16]), version: Some(0) }], ..Requires::default() },
+                ..skill()
+            },
             Skill { source: Source::Imported { origin: "x".repeat(MAX_SKILL_ORIGIN_BYTES + 1) }, ..skill() },
         ] {
             assert!(broken.validate().is_err(), "{broken:?}");

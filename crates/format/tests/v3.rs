@@ -85,8 +85,10 @@ fn v3_colours_fields_bulk_replay_and_comments_roundtrip_together() {
     assert!(recovered.truncated_tail);
     assert_eq!(recovered.snapshot, after);
     // Project skills (#168) save, journal and undo like any v3 edit.
-    let skill: nodecraft_graph::Skill =
-        serde_json::from_value(serde_json::json!({"id": "05050505-0505-0505-0505-050505050505", "version": 1, "name": "Storyboard", "instructions": "Six panels."})).unwrap();
+    let skill: nodecraft_graph::Skill = serde_json::from_value(
+        serde_json::json!({"id": "05050505-0505-0505-0505-050505050505", "version": 1, "name": "Storyboard", "instructions": "Six panels."}),
+    )
+    .unwrap();
     let put = Changeset::new(vec![Change::PutSkill { skill }]);
     let unput = put.apply(&mut snapshot.project).unwrap();
     let skilled = snapshot.clone();

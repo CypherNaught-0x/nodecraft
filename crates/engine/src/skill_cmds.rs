@@ -58,7 +58,9 @@ fn missing(c: &Context<'_>, requires: &Requires) -> Json {
             let fits = |id, version| id == wanted.id && wanted.version.is_none_or(|v| v == version);
             let owned = c.document.canvases().values().filter_map(|canvas| canvas.technique_info()).any(|info| !info.retired && fits(info.id, info.version));
             let kept = shelf.is_some_and(|shelf| {
-                shelf.with(|library| Ok(library.versions().filter_map(|canvas| canvas.technique_info()).any(|info| fits(info.id, info.version)))).unwrap_or(false)
+                shelf
+                    .with(|library| Ok(library.versions().filter_map(|canvas| canvas.technique_info()).any(|info| fits(info.id, info.version))))
+                    .unwrap_or(false)
             });
             !owned && !kept
         })
@@ -213,8 +215,16 @@ struct CreateParams {
 fn create(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: CreateParams = params(value)?;
     let skills = fresh(c, p.scope, p.id)?;
-    let skill =
-        Skill { id: p.id, version: 1, name: p.name, description: p.description, instructions: p.instructions, requires: p.requires, source: SkillSource::Written, enabled: true };
+    let skill = Skill {
+        id: p.id,
+        version: 1,
+        name: p.name,
+        description: p.description,
+        instructions: p.instructions,
+        requires: p.requires,
+        source: SkillSource::Written,
+        enabled: true,
+    };
     put(c, p.scope, &skills, skill)
 }
 
@@ -445,7 +455,10 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "skill.import",
             "Import a skill",
-            schema(&["scope", "id", "text"], json!({"scope": scope(), "id": uuid(), "text": text(skills::MAX_SKILL_EXPORT_BYTES), "origin": text(MAX_SKILL_ORIGIN_BYTES)})),
+            schema(
+                &["scope", "id", "text"],
+                json!({"scope": scope(), "id": uuid(), "text": text(skills::MAX_SKILL_EXPORT_BYTES), "origin": text(MAX_SKILL_ORIGIN_BYTES)})
+            ),
             "{scope, id: new SkillId, text: an exported skill, origin?} -> {id, scope, version: 1, name, enabled: false}; adds a skill from skill.export's text. It is marked imported (untrusted) and starts disabled until the person turns it on.",
             import,
             enabled_change

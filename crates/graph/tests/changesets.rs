@@ -1,5 +1,6 @@
 use nodecraft_graph::{
-    Canvas, Change, Changeset, Comment, Edge, Endpoint, Field, Generation, MAX_CHANGES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS, Node, Port, Position, Project, Skill, SkillSource, Tag,
+    Canvas, Change, Changeset, Comment, Edge, Endpoint, Field, Generation, MAX_CHANGES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS, Node, Port, Position, Project, Skill,
+    SkillSource, Tag,
 };
 use nodecraft_types::{CanvasId, CommentId, EdgeId, FieldId, GenerationId, Modality, NodeId, PortType, ProjectId, SkillId, TagId, Value};
 use proptest::prelude::*;

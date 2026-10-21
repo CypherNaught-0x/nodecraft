@@ -25,8 +25,11 @@ fn session(store: &MemorySkills) -> Session {
 }
 
 fn create(s: &mut Session, scope: &str, n: u8, name: &str) -> Json {
-    s.dispatch("skill.create", &json!({"scope": scope, "id": sid(n), "name": name, "description": "for tests", "instructions": "Add a text node, then run it."}))
-        .unwrap()
+    s.dispatch(
+        "skill.create",
+        &json!({"scope": scope, "id": sid(n), "name": name, "description": "for tests", "instructions": "Add a text node, then run it."}),
+    )
+    .unwrap()
 }
 
 fn listed(s: &mut Session, params: Json) -> Vec<Json> {
@@ -151,7 +154,10 @@ fn listing_names_what_a_skill_needs_but_this_session_lacks() {
     )
     .unwrap();
     let row = listed(&mut s, json!({})).remove(0);
-    assert_eq!(row["missing"], json!({"commands": ["made.up"], "techniques": [{"id": technique, "version": 2}], "capabilities": ["library.store", "skills.store"]}));
+    assert_eq!(
+        row["missing"],
+        json!({"commands": ["made.up"], "techniques": [{"id": technique, "version": 2}], "capabilities": ["library.store", "skills.store"]})
+    );
     assert_eq!(row["trust"], json!("written here"));
 }
 
@@ -236,7 +242,10 @@ fn a_damaged_or_newer_skills_file_is_an_error_not_a_crash_and_isnt_overwritten()
     for (bytes, expected) in [
         (b"{".to_vec(), ErrorKind::InvalidInput),
         (br#"{"version": 9, "skills": "anything"}"#.to_vec(), ErrorKind::Unsupported),
-        (br#"{"version": 1, "skills": [{"id": "01010101-0101-0101-0101-010101010101", "version": 0, "name": "a", "instructions": "x"}]}"#.to_vec(), ErrorKind::InvalidInput),
+        (
+            br#"{"version": 1, "skills": [{"id": "01010101-0101-0101-0101-010101010101", "version": 0, "name": "a", "instructions": "x"}]}"#.to_vec(),
+            ErrorKind::InvalidInput,
+        ),
     ] {
         store.save(&bytes).unwrap();
         assert_eq!(kind(&mut s, "skill.list", json!({"scope": "user"})), expected);
