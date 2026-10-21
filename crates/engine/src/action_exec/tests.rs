@@ -520,14 +520,15 @@ fn pdf_to_images_draws_each_page_in_the_range_at_its_size() {
 fn pdf_to_text_reads_the_range_with_the_chosen_separator() {
     let kinds = Registry::builtins().unwrap();
     let mut assets = AssetStore::default();
-    let document = pdf_value(&mut assets, &[PAGE, "BT /F1 12 Tf 20 150 Td (Two) Tj ET", "BT /F1 12 Tf 20 150 Td (Three) Tj ET"]);
+    let document = pdf_value(&mut assets, &["", PAGE, "", "BT /F1 12 Tf 20 150 Td (Two) Tj ET", "", "BT /F1 12 Tf 20 150 Td (Three) Tj ET", ""]);
     let actions = LocalActions::new(assets);
     let mut params = defaults(&kinds, nodecraft_nodes::document::TEXT);
     let run = |params: &ParamValues| actions.execute(nodecraft_nodes::document::TEXT, params, std::slice::from_ref(&document));
-    assert_eq!(run(&params).unwrap(), Value::Text("Hello\n\nTwo\n\nThree".into()));
-    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
+    assert_eq!(run(&params).unwrap(), Value::Text("Hello\n\nTwo\n\nThree".into()), "pages without text leave no gap");
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(4)));
     params.insert("separator".into(), Value::Text("heading".into()));
-    assert_eq!(run(&params).unwrap(), Value::Text("[Page 2]\nTwo\n\n[Page 3]\nThree".into()));
+    assert_eq!(run(&params).unwrap(), Value::Text("[Page 4]\nTwo\n\n[Page 5]\n\n\n[Page 6]\nThree\n\n[Page 7]\n".into()));
+    params.insert("first".into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
     params.insert("last".into(), Value::Unsigned(nodecraft_types::Unsigned(1)));
     assert!(run(&params).unwrap_err().contains("comes before"));
     params.insert("separator".into(), Value::Text("nope".into()));

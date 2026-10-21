@@ -47,12 +47,15 @@ impl LocalActions {
         let size = u32::try_from(whole(params, "size")?.clamp(1, MAX_PAGE_SIDE)).map_err(|_| "the size is too large".to_owned())?;
         let background = rgba(word(params, "background")?)?;
         let document = self.document(inputs)?;
+        let reader = document.reader();
         let mut images = Vec::new();
         for index in self.pages(params, &document, MAX_IMAGE_PAGES)? {
-            let page = document.render(index, size, background).map_err(|e| format!("page {} can't be drawn: {e}", index.saturating_add(1)))?;
-            let raster = Raster::new(page.width, page.height, page.rgba, ImageLimits::default())
-                .map_err(|e| format!("page {} can't be used: {e}", index.saturating_add(1)))?;
-            images.push(self.stage(&raster)?);
+            let number = index.saturating_add(1);
+            let page = reader.render(index, size, background).map_err(|e| format!("page {number} can't be drawn: {e}"))?;
+            let raster = Raster::new(page.width, page.height, page.rgba, ImageLimits::default()).map_err(|e| format!("page {number} can't be used: {e}"))?;
+            // Staging fails once the run's pages outgrow what a project holds; say what to change.
+            let staged = self.stage(&raster).map_err(|e| format!("page {number} can't be kept ({e}); narrow the page range or lower the size"))?;
+            images.push(staged);
         }
         Ok(Value::List(images))
     }
@@ -65,9 +68,14 @@ impl LocalActions {
             other => return Err(format!("{other} isn't a way to separate pages")),
         };
         let document = self.document(inputs)?;
+        let reader = document.reader();
         let mut out = String::new();
         for index in self.pages(params, &document, MAX_TEXT_PAGES)? {
-            let text = document.text(index).map_err(|e| format!("page {} can't be read: {e}", index.saturating_add(1)))?;
+            let text = reader.text(index).map_err(|e| format!("page {} can't be read: {e}", index.saturating_add(1)))?;
+            // Without headings a page with no text (a scan, a blank page) adds nothing, not a gap.
+            if !headings && text.is_empty() {
+                continue;
+            }
             let mut part = String::new();
             if !out.is_empty() {
                 part.push_str("\n\n");

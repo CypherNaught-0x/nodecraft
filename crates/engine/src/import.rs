@@ -136,6 +136,9 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     if sniffed.kind == MediaKind::Document {
         // Open it now, so a damaged or password-protected PDF is refused with its reason.
         let info = probe_document(file.bytes, &DocumentLimits::default()).map_err(|error| format!("the PDF can't be read: {error}"))?;
+        if info.pages == 0 {
+            return Err("the PDF has no pages".into());
+        }
         meta.page_count = Some(info.pages);
     }
     let mime = sniffed.mime.parse().map_err(|_| "the file type isn't supported".to_owned())?;

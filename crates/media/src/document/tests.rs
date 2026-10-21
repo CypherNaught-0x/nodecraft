@@ -38,6 +38,15 @@ fn a_page_is_drawn_at_the_asked_size_within_the_limit() {
     let small = Document::open(&bytes, &DocumentLimits { max_side: 60, ..DocumentLimits::default() }).unwrap();
     let page = small.render(0, 4096, [0; 4]).unwrap();
     assert_eq!((page.width, page.height), (60, 40));
+    // A size whose scale isn't exact in f32 still gets its full longer side.
+    for edge in [97, 333, 1601, 4093] {
+        let page = doc.render(0, edge, [255; 4]).unwrap();
+        assert_eq!(page.width, edge, "the longer side is exactly the size asked for");
+        assert_eq!(page.height, ((edge as f32) * 2.0 / 3.0).round() as u32);
+    }
+    // A reader shares its caches across pages and gives the same pages.
+    let reader = doc.reader();
+    assert_eq!(reader.render(0, 97, [255; 4]).unwrap(), doc.render(0, 97, [255; 4]).unwrap());
     // Straight alpha over a transparent background: blue stays fully blue where drawn.
     assert_eq!(&page.rgba[(20 * 60 + 5) * 4..][..4], [0, 0, 255, 255]);
     assert_eq!(&page.rgba[(20 * 60 + 55) * 4..][..4], [0, 0, 0, 0]);

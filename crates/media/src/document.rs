@@ -14,6 +14,8 @@ use craft_pdf::interpret::{
 use craft_pdf::raster::{self, RenderCache};
 use craft_pdf::syntax::{DecryptionError, LoadPdfError, Pdf};
 use kurbo::{Affine, BezPath, Point, Rect, Shape};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Bounds for reading one document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,19 +121,46 @@ impl Document {
             .ok_or_else(|| MediaError::LimitExceeded(format!("page {} doesn't exist; the PDF has {count}", index.saturating_add(1))))
     }
 
+    /// Page `index` (from 0) drawn so its longer side is `edge` pixels; see [`Reader::render`].
+    pub fn render(&self, index: u32, edge: u32, background: [u8; 4]) -> Result<PageImage, MediaError> {
+        self.reader().render(index, edge, background)
+    }
+
+    /// The text page `index` (from 0) draws; see [`Reader::text`].
+    pub fn text(&self, index: u32) -> Result<String, MediaError> {
+        self.reader().text(index)
+    }
+
+    /// A reader for several pages: fonts, images and objects the pages share are decoded once
+    /// for all of them rather than once a page.
+    pub fn reader(&self) -> Reader<'_> {
+        Reader { document: self, render: RenderCache::new(), text: InterpreterCache::new() }
+    }
+}
+
+/// Reads the pages of one [`Document`] through caches shared by every page it reads.
+pub struct Reader<'d> {
+    document: &'d Document,
+    render: RenderCache<'d>,
+    text: InterpreterCache<'d>,
+}
+
+impl Reader<'_> {
     /// Page `index` (from 0) drawn so its longer side is `edge` pixels (at most the limit's
     /// `max_side`), over `background` (straight sRGB RGBA).
     pub fn render(&self, index: u32, edge: u32, background: [u8; 4]) -> Result<PageImage, MediaError> {
-        let page = self.page(index)?;
+        let page = self.document.page(index)?;
         let (width, height) = page.render_dimensions();
         let longest = width.max(height);
-        if !longest.is_finite() || longest <= 0.0 {
+        if !longest.is_finite() || longest <= 0.0 || !width.is_finite() || !height.is_finite() {
             return Err(MediaError::Decode("the page has no area to draw".into()));
         }
-        let edge = edge.clamp(1, self.limits.max_side) as f32;
-        let scale = edge / longest;
-        let options = raster::Options { scale: [scale, scale], background, ..Default::default() };
-        let drawn = raster::render(page, &RenderCache::new(), &InterpreterSettings::default(), &options).map_err(raster_error)?;
+        let edge = edge.clamp(1, self.document.limits.max_side);
+        let scale = edge as f32 / longest;
+        // The longer side is exactly `edge`; flooring the scaled size could leave it a pixel short.
+        let side = |s: f32| if s >= longest { edge } else { ((s * scale).round() as u32).clamp(1, edge) };
+        let options = raster::Options { scale: [scale, scale], size: Some([side(width), side(height)]), background, ..Default::default() };
+        let drawn = raster::render(page, &self.render, &InterpreterSettings::default(), &options).map_err(raster_error)?;
         let (width, height) = (drawn.width, drawn.height);
         let mut rgba = drawn.bytes().to_vec();
         // The renderer premultiplies; an opaque background leaves nothing to undo.
@@ -147,14 +176,16 @@ impl Document {
     }
 
     /// The text page `index` (from 0) draws, cut at the limit's `max_page_text_bytes` (at a
-    /// character boundary). Empty for a page that draws no text, such as a scan.
+    /// character boundary). Empty for a page that draws no text, such as a scan. Reading stops
+    /// once the page's text is full.
     pub fn text(&self, index: u32) -> Result<String, MediaError> {
-        let page = self.page(index)?;
-        let cache = InterpreterCache::new();
+        let page = self.document.page(index)?;
         let (width, height) = page.render_dimensions();
         let bbox = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), f64::from(height.max(1.0)));
-        let mut context = Context::new(page.initial_transform(true).to_kurbo(), bbox, &cache, page.xref(), InterpreterSettings::default());
-        let mut device = TextDevice::new(self.limits.max_page_text_bytes);
+        let full = Arc::new(AtomicBool::new(false));
+        let settings = InterpreterSettings { cancelled: Some(full.clone()), ..InterpreterSettings::default() };
+        let mut context = Context::new(page.initial_transform(true).to_kurbo(), bbox, &self.text, page.xref(), settings);
+        let mut device = TextDevice::new(self.document.limits.max_page_text_bytes, full);
         craft_pdf::interpret_page(page, &mut context, &mut device).map_err(|_| MediaError::Decode("the PDF reader failed on this page".into()))?;
         Ok(device.finish())
     }
@@ -178,13 +209,14 @@ struct Pen {
 struct TextDevice {
     text: String,
     max_bytes: usize,
-    full: bool,
+    /// Set once the text is full; it also stops the interpreter, as nothing more can be kept.
+    full: Arc<AtomicBool>,
     pen: Option<Pen>,
 }
 
 impl TextDevice {
-    fn new(max_bytes: usize) -> Self {
-        Self { text: String::new(), max_bytes, full: false, pen: None }
+    fn new(max_bytes: usize, full: Arc<AtomicBool>) -> Self {
+        Self { text: String::new(), max_bytes, full, pen: None }
     }
 
     fn push(&mut self, s: &str) {
@@ -192,7 +224,7 @@ impl TextDevice {
             // Control characters other than line structure only garble the text.
             let c = if c.is_control() && c != '\n' && c != '\t' { ' ' } else { c };
             if self.text.len().saturating_add(c.len_utf8()) > self.max_bytes {
-                self.full = true;
+                self.full.store(true, Ordering::Relaxed);
                 return;
             }
             self.text.push(c);
@@ -219,7 +251,7 @@ impl<'a> Device<'a> for TextDevice {
     fn push_clip_path(&mut self, _: &ClipPath) {}
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
     fn draw_glyph(&mut self, glyph: &Glyph<'a>, transform: Affine, glyph_transform: Affine, _: &Paint<'a>, _: &GlyphDrawMode) {
-        if self.full {
+        if self.full.load(Ordering::Relaxed) {
             return;
         }
         let Some(unicode) = glyph.as_unicode() else { return };
