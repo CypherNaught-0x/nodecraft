@@ -174,3 +174,12 @@ mapping layer (#489) should map units into this shape rather than into tokens or
 The field records what one result was billed, not a ledger to add up. A result the cache copies
 onto another node carries no units, since nothing was billed for the copy. A result too large to
 keep its settings drops them, units included. Duplicating a node copies its history as it is.
+
+## Held results
+
+A paid result the run can't keep on its card is held by the run host, not dropped (#369; see
+`docs/decisions/2026-10-21-held-results.md`). Its charge is settled as for any finished job: it
+is in the usage log once. Retrying, placing or discarding it never calls the provider and never
+charges again. The run host's write-ahead refuses every new job, before it is sent, while
+`MAX_HELD` results wait. The write-ahead runs for every job that has no provider handle yet,
+priced or not.

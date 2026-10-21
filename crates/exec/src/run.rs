@@ -404,6 +404,43 @@ impl Run {
         }
     }
 
+    /// Whether `outputs` fit `job`'s node by the rules its step is assembled with (#369): every
+    /// port is one of the node's, a list output takes at most [`MAX_LIST_ITEMS`] values, and a
+    /// single output at most one, or exactly one when the job fills its step (or its item) alone.
+    /// A host checks a model job's converted result with this while it still holds the result,
+    /// so a result its step would refuse is kept rather than lost.
+    pub fn admit_outputs(&self, job: JobId, outputs: &[(String, Value)]) -> Result<(), String> {
+        let state = self.jobs.get(&job).ok_or("the job isn't part of this run")?;
+        let target = self.canvas.nodes().get(&state.step).ok_or("the node is gone")?;
+        let step = self.steps.get(&state.step).ok_or("the job's step is unknown")?;
+        let alone = match step.step.fanout {
+            Some(_) => {
+                let cell_of = |n: usize| step.job_items.get(n).copied();
+                let cell = step.jobs.iter().position(|j| *j == job).and_then(cell_of).ok_or("the job's item is unknown")?;
+                step.job_items.iter().filter(|c| **c == cell).count() == 1
+            }
+            None => step.jobs.len() == 1,
+        };
+        let mut counts = vec![0usize; target.outputs.len()];
+        for (port, _) in outputs {
+            let index = target.outputs.iter().position(|p| &p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
+            let count = counts.get_mut(index).ok_or("output index out of range")?;
+            *count = count.saturating_add(1);
+        }
+        for (port, count) in target.outputs.iter().zip(counts) {
+            if port.port_type.many {
+                if count > MAX_LIST_ITEMS {
+                    return Err(format!("its {} output has more than {MAX_LIST_ITEMS} items", port.name));
+                }
+            } else if count > 1 {
+                return Err(format!("it produced several values on its single {} output", port.name));
+            } else if count == 0 && alone {
+                return Err(format!("it produced nothing on its {} output", port.name));
+            }
+        }
+        Ok(())
+    }
+
     /// A job finished with `outputs` (`(output port, value)`, in order). Late or repeated reports
     /// change nothing.
     pub fn job_done(&mut self, kinds: &Registry, job: JobId, outputs: Vec<(String, Value)>) -> Progress {

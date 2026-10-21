@@ -226,6 +226,7 @@ impl Registry {
             .chain(crate::plugin_cmds::specs())
             .chain(crate::ownership_cmds::specs())
             .chain(crate::resolve_cmds::specs())
+            .chain(crate::held_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::export_cmds::specs())

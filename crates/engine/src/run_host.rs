@@ -50,15 +50,22 @@ use nodecraft_exec::cost::{Budgets, Charge, UsageLog};
 use nodecraft_exec::driver::{CancelToken, Handle, JobRunner, Runtime, TaskFuture, driver};
 use nodecraft_exec::run::{Progress, RunOptions, SourceRunner, StepResult, take_outputs};
 use nodecraft_exec::scheduler::{CancelScope, Event, JobId, Outcome, RetryPolicy, Scheduler, Start};
-use nodecraft_nodes::JobSpec;
-use nodecraft_providers::{JobHandle, RunUpdate};
+use nodecraft_nodes::{GenerateOutput, JobSpec};
+use nodecraft_providers::{Completed, JobHandle, RunUpdate};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod held;
 mod partial;
 mod resume;
+
+pub use crate::held_cmds::{HELD_SERVICE, MAX_HELD};
+pub use held::{HeldAction, HeldView};
+
+/// Added to the reason a paid result couldn't be kept, once it is held (#369).
+const HELD_NOTE: &str = "the paid result is held: retry it, put it on the canvas or discard it in the queue panel";
 
 /// How long after a failed journal save the next one is tried.
 const SAVE_RETRY_MS: u64 = 5_000;
@@ -130,6 +137,8 @@ pub enum RunNotice {
     /// A paid result was kept but its charge couldn't be written to the usage log, so budgets
     /// under-count it. The rest of its run was stopped.
     Unaccounted { canvas: CanvasId, node: NodeId, reason: String },
+    /// A held result (#369) was put on its canvas as source nodes.
+    Placed { canvas: CanvasId, node: NodeId },
     /// Every step of a run has finished or failed.
     Finished { canvas: CanvasId },
     /// The run journal couldn't be read or saved, so what is running may not be followed again
@@ -186,6 +195,9 @@ struct Active {
     templates: BTreeMap<JobId, Submitted>,
     /// Model jobs the provider accepted and that haven't ended, as saved.
     journal: BTreeMap<JobId, Submitted>,
+    /// The paid result of each single-job step converted this pump and not yet recorded, held
+    /// if recording it is refused (#369).
+    awaiting: BTreeMap<NodeId, held::HeldResult>,
     /// `journal` changed since the last save.
     journal_changed: bool,
 }
@@ -220,6 +232,8 @@ pub struct RunHost {
     save_failed: Option<(u64, bool)>,
     /// When the usage log was last compared with the saved one.
     checked_at: u64,
+    /// Paid results that couldn't be kept, waiting for a decision (#369).
+    results: Arc<Mutex<held::Held>>,
 }
 
 /// The journal's store and the submitted jobs as last saved, for the write-ahead: a runner saves
@@ -257,6 +271,7 @@ impl RunHost {
             journal_changed: false,
             save_failed: None,
             checked_at: 0,
+            results: Arc::default(),
         }
     }
 
@@ -412,14 +427,22 @@ impl RunHost {
     }
 
     /// The runners' write-ahead: saves the usage log, with the jobs as last saved, before a paid
-    /// job is sent; refuses to send once the host is shutting down.
+    /// job is sent; refuses to send any job once the host is shutting down, or while
+    /// [`MAX_HELD`] results are held (#369), so a held result is never dropped for room.
     fn write_ahead(&self) -> Arc<WriteAhead> {
         let shared = Arc::clone(&self.journal);
         let log = Arc::clone(&self.budget.log);
-        Arc::new(move || {
+        let results = Arc::clone(&self.results);
+        Arc::new(move |priced| {
+            if lock(&results).is_full() {
+                return Err(format!("it wasn't sent: {MAX_HELD} paid results are waiting in the queue panel; retry, place or discard them first"));
+            }
             let shared = lock(&shared);
             if shared.closing {
                 return Err("NodeCraft was quitting, so it wasn't sent".into());
+            }
+            if !priced {
+                return Ok(());
             }
             let Some(store) = &shared.store else { return Ok(()) };
             let journal = Journal { version: JOURNAL_VERSION, usage: lock(&log).clone(), submitted: shared.submitted.clone() };
@@ -443,7 +466,13 @@ impl RunHost {
             }
             inbox.waiting.push_back(prepared);
             Ok(json!({"accepted": true}))
-        })
+        })?;
+        held::register(&self.results, services)
+    }
+
+    /// The paid results waiting for a decision (#369), oldest first.
+    pub fn held_results(&self) -> Vec<HeldView> {
+        lock(&self.results).views()
     }
 
     /// Registers the `usage.reconcile_ownership` service (#362) over the shared usage log. A
@@ -569,7 +598,7 @@ impl RunHost {
         self.runs.retain_mut(|active| {
             // Read first: everything the driver reported before it returned is then absorbed.
             let ended = lock(&active.mailbox).ended;
-            settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget);
+            settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget, &self.results);
             journal_changed |= std::mem::take(&mut active.journal_changed);
             keep_recent(recent, active.jobs.ended.drain(..));
             if ended {
@@ -578,7 +607,7 @@ impl RunHost {
             !ended
         });
         lock(&self.inbox).running = self.runs.len();
-        for ended in self.resumes.absorb(session, &self.budget, &mut notices) {
+        for ended in self.resumes.absorb(session, &self.budget, &self.results, &mut notices) {
             settled = true;
             journal_changed = true;
             match ended {
@@ -588,6 +617,7 @@ impl RunHost {
             }
         }
         keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
+        act_on_held(session, &self.results, &mut notices);
         if settled {
             lock(&self.journal).reconciled = false;
             refresh(session, &self.budget);
@@ -649,11 +679,12 @@ impl RunHost {
             jobs: RunJobs::default(),
             templates: BTreeMap::new(),
             journal: BTreeMap::new(),
+            awaiting: BTreeMap::new(),
             journal_changed: false,
         };
         // Queue before the driver runs, so a job that can't be prepared is never sent.
         let mut started = Vec::new();
-        advance(session, &mut active, progress, &mut started, &self.runtime);
+        advance(session, &mut active, progress, &mut started, &self.runtime, &self.results);
         notices.push(RunNotice::Started { canvas, nodes: active.live.values().copied().collect::<BTreeSet<_>>().into_iter().collect() });
         notices.extend(started);
         keep_recent(&mut self.recent, active.jobs.ended.drain(..));
@@ -736,14 +767,21 @@ fn refresh(session: &mut Session, budget: &JobBudget) {
 /// schedules its new jobs and cancels what it cancels. A job that can't be prepared (its media is
 /// missing or too large) fails on its own before anything is sent, and what that unlocks is
 /// handled in turn.
-fn advance(session: &mut Session, active: &mut Active, progress: Progress, notices: &mut Vec<RunNotice>, runtime: &Arc<dyn Runtime>) {
+fn advance(session: &mut Session, active: &mut Active, progress: Progress, notices: &mut Vec<RunNotice>, runtime: &Arc<dyn Runtime>, held: &Mutex<held::Held>) {
     let canvas = active.canvas;
     let mut pending = VecDeque::from([progress]);
     while let Some(progress) = pending.pop_front() {
         // Results first: a partial one (#480) is recorded, and its step then reports why it is
         // partial.
         for result in progress.finished {
-            notices.push(record(session, canvas, result));
+            let awaiting = active.awaiting.remove(&result.node);
+            notices.push(match (record(session, canvas, result), awaiting) {
+                (RunNotice::Failed { canvas, node, reason }, Some(kept)) => {
+                    lock(held).hold(held::HeldResult { reason: reason.clone(), ..kept });
+                    RunNotice::Failed { canvas, node, reason: format!("{reason}; {HELD_NOTE}") }
+                }
+                (notice, _) => notice,
+            });
         }
         for failure in progress.failed {
             notices.push(if failure.reason == CANCELLED {
@@ -857,7 +895,14 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
 }
 
 /// Absorbs one run's messages; returns whether a paid job settled.
-fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotice>, runtime: &Arc<dyn Runtime>, budget: &JobBudget) -> bool {
+fn absorb(
+    session: &mut Session,
+    active: &mut Active,
+    notices: &mut Vec<RunNotice>,
+    runtime: &Arc<dyn Runtime>,
+    budget: &JobBudget,
+    held: &Mutex<held::Held>,
+) -> bool {
     // Before the events, so a job that ended this frame is dropped from the journal after.
     note_submitted(active);
     let (events, rejected, mut reports) = {
@@ -872,12 +917,12 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
         active.jobs.end(job, JobState::Failed { reason: reason.clone(), cause: None });
         settled |= finish(active, job);
         let progress = active.run.job_failed(session.kinds(), job, &reason);
-        advance(session, active, progress, notices, runtime);
+        advance(session, active, progress, notices, runtime, held);
     }
     for event in events {
         let progress = match event {
             Event::Done { job } => {
-                let outputs = outputs(session, active, job);
+                let outputs = outputs(session, active, job, held);
                 settled |= finish(active, job);
                 active.jobs.end(job, ended(&outputs));
                 match outputs {
@@ -894,7 +939,7 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
                 // The provider finished and billed; only writing the charge failed.
                 Some(charge) => {
                     let node = active.live.get(&job).copied();
-                    let outputs = outputs(session, active, job);
+                    let outputs = outputs(session, active, job, held);
                     settled |= finish(active, job);
                     active.jobs.end(job, ended(&outputs));
                     if let Err(reason) = charge {
@@ -944,9 +989,11 @@ fn absorb(session: &mut Session, active: &mut Active, notices: &mut Vec<RunNotic
             }
             Event::Queued { .. } => continue,
         };
-        advance(session, active, progress, notices, runtime);
+        advance(session, active, progress, notices, runtime, held);
     }
     active.jobs.absorb_reports(&mut reports);
+    // Every step that could record one has: a step that failed instead holds nothing more.
+    active.awaiting.clear();
     if active.run.is_finished() {
         // Dropping the last handle lets the driver drain and return.
         active.handle = None;
@@ -1002,8 +1049,10 @@ fn finish(active: &mut Active, job: JobId) -> bool {
 /// A finished job's outputs and the units its provider said it billed (#437).
 type Finished = (Vec<(String, nodecraft_types::Value)>, Option<nodecraft_types::BillableUnits>);
 
-/// A finished job's outputs, with any assets it made imported into the project.
-fn outputs(session: &mut Session, active: &Active, job: JobId) -> Result<Finished, String> {
+/// A finished job's outputs, with any assets it made imported into the project. A model job's
+/// result that can't be converted, imported or fitted to its node's ports is held (#369); one
+/// that fills a step alone waits in `awaiting` until its step is recorded.
+fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<held::Held>) -> Result<Finished, String> {
     if !active.provider_jobs.contains(&job) {
         // Staged images stay staged: a later action in the run may read them (chains).
         let staged = active.actions.staged();
@@ -1020,14 +1069,74 @@ fn outputs(session: &mut Session, active: &Active, job: JobId) -> Result<Finishe
     }
     let delivery = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
     let Some(JobSpec::Generate { outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
-    let produced = generate::produced(routes, &delivery.completed).map_err(|e| e.message)?;
+    let converted = convert(session, &active.run, job, routes, &delivery.completed);
+    let Some(template) = active.templates.get(&job) else { return converted.map(|outputs| (outputs, delivery.completed.usage.billable_units)) };
+    let kept = |reason: String, completed: Completed| held::HeldResult {
+        project: template.project,
+        canvas: template.canvas,
+        node: template.node,
+        provider: template.target.adapter().to_owned(),
+        model: template.model.clone(),
+        reason,
+        completed,
+        routes: template.routes.clone(),
+        recipe: template.recipe.clone(),
+    };
+    match converted {
+        Ok(outputs) => {
+            let billed = delivery.completed.usage.billable_units;
+            if let Some(recipe) = &template.recipe {
+                let node = recipe.node;
+                active.awaiting.insert(node, kept(String::new(), delivery.completed));
+            }
+            Ok((outputs, billed))
+        }
+        Err(reason) => {
+            lock(held).hold(kept(reason.clone(), delivery.completed));
+            Err(format!("{reason}; {HELD_NOTE}"))
+        }
+    }
+}
+
+/// Converts a model job's result by `routes`, checks it fits its node's ports, and imports its
+/// assets.
+fn convert(
+    session: &mut Session,
+    run: &AuthorizedRun,
+    job: JobId,
+    routes: &[GenerateOutput],
+    completed: &Completed,
+) -> Result<Vec<(String, nodecraft_types::Value)>, String> {
+    let produced = generate::produced(routes, completed).map_err(|e| e.message)?;
+    run.admit_outputs(job, &produced.outputs)?;
     for (hash, bytes) in produced.assets {
         let imported = session.import_asset(&bytes).map_err(|e| e.message)?;
         if imported != hash {
             return Err("a generated asset changed while it was imported".into());
         }
     }
-    Ok((produced.outputs, delivery.completed.usage.billable_units))
+    Ok(produced.outputs)
+}
+
+/// Retries or places the held results asked for since the last pump. A result is let go only
+/// once that worked; otherwise it stays held and the failure is reported.
+fn act_on_held(session: &mut Session, results: &Mutex<held::Held>, notices: &mut Vec<RunNotice>) {
+    let pending = lock(results).pending();
+    for (id, action, result) in pending {
+        let (canvas, node) = (result.canvas, result.node);
+        let outcome = match (action, &result.recipe) {
+            _ if session.document().id() != result.project => Err("its project isn't open".to_owned()),
+            (HeldAction::Retry, Some(recipe)) => resume::record_alone(session, canvas, node, &result.routes, recipe, &result.completed),
+            (HeldAction::Retry, None) => Err("its step needs other jobs' results too".to_owned()),
+            (HeldAction::Place, _) => held::place(session, &result),
+        };
+        lock(results).settle(id, outcome.is_ok());
+        notices.push(match (outcome, action) {
+            (Ok(()), HeldAction::Retry) => RunNotice::Recorded { canvas, node },
+            (Ok(()), HeldAction::Place) => RunNotice::Placed { canvas, node },
+            (Err(reason), _) => RunNotice::Failed { canvas, node, reason: format!("{reason}; the paid result is still held") },
+        });
+    }
 }
 
 /// Records one finished step on its card.

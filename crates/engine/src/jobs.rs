@@ -339,10 +339,11 @@ pub struct ProviderRunner {
     write_ahead: Option<Arc<WriteAhead>>,
 }
 
-/// Called before a paid job is first sent, once its estimate is in the usage log: saves what a
-/// restart needs so the charge isn't lost if the process dies mid-submit (#508). An error stops
-/// the job before it is sent, and is its failure reason.
-pub type WriteAhead = dyn Fn() -> Result<(), String> + Send + Sync;
+/// Called before every job is first sent, with whether it is paid (a paid one's estimate is
+/// already in the usage log): saves what a restart needs so a charge isn't lost if the process
+/// dies mid-submit (#508), and refuses while results it couldn't keep fill the host's held
+/// results (#369). An error stops the job before it is sent, and is its failure reason.
+pub type WriteAhead = dyn Fn(bool) -> Result<(), String> + Send + Sync;
 
 fn lock_log(budget: &JobBudget) -> std::sync::MutexGuard<'_, UsageLog> {
     budget.log.lock().unwrap_or_else(PoisonError::into_inner)
@@ -583,7 +584,7 @@ impl ProviderRunner {
         Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None }
     }
 
-    /// Calls `write_ahead` before each paid job is first sent (see [`WriteAhead`]).
+    /// Calls `write_ahead` before each job is first sent (see [`WriteAhead`]).
     pub fn with_write_ahead(mut self, write_ahead: Arc<WriteAhead>) -> Self {
         self.write_ahead = Some(write_ahead);
         self
@@ -1052,11 +1053,10 @@ impl JobRunner for ProviderRunner {
                     on_update(job_id, Sent { key: &key, base: &start.idempotency_key, generation, target: &provider_id, attempt: start.attempt }, update);
                 };
                 if handle.is_none()
-                    && queued.charged_price().is_some()
                     && let Some(write_ahead) = &write_ahead
-                    && let Err(reason) = write_ahead()
+                    && let Err(reason) = write_ahead(queued.charged_price().is_some())
                 {
-                    // Nothing was sent: the estimate is released.
+                    // Nothing was sent: any estimate is released.
                     let reserved = lock().take_reserved(job_id, &attempt);
                     if let (Some(budget), Some(r)) = (&budget, reserved) {
                         close(budget, &r);

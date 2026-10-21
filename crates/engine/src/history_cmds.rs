@@ -173,7 +173,7 @@ pub(crate) fn result_value<'a>(
 }
 
 /// The source kind that holds a value of `modality`, and its parameter.
-fn source_kind(modality: Modality) -> Result<(&'static str, &'static str), Error> {
+pub(crate) fn source_kind(modality: Modality) -> Result<(&'static str, &'static str), Error> {
     match modality {
         Modality::Text => Ok(("source.text", "text")),
         Modality::Image => Ok(("source.image", "asset")),

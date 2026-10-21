@@ -1,7 +1,11 @@
 //! The queue panel (#82): every job the run host is running or recently ran, newest first, with
 //! its card, provider and model, status and price. A live job can be cancelled; a failed or
 //! cancelled model job can be retried, which quotes it again first like Generate does.
+//!
+//! Above the jobs, paid results a run couldn't keep (#369) wait for a decision: record again,
+//! put on the canvas, or discard. None of these calls the provider again.
 use super::*;
+use nodecraft_engine::run_host::{HeldAction, HeldView, MAX_HELD};
 use nodecraft_engine::run_jobs::{JobState, JobView, cause_label, cause_of, fix_hint};
 
 /// What a click in the panel asked for, applied after it is drawn.
@@ -9,6 +13,8 @@ enum Action {
     Cancel(nodecraft_engine::run_jobs::JobKey),
     Retry(NodeId),
     Clear,
+    /// A held result's command (`run.held_retry`, …) and its id.
+    Held(&'static str, u64),
 }
 
 impl NodeCraftApp {
@@ -16,7 +22,12 @@ impl NodeCraftApp {
     pub(super) fn queue_label(&self) -> Option<String> {
         let runs = self.runs.as_ref()?;
         let live = runs.jobs().iter().filter(|view| !view.state.is_final()).count();
-        Some(if live == 0 { "Queue".into() } else { format!("Queue ({live})") })
+        let held = runs.held().len();
+        Some(match (live, held) {
+            (0, 0) => "Queue".into(),
+            (live, 0) => format!("Queue ({live})"),
+            (live, held) => format!("Queue ({live}, {held} held)"),
+        })
     }
 
     pub(super) fn queue_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
@@ -25,6 +36,7 @@ impl NodeCraftApp {
         }
         let Some(runs) = &self.runs else { return };
         let jobs: Vec<JobView> = runs.jobs().iter().rev().cloned().collect();
+        let held: Vec<HeldView> = runs.held().to_vec();
         let mut open = true;
         let mut action = None;
         let frame =
@@ -39,8 +51,14 @@ impl NodeCraftApp {
             .resizable(false)
             .frame(frame)
             .show(ctx, |ui| {
-                if jobs.is_empty() {
+                if !held.is_empty() {
+                    self.held_section(ui, &held, t, &mut action);
+                }
+                if jobs.is_empty() && held.is_empty() {
                     ui.label(egui::RichText::new("Nothing has run yet. Jobs appear here while they run.").color(t.text_muted));
+                    return;
+                }
+                if jobs.is_empty() {
                     return;
                 }
                 egui::ScrollArea::vertical().max_height(t.minimap_height * 2.0).show(ui, |ui| {
@@ -65,11 +83,64 @@ impl NodeCraftApp {
                 }
                 Ok(())
             }
+            Some(Action::Held(command, id)) => {
+                let done = self.session.dispatch(command, &serde_json::json!({"id": id})).map(|_| ());
+                if let Some(runs) = &mut self.runs {
+                    runs.refresh_held();
+                }
+                done
+            }
             None => Ok(()),
         };
         if let Err(error) = result {
             self.notice = Some(error.message);
         }
+    }
+
+    /// The held results, each with what can be done with it.
+    fn held_section(&self, ui: &mut egui::Ui, held: &[HeldView], t: &Tokens, action: &mut Option<Action>) {
+        let full = held.len() >= MAX_HELD;
+        let heading = if full {
+            format!("{} paid results need a decision before anything else runs", held.len())
+        } else {
+            format!("{} paid result{} couldn't be kept", held.len(), if held.len() == 1 { "" } else { "s" })
+        };
+        ui.label(egui::RichText::new(heading).color(if full { t.danger } else { t.text }));
+        ui.label(egui::RichText::new("They are kept until NodeCraft quits. Nothing here is sent or charged again.").color(t.text_muted));
+        egui::Grid::new("queue_held").num_columns(3).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
+            for view in held {
+                let node = self.session.document().canvases().get(&view.canvas).and_then(|canvas| canvas.nodes().get(&view.node));
+                let title = node.map_or_else(
+                    || "Deleted card".to_owned(),
+                    |node| crate::card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor())),
+                );
+                ui.label(title).on_hover_text(format!("{} · {}", view.provider, view.model));
+                ui.label(egui::RichText::new(&view.reason).color(t.danger));
+                ui.horizontal(|ui| {
+                    let idle = view.pending.is_none();
+                    let retry = ui.add_enabled(idle && view.retry, egui::Button::new("Retry"));
+                    let retry = if view.retry {
+                        retry.on_hover_text("Record it on its card again")
+                    } else {
+                        retry.on_disabled_hover_text("Its step needed other jobs' results too")
+                    };
+                    if retry.clicked() {
+                        *action = Some(Action::Held("run.held_retry", view.id));
+                    }
+                    if ui.add_enabled(idle, egui::Button::new("Put on canvas")).on_hover_text("Add its outputs as source nodes beside its card").clicked() {
+                        *action = Some(Action::Held("run.held_place", view.id));
+                    }
+                    if ui.add_enabled(idle, egui::Button::new("Discard")).on_hover_text("Let it go; its charge stands").clicked() {
+                        *action = Some(Action::Held("run.held_discard", view.id));
+                    }
+                    if let Some(pending) = view.pending {
+                        ui.label(egui::RichText::new(if pending == HeldAction::Retry { "Retrying…" } else { "Placing…" }).color(t.text_muted));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        ui.separator();
     }
 
     fn queue_row(&self, ui: &mut egui::Ui, view: &JobView, t: &Tokens, action: &mut Option<Action>) {
