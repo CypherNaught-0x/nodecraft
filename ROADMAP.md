@@ -21,7 +21,7 @@ an agent can actually do today.
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557) | 2/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105) | 2/15 |
-| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113) | 4/7 |
+| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/26 |
@@ -90,8 +90,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   batch, Techniques, app mode, library, Layer/Timeline editors, Elements, PDF,
   collaboration, and 33 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
-  Meshy and the 25 `future` names have no work started). 3D generation has a Generate 3D card
-  with Tripo text, image and multiview models and fal's Trellis (#22).
+  and the 25 `future` names have no work started). 3D generation has a Generate 3D card
+  with Tripo text, image and multiview models and fal's Trellis (#22), and Meshy text, image,
+  multi-image, retexture and remesh models (#23).
 
 ## Next up
 

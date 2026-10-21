@@ -58,6 +58,14 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
         } else if model.provider == "tripo" {
             let micros = if model.id == "tripo.text-to-3d" { 200_000 } else { 300_000 };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
+        } else if model.provider == "meshy" {
+            let micros = match model.id.as_str() {
+                "meshy.text-to-3d" => 400_000,
+                "meshy.image-to-3d" | "meshy.multi-image-to-3d" => 600_000,
+                "meshy.remesh" => 100_000,
+                _ => 200_000,
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -118,6 +126,12 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.kokoro", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),
+            ("meshy.image-to-3d", false),
+            ("meshy.multi-image-to-3d", false),
+            ("meshy.remesh", false),
+            ("meshy.retexture", false),
+            ("meshy.retexture-image", false),
+            ("meshy.text-to-3d", false),
             ("replicate.hello", false),
             ("test.video", false),
             ("tripo.image-to-3d", false),
@@ -130,6 +144,17 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
     assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);
+    // A wired 3D model picks the Meshy models that take one; the prompt picks retexture.
+    let retexture = catalog.get("meshy.retexture").unwrap();
+    let remesh = catalog.get("meshy.remesh").unwrap();
+    let styled = catalog.get("meshy.retexture-image").unwrap();
+    let mesh_in = Wiring::new(Modality::Mesh).with(Modality::Mesh, 1);
+    assert!(mesh_in.clone().fit(remesh).is_ok());
+    assert!(mesh_in.clone().with(Modality::Image, 1).fit(styled).is_ok());
+    assert!(mesh_in.clone().fit(styled).is_err(), "the style image is required");
+    assert!(Wiring::new(Modality::Mesh).fit(remesh).is_err(), "remesh needs a model");
+    assert!(mesh_in.clone().with_inline_prompt().fit(retexture).is_ok());
+    assert!(mesh_in.clone().fit(retexture).is_err(), "retexture needs a prompt");
     let seedream = catalog.get("seedream.4_5").unwrap();
     assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 14).fit(seedream).is_ok());
     assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 15).fit(seedream).is_err());

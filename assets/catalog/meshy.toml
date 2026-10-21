@@ -1,0 +1,169 @@
+# Meshy official API and pricing verified 2026-10-21.
+# https://docs.meshy.ai/en/api (Text to 3D, Image to 3D, Multi-Image to 3D, Retexture, Remesh)
+# https://docs.meshy.ai/en/api/pricing (credits per task)
+# Estimates at 0.02 USD a credit (the Pro plan's rate). The adapter fixes everything that changes
+# the price: Text to 3D asks for the untextured preview (20 credits); image and multi-image ask for
+# textured PBR models at 2K (30 credits); retexture at 2K is 10 credits and remesh 5. Not a
+# provider-reported charge.
+
+[[model]]
+id="meshy.text-to-3d"
+provider="meshy"
+provider_model="text-to-3d"
+label="Meshy text to 3D"
+description="Generate one untextured GLB model (Meshy's preview stage) from a prompt. Dated 0.40 USD estimate (20 credits)."
+latency_s=60
+quality=4
+pricing={type="per_call",price="0.40 USD"}
+
+[[model.modes]]
+id="text-to-mesh"
+output="mesh"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="ai_model"
+label="Model"
+control={type="choice",options=[{value="meshy-6",label="Meshy 6"},{value="meshy-7.1",label="Meshy 7.1"}]}
+default={type="text",value="meshy-6"}
+
+[[model.params.params]]
+name="pose_mode"
+label="Pose"
+control={type="choice",options=[{value="none",label="As described"},{value="a-pose",label="A-pose"},{value="t-pose",label="T-pose"}]}
+default={type="text",value="none"}
+
+[[model]]
+id="meshy.image-to-3d"
+provider="meshy"
+provider_model="image-to-3d"
+label="Meshy image to 3D"
+description="Generate one textured PBR GLB model from one image. Dated 0.60 USD estimate (30 credits)."
+latency_s=90
+quality=4
+pricing={type="per_call",price="0.60 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="ai_model"
+label="Model"
+control={type="choice",options=[{value="meshy-6",label="Meshy 6"},{value="meshy-7.1",label="Meshy 7.1"}]}
+default={type="text",value="meshy-6"}
+
+[[model.params.params]]
+name="pose_mode"
+label="Pose"
+control={type="choice",options=[{value="none",label="As pictured"},{value="a-pose",label="A-pose"},{value="t-pose",label="T-pose"}]}
+default={type="text",value="none"}
+
+[[model]]
+id="meshy.multi-image-to-3d"
+provider="meshy"
+provider_model="multi-image-to-3d"
+label="Meshy multi-image to 3D"
+description="Generate one textured PBR GLB model from a front view plus up to three of left, back and right. Dated 0.60 USD estimate (30 credits)."
+latency_s=90
+quality=4
+pricing={type="per_call",price="0.60 USD"}
+
+[[model.modes]]
+id="views-to-mesh"
+output="mesh"
+inputs=[{role="front",modality="image",min=1,max=1},{role="left",modality="image",min=0,max=1},{role="back",modality="image",min=0,max=1},{role="right",modality="image",min=0,max=1}]
+
+[[model.params.params]]
+name="ai_model"
+label="Model"
+control={type="choice",options=[{value="meshy-6",label="Meshy 6"},{value="meshy-7.1",label="Meshy 7.1"}]}
+default={type="text",value="meshy-6"}
+
+[[model.params.params]]
+name="pose_mode"
+label="Pose"
+control={type="choice",options=[{value="none",label="As pictured"},{value="a-pose",label="A-pose"},{value="t-pose",label="T-pose"}]}
+default={type="text",value="none"}
+
+[[model]]
+id="meshy.retexture"
+provider="meshy"
+provider_model="retexture"
+label="Meshy retexture"
+description="Paint new 2K PBR textures onto a wired GLB model from a prompt. Dated 0.20 USD estimate (10 credits)."
+latency_s=60
+quality=4
+pricing={type="per_call",price="0.20 USD"}
+
+[[model.modes]]
+id="retexture-prompt"
+output="mesh"
+inputs=[{role="mesh",modality="mesh",min=1,max=1},{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="ai_model"
+label="Model"
+control={type="choice",options=[{value="latest",label="Latest"},{value="meshy-6",label="Meshy 6"}]}
+default={type="text",value="latest"}
+
+[[model.params.params]]
+name="uv"
+label="UV layout"
+control={type="choice",options=[{value="original",label="Keep the model's UVs"},{value="new",label="Make new UVs"}]}
+default={type="text",value="original"}
+
+[[model]]
+id="meshy.retexture-image"
+provider="meshy"
+provider_model="retexture"
+label="Meshy retexture from image"
+description="Paint new 2K PBR textures onto a wired GLB model in the style of a wired image. Dated 0.20 USD estimate (10 credits)."
+latency_s=60
+quality=4
+pricing={type="per_call",price="0.20 USD"}
+
+[[model.modes]]
+id="retexture-style"
+output="mesh"
+inputs=[{role="mesh",modality="mesh",min=1,max=1},{role="style",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="ai_model"
+label="Model"
+control={type="choice",options=[{value="latest",label="Latest"},{value="meshy-6",label="Meshy 6"}]}
+default={type="text",value="latest"}
+
+[[model.params.params]]
+name="uv"
+label="UV layout"
+control={type="choice",options=[{value="original",label="Keep the model's UVs"},{value="new",label="Make new UVs"}]}
+default={type="text",value="original"}
+
+[[model]]
+id="meshy.remesh"
+provider="meshy"
+provider_model="remesh"
+label="Meshy remesh"
+description="Rebuild a wired GLB model's topology as triangles or quads at a target face count. Dated 0.10 USD estimate (5 credits)."
+latency_s=30
+quality=4
+pricing={type="per_call",price="0.10 USD"}
+
+[[model.modes]]
+id="remesh"
+output="mesh"
+inputs=[{role="mesh",modality="mesh",min=1,max=1}]
+
+[[model.params.params]]
+name="topology"
+label="Topology"
+control={type="choice",options=[{value="triangle",label="Triangles"},{value="quad",label="Quads"}]}
+default={type="text",value="triangle"}
+
+[[model.params.params]]
+name="target_polycount"
+label="Target faces"
+control={type="unsigned",min="100",max="300000",step="100"}
+default={type="unsigned",value="30000"}

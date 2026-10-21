@@ -29,6 +29,8 @@ fal = ["dep:base64"]
 seedream = ["dep:base64"]
 # Tripo text, image and multiview to 3D: uploads, a paid task, polling and the GLB download.
 tripo = []
+# Meshy text, image and multi-image to 3D, retexture and remesh: one paid task, polling and the GLB download.
+meshy = ["dep:base64"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 

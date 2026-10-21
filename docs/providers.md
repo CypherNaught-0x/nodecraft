@@ -20,6 +20,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
+| **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 
 ## Setting up catalog providers
 
@@ -34,6 +35,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
 | `tripo` | `tripo` | — |
+| `meshy` | `meshy` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
@@ -507,4 +509,57 @@ never runs in CI:
 ```sh
 NODECRAFT_LIVE_TRIPO=1 NODECRAFT_LIVE_TRIPO_ACKNOWLEDGE_COST=1 TRIPO_API_KEY=… \
   cargo test -p nodecraft-providers --features http,tripo --test live_tripo -- --ignored
+```
+
+## Meshy 3D tasks
+
+The optional `meshy` adapter drives the [Meshy API](https://docs.meshy.ai/en/api) at the fixed base
+`https://api.meshy.ai/openapi` (Text to 3D on `v2`, the other tasks on `v1`). Six catalog models
+share it and appear on the **Generate 3D** card:
+
+| Catalog model | Task | Inputs | Estimate |
+|---|---|---|---|
+| `meshy.text-to-3d` | `text-to-3d` (preview) | a prompt (1–800 characters) | 0.40 USD |
+| `meshy.image-to-3d` | `image-to-3d` | one image | 0.60 USD |
+| `meshy.multi-image-to-3d` | `multi-image-to-3d` | a front view plus up to three of left, back, right | 0.60 USD |
+| `meshy.retexture` | `retexture` | a wired GLB model and a prompt | 0.20 USD |
+| `meshy.retexture-image` | `retexture` | a wired GLB model and a style image | 0.20 USD |
+| `meshy.remesh` | `remesh` | a wired GLB model | 0.10 USD |
+
+Estimates were verified 2026-10-21 at 0.02 USD a credit (the Pro plan's rate; other plans pay a
+little more or less per credit) and are per task, not actual charges. The adapter fixes
+everything that changes the price: Text to 3D asks for the untextured preview stage (20 credits);
+image and multi-image ask for textured PBR models with 2K textures (30 credits); retexture paints
+2K PBR textures (10 credits); remesh is 5. The settings it exposes are the model (Meshy 6 or 7.1,
+the same price; `latest` or Meshy 6 for retexture), a pose (A or T) for generation, keeping the
+model's UVs when retexturing, and remesh topology (triangles or quads) and target face count
+(100–300,000).
+
+Every input travels inline in the one task request as a data URI: images (PNG, JPEG or WebP whose
+bytes match their type, at most 15 MiB each before encoding, inside Meshy's 20 MB cap) and models
+(a whole glTF 2.0 binary of at most 64 MiB; convert other 3D formats to GLB first). The task
+request is the paid step: a lost reply may have billed and Meshy takes no idempotency key, so a
+submit is never retried automatically. Polling is every three seconds and reports Meshy's queue
+position and percentage. A task can't be cancelled: Meshy's delete erases the task and its
+models without a documented refund, so cancelling says the task runs to the end and is billed.
+
+A finished task's GLB link is downloaded **without the key**, from public `https` hosts only,
+with the same checks as Tripo's (no IP literals, internal names, ports or credentials; a whole
+glTF 2.0 binary of at most 256 MiB; a failed download retried on the next poll's fresh link).
+Error replies map HTTP statuses onto the shared kinds (400/422 input, 401/403 auth, 402 credit,
+404, 429 with `Retry-After`, 5xx server or busy) with Meshy's message cut short, and withheld if
+it echoes the key. A failed task reports Meshy's reason. Limits can only be lowered. Meshy is
+native only for the same reason as Tripo.
+
+**Not verified live yet:** Meshy's data URI support for models is documented but untested here,
+and as with Tripo a returned GLB that needs a mesh decoder extension lands in history but can't
+be viewed.
+
+The ignored live test requires `NODECRAFT_LIVE_MESHY=1`, `NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1`
+and `MESHY_API_KEY`, plus separate explicit human spending authorization (about 0.40 USD). It
+never runs in CI:
+
+```sh
+NODECRAFT_LIVE_MESHY=1 NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1 MESHY_API_KEY=… \
+  cargo test -p nodecraft-providers --features http,meshy --test live_meshy -- --ignored
 ```
