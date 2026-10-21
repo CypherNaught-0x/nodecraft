@@ -227,21 +227,36 @@ pub(super) fn args(parts: &[&str]) -> Vec<OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The file a fixture's working directory holds when a test launched it. `run` clears the
+    /// environment, so this is how a fixture tells it was launched rather than picked up by
+    /// `cargo test -- --ignored`, where it returns at once.
+    const LAUNCHED: &str = "nodecraft-process-fixture";
+    fn launched() -> bool {
+        Path::new(LAUNCHED).is_file()
+    }
     fn fixture(name: &str, input: Option<Input>, cap: usize, cancel: Arc<AtomicBool>) -> Result<Reply> {
         let exe = std::env::current_exe().unwrap();
-        run(
+        let dir = std::env::temp_dir().join(format!("{LAUNCHED}-{}-{}", std::process::id(), name.rsplit("::").next().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(LAUNCHED), b"").unwrap();
+        let reply = run(
             &exe,
             &args(&["--ignored", "--exact", name, "--nocapture"]),
-            &std::env::temp_dir(),
+            &dir,
             input,
             cap,
             Watchdog { cancel: &cancel, closed: &Arc::new(AtomicBool::new(false)), deadline: Instant::now() + Duration::from_millis(250), counters: None },
             &mut || {},
-        )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        reply
     }
     #[test]
     #[ignore = "subprocess fixture, never run directly"]
     fn child_flood() {
+        if !launched() {
+            return;
+        }
         let buf = [b'x'; 65536];
         let mut out = std::io::stdout().lock();
         while out.write_all(&buf).is_ok() {}
@@ -249,6 +264,9 @@ mod tests {
     #[test]
     #[ignore = "subprocess fixture, never run directly"]
     fn child_wait() {
+        if !launched() {
+            return;
+        }
         thread::sleep(Duration::from_secs(10));
     }
     #[test]
