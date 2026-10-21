@@ -98,7 +98,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   keys or runs yet, and dropping files in a browser is an explicit *unsupported*.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them
-  (#411). There is no audio playback (#106), no video actions (#108).
+  (#411). There is no audio playback (#106) and no video actions (#108).
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
   maps reference-to-video yet.
