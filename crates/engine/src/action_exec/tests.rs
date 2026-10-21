@@ -30,9 +30,10 @@ fn every_action_kind_runs_with_its_defaults() {
     let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets);
     let mut ran = 0;
-    // The custom shader needs a GPU: its own tests run it. An Element plans source jobs, not an
-    // action.
-    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && d.id != "image.shader" && d.id != nodecraft_nodes::element::ID) {
+    // The custom shader and 3D captures need a GPU: their own tests run them. An Element plans
+    // source jobs, not an action.
+    let gpu = ["image.shader", nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS];
+    for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && !gpu.contains(&d.id.as_str()) && d.id != nodecraft_nodes::element::ID) {
         let input = if descriptor.id.starts_with("image.") {
             image.clone()
         } else if descriptor.id.starts_with("mesh.") {
@@ -377,4 +378,63 @@ fn convert_3d_writes_each_format_and_chains_from_staged_results() {
     let mut broken = AssetStore::default();
     let junk = Value::Media(AssetRef { hash: broken.insert(b"v 0 0\n").unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     assert!(LocalActions::new(broken).execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), &[junk]).unwrap_err().contains("can't be read"));
+}
+
+/// A capture's result, or `None` on a machine with no GPU.
+fn capture(actions: &LocalActions, action: &str, params: &ParamValues, model: &Value) -> Option<AssetRef> {
+    match actions.execute(action, params, std::slice::from_ref(model)) {
+        Ok(Value::Media(asset)) => Some(asset),
+        Err(e) if e.contains("need a GPU") => None,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_3d_photo_is_an_image_of_its_size_and_repeats_exactly() {
+    let mut assets = AssetStore::default();
+    let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    let kinds = Registry::builtins().unwrap();
+    let mut params = defaults(&kinds, nodecraft_nodes::mesh::PHOTO);
+    params.insert("width".into(), Value::Unsigned(nodecraft_types::Unsigned(64)));
+    params.insert("height".into(), Value::Unsigned(nodecraft_types::Unsigned(48)));
+    let Some(photo) = capture(&actions, nodecraft_nodes::mesh::PHOTO, &params, &model) else { return };
+    assert_eq!((photo.mime.essence(), photo.meta.width, photo.meta.height), ("image/png", Some(64), Some(48)));
+    assert_eq!(capture(&actions, nodecraft_nodes::mesh::PHOTO, &params, &model).unwrap().hash, photo.hash, "the same settings draw the same image");
+    params.insert("yaw".into(), Value::Number(nodecraft_types::Number::new(120.0).unwrap()));
+    assert_ne!(capture(&actions, nodecraft_nodes::mesh::PHOTO, &params, &model).unwrap().hash, photo.hash);
+    // The default background is transparent; the model covers the middle.
+    let staged = actions.take_staged();
+    let (_, image) = nodecraft_media::decode_image(staged.get(&photo.hash).unwrap(), &Default::default()).unwrap();
+    let rgba = image.into_rgba8();
+    assert_eq!(rgba.get_pixel(0, 0).0[3], 0);
+    assert_eq!(rgba.get_pixel(32, 24).0[3], 255);
+    assert!(actions.execute(nodecraft_nodes::mesh::PHOTO, &params, &[Value::Text("x".into())]).unwrap_err().contains("connect a 3D model"));
+    params.insert("style".into(), Value::Text("clay".into()));
+    assert!(actions.execute(nodecraft_nodes::mesh::PHOTO, &params, std::slice::from_ref(&model)).unwrap_err().contains("clay"));
+}
+
+#[test]
+fn a_view_sheet_lays_its_views_out_in_a_grid_and_turns_either_way() {
+    // A right triangle: its mirror image (the view from behind) differs from it.
+    let triangle = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    let mut assets = AssetStore::default();
+    let model = Value::Media(AssetRef { hash: assets.insert(triangle).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    let kinds = Registry::builtins().unwrap();
+    let mut params = defaults(&kinds, nodecraft_nodes::mesh::VIEWS);
+    params.insert("size".into(), Value::Unsigned(nodecraft_types::Unsigned(64)));
+    for (count, size) in [("4", (128, 128)), ("8", (256, 128)), ("16", (256, 256))] {
+        params.insert("count".into(), Value::Text(count.into()));
+        let Some(sheet) = capture(&actions, nodecraft_nodes::mesh::VIEWS, &params, &model) else { return };
+        assert_eq!((sheet.meta.width, sheet.meta.height), (Some(size.0), Some(size.1)), "{count} views");
+    }
+    params.insert("count".into(), Value::Text("4".into()));
+    params.insert("start".into(), Value::Number(nodecraft_types::Number::new(30.0).unwrap()));
+    let ccw = capture(&actions, nodecraft_nodes::mesh::VIEWS, &params, &model).unwrap();
+    params.insert("direction".into(), Value::Text("cw".into()));
+    let cw = capture(&actions, nodecraft_nodes::mesh::VIEWS, &params, &model).unwrap();
+    assert_ne!(ccw.hash, cw.hash);
+    params.insert("count".into(), Value::Text("5".into()));
+    assert!(actions.execute(nodecraft_nodes::mesh::VIEWS, &params, std::slice::from_ref(&model)).unwrap_err().contains("4, 8 or 16"));
 }

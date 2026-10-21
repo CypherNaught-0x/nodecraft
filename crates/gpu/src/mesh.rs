@@ -7,6 +7,9 @@
 
 use std::fmt;
 
+/// Offscreen captures of a model into image pixels (#112).
+pub mod capture;
+
 /// Bytes per vertex: position (3 × f32), normal (3 × f32), linear RGBA colour (4 × f32).
 pub const VERTEX_BYTES: u64 = 40;
 /// Multisampling of the offscreen pass.
@@ -219,6 +222,8 @@ pub struct View {
 /// One card's offscreen images.
 pub struct Target {
     size: [u32; 2],
+    /// The resolved image's texture, which a capture copies out.
+    image: wgpu::Texture,
     color: wgpu::TextureView,
     resolved: wgpu::TextureView,
     depth: wgpu::TextureView,
@@ -393,27 +398,27 @@ impl MeshRenderer {
     fn make_target(&self, device: &wgpu::Device, size: [u32; 2]) -> Target {
         let size = self.clamp_size(size);
         let texture = |label: &str, format, samples, usage| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: samples,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default())
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
         };
-        let color = texture("NodeCraft 3D colour", COLOR_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
-        let resolved = texture(
+        let view = |texture: &wgpu::Texture| texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let color = view(&texture("NodeCraft 3D colour", COLOR_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT));
+        let image = texture(
             "NodeCraft 3D image",
             COLOR_FORMAT,
             1,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
         );
-        let depth = texture("NodeCraft 3D depth", DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let resolved = view(&image);
+        let depth = view(&texture("NodeCraft 3D depth", DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT));
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("NodeCraft 3D view"),
             size: UNIFORM_BYTES,
@@ -446,7 +451,7 @@ impl MeshRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
             ],
         });
-        Target { size, color, resolved, depth, uniforms, mesh_group, blit_group }
+        Target { size, image, color, resolved, depth, uniforms, mesh_group, blit_group }
     }
 
     /// Draws `mesh` into `target` as `view` shows it.
@@ -518,11 +523,6 @@ impl MeshRenderer {
         pass.set_bind_group(0, &target.blit_group, &[]);
         pass.draw(0..3, 0..1);
         true
-    }
-
-    /// The resolved image of `target`, for a caller that reads it back (captures).
-    pub fn image<'a>(&self, target: &'a Target) -> &'a wgpu::TextureView {
-        &target.resolved
     }
 }
 
