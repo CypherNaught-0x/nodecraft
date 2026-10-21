@@ -51,7 +51,10 @@ coverage. Color grade and tint formulas use unassociated linear RGB. Sampling, c
 source-over use premultiplied linear RGBA, then unpremultiply and encode once per stage. Clamp final SDR
 channels to [0, 1], round to nearest byte; if quantized alpha is zero, newly computed RGB is zero.
 Luminance is `0.2126 R + 0.7152 G + 0.0722 B`. The media pipeline currently assumes sRGB rather
-than applying ICC profiles; this API does not claim HDR or color-profile fidelity.
+than applying ICC profiles; this API does not claim HDR or color-profile fidelity. An imported
+image's reference records what its file says (`color_space`: untagged, sRGB, ICC profile or
+other), but no action reads or applies it yet, and action outputs record only their size
+([decision](decisions/2026-10-21-image-header-metadata.md)).
 
 Admitted identity paths and exact byte copies/permutations preserve every stored byte, including
 hidden RGB at alpha zero and low-alpha colors. Computed operations may canonicalize hidden RGB.

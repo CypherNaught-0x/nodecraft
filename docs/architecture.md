@@ -82,8 +82,12 @@ keys. `Modality` and `PortType` describe ports; `Value` is a tagged scalar, text
 value. Keep decoder recursion limits and file-size limits enabled when reading projects.
 
 `AssetRef` carries a 32-byte BLAKE3 digest (hex on the wire), a validated concrete MIME value and
-optional integer media metadata. Metadata is descriptive, never permission to allocate an
-unbounded image or buffer. `Money` stores non-negative millionths of a named currency, with
+optional media metadata. Metadata is descriptive, never permission to allocate an unbounded
+image or buffer. An absent field means unknown, never a default (8-bit, opaque, sRGB). Import
+fills an image's size, `has_alpha`, `bits_per_channel` and `color_space` from its header
+(`nodecraft_format::image_header_meta`), and `format` refuses a reference whose claims its bytes
+contradict, on save and on open
+([decision](decisions/2026-10-21-image-header-metadata.md)). `Money` stores non-negative millionths of a named currency, with
 checked arithmetic and explicit errors for overflow, underflow and mixed currencies. Micros
 serialize as decimal strings so browser JSON clients preserve every bit. Currency validation
 checks the three-uppercase-letter syntax, not membership in a currency registry.

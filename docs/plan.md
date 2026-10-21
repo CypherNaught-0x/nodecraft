@@ -333,7 +333,10 @@ These are worth adding once the adapter pattern has settled. Each one gets a Git
    node body controls, bulk panel, app-mode form and MCP tool schema are all generated from it.
    A new node kind writes no bespoke UI unless it wants a custom body.
 5. **No modality assumptions.** Port types and values are runtime data; nothing hard-codes "an
-   image is RGBA8 PNG". Colour space, bit depth and alpha travel with media.
+   image is RGBA8 PNG". Alpha, stored bit depth and the file's colour-space tag travel with an
+   imported image as optional, verified reference metadata; absent means unknown. Pixels are
+   still decoded as sRGB until the colour/HDR contract lands
+   ([decision](decisions/2026-10-21-image-header-metadata.md)).
 6. **Never crash.** No `unwrap`/`expect`/`panic!`/indexing in non-test code
    (clippy-enforced), `unsafe_code = "forbid"`, hostile-input discipline for files, params and
    provider responses, a last-resort panic guard around command dispatch, and a `panic_hunt`

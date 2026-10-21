@@ -23,6 +23,15 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
+## Image facts on inputs and outputs
+
+An imported image's reference says whether it has an alpha channel, its stored bits per channel
+and its colour-space tag, all verified against its bytes when the project is saved or opened
+([decision](decisions/2026-10-21-image-header-metadata.md)). A field can be absent, which means
+unknown, and outputs written by provider adapters record only their size for now. So an adapter
+deciding an alpha or format policy probes the bytes it sends, as every adapter below already
+does, and never treats an absent field as "opaque 8-bit sRGB".
+
 ## Setting up catalog providers
 
 The engine builds an adapter for every provider the model catalog names

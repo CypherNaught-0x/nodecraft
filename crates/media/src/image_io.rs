@@ -79,6 +79,61 @@ pub struct ImageMeta {
     /// Bits per channel stored in the file (1, 2, 4, 8, 16 or 32).
     pub bits_per_channel: u8,
     pub has_alpha: bool,
+    /// What the file says about its colour space, or `None` where this build doesn't read
+    /// everything the format can say (#393). NodeCraft decodes every image as sRGB and applies
+    /// no profile yet.
+    pub color_tag: Option<ColorTag>,
+}
+
+/// What an image file says about its colour space, from the signals this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorTag {
+    /// The file declares no colour space.
+    Untagged,
+    /// The file declares sRGB (a PNG `sRGB` chunk).
+    Srgb,
+    /// The file embeds an ICC profile, or profile data that can't be read.
+    IccProfile,
+    /// The file declares a colour space another way: a PNG `cICP`, `gAMA` or `cHRM` chunk.
+    Other,
+}
+
+/// The PNG chunks before the image data that say something about colour.
+#[derive(Debug, Default, Clone, Copy)]
+struct PngColorChunks {
+    iccp: bool,
+    srgb: bool,
+    cicp: bool,
+    gamma_or_chromaticities: bool,
+    exif: bool,
+}
+
+/// At most this many chunks are walked before the image data; a header with more says nothing.
+const MAX_PNG_HEADER_CHUNKS: usize = 4096;
+
+/// Walks a PNG's chunk headers up to the first `IDAT`, reading 8 bytes a chunk and seeking over
+/// its body. `None` when the walk can't reach the image data.
+fn png_color_chunks(input: &mut (impl std::io::Read + std::io::Seek)) -> Option<PngColorChunks> {
+    use std::io::SeekFrom;
+    input.seek(SeekFrom::Start(8)).ok()?;
+    let mut found = PngColorChunks::default();
+    for _ in 0..MAX_PNG_HEADER_CHUNKS {
+        let mut head = [0u8; 8];
+        input.read_exact(&mut head).ok()?;
+        let [l0, l1, l2, l3, t0, t1, t2, t3] = head;
+        match &[t0, t1, t2, t3] {
+            b"IDAT" => return Some(found),
+            b"iCCP" => found.iccp = true,
+            b"sRGB" => found.srgb = true,
+            b"cICP" => found.cicp = true,
+            b"gAMA" | b"cHRM" => found.gamma_or_chromaticities = true,
+            b"eXIf" => found.exif = true,
+            _ => {}
+        }
+        // The body and its CRC.
+        input.seek(SeekFrom::Current(i64::from(u32::from_be_bytes([l0, l1, l2, l3])).saturating_add(4))).ok()?;
+    }
+    None
 }
 
 /// Reads an image's format, size and colour layout from its header, without decoding the pixels.
@@ -123,7 +178,8 @@ fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(ImageMeta, Orientation,
     if orientation != Orientation::NoTransforms {
         budget.reserve(decoder.total_bytes())?;
     }
-    let mut meta = meta_of(sniffed.mime, &decoder);
+    let png = (format == ImageFormat::Png).then(|| png_color_chunks(&mut Cursor::new(bytes)));
+    let mut meta = meta_of(sniffed.mime, &mut decoder, png);
     if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
         std::mem::swap(&mut meta.width, &mut meta.height);
     }
@@ -151,7 +207,8 @@ pub fn is_undecoded_image(mime: &str) -> bool {
     matches!(mime, "image/x-exr" | "image/vnd.radiance")
 }
 
-fn meta_of(mime: &'static str, decoder: &impl ImageDecoder) -> ImageMeta {
+/// `png` is the PNG chunk walk: `None` for another format, `Some(None)` when the walk failed.
+fn meta_of(mime: &'static str, decoder: &mut impl ImageDecoder, png: Option<Option<PngColorChunks>>) -> ImageMeta {
     let (width, height) = decoder.dimensions();
     let stored = decoder.original_color_type();
     let decoded = decoder.color_type();
@@ -172,7 +229,44 @@ fn meta_of(mime: &'static str, decoder: &impl ImageDecoder) -> ImageMeta {
             u8::try_from(per).unwrap_or(8)
         }
     };
-    ImageMeta { mime, width, height, color, bits_per_channel, has_alpha: decoded.has_alpha() }
+    ImageMeta { mime, width, height, color, bits_per_channel, has_alpha: decoded.has_alpha(), color_tag: color_tag(mime, decoder, png) }
+}
+
+/// Only formats whose every common colour signal this build reads get a tag. EXIF can name a
+/// colour space too and isn't read, so a file with EXIF and no stronger signal is unknown, never
+/// "untagged". BMP (v4/v5 colour spaces), GIF and TIFF (whose ICC tag the decoder can miss) are
+/// unknown.
+fn color_tag(mime: &str, decoder: &mut impl ImageDecoder, png: Option<Option<PngColorChunks>>) -> Option<ColorTag> {
+    match (mime, png) {
+        ("image/png", Some(chunks)) => {
+            let chunks = chunks?;
+            Some(if chunks.cicp {
+                ColorTag::Other
+            } else if chunks.iccp {
+                ColorTag::IccProfile
+            } else if chunks.srgb {
+                ColorTag::Srgb
+            } else if chunks.gamma_or_chromaticities {
+                ColorTag::Other
+            } else if chunks.exif {
+                return None;
+            } else {
+                ColorTag::Untagged
+            })
+        }
+        ("image/jpeg" | "image/webp", None) => {
+            // A profile that can't be read still counts: "untagged" would claim more than the
+            // file proves.
+            if decoder.icc_profile().map_or(true, |profile| profile.is_some()) {
+                Some(ColorTag::IccProfile)
+            } else if decoder.exif_metadata().map_or(true, |exif| exif.is_some()) {
+                None
+            } else {
+                Some(ColorTag::Untagged)
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +425,43 @@ pub(crate) mod tests {
         assert_eq!(probe_image(b"\0\0\0\x1cftypavif\0", &l).unwrap_err(), MediaError::Unsupported { mime: "image/avif" });
         assert_eq!(decode_image(b"hello", &l).unwrap_err(), MediaError::Unsupported { mime: "text/plain" });
         assert!(matches!(decode_image(b"\x89PNG\r\n\x1a\nnot really", &l), Err(MediaError::Decode(_))));
+    }
+
+    /// A PNG's colour chunks decide its tag (#393), and both probes read them alike. EXIF with no
+    /// colour chunk leaves the tag unknown; so do the formats whose colour signals aren't read.
+    #[test]
+    fn png_colour_chunks_decide_the_tag_and_unread_formats_stay_unknown() {
+        let with_chunk = |kind: &[u8; 4], data: &[u8]| {
+            let png = png_rgba(3, 2);
+            let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+            chunk.extend_from_slice(kind);
+            chunk.extend_from_slice(data);
+            chunk.extend_from_slice(&crc32(&chunk[4..]).to_be_bytes());
+            // After the signature and the 25-byte IHDR chunk.
+            [&png[..33], &chunk[..], &png[33..]].concat()
+        };
+        let cases = [
+            (png_rgba(3, 2), Some(ColorTag::Untagged)),
+            (with_chunk(b"sRGB", &[0]), Some(ColorTag::Srgb)),
+            (with_chunk(b"gAMA", &45_455u32.to_be_bytes()), Some(ColorTag::Other)),
+            (with_chunk(b"cICP", &[9, 16, 0, 1]), Some(ColorTag::Other)),
+            (with_chunk(b"eXIf", b"MM\0*\0\0\0\x08\0\0"), None),
+            (with_chunk(b"tEXt", b"Comment\0hello"), Some(ColorTag::Untagged)),
+        ];
+        for (bytes, tag) in cases {
+            let meta = probe_image(&bytes, &Limits::default()).unwrap();
+            assert_eq!(meta.color_tag, tag);
+            let read = super::probe_image_reader(Cursor::new(bytes.clone()), bytes.len() as u64, &Limits::default()).unwrap();
+            assert_eq!(read, meta);
+        }
+        let rgb = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 4, |x, _| Rgb([x as u8, 0, 0])));
+        for format in [ImageFormat::Bmp, ImageFormat::Tiff, ImageFormat::Gif] {
+            let source = if format == ImageFormat::Gif { DynamicImage::ImageRgba8(rgb.to_rgba8()) } else { rgb.clone() };
+            assert_eq!(probe_image(&encode(source, format), &Limits::default()).unwrap().color_tag, None, "{format:?}");
+        }
+        for format in [ImageFormat::Jpeg, ImageFormat::WebP] {
+            assert_eq!(probe_image(&encode(rgb.clone(), format), &Limits::default()).unwrap().color_tag, Some(ColorTag::Untagged), "{format:?}");
+        }
     }
 
     #[test]

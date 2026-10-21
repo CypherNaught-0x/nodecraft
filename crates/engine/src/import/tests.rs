@@ -41,6 +41,9 @@ fn text_and_images_become_source_nodes_in_a_row_as_one_undo_step() {
     assert_eq!(picture.pos.x, 310.0);
     let Some(Value::Media(asset)) = picture.params.get("asset") else { panic!("an asset parameter") };
     assert_eq!((asset.mime.essence(), asset.meta.width, asset.meta.height), ("image/png", Some(3), Some(2)));
+    // What the header proves travels with the asset (#393).
+    let facts = (asset.meta.has_alpha, asset.meta.bits_per_channel, asset.meta.color_space);
+    assert_eq!(facts, (Some(true), Some(8), Some(nodecraft_types::ColorSpace::Untagged)));
     assert!(s.assets().get(&asset.hash).is_some(), "the bytes are in the project's asset store");
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(s.document(), &before, "one undo removes them all");
@@ -136,6 +139,7 @@ fn camera_formats_are_kept_without_a_size_and_bad_text_is_refused() {
     assert_eq!(photo.kind, "source.image");
     let Some(Value::Media(asset)) = photo.params.get("asset") else { panic!("an asset") };
     assert_eq!((asset.mime.essence(), asset.meta.width), ("image/heic", None));
+    assert_eq!(asset.meta, MediaMeta::default(), "nothing is claimed about an image this build can't read");
 }
 
 #[test]
