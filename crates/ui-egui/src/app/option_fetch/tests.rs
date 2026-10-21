@@ -194,5 +194,32 @@ mod picker {
         assert_eq!(checkpoint(h.state()), Some(Value::Text("juggernaut.safetensors".into())));
     }
 
+    #[test]
+    fn lists_installed_after_the_card_was_cached_show_without_a_document_edit() {
+        let mut h = harness(scene(None));
+        h.run();
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Checkpoint").is_none());
+        // Installed behind the view cache's back: the card reads the lists live.
+        install(h.state_mut());
+        h.run();
+        assert_eq!(shown(&h).as_deref(), Some("Choose…"));
+    }
+
+    #[test]
+    fn a_stored_value_of_another_type_keeps_the_ordinary_control() {
+        let app = scene(None);
+        let mut node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().clone();
+        node.params.insert("checkpoint".into(), Value::Bool(true));
+        let mut project = app.session.document().clone();
+        nodecraft_graph::Change::RemoveNode { canvas: C, id: N }.apply(&mut project).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+        let mut app = NodeCraftApp::from_session(Session::new(project).unwrap(), C).unwrap();
+        install(&mut app);
+        let mut h = harness(app);
+        h.run();
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Checkpoint").is_none());
+        assert!(h.query_by_label(crate::card::listed::UNFETCHED_HINT).is_none());
+    }
+
     use egui::accesskit::Role;
 }

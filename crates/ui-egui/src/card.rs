@@ -404,14 +404,17 @@ pub fn show(
                                 }
                             } else {
                                 let list = listed_params.and_then(|listed| listed.get(&spec.name));
-                                let choices = list.and_then(|list| list.choices(lists));
+                                // A stored value of another type (a hand-edited project) keeps the
+                                // ordinary control, which shows it as it is.
+                                let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
+                                let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
                                 let changed = match choices {
                                     Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, label.id, t)).inner,
                                     None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
                                     None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
                                 };
-                                if list.is_some() && choices.is_none() {
-                                    ui.label(egui::RichText::new(listed::UNFETCHED_HINT).color(t.text_muted).small());
+                                if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
+                                    ui.label(egui::RichText::new(hint).color(t.text_muted).small());
                                 }
                                 if editable && let Some(value) = changed {
                                     intents.push(Intent::Parameter { name: spec.name.clone(), value });

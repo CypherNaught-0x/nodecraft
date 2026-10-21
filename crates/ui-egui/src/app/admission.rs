@@ -34,9 +34,12 @@ pub(super) fn admit<'a>(session: &'a Session, node: &Node, cache: Option<&Schema
             let Some(options) = &state.options else { continue };
             let owner = contract.parameter_groups().find(|group| group.schema.params.iter().any(|spec| spec.name == state.name));
             if let Some(owner) = owner {
+                // Whether the list is fetched is read live when the card draws, so lists installed
+                // after this entry was cached show at once; a scoped source can't be fetched yet.
+                let scoped = owner.rules.iter().any(|rule| rule.param == state.name && rule.options.as_ref().is_some_and(|o| o.scope.is_some()));
                 listed.insert(
                     state.name.clone(),
-                    crate::card::Listed { owner: owner.namespace.clone(), source: options.source.clone(), scope: options.scope.clone(), known: options.known },
+                    crate::card::Listed { owner: owner.namespace.clone(), source: options.source.clone(), scope: options.scope.clone(), scoped },
                 );
             }
         }
