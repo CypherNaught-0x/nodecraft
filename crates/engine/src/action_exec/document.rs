@@ -12,7 +12,7 @@ use nodecraft_types::{ParamValues, Value};
 const MAX_TEXT_BYTES: usize = nodecraft_actions::text::MAX_OUTPUT_BYTES;
 
 /// `#rrggbb` or `#rrggbbaa` as straight sRGB RGBA.
-fn rgba(text: &str) -> Result<[u8; 4], String> {
+pub(super) fn rgba(text: &str) -> Result<[u8; 4], String> {
     let json = super::color(text)?;
     let channel = |name: &str| json.get(name).and_then(serde_json::Value::as_u64).and_then(|v| u8::try_from(v).ok()).unwrap_or(255);
     Ok([channel("r"), channel("g"), channel("b"), channel("a")])

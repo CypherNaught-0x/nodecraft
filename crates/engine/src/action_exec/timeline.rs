@@ -85,8 +85,8 @@ pub(super) mod native {
     use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
-        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, Placement, Quality, ServiceConfig, Source, ToolPaths, VideoError, VideoJob,
-        VideoLimits, VideoService,
+        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, Placement, Quality, RenderedVideo, ServiceConfig, Source, ToolPaths, VideoError,
+        VideoJob, VideoLimits, VideoService,
     };
     use nodecraft_nodes::timeline::{Timeline, caption};
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
@@ -99,9 +99,9 @@ pub(super) mod native {
     /// The service renders share, for the tools it was opened with.
     static SERVICE: Mutex<Option<(Tools, Arc<VideoService>)>> = Mutex::new(None);
     /// How often a wait looks for a result or a cancel.
-    const POLL: Duration = Duration::from_millis(10);
+    pub(in crate::action_exec) const POLL: Duration = Duration::from_millis(10);
     /// Longest wait for another render to free the service's one render slot.
-    const BUSY_WAIT: Duration = Duration::from_secs(3600);
+    pub(in crate::action_exec) const BUSY_WAIT: Duration = Duration::from_secs(3600);
     /// Bytes read back from the rendered file at once (the service's most).
     const CHUNK: u64 = 1024 * 1024;
 
@@ -396,6 +396,20 @@ pub(super) mod native {
                 }
             };
             let rendered = wait(job, cancelled).map_err(message)?;
+            self.keep(service, &rendered, size, duration_us, true, cancelled)
+        }
+
+        /// `rendered` read back from `service` and staged as a `size` WebM `duration_us` long,
+        /// with stereo sound when `sound`.
+        pub(in crate::action_exec) fn keep(
+            &self,
+            service: &VideoService,
+            rendered: &RenderedVideo,
+            size: (u32, u32),
+            duration_us: u64,
+            sound: bool,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<Value, String> {
             let bytes_len = rendered.bytes();
             if bytes_len > MAX_RENDER_BYTES {
                 return Err(format!("the rendered video is larger than {} MiB; make it shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
@@ -416,8 +430,8 @@ pub(super) mod native {
                 width: Some(size.0),
                 height: Some(size.1),
                 duration_ms: Some(duration_us / 1000),
-                sample_rate: Some(48_000),
-                channels: Some(2),
+                sample_rate: sound.then_some(48_000),
+                channels: sound.then_some(2),
                 ..MediaMeta::default()
             };
             Ok(Value::Media(AssetRef { hash, mime, meta }))

@@ -29,6 +29,9 @@ impl Registry {
         for kind in crate::video_edit::kinds()? {
             registry.register(Box::new(kind))?;
         }
+        for kind in crate::video_frames::kinds()? {
+            registry.register(Box::new(kind))?;
+        }
         registry.register(Box::new(crate::shader::kind()?))?;
         registry.register(Box::new(crate::mask::kind()))?;
         registry.register(Box::new(crate::mesh::convert_kind()))?;

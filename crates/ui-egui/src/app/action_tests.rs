@@ -49,17 +49,25 @@ fn render_action_review_evidence() {
 }
 
 fn with_video_actions() -> NodeCraftApp {
+    with_kinds(
+        &[
+            nodecraft_nodes::video_edit::TRIM,
+            nodecraft_nodes::video_edit::SPEED,
+            nodecraft_nodes::video_edit::STITCH,
+            nodecraft_nodes::video_edit::REPLACE_AUDIO,
+        ],
+        2,
+        380.0,
+    )
+}
+
+/// An app with a node of each of `kinds`, `columns` to a row, rows `row` apart.
+fn with_kinds(kinds: &[&str], columns: usize, row: f32) -> NodeCraftApp {
     let mut app = NodeCraftApp::headless().unwrap();
     let canvas = app.canvas;
-    let kinds = [
-        nodecraft_nodes::video_edit::TRIM,
-        nodecraft_nodes::video_edit::SPEED,
-        nodecraft_nodes::video_edit::STITCH,
-        nodecraft_nodes::video_edit::REPLACE_AUDIO,
-    ];
-    for (i, kind) in kinds.into_iter().enumerate() {
+    for (i, kind) in kinds.iter().enumerate() {
         let id = NodeId::from_bytes([100 + i as u8; 16]);
-        let (x, y) = (420.0 + 400.0 * (i % 2) as f32, -260.0 + 380.0 * (i / 2) as f32);
+        let (x, y) = (420.0 + 400.0 * (i % columns) as f32, -260.0 + row * (i / columns) as f32);
         app.session.dispatch("node.create", &json!({"canvas": canvas, "id": id, "kind": kind, "pos": {"x": x, "y": y}})).unwrap();
     }
     app
@@ -90,4 +98,37 @@ fn render_video_action_review_evidence() {
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.run();
     h.render().unwrap().save(folder.join("video-actions.png")).unwrap();
+}
+
+fn with_frame_actions() -> NodeCraftApp {
+    with_kinds(&nodecraft_nodes::video_frames::IDS, 3, 640.0)
+}
+
+#[test]
+fn frame_action_cards_show_their_generated_controls() {
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1800.0, 1200.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), with_frame_actions());
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.step();
+    for label in
+        ["Extract frames", "Contact sheet", "Long exposure", "Reverse video", "Pan and zoom", "How many", "Columns", "Frames blended", "Zoom at the end"]
+    {
+        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+    }
+    // The single frame's time shows only once one frame is chosen.
+    assert!(h.query_by_label_contains("At (s)").is_none());
+}
+
+#[test]
+#[ignore = "manual public-safe PR evidence"]
+fn render_frame_action_review_evidence() {
+    let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut h =
+        Harness::builder().wgpu().with_size(egui::Vec2::new(1800.0, 1200.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), with_frame_actions());
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.run();
+    h.render().unwrap().save(folder.join("frame-actions.png")).unwrap();
 }

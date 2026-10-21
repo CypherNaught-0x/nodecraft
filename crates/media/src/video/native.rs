@@ -1029,14 +1029,14 @@ impl Context {
             "-noautorotate",
         ]);
         args.extend(probe::input_args(asset.mov));
-        args.push("-i".into());
-        args.push(self.path(asset)?.into_os_string());
+        // Seeking on the input jumps to the keyframe before the time and decodes only from
+        // there (still exactly to the time), so a late frame costs no more than an early one.
         let u = m.stream_start - m.format_start + i128::from(r.time_us);
         let time = format!("{}.{:06}", u / 1_000_000, u % 1_000_000);
+        args.extend(process::args(&["-ss", &time, "-i"]));
+        args.push(self.path(asset)?.into_os_string());
         let map = format!("0:{}", m.stream);
         args.extend(process::args(&[
-            "-ss",
-            &time,
             "-map",
             &map,
             "-frames:v",
@@ -1239,7 +1239,7 @@ impl Context {
             "-vf",
             "scale=iw:ih:flags=bilinear:in_range=pc:out_range=pc:out_color_matrix=bt709,format=yuv444p,colorspace=iall=bt709:itrc=srgb:irange=pc:all=bt709:range=tv:format=yuv420p:fast=0:dither=none",
         ]);
-        args.extend(process::args(VP9));
+        args.extend(process::args(&compose::encoding(spec.quality)));
         args.extend(process::args(&["-fps_mode", "passthrough", "-frames:v", &spec.count.to_string()]));
         args.extend(process::args(TAGS));
         args.extend(process::args(&["-fs", &quota.to_string()]));

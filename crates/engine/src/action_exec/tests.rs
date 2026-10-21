@@ -41,7 +41,7 @@ fn every_action_kind_runs_with_its_defaults() {
     // The custom shader and 3D captures need a GPU, and the timeline and video actions ffmpeg:
     // their own tests run them. An Element plans source jobs, not an action.
     let skipped = ["image.shader", nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS, nodecraft_nodes::element::ID, nodecraft_nodes::timeline::ID];
-    let runs = |id: &str| !skipped.contains(&id) && !nodecraft_nodes::video_edit::IDS.contains(&id);
+    let runs = |id: &str| !skipped.contains(&id) && !nodecraft_nodes::video_edit::IDS.contains(&id) && !nodecraft_nodes::video_frames::IDS.contains(&id);
     for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && runs(&d.id)) {
         let input = if descriptor.id.starts_with("image.") {
             image.clone()

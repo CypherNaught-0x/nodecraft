@@ -945,3 +945,43 @@ fn actual_compose_places_turns_and_speeds_up_clips() {
     drop(video);
     assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
 }
+/// Ten minutes at 30 a second, red until 590 s and green after, keyframes every 10 s.
+fn long_red_then_green() -> Vec<u8> {
+    let id = SERVICE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nodecraft-long-fixture-{}-{id}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("long.mp4");
+    let tool = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let graph = "color=c=red:s=320x240:r=30:d=590[a];color=c=lime:s=320x240:r=30:d=10[b];[a][b]concat=n=2:v=1:a=0";
+    let mut args = process::args(&["-v", "error", "-nostdin", "-y", "-filter_complex", graph]);
+    args.extend(process::args(&["-c:v", "libx264", "-preset", "ultrafast", "-g", "300", "-pix_fmt", "yuv420p"]));
+    args.extend(process::args(&["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]));
+    args.push(path.as_os_str().to_owned());
+    let status = std::process::Command::new(tool).args(&args).status().unwrap();
+    assert!(status.success());
+    let bytes = fs::read(&path).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    bytes
+}
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_a_late_frame_is_exact_and_costs_no_more_than_an_early_one() {
+    let service = service();
+    let mut job = service.import(Arc::from(long_red_then_green()), ColorPolicy::default()).ok().unwrap();
+    let asset = wait(&mut job).unwrap();
+    let grab = |time: u64| {
+        let started = Instant::now();
+        let mut job = service.frame(&asset, FrameRequest::new(time, 32, 24).unwrap()).unwrap();
+        let pixel: [u8; 4] = wait(&mut job).unwrap().pixels().get(..4).unwrap().try_into().unwrap();
+        (pixel, started.elapsed())
+    };
+    let (early, early_took) = grab(1_000_000);
+    // The last red frame starts at 589.9666 s; the first green one at 590 s, between keyframes.
+    let (red, _) = grab(589_950_000);
+    let (green, late_took) = grab(590_000_000);
+    assert!(early[0] > 200 && early[1] < 60, "{early:?}");
+    assert!(red[0] > 200 && red[1] < 60, "the frame before the switch is red: {red:?}");
+    assert!(green[1] > 200 && green[0] < 60, "the frame at the switch is green: {green:?}");
+    // Decoding from the start would read 17,700 frames for the late grab.
+    assert!(late_took < early_took * 4 + Duration::from_secs(1), "early {early_took:?}, late {late_took:?}");
+}
