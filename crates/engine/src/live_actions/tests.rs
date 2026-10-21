@@ -244,6 +244,29 @@ fn a_settled_canvas_stays_settled_through_layout_only() {
 }
 
 #[test]
+fn holding_a_settled_canvas_only_reads_it() {
+    // `holds` runs on the UI thread every frame after an edit, so it must not touch anything (#556).
+    let mut s = session();
+    connect(&mut s);
+    settle(&mut s);
+    let settled = Settled::now(&s, CANVAS).expect("nothing to redo");
+    let document = s.document().clone();
+    let (revision, can_undo, can_redo) = (s.revision(), s.can_undo(), s.can_redo());
+    assert!(settled.holds(&s, CANVAS));
+    assert!(settled.holds(&s, CANVAS), "asking twice gives the same answer");
+    assert!(!settled.holds(&s, CanvasId::from_bytes([9; 16])), "another canvas");
+    assert_eq!(s.document(), &document, "the document is exactly what it was");
+    assert_eq!(s.revision(), revision, "no revision was spent asking");
+    assert_eq!((s.can_undo(), s.can_redo()), (can_undo, can_redo), "nor the undo history changed");
+    // An edit it does notice still leaves them alone: it reports, it doesn't act.
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": BLUR, "name": "sigma", "value": Value::Number(nodecraft_types::Number::new(6.0).unwrap())}))
+        .unwrap();
+    assert!(!settled.holds(&s, CANVAS));
+    assert_eq!(s.revision(), revision + 1, "only the edit changed the revision");
+    assert!(!s.can_redo());
+}
+
+#[test]
 fn an_action_behind_a_batch_follows_its_stale_source_a_round_later() {
     let mut s = session();
     let (text, split, batch, replace) =
