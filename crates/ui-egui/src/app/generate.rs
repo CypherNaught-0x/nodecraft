@@ -21,7 +21,7 @@ pub(super) enum RunKind {
 }
 
 impl RunKind {
-    fn mode(self) -> &'static str {
+    pub(super) fn mode(self) -> &'static str {
         match self {
             Self::Generate => "selected",
             Self::Refresh => "with_upstream",
@@ -64,7 +64,7 @@ impl RunConfirm {
 
 /// What the confirmation shows and `run.start` needs, read from a `run.quote` result.
 #[derive(Debug, PartialEq)]
-struct Quote {
+pub(super) struct Quote {
     token: String,
     amounts: serde_json::Map<String, Json>,
     totals: Vec<String>,
@@ -87,7 +87,7 @@ fn line(text: &str) -> String {
 }
 
 impl Quote {
-    fn read(value: &Json) -> Option<Self> {
+    pub(super) fn read(value: &Json) -> Option<Self> {
         let token = value.get("token")?.as_str()?.to_owned();
         let complete = value.get("complete")?.as_bool()?;
         let allowed = value.get("allowed")?.as_bool()?;
@@ -114,7 +114,7 @@ impl Quote {
         self.allowed && self.listed && (self.complete || partial)
     }
 
-    fn price(&self) -> String {
+    pub(super) fn price(&self) -> String {
         match (self.totals.is_empty(), self.complete) {
             (true, true) => "No charge".into(),
             (true, false) => "Unknown price".into(),

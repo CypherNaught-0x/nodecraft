@@ -139,6 +139,9 @@ pub struct Tokens {
     pub layers_panel_width: f32,
     pub layer_snap_distance: f32,
     pub layer_rotate_offset: f32,
+    /// App mode (#95): the width of its form and side of a result or media thumbnail.
+    pub app_form_width: f32,
+    pub app_thumbnail: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -241,6 +244,8 @@ pub const DARK: Tokens = Tokens {
     layers_panel_width: 250.0,
     layer_snap_distance: 6.0,
     layer_rotate_offset: 24.0,
+    app_form_width: 640.0,
+    app_thumbnail: 120.0,
 };
 
 pub const LIGHT: Tokens = Tokens {

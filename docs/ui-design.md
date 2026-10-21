@@ -40,7 +40,8 @@ points across; the generation toolbar is 32 high, 10 above its card; the image v
 120-wide model, references, result, status and button columns, the prompt taking the rest; the
 Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
 properties panels are 250 wide; a dragged layer snaps within 6 points of a guide, and its rotate
-handle sits 24 points above it.
+handle sits 24 points above it. App mode's form is 640 wide, and its media and result
+thumbnails 120 across.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the

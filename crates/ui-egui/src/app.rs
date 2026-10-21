@@ -319,6 +319,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 }
 pub(crate) mod admission;
 
+mod app_mode;
 mod comments;
 mod drop;
 mod elements;
@@ -436,6 +437,8 @@ pub struct NodeCraftApp {
     /// The mask editor (#102), while open.
     mask_editor: Option<mask_editor::MaskEditor>,
     layer_editor: Option<layer_editor::LayerEditor>,
+    /// App mode's form (#95), while it is open.
+    app_mode: Option<app_mode::AppMode>,
     /// Includes the closing pass, so release/shortcut events cannot leak to canvas owners.
     model_frame_owned: bool,
     /// egui drops focus on a bare Escape before the frame runs, so remember last frame's.
@@ -790,6 +793,7 @@ impl NodeCraftApp {
             viewer: None,
             mask_editor: None,
             layer_editor: None,
+            app_mode: None,
             model_frame_owned: false,
             text_focused: false,
             last_text_focus: None,
@@ -909,6 +913,8 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        // Before the price confirmation, which a run from the form opens on top of it.
+        model_blocks |= self.app_overlay(ui);
         model_blocks |= self.run_overlay(ui);
         model_blocks |= self.mask_overlay(ui);
         model_blocks |= self.layer_overlay(ui);
@@ -1935,6 +1941,14 @@ impl NodeCraftApp {
                     ui.horizontal(|ui| {
                         self.sheets_button(ui, t);
                         self.techniques_button(ui, t);
+                        if let Some(node) = self.selected_technique()
+                            && ui
+                                .add(egui::Button::new(egui::RichText::new("Open as app").color(t.text_muted)).frame(false))
+                                .on_hover_text("Fill the selected technique's inputs and run it from a simple form")
+                                .clicked()
+                        {
+                            self.open_app_mode(node);
+                        }
                         #[cfg(not(target_arch = "wasm32"))]
                         if let Some(label) = self.queue_label()
                             && ui
@@ -2434,6 +2448,8 @@ impl eframe::App for NodeCraftApp {
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod app_mode_tests;
 #[cfg(test)]
 mod elements_tests;
 #[cfg(test)]

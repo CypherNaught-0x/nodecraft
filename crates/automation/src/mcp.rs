@@ -78,6 +78,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "technique.place",
     "technique.upgrade",
     "technique.detach",
+    "app.form",
+    "app.input_set",
     "library.list",
     "library.place",
     "node.describe",

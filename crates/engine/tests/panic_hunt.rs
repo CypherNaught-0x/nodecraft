@@ -294,18 +294,29 @@ fn template(id: &str) -> (Session, Value) {
     if id.starts_with("library.") {
         nodecraft_engine::library::install(&mut session, Box::new(nodecraft_engine::library::MemoryLibrary::default())).unwrap();
     }
-    if id.starts_with("technique.") || id.starts_with("library.") {
+    let app_form = matches!(id, "app.form" | "app.input_set");
+    if id.starts_with("technique.") || id.starts_with("library.") || app_form {
         let note = nodecraft_nodes::text::kind().descriptor().instantiate(node_id(0x63), &std::collections::BTreeMap::new()).unwrap();
         session.dispatch("node.add", &json!({"canvas":canvas(),"node":note})).unwrap();
         if !matches!(id, "technique.check" | "technique.publish" | "technique.list") {
-            let publish = json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]});
+            let mut publish = json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]});
+            if app_form {
+                // A technique with an input: the note feeding a replace.
+                let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+                let replace = kinds.get("text.replace").unwrap().instantiate_instance(node_id(0x67), Default::default(), &Default::default()).unwrap();
+                session.dispatch("node.add", &json!({"canvas":canvas(),"node":replace})).unwrap();
+                let wire = json!({"id":nodecraft_types::EdgeId::from_bytes([0x68; 16]),"from":{"node":node_id(0x63),"port":"out"},"to":{"node":node_id(0x67),"port":"text"},"order":0});
+                session.dispatch("edge.connect", &json!({"canvas":canvas(),"edge":wire})).unwrap();
+                publish["inputs"] = json!([{"node":node_id(0x63),"name":"Brief"}]);
+                publish["outputs"] = json!([{"node":node_id(0x67)}]);
+            }
             session.dispatch("technique.publish", &publish).unwrap();
         }
         if matches!(id, "library.remove" | "library.place") {
             session.dispatch("library.add", &json!({"canvas":technique_canvas})).unwrap();
             session.dispatch("library.list", &json!({})).unwrap();
         }
-        if matches!(id, "technique.upgrade" | "technique.detach") {
+        if matches!(id, "technique.upgrade" | "technique.detach") || app_form {
             let place = json!({"canvas":canvas(),"version":technique_canvas,"id":node_id(0x65),"pos":{"x":0,"y":0}});
             session.dispatch("technique.place", &place).unwrap();
         }
@@ -374,6 +385,8 @@ fn template(id: &str) -> (Session, Value) {
         }
         "technique.upgrade" => json!({"canvas":canvas(),"node":node_id(0x65),"version":technique_canvas}),
         "technique.detach" => json!({"canvas":canvas(),"node":node_id(0x65),"seed":node_id(0x66)}),
+        "app.form" => json!({"canvas":canvas(),"id":node_id(0x65)}),
+        "app.input_set" => json!({"canvas":canvas(),"id":node_id(0x65),"port":"brief","seed":node_id(0x66),"values":[{"type":"text","value":"a fox"}]}),
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.options" => json!({"canvas":canvas(),"id":node_id(1),"param":"text"}),
         "options.refresh" | "options.status" => json!({}),

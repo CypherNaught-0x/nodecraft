@@ -199,3 +199,16 @@ fn hdr394_import_skips_hdr_without_assets_edits_or_text_fallback() {
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(s.document(), &before);
 }
+
+#[test]
+fn import_media_stores_one_file_for_a_later_edit_and_refuses_text() {
+    let mut s = session();
+    let image = png();
+    let asset = import_media(&mut s, &Incoming { name: "photo.png", bytes: &image }).unwrap();
+    assert_eq!((asset.mime.essence(), asset.meta.width, asset.meta.height), ("image/png", Some(3), Some(2)));
+    s.validate_asset(&asset).unwrap();
+    assert!(s.document().canvases().get(&C).unwrap().nodes().is_empty(), "it adds no node");
+    let text = import_media(&mut s, &Incoming { name: "notes.txt", bytes: b"A forest at dawn" }).unwrap_err();
+    assert!(text.message.contains("notes.txt") && text.message.contains("text"), "{}", text.message);
+    assert_eq!(import_media(&mut s, &Incoming { name: "empty", bytes: b"" }).unwrap_err().kind, nodecraft_types::ErrorKind::InvalidInput);
+}

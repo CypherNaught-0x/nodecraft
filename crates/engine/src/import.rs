@@ -129,6 +129,21 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })
 }
 
+/// One media file stored on its own, for a caller that references it in its next edit (App
+/// mode's form, #95). It is recognised from its bytes as a drop is; text and what a source node
+/// can't hold are refused. Until an edit references it, the asset is collected as any other.
+pub fn import_media(session: &mut Session, file: &Incoming<'_>) -> Result<nodecraft_types::AssetRef, Error> {
+    let refused =
+        |why: String| Error::new(nodecraft_types::ErrorKind::InvalidInput, format!("{} can't be used: {why}.", file.name.chars().take(80).collect::<String>()));
+    if sniff(file.bytes).is_some_and(|sniffed| sniffed.kind == MediaKind::Text) {
+        return Err(refused("it is text, not media".into()));
+    }
+    match plan(file, 0).map_err(refused)? {
+        Plan::Media { mime, meta, bytes, .. } => Ok(nodecraft_types::AssetRef { hash: session.import_asset(bytes)?, mime, meta }),
+        Plan::Text(_) => Err(refused("it is text, not media".into())),
+    }
+}
+
 /// Adds source nodes through one candidate-store transaction and one undo step. Ineligible
 /// files are skipped in input order; a rejected transaction preserves existing staged assets.
 /// At most 32 node/source plans are admitted, but skipped bookkeeping is O(files.len()).
