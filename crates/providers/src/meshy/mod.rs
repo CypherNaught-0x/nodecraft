@@ -8,8 +8,7 @@ mod response;
 mod tests;
 use crate::secrets::Secret;
 use crate::{
-    BoxFuture, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
-    Submission,
+    BoxFuture, Completed, ErrorKind, Http, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob, Submission,
 };
 use std::sync::Arc;
 
@@ -154,16 +153,6 @@ impl Meshy {
         crate::model_file::glb(&reply.body, "Meshy")?;
         Ok(Arc::from(reply.body))
     }
-    /// Deleting a task that hasn't started refunds it; one already running can't be stopped.
-    async fn delete(&self, handle: &JobHandle) -> Result<(), ProviderError> {
-        let task = self.task(handle)?;
-        let request = HttpRequest { method: HttpMethod::Delete, ..HttpRequest::get(format!("{}/{}", endpoint(task), handle.remote_id)) }.timeout_ms(30_000);
-        let reply = self.exchange(request, false).await?;
-        if reply.status == 409 {
-            return Err(invalid("the Meshy task has already started; it runs to the end and is billed"));
-        }
-        response::check(&reply, self.limits, &self.key)
-    }
 }
 impl Provider for Meshy {
     fn id(&self) -> &str {
@@ -183,8 +172,10 @@ impl Provider for Meshy {
     fn poll<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(self.progress(h))
     }
-    fn cancel<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
-        Box::pin(self.delete(h))
+    /// Meshy's DELETE erases a task and its models, and nothing documents a refund or a refusal
+    /// for a running task, so a cancel could lose a billed model: it is unsupported.
+    fn cancel<'a>(&'a self, _: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+        Box::pin(async { Err(invalid("Meshy can't cancel a task; it runs to the end and is billed")) })
     }
     fn poll_interval_ms(&self, _: &JobProgress) -> u64 {
         3_000

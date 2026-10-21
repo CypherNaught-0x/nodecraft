@@ -20,7 +20,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
-| **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Cancelling refunds a task that hasn't started. No automatic paid replay. See below. |
+| **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 
 ## Setting up catalog providers
 
@@ -536,13 +536,12 @@ model's UVs when retexturing, and remesh topology (triangles or quads) and targe
 (100–300,000).
 
 Every input travels inline in the one task request as a data URI: images (PNG, JPEG or WebP whose
-bytes match their type, at most 15 MB each before encoding, inside Meshy's 20 MB cap) and models
-(a whole glTF 2.0 binary of at most 64 MB; convert other 3D formats to GLB first). The task
+bytes match their type, at most 15 MiB each before encoding, inside Meshy's 20 MB cap) and models
+(a whole glTF 2.0 binary of at most 64 MiB; convert other 3D formats to GLB first). The task
 request is the paid step: a lost reply may have billed and Meshy takes no idempotency key, so a
 submit is never retried automatically. Polling is every three seconds and reports Meshy's queue
-position and percentage. Cancelling deletes the task, which Meshy refunds while it is still
-waiting; once a task is running it can't be stopped, and cancelling says so (it runs to the end
-and is billed).
+position and percentage. A task can't be cancelled: Meshy's delete erases the task and its
+models without a documented refund, so cancelling says the task runs to the end and is billed.
 
 A finished task's GLB link is downloaded **without the key**, from public `https` hosts only,
 with the same checks as Tripo's (no IP literals, internal names, ports or credentials; a whole

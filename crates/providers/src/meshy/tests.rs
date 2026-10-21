@@ -359,18 +359,13 @@ fn only_a_whole_glb_within_the_limit_is_accepted_as_the_model() {
 }
 
 #[test]
-fn cancelling_deletes_a_waiting_task_and_explains_a_running_one() {
-    let http = Transport::new(vec![ok(json!({}))]);
-    let meshy = Meshy::new(key(), http.clone());
-    block_on(meshy.cancel(&handle(IMAGE))).unwrap();
-    let sent = http.requests();
-    let [delete] = sent.as_slice() else { panic!("one request") };
-    assert_eq!((delete.method, delete.url.as_str()), (HttpMethod::Delete, format!("https://api.meshy.ai/openapi/v1/image-to-3d/{TASK}").as_str()));
-    assert!(authorised(delete));
-    let started = status(409, json!({"message": "Task is in progress"}));
-    let error = block_on(Meshy::new(key(), Transport::new(vec![started])).cancel(&handle(IMAGE))).unwrap_err();
+fn cancelling_is_refused_without_a_request() {
+    // Meshy's DELETE erases the task and its models; nothing confirms a refund.
+    let http = Transport::new(vec![]);
+    let error = block_on(Meshy::new(key(), http.clone()).cancel(&handle(IMAGE))).unwrap_err();
     assert_eq!(error.kind, ErrorKind::UnsupportedInput);
     assert!(error.message.contains("billed"), "{}", error.message);
+    assert!(http.requests().is_empty());
     let meshy = Meshy::new(key(), Transport::new(vec![]));
     assert_eq!(meshy.poll_interval_ms(&JobProgress::Queued { position: None }), 3_000);
     assert_eq!(meshy.id(), "meshy");

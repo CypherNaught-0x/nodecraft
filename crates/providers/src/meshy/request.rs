@@ -34,7 +34,7 @@ fn data_uri(mime: &str, bytes: &[u8]) -> String {
 fn image(mime: &str, bytes: &[u8], l: Limits) -> Result<String, ProviderError> {
     let mime = image_mime(mime).ok_or_else(|| invalid("Meshy takes PNG, JPEG or WebP images"))?;
     if bytes.is_empty() || bytes.len() > l.image_bytes {
-        return Err(invalid(format!("a Meshy image must be under {} MB", l.image_bytes.div_ceil(MIB))));
+        return Err(invalid(format!("a Meshy image must be under {} MiB", l.image_bytes.div_ceil(MIB))));
     }
     if nodecraft_media::sniff(bytes).map(|s| s.mime) != Some(mime) {
         return Err(invalid("a Meshy image's bytes don't match its type"));
@@ -47,7 +47,7 @@ fn model(mime: &str, bytes: &[u8], l: Limits) -> Result<String, ProviderError> {
         return Err(invalid("Meshy takes a GLB model; convert the 3D model to GLB first"));
     }
     if bytes.len() > l.model_bytes {
-        return Err(invalid(format!("a Meshy input model must be under {} MB", l.model_bytes.div_ceil(MIB))));
+        return Err(invalid(format!("a Meshy input model must be under {} MiB", l.model_bytes.div_ceil(MIB))));
     }
     crate::model_file::glb(bytes, "the wired model").map_err(|_| invalid("the wired model isn't a whole GLB file"))?;
     Ok(data_uri("application/octet-stream", bytes))
