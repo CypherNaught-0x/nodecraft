@@ -1,7 +1,9 @@
 //! Exporting a result to a file (#557): the native save dialog asks where (and whether to
 //! replace a file already there), then `history.export` writes it. The dialog never blocks the
 //! frame; the browser build says export needs the desktop app. Saving every item of a result
-//! (#581) asks for a folder instead and never replaces a file already there.
+//! (#581) asks for a folder instead and never replaces a file already there. A Timeline's
+//! interchange archive (#166) is asked for the same way and written by
+//! `timeline.export_interchange`.
 use super::NodeCraftApp;
 use nodecraft_types::{CanvasId, GenerationId, NodeId};
 use serde_json::json;
@@ -25,7 +27,8 @@ struct Pending {
 }
 
 enum Target {
-    File(serde_json::Value),
+    /// The command that writes the file and its params, without the path.
+    File(&'static str, serde_json::Value),
     /// `history.export` params with the suggested file name each is numbered from.
     Folder(Vec<(serde_json::Value, String)>),
 }
@@ -76,7 +79,12 @@ impl NodeCraftApp {
     /// suggesting `name`.
     pub(super) fn start_export(&mut self, canvas: CanvasId, id: NodeId, generation: GenerationId, port: Option<String>, item: Option<usize>, name: &str) {
         let params = export_params(canvas, id, generation, port, item);
-        self.pick_export(Target::File(params), name);
+        self.pick_export(Target::File("history.export", params), name);
+    }
+
+    /// Asks where to save Timeline node `id`'s interchange archive, suggesting `name`.
+    pub(super) fn start_interchange_export(&mut self, canvas: CanvasId, id: NodeId, name: &str) {
+        self.pick_export(Target::File("timeline.export_interchange", json!({"canvas": canvas, "id": id})), name);
     }
 
     /// Asks for a folder and saves each of `targets` (output port, item, suggested name) of
@@ -150,11 +158,11 @@ impl NodeCraftApp {
             return;
         }
         match pending.target {
-            Target::File(mut params) => {
+            Target::File(command, mut params) => {
                 params["path"] = json!(path);
                 // The dialog already asked before replacing a file.
                 params["overwrite"] = json!(true);
-                match self.session.dispatch("history.export", &params) {
+                match self.session.dispatch(command, &params) {
                     Ok(_) => {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
                         self.notice = Some(format!("Exported {name}."));

@@ -328,3 +328,25 @@ fn measured_videos_show_their_lengths_and_trim_to_their_ends() {
         image.save(std::path::Path::new(&dir).join("timeline-editor.png")).unwrap();
     }
 }
+
+#[test]
+fn the_editor_exports_an_interchange_archive_where_the_dialog_says() {
+    let mut h = opened();
+    // The test videos can't be measured, so each clip says where it ends.
+    for node in [ONE, TWO] {
+        dispatch(&mut h, "timeline.update", json!({"clip": auto(node), "set": {"out_us": 1_000_000}}));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cut.zip");
+    let revision = h.state().session.revision();
+    h.state_mut().exports.answer = Some(path.clone());
+    h.get_by_label("Export for another editor…").click();
+    h.run_steps(3);
+    assert_eq!(h.state().notice.as_deref(), Some("Exported cut.zip."));
+    let zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let mut names: Vec<String> = zip.file_names().map(|name| name.unwrap().into_owned()).collect();
+    names.sort();
+    assert_eq!(names.len(), 3, "the same video wired twice is one file: {names:?}");
+    assert!(names.iter().any(|n| n.ends_with(".fcpxml")) && names.contains(&"report.txt".to_owned()), "{names:?}");
+    assert_eq!(h.state().session.revision(), revision, "exporting doesn't edit the project");
+}

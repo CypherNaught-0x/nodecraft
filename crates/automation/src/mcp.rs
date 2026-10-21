@@ -149,6 +149,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "layers.align",
     // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
     "timeline.list",
+    "timeline.interchange",
     "node.timeline_set",
     "timeline.update",
     "timeline.move",
@@ -203,6 +204,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "keys.remove",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
+    "timeline.export_interchange",
     "file.open",
     "file.save",
     "file.save_as",

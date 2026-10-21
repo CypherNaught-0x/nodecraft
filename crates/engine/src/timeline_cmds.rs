@@ -15,7 +15,7 @@ fn not_found(what: &str) -> Error {
     Error::new(ErrorKind::NotFound, format!("{what} does not exist"))
 }
 
-fn editor<'a>(c: &'a Context<'_>, canvas: CanvasId, id: NodeId) -> Result<&'a Node, Error> {
+pub(crate) fn editor<'a>(c: &'a Context<'_>, canvas: CanvasId, id: NodeId) -> Result<&'a Node, Error> {
     let node = c.document.canvases().get(&canvas).ok_or_else(|| not_found("canvas"))?.nodes().get(&id).ok_or_else(|| not_found("document entity"))?;
     if node.kind == ID { Ok(node) } else { Err(invalid("only a Timeline node has clips")) }
 }

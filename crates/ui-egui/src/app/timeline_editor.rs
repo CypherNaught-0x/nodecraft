@@ -339,6 +339,7 @@ impl NodeCraftApp {
 
         let mut commands: Commands = Vec::new();
         let mut close = false;
+        let mut export = false;
         let notice = self.notice.clone();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
@@ -354,6 +355,10 @@ impl NodeCraftApp {
                 ui.label(egui::RichText::new(format!("{}{}", if unknown { "at least " } else { "" }, duration(total))).color(t.text_muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close |= ui.button("Done").clicked();
+                    export |= ui
+                        .button("Export for another editor…")
+                        .on_hover_text("Save an FCPXML document and the media it plays as one archive, without rendering.")
+                        .clicked();
                     let room = tracks.len() <= timeline::MAX_TRACKS;
                     for (kind, label) in [("audio", "Add sound track"), ("video", "Add picture track")] {
                         if ui.add_enabled(room, egui::Button::new(label)).clicked() {
@@ -400,6 +405,11 @@ impl NodeCraftApp {
             if !self.layer_dispatch(command, &params) {
                 break;
             }
+        }
+        if export {
+            let stem: String = node.title.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).take(48).collect();
+            let stem = if stem.trim().is_empty() { "Timeline".to_owned() } else { stem.trim().to_owned() };
+            self.start_interchange_export(editor.canvas, editor.node, &format!("{stem}.zip"));
         }
         if !close {
             self.timeline_editor = Some(editor);
