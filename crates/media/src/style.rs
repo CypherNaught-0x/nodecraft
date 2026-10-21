@@ -40,7 +40,8 @@ struct Stored {
 pub struct Style {
     /// The provider adapter that trained it and keeps the weights (`fal`).
     pub provider: String,
-    /// The catalog trainer model that trained it.
+    /// The provider's id for the trainer that trained it (`fal-ai/flux-lora-fast-training`), not
+    /// the catalog id.
     pub trainer: String,
     /// The base-model family it was trained for: only models of this family can use it.
     pub family: String,
@@ -132,7 +133,7 @@ mod tests {
     fn style() -> Style {
         Style {
             provider: "fal".into(),
-            trainer: "fal.flux-lora-trainer".into(),
+            trainer: "fal-ai/flux-lora-fast-training".into(),
             family: "flux-1".into(),
             trigger: "inkwash style".into(),
             weights: "https://files.example/abc/weights.safetensors".into(),

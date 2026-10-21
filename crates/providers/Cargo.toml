@@ -24,7 +24,8 @@ openai-images = ["dep:base64", "dep:blake3"]
 replicate = ["dep:base64"]
 # Stateless Gemini Interactions image generation and editing.
 gemini-images = ["dep:base64"]
-fal = ["dep:base64"]
+# Queue models, and style training (#167), whose images go up as one zip.
+fal = ["dep:base64", "dep:zip"]
 # Dated Seedream text generation and ordered multi-reference edits.
 seedream = ["dep:base64"]
 # Tripo text, image and multiview to 3D: uploads, a paid task, polling and the GLB download.
@@ -47,6 +48,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 url = { workspace = true }
 base64 = { version = "=0.22.1", optional = true }
 blake3 = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
 
 # TLS: the operating system's stack on Windows and macOS (no C toolchain needed, and it builds for
 # Windows ARM64, where aws-lc needs clang-cl); rustls with aws-lc on Linux; `fetch` in the browser.

@@ -253,7 +253,7 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
 }
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Upscale => {
+        Model::Image | Model::Styled | Model::Upscale => {
             png_extent(b)?;
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
             if m.mime != "image/png" {
@@ -281,5 +281,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             glb(b, l)?;
             Ok("model/gltf-binary")
         }
+        // A training's result is never downloaded.
+        Model::Train => Err(bad()),
     }
 }

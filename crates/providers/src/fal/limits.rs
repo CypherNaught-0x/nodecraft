@@ -6,6 +6,10 @@ pub struct Limits {
     pub input_bytes: usize,
     pub text_bytes: usize,
     pub request_bytes: usize,
+    /// Most bytes of training images (#167), packed into one zip.
+    pub dataset_bytes: usize,
+    /// Most bytes in a training request: the zip in base64, plus the JSON.
+    pub training_request_bytes: usize,
     pub response_bytes: usize,
     pub metadata_bytes: usize,
     pub output_bytes: usize,
@@ -26,6 +30,10 @@ impl Limits {
         text_bytes: 16 * 1024,
         // Two 1 MiB inputs (a portrait and speech, or two frames) in base64, plus the JSON.
         request_bytes: 4 * MIB,
+        // Twelve 1 MiB images and their zip headers.
+        dataset_bytes: 12 * MIB + 64 * 1024,
+        // That zip in base64, plus the JSON.
+        training_request_bytes: 17 * MIB,
         response_bytes: 2 * MIB,
         metadata_bytes: 256 * 1024,
         output_bytes: 16 * MIB,
@@ -40,6 +48,8 @@ impl Limits {
         if self.input_bytes > h.input_bytes
             || self.text_bytes > h.text_bytes
             || self.request_bytes > h.request_bytes
+            || self.dataset_bytes > h.dataset_bytes
+            || self.training_request_bytes > h.training_request_bytes
             || self.response_bytes > h.response_bytes
             || self.metadata_bytes > h.metadata_bytes
             || self.output_bytes > h.output_bytes

@@ -55,6 +55,12 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
         } else if model.id == "fal.trellis2" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.flux-lora-trainer" {
+            // 2 USD per 1000 training steps, checked 2026-10-21; 1000 steps by default.
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 2_000_000)));
+            let mut long = ParamValues::new();
+            long.insert("steps".into(), Value::Unsigned(Unsigned(2500)));
+            assert_eq!(model.quote(&long).unwrap(), Some(Money::new(Currency::USD, 5_000_000)));
         } else if model.provider == "tripo" {
             let micros = if model.id == "tripo.text-to-3d" { 200_000 } else { 300_000 };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
@@ -147,7 +153,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-opus-5-5", false),
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
+            ("fal.flux-lora", false),
             ("fal.esrgan", false),
+            ("fal.flux-lora-trainer", false),
             ("fal.kokoro", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),

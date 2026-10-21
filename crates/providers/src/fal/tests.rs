@@ -75,7 +75,7 @@ pub(super) fn receipt(model: &str) -> serde_json::Value {
     let root = format!("{ORIGIN}/{}/requests/r_1", m.root());
     json!({"request_id":"r_1","status":"IN_QUEUE","status_url":format!("{root}/status"),"response_url":root,"cancel_url":format!("{root}/cancel")})
 }
-fn handle(model: &str) -> JobHandle {
+pub(super) fn handle(model: &str) -> JobHandle {
     let o = receipt(model);
     Record { model: Model::read(model).unwrap(), requested: 1, width: if model == ESRGAN { 4 } else { 0 }, height: if model == ESRGAN { 4 } else { 0 } }.handle(
         "r_1",
@@ -84,6 +84,7 @@ fn handle(model: &str) -> JobHandle {
             result: o["response_url"].as_str().unwrap().into(),
             cancel: o["cancel_url"].as_str().unwrap().into(),
         },
+        "",
     )
 }
 fn output(model: &str) -> (serde_json::Value, Vec<u8>, &'static str) {
@@ -329,7 +330,7 @@ fn map_only_all_required_record_boundaries_and_bounded_json() {
         } else {
             ESRGAN
         };
-        let (rec, _) = Record::read(&handle(model), &key()).unwrap();
+        let (rec, _, _) = Record::read(&handle(model), &key()).unwrap();
         assert!(response::outputs(&serde_json::to_vec(&o).unwrap(), rec, Limits::HARD, &key()).is_err());
     }
 }
@@ -458,7 +459,7 @@ fn descriptor_admission_precedes_all_downloads_and_remaining_cap_shrinks() {
 fn actual_container_fixtures_and_truncated_extent_refusal() {
     for m in [WAN, KOKORO, TRELLIS] {
         let (_, b, _) = output(m);
-        let (rec, _) = Record::read(&handle(m), &key()).unwrap();
+        let (rec, _, _) = Record::read(&handle(m), &key()).unwrap();
         assert!(media::validate(&b, rec, Limits::HARD, &mut 0).is_ok());
         for data in [&b[..b.len() - 1], b"wrong bytes".as_slice()] {
             assert!(media::validate(data, rec, Limits::HARD, &mut 0).is_err());
@@ -471,7 +472,7 @@ fn image_16_bit_and_combined_allocation_preflight() {
     let mut b = vec![];
     let pixels = vec![0u8; 2 * 2 * 8];
     image::codecs::png::PngEncoder::new(&mut b).write_image(&pixels, 2, 2, image::ExtendedColorType::Rgba16).unwrap();
-    let (rec, _) = Record::read(&handle(FLUX), &key()).unwrap();
+    let (rec, _, _) = Record::read(&handle(FLUX), &key()).unwrap();
     for (cap, ok) in [(32, true), (31, false)] {
         reset();
         let l = Limits { codec_bytes: cap, ..Limits::HARD };
@@ -507,7 +508,7 @@ fn returned_length_declared_aggregate_and_png_tail_refuse_safely() {
     let mut oversized = Vec::with_capacity(Limits::HARD.response_bytes + 1);
     oversized.extend_from_slice(b"{}");
     assert!(status(&bytes(oversized), Limits::HARD.response_bytes).is_ok());
-    let (rec, _) = Record::read(&handle(FLUX), &key()).unwrap();
+    let (rec, _, _) = Record::read(&handle(FLUX), &key()).unwrap();
     let mut r = rec;
     r.requested = 4;
     let huge = json!({"images":vec![json!({"url":"https://fal.media/f","width":4096,"height":4096});4]});
@@ -536,11 +537,11 @@ fn actual_length_capacity_and_container_conflicts_are_not_partial_success() {
         ]);
         assert!(block_on(Fal::new(key(), t).poll(&handle(FLUX))).is_err());
     }
-    let (rec, _) = Record::read(&handle(TRELLIS), &key()).unwrap();
+    let (rec, _, _) = Record::read(&handle(TRELLIS), &key()).unwrap();
     let mut raw = include_bytes!("fixtures/triangle.glb").to_vec();
     raw[4] = 1;
     assert!(media::validate(&raw, rec, Limits::HARD, &mut 0).is_err());
-    let (rec, _) = Record::read(&handle(WAN), &key()).unwrap();
+    let (rec, _, _) = Record::read(&handle(WAN), &key()).unwrap();
     let fake = b"\0\0\0\x18ftypisom\0\0\0\0iso2avc1\0\0\0\x10moovbad data\0\0\0\x09mdatx";
     assert!(media::validate(fake, rec, Limits::HARD, &mut 0).is_err());
 }

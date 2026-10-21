@@ -209,3 +209,90 @@ pricing={type="by_usage",currency="USD"}
 id="upscale"
 output="image"
 inputs=[{role="image",modality="image",min=1,max=1}]
+
+# Style training and styled images (#167), checked 2026-10-21:
+# https://fal.ai/models/fal-ai/flux-lora-fast-training/api and https://fal.ai/models/fal-ai/flux-lora/api
+[[model]]
+id="fal.flux-lora-trainer"
+provider="fal"
+provider_model="fal-ai/flux-lora-fast-training"
+label="FLUX style training (fal)"
+description="Trains a FLUX.1 [dev] style from 4 to 12 images; fal keeps the weights. 2 USD per 1000 steps, dated 2026-10-21."
+latency_s=600
+quality=3
+style_family="flux-1"
+pricing={type="per_unit",unit="thousand_steps",price="2 USD",count="steps"}
+
+[[model.modes]]
+id="images-to-style"
+output="style"
+inputs=[{role="images",modality="image",min=4,max=12}]
+
+[[model.params.params]]
+name="steps"
+label="Steps"
+control={type="unsigned",min="1",max="5000",step="1"}
+default={type="unsigned",value="1000"}
+
+[[model.params.params]]
+name="trigger_word"
+label="Trigger word"
+control={type="text",multiline=false,max_bytes=64}
+default={type="text",value=""}
+
+[[model]]
+id="fal.flux-lora"
+provider="fal"
+provider_model="fal-ai/flux-lora"
+label="FLUX with a style (fal)"
+description="FLUX.1 [dev] with a style trained on fal. Priced per megapixel; usage price unknown before execution."
+latency_s=30
+quality=4
+style_family="flux-1"
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="styled"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="style",modality="style",min=1,max=1}]
+
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="num_inference_steps"
+label="Steps"
+control={type="unsigned",min="1",max="50",step="1"}
+default={type="unsigned",value="28"}
+
+[[model.params.params]]
+name="guidance_scale"
+label="Guidance"
+control={type="slider",min=1.0,max=20.0,step=0.5}
+default={type="number",value=3.5}
+
+[[model.params.params]]
+name="lora_scale"
+label="Style strength"
+control={type="slider",min=0.0,max=2.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}

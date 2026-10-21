@@ -3299,6 +3299,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "zip",
 ]
 
 [[package]]

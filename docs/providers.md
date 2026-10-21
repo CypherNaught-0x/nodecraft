@@ -334,10 +334,12 @@ Original synthetic fixtures run offline. The ignored native smoke requires NODEC
 Contract checked 2026-10-18: [REST](https://ai.google.dev/api/interactions-api), [image guide](https://ai.google.dev/gemini-api/docs/image-generation), [Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image), [Nano](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1), [Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image).
 ## fal.ai queue models
 
-The optional `fal` feature supports seven explicit live aliases, checked against official HTTP
-schemas on 2026-10-18 (the two Wan image and speech aliases on 2026-10-21): `fal-ai/flux/schnell`,
-`fal-ai/wan/v2.2-a14b/text-to-video`, `fal-ai/wan/v2.2-a14b/image-to-video`,
-`fal-ai/wan/v2.2-14b/speech-to-video`, `fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, and `fal-ai/esrgan`. These names are not
+The optional `fal` feature supports nine explicit live aliases, checked against official HTTP
+schemas on 2026-10-18 (the two Wan image and speech aliases and the two style models on
+2026-10-21): `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
+`fal-ai/wan/v2.2-a14b/image-to-video`, `fal-ai/wan/v2.2-14b/speech-to-video`,
+`fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, `fal-ai/esrgan`,
+`fal-ai/flux-lora-fast-training` and `fal-ai/flux-lora`. These names are not
 immutable weight versions; upstream schema/model availability can change. Hosts inject a Secret
 and HTTP transport. The adapter never reads credentials, project keys or live-test variables.
 The existing host provider factory reads the `fal` keychain account and constructs the adapter
@@ -366,6 +368,21 @@ run.quote/run.start partial-price consent. Trellis512 has a dated 0.25 USD per-c
 verified from the [official endpoint](https://fal.ai/models/fal-ai/trellis-2/api?platform=http).
 Absent monetary usage never becomes a provider-observed invoice: existing runner estimate
 fallback is separate. Unknown-price completions may have no numeric money row, not free work.
+
+Trained styles (#167): `fal-ai/flux-lora-fast-training` takes 4 to 12 `images` (each like any
+fal input image, 12 MiB together), packs them uncompressed into one zip sent as an
+`images_data_url` data URI (a request is at most 17 MiB), and sends `steps` (1–5000),
+`is_style=true`, `create_masks=false` and the optional one-line `trigger_word`, which the job
+handle keeps. Its result is never downloaded: `diffusers_lora_file.url` must be a plain `https`
+link on `fal.media`, and the adapter returns a style descriptor naming it (provider `fal`, family
+`flux-1`). `fal-ai/flux-lora` takes a `prompt` and one `style`, sends it as
+`loras=[{path, scale}]` with `lora_scale` 0–2, `guidance_scale` 1–20 and 1–50 steps, and puts the
+trigger word before a prompt that doesn't already contain it. It accepts only descriptors fal's
+trainer made for `flux-1` whose weights are on `fal.media`; any other is refused before the
+request. The trainer is priced 2 USD per 1000 steps (dated 2026-10-21); FLUX with a style is
+by usage (fal prices it per megapixel). Two things are not yet verified by a live run: whether fal accepts a data-URI zip
+for training, and whether every trained weights link is a plain `fal.media` link. A link on
+another host or with a query is refused after the training was paid for, and nothing is kept.
 
 Billable units (#437): fal may send `X-Fal-Billable-Units`, documented only as the "billing units
 charged for this request" ([response headers](https://fal.ai/docs/documentation/model-apis/common-parameters#response-headers),
