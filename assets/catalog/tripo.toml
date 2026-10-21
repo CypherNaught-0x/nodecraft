@@ -87,7 +87,7 @@ id="tripo.multiview-to-3d"
 provider="tripo"
 provider_model="multiview_to_model"
 label="Tripo multiview to 3D"
-description="Generate one textured GLB model from a front view and up to three more. Dated 0.30 USD estimate (30 credits)."
+description="Generate one textured GLB model from a front view plus one to three of left, back and right. Dated 0.30 USD estimate (30 credits)."
 latency_s=90
 quality=4
 pricing={type="per_call",price="0.30 USD"}

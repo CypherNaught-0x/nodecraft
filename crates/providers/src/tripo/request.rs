@@ -66,7 +66,7 @@ fn options(job: &ProviderJob, task: &str, l: Limits) -> Result<Map<String, Value
             "negative_prompt" if task == TEXT => {
                 let text = value.as_str().ok_or_else(|| invalid("Tripo negative prompt must be text"))?;
                 if !chars(text, l.negative_chars) {
-                    return Err(invalid("Tripo negative prompt exceeds 255 characters"));
+                    return Err(invalid(format!("Tripo negative prompt exceeds {} characters", l.negative_chars)));
                 }
                 if !text.is_empty() {
                     out.insert(name.clone(), json!(text));
@@ -97,7 +97,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         match input {
             JobInput::Text { role, text } if role == "prompt" && task == TEXT && prompt.is_none() => {
                 if text.trim().is_empty() || !chars(text, l.prompt_chars) {
-                    return Err(invalid("a Tripo prompt has 1 to 1024 characters"));
+                    return Err(invalid(format!("a Tripo prompt has 1 to {} characters", l.prompt_chars)));
                 }
                 prompt = Some(text.as_str());
             }
@@ -112,7 +112,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
                 }
                 let mime = mime(m).ok_or_else(|| invalid("Tripo takes PNG, JPEG or WebP images"))?;
                 if bytes.is_empty() || bytes.len() > l.input_bytes {
-                    return Err(invalid("a Tripo image must be under 20 MB"));
+                    return Err(invalid(format!("a Tripo image must be under {} MB", l.input_bytes.div_ceil(1 << 20))));
                 }
                 let sniffed = nodecraft_media::sniff(bytes).map(|s| s.mime);
                 if sniffed != Some(mime) {

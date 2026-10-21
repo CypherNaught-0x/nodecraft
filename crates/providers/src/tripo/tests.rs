@@ -261,6 +261,11 @@ fn terminal_failures_and_hostile_status_replies_are_errors_not_results() {
         success(json!({"pbr_model": "http://cdn.example.com/m.glb"})),
         success(json!({"pbr_model": "https://127.0.0.1/m.glb"})),
         success(json!({"pbr_model": "https://localhost/m.glb"})),
+        success(json!({"pbr_model": "https://localhost.localdomain/m.glb"})),
+        success(json!({"pbr_model": "https://metadata.google.internal/m.glb"})),
+        success(json!({"pbr_model": "https://printer.local/m.glb"})),
+        success(json!({"pbr_model": "https://app.localhost./m.glb"})),
+        success(json!({"pbr_model": "https://[::1]/m.glb"})),
         success(json!({"pbr_model": "https://user:pw@cdn.example.com/m.glb"})),
         success(json!({"pbr_model": "https://cdn.example.com:8443/m.glb"})),
         success(json!({"pbr_model": format!("https://cdn.example.com/{KEY}.glb")})),
@@ -298,6 +303,13 @@ fn only_a_whole_glb_within_the_limit_is_accepted_as_the_model() {
     let expired = Ok(HttpResponse { status: 403, headers: vec![], body: b"AccessDenied".to_vec() });
     let error = block_on(Tripo::new(key(), Transport::new(vec![finished(), expired])).poll(&handle(TEXT))).unwrap_err();
     assert!(error.message.contains("billed"), "{}", error.message);
+    // An expired link is retried (the next poll hands out a fresh one), never given up as permanent.
+    assert!(error.is_transient(), "{error:?}");
+    for status in [404, 500] {
+        let failed = Ok(HttpResponse { status, headers: vec![], body: vec![] });
+        let error = block_on(Tripo::new(key(), Transport::new(vec![finished(), failed])).poll(&handle(TEXT))).unwrap_err();
+        assert!(error.is_transient(), "{status}: {error:?}");
+    }
     let small = Limits { output_bytes: GLB_FIXTURE.len() - 1, ..Limits::HARD };
     let tripo = Tripo::with_limits(key(), Transport::new(vec![finished(), file(GLB_FIXTURE)]), small).unwrap();
     assert_eq!(block_on(tripo.poll(&handle(TEXT))).unwrap_err().kind, ErrorKind::Malformed);

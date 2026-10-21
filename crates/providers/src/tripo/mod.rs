@@ -52,7 +52,7 @@ impl Default for Limits {
         Self::HARD
     }
 }
-fn invalid(s: &'static str) -> ProviderError {
+fn invalid(s: impl Into<String>) -> ProviderError {
     ProviderError::new(ErrorKind::UnsupportedInput, s)
 }
 fn malformed(s: &'static str) -> ProviderError {
@@ -132,8 +132,10 @@ impl Tripo {
         let request = HttpRequest::get(url).max_response_bytes(self.limits.output_bytes).timeout_ms(300_000);
         let reply = self.http.send_no_redirect(request).await.map_err(|e| transport(e, false))?;
         if !reply.is_success() {
-            let mut error = ProviderError::from_status(reply.status, b"");
-            error.message = format!("the Tripo model download failed (HTTP {}); the task was billed", reply.status);
+            // Retryable whatever the status: links expire, and the next poll hands out a fresh one,
+            // so a billed model is never given up on a stale link.
+            let mut error = ProviderError::new(ErrorKind::Server, format!("the Tripo model download failed (HTTP {}); the task was billed", reply.status));
+            error.retry_after_ms = ProviderError::from_status(reply.status, b"").retry_after_ms;
             return Err(error);
         }
         if reply.body.len() > self.limits.output_bytes {

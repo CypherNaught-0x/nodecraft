@@ -78,11 +78,16 @@ pub(super) enum Status {
 /// The result link: Tripo's own HTTPS storage, nothing that could point back inside a network.
 fn link(url: &str) -> Result<String, ProviderError> {
     let parsed = url::Url::parse(url).map_err(|_| malformed("Tripo result link isn't a URL"))?;
-    let host = parsed.host_str().unwrap_or_default();
     if url.len() > 8192 || parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
         return Err(malformed("Tripo result link refused"));
     }
-    if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
+    // A public DNS name only: no IP literals, single labels or names that resolve inside a network.
+    let Some(url::Host::Domain(host)) = parsed.host() else {
+        return Err(malformed("Tripo result link refused"));
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let internal = [".internal", ".local", ".localhost", ".localdomain", ".lan", ".home", ".corp", ".intranet"];
+    if !host.contains('.') || host.starts_with("localhost") || internal.iter().any(|suffix| host.ends_with(suffix)) {
         return Err(malformed("Tripo result link refused"));
     }
     Ok(url.to_owned())

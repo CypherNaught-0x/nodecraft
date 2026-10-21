@@ -466,7 +466,7 @@ the **Generate 3D** card (`generation.mesh`, which also offers fal's Trellis):
 |---|---|---|---|
 | `tripo.text-to-3d` | `text_to_model` | a prompt (1–1,024 characters), optional negative prompt (255) | 0.20 USD |
 | `tripo.image-to-3d` | `image_to_model` | one image | 0.30 USD |
-| `tripo.multiview-to-3d` | `multiview_to_model` | a front view and up to three of left, back, right | 0.30 USD |
+| `tripo.multiview-to-3d` | `multiview_to_model` | a front view plus one to three of left, back, right | 0.30 USD |
 
 Estimates were verified 2026-10-21 (1 credit = 0.01 USD) and are per task, not actual charges.
 They cover a textured PBR model at standard quality, so the adapter always sends `texture` and
@@ -482,13 +482,19 @@ seconds and reports Tripo's queue position and percentage. Tripo has no cancel e
 cancelling a run stops waiting but not the task.
 
 A finished task names short-lived (about five minutes) result links. The adapter takes the PBR
-model, then the plain or base model, and downloads it **without the key**, from `https` hosts
-only (no IP literals, ports or credentials in the link). The download must be a whole glTF 2.0
+model, then the plain or base model, and downloads it **without the key**, from public `https`
+hosts only (no IP literals, single-label or internal names such as `*.internal` or `*.local`,
+ports or credentials in the link). A failed download is retryable: the next poll hands out a
+fresh link, so an expired one never loses a billed model. The download must be a whole glTF 2.0
 binary (`glTF` magic, version 2, length matching) of at most 256 MiB; anything else is refused as
 malformed, and since the task already ran it may still have been billed. Error replies map
 Tripo's codes onto the shared kinds (auth, rate limit and quota with `Retry-After`, content
 policy, credit, input errors, server); their messages are cut short and withheld if they echo
 the key. Limits can only be lowered.
+
+The multiview task needs the front view and at least one other; the card accepts a front view
+alone and the adapter refuses it before anything is uploaded. Tripo is native only: the adapter
+fetches results with no-redirect requests, which the builtin browser transport refuses.
 
 **Not verified live yet:** the model files Tripo returns are expected to be plain GLBs. A GLB that
 needs an extension the mesh decoder doesn't read (meshopt or Draco compression, say) still

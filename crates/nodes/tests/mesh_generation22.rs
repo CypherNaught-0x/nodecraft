@@ -94,3 +94,23 @@ fn a_text_mode_sends_its_prompt_and_image_modes_send_only_images() {
     let image = InputValue { port: "image".into(), ..picture(4) };
     assert!(plan("image", Some("@chair"), &[image, mention]).unwrap_err().message.contains("@mentions"));
 }
+
+#[test]
+fn the_image_card_plans_an_image_only_mode_too() {
+    // An upscaler (fal's ESRGAN) has no prompt role: the image card plans it with just its image.
+    let upscale = GenerationModel {
+        modes: vec![GenerationMode { id: ModeId::new("upscale").unwrap(), inputs: vec![role("image", Modality::Image, 1, 1, false)] }],
+        ..model("esrgan", "upscale", vec![])
+    };
+    let kind = GenerationKind::new(vec![upscale], [5; 32]).unwrap();
+    let supplied: ParamValues = [("model".into(), Value::Text("esrgan".into()))].into();
+    let node = kind.instantiate_instance(ID, Default::default(), &supplied).unwrap();
+    let mut targets = TargetSelection::empty();
+    targets.insert(ID, &ProviderTarget::default_instance("tripo").unwrap()).unwrap();
+    let image = InputValue { port: "image".into(), ..picture(5) };
+    let jobs = kind.plan(&PlanCtx { node: &node, inputs: &[image], targets: &targets }).unwrap();
+    let [JobSpec::Generate { inputs, outputs, .. }] = jobs.as_slice() else { panic!("one generation job: {jobs:?}") };
+    assert_eq!(inputs.iter().map(|i| i.role.as_str()).collect::<Vec<_>>(), ["image"]);
+    assert_eq!(outputs.first().map(|o| o.modality), Some(Modality::Image));
+    assert!(kind.plan(&PlanCtx { node: &node, inputs: &[], targets: &targets }).is_err(), "without media there is nothing to send");
+}
