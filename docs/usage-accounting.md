@@ -78,7 +78,12 @@ explicit accounting result. An accounting failure retains the output and origina
 then reports a non-transient scheduler failure. A supplied retry capability performs only
 accounting against that captured identity/report: it never invokes a provider, restarts a
 scheduler job or redelivers output. A currency mismatch is a failure, not an estimated-currency
-actual charge. No reported or estimated cost is explicitly unknown, not free. Existing
+actual charge. No reported or estimated cost is explicitly unknown, not free. A job whose
+provider reports tokens but no cost, in an authorized run of one model with catalog token
+rates, is charged those tokens at the rates (#595); otherwise it is charged its estimate. A job
+resumed after a restart carries no rates, and token counts too large to price fall back to the
+estimate. Because prompt tokens are now charged, a run with a long prompt can settle above the
+quote, which bounds output only. Existing
 provider idempotency and handle behavior remain separate from this accounting capability;
 this does not provide durable restart recovery or fix handle re-registration issue #290.
 

@@ -94,6 +94,8 @@ impl Resumes {
             Err(error) => return Err(Box::new((entry, error.message))),
         };
         let job = ProviderJob { model: entry.model.clone(), params: Default::default(), inputs: Vec::new(), idempotency_key: entry.key.clone() };
+        // A resumed job carries no token rates (#595): one that reports tokens but no cost settles
+        // at its estimate. Chat adapters answer from submit, so they save no handle to resume.
         let price = entry.priced.then(|| JobPrice::new(entry.node, entry.model.clone(), entry.estimate));
         runner.register(id, QueuedJob::resume(binding.clone(), job, price));
         if let Err(error) = runner.restore_target_generation(binding, entry.key.clone(), entry.generation, entry.handle.clone()) {

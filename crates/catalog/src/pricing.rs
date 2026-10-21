@@ -135,6 +135,47 @@ impl Pricing {
     }
 }
 
+/// What a chat model bills for the tokens a run reports using (#595), per 1000 tokens. A run is
+/// quoted by [`Pricing`] before it is sent (an upper bound on the reply) and charged at these
+/// rates once the reply says how many tokens it used.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenRates {
+    /// Per 1000 prompt tokens.
+    pub input: Price,
+    /// Per 1000 reply tokens, thinking included.
+    pub output: Price,
+    /// The rates for a long prompt, if the model has them.
+    #[serde(default)]
+    pub long: Option<LongPrompt>,
+}
+
+/// Rates that apply to the whole request once its prompt has more than `above` tokens.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LongPrompt {
+    pub above: u64,
+    pub input: Price,
+    pub output: Price,
+}
+
+impl TokenRates {
+    /// Every price these rates hold.
+    pub(crate) fn prices(&self) -> impl Iterator<Item = Price> + '_ {
+        [self.input, self.output].into_iter().chain(self.long.iter().flat_map(|long| [long.input, long.output]))
+    }
+
+    /// What `input` prompt tokens and `output` reply tokens cost, each part rounded up to the micro.
+    pub fn cost(&self, input: u64, output: u64) -> Result<Money, Error> {
+        let (input_price, output_price) = match &self.long {
+            Some(long) if input > long.above => (long.input, long.output),
+            _ => (self.input, self.output),
+        };
+        let input = input_price.0.checked_mul_ratio(input, 1000, Rounding::Up)?;
+        input.checked_add(output_price.0.checked_mul_ratio(output, 1000, Rounding::Up)?)
+    }
+}
+
 /// `⌈x × 10⁶⌉`, never below either reading of the count: the float's exact binary value, or the
 /// shortest decimal that is written into the provider request (which can be slightly larger).
 /// `None` for negative, non-finite or too-large values.
@@ -259,5 +300,20 @@ mod tests {
         params.insert("max_tokens".into(), Value::Unsigned(Unsigned(1)));
         assert_eq!(tokens.quote(&params, Currency::USD).unwrap(), Some(usd(2)));
         assert_eq!(Pricing::Free.quote(&ParamValues::new(), Currency::EUR).unwrap(), Some(Money::zero(Currency::EUR)));
+    }
+
+    #[test]
+    fn token_rates_charge_measured_usage_and_switch_for_a_long_prompt() {
+        let rates: TokenRates =
+            toml::from_str("input = \"0.0001 USD\"\noutput = \"0.0005 USD\"\nlong = { above = 100000, input = \"0.0005 USD\", output = \"0.0025 USD\" }")
+                .unwrap();
+        // 1,000 × 0.0001 + 2,000 × 0.0005.
+        assert_eq!(rates.cost(1_000, 2_000).unwrap(), usd(1_100));
+        assert_eq!(rates.cost(100_000, 0).unwrap(), usd(10_000), "at the threshold: the short rate");
+        assert_eq!(rates.cost(100_001, 1_000).unwrap(), usd(50_001 + 2_500), "over it: the long rate for the whole request");
+        assert_eq!(rates.cost(1, 1).unwrap(), usd(2), "each part rounds up");
+        assert_eq!(rates.cost(0, 0).unwrap(), usd(0));
+        assert!(rates.cost(u64::MAX, u64::MAX).is_err());
+        assert!(toml::from_str::<TokenRates>("input = \"1 USD\"\noutput = \"1 USD\"\nper = 5").is_err(), "unknown fields");
     }
 }
