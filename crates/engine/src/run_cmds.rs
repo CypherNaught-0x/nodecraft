@@ -922,6 +922,11 @@ impl AuthorizedRun {
     pub fn job_billed(&mut self, job: nodecraft_exec::scheduler::JobId, units: nodecraft_types::BillableUnits) {
         self.run.job_billed(job, units)
     }
+    /// `job` may have been billed under `key` although it didn't finish (#517); call before
+    /// [`Self::job_failed`].
+    pub fn job_may_be_billed(&mut self, job: nodecraft_exec::scheduler::JobId, key: &str) {
+        self.run.job_may_be_billed(job, key)
+    }
     pub fn job_failed(&mut self, kinds: &nodecraft_nodes::Registry, job: nodecraft_exec::scheduler::JobId, reason: &str) -> nodecraft_exec::run::Progress {
         self.run.job_failed(kinds, job, reason)
     }

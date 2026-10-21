@@ -18,14 +18,23 @@
   result, which keeps every item's id. Anything that doesn't match exactly runs in full. Only
   steps whose jobs are known up front qualify: a step fed by this run can't know its inputs are
   unchanged until they are made.
-- **Missing items get fresh idempotency keys.** Reusing an item's old keys looks like the way to
-  avoid a double charge, but what a provider holds under them is the outcome we are retrying: a
-  failed job answers with its failure and a provider-side cancel with `Cancelled`, so the retry
-  could never succeed. Not resubmitting the finished items is what saves the money. An item whose
-  job may have been billed also runs again under a new key, so it can be charged twice: one
-  whose reply was lost (an uncertain failure after retries), and one the provider finished whose
-  outputs then failed here (a download or validation error). Recovering those under their old
-  keys is #517.
+- **A missing item runs under a fresh key unless it may have been billed** (#517, revised
+  2026-10-21). What a provider holds under an item's old keys is the outcome being retried: a job
+  it reported failed answers with that failure, a provider-side cancel with `Cancelled`. So those
+  items, and cancelled ones, run under new keys; not resubmitting the finished items is what
+  saves the money. Two kinds of failure may have been billed without the provider saying the
+  job failed: a reply lost on submit (an uncertain failure, counted only for providers whose
+  policy allows sending such a job again) and a job the provider accepted that didn't finish
+  here (a failed download, an invalid output, a deadline). Their missing item keeps each such
+  job's exact sent key (`keys`, a list of `{job, key}`, omitted when empty), and running again
+  sends that job under it, at most once per run, so a provider that keeps jobs by key (ComfyUI,
+  the mock) answers with the job it ran and the usage log keeps one charge. The provider's
+  handle is kept for the session only (at most 256), so the same session polls it instead of
+  submitting; after a restart the job is submitted under its key. Limits: providers that ignore
+  keys (fal, Replicate and most cloud APIs) bill again regardless, and a recovered item's
+  recorded settings and seed are the new run's. Older builds ignore the field and use fresh keys,
+  so the format version is unchanged. Keys are validated on load: only a failed item's, in job
+  order, each a visible-ASCII `nodecraft:` key of at most 64 bytes.
 - **Inputs made in the same run run in full.** A step resumes only when its inputs are known at
   planning time. Re-running an upstream node together with the partial one runs every item, even
   when the upstream turns out unchanged; comparing hashes once the inputs are made is tracked as

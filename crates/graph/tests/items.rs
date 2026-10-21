@@ -1,5 +1,5 @@
 //! Fanned results (#92): a generation tagged with the batch items it was made from.
-use nodecraft_graph::{Canvas, Change, Changeset, Generation, Incomplete, ItemKey, MAX_ITEM_AXES, Missing, MissingItem, Node, Project};
+use nodecraft_graph::{Canvas, Change, Changeset, Generation, Incomplete, ItemKey, MAX_ITEM_AXES, MAX_SENT_KEY, Missing, MissingItem, Node, Project, SentKey};
 use nodecraft_types::{CanvasId, GenerationId, ItemId, NodeId, ProjectId, Value};
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
@@ -65,7 +65,7 @@ fn malformed_item_tags_are_rejected() {
 fn a_partial_result_names_some_of_its_items_once_each_in_order() {
     let partial = |missing: &[u32]| {
         let items = vec![vec![key(1, 1)], vec![key(1, 2)], vec![key(1, 3)]];
-        let missing = missing.iter().map(|item| MissingItem { item: *item, why: Missing::Failed }).collect();
+        let missing = missing.iter().map(|item| MissingItem::new(*item, Missing::Failed)).collect();
         Generation { incomplete: Some(Incomplete { missing }), ..fanned(items, vec![list(3)]) }
     };
     let project = record(partial(&[0, 2])).unwrap();
@@ -79,6 +79,39 @@ fn a_partial_result_names_some_of_its_items_once_each_in_order() {
     // Only a fanned result can be partial, and a complete one writes no field.
     let plain = Generation::new(GenerationId::from_bytes([4; 16]), vec![Value::Text("x".into())]);
     assert!(serde_json::to_value(&plain).unwrap().get("incomplete").is_none());
-    let missing = vec![MissingItem { item: 0, why: Missing::Cancelled }];
+    let missing = vec![MissingItem::new(0, Missing::Cancelled)];
     assert!(record(Generation { incomplete: Some(Incomplete { missing }), ..plain }).is_err());
+}
+
+#[test]
+fn a_failed_item_keeps_the_keys_its_jobs_went_under() {
+    let partial = |why: Missing, keys: Vec<(u32, String)>| {
+        let items = vec![vec![key(1, 1)], vec![key(1, 2)]];
+        let keys = keys.into_iter().map(|(job, key)| SentKey { job, key }).collect();
+        let missing = vec![MissingItem { keys, ..MissingItem::new(1, why) }];
+        Generation { incomplete: Some(Incomplete { missing }), ..fanned(items, vec![list(2)]) }
+    };
+    let sent = |job: u32| (job, format!("nodecraft:{:032x}:{job}", 7));
+    let project = record(partial(Missing::Failed, vec![sent(0), sent(1)])).unwrap();
+    let json = serde_json::to_string(&project).unwrap();
+    assert!(json.contains("nodecraft:"), "{json}");
+    let back: Project = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, project);
+    // An item without keys writes no field, so files stay as older builds wrote them.
+    let none = serde_json::to_string(&record(partial(Missing::Failed, vec![])).unwrap()).unwrap();
+    assert!(!none.contains("\"keys\""), "{none}");
+
+    // Only a failed item's, in job order, once each, each a short visible key of NodeCraft's.
+    let long = (0, format!("nodecraft:{}", "a".repeat(MAX_SENT_KEY)));
+    for bad in [
+        partial(Missing::Cancelled, vec![sent(0)]),
+        partial(Missing::Failed, vec![sent(1), sent(0)]),
+        partial(Missing::Failed, vec![sent(0), sent(0)]),
+        partial(Missing::Failed, vec![(0, String::new())]),
+        partial(Missing::Failed, vec![(0, "fal:123".into())]),
+        partial(Missing::Failed, vec![(0, "nodecraft:a b".into())]),
+        partial(Missing::Failed, vec![long]),
+    ] {
+        assert!(record(bad.clone()).is_err(), "{bad:?}");
+    }
 }

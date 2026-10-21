@@ -85,11 +85,37 @@ pub struct Incomplete {
 }
 
 /// One item of a partial result that has no value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissingItem {
     pub item: u32,
     pub why: Missing,
+    /// For a failed item, the jobs that may have been billed although they didn't finish (#517):
+    /// a reply lost on submit, or a job the provider accepted whose outputs then failed here.
+    /// Running the item again sends them under these keys, so a provider that keeps a job by
+    /// its key answers with it instead of charging again. Empty when none may have been billed,
+    /// or the provider reported them failed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<SentKey>,
 }
+
+impl MissingItem {
+    /// An item with no job that may have been billed.
+    pub fn new(item: u32, why: Missing) -> Self {
+        Self { item, why, keys: Vec::new() }
+    }
+}
+
+/// The idempotency key one job of an item was last sent under (#517).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentKey {
+    /// Which of the item's jobs, by position among them.
+    pub job: u32,
+    /// Opaque ASCII, at most [`MAX_SENT_KEY`] long: nothing about the account or the provider.
+    pub key: String,
+}
+
+/// The longest idempotency key a job is sent under.
+pub const MAX_SENT_KEY: usize = 64;
 
 /// Why an item of a partial result has no value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -248,10 +248,39 @@ struct State {
     invocations: HashMap<u64, (JobId, Attempt)>,
     next_invocation: u64,
     metadata: HashMap<Attempt, RetainedMetadata>,
+    /// Jobs whose last attempt failed although the provider may have billed it (#517): the
+    /// provider, the key it went under and any handle the provider issued, until the run host
+    /// takes them ([`ProviderRunner::take_billed`]).
+    billed: HashMap<JobId, (nodecraft_types::ProviderTarget, String, Option<JobHandle>)>,
+}
+
+/// The handles of jobs that may have been billed although they failed here (#517), oldest first,
+/// at most [`MAX_KEPT_HANDLES`]: a later run that sends one again under its key follows the
+/// handle instead of submitting anew. Owned by the run host and shared by its runs' runners, as
+/// each run has a runner of its own.
+#[derive(Default)]
+pub struct KeptHandles(std::collections::VecDeque<((nodecraft_types::ProviderTarget, String), JobHandle)>);
+
+impl KeptHandles {
+    fn keep(&mut self, at: (nodecraft_types::ProviderTarget, String), handle: JobHandle) {
+        self.0.retain(|(kept, _)| *kept != at);
+        if self.0.len() >= MAX_KEPT_HANDLES {
+            self.0.pop_front();
+        }
+        self.0.push_back((at, handle));
+    }
+
+    fn take(&mut self, at: &(nodecraft_types::ProviderTarget, String)) -> Option<JobHandle> {
+        let n = self.0.iter().position(|(kept, _)| kept == at)?;
+        self.0.remove(n).map(|(_, handle)| handle)
+    }
 }
 
 /// Longest idempotency key sent to a provider.
-pub const MAX_SENT_KEY: usize = 64;
+pub const MAX_SENT_KEY: usize = nodecraft_graph::MAX_SENT_KEY;
+
+/// The most handles of possibly billed jobs kept for a later run (#517).
+const MAX_KEPT_HANDLES: usize = 256;
 
 /// The key a job's next submission is sent under: the scheduler's `base` key at first, then
 /// `base#n` after the provider reported `n` generations failed, so a provider that dedupes on the
@@ -337,6 +366,7 @@ pub struct ProviderRunner {
     on_update: Arc<UpdateSink>,
     budget: Option<JobBudget>,
     write_ahead: Option<Arc<WriteAhead>>,
+    kept: Arc<Mutex<KeptHandles>>,
 }
 
 /// Called before every job is first sent, with whether it is paid (a paid one's estimate is
@@ -581,12 +611,18 @@ impl Drop for RunGuard {
 
 impl ProviderRunner {
     pub fn new(runtime: Arc<dyn Runtime>, limits: RunLimits, on_output: Arc<OutputSink>, on_update: Arc<UpdateSink>) -> Self {
-        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None }
+        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None, kept: Arc::default() }
     }
 
     /// Calls `write_ahead` before each job is first sent (see [`WriteAhead`]).
     pub fn with_write_ahead(mut self, write_ahead: Arc<WriteAhead>) -> Self {
         self.write_ahead = Some(write_ahead);
+        self
+    }
+
+    /// Keeps the handles of possibly billed jobs in `kept`, shared with other runs' runners.
+    pub fn with_kept_handles(mut self, kept: Arc<Mutex<KeptHandles>>) -> Self {
+        self.kept = kept;
         self
     }
 
@@ -714,9 +750,27 @@ impl ProviderRunner {
     }
 
     /// Drops a finished job's registration and handle (call when the scheduler forgets it).
+    /// The key `id` was last sent under, when its last attempt failed although the provider may
+    /// have billed it (#517): a reply lost on submit by a provider whose policy allows sending
+    /// it again, or a job the provider accepted that didn't finish here (a failed download, an
+    /// invalid output, a deadline) without the provider reporting it failed. Sending the job
+    /// again under this key lets a provider that keeps jobs by key answer with it; a handle it
+    /// issued is kept for the session, so a run that does resumes it rather than submitting.
+    /// Take it before [`Self::forget`].
+    pub fn take_billed(&self, id: JobId) -> Option<String> {
+        let mut s = self.lock();
+        let (provider, key, handle) = s.billed.remove(&id)?;
+        drop(s);
+        if let Some(handle) = handle {
+            self.kept.lock().unwrap_or_else(PoisonError::into_inner).keep((provider, key.clone()), handle);
+        }
+        Some(key)
+    }
+
     pub fn forget(&self, id: JobId) {
         self.settle(id);
         let mut s = self.lock();
+        s.billed.remove(&id);
         if s.running.contains_key(&id) {
             // Dropped when the run ends (with its reservation settled).
             s.forget_after.insert(id);
@@ -776,6 +830,7 @@ impl JobRunner for ProviderRunner {
         let on_update = Arc::clone(&self.on_update);
         let budget = self.budget.clone();
         let write_ahead = self.write_ahead.clone();
+        let kept = Arc::clone(&self.kept);
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
             if start.idempotency_key.is_empty() || start.idempotency_key.len() > 64 || !start.idempotency_key.is_ascii() {
@@ -819,8 +874,22 @@ impl JobRunner for ProviderRunner {
                 let key = sent_key(&start.idempotency_key, generation);
                 (key, generation)
             };
-            // Only a handle this job's current provider issued, under the key now sent, resumes.
-            let handle = lock().handles.get(&(provider_id.clone(), key.clone())).cloned();
+            // Only a handle this job's current provider issued, under the key now sent, resumes:
+            // one of this run's, or one kept from a job an earlier run may have been billed for.
+            let handle = {
+                let mut s = lock();
+                let at = (provider_id.clone(), key.clone());
+                match s.handles.get(&at).cloned() {
+                    Some(handle) => Some(handle),
+                    None => {
+                        let kept = kept.lock().unwrap_or_else(PoisonError::into_inner).take(&at);
+                        if let Some(handle) = &kept {
+                            s.handles.insert(at, handle.clone());
+                        }
+                        kept
+                    }
+                }
+            };
             if handle.is_none() && queued.resume_only {
                 return Outcome::Failed {
                     error: "the provider's handle for this job is gone, so it can't be followed without sending it again".into(),
@@ -1071,6 +1140,7 @@ impl JobRunner for ProviderRunner {
                     Ok(done) => {
                         let reserved = {
                             let mut s = lock();
+                            s.billed.remove(&job_id);
                             if s.jobs.get(&job_id).is_some_and(|job| attempt.matches_job(job))
                                 && s.jobs.get(&job_id).is_some_and(|job| Arc::ptr_eq(&job.identity, &registration))
                                 && guard.scheduler.as_ref().is_some_and(|lease| s.owns_scheduler(job_id, lease))
@@ -1118,6 +1188,21 @@ impl JobRunner for ProviderRunner {
                         // registration was replaced while awaiting the response.
                         let will_retry = failure.error.is_transient()
                             && (failure.handle.is_some() || !failure.uncertain || queued.provider.provider().retry_ambiguous_submit());
+                        // May have been billed although it didn't finish (#517). A provider that
+                        // reported the job failed, or a cancel, is over: neither is sent again
+                        // under this key. A lost submit counts only where the provider's policy
+                        // allows sending it again.
+                        let billed = !failure.finished
+                            && failure.error.kind != ErrorKind::Cancelled
+                            && (failure.handle.is_some() || (failure.uncertain && queued.provider.provider().retry_ambiguous_submit()));
+                        {
+                            let mut s = lock();
+                            if billed {
+                                s.billed.insert(job_id, (provider_id.clone(), key.clone(), failure.handle.clone()));
+                            } else {
+                                s.billed.remove(&job_id);
+                            }
+                        }
                         let reserved = {
                             let mut s = lock();
                             if let Some(r) = s.reserved.get_mut(&job_id).filter(|r| r.matches(&attempt)) {

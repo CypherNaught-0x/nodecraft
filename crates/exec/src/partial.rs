@@ -3,7 +3,10 @@
 //! throwing paid results away. Running the node again while its inputs are unchanged completes
 //! that result: the planner keeps the finished items and plans only the missing ones
 //! ([`Resume`]), so the items already paid for aren't charged again. A missing item runs under
-//! new idempotency keys: what a provider holds under its old ones is the failure or the cancel.
+//! new idempotency keys, as what a provider holds under its old ones is the failure or the
+//! cancel, unless one of its jobs may have been billed without the provider reporting it failed
+//! (#517): that job's key is kept with the item ([`nodecraft_graph::SentKey`]) and the job is
+//! sent under it again, so a provider that keeps jobs by key answers with the one it ran.
 //!
 //! A technique node fanned out by a batch (#533) keeps its finished items the same way (#536).
 //! Its inlined nodes have no results of their own, so running it again plans only the missing

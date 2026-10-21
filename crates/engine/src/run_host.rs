@@ -238,6 +238,9 @@ pub struct RunHost {
     save_failed: Option<(u64, bool)>,
     /// When the usage log was last compared with the saved one.
     checked_at: u64,
+    /// Handles of jobs that may have been billed though they failed, for a later run that sends
+    /// them again (#517).
+    kept_handles: Arc<Mutex<crate::jobs::KeptHandles>>,
     /// Paid results that couldn't be kept, waiting for a decision (#369).
     results: Arc<Mutex<held::Held>>,
     /// ffmpeg and ffprobe for timeline renders (#109), from the settings.
@@ -279,6 +282,7 @@ impl RunHost {
             journal_changed: false,
             save_failed: None,
             checked_at: 0,
+            kept_handles: Arc::default(),
             results: Arc::default(),
             video_tools: None,
         }
@@ -684,7 +688,8 @@ impl RunHost {
             }),
         )
         .with_budget(self.budget.clone())
-        .with_write_ahead(self.write_ahead());
+        .with_write_ahead(self.write_ahead())
+        .with_kept_handles(Arc::clone(&self.kept_handles));
         let actions = Arc::new(LocalActions::new(session.assets().clone()).with_video_tools(self.video_tools.clone()));
         let sources = SourceRunner::default().with_actions(actions.clone());
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
@@ -1000,6 +1005,9 @@ fn absorb(
                     }
                 }
                 None => {
+                    if let Some(key) = active.provider_jobs.contains(&job).then(|| active.runner.provider.take_billed(job)).flatten() {
+                        active.run.job_may_be_billed(job, &key);
+                    }
                     settled |= finish(active, job);
                     active.jobs.end(job, JobState::Failed { reason: error.clone(), cause: None });
                     active.run.job_failed(session.kinds(), job, &error)
