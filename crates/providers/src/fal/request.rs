@@ -15,6 +15,10 @@ struct Body<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     image_url: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    end_image_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     image_size: Option<Size>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_images: Option<u64>,
@@ -31,7 +35,7 @@ struct Body<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     frames_per_second: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    resolution: Option<Resolution>,
+    resolution: Option<Resolution<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     aspect_ratio: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,8 +57,8 @@ struct Body<'a> {
 }
 #[derive(Serialize)]
 #[serde(untagged)]
-enum Resolution {
-    Video(&'static str),
+enum Resolution<'a> {
+    Video(&'a str),
     Mesh(u16),
 }
 struct Count {
@@ -77,6 +81,25 @@ fn integer(j: &ProviderJob, k: &str, d: u64, min: u64, max: u64) -> Result<u64, 
     }
     Ok(n)
 }
+/// A media input's data URI length: the `data:<mime>;base64,` prefix and the padded base64.
+fn encoded(mime: &str, b: &[u8]) -> Result<usize, ProviderError> {
+    b.len()
+        .checked_add(2)
+        .and_then(|n| n.checked_div(3))
+        .and_then(|n| n.checked_mul(4))
+        .and_then(|n| mime.len().checked_add(13).and_then(|prefix| n.checked_add(prefix)))
+        .ok_or_else(|| invalid("fal encoded media overflow"))
+}
+fn uri(mime: &str, bytes: &[u8], len: usize) -> Result<String, ProviderError> {
+    let mut s = String::new();
+    s.try_reserve_exact(len).map_err(|_| invalid("fal encoding allocation refused"))?;
+    s.push_str("data:");
+    s.push_str(mime);
+    s.push_str(";base64,");
+    observe(1);
+    base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut s);
+    Ok(s)
+}
 fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Result<&'a str, ProviderError> {
     let s = j.params.get(k).map(|v| v.as_str().ok_or_else(|| invalid("fal choice required"))).transpose()?.unwrap_or(d);
     if !allowed.contains(&s) {
@@ -86,20 +109,23 @@ fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Resu
 }
 pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), ProviderError> {
     let model = Model::read(&j.model)?;
-    if j.inputs.len() > 2 || j.params.len() > 8 || j.idempotency_key.len() > 256 {
+    if j.inputs.len() > 4 || j.params.len() > 8 || j.idempotency_key.len() > 256 {
         return Err(invalid("fal input count/identity limit"));
     }
     let mut strings = j.model.len() + j.idempotency_key.len();
     let mut prompt = None;
     let mut negative = None;
-    let mut media = None;
+    // The image (frame, portrait or source), the last frame, and the speech track.
+    let mut image: Option<(&str, &[u8])> = None;
+    let mut end: Option<(&str, &[u8])> = None;
+    let mut audio: Option<(&str, &[u8])> = None;
     for i in &j.inputs {
         match i {
             crate::JobInput::Text { role, text } => {
                 strings = strings.checked_add(role.len()).and_then(|n| n.checked_add(text.len())).ok_or_else(|| invalid("fal input size overflow"))?;
                 let target = match (model, role.as_str()) {
-                    (Model::Image | Model::Video | Model::Audio, "prompt") => &mut prompt,
-                    (Model::Video, "negative_prompt") => &mut negative,
+                    (Model::Image | Model::Video | Model::Frames | Model::Speech | Model::Audio, "prompt") => &mut prompt,
+                    (Model::Video | Model::Frames | Model::Speech, "negative_prompt") => &mut negative,
                     _ => return Err(invalid("fal unsupported text role")),
                 };
                 if target.replace(text.as_str()).is_some() {
@@ -108,10 +134,18 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             }
             crate::JobInput::Media { role, mime, bytes } => {
                 strings = strings.checked_add(role.len()).and_then(|n| n.checked_add(mime.len())).ok_or_else(|| invalid("fal metadata overflow"))?;
-                if !matches!(model, Model::Mesh | Model::Upscale) || role != "image" || media.is_some() || bytes.len() > l.input_bytes {
-                    return Err(invalid("fal invalid image input"));
+                let target = match (model, role.as_str()) {
+                    (Model::Mesh | Model::Upscale, "image") | (Model::Frames, "first_frame") | (Model::Speech, "portrait") => &mut image,
+                    (Model::Frames, "last_frame") => &mut end,
+                    (Model::Speech, "speech") => &mut audio,
+                    _ => return Err(invalid("fal unsupported media role")),
+                };
+                if bytes.len() > l.input_bytes {
+                    return Err(invalid("fal media input exceeds limit"));
                 }
-                media = Some((mime.as_str(), bytes.as_ref()));
+                if target.replace((mime.as_str(), bytes.as_ref())).is_some() {
+                    return Err(invalid("fal duplicate input role"));
+                }
             }
         }
     }
@@ -123,6 +157,8 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         let ok = match model {
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
             Model::Video => matches!(k.as_str(), "num_frames" | "aspect_ratio" | "seed"),
+            Model::Frames => matches!(k.as_str(), "num_frames" | "resolution" | "aspect_ratio" | "seed"),
+            Model::Speech => matches!(k.as_str(), "num_frames" | "resolution" | "seed"),
             Model::Audio => matches!(k.as_str(), "voice" | "speed"),
             Model::Mesh => k == "seed",
             Model::Upscale => false,
@@ -134,14 +170,17 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if strings > l.text_bytes {
         return Err(invalid("fal aggregate text metadata exceeds limit"));
     }
-    if matches!(model, Model::Image | Model::Video | Model::Audio) && prompt.is_none_or(|s| s.trim().is_empty()) {
+    if matches!(model, Model::Image | Model::Video | Model::Frames | Model::Speech | Model::Audio) && prompt.is_none_or(|s| s.trim().is_empty()) {
         return Err(invalid("fal prompt required"));
     }
     if model == Model::Audio && prompt.is_some_and(|s| s.len() > 4096) {
         return Err(invalid("fal audio prompt exceeds 4096 bytes"));
     }
-    if matches!(model, Model::Mesh | Model::Upscale) && media.is_none() {
+    if matches!(model, Model::Mesh | Model::Upscale | Model::Frames | Model::Speech) && image.is_none() {
         return Err(invalid("fal image required"));
+    }
+    if model == Model::Speech && audio.is_none() {
+        return Err(invalid("fal speech audio required"));
     }
     let mut body = Body { prompt, negative_prompt: negative, ..Default::default() };
     let mut record = Record { model, requested: 1, width: 0, height: 0 };
@@ -178,6 +217,24 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             body.num_interpolated_frames = Some(0);
             body.adjust_fps_for_interpolation = Some(false);
         }
+        Model::Frames => {
+            body.num_frames = Some(integer(j, "num_frames", 81, 17, 161)?);
+            body.frames_per_second = Some(16);
+            body.resolution = Some(Resolution::Video(choice(j, "resolution", "480p", &["480p", "580p", "720p"])?));
+            body.aspect_ratio = Some(choice(j, "aspect_ratio", "auto", &["auto", "16:9", "9:16", "1:1"])?);
+            body.interpolator_model = Some("none");
+            body.num_interpolated_frames = Some(0);
+            body.adjust_fps_for_interpolation = Some(false);
+        }
+        Model::Speech => {
+            let frames = integer(j, "num_frames", 80, 40, 120)?;
+            if frames % 4 != 0 {
+                return Err(invalid("fal speech-to-video frames require a multiple of 4"));
+            }
+            body.num_frames = Some(frames);
+            body.frames_per_second = Some(16);
+            body.resolution = Some(Resolution::Video(choice(j, "resolution", "480p", &["480p", "580p", "720p"])?));
+        }
         Model::Audio => {
             body.voice = Some(choice(j, "voice", "af_heart", &["af_heart", "am_adam"])?);
             let speed = j.params.get("speed").map(|v| v.as_f64().ok_or_else(|| invalid("fal numeric speed required"))).transpose()?.unwrap_or(1.0);
@@ -195,22 +252,21 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         }
     }
     // Count the complete escaped JSON and base64 extent BEFORE codecs or owned encodings.
-    body.image_url = media.map(|_| "");
+    body.image_url = image.map(|_| "");
+    body.end_image_url = end.map(|_| "");
+    body.audio_url = audio.map(|_| "");
     let mut count = Count { n: 0, cap: l.request_bytes };
     serde_json::to_writer(&mut count, &body).map_err(|_| invalid("fal escaped request exceeds limit"))?;
-    let image_len = media
-        .map(|(mime, b)| {
-            b.len()
-                .checked_add(2)
-                .and_then(|n| n.checked_div(3))
-                .and_then(|n| n.checked_mul(4))
-                .and_then(|n| mime.len().checked_add(13).and_then(|prefix| n.checked_add(prefix)))
-                .ok_or_else(|| invalid("fal encoded image overflow"))
-        })
-        .transpose()?
-        .unwrap_or(0);
-    let length = count.n.checked_add(image_len).filter(|n| *n <= l.request_bytes).ok_or_else(|| invalid("fal encoded request exceeds limit"))?;
-    if let Some((mime, bytes)) = media {
+    let image_len = image.map(|(mime, b)| encoded(mime, b)).transpose()?;
+    let end_len = end.map(|(mime, b)| encoded(mime, b)).transpose()?;
+    let audio_len = audio.map(|(mime, b)| encoded(mime, b)).transpose()?;
+    let length = [image_len, end_len, audio_len]
+        .into_iter()
+        .flatten()
+        .try_fold(count.n, usize::checked_add)
+        .filter(|n| *n <= l.request_bytes)
+        .ok_or_else(|| invalid("fal encoded request exceeds limit"))?;
+    for (mime, bytes) in [image, end].into_iter().flatten() {
         let m = nodecraft_media::probe_image(bytes, &l.image(true)).map_err(|_| invalid("fal input image probe refused"))?;
         if !matches!(m.mime, "image/png" | "image/jpeg" | "image/webp") || m.mime != mime {
             return Err(invalid("fal input MIME mismatch"));
@@ -227,19 +283,18 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         let decoded = nodecraft_media::decode_image(bytes, &l.image(true)).map_err(|_| invalid("fal input image codec refused"))?;
         drop(decoded);
     }
-    let uri = media
-        .map(|(mime, bytes)| {
-            let mut s = String::new();
-            s.try_reserve_exact(image_len).map_err(|_| invalid("fal encoding allocation refused"))?;
-            s.push_str("data:");
-            s.push_str(mime);
-            s.push_str(";base64,");
-            observe(1);
-            base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut s);
-            Ok::<_, ProviderError>(s)
-        })
-        .transpose()?;
-    body.image_url = uri.as_deref();
+    if let Some((mime, bytes)) = audio {
+        let sniffed = nodecraft_media::sniff(bytes).filter(|m| m.kind == nodecraft_media::MediaKind::Audio);
+        if !sniffed.is_some_and(|m| matches!(m.mime, "audio/wav" | "audio/mpeg" | "audio/ogg" | "audio/mp4") && m.mime == mime) {
+            return Err(invalid("fal speech audio must be WAV, MP3, Ogg or M4A matching its declared type"));
+        }
+    }
+    let image_uri = image.zip(image_len).map(|((mime, b), n)| uri(mime, b, n)).transpose()?;
+    let end_uri = end.zip(end_len).map(|((mime, b), n)| uri(mime, b, n)).transpose()?;
+    let audio_uri = audio.zip(audio_len).map(|((mime, b), n)| uri(mime, b, n)).transpose()?;
+    body.image_url = image_uri.as_deref();
+    body.end_image_url = end_uri.as_deref();
+    body.audio_url = audio_uri.as_deref();
     let mut out = Vec::new();
     reserve(&mut out, length)?;
     serde_json::to_writer(&mut out, &body).map_err(|_| invalid("fal request encoding failed"))?;

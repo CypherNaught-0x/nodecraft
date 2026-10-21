@@ -78,6 +78,77 @@ label="Seed (optional)"
 control={type="unsigned",min="0",max="4294967295",step="1"}
 
 [[model]]
+id="fal.wan22-i2v"
+provider="fal"
+provider_model="fal-ai/wan/v2.2-a14b/image-to-video"
+label="Wan 2.2 image to video (fal)"
+description="Animates a first frame, toward an optional last frame. Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=45
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="first_frame",modality="image",min=1,max=1},{role="last_frame",modality="image",min=0,max=1}]
+
+[[model.params.params]]
+name="num_frames"
+label="Frames"
+control={type="unsigned",min="17",max="161",step="1"}
+default={type="unsigned",value="81"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="580p",label="580p"},{value="720p",label="720p"}]}
+default={type="text",value="480p"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="auto",label="From the frame"},{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="1:1",label="1:1"}]}
+default={type="text",value="auto"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.wan22-s2v"
+provider="fal"
+provider_model="fal-ai/wan/v2.2-14b/speech-to-video"
+label="Wan 2.2 speech to video (fal)"
+description="Makes a portrait speak a wired speech track; whether the clip carries that track is not yet verified live. Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=60
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="speech-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="portrait",modality="image",min=1,max=1},{role="speech",modality="audio",min=1,max=1}]
+audio={role="speech",duration="fixed",sound="input"}
+
+[[model.params.params]]
+name="num_frames"
+label="Frames (multiple of 4)"
+control={type="unsigned",min="40",max="120",step="4"}
+default={type="unsigned",value="80"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="580p",label="580p"},{value="720p",label="720p"}]}
+default={type="text",value="480p"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
 id="fal.kokoro"
 provider="fal"
 provider_model="fal-ai/kokoro/american-english"

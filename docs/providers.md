@@ -17,7 +17,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text, quoted at the output price on `max_tokens` (input billed on top). Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
-| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
+| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale | Seven explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
@@ -323,9 +323,10 @@ Original synthetic fixtures run offline. The ignored native smoke requires NODEC
 Contract checked 2026-10-18: [REST](https://ai.google.dev/api/interactions-api), [image guide](https://ai.google.dev/gemini-api/docs/image-generation), [Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image), [Nano](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1), [Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image).
 ## fal.ai queue models
 
-The optional `fal` feature supports five explicit live aliases, checked against official HTTP
-schemas on 2026-10-18: `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
-`fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, and `fal-ai/esrgan`. These names are not
+The optional `fal` feature supports seven explicit live aliases, checked against official HTTP
+schemas on 2026-10-18 (the two Wan image and speech aliases on 2026-10-21): `fal-ai/flux/schnell`,
+`fal-ai/wan/v2.2-a14b/text-to-video`, `fal-ai/wan/v2.2-a14b/image-to-video`,
+`fal-ai/wan/v2.2-14b/speech-to-video`, `fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, and `fal-ai/esrgan`. These names are not
 immutable weight versions; upstream schema/model availability can change. Hosts inject a Secret
 and HTTP transport. The adapter never reads credentials, project keys or live-test variables.
 The existing host provider factory reads the `fal` keychain account and constructs the adapter
@@ -334,13 +335,20 @@ It does not supply a desktop paid-run service or production canvas media-input r
 
 FLUX requests 512–1024 dimensions in multiples of 64, one to four PNG outputs, one to four steps
 and optional u32 seed. Wan selects 480p/16fps, 17–81 frames and three aspect ratios, explicitly
-turning interpolation off. Kokoro selects af_heart/am_adam and speed 0.5–2.0, returning WAV.
+turning interpolation off. Wan image to video takes a `first_frame` (`image_url`) and an
+optional `last_frame` (`end_image_url`), 17–161 frames, 480p/580p/720p and an aspect ratio that
+defaults to following the frame, again without interpolation. Wan speech to video takes a
+`portrait` (`image_url`) and `speech` (`audio_url`, sniffed as WAV, MP3, Ogg or M4A matching its
+declared type), 40–120 frames in multiples of 4 and the same resolutions; whether its MP4 carries
+the speech track is not yet verified by a live run. Inputs are 1 MiB and 1024 px each; a request
+is at most 4 MiB after base64. A clip declared `application/octet-stream` counts as undeclared and
+is still sniffed as MP4 (#607). Kokoro selects af_heart/am_adam and speed 0.5–2.0, returning WAV.
 Trellis selects resolution 512 and one inline image, returning GLB2. ESRGAN selects scale2,
 RealESRGAN_x4plus, face=false and PNG. Advanced/unknown parameters and extra roles refuse
 before HTTP. Image-to-3D/upscale input contracts are direct-adapter capabilities; their engine
 fixtures use an explicitly test-only immutable asset resolver. No shipping resolver is implied.
 
-The catalog uses ByUsage USD for FLUX/Wan/Kokoro/ESRGAN: unknown is not zero/free. Every finite
+The catalog uses ByUsage USD for FLUX/all three Wan models/Kokoro/ESRGAN: unknown is not zero/free. Every finite
 budget cap refuses an unknown paid quote before invocation; an uncapped host still needs actual
 run.quote/run.start partial-price consent. Trellis512 has a dated 0.25 USD per-call estimate,
 verified from the [official endpoint](https://fal.ai/models/fal-ai/trellis-2/api?platform=http).

@@ -24,7 +24,8 @@ impl Limits {
     pub const HARD: Self = Self {
         input_bytes: MIB,
         text_bytes: 16 * 1024,
-        request_bytes: 2 * MIB,
+        // Two 1 MiB inputs (a portrait and speech, or two frames) in base64, plus the JSON.
+        request_bytes: 4 * MIB,
         response_bytes: 2 * MIB,
         metadata_bytes: 256 * 1024,
         output_bytes: 16 * MIB,

@@ -54,10 +54,18 @@ pub(super) fn job(model: &str) -> ProviderJob {
     ProviderJob {
         model: model.into(),
         params: Default::default(),
-        inputs: if [TRELLIS, ESRGAN].contains(&model) {
-            vec![crate::JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) }]
-        } else {
-            vec![crate::JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }]
+        inputs: match model {
+            TRELLIS | ESRGAN => vec![crate::JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) }],
+            WAN_I2V => vec![
+                crate::JobInput::Text { role: "prompt".into(), text: "A blue circle".into() },
+                crate::JobInput::Media { role: "first_frame".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) },
+            ],
+            WAN_S2V => vec![
+                crate::JobInput::Text { role: "prompt".into(), text: "A blue circle".into() },
+                crate::JobInput::Media { role: "portrait".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) },
+                crate::JobInput::Media { role: "speech".into(), mime: "audio/wav".into(), bytes: Arc::from(include_bytes!("fixtures/tone.wav").as_slice()) },
+            ],
+            _ => vec![crate::JobInput::Text { role: "prompt".into(), text: "A blue circle".into() }],
         },
         idempotency_key: "fixture-operation".into(),
     }
@@ -83,6 +91,12 @@ fn output(model: &str) -> (serde_json::Value, Vec<u8>, &'static str) {
     match model {
         FLUX => (json!({"images":[{"url":"https://fal.media/fixture","width":2,"height":2}]}), png(2, 2), "image/png"),
         WAN => (json!({"video":file}), include_bytes!("fixtures/blue.mp4").to_vec(), "video/mp4"),
+        // fal labels some clips with a generic content type; the bytes are still sniffed as MP4.
+        WAN_I2V | WAN_S2V => (
+            json!({"video":{"url":"https://v3.fal.media/files/fixture","content_type":"application/octet-stream","file_size":null}}),
+            include_bytes!("fixtures/blue.mp4").to_vec(),
+            "video/mp4",
+        ),
         KOKORO => (json!({"audio":file}), include_bytes!("fixtures/tone.wav").to_vec(), "audio/wav"),
         TRELLIS => (json!({"model_glb":file}), include_bytes!("fixtures/triangle.glb").to_vec(), "model/gltf-binary"),
         ESRGAN => (json!({"image":file}), png(4, 4), "image/png"),
@@ -90,8 +104,8 @@ fn output(model: &str) -> (serde_json::Value, Vec<u8>, &'static str) {
     }
 }
 #[test]
-fn all_five_actual_submit_resume_result_download_contracts() {
-    for model in [FLUX, WAN, KOKORO, TRELLIS, ESRGAN] {
+fn all_seven_actual_submit_resume_result_download_contracts() {
+    for model in [FLUX, WAN, WAN_I2V, WAN_S2V, KOKORO, TRELLIS, ESRGAN] {
         let (o, b, mime) = output(model);
         let original = b.clone();
         let t = Transport::new(vec![reply(receipt(model)), reply(json!({"status":"IN_PROGRESS"})), reply(json!({"status":"COMPLETED"})), reply(o), bytes(b)]);
@@ -117,7 +131,7 @@ fn all_five_actual_submit_resume_result_download_contracts() {
 }
 #[test]
 fn independent_wire_expectations_for_every_model() {
-    for model in [FLUX, WAN, KOKORO, TRELLIS, ESRGAN] {
+    for model in [FLUX, WAN, WAN_I2V, WAN_S2V, KOKORO, TRELLIS, ESRGAN] {
         let t = Transport::new(vec![reply(receipt(model))]);
         let f = Fal::new(key(), t.clone());
         block_on(f.submit(&job(model))).unwrap();
@@ -130,13 +144,19 @@ fn independent_wire_expectations_for_every_model() {
             WAN => {
                 json!({"prompt":"A blue circle","num_frames":81,"frames_per_second":16,"resolution":"480p","aspect_ratio":"16:9","interpolator_model":"none","num_interpolated_frames":0,"adjust_fps_for_interpolation":false})
             }
+            WAN_I2V => {
+                json!({"prompt":"A blue circle","image_url":body["image_url"],"num_frames":81,"frames_per_second":16,"resolution":"480p","aspect_ratio":"auto","interpolator_model":"none","num_interpolated_frames":0,"adjust_fps_for_interpolation":false})
+            }
+            WAN_S2V => {
+                json!({"prompt":"A blue circle","image_url":body["image_url"],"audio_url":body["audio_url"],"num_frames":80,"frames_per_second":16,"resolution":"480p"})
+            }
             KOKORO => json!({"prompt":"A blue circle","voice":"af_heart","speed":1.0}),
             TRELLIS => json!({"resolution":512,"image_url":body["image_url"]}),
             ESRGAN => json!({"model":"RealESRGAN_x4plus","scale":2,"face":false,"output_format":"png","image_url":body["image_url"]}),
             _ => panic!(),
         };
         assert_eq!(body, expected);
-        if model == TRELLIS || model == ESRGAN {
+        if [TRELLIS, ESRGAN, WAN_I2V, WAN_S2V].contains(&model) {
             use base64::Engine;
             let uri = body["image_url"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();
             assert_eq!(base64::engine::general_purpose::STANDARD.decode(uri).unwrap(), png(2, 2));
@@ -675,4 +695,102 @@ fn billable_units_come_from_the_result_fetch_and_never_cost_the_result() {
     }
     let duplicate = vec![("x-fal-billable-units", "1"), ("x-fal-billable-units", "2")];
     assert_eq!(run(duplicate, vec![]), None, "two values: neither is trusted");
+}
+
+#[test]
+fn wan_frames_and_speech_inputs_reach_their_own_fields() {
+    use base64::Engine;
+    let decode =
+        |v: &serde_json::Value, prefix: &str| base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap().strip_prefix(prefix).unwrap()).unwrap();
+    let mut j = job(WAN_I2V);
+    j.inputs.push(crate::JobInput::Text { role: "negative_prompt".into(), text: "blur".into() });
+    j.inputs.push(crate::JobInput::Media { role: "last_frame".into(), mime: "image/png".into(), bytes: Arc::from(png(3, 3)) });
+    j.params.insert("num_frames".into(), json!(161));
+    j.params.insert("resolution".into(), json!("720p"));
+    j.params.insert("aspect_ratio".into(), json!("9:16"));
+    j.params.insert("seed".into(), json!(7));
+    let (_, body) = request::prepare(&j, Limits::HARD).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(decode(&body["image_url"], "data:image/png;base64,"), png(2, 2));
+    assert_eq!(decode(&body["end_image_url"], "data:image/png;base64,"), png(3, 3));
+    assert_eq!(
+        body,
+        json!({"prompt":"A blue circle","negative_prompt":"blur","image_url":body["image_url"],"end_image_url":body["end_image_url"],"seed":7,"num_frames":161,"frames_per_second":16,"resolution":"720p","aspect_ratio":"9:16","interpolator_model":"none","num_interpolated_frames":0,"adjust_fps_for_interpolation":false})
+    );
+
+    let mut j = job(WAN_S2V);
+    j.params.insert("num_frames".into(), json!(120));
+    j.params.insert("resolution".into(), json!("580p"));
+    let (_, body) = request::prepare(&j, Limits::HARD).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(decode(&body["audio_url"], "data:audio/wav;base64,"), include_bytes!("fixtures/tone.wav"));
+    assert_eq!((body["num_frames"].clone(), body["resolution"].clone()), (json!(120), json!("580p")));
+    assert!(body.get("aspect_ratio").is_none() && body.get("interpolator_model").is_none());
+}
+#[test]
+fn wan_frames_and_speech_refuse_before_any_encoding() {
+    let speech = |mime: &str, b: &[u8]| crate::JobInput::Media { role: "speech".into(), mime: mime.into(), bytes: Arc::from(b) };
+    type Edit = Box<dyn Fn(&mut ProviderJob)>;
+    let cases: Vec<(&str, Edit)> = vec![
+        // The required media is missing.
+        (WAN_I2V, Box::new(|j| j.inputs.truncate(1))),
+        (WAN_S2V, Box::new(|j| j.inputs.truncate(2))),
+        (WAN_S2V, Box::new(|j| drop(j.inputs.remove(1)))),
+        // A role another model owns, or the same role twice.
+        (WAN_I2V, Box::new(move |j| j.inputs.push(speech("audio/wav", include_bytes!("fixtures/tone.wav"))))),
+        (WAN_S2V, Box::new(|j| j.inputs.push(crate::JobInput::Media { role: "last_frame".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) }))),
+        (WAN, Box::new(|j| j.inputs.push(crate::JobInput::Media { role: "first_frame".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) }))),
+        (WAN_I2V, Box::new(|j| j.inputs.push(j.inputs[1].clone()))),
+        // Speech that isn't audio, or whose bytes disagree with its declared type.
+        (WAN_S2V, Box::new(move |j| j.inputs[2] = speech("audio/wav", &png(2, 2)))),
+        (WAN_S2V, Box::new(move |j| j.inputs[2] = speech("audio/mpeg", include_bytes!("fixtures/tone.wav")))),
+        (WAN_S2V, Box::new(move |j| j.inputs[2] = speech("audio/wav", b"RIFF"))),
+        // Settings outside each model's documented range.
+        (WAN_I2V, Box::new(|j| drop(j.params.insert("num_frames".into(), json!(162))))),
+        (WAN_I2V, Box::new(|j| drop(j.params.insert("resolution".into(), json!("1080p"))))),
+        (WAN_S2V, Box::new(|j| drop(j.params.insert("num_frames".into(), json!(42))))),
+        (WAN_S2V, Box::new(|j| drop(j.params.insert("num_frames".into(), json!(124))))),
+        (WAN_S2V, Box::new(|j| drop(j.params.insert("aspect_ratio".into(), json!("16:9"))))),
+    ];
+    for (n, (model, edit)) in cases.iter().enumerate() {
+        let mut j = job(model);
+        edit(&mut j);
+        reset();
+        assert!(request::prepare(&j, Limits::HARD).is_err(), "case {n}");
+        assert_eq!(stages()[1], 0, "case {n} encoded");
+    }
+}
+#[test]
+fn two_full_size_inputs_fit_the_request_and_the_extent_is_exact() {
+    // Noise doesn't compress, so the PNG is close to the 1 MiB input cap.
+    let mut seed = 1u32;
+    let noise: Vec<u8> = (0..512 * 500 * 4)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 24) as u8
+        })
+        .collect();
+    let frame = nodecraft_media::encode_png(512, 500, &noise, &nodecraft_media::Limits::default()).unwrap();
+    assert!(frame.len() > 900_000 && frame.len() <= Limits::HARD.input_bytes, "{}", frame.len());
+    let mut j = job(WAN_I2V);
+    j.inputs[1] = crate::JobInput::Media { role: "first_frame".into(), mime: "image/png".into(), bytes: Arc::from(frame.clone()) };
+    j.inputs.push(crate::JobInput::Media { role: "last_frame".into(), mime: "image/png".into(), bytes: Arc::from(frame) });
+    let (_, body) = request::prepare(&j, Limits::HARD).unwrap();
+    assert!(body.len() > 2 * 1024 * 1024);
+    assert!(request::prepare(&j, Limits { request_bytes: body.len(), ..Limits::HARD }).is_ok());
+    reset();
+    assert!(request::prepare(&j, Limits { request_bytes: body.len() - 1, ..Limits::HARD }).is_err());
+    assert_eq!(stages(), [0, 0, 0]);
+}
+#[test]
+fn a_declared_clip_type_that_isnt_mp4_or_generic_is_refused() {
+    let r = Record { model: Model::Frames, requested: 1, width: 0, height: 0 };
+    for (mime, ok) in [("video/mp4", true), ("application/octet-stream", true), ("video/webm", false), ("image/png", false)] {
+        let o = json!({"video":{"url":"https://v3.fal.media/files/fixture","content_type":mime,"file_size":null}});
+        assert_eq!(response::outputs(&serde_json::to_vec(&o).unwrap(), r, Limits::HARD, &key()).is_ok(), ok, "{mime}");
+    }
+    // A generic type on a non-video output still has to match.
+    let r = Record { model: Model::Audio, requested: 1, width: 0, height: 0 };
+    let o = json!({"audio":{"url":"https://v3.fal.media/files/fixture","content_type":"application/octet-stream","file_size":null}});
+    assert!(response::outputs(&serde_json::to_vec(&o).unwrap(), r, Limits::HARD, &key()).is_err());
 }
