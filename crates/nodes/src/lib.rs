@@ -26,6 +26,7 @@ pub mod technique;
 pub mod text;
 pub mod timeline;
 pub mod video;
+pub mod video_edit;
 
 pub use contract::{InputContract, ModeContract, NodeContract, OutputContract, PortCount};
 pub use descriptor::{Category, GenerateInput, GenerateOutput, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};

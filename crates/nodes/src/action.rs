@@ -329,8 +329,10 @@ impl NodeKind for ActionKind {
     }
 
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
-        let wanted = self.descriptor.inputs.first().map(|p| p.port_type.modality)?;
-        let fits = !inputs.is_empty() && inputs.len() <= self.descriptor.inputs.len() && inputs.iter().all(|t| t.modality == wanted);
+        // Every input lands on a port of its modality: one each, unless a port takes a list.
+        let ports = &self.descriptor.inputs;
+        let room = ports.iter().any(|p| p.port_type.many) || inputs.len() <= ports.len();
+        let fits = !inputs.is_empty() && room && inputs.iter().all(|t| ports.iter().any(|p| p.port_type.modality == t.modality));
         fits.then(|| ModeId::new("action").ok()).flatten()
     }
 
