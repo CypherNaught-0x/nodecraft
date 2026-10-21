@@ -95,8 +95,10 @@ bridge to the desktop app it works, while the standalone CLI reports it unavaila
 
 **Updates:** `app.check_updates` asks the desktop app to read NodeCraft's releases from GitHub
 and returns `{pending: id}`; `app.update_status` then reports this build's version and whether a
-newer release is on the update channel in settings (#123). Nothing is downloaded or installed.
-The standalone CLI and the browser build report the check unavailable.
+newer release is on the update channel in settings (#123), and under `install` where an install
+the person started stands (#540). Agents can't download or install updates: `app.install_update`
+and `app.restart_to_update` are not MCP tools, so replacing the app and restarting it stays the
+person's choice. The standalone CLI and the browser build report the check unavailable.
 
 **Limits:** messages are at most 4 MiB. The engine accepts at most 1 MiB of decoded command parameters, and clients may escape non-ASCII text.
 A longer line is skipped with an error reply instead of being buffered. Messages must be UTF-8

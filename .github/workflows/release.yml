@@ -302,20 +302,34 @@ jobs:
     name: Draft GitHub release
     needs: [version, macos, windows, linux, flatpak, web]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: release
     permissions:
       contents: write
     steps:
+      # The whole tree: signing the update feed builds xtask.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          sparse-checkout: packaging/release-notes.md
-          sparse-checkout-cone-mode: false
+          toolchain: stable
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
           path: artifacts
           merge-multiple: true
+      # The feed the app installs updates from (#540): each payload's size and BLAKE3 hash,
+      # signed with the release key. Without the key the release has no feed, and the app offers
+      # only its release notes.
+      - name: Sign the update feed
+        env:
+          NODECRAFT_UPDATE_SIGNING_KEY: ${{ secrets.NODECRAFT_UPDATE_SIGNING_KEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [ -z "$NODECRAFT_UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::NODECRAFT_UPDATE_SIGNING_KEY isn't set: this release has no update feed, so the app can't install it."
+            exit 0
+          fi
+          cargo xtask update-feed artifacts "$VERSION"
       - name: Checksums
         working-directory: artifacts
         run: sha256sum -- * | tee SHA256SUMS.txt

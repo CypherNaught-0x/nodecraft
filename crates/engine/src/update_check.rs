@@ -52,6 +52,13 @@ pub struct Release {
     pub prerelease: bool,
 }
 
+impl Release {
+    /// Its tag, read back from the page built from it.
+    pub fn tag(&self) -> Option<&str> {
+        self.url.strip_prefix(RELEASE_TAGS).filter(|tag| !tag.is_empty())
+    }
+}
+
 /// A release newer than this build.
 pub type Available = Release;
 
@@ -73,9 +80,14 @@ struct LastCheck(Check);
 
 /// Reads NodeCraft's releases. The host calls it off the UI thread.
 pub async fn fetch(http: &dyn Http) -> Result<Vec<Release>, Error> {
+    fetch_from(http, RELEASES_URL).await
+}
+
+/// Reads a release list from `url`: [`RELEASES_URL`], or a test feed's list.
+pub async fn fetch_from(http: &dyn Http, url: &str) -> Result<Vec<Release>, Error> {
     let request = HttpRequest {
         method: HttpMethod::Get,
-        url: RELEASES_URL.into(),
+        url: url.into(),
         headers: vec![("accept".into(), "application/vnd.github+json".into())],
         secret_headers: Vec::new(),
         body: Vec::new(),
@@ -127,6 +139,11 @@ pub fn newest(current: &str, releases: &[Release], channel: UpdateChannel) -> Op
         .filter(|(version, _)| *version > current)
         .max_by(|(a, _), (b, _)| a.cmp(b))
         .map(|(_, release)| release.clone())
+}
+
+/// Whether `version` is newer than `current`; false when either isn't a version.
+pub fn is_newer(version: &str, current: &str) -> bool {
+    matches!((Version::parse(version), Version::parse(current)), (Some(version), Some(current)) if version > current)
 }
 
 /// Records what check `id` brought back for `app.update_status`.
@@ -240,7 +257,7 @@ fn status(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         return Ok(Effect::None { result: Value::Null });
     }
     let last = c.resources.get::<LastCheck>().map(|last| &last.0);
-    Ok(Effect::None { result: json!({"current": VERSION, "last": last}) })
+    Ok(Effect::None { result: json!({"current": VERSION, "last": last, "install": crate::update_install::last(c)}) })
 }
 
 fn empty_schema() -> Value {
@@ -255,7 +272,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {pending: id}; reads NodeCraft's releases from GitHub and reports the newest one on the update channel in settings that is newer than this build. Nothing is downloaded or installed. The host answers later: read the outcome with app.update_status. Refused when the host can't check (the CLI, the browser build).",
+            params_doc: "{} -> {pending: id}; reads NodeCraft's releases from GitHub and reports the newest one on the update channel in settings that is newer than this build. Nothing is downloaded or installed; app.install_update does that. The host answers later: read the outcome with app.update_status. Refused when the host can't check (the CLI, the browser build).",
             enabled: enabled_check,
             run: check,
         },
@@ -265,7 +282,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {current, last: {id, current, channel: \"stable\"|\"prerelease\", available: {version, url, prerelease} | null, error} | null}; this build's version and the outcome of the last app.check_updates, or null before one finishes. Read-only.",
+            params_doc: "{} -> {current, last: {id, current, channel: \"stable\"|\"prerelease\", available: {version, url, prerelease} | null, error} | null, install: {state: \"downloading\"|\"ready\"|\"failed\", version, error?} | null}; this build's version, the outcome of the last app.check_updates (null before one finishes) and where app.install_update stands. Read-only.",
             enabled: enabled_status,
             run: status,
         },

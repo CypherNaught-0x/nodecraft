@@ -133,7 +133,7 @@ fn a_host_without_the_service_refuses_and_status_reports_the_last_check() {
     let mut session = new_session();
     let refused = session.dispatch("app.check_updates", &json!({})).unwrap_err();
     assert_eq!(refused.kind, ErrorKind::Unsupported);
-    assert_eq!(session.dispatch("app.update_status", &json!({})).unwrap(), json!({"current": VERSION, "last": null}));
+    assert_eq!(session.dispatch("app.update_status", &json!({})).unwrap(), json!({"current": VERSION, "last": null, "install": null}));
     assert!(session.dispatch("app.update_status", &json!({"extra": 1})).is_err());
 
     let check = finish(&mut session, 7, UpdateChannel::Stable, Ok(vec![release("99.0.0", false)]));

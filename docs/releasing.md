@@ -29,6 +29,14 @@ on its step; without them the scripts print a warning and the release still buil
   `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`). Without them the MSI
   and executables are unsigned.
 
+- Update feed (#540): `NODECRAFT_UPDATE_SIGNING_KEY`, the Ed25519 key `cargo xtask update-feed`
+  signs `nodecraft-update.json` with. Without it the release has no feed and the app only links
+  its release notes. Create it once with `cargo xtask update-key <file outside the repo>`, which
+  adds the public key to `packaging/update-key.pub` (commit that), then
+  `gh secret set NODECRAFT_UPDATE_SIGNING_KEY --env release < <file>` and delete the file. To
+  rotate, add the new key, ship a release carrying both public keys, then switch the secret; drop
+  the old public key only once nobody runs a version that lacks the new one.
+
 Unsigned builds show a first-launch warning; [`install.md`](install.md) explains how users get past
 it, and every release's notes link there. When signing lands (#100), drop the warning from
 `packaging/release-notes.md` and `install.md`.
@@ -37,11 +45,12 @@ it, and every release's notes link there. When signing lands (#100), drop the wa
 
 | Platform | Built by | Files |
 |---|---|---|
-| macOS universal | `packaging/macos/package.sh --arch universal` | `nodecraft-<v>-macos-universal.dmg`, `nodecraft-cli-<v>-macos-universal.zip` |
+| macOS universal | `packaging/macos/package.sh --arch universal` | `nodecraft-<v>-macos-universal.dmg`, `nodecraft-cli-<v>-macos-universal.zip`, `nodecraft-<v>-macos-universal.app.zip` (the update payload) |
 | Windows x64, arm64 | `packaging/windows/package.ps1 -Arch <arch>` | `.msi`, `-portable.zip` (both binaries) |
 | Linux x86_64, aarch64 | `packaging/linux/package.sh` | `.AppImage` (+ `.zsync`), `.deb`, `.rpm`, `.tar.gz` |
 | Linux Flatpak | `packaging/linux/flatpak-bundle.sh` (repackages the tarball) | `.flatpak` |
 | Web (preview) | `packaging/web/package.sh` | `nodecraft-web-<v>.zip` (a static site) |
+| Update feed | `cargo xtask update-feed artifacts <v>` in the release job | `nodecraft-update.json` + `.sig`: the `.app.zip`, AppImages and MSIs, signed |
 
 Not targets: Windows x86, Linux riscv64 and FreeBSD (the shared Craft workflow builds those for other apps).
 

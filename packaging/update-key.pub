@@ -1,0 +1,4 @@
+# The Ed25519 public keys NodeCraft accepts update feeds from (#540), one per line as 64 hex
+# digits. Built into the app (crates/engine/src/update_install.rs); the matching private key is
+# the release secret NODECRAFT_UPDATE_SIGNING_KEY and is never committed. With no key here the
+# app only tells people about new releases. `cargo xtask update-key` makes a pair (docs/releasing.md).

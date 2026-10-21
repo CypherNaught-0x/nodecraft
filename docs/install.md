@@ -83,6 +83,16 @@ runs are not available in the browser yet.
 
 See [`development.md`](development.md): `cargo run --release -p nodecraft`.
 
+## Updates
+
+NodeCraft checks GitHub for a newer release at startup (turn it off with **Don't check at
+startup**, or `[updates] check = false`). When the macOS app in Applications, the AppImage or the
+Windows MSI install finds one, **Install update** downloads it in the background and checks its
+signature; **Restart to update** then replaces this copy and reopens your project (unsaved changes
+come back through crash recovery). Restarting waits while a generation runs. Other installs (the
+deb, rpm, Flatpak, the portable zip) say where to get the new version instead. On Windows the
+installer asks for permission as it does when you first install.
+
 ## Settings
 
 NodeCraft keeps its settings in `config.toml`, which you can edit by hand (comments and unknown

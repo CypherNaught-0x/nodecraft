@@ -3,6 +3,8 @@
 #
 #   $DIST/nodecraft-<version>-macos-<arch>.dmg          NodeCraft.app on a drag-to-Applications DMG
 #   $DIST/nodecraft-cli-<version>-macos-<arch>.zip      the headless CLI
+#   $DIST/nodecraft-<version>-macos-<arch>.app.zip      the stapled NodeCraft.app, which the app
+#                                                       installs as an update (#540)
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build]
 #
@@ -42,6 +44,7 @@ WORK="$CARGO_TARGET_DIR/macos-package"
 APP="$WORK/NodeCraft.app"
 DMG="$DIST/nodecraft-$VERSION-macos-$ARCH.dmg"
 CLI_ZIP="$DIST/nodecraft-cli-$VERSION-macos-$ARCH.zip"
+APP_ZIP="$DIST/nodecraft-$VERSION-macos-$ARCH.app.zip"
 
 NOTARIZE=0
 if [ "$IDENTITY" = "-" ]; then
@@ -123,6 +126,12 @@ if [ "$NOTARIZE" = 1 ]; then
   spctl --assess --type execute -vvv "$APP"
 fi
 
+# ---- update payload ----------------------------------------------------------------------------
+# The bundle as stapled; the signed update feed (cargo xtask update-feed) names its hash.
+echo "==> building $APP_ZIP"
+rm -f "$APP_ZIP"
+ditto -c -k --keepParent "$APP" "$APP_ZIP"
+
 # ---- DMG ---------------------------------------------------------------------------------------
 echo "==> building $DMG"
 STAGE="$WORK/dmg"
@@ -162,4 +171,4 @@ if [ "$NOTARIZE" = 1 ]; then notarize "$CLI_ZIP"; fi
 
 "$WORK/bin/nodecraft-cli" --version
 echo "==> done (check the artifacts as shipped with packaging/macos/verify.sh --arch $ARCH)"
-ls -lh "$DMG" "$CLI_ZIP"
+ls -lh "$DMG" "$CLI_ZIP" "$APP_ZIP"

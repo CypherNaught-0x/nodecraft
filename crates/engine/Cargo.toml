@@ -30,6 +30,8 @@ nodecraft-media.workspace = true
 # Action nodes run their operations locally (#410).
 nodecraft-actions.workspace = true
 blake3.workspace = true
+# Update feed signatures (#540): verify only, against the keys in packaging/update-key.pub.
+ed25519-dalek = { workspace = true }
 # Fallible live execution identities; Web Crypto on wasm, OS entropy natively.
 getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 serde_path_to_error.workspace = true
