@@ -83,6 +83,8 @@ struct Canned {
     answers: Arc<Mutex<Vec<Answer>>>,
     requests: Arc<AtomicUsize>,
     gated: Arc<AtomicBool>,
+    /// A prompt that stays running whatever the gate.
+    stuck: Arc<Mutex<Option<String>>>,
 }
 
 impl Canned {
@@ -91,6 +93,9 @@ impl Canned {
     }
     fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
+    }
+    fn waits(&self, prompt: &str) -> bool {
+        self.gated.load(Ordering::SeqCst) || self.stuck.lock().unwrap().as_deref() == Some(prompt)
     }
     fn result(&self, prompt: &str) -> Completed {
         let answers = self.answers.lock().unwrap();
@@ -115,7 +120,7 @@ impl Provider for Canned {
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         self.requests.fetch_add(1, Ordering::SeqCst);
         let prompt = prompt_of(job);
-        let submission = if self.gated.load(Ordering::SeqCst) {
+        let submission = if self.waits(&prompt) {
             Submission::Queued(JobHandle { remote_id: prompt, data: serde_json::Value::Null })
         } else {
             Submission::Finished(self.result(&prompt))
@@ -123,7 +128,7 @@ impl Provider for Canned {
         Box::pin(async move { Ok(submission) })
     }
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
-        let progress = if self.gated.load(Ordering::SeqCst) {
+        let progress = if self.waits(&handle.remote_id) {
             JobProgress::Running { fraction: None, message: None, partial: None }
         } else {
             JobProgress::Done(self.result(&handle.remote_id))
@@ -319,4 +324,38 @@ fn an_item_that_fails_doesnt_take_its_siblings_result_with_it() {
     }
     assert!(f.host.held_results().is_empty());
     assert_eq!((f.canned.requests(), charges(&f)), (2, 2));
+}
+
+/// A cancel keeps the items already paid for: recorded if the card is there, held if not.
+#[test]
+fn cancelling_a_fanned_run_keeps_the_items_already_paid_for() {
+    for remove in [false, true] {
+        let mut f = fixture();
+        f.canned.answer("a fox", vec![image()]);
+        *f.canned.stuck.lock().unwrap() = Some("an owl".into());
+        start(&mut f);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut notices = Vec::new();
+        while f.canned.requests() < 2 || charges(&f) < 1 {
+            notices.extend(f.host.pump(&mut f.session));
+            assert!(Instant::now() < deadline, "the fox never finished");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if remove {
+            f.session.dispatch("node.remove", &json!({"canvas": C, "id": PAINTER})).unwrap();
+        }
+        f.host.cancel_all();
+        notices.extend(drive(&mut f));
+        assert!(notices.contains(&RunNotice::Cancelled { canvas: C, node: PAINTER }), "{notices:?}");
+        if remove {
+            // The fox's image can't be recorded on a card that's gone: it is held, not lost.
+            let held = f.host.held_results();
+            let [view] = held.as_slice() else { panic!("{held:?}") };
+            assert_eq!((view.node, view.outputs), (PAINTER, 1));
+        } else {
+            // The fox is recorded beside the cancelled owl; nothing is held.
+            assert_eq!(history(&f)[0].items.len(), 2);
+            assert!(f.host.held_results().is_empty(), "{:?}", f.host.held_results());
+        }
+    }
 }

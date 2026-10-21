@@ -1163,6 +1163,8 @@ fn hold_dropped(active: &mut Active, dropped: &[JobId], held: &Mutex<held::Held>
 
 /// Lets go of the awaiting results of steps that ended: one inlined in a technique used its
 /// result; one that failed without reporting it (its technique node reported another) holds them.
+/// An inlined step's results are let go even if its technique node's record is refused later
+/// (#615).
 fn let_go_of_ended(active: &mut Active, held: &Mutex<held::Held>) {
     let run = &active.run;
     for (step, result) in take_by_step(&mut active.awaiting, |_, a| !run.is_running(a.step)) {

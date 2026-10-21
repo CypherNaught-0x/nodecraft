@@ -38,4 +38,8 @@
   after its jobs finished, every job's result is held as one entry, outputs in job order. It can
   be placed or discarded but not retried, because recording it needs the whole step. A finished
   result the step lets go is held on its own: a sibling in a failed fanned item, or a job that
-  finished after its step failed. The run reports these as `Progress::dropped`.
+  finished after its step had ended. The run reports these as `Progress::dropped`, and they are
+  held before the step's own result is recorded, so a partial record can't take them along. A
+  cancelled step's results are held too; its card shows the cancel. A technique's inner steps let
+  go of their results once they're done, so a refused record of the technique node itself loses
+  them; holding those is a follow-up (#615).
