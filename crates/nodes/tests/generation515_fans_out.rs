@@ -19,6 +19,7 @@ fn text_and_media_generations_fan_out_over_their_prompt() {
                 inputs: vec![role("prompt", Modality::Text, 1, 1), role("image_reference", Modality::Image, 1, 4)],
                 params: None,
                 audio: None,
+                edit: None,
             }],
         }]
     };

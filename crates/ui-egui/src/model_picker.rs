@@ -282,6 +282,11 @@ fn price_label(model: &ModelDescriptor) -> String {
                 Unit::ThousandSteps => "1,000 training steps",
             }
         ),
+        Pricing::PerSourceSecond { prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
+            Some(cheapest) if prices.len() > 1 => format!("From {} / second of source", amount(cheapest)),
+            Some(price) => format!("{} / second of source", amount(price)),
+            None => "Priced per second of source".into(),
+        },
     }
 }
 fn modality(modality: Modality) -> &'static str {
@@ -311,6 +316,9 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
         }
         if let Some(audio) = &mode.audio {
             ui.label(audio.summary());
+        }
+        if let Some(edit) = &mode.edit {
+            ui.label(edit.summary());
         }
         if let Some(params) = &mode.params {
             ui.label(if params.is_empty() { "Sends no settings".to_owned() } else { format!("Sends only: {}", params.join(", ")) });

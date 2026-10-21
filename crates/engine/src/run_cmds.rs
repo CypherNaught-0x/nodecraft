@@ -180,6 +180,7 @@ fn unpriced_reason(why: &Unpriced) -> String {
         Unpriced::NoModel => "no model is chosen".into(),
         Unpriced::UnknownModel(_) => "the selected model is not in the catalog".into(),
         Unpriced::ByUsage(id) => format!("{id} is priced by usage, measured during the run"),
+        Unpriced::AwaitsSource(id) => format!("{id} is priced per second of its source video, whose length isn't known yet"),
         Unpriced::Invalid(message) => message.clone(),
     }
 }

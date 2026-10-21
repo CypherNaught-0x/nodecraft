@@ -108,6 +108,20 @@ fn model_rates_distinguish_free_usage_and_unit_prices_without_a_run_quote() {
     model.pricing = Pricing::PerUnit { unit: Unit::ThousandTokens, price: "0.002 USD".parse().unwrap(), count: None, default_count: None };
     assert_eq!(price_label(&model), "0.002 USD / 1,000 tokens");
     assert_eq!(amount(Money::new(Currency::USD, 1)), "0.000001 USD");
+    // Priced per second of source (#179): the cheapest rate, since the setting picks one.
+    let prices = [("480p", "0.318 USD"), ("720p", "0.681 USD")].map(|(k, v)| (k.to_owned(), v.parse().unwrap())).into();
+    model.pricing = Pricing::PerSourceSecond { param: "resolution".into(), prices };
+    assert_eq!(price_label(&model), "From 0.318 USD / second of source");
+}
+
+#[test]
+fn a_source_edit_says_what_it_does_to_the_source() {
+    let catalog = Catalog::builtin().unwrap();
+    let swap = catalog.get("higgsfield.genjutsu-object-swap").unwrap().clone();
+    assert_eq!(price_label(&swap), "From 0.318 USD / second of source");
+    let mut h = Harness::builder().with_size(egui::vec2(900.0, 600.0)).build_ui(move |ui| model_details(ui, &swap));
+    h.run();
+    h.get_by_label("Object swap of source; sources of at least 4 s, only the first 30 s is used; sound not documented");
 }
 
 struct View {

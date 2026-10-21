@@ -35,6 +35,7 @@ fn a_random_seed_model_plans_without_a_seed_for_the_run_to_draw() {
                 inputs: vec![GenerationRole { role: "prompt".into(), modality: Modality::Text, min: 1, max: 1, inline: true }],
                 params: None,
                 audio: None,
+                edit: None,
             }],
         }],
         [1; 32],

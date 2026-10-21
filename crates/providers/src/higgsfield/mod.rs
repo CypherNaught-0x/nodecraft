@@ -1,5 +1,5 @@
-//! Higgsfield (#177): SOUL 2 text to image and Kling 2.5 Turbo Pro image to video on Higgsfield's
-//! queue API. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
+//! Higgsfield (#177): SOUL 2 text to image, Kling 2.5 Turbo Pro image to video and the Genjutsu
+//! source video edits (#179: motion transfer, object swap) on Higgsfield's queue API. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
 //! submit is the paid step. It carries the job's idempotency key, and the exact body sent under a
 //! key is kept for this process, so a retry after a lost reply replays it byte for byte and gets
 //! the original request back instead of paying for a second one. Higgsfield keeps results for at
@@ -21,6 +21,10 @@ use std::sync::{Arc, Mutex};
 pub const SOUL: &str = "higgsfield-ai/soul/v2/standard";
 /// Kling 2.5 Turbo Pro: one image animated into a 5 or 10 second clip.
 pub const KLING_I2V: &str = "kling-video/v2.5-turbo/pro/image-to-video";
+/// Genjutsu motion transfer: the source video's motion, performed by the reference images' subjects.
+pub const MOTION_TRANSFER: &str = "higgsfield/genjutsu/motion-transfer/v1.0";
+/// Genjutsu object swap: an object in the source video replaced by the reference images' one.
+pub const OBJECT_SWAP: &str = "higgsfield/genjutsu/object-swap/v1.0";
 const API: &str = "https://api.higgsfield.ai";
 const MIB: usize = 1024 * 1024;
 /// Bodies kept for exact replay; the oldest goes first.
@@ -34,6 +38,8 @@ pub struct Limits {
     pub prompt_chars: usize,
     /// Each staged image. Higgsfield documents no upload cap.
     pub input_bytes: usize,
+    /// A staged source video. Higgsfield documents 200 MiB for Genjutsu sources.
+    pub video_bytes: usize,
     /// JSON replies (receipts, status, upload grants, estimates).
     pub response_bytes: usize,
     /// Each downloaded result.
@@ -42,11 +48,19 @@ pub struct Limits {
     pub total_output_bytes: usize,
 }
 impl Limits {
-    pub const HARD: Self = Self { prompt_chars: 10_000, input_bytes: 20 * MIB, response_bytes: MIB, output_bytes: 256 * MIB, total_output_bytes: 512 * MIB };
+    pub const HARD: Self = Self {
+        prompt_chars: 10_000,
+        input_bytes: 20 * MIB,
+        video_bytes: 200 * MIB,
+        response_bytes: MIB,
+        output_bytes: 256 * MIB,
+        total_output_bytes: 512 * MIB,
+    };
     fn validate(self) -> Result<Self, ProviderError> {
         let h = Self::HARD;
         if self.prompt_chars > h.prompt_chars
             || self.input_bytes > h.input_bytes
+            || self.video_bytes > h.video_bytes
             || self.response_bytes > h.response_bytes
             || self.output_bytes > h.output_bytes
             || self.total_output_bytes > h.total_output_bytes
@@ -140,18 +154,24 @@ impl Higgsfield {
         self.staged.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     /// The exact body for this job: the one already staged under its key, or a new one, with its
-    /// images uploaded. Uploads are free, so a failure here proves nothing was billed.
+    /// source video and images uploaded. Uploads are free, so a failure here proves nothing was
+    /// billed.
     async fn stage(&self, job: &ProviderJob, prepared: &request::Prepared<'_>) -> Result<Arc<[u8]>, ProviderError> {
         let fingerprint = request::fingerprint(job);
         if let Some(staged) = self.lock().iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
             return Ok(Arc::clone(&staged.body));
         }
+        let video = match &prepared.video {
+            Some(video) => Some(self.upload(video.mime, video.bytes).await?),
+            None => None,
+        };
         let mut urls = Vec::new();
         urls.try_reserve_exact(prepared.images.len()).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
         for image in &prepared.images {
             urls.push(self.upload(image.mime, image.bytes).await?);
         }
-        let body: Arc<[u8]> = serde_json::to_vec(&prepared.body(&urls)?).map_err(|_| malformed("Higgsfield request couldn't be encoded"))?.into();
+        let body: Arc<[u8]> =
+            serde_json::to_vec(&prepared.body(video.as_deref(), &urls)?).map_err(|_| malformed("Higgsfield request couldn't be encoded"))?.into();
         let mut staged = self.lock();
         // Another submit under this key may have staged first; keep the body it may have sent.
         if let Some(existing) = staged.iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
@@ -164,7 +184,7 @@ impl Higgsfield {
         staged.push_back(Staged { key: job.idempotency_key.clone(), job: fingerprint, body: Arc::clone(&body) });
         Ok(body)
     }
-    /// Uploads one image through a presigned grant; the bytes go to storage without the key.
+    /// Uploads one image or video through a presigned grant; the bytes go to storage without the key.
     async fn upload(&self, mime: &'static str, bytes: &[u8]) -> Result<String, ProviderError> {
         let grant = HttpRequest::post_json(format!("{API}/files/generate-upload-url"), &serde_json::json!({"content_type": mime}))?.timeout_ms(30_000);
         let reply = self.send(grant, false, None).await?;
@@ -216,6 +236,8 @@ impl Higgsfield {
         let model = match handle.data.get("model").and_then(serde_json::Value::as_str) {
             Some(SOUL) => SOUL,
             Some(KLING_I2V) => KLING_I2V,
+            Some(MOTION_TRANSFER) => MOTION_TRANSFER,
+            Some(OBJECT_SWAP) => OBJECT_SWAP,
             _ => return Err(invalid("Higgsfield handle record refused")),
         };
         let count = handle.data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));

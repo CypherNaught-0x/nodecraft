@@ -126,6 +126,14 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
             Err(_) => return Err("the image can't be read".into()),
         }
     }
+    if sniffed.kind == MediaKind::Video
+        && let Ok(movie) = nodecraft_media::probe_movie(file.bytes)
+    {
+        // The length and frame size its headers state (#179), so a model priced per second of
+        // source can quote it and one with source limits can check it before anything is paid.
+        // A movie whose headers can't be read still imports; the provider checks it.
+        (meta.duration_ms, meta.width, meta.height) = (movie.duration_ms, movie.width, movie.height);
+    }
     if sniffed.kind == MediaKind::Model3d {
         // Read the whole model now, so a file that can't be shown (an external buffer, Draco
         // compression, past the limits) is refused with its reason instead of landing broken.

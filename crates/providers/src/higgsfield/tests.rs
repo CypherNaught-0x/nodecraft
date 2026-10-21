@@ -425,4 +425,90 @@ fn the_catalog_and_the_adapter_agree() {
         let inputs = if model == SOUL { vec![prompt("x")] } else { vec![prompt("x"), image()] };
         request::prepare(&job(model, Value::Object(params), inputs), Limits::HARD).unwrap();
     }
+    for (id, model) in [("higgsfield.genjutsu-motion-transfer", MOTION_TRANSFER), ("higgsfield.genjutsu-object-swap", OBJECT_SWAP)] {
+        let entry = catalog.get(id).unwrap();
+        assert_eq!((entry.provider.as_str(), entry.provider_model.as_str()), ("higgsfield", model));
+        // Every resolution the catalog prices is one the adapter sends.
+        let nodecraft_catalog::Pricing::PerSourceSecond { prices, .. } = &entry.pricing else { panic!("priced per source second") };
+        for resolution in prices.keys() {
+            request::prepare(&genjutsu(model, json!({"resolution": resolution}), vec![source(), image()]), Limits::HARD).unwrap();
+        }
+    }
+}
+
+fn source() -> JobInput {
+    JobInput::Media { role: "source".into(), mime: "video/mp4".into(), bytes: Arc::from(mp4()) }
+}
+fn genjutsu(model: &str, params: Value, inputs: Vec<JobInput>) -> ProviderJob {
+    job(model, params, inputs)
+}
+fn video_grant() -> Result<HttpResponse, ProviderError> {
+    ok(
+        json!({"public_url": "https://upload.cdn.example.com/inputs/source.mp4", "upload_url": UPLOAD, "content_type": "video/mp4", "upload_headers": {"Content-Type": "video/mp4"}}),
+    )
+}
+fn image_grant(n: u32) -> Result<HttpResponse, ProviderError> {
+    ok(json!({"public_url": format!("https://upload.cdn.example.com/inputs/ref{n}.png"), "upload_url": UPLOAD, "content_type": "image/png"}))
+}
+
+#[test]
+fn a_genjutsu_edit_stages_its_source_then_names_the_ordered_references() {
+    let second = JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png()) };
+    let t = Transport::new(vec![video_grant(), empty(200), image_grant(1), empty(200), image_grant(2), empty(200), receipt()]);
+    let edit = genjutsu(MOTION_TRANSFER, json!({"resolution": "1080p"}), vec![prompt(""), source(), image(), second]);
+    block_on(adapter(&t).submit(&edit)).unwrap();
+    let requests = t.requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(body(&requests[0]), json!({"content_type": "video/mp4"}));
+    assert_eq!(requests[1].body, mp4());
+    let submit = &requests[6];
+    assert_eq!(submit.url, "https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0");
+    // The empty prompt is left out: Genjutsu's is optional.
+    assert_eq!(
+        body(submit),
+        json!({
+            "video_url": "https://upload.cdn.example.com/inputs/source.mp4",
+            "image_urls": ["https://upload.cdn.example.com/inputs/ref1.png", "https://upload.cdn.example.com/inputs/ref2.png"],
+            "resolution": "1080p"
+        })
+    );
+    // The default resolution is sent explicitly, as is a prompt.
+    let t = Transport::new(vec![video_grant(), empty(200), image_grant(1), empty(200), receipt()]);
+    block_on(adapter(&t).submit(&genjutsu(OBJECT_SWAP, json!({}), vec![prompt("a red umbrella"), source(), image()]))).unwrap();
+    let submit = body(&t.requests()[4]);
+    assert_eq!((submit["resolution"].as_str(), submit["prompt"].as_str()), (Some("720p"), Some("a red umbrella")));
+    // A finished edit downloads its MP4.
+    let done = json!({"request_id": REQUEST, "status": "completed", "video": {"url": "https://cdn.example.com/out.mp4"}});
+    let t = Transport::new(vec![ok(done), file(&mp4())]);
+    let JobProgress::Done(done) = block_on(adapter(&t).poll(&queued(OBJECT_SWAP, 1))).unwrap() else { panic!("done") };
+    assert_eq!(done.outputs.len(), 1);
+}
+
+#[test]
+fn genjutsu_jobs_are_checked_before_anything_is_sent() {
+    let mov = JobInput::Media { role: "source".into(), mime: "video/quicktime".into(), bytes: Arc::from(mp4()) };
+    let mislabelled = JobInput::Media { role: "source".into(), mime: "video/mp4".into(), bytes: Arc::from(png()) };
+    let bad = [
+        genjutsu(MOTION_TRANSFER, json!({}), vec![source()]),
+        genjutsu(MOTION_TRANSFER, json!({}), vec![image()]),
+        genjutsu(MOTION_TRANSFER, json!({}), vec![source(), source(), image()]),
+        genjutsu(MOTION_TRANSFER, json!({}), vec![mov, image()]),
+        genjutsu(MOTION_TRANSFER, json!({}), vec![mislabelled, image()]),
+        genjutsu(MOTION_TRANSFER, json!({"resolution": "4K"}), vec![source(), image()]),
+        genjutsu(MOTION_TRANSFER, json!({"duration": 5}), vec![source(), image()]),
+        genjutsu(OBJECT_SWAP, json!({}), [vec![source()], vec![image(); 9]].concat()),
+        genjutsu(OBJECT_SWAP, json!({}), vec![prompt(&"x".repeat(10_001)), source(), image()]),
+        job(KLING_I2V, json!({}), vec![prompt("x"), source()]),
+    ];
+    for j in bad {
+        let t = Transport::new(vec![]);
+        assert_eq!(block_on(adapter(&t).submit(&j)).unwrap_err().kind, ErrorKind::UnsupportedInput, "{:?}", j.params);
+        assert!(t.requests().is_empty());
+    }
+    let small = Limits { video_bytes: 8, ..Limits::HARD };
+    let t = Transport::new(vec![]);
+    let e =
+        block_on(Higgsfield::with_limits(key(), t.clone(), small).unwrap().submit(&genjutsu(MOTION_TRANSFER, json!({}), vec![source(), image()]))).unwrap_err();
+    assert!(e.message.contains("source video must be under"), "{e:?}");
+    assert!(Higgsfield::with_limits(key(), Transport::new(vec![]), Limits { video_bytes: 201 * MIB, ..Limits::HARD }).is_err());
 }

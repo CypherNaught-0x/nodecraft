@@ -73,3 +73,50 @@ name="cfg_scale"
 label="Prompt adherence"
 control={type="slider",min=0.0,max=1.0,step=0.05}
 default={type="number",value=0.5}
+
+# Genjutsu source video edits (#179). Higgsfield lists these at a price per started second of
+# source, after it cuts the source to its first 30 s; the plan's credits can make it cheaper, so
+# the catalog price is the most a run can cost. Its uploads take MP4 sources only.
+[[model]]
+id="higgsfield.genjutsu-motion-transfer"
+provider="higgsfield"
+provider_model="higgsfield/genjutsu/motion-transfer/v1.0"
+label="Genjutsu motion transfer (Higgsfield)"
+description="Moves the subjects of one to eight reference images the way the source video moves. The source is an MP4 of at least 4 s; only its first 30 s is used. Priced per second of source at Higgsfield's list price, the most a run can cost."
+latency_s=300
+quality=4
+pricing={type="per_source_second",param="resolution",prices={"480p"="0.318 USD","720p"="0.681 USD","1080p"="1.632 USD"}}
+
+[[model.modes]]
+id="motion-transfer"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="source",modality="video",min=1,max=1},{role="image",modality="image",min=1,max=8}]
+edit={operation="motion_transfer",role="source",min_ms=4000,uses_ms=30000,sound="unknown"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model]]
+id="higgsfield.genjutsu-object-swap"
+provider="higgsfield"
+provider_model="higgsfield/genjutsu/object-swap/v1.0"
+label="Genjutsu object swap (Higgsfield)"
+description="Replaces an object in the source video with the one in one to eight reference images. The source is an MP4 of at least 4 s with frames of at least 409,600 pixels; only its first 30 s is used. Priced per second of source at Higgsfield's list price, the most a run can cost."
+latency_s=300
+quality=4
+pricing={type="per_source_second",param="resolution",prices={"480p"="0.318 USD","720p"="0.681 USD","1080p"="1.632 USD"}}
+
+[[model.modes]]
+id="object-swap"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="source",modality="video",min=1,max=1},{role="image",modality="image",min=1,max=8}]
+edit={operation="object_swap",role="source",min_ms=4000,uses_ms=30000,min_pixels=409600,sound="unknown"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}

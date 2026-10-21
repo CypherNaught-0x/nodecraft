@@ -384,6 +384,33 @@ fn quote_bound(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<usize, Erro
     }
     Ok(n)
 }
+/// The length of the source video wired into `role` (#179), the longest across a fanned step's
+/// items, when every one is already known: a source made earlier in the run, or one whose length
+/// wasn't read on import, leaves it unknown.
+fn source_ms(step: &crate::planner::Step, role: &str) -> Option<u64> {
+    let cells: Vec<&[crate::planner::PlannedInput]> = match &step.fanout {
+        Some(fanout) => fanout.cells.iter().map(Vec::as_slice).collect(),
+        None => vec![step.inputs.as_slice()],
+    };
+    let mut longest: Option<u64> = None;
+    for inputs in cells {
+        let input = inputs.iter().find(|input| input.port == role)?;
+        let value = match input.from.as_slice() {
+            [crate::planner::InputSource::Value(value)] => value,
+            _ => return None,
+        };
+        let asset = match value {
+            Value::Media(asset) => asset,
+            Value::List(items) => match items.as_slice() {
+                [Value::Media(asset)] => asset,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        longest = Some(longest.unwrap_or(0).max(asset.meta.duration_ms?));
+    }
+    longest
+}
 fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, Error> {
     quote_bound(plan, selected)?;
     let mut result = Quote::default();
@@ -413,7 +440,8 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             if model.pricing == Pricing::Free && model.parameter_contract.is_none() {
                 continue;
             }
-            match model.quote_selected(&s.source.params) {
+            let source_ms = model.edit().and_then(|edit| source_ms(step, &edit.role));
+            match model.quote_source(&s.source.params, source_ms) {
                 Ok(Some(m)) => match total {
                     Some(t) => match t.checked_add(m) {
                         Ok(sum) => total = Some(sum),
@@ -421,6 +449,7 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
                     },
                     None => total = Some(m),
                 },
+                Ok(None) if matches!(model.pricing, Pricing::PerSourceSecond { .. }) => reason = Some(Unpriced::AwaitsSource(model.id.clone())),
                 Ok(None) => reason = Some(Unpriced::ByUsage(model.id.clone())),
                 Err(_) => reason = Some(Unpriced::Invalid("invalid model pricing parameters".into())),
             }
