@@ -645,13 +645,19 @@ pub(crate) fn control_with_mode(
             if editor.sliders.get(name).is_some_and(|draft| draft.original != original) {
                 editor.sliders.remove(name);
             }
+            let dragging = editor.sliders.contains_key(name);
             let mut number = editor.sliders.get(name).map_or(original, |draft| draft.value);
             let r = ui.add(egui::Slider::new(&mut number, min.get()..=max.get()).step_by(step.get()).update_while_editing(false)).labelled_by(label);
             if r.dragged() {
                 editor.sliders.insert(name.to_owned(), SliderDraft { original, value: number });
             } else if r.changed() || r.drag_stopped() {
                 editor.sliders.remove(name);
-                if number != original
+                // Only a drag or typing (committed with Enter, which ends the focus) sets a value: the slider snapping a stored value to its
+                // step moves it by a rounding error, and must not edit the document.
+                let by_user = (r.drag_stopped() && dragging) || (r.changed() && (r.has_focus() || r.lost_focus()));
+                let moved = (number - original).abs() > (max.get() - min.get()).abs() * 1e-9;
+                if by_user
+                    && moved
                     && let Ok(n) = Number::new(number)
                 {
                     return Some(Some(Value::Number(n)));

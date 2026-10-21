@@ -6,12 +6,14 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
+use nodecraft_engine::import::{Incoming, import_files};
 use nodecraft_engine::{
     commands::{Registry, Resources, Services},
     generation_catalog::GenerationCatalog,
     provider_routing::ProviderRouting,
     run_cmds::{BudgetState, PreparedRun, RunCatalog},
 };
+use nodecraft_types::EdgeId;
 use std::sync::Mutex;
 
 const C: CanvasId = CanvasId::from_bytes([81; 16]);
@@ -38,6 +40,55 @@ name = "aspect"
 label = "Aspect"
 control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "16:9", label = "16:9" }] }
 default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "mock-edit"
+provider = "mock"
+provider_model = "mock-image"
+label = "Mock edit"
+description = "Public deterministic test fixture with an edit mode"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.04 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 4 }]
+[[model.params.params]]
+name = "n"
+label = "Images"
+control = { type = "choice", options = [{ value = "1", label = "1" }, { value = "2", label = "2" }, { value = "4", label = "4" }] }
+default = { type = "text", value = "1" }
+[[model.params.params]]
+name = "strength"
+label = "Strength"
+control = { type = "slider", min = 0.0, max = 1.0, step = 0.05 }
+default = { type = "number", value = 0.7 }
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "mock-edit"
+owner = "model"
+[[model.parameter_contract.rules]]
+param = "n"
+meaning = "generated_image_count"
+[[model.parameter_contract.rules]]
+param = "strength"
+unit = "ratio"
+meaning = "image_strength"
+[[model.parameter_contract.schema.params]]
+name = "n"
+label = "Images"
+control = { type = "choice", options = [{ value = "1", label = "1" }, { value = "2", label = "2" }, { value = "4", label = "4" }] }
+default = { type = "text", value = "1" }
+[[model.parameter_contract.schema.params]]
+name = "strength"
+label = "Strength"
+control = { type = "slider", min = 0.0, max = 1.0, step = 0.05 }
+default = { type = "number", value = 0.7 }
 "#;
 
 fn scene(model: &str) -> (Harness<'static, NodeCraftApp>, Runs) {
@@ -250,6 +301,117 @@ fn the_toolbar_sets_the_aspect_ratio_found_by_its_options() {
     h.get_by_label("16:9").click();
     h.run();
     assert_eq!(node(h.state()).params.get("aspect"), Some(&Value::Text("16:9".into())));
+    assert!(runs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_toolbar_names_the_mode_the_wired_inputs_choose() {
+    let (mut h, _) = scene("mock-edit");
+    h.state_mut().selection.only(N);
+    h.run();
+    assert!(h.query_by_label("Text to image").is_some(), "only a prompt: text to image");
+    let png = nodecraft_media::encode_png(16, 8, &[200; 16 * 8 * 4], &Default::default()).unwrap();
+    const PICTURE: NodeId = NodeId::from_bytes([84; 16]);
+    let at = nodecraft_graph::Position { x: -300.0, y: 120.0 };
+    import_files(&mut h.state_mut().session, C, at, 200.0, &[Incoming { name: "pic.png", bytes: &png }], &[PICTURE]).unwrap();
+    let port = h
+        .state()
+        .session
+        .kinds()
+        .get(&node(h.state()).kind)
+        .unwrap()
+        .instance_contract(node(h.state()))
+        .unwrap()
+        .inputs
+        .iter()
+        .find(|input| input.port != "prompt")
+        .unwrap()
+        .port
+        .clone();
+    let edge = json!({"id": EdgeId::from_bytes([85; 16]), "from": {"node": PICTURE, "port": "out"}, "to": {"node": N, "port": port}, "order": 1});
+    h.state_mut().session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    h.run();
+    assert!(h.query_by_label("Edit").is_some(), "a wired reference image chooses the edit mode");
+    assert!(h.query_by_label("Text to image").is_none());
+}
+
+#[test]
+fn a_counter_steps_through_a_choice_of_counts() {
+    let (mut h, runs) = scene("mock-edit");
+    press(&mut h, Role::Button, "More images");
+    assert_eq!(node(h.state()).params.get("n"), Some(&Value::Text("2".into())));
+    press(&mut h, Role::Button, "More images");
+    assert_eq!(node(h.state()).params.get("n"), Some(&Value::Text("4".into())));
+    press(&mut h, Role::Button, "Fewer images");
+    assert_eq!(node(h.state()).params.get("n"), Some(&Value::Text("2".into())));
+    assert!(runs.lock().unwrap().is_empty());
+}
+
+fn toolbar_slider(h: &Harness<'static, NodeCraftApp>) -> egui::Rect {
+    h.get_all_by_role(Role::Slider)
+        .filter(|node| node.accesskit_node().label().as_deref() == Some("Strength"))
+        .min_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+        .unwrap()
+        .rect()
+}
+
+#[test]
+fn showing_a_strength_the_slider_snaps_edits_nothing() {
+    // 0.7 snaps to 0.7000000000000001 on a 0.05 step.
+    let (mut h, _) = scene("mock-edit");
+    let revision = h.state().session.revision();
+    h.state_mut().selection.only(N);
+    for _ in 0..4 {
+        h.run();
+    }
+    toolbar_slider(&h);
+    assert_eq!(h.state().session.revision(), revision, "selecting the card never edits it");
+    assert_eq!(node(h.state()).params.get("strength").and_then(|v| if let Value::Number(n) = v { Some(n.get()) } else { None }), Some(0.7));
+}
+
+#[test]
+fn escape_during_a_strength_drag_sets_nothing() {
+    let (mut h, _) = scene("mock-edit");
+    h.state_mut().selection.only(N);
+    h.run();
+    let slider = toolbar_slider(&h);
+    let revision = h.state().session.revision();
+    let (from, to) = (slider.center(), egui::pos2(slider.right() - 1.0, slider.center().y));
+    h.hover_at(from);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.hover_at(to);
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert_eq!(h.state().session.revision(), revision, "Escape cancels the drag");
+}
+
+#[test]
+fn the_toolbar_strength_slider_sets_the_strength_once_a_drag_ends() {
+    let (mut h, runs) = scene("mock-edit");
+    h.state_mut().selection.only(N);
+    h.run();
+    let slider = toolbar_slider(&h);
+    let revision = h.state().session.revision();
+    let (from, to) = (slider.center(), egui::pos2(slider.right() - 1.0, slider.center().y));
+    h.hover_at(from);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    for step in 1..=4 {
+        h.hover_at(from.lerp(to, step as f32 / 4.0));
+        h.run();
+    }
+    assert_eq!(h.state().session.revision(), revision, "nothing is set while the drag goes on");
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    let Some(Value::Number(set)) = node(h.state()).params.get("strength") else { panic!("the strength was set") };
+    assert!(set.get() > 0.9, "dragged to the right end: {}", set.get());
+    assert!(h.state().session.revision() > revision);
     assert!(runs.lock().unwrap().is_empty());
 }
 

@@ -336,6 +336,7 @@ impl NodeCraftApp {
         let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
         let shown = |name: &str| cached.visible.contains(name);
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
+        let mode = self.session.document().canvases().get(&self.canvas).and_then(|canvas| mode_of(&self.session, canvas, node));
         let mut expand = false;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
@@ -361,6 +362,20 @@ impl NodeCraftApp {
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), format!("Model {short}")));
                             if r.clicked() {
                                 intents.push((id, Intent::Model));
+                            }
+                            match &mode {
+                                Some(Mode::Chosen { label, references }) => {
+                                    let hover = if *references {
+                                        "The model's mode, chosen by what is wired in: connect reference images to edit from them"
+                                    } else {
+                                        "The model's mode, chosen by what is wired in"
+                                    };
+                                    ui.label(egui::RichText::new(label).color(t.text_muted)).on_hover_text(hover);
+                                }
+                                Some(Mode::NoFit(why)) => {
+                                    ui.label(egui::RichText::new("No mode fits").color(t.danger)).on_hover_text(why);
+                                }
+                                None => {}
                             }
                             if let Some(spec) = cached
                                 .roles
@@ -389,6 +404,13 @@ impl NodeCraftApp {
                                 });
                                 if selected != current {
                                     intents.push((id, Intent::Parameter { name: spec.name.clone(), value: Some(Value::Text(selected)) }));
+                                }
+                            }
+                            for name in [&cached.roles.strength, &cached.roles.style_strength].into_iter().flatten().filter(|name| shown(name)) {
+                                if let Some(spec) = cached.descriptor.params.params.iter().find(|spec| spec.name == *name)
+                                    && let Some(value) = strength(ui, id, node, spec, editable(name), t)
+                                {
+                                    intents.push((id, Intent::Parameter { name: spec.name.clone(), value: Some(value) }));
                                 }
                             }
                             if nodecraft_engine::split::image_of(node).is_some() {
@@ -442,6 +464,102 @@ impl NodeCraftApp {
             self.viewer = None;
         }
     }
+}
+
+/// A multi-mode model's mode, as the toolbar names it.
+enum Mode {
+    /// The mode the wired inputs choose, humanised; `references` when some mode reads media.
+    Chosen { label: String, references: bool },
+    /// No mode takes what is wired, and why.
+    NoFit(String),
+}
+
+/// The mode `node`'s inputs choose, counted as the planner counts them: the items each wired
+/// output holds now, or one for an output with no result yet. `None` for a single-mode model, or
+/// one the card can't read (the card says why).
+fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Option<Mode> {
+    let contract = session.kinds().get(&node.kind).and_then(|kind| kind.instance_contract(node)).ok()?;
+    if contract.modes.len() < 2 {
+        return None;
+    }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for edge in canvas.edges().values().filter(|edge| edge.to.node == node.id) {
+        if contract.inputs.iter().any(|input| input.port == edge.to.port) {
+            let items = canvas.nodes().get(&edge.from.node).and_then(|from| held(from, &edge.from.port)).unwrap_or(1);
+            let count = counts.entry(edge.to.port.as_str()).or_default();
+            *count = count.saturating_add(items);
+        }
+    }
+    let media = |port: &str| node.inputs.iter().any(|input| input.name == port && input.port_type.modality != nodecraft_types::Modality::Text);
+    let references = contract.modes.iter().any(|mode| mode.inputs.iter().any(|input| media(&input.port)));
+    match contract.resolve_mode(&counts, false) {
+        Ok(Some(mode)) => {
+            let words = mode.as_str().replace(['-', '_'], " ");
+            let mut chars = words.chars();
+            let label = chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect());
+            Some(Mode::Chosen { label, references })
+        }
+        Ok(None) => None,
+        Err(error) => Some(Mode::NoFit(error.message)),
+    }
+}
+
+/// How many items `node`'s output `port` holds in its shown result, lists flattened.
+fn held(node: &Node, port: &str) -> Option<usize> {
+    fn items(value: &Value, depth: usize) -> usize {
+        match value {
+            Value::List(values) if depth < 4 => values.iter().fold(0usize, |total, value| total.saturating_add(items(value, depth.saturating_add(1)))),
+            Value::List(_) => 0,
+            _ => 1,
+        }
+    }
+    let at = node.outputs.iter().position(|output| output.name == port)?;
+    let shown = node.history.iter().find(|generation| Some(generation.id) == node.active)?;
+    shown.outputs.get(at).map(|value| items(value, 0))
+}
+
+/// A strength slider in the toolbar. A drag is one edit, made when it ends: the value being
+/// dragged lives in egui memory until then, with the value it started from, and is dropped if
+/// that value changes meanwhile (an undo, an agent) or Escape is pressed. Only a drag or a key
+/// on the focused slider sets a value: the slider snapping a stored value to its step never does.
+/// Returns the value to set.
+fn strength(ui: &mut egui::Ui, id: NodeId, node: &Node, spec: &nodecraft_types::ParamSpec, editable: bool, t: &Tokens) -> Option<Value> {
+    let ParamControl::Slider { min: Some(min), max: Some(max), step } = &spec.control else { return None };
+    let (low, high) = (min.get(), max.get());
+    if !(low.is_finite() && high.is_finite() && low < high) {
+        return None;
+    }
+    let stored = match node.params.get(&spec.name).or(spec.default.as_ref()) {
+        Some(Value::Number(n)) => n.get(),
+        _ => low,
+    };
+    let memory = egui::Id::new(("toolbar_strength", id, spec.name.as_str()));
+    // (the stored value the drag started from, the dragged value)
+    let draft: Option<(f64, f64)> = ui.data(|data| data.get_temp(memory)).filter(|(from, _): &(f64, f64)| *from == stored);
+    let mut value = draft.map_or(stored, |(_, value)| value);
+    let mut out = None;
+    ui.add_enabled_ui(editable, |ui| {
+        let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
+        let step = step.get();
+        let mut slider = egui::Slider::new(&mut value, low..=high).show_value(true).update_while_editing(false);
+        if step.is_finite() && step > 0.0 {
+            slider = slider.step_by(step);
+        }
+        let r = ui.add(slider).labelled_by(label.id);
+        let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if r.dragged() && !cancelled {
+            ui.data_mut(|data| data.insert_temp(memory, (stored, value)));
+            return;
+        }
+        ui.data_mut(|data| data.remove::<(f64, f64)>(memory));
+        let by_user = (r.drag_stopped() && draft.is_some()) || (r.changed() && (r.has_focus() || r.lost_focus()));
+        // Snapping to the step moves a value by a rounding error, not a step.
+        let moved = (value - stored).abs() > (high - low) * 1e-9;
+        if by_user && !cancelled && moved {
+            out = nodecraft_types::Number::new(value).ok().map(Value::Number);
+        }
+    });
+    out
 }
 
 #[cfg(test)]

@@ -8,6 +8,10 @@ use nodecraft_nodes::{NodeContract, generation::PROMPT};
 pub const COUNT: &str = "generated_image_count";
 /// The meaning tag of a model's output aspect ratio.
 pub const ASPECT: &str = "aspect_ratio";
+/// The meaning tag of how far an image-to-image run may move from its reference image.
+pub const STRENGTH: &str = "image_strength";
+/// The meaning tag of how strongly a style reference is applied.
+pub const STYLE_STRENGTH: &str = "style_strength";
 const MAX_RATIO_DIGITS: usize = 5;
 /// Shown beside a wired prompt's label.
 pub(crate) const WIRED: &str = "from connected text";
@@ -16,21 +20,40 @@ pub(crate) const WIRED: &str = "from connected text";
 /// node's contract rather than by name, so a model's `n` and another's `num_images` both count.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roles {
-    /// How many images one run makes: the variation counter.
+    /// How many images one run makes: the variation counter. A whole number, or a choice of
+    /// counts (1, 2, 4) the counter steps through.
     pub count: Option<String>,
     /// The output aspect: tagged `aspect_ratio`, or else a choice whose every option is `W:H`.
     pub aspect: Option<String>,
+    /// Image strength: a slider tagged `image_strength`, or else an untagged slider named
+    /// `strength`, `image_strength` or `prompt_strength`.
+    pub strength: Option<String>,
+    /// Style strength: a slider tagged `style_strength`, or else one named `style_strength`.
+    pub style_strength: Option<String>,
 }
 
 impl Roles {
     pub fn of(contract: &NodeContract) -> Self {
         let mut roles = Self::default();
         let mut ratios = None;
+        let (mut strength, mut style) = (None, None);
         for group in contract.parameter_groups() {
             for spec in &group.schema.params {
                 let meaning = group.rule(&spec.name).and_then(|rule| rule.meaning.clone());
-                if roles.count.is_none() && meaning.as_deref() == Some(COUNT) && matches!(spec.control, ParamControl::Unsigned { .. }) {
+                if roles.count.is_none() && meaning.as_deref() == Some(COUNT) && count_choices(&spec.control).is_some() {
                     roles.count = Some(spec.name.clone());
+                }
+                if matches!(spec.control, ParamControl::Slider { .. }) {
+                    match meaning.as_deref() {
+                        Some(STRENGTH) if roles.strength.is_none() => roles.strength = Some(spec.name.clone()),
+                        Some(STYLE_STRENGTH) if roles.style_strength.is_none() => roles.style_strength = Some(spec.name.clone()),
+                        Some(_) => {}
+                        None if strength.is_none() && matches!(spec.name.as_str(), "strength" | "image_strength" | "prompt_strength") => {
+                            strength = Some(spec.name.clone());
+                        }
+                        None if style.is_none() && spec.name == "style_strength" => style = Some(spec.name.clone()),
+                        None => {}
+                    }
                 }
                 if let ParamControl::Choice { options } = &spec.control {
                     if roles.aspect.is_none() && meaning.as_deref() == Some(ASPECT) {
@@ -45,11 +68,16 @@ impl Roles {
         if roles.aspect.is_none() {
             roles.aspect = ratios;
         }
+        roles.strength = roles.strength.or(strength);
+        roles.style_strength = roles.style_strength.or(style);
         roles
     }
     /// Bytes this adds to a cached schema entry.
     pub fn bytes(&self) -> usize {
-        [&self.count, &self.aspect].into_iter().flatten().fold(0usize, |total, name| total.saturating_add(name.len().saturating_add(48)))
+        [&self.count, &self.aspect, &self.strength, &self.style_strength]
+            .into_iter()
+            .flatten()
+            .fold(0usize, |total, name| total.saturating_add(name.len().saturating_add(48)))
     }
 }
 
@@ -62,13 +90,51 @@ pub fn ratio(value: &str) -> Option<(u32, u32)> {
     Some((part(w)?, part(h)?))
 }
 
-/// The next count a step away, when the parameter's control accepts it.
-pub fn step_count(control: &ParamControl, current: u64, up: bool) -> Option<u64> {
-    let ParamControl::Unsigned { step, .. } = control else {
-        return None;
-    };
-    let next = if up { current.checked_add(step.0)? } else { current.checked_sub(step.0)? };
-    control.validate_value(&Value::Unsigned(Unsigned(next))).is_ok().then_some(next)
+/// Whether `control` can hold an output count: a whole number, or a choice whose every option
+/// is one (`1`, `2`, `4`). For a choice, its counts in option order.
+fn count_choices(control: &ParamControl) -> Option<Vec<u64>> {
+    match control {
+        ParamControl::Unsigned { .. } => Some(Vec::new()),
+        ParamControl::Choice { options } if !options.is_empty() => options.iter().map(|option| choice_count(&option.value)).collect(),
+        _ => None,
+    }
+}
+
+/// A choice option read as a count: a short run of ASCII digits.
+fn choice_count(value: &str) -> Option<u64> {
+    (!value.is_empty() && value.len() <= 6 && value.bytes().all(|b| b.is_ascii_digit())).then(|| value.parse().ok()).flatten()
+}
+
+/// The count `value` holds: a whole number, or a choice option that is one.
+pub fn count_of(value: Option<&Value>) -> Option<u64> {
+    match value? {
+        Value::Unsigned(n) => Some(n.0),
+        Value::Text(text) => choice_count(text),
+        _ => None,
+    }
+}
+
+/// The value a step away from `current`, when the parameter's control accepts it: the next
+/// whole number by the control's step, or the neighbouring option of a choice of counts.
+pub fn step_count(control: &ParamControl, current: u64, up: bool) -> Option<Value> {
+    match control {
+        ParamControl::Unsigned { step, .. } => {
+            let next = if up { current.checked_add(step.0)? } else { current.checked_sub(step.0)? };
+            let next = Value::Unsigned(Unsigned(next));
+            control.validate_value(&next).is_ok().then_some(next)
+        }
+        // By count, not option order, so unordered or repeated options still step one way.
+        ParamControl::Choice { options } => {
+            let counted = options.iter().filter_map(|option| choice_count(&option.value).map(|count| (count, option)));
+            let next = if up {
+                counted.filter(|(count, _)| *count > current).min_by_key(|(count, _)| *count)
+            } else {
+                counted.filter(|(count, _)| *count < current).max_by_key(|(count, _)| *count)
+            };
+            next.map(|(_, option)| Value::Text(option.value.clone()))
+        }
+        _ => None,
+    }
 }
 
 /// Whether the card is a generation card that gets a composer.
@@ -258,10 +324,7 @@ fn mention_hint(ui: &mut egui::Ui, prompt: &str, elements: &std::collections::BT
 }
 
 fn counter(ui: &mut egui::Ui, node: &Node, spec: &nodecraft_types::ParamSpec, editable: bool, intents: &mut Vec<Intent>, t: &Tokens) {
-    let current = match node.params.get(&spec.name).or(spec.default.as_ref()) {
-        Some(Value::Unsigned(n)) => Some(n.0),
-        _ => None,
-    };
+    let current = count_of(node.params.get(&spec.name).or(spec.default.as_ref()));
     ui.push_id(&spec.name, |ui| {
         for (text, up, name) in [("-", false, "Fewer"), ("+", true, "More")] {
             let next = current.and_then(|n| step_count(&spec.control, n, up));
@@ -270,7 +333,7 @@ fn counter(ui: &mut egui::Ui, node: &Node, spec: &nodecraft_types::ParamSpec, ed
             if r.clicked()
                 && let Some(next) = next
             {
-                intents.push(Intent::Parameter { name: spec.name.clone(), value: Some(Value::Unsigned(Unsigned(next))) });
+                intents.push(Intent::Parameter { name: spec.name.clone(), value: Some(next) });
             }
             if !up {
                 let shown = current.map_or_else(|| "?".to_owned(), |n| n.to_string());
@@ -317,11 +380,32 @@ mod tests {
     #[test]
     fn the_counter_steps_only_to_values_the_control_accepts() {
         let control = ParamControl::Unsigned { min: Some(Unsigned(1)), max: Some(Unsigned(4)), step: Unsigned(1) };
-        assert_eq!(step_count(&control, 2, true), Some(3));
+        assert_eq!(step_count(&control, 2, true), Some(Value::Unsigned(Unsigned(3))));
         assert_eq!(step_count(&control, 4, true), None);
         assert_eq!(step_count(&control, 1, false), None);
         assert_eq!(step_count(&control, u64::MAX, true), None);
         assert_eq!(step_count(&ParamControl::Unsigned { min: None, max: None, step: Unsigned(1) }, 0, false), None);
         assert_eq!(step_count(&ParamControl::Toggle, 1, true), None);
+    }
+
+    #[test]
+    fn a_choice_of_counts_steps_through_its_options() {
+        let option = |v: &str| nodecraft_types::Choice { value: v.into(), label: v.into() };
+        let control = ParamControl::Choice { options: vec![option("1"), option("2"), option("4")] };
+        assert!(count_choices(&control).is_some());
+        assert_eq!(step_count(&control, 2, true), Some(Value::Text("4".into())));
+        assert_eq!(step_count(&control, 2, false), Some(Value::Text("1".into())));
+        assert_eq!(step_count(&control, 4, true), None);
+        assert_eq!(step_count(&control, 1, false), None);
+        assert_eq!(step_count(&control, 3, true), Some(Value::Text("4".into())), "between options: the next one that way");
+        let shuffled = ParamControl::Choice { options: vec![option("4"), option("1"), option("1"), option("2")] };
+        assert_eq!(step_count(&shuffled, 1, true), Some(Value::Text("2".into())), "by count, not option order");
+        assert_eq!(step_count(&shuffled, 4, false), Some(Value::Text("2".into())));
+        assert_eq!(step_count(&shuffled, 2, false), Some(Value::Text("1".into())), "a repeated option is no step");
+        assert_eq!(count_of(Some(&Value::Text("4".into()))), Some(4));
+        assert_eq!(count_of(Some(&Value::Text("four".into()))), None);
+        let words = ParamControl::Choice { options: vec![option("1"), option("many")] };
+        assert!(count_choices(&words).is_none(), "every option must be a count");
+        assert!(count_choices(&ParamControl::Choice { options: Vec::new() }).is_none());
     }
 }
