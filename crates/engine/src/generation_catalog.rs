@@ -21,7 +21,7 @@ struct Snapshot {
     kinds: Vec<GenerationKind>,
 }
 /// The outputs that get a generation kind, in registration order.
-const OUTPUTS: [Modality; 2] = [Modality::Image, Modality::Text];
+const OUTPUTS: [Modality; 3] = [Modality::Image, Modality::Text, Modality::Mesh];
 #[derive(Clone)]
 pub struct GenerationCatalogStamp(RunCatalog);
 impl GenerationCatalogStamp {
@@ -56,10 +56,11 @@ impl GenerationCatalog {
             let models = Self::admit(&catalog, output, &mut charge)?;
             // The image kind is always offered; another kind only once the catalog has a model
             // for it, so the palette never adds a card with nothing to choose (#84).
-            if output == Modality::Image {
-                kinds.push(GenerationKind::new(models, identity)?);
-            } else if !models.is_empty() {
-                kinds.push(GenerationKind::text(models, identity)?);
+            match output {
+                Modality::Image => kinds.push(GenerationKind::new(models, identity)?),
+                _ if models.is_empty() => {}
+                Modality::Text => kinds.push(GenerationKind::text(models, identity)?),
+                _ => kinds.push(GenerationKind::mesh(models, identity)?),
             }
         }
         Ok(Self(Arc::new(Snapshot { catalog, kinds })))
@@ -284,7 +285,11 @@ pub(crate) fn validate_plan(
         let contract = catalog.kind(&node.kind)?.model_contract(model).ok_or_else(|| {
             Error::new(
                 ErrorKind::Unsupported,
-                if node.kind == nodecraft_nodes::generation::TEXT_KIND { "selected text model is unavailable" } else { "selected image model is unavailable" },
+                match node.kind.as_str() {
+                    nodecraft_nodes::generation::TEXT_KIND => "selected text model is unavailable",
+                    nodecraft_nodes::generation::MESH_KIND => "selected 3D model is unavailable",
+                    _ => "selected image model is unavailable",
+                },
             )
         })?;
         contract.resolve_mode(&wires, true)?;

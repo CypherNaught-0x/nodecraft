@@ -27,6 +27,8 @@ gemini-images = ["dep:base64"]
 fal = ["dep:base64"]
 # Dated Seedream text generation and ordered multi-reference edits.
 seedream = ["dep:base64"]
+# Tripo text, image and multiview to 3D: uploads, a paid task, polling and the GLB download.
+tripo = []
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 

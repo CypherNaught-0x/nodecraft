@@ -19,6 +19,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept). Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan video, Kokoro audio, Trellis 3D, ESRGAN upscale | Five explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
+| **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 
 ## Setting up catalog providers
 
@@ -32,6 +33,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
+| `tripo` | `tripo` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
@@ -453,3 +455,56 @@ output routing/conversion refuses it.
 The ignored live test requires NODECRAFT_LIVE_SEEDREAM=1,
 NODECRAFT_LIVE_SEEDREAM_ACKNOWLEDGE_COST=1 and ARK_API_KEY, plus separate explicit human spending
 authorization. It never runs in CI; ordinary contracts use authored fixtures and local HTTP.
+
+## Tripo 3D tasks
+
+The optional `tripo` adapter drives the [Tripo v2 API](https://docs.tripo3d.ai) at the fixed base
+`https://api.tripo3d.ai/v2/openapi`. Three catalog models share it, one per task type, and appear on
+the **Generate 3D** card (`generation.mesh`, which also offers fal's Trellis):
+
+| Catalog model | Task | Inputs | Estimate |
+|---|---|---|---|
+| `tripo.text-to-3d` | `text_to_model` | a prompt (1–1,024 characters), optional negative prompt (255) | 0.20 USD |
+| `tripo.image-to-3d` | `image_to_model` | one image | 0.30 USD |
+| `tripo.multiview-to-3d` | `multiview_to_model` | a front view plus one to three of left, back, right | 0.30 USD |
+
+Estimates were verified 2026-10-21 (1 credit = 0.01 USD) and are per task, not actual charges.
+They cover a textured PBR model at standard quality, so the adapter always sends `texture` and
+`pbr` as true and exposes no setting that would change the price (detailed textures, quad meshes,
+smart low-poly). The settings it does expose are `model_version` (v2.5, v3.0 or v3.1, dated),
+shape and texture seeds and a face limit (1,000–1,500,000).
+
+Images (PNG, JPEG or WebP whose bytes match their type, at most 20 MB each) are uploaded first;
+each upload returns a token and creates no task, so a failed upload is a proved non-acceptance.
+The task request comes next and is the paid step: from then on a lost reply may have billed, and
+there is no idempotency key, so a submit is never retried automatically. Polling is every three
+seconds and reports Tripo's queue position and percentage. Tripo has no cancel endpoint, so
+cancelling a run stops waiting but not the task.
+
+A finished task names short-lived (about five minutes) result links. The adapter takes the PBR
+model, then the plain or base model, and downloads it **without the key**, from public `https`
+hosts only (no IP literals, single-label or internal names such as `*.internal` or `*.local`,
+ports or credentials in the link). A failed download is retryable: the next poll hands out a
+fresh link, so an expired one never loses a billed model. The download must be a whole glTF 2.0
+binary (`glTF` magic, version 2, length matching) of at most 256 MiB; anything else is refused as
+malformed, and since the task already ran it may still have been billed. Error replies map
+Tripo's codes onto the shared kinds (auth, rate limit and quota with `Retry-After`, content
+policy, credit, input errors, server); their messages are cut short and withheld if they echo
+the key. Limits can only be lowered.
+
+The multiview task needs the front view and at least one other; the card accepts a front view
+alone and the adapter refuses it before anything is uploaded. Tripo is native only: the adapter
+fetches results with no-redirect requests, which the builtin browser transport refuses.
+
+**Not verified live yet:** the model files Tripo returns are expected to be plain GLBs. A GLB that
+needs an extension the mesh decoder doesn't read (meshopt or Draco compression, say) still
+lands in the card's history, but its viewer and the 3D captures report it can't be read.
+
+The ignored live test requires `NODECRAFT_LIVE_TRIPO=1`, `NODECRAFT_LIVE_TRIPO_ACKNOWLEDGE_COST=1`
+and `TRIPO_API_KEY`, plus separate explicit human spending authorization (about 0.20 USD). It
+never runs in CI:
+
+```sh
+NODECRAFT_LIVE_TRIPO=1 NODECRAFT_LIVE_TRIPO_ACKNOWLEDGE_COST=1 TRIPO_API_KEY=… \
+  cargo test -p nodecraft-providers --features http,tripo --test live_tripo -- --ignored
+```
