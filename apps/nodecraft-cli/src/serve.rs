@@ -29,8 +29,9 @@ pub use worker::Loaded;
 const MAX_CONNECTIONS: usize = 8;
 /// Runs waiting for the worker; more are answered 429.
 const MAX_QUEUED: usize = 32;
-/// Each wait for the client's next bytes, and for it to take ours.
-const IO_TIMEOUT: Duration = Duration::from_secs(15);
+/// Each wait for the client's next bytes, and for it to take ours; no longer than the head's
+/// deadline, so that deadline holds.
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What a served run may cost, unless a request asks for less.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -129,7 +130,11 @@ impl Drop for Slot {
 fn accept_loop(listener: &TcpListener, state: &Arc<api::State>) {
     let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
+        let Ok(mut stream) = stream else {
+            // Out of file handles, say: wait a little rather than spin.
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -154,7 +159,9 @@ fn connection(stream: TcpStream, state: &api::State) {
     let mut on_continue = || {
         let _ = http::write_continue(&mut out);
     };
-    let response = match http::read(&stream, http::Limits::DEFAULT, &mut on_continue) {
+    // The token is checked once the headers are in, before any body is read or invited.
+    let admit = |request: &http::Request| if state.authorized(request) { Ok(()) } else { Err(http::Refusal::UNAUTHORIZED) };
+    let response = match http::read(&stream, http::Limits::DEFAULT, admit, &mut on_continue) {
         Ok(request) => state.answer(&request),
         Err(refusal) => http::refusal(&refusal),
     };

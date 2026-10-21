@@ -207,11 +207,86 @@ fn base64_decodes_and_refuses_what_isnt() {
     assert_eq!(api::base64(""), Some(Vec::new()));
     assert_eq!(api::base64("aGVs bG8="), None);
     assert_eq!(api::base64("a"), None);
+    assert_eq!(api::base64("aGVsbG9="), None, "stray bits");
+    assert_eq!(api::base64("aGVsbG8=="), None, "too much padding");
+    assert_eq!(api::base64("aGVsbA="), None, "padding that doesn't fill a group");
+    assert_eq!(api::base64("aGVsbA=="), Some(b"hell".to_vec()));
+}
+
+#[test]
+fn the_body_isnt_read_until_the_token_is_checked() {
+    let mut continued = false;
+    let refused = read(
+        b"POST / HTTP/1.1\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n".as_slice(),
+        Limits::DEFAULT,
+        |_| Err(Refusal::UNAUTHORIZED),
+        || continued = true,
+    )
+    .unwrap_err();
+    assert_eq!(refused.status, 401);
+    assert!(!continued, "no body was invited");
+    // Over the wire: a large body is never waited for.
+    let served = serve(Policy::default());
+    let mut stream = TcpStream::connect(served.addr).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream.write_all(b"POST /techniques HTTP/1.1\r\nContent-Length: 60000000\r\n\r\n").unwrap();
+    let mut reply = String::new();
+    let _ = stream.read_to_string(&mut reply);
+    assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
+    assert!(reply.contains("WWW-Authenticate: Bearer"), "{reply}");
+}
+
+#[test]
+fn one_key_sent_twice_at_once_makes_one_run() {
+    let served = std::sync::Arc::new(serve(Policy::default()));
+    let (_, listed) = served.json("GET", "/techniques", &[], "");
+    let port = listed["techniques"][0]["inputs"][0]["port"].as_str().unwrap().to_owned();
+    let body = json!({"inputs": {port: "a red fox"}});
+    let threads: Vec<_> = (0..6)
+        .map(|_| {
+            let (served, body) = (std::sync::Arc::clone(&served), body.clone());
+            std::thread::spawn(move || served.submit(&body, Some("once")))
+        })
+        .collect();
+    let answers: Vec<(u16, Value)> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let ids: std::collections::BTreeSet<&str> = answers.iter().map(|(_, run)| run["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 1, "{answers:?}");
+    assert_eq!(answers.iter().filter(|(status, _)| *status == 202).count(), 1, "{answers:?}");
+}
+
+#[test]
+fn an_expired_file_keeps_its_place_and_answers_gone() {
+    use super::worker::{Body, Produced, Run, Runs};
+    let runs = std::sync::Arc::new(Runs::default());
+    let mut run = Run::new("t".into(), 1, None);
+    run.status = worker::Status::Succeeded;
+    run.expired = true;
+    run.outputs = vec![
+        Produced { name: "Picture".into(), port: "a".into(), item: None, body: Body::Expired { mime: "image/png".into() } },
+        Produced { name: "Caption".into(), port: "b".into(), item: None, body: Body::Text("fox".into()) },
+    ];
+    runs.lock().add("r1".into(), run).unwrap();
+    let token = nodecraft_automation::control::Token::generate().unwrap();
+    let auth = format!("Bearer {}", token.to_hex());
+    let (jobs, _queue) = std::sync::mpsc::sync_channel(1);
+    let state = api::State::new(token, Vec::new(), runs, jobs, Policy::default());
+    let get = |path: &str| {
+        let request = http::Request { method: "GET".into(), path: path.into(), headers: vec![("authorization".into(), auth.clone())], body: Vec::new() };
+        state.answer(&request)
+    };
+    assert_eq!(get("/runs/r1/outputs/0").status, 410);
+    let caption = get("/runs/r1/outputs/1");
+    assert!(matches!(&caption.body, http::Body::Bytes(b) if b == b"fox"), "{caption:?}");
+    let described = get("/runs/r1");
+    let http::Body::Bytes(bytes) = described.body else { panic!("a JSON body") };
+    let described: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(described["outputs"][0]["expired"], true, "{described}");
+    assert_eq!(described["outputs"][1]["n"], 1, "{described}");
 }
 
 fn parse(raw: &[u8]) -> Result<http::Request, Refusal> {
-    let limits = Limits { head_bytes: 256, headers: 4, body_bytes: 16, deadline: Duration::from_secs(5) };
-    read(raw, limits, || {})
+    let limits = Limits { head_bytes: 256, headers: 4, body_bytes: 16, head_deadline: Duration::from_secs(5), deadline: Duration::from_secs(5) };
+    read(raw, limits, |_| Ok(()), || {})
 }
 
 #[test]

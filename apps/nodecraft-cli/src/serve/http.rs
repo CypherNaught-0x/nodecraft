@@ -11,12 +11,15 @@ pub struct Limits {
     pub head_bytes: usize,
     pub headers: usize,
     pub body_bytes: usize,
-    /// From the first byte read to the last, whatever the client's pace.
+    /// For the request line and headers, from the first byte read.
+    pub head_deadline: Duration,
+    /// For the whole request, whatever the client's pace.
     pub deadline: Duration,
 }
 
 impl Limits {
-    pub const DEFAULT: Self = Self { head_bytes: 16 * 1024, headers: 64, body_bytes: 64 * 1024 * 1024, deadline: Duration::from_secs(60) };
+    pub const DEFAULT: Self =
+        Self { head_bytes: 16 * 1024, headers: 64, body_bytes: 64 * 1024 * 1024, head_deadline: Duration::from_secs(10), deadline: Duration::from_secs(60) };
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,11 +42,16 @@ impl Request {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Refusal {
     pub status: u16,
+    pub kind: &'static str,
     pub message: &'static str,
 }
 
+impl Refusal {
+    pub const UNAUTHORIZED: Self = Self { status: 401, kind: "unauthorized", message: "send the token from the token file as `Authorization: Bearer <token>`" };
+}
+
 fn refuse(status: u16, message: &'static str) -> Refusal {
-    Refusal { status, message }
+    Refusal { status, kind: "invalid_request", message }
 }
 
 /// A read that gives up at `deadline`; the stream's own timeout bounds each wait.
@@ -80,10 +88,17 @@ fn line<R: BufRead>(reader: &mut R, budget: &mut usize) -> Result<String, Refusa
     String::from_utf8(bytes).map_err(|_| refuse(400, "the request's head isn't text"))
 }
 
-/// Reads one request from `stream`. `on_continue` is called once if the client waits for a
+/// Reads one request from `stream`. `admit` sees the request line and headers before any of the
+/// body is read, and can refuse it there. `on_continue` is called once if the client waits for a
 /// `100 Continue` before sending its body.
-pub fn read<R: Read>(stream: R, limits: Limits, mut on_continue: impl FnMut()) -> Result<Request, Refusal> {
-    let mut reader = BufReader::new(Deadline { inner: stream, deadline: Instant::now() + limits.deadline });
+pub fn read<R: Read>(
+    stream: R,
+    limits: Limits,
+    admit: impl FnOnce(&Request) -> Result<(), Refusal>,
+    mut on_continue: impl FnMut(),
+) -> Result<Request, Refusal> {
+    let started = Instant::now();
+    let mut reader = BufReader::new(Deadline { inner: stream, deadline: started + limits.head_deadline.min(limits.deadline) });
     let mut budget = limits.head_bytes;
     let start = line(&mut reader, &mut budget)?;
     let mut parts = start.split(' ');
@@ -116,6 +131,8 @@ pub fn read<R: Read>(stream: R, limits: Limits, mut on_continue: impl FnMut()) -
         headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
     }
     let request = Request { method: method.to_owned(), path, headers, body: Vec::new() };
+    admit(&request)?;
+    reader.get_mut().deadline = started + limits.deadline;
     if request.header("transfer-encoding").is_some() {
         return Err(refuse(501, "send the body with a Content-Length, not chunked"));
     }
@@ -242,5 +259,6 @@ pub fn write_continue<W: Write>(out: &mut W) -> std::io::Result<()> {
 
 /// A refusal as its JSON reply.
 pub fn refusal(refusal: &Refusal) -> Response {
-    Response::json(refusal.status, &serde_json::json!({"error": {"kind": "invalid_request", "message": refusal.message}}))
+    let response = Response::json(refusal.status, &serde_json::json!({"error": {"kind": refusal.kind, "message": refusal.message}}));
+    if refusal.status == 401 { response.header("WWW-Authenticate", "Bearer".into()) } else { response }
 }

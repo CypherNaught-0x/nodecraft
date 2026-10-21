@@ -110,6 +110,10 @@ pub enum Body {
     },
     /// A number, a flag or anything else that has no file.
     Value(Value),
+    /// A file let go to keep the server's memory bounded; it keeps its place in the list.
+    Expired {
+        mime: String,
+    },
 }
 
 /// A run, as `GET /runs/{id}` reports it.
@@ -191,7 +195,11 @@ impl Book {
             }
             let Some(run) = self.runs.get_mut(old).filter(|run| run.status.is_done() && !run.expired) else { continue };
             self.kept = self.kept.saturating_sub(run.kept_bytes());
-            run.outputs.retain(|o| !matches!(o.body, Body::Media { .. }));
+            for output in &mut run.outputs {
+                if let Body::Media { mime, .. } = &output.body {
+                    output.body = Body::Expired { mime: mime.clone() };
+                }
+            }
             run.expired = true;
         }
     }
@@ -224,7 +232,9 @@ pub fn spawn(load: impl FnOnce() -> Result<Loaded, Error> + Send + 'static, queu
             // Ends when the server is gone and the queue with it.
             while let Ok(job) = queue.recv() {
                 runs.lock().set_status(&job.id, Status::Running);
-                let outcome = worker.run(&job);
+                // A bug in one run fails that run, not the server: it is reported, never left running.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(&job)))
+                    .unwrap_or_else(|_| Err((Error::new(ErrorKind::Internal, "the run stopped on an internal error; the server keeps serving"), None)));
                 runs.lock().finish(&job.id, |run| match outcome {
                     Ok(done) => {
                         run.status = if done.failed { Status::Failed } else { Status::Succeeded };
