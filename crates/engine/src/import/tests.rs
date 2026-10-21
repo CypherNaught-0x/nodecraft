@@ -212,3 +212,24 @@ fn import_media_stores_one_file_for_a_later_edit_and_refuses_text() {
     assert!(text.message.contains("notes.txt") && text.message.contains("text"), "{}", text.message);
     assert_eq!(import_media(&mut s, &Incoming { name: "empty", bytes: b"" }).unwrap_err().kind, nodecraft_types::ErrorKind::InvalidInput);
 }
+
+#[test]
+fn models_become_3d_nodes_and_unreadable_ones_are_refused_with_a_reason() {
+    let mut s = session();
+    let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 4 3\n".to_vec();
+    let mesh = nodecraft_media::decode_mesh(&obj, &MeshLimits::default()).unwrap();
+    let glb = nodecraft_media::encode_glb(&mesh).unwrap();
+    let external = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"model.bin"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}]}"#;
+    let files = [Incoming { name: "quad.obj", bytes: &obj }, Incoming { name: "quad.glb", bytes: &glb }, Incoming { name: "split.gltf", bytes: external }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
+    assert_eq!(imported.nodes, ids(2));
+    for (id, mime) in ids(2).into_iter().zip(["model/obj", "model/gltf-binary"]) {
+        let model = node(&s, id);
+        assert_eq!(model.kind, "source.mesh");
+        let Some(Value::Media(asset)) = model.params.get("asset") else { panic!("an asset parameter") };
+        assert_eq!((asset.mime.essence(), asset.meta.vertices, asset.meta.triangles), (mime, Some(4), Some(2)));
+    }
+    let [(name, why)] = imported.skipped.as_slice() else { panic!("one skipped: {:?}", imported.skipped) };
+    assert_eq!(name, "split.gltf");
+    assert!(why.contains("3D model can't be read") && why.contains(".glb"), "{why}");
+}

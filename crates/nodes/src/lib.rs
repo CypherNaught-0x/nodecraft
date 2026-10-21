@@ -14,6 +14,7 @@ pub mod generation;
 pub mod image;
 pub mod layers;
 pub mod mask;
+pub mod mesh;
 pub mod note;
 mod registry;
 pub mod router;

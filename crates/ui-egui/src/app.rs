@@ -421,6 +421,11 @@ pub struct NodeCraftApp {
     previews: crate::preview::Previews,
     /// Video posters and players on cards (#105).
     videos: crate::video::Videos,
+    /// 3D models on cards (#111): decoded models, each card's camera, and whether a renderer is
+    /// installed to draw them.
+    meshes: crate::mesh_view::Meshes,
+    mesh_views: std::collections::HashMap<NodeId, crate::mesh_view::MeshView>,
+    mesh_gpu: bool,
     /// When the last timed frame started, for the frame interval (#151).
     last_frame: Option<u64>,
     frame_workload: Option<nodecraft_engine::perf::Workload>,
@@ -792,6 +797,9 @@ impl NodeCraftApp {
             title: String::new(),
             previews: crate::preview::Previews::default(),
             videos: crate::video::Videos::default(),
+            meshes: crate::mesh_view::Meshes::default(),
+            mesh_views: std::collections::HashMap::new(),
+            mesh_gpu: false,
             last_frame: None,
             frame_workload: None,
             split_size: (2, 2),
@@ -897,6 +905,7 @@ impl NodeCraftApp {
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
         self.videos.poll(ui.ctx());
+        self.meshes.poll();
         let surrender_focus_on = ui.ctx().options(|o| o.input_options.surrender_focus_on);
         self.cache_clock = self.cache_clock.saturating_add(1);
         let changed_session = self.marquee_geometry.prepare(&mut self.session, self.canvas, self.theme);
@@ -1216,6 +1225,7 @@ impl NodeCraftApp {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
             self.videos.retain(|id| canvas.nodes().contains_key(&id));
+            self.mesh_views.retain(|id, _| canvas.nodes().contains_key(id));
             self.schemas.retain(|id| canvas.nodes().contains_key(id));
             self.selection.retain_existing(canvas);
             // Selected cards draw last, on top.
@@ -1259,6 +1269,14 @@ impl NodeCraftApp {
                         let assets = self.session.assets();
                         self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
                     });
+                let mesh = match crate::mesh_view::mesh_of(node) {
+                    Some(asset) if self.view.zoom >= card::BODY_MIN_ZOOM => {
+                        let assets = self.session.assets();
+                        let preview = self.meshes.request(ui.ctx(), asset, || assets.preview_read(asset));
+                        Some(crate::mesh_view::CardMesh { preview, view: self.mesh_views.entry(node.id).or_default(), gpu: self.mesh_gpu })
+                    }
+                    _ => None,
+                };
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
@@ -1294,6 +1312,7 @@ impl NodeCraftApp {
                         #[cfg(target_arch = "wasm32")]
                         partial: None,
                         video,
+                        mesh,
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -2499,6 +2518,8 @@ mod layer_editor_tests;
 mod library_view_tests;
 #[cfg(test)]
 mod mask_editor_tests;
+#[cfg(test)]
+mod mesh_tests;
 #[cfg(test)]
 mod order_tests;
 #[cfg(test)]

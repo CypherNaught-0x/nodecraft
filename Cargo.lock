@@ -3101,6 +3101,7 @@ dependencies = [
  "nodecraft-engine",
  "nodecraft-exec",
  "nodecraft-format",
+ "nodecraft-gpu",
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-nodes",

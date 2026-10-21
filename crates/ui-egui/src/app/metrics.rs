@@ -16,6 +16,12 @@ impl NodeCraftApp {
         self.session.perf_mut().set_renderer(Some(renderer));
     }
 
+    /// Lets cards draw 3D models with eframe's wgpu renderer (#111). Call once at start-up.
+    pub fn install_mesh_renderer(&mut self, render: &eframe::egui_wgpu::RenderState) {
+        crate::mesh_view::install(render);
+        self.mesh_gpu = true;
+    }
+
     /// The frame's start time while a capture runs, recording the interval since the last one.
     pub(super) fn frame_started(&mut self) -> Option<u64> {
         self.frame_workload = None;

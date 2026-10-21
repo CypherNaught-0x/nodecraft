@@ -9,7 +9,7 @@
 use crate::Session;
 use nodecraft_format::{MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES};
 use nodecraft_graph::Position;
-use nodecraft_media::{Limits, MediaKind, Sniffed, probe_image, sniff};
+use nodecraft_media::{Limits, MediaKind, MeshLimits, Sniffed, probe_image, probe_mesh, sniff};
 use nodecraft_types::{CanvasId, Error, MediaMeta, Mime, NodeId};
 
 /// Most files one drop adds; the rest are reported as skipped.
@@ -109,7 +109,8 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
         MediaKind::Image => "source.image",
         MediaKind::Video => "source.video",
         MediaKind::Audio => "source.audio",
-        MediaKind::Model3d | MediaKind::Document => return Err("3D models and documents can't be added yet".into()),
+        MediaKind::Model3d => "source.mesh",
+        MediaKind::Document => return Err("documents can't be added yet".into()),
     };
     if file.bytes.len() > MAX_ASSET_BYTES {
         return Err(format!("media over {} MiB can't be added to a project yet", MAX_ASSET_BYTES / (1024 * 1024)));
@@ -124,6 +125,13 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
             Err(_) if decodes_later(&sniffed) => {}
             Err(_) => return Err("the image can't be read".into()),
         }
+    }
+    if sniffed.kind == MediaKind::Model3d {
+        // Read the whole model now, so a file that can't be shown (an external buffer, Draco
+        // compression, past the limits) is refused with its reason instead of landing broken.
+        let info = probe_mesh(file.bytes, &MeshLimits::default()).map_err(|error| format!("the 3D model can't be read: {error}"))?;
+        meta.vertices = u32::try_from(info.vertices).ok();
+        meta.triangles = u32::try_from(info.triangles).ok();
     }
     let mime = sniffed.mime.parse().map_err(|_| "the file type isn't supported".to_owned())?;
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })

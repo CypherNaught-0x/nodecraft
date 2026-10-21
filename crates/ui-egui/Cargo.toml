@@ -19,6 +19,8 @@ nodecraft-nodes.workspace = true
 nodecraft-actions.workspace = true
 nodecraft-format.workspace = true
 nodecraft-media.workspace = true
+# The 3D preview renderer (#111), drawn through eframe's wgpu paint callbacks.
+nodecraft-gpu.workspace = true
 nodecraft-plugin-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true

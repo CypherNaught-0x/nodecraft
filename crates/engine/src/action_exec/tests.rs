@@ -2,6 +2,8 @@ use super::*;
 use nodecraft_nodes::{Category, Registry};
 use nodecraft_types::NodeId;
 
+const OBJ: &[u8] = b"v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n";
+
 fn png(width: u32, height: u32) -> Vec<u8> {
     let pixels: Vec<u8> = (0..width * height).flat_map(|i| [(i % 251) as u8, 80, 160, 255]).collect();
     nodecraft_media::encode_png(width, height, &pixels, &nodecraft_media::Limits::default()).unwrap()
@@ -25,14 +27,26 @@ fn every_action_kind_runs_with_its_defaults() {
     let mut assets = AssetStore::default();
     let hash = assets.insert(&png(8, 6)).unwrap();
     let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
+    let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets);
     let mut ran = 0;
     // The custom shader needs a GPU: its own tests run it. An Element plans source jobs, not an
     // action.
     for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && d.id != "image.shader" && d.id != nodecraft_nodes::element::ID) {
-        let input = if descriptor.id.starts_with("image.") { image.clone() } else { Value::Text("a, b\\nc".into()) };
+        let input = if descriptor.id.starts_with("image.") {
+            image.clone()
+        } else if descriptor.id.starts_with("mesh.") {
+            model.clone()
+        } else {
+            Value::Text("a, b\\nc".into())
+        };
         let inputs = vec![input; descriptor.inputs.len()];
         let out = actions.execute(&descriptor.id, &defaults(&kinds, &descriptor.id), &inputs).unwrap_or_else(|e| panic!("{}: {e}", descriptor.id));
+        if descriptor.id.starts_with("mesh.") {
+            assert!(matches!(&out, Value::Media(asset) if asset.meta.triangles == Some(2)), "{}: {out:?}", descriptor.id);
+            ran += 1;
+            continue;
+        }
         match (&out, descriptor.id.starts_with("image.")) {
             (Value::Media(asset), true) => assert!(asset.meta.width.is_some(), "{}", descriptor.id),
             (Value::List(items), true) => assert!(items.iter().all(|i| matches!(i, Value::Media(_))), "{}", descriptor.id),
@@ -41,8 +55,8 @@ fn every_action_kind_runs_with_its_defaults() {
         }
         ran += 1;
     }
-    assert_eq!(ran, 20);
-    // Every new image is staged for the host to import, and nothing else.
+    assert_eq!(ran, 21);
+    // Every new image and model is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());
     assert_eq!(actions.take_staged().len(), 0);
@@ -339,4 +353,28 @@ fn native_imported_image_runs_local_actions_without_resident_materialization() {
     let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
     let Value::Media(result) = actions.execute("image.resize", &defaults(&kinds, "image.resize"), &[image]).unwrap() else { panic!() };
     assert_eq!((result.meta.width, result.meta.height), (Some(20), Some(10)));
+}
+
+#[test]
+fn convert_3d_writes_each_format_and_chains_from_staged_results() {
+    let mut assets = AssetStore::default();
+    let hash = assets.insert(OBJ).unwrap();
+    let model = Value::Media(AssetRef { hash, mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    let format = |f: &str| ParamValues::from([("format".into(), Value::Text(f.into()))]);
+    let glb = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), std::slice::from_ref(&model)).unwrap();
+    let Value::Media(glb_asset) = &glb else { panic!("a model") };
+    assert_eq!((glb_asset.mime.essence(), glb_asset.meta.vertices, glb_asset.meta.triangles), ("model/gltf-binary", Some(4), Some(2)));
+    // The GLB was staged, so a second conversion in the same run reads it.
+    let obj = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("obj"), &[glb]).unwrap();
+    let Value::Media(obj_asset) = &obj else { panic!("a model") };
+    assert_eq!(obj_asset.mime.essence(), "model/obj");
+    let staged = actions.take_staged();
+    let written = nodecraft_media::decode_mesh(staged.get(&obj_asset.hash).unwrap(), &Default::default()).unwrap();
+    assert_eq!(written.triangle_count(), 2);
+    assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("stl"), std::slice::from_ref(&model)).unwrap_err().contains("stl"));
+    assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), &[Value::Text("x".into())]).unwrap_err().contains("connect a 3D model"));
+    let mut broken = AssetStore::default();
+    let junk = Value::Media(AssetRef { hash: broken.insert(b"v 0 0\n").unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    assert!(LocalActions::new(broken).execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), &[junk]).unwrap_err().contains("can't be read"));
 }

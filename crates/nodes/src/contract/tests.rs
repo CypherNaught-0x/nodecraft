@@ -57,7 +57,7 @@ fn every_builtin_kind_has_a_valid_contract_matching_its_schema() {
 fn source_contracts_declare_their_single_mode() {
     let registry = Registry::builtins().unwrap();
     let sources: Vec<_> = registry.descriptors().filter(|descriptor| descriptor.category == Category::Source).map(|descriptor| descriptor.id.clone()).collect();
-    assert_eq!(sources.len(), 4);
+    assert_eq!(sources.len(), 5);
     for id in sources {
         let contract = registry.contract(&id).unwrap();
         let kind = registry.get(&id).unwrap();

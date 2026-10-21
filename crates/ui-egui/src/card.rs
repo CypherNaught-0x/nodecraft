@@ -110,8 +110,8 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
     // The history strip sits under the parameters and is never squeezed out by them; an image
-    // or video preview sits above them.
-    let shows = nodecraft_engine::split::image_of(node).is_some() || crate::video::video_of(node).is_some();
+    // or video or 3D preview sits above them.
+    let shows = nodecraft_engine::split::image_of(node).is_some() || crate::video::video_of(node).is_some() || crate::mesh_view::mesh_of(node).is_some();
     let preview = if shows { t.card_preview_height } else { 0.0 };
     // A text card always has room for its answer, so the card doesn't jump when one starts
     // streaming in (#504).
@@ -145,6 +145,8 @@ pub struct CardView<'a> {
     pub partial: Option<generate::Partial<'a>>,
     /// The node's video and its player, when it has one (#105).
     pub video: Option<crate::video::VideoView>,
+    /// The node's 3D model, when it has one (#111).
+    pub mesh: Option<crate::mesh_view::CardMesh<'a>>,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -169,7 +171,7 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, partial, video } = card;
+    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, partial, video, mesh } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -317,6 +319,10 @@ pub fn show(
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
             show_video(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), video, &mut intents, t);
+        } else if let Some(mesh) = mesh {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            crate::mesh_view::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), view.zoom, mesh, t);
         }
         if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);

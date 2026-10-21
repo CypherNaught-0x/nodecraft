@@ -42,7 +42,11 @@ async fn start() -> Result<(), String> {
             canvas,
             eframe::WebOptions::default(),
             Box::new(|cc| {
-                let app = nodecraft_ui_egui::NodeCraftApp::new(&cc.egui_ctx)?;
+                let mut app = nodecraft_ui_egui::NodeCraftApp::new(&cc.egui_ctx)?;
+                // 3D models on cards draw with the same wgpu renderer (#111).
+                if let Some(render) = cc.wgpu_render_state.as_ref() {
+                    app.install_mesh_renderer(render);
+                }
                 Ok(Box::new(app))
             }),
         )

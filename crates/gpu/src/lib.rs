@@ -6,5 +6,7 @@
 
 /// Bounded image compute backend.
 pub mod image;
+/// The 3D preview renderer (#111).
+pub mod mesh;
 /// Custom WGSL shader actions (#90).
 pub mod shader;

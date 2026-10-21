@@ -12,7 +12,7 @@ pub struct ActionKind {
     descriptor: NodeDescriptor,
 }
 
-fn port(name: &str, modality: Modality, many: bool) -> Port {
+pub(crate) fn port(name: &str, modality: Modality, many: bool) -> Port {
     Port { name: name.into(), port_type: PortType { modality, many } }
 }
 
@@ -32,7 +32,7 @@ fn slider(name: &str, label: &str, min: f64, max: f64, step: f64, default: f64) 
     })
 }
 
-fn choice(name: &str, label: &str, options: &[(&str, &str)], default: &str) -> ParamSpec {
+pub(crate) fn choice(name: &str, label: &str, options: &[(&str, &str)], default: &str) -> ParamSpec {
     ParamSpec {
         name: name.into(),
         label: label.into(),
@@ -105,7 +105,7 @@ fn image(id: &str, label: &str, params: Vec<ParamSpec>) -> ActionKind {
     kind(id, label, vec![port("image", Modality::Image, false)], vec![port("out", Modality::Image, false)], params)
 }
 
-fn kind(id: &str, label: &str, inputs: Vec<Port>, outputs: Vec<Port>, params: Vec<ParamSpec>) -> ActionKind {
+pub(crate) fn kind(id: &str, label: &str, inputs: Vec<Port>, outputs: Vec<Port>, params: Vec<ParamSpec>) -> ActionKind {
     ActionKind {
         descriptor: NodeDescriptor {
             id: id.into(),

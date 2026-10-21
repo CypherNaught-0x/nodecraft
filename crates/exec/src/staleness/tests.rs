@@ -542,6 +542,8 @@ fn effective_default_and_stored_payloads_have_identical_hashes_and_admission_bou
                     sample_rate: Some(u32::MAX),
                     channels: Some(u16::MAX),
                     page_count: Some(u32::MAX),
+                    vertices: Some(u32::MAX),
+                    triangles: Some(u32::MAX),
                 },
             }),
         ),
@@ -618,6 +620,8 @@ fn scalar_and_media_reservations_cover_json_before_serialization_and_keep_v2_byt
                 sample_rate: Some(u32::MAX),
                 channels: Some(u16::MAX),
                 page_count: Some(u32::MAX),
+                vertices: Some(u32::MAX),
+                triangles: Some(u32::MAX),
             },
         }),
     ];

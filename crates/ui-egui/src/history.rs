@@ -75,8 +75,8 @@ pub const MAX_EXTRACT_ITEMS: usize = 12;
 /// [`MAX_EXTRACT_ITEMS`], a batch-fanned result's media counted one by one), labelled for the menu.
 pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
     let mut targets = Vec::new();
-    // Only what a source node can hold (text, image, video, audio).
-    let extractable = |port: &nodecraft_graph::Port| !matches!(port.port_type.modality, Modality::Mesh | Modality::Document);
+    // Only what a source node can hold (text, image, video, audio, 3D).
+    let extractable = |port: &nodecraft_graph::Port| port.port_type.modality != Modality::Document;
     for (port, value) in node.outputs.iter().zip(&generation.outputs).filter(|(port, _)| extractable(port)) {
         match value {
             Value::List(items) => {
@@ -272,9 +272,9 @@ mod tests {
         assert_eq!(targets.len(), 1 + MAX_EXTRACT_ITEMS);
         assert_eq!(targets[0], ("caption".into(), Some("caption".into()), None));
         assert_eq!(targets[1], ("takes: item 1 of 20".into(), Some("takes".into()), Some(0)));
-        node.outputs.push(Port { name: "mesh".into(), port_type: PortType { modality: Modality::Mesh, many: false } });
+        node.outputs.push(Port { name: "report".into(), port_type: PortType { modality: Modality::Document, many: false } });
         let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), Value::List(vec![]), Value::Text("m".into())]));
-        assert_eq!(targets.len(), 1, "an empty list and a mesh output offer nothing");
+        assert_eq!(targets.len(), 1, "an empty list and a document output offer nothing");
         // A batch-fanned result offers its values one by one, not each item's list (#519).
         let texts = |t: &[&str]| t.iter().map(|t| Value::Text((*t).into())).collect::<Vec<_>>();
         let fanned = Value::List(vec![Value::List(texts(&["a", "b"])), Value::List(texts(&["c"]))]);
