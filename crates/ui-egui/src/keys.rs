@@ -24,7 +24,7 @@ use crate::theme::Tokens;
 pub const KEYCHAIN_TIMEOUT_S: f64 = 120.0;
 
 /// Common providers, offered as quick picks.
-const PRESETS: &[&str] = &["openai", "anthropic", "openrouter", "fal", "replicate", "seedream", "tripo", "meshy"];
+const PRESETS: &[&str] = &["openai", "anthropic", "openrouter", "fal", "replicate", "seedream", "tripo", "meshy", "higgsfield"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStatus {

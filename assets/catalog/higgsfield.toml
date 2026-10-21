@@ -1,0 +1,75 @@
+# Higgsfield platform API (https://docs.higgsfield.ai) checked 2026-10-21. Higgsfield bills in
+# credits whose price depends on the account's plan, so the catalog carries no price; the adapter
+# can ask Higgsfield for an estimate of the exact request it will send.
+
+[[model]]
+id="higgsfield.soul-2"
+provider="higgsfield"
+provider_model="higgsfield-ai/soul/v2/standard"
+label="Higgsfield SOUL 2"
+description="Photographic images from a prompt, one or four at a time. Billed in Higgsfield credits; price unknown before execution."
+latency_s=40
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="1:1",label="1:1"},{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="4:3",label="4:3"},{value="3:4",label="3:4"},{value="3:2",label="3:2"},{value="2:3",label="2:3"}]}
+default={type="text",value="1:1"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model.params.params]]
+name="batch_size"
+label="Images"
+control={type="choice",options=[{value="1",label="1"},{value="4",label="4"}]}
+default={type="text",value="1"}
+
+[[model.params.params]]
+name="enhance_prompt"
+label="Enhance prompt"
+control={type="toggle"}
+default={type="bool",value=false}
+
+# An unsigned control, not a run seed: run seeds may draw 0, which SOUL refuses.
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="1",max="1000000",step="1"}
+
+[[model]]
+id="higgsfield.kling-2.5-turbo-i2v"
+provider="higgsfield"
+provider_model="kling-video/v2.5-turbo/pro/image-to-video"
+label="Kling 2.5 Turbo Pro image to video (Higgsfield)"
+description="Animates one image, PNG, JPEG or WebP up to 20 MiB, into a 5 or 10 second clip. Billed in Higgsfield credits; price unknown before execution."
+latency_s=120
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="duration"
+label="Duration"
+control={type="choice",options=[{value="5",label="5 s"},{value="10",label="10 s"}]}
+default={type="text",value="5"}
+
+[[model.params.params]]
+name="cfg_scale"
+label="Prompt adherence"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
