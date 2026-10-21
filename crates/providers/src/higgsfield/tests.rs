@@ -623,6 +623,13 @@ fn a_soul_id_is_confirmed_ready_on_the_account_before_the_paid_submit() {
     block_on(higgsfield.submit(&job)).unwrap();
     let urls: Vec<String> = t.requests().iter().skip(2).map(|r| r.url.clone()).collect();
     assert_eq!(urls.iter().filter(|u| u.contains("custom-references")).count(), 1, "{urls:?}");
+    // The check reads only what a run needs: a ready identity whose name the list wouldn't show
+    // still runs, and a pasted id may carry spaces.
+    for name in [json!("x".repeat(101)), json!("Line\nbreak"), json!(""), Value::Null] {
+        let t = Transport::new(vec![ok(json!({"id": SOUL_ID, "name": name, "model_version": "v2", "status": "completed"})), receipt()]);
+        block_on(adapter(&t).submit(&soul(json!({"custom_reference_id": format!(" {SOUL_ID} ")})))).unwrap();
+        assert_eq!(body(&t.requests()[1])["custom_reference_id"], json!(SOUL_ID));
+    }
 }
 
 #[test]
@@ -647,7 +654,7 @@ fn a_soul_id_that_is_not_ready_here_is_refused_before_anything_is_paid() {
         (ok(reference("v2", "in_progress")), "still training"),
         (ok(reference("v2", "queued")), "still training"),
         (ok(reference("v2", "not_ready")), "still training"),
-        (ok(reference("v2", "something_new")), "still training"),
+        (ok(reference("v2", "archived")), "Higgsfield reports it as archived"),
         (ok(json!({"id": SOUL_ID, "name": "Mara", "model_version": "v2", "status": "failed", "fail_reason": "faces differ"})), "failed: faces differ"),
         (ok(reference("v2", "failed")), "training failed"),
         (ok(reference("v1", "completed")), "another SOUL version"),
@@ -686,13 +693,12 @@ fn the_soul_id_list_keeps_ready_soul_2_identities_across_pages() {
     first[5] = json!({"id": "not-a-uuid", "name": "Broken", "model_version": "v2", "status": "completed"});
     first[6] = entry("22222222-2222-4333-8444-555555555555", &format!("leaks {SECRET}"), "v2", "completed");
     let second = vec![entry(SOUL_ID, "Mara again", "v2", "completed"), entry("33333333-2222-4333-8444-555555555555", "Jun", "v2", "completed")];
-    let t = Transport::new(vec![ok(json!({"items": first})), ok(Value::Array(second))]);
+    // A short page isn't taken for the last: only an empty one ends the list.
+    let t = Transport::new(vec![ok(json!({"items": first})), ok(Value::Array(second)), ok(json!({"items": []}))]);
     let ids = block_on(adapter(&t).soul_ids()).unwrap();
     let urls: Vec<String> = t.requests().iter().map(|r| r.url.clone()).collect();
-    assert_eq!(
-        urls,
-        ["https://api.higgsfield.ai/v1/custom-references/list?page=1&page_size=50", "https://api.higgsfield.ai/v1/custom-references/list?page=2&page_size=50"]
-    );
+    let page = |n: usize| format!("https://api.higgsfield.ai/v1/custom-references/list?page={n}&page_size=50");
+    assert_eq!(urls, [page(1), page(2), page(3)]);
     let names: Vec<(&str, &str)> = ids.ids.iter().map(|s| (s.id.as_str(), s.name.as_str())).collect();
     assert_eq!(names, [(SOUL_ID, "Mara"), ("33333333-2222-4333-8444-555555555555", "Jun")]);
     assert_eq!(ids.skipped, 2);
@@ -702,8 +708,11 @@ fn the_soul_id_list_keeps_ready_soul_2_identities_across_pages() {
         let t = Transport::new(replies);
         no_secret(&block_on(adapter(&t).soul_ids()).unwrap_err());
     }
+    // Exactly 1,000 is listed in full; one more past the cap is refused.
     let full = || ok(Value::Array(vec![json!({}); 50]));
-    let t = Transport::new((0..20).map(|_| full()).collect());
+    let t = Transport::new((0..20).map(|_| full()).chain([ok(Value::Array(vec![]))]).collect());
+    assert_eq!(block_on(adapter(&t).soul_ids()).unwrap().skipped, 1000);
+    let t = Transport::new((0..21).map(|_| full()).collect());
     assert!(block_on(adapter(&t).soul_ids()).unwrap_err().message.contains("more Soul IDs"));
-    assert_eq!(t.requests().len(), 20);
+    assert_eq!(t.requests().len(), 21);
 }

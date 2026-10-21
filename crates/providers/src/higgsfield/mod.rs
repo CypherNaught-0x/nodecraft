@@ -149,6 +149,8 @@ enum Training {
     Completed,
     /// With Higgsfield's reason, when it gave one.
     Failed(Option<String>),
+    /// A state Higgsfield doesn't document, as it said it.
+    Unknown(String),
 }
 
 /// A Soul ID as `GET /v1/custom-references/{id}` reports it.
@@ -316,24 +318,30 @@ impl Higgsfield {
             Training::Pending => Err(invalid("this Soul ID is still training; run again once Higgsfield finishes it. Nothing was billed")),
             Training::Failed(Some(reason)) => Err(invalid(format!("this Soul ID's training failed: {reason}. Nothing was billed"))),
             Training::Failed(None) => Err(invalid("this Soul ID's training failed. Nothing was billed")),
+            Training::Unknown(status) => Err(invalid(format!("this Soul ID isn't ready: Higgsfield reports it as {status}. Nothing was billed"))),
         }
     }
     /// The account's ready SOUL 2 Soul IDs. Free, and sends nothing but the key.
     pub async fn soul_ids(&self) -> Result<SoulIds, ProviderError> {
         let mut out = SoulIds::default();
         let mut seen = std::collections::BTreeSet::new();
-        for page in 1..=SOUL_PAGES {
+        // Only an empty page ends the list: Higgsfield doesn't document its page size, so a
+        // short page may still have more after it. One page past the cap probes for more.
+        for page in 1..=SOUL_PAGES.saturating_add(1) {
             let list = HttpRequest::get(format!("{API}/v1/custom-references/list?page={page}&page_size={SOUL_PAGE}")).timeout_ms(30_000);
             let reply = self.send(list, false, None).await?;
             let (ready, entries, skipped) = response::soul_page(&reply.body, SOUL_PAGE, |s| self.leaks(s))?;
+            if entries == 0 {
+                return Ok(out);
+            }
+            if page > SOUL_PAGES {
+                break;
+            }
             out.skipped = out.skipped.saturating_add(skipped);
             for soul in ready {
                 if seen.insert(soul.id.clone()) {
                     out.ids.push(soul);
                 }
-            }
-            if entries < SOUL_PAGE {
-                return Ok(out);
             }
         }
         Err(malformed("this Higgsfield account has more Soul IDs than NodeCraft lists"))

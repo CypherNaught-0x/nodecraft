@@ -671,7 +671,7 @@ anything is uploaded or paid, and a preset the latest list doesn't have is repor
 optional **Soul ID** field (`custom_reference_id`) names one, and **Soul ID strength**
 (`custom_reference_strength`, 0 to 1, default 1) is sent only with one. **Refresh option lists**
 fetches the account's ready ones as the `higgsfield.soul_ids` list, valued by id and labelled by
-name, from `GET /v1/custom-references/list` (free; up to 20 pages of 50). Higgsfield documents the
+name, from `GET /v1/custom-references/list` (free; pages of 50 until an empty one, at most 20). Higgsfield documents the
 reference object (`id`, `name`, `model_version`, `status`) but not the list's reply, so a page must
 be a list of those objects, bare or under `items`; any other shape, and an account past 1,000, is
 refused rather than listed in part. Only `model_version: "v2"` entries whose `status` is

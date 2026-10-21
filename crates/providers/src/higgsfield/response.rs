@@ -251,21 +251,27 @@ pub(super) fn presets(body: &[u8], leaks: impl Fn(&str) -> bool) -> Result<Prese
 /// A Soul ID's fields as Higgsfield documents its reference object; `None` for one that doesn't
 /// read as one.
 fn reference_fields<'a>(item: &'a Value, leaks: &impl Fn(&str) -> bool) -> Option<(String, &'a str, &'a str, &'a str)> {
-    let id = item.get("id").and_then(Value::as_str).filter(|id| request::uuid(id))?.to_ascii_lowercase();
+    let (id, version, status) = reference_state(item)?;
     let name = item
         .get("name")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|n| !n.is_empty() && n.chars().count() <= 100 && !n.chars().any(char::is_control) && !leaks(n))?;
+    Some((id, name, version, status))
+}
+/// A reference object's id, SOUL version and training status, which a run needs; its name is
+/// only for the list.
+fn reference_state(item: &Value) -> Option<(String, &str, &str)> {
+    let id = item.get("id").and_then(Value::as_str).filter(|id| request::uuid(id))?.to_ascii_lowercase();
     let version = item.get("model_version").and_then(Value::as_str).filter(|v| v.len() <= 32)?;
     let status = item.get("status").and_then(Value::as_str).filter(|s| s.len() <= 32)?;
-    Some((id, name, version, status))
+    Some((id, version, status))
 }
 /// One Soul ID, read with `GET /v1/custom-references/{id}`: what SOUL version it was trained
 /// for, and where its training stands.
 pub(super) fn reference(body: &[u8], id: &str, leaks: impl Fn(&str) -> bool) -> Result<Reference, ProviderError> {
     let v = json(body)?;
-    let (got, _, version, status) = reference_fields(&v, &leaks).ok_or_else(|| malformed("Higgsfield's Soul ID reply isn't the documented reference"))?;
+    let (got, version, status) = reference_state(&v).ok_or_else(|| malformed("Higgsfield's Soul ID reply isn't the documented reference"))?;
     if got != id.to_ascii_lowercase() {
         return Err(malformed("Higgsfield answered for a different Soul ID"));
     }
@@ -274,7 +280,7 @@ pub(super) fn reference(body: &[u8], id: &str, leaks: impl Fn(&str) -> bool) -> 
         "not_ready" | "queued" | "in_progress" => Training::Pending,
         "failed" => Training::Failed(v.get("fail_reason").and_then(Value::as_str).filter(|r| !r.trim().is_empty()).map(|r| said(r, &leaks))),
         // An undocumented state is never taken for ready.
-        _ => Training::Pending,
+        other => Training::Unknown(said(other, &leaks)),
     };
     Ok(Reference { v2: version == "v2", training })
 }

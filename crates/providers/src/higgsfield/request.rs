@@ -71,6 +71,7 @@ fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(u64, Opti
             "custom_reference_id" => {
                 let id = value
                     .as_str()
+                    .map(str::trim)
                     .filter(|id| uuid(id))
                     .ok_or_else(|| invalid("a Higgsfield Soul ID is the UUID Higgsfield issued; Refresh option lists fetches this account's"))?;
                 reference = Some(id.to_ascii_lowercase());

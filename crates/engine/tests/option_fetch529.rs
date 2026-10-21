@@ -304,6 +304,8 @@ impl Http for Souls {
                 {"name": "Broken"},
             ]});
             Ok(HttpResponse { status: 200, headers: vec![], body: serde_json::to_vec(&body).unwrap() })
+        } else if request.url == "https://api.higgsfield.ai/v1/custom-references/list?page=2&page_size=50" {
+            Ok(HttpResponse { status: 200, headers: vec![], body: b"[]".to_vec() })
         } else {
             Err(ProviderError::new(WireKind::Network, "connection refused"))
         };
@@ -321,7 +323,8 @@ fn soul_ids_are_listed_by_name_for_soul_2_even_when_the_presets_fail() {
     let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
     let sources = ["higgsfield.restyle_presets".to_owned(), "higgsfield.soul_ids".to_owned()];
     let fetched = block_on(option_fetch::fetch(&env, &sources));
-    assert_eq!(http.0.lock().unwrap().len(), 2);
+    // The presets, then Soul ID pages until an empty one.
+    assert_eq!(http.0.lock().unwrap().len(), 3);
     let (mut session, _) = session();
     let report = option_fetch::finish(&mut session, 1, fetched);
     assert_eq!(report.error, None);
