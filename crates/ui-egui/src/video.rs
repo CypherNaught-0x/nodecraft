@@ -114,6 +114,8 @@ mod native {
 
     /// Videos read from the project at once; each may hold up to `media`'s 256 MiB input cap.
     const MAX_READS: usize = 1;
+    /// `media`'s cap on one video's bytes; a bigger one is refused for good.
+    const MAX_INPUT: usize = 256 * 1024 * 1024;
     /// Imports the service works on at once.
     const MAX_IMPORTS: usize = 2;
     /// Staged video bytes kept imported; the least recently shown go first past this. Below the
@@ -121,12 +123,23 @@ mod native {
     const MAX_STAGED_BYTES: u64 = 768 * 1024 * 1024;
     /// Frames (posters and players) being made at once; the service has two workers.
     const MAX_FRAME_JOBS: usize = 4;
-    /// Posters kept as textures; the least recently shown go first past this.
+    /// Posters kept; the least recently shown go first past this.
     const MAX_POSTERS: usize = 64;
     /// How often to look for finished work while some is outstanding (jobs don't wake the UI).
     const POLL: std::time::Duration = std::time::Duration::from_millis(30);
+    /// How often to look again while only waiting to retry.
+    const LATER: std::time::Duration = std::time::Duration::from_secs(1);
     /// Frame spacing assumed when a video doesn't say its rate (24 fps).
     const DEFAULT_STEP_US: u64 = 41_667;
+    /// Tries for work that failed for now (the service was full, busy or slow), and seconds
+    /// before the first retry; each later one waits a second longer.
+    const MAX_TRIES: u8 = 5;
+    const RETRY_S: f64 = 1.0;
+    /// Times a player finds no frame where the video says there is one before it settles on
+    /// the last it showed.
+    const MAX_MISSES: u8 = 5;
+    /// Frames a card can be off screen before its player lets its texture go.
+    const OFFSCREEN_FRAMES: u64 = 600;
 
     enum Service {
         Off,
@@ -140,9 +153,16 @@ mod native {
             done: Receiver<Result<Arc<[u8]>, &'static str>>,
             cancel: TransferCancel,
         },
-        /// Read, waiting for the service to take it.
-        Read(Arc<[u8]>),
-        Importing(VideoJob<VideoAsset>),
+        /// Read, waiting for the service to take it (again, after `retry`).
+        Read {
+            bytes: Arc<[u8]>,
+            retry: Option<Retry>,
+        },
+        Importing {
+            job: VideoJob<VideoAsset>,
+            bytes: Arc<[u8]>,
+            retry: Option<Retry>,
+        },
         Ready(VideoAsset),
         Failed(&'static str),
     }
@@ -162,9 +182,22 @@ mod native {
     }
 
     enum Poster {
-        Making(VideoJob<VideoFrame>),
-        Ready { texture: TextureHandle, size: [u32; 2], used: u64 },
+        Making {
+            job: VideoJob<VideoFrame>,
+            retry: Option<Retry>,
+        },
+        Ready {
+            texture: TextureHandle,
+            size: [u32; 2],
+        },
+        /// Failed for now; tried again when due.
+        Waiting(Retry),
         Failed,
+    }
+
+    struct PosterEntry {
+        state: Poster,
+        used: u64,
     }
 
     struct Shown {
@@ -186,7 +219,69 @@ mod native {
         /// The bounding box frames are asked for at.
         edge: u32,
         seen: u64,
+        /// Where the video turned out to have no more frames, and how often that happened.
+        end: Option<u64>,
+        misses: u8,
+        retry: Option<Retry>,
         error: Option<&'static str>,
+    }
+
+    impl Player {
+        fn new(hash: Blake3, edge: u32, seen: u64) -> Self {
+            Self { hash, playing: false, position_us: 0, anchor: (0.0, 0), job: None, shown: None, edge, seen, end: None, misses: 0, retry: None, error: None }
+        }
+    }
+
+    /// When to try failed work again.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(super) struct Retry {
+        at: f64,
+        tries: u8,
+    }
+
+    impl Retry {
+        /// After `error` at `now`, following `previous` tries: when to try again, or `None` to
+        /// give up (the error won't pass, or it has been tried enough).
+        pub(super) fn after(previous: Option<Retry>, error: VideoError, now: f64) -> Option<Retry> {
+            let tries = previous.map_or(0, |r| r.tries).saturating_add(1);
+            (transient(error) && tries < MAX_TRIES).then(|| Retry { at: now + RETRY_S * f64::from(tries), tries })
+        }
+
+        pub(super) fn due(self, now: f64) -> bool {
+            now >= self.at
+        }
+    }
+
+    /// Whether `error` may pass when tried again later.
+    pub(super) fn transient(error: VideoError) -> bool {
+        matches!(error, VideoError::Limit | VideoError::Busy | VideoError::Timeout | VideoError::Io | VideoError::Cancelled)
+    }
+
+    /// Neither shown this frame nor the last, so it can go.
+    pub(super) fn stale(used: u64, clock: u64) -> bool {
+        clock.wrapping_sub(used) > 1
+    }
+
+    /// The frame time to ask for at `position_us`: the start of its frame, and no later than
+    /// the last frame, which starts a step before the end (or before `end`, where the video
+    /// turned out to have none). `None` when there's no frame at all.
+    pub(super) fn wanted_us(position_us: u64, duration_us: u64, step_us: u64, end: Option<u64>) -> Option<u64> {
+        let step = step_us.max(1);
+        let limit = end.map_or(duration_us, |end| end.min(duration_us));
+        if end.is_some_and(|end| end == 0) {
+            return None;
+        }
+        let last = limit.saturating_sub(step);
+        Some(position_us.min(last) / step * step)
+    }
+
+    /// What's still outstanding after a poll.
+    #[derive(Default)]
+    struct Wake {
+        /// Work that finishes on its own: look again shortly.
+        soon: bool,
+        /// Only retries: look again in a while.
+        later: bool,
     }
 
     /// Video sources, posters and players. One per app.
@@ -194,7 +289,7 @@ mod native {
         service: Service,
         tools: Option<(std::path::PathBuf, std::path::PathBuf)>,
         sources: HashMap<Blake3, SourceEntry>,
-        posters: HashMap<(Blake3, u32), Poster>,
+        posters: HashMap<(Blake3, u32), PosterEntry>,
         players: HashMap<NodeId, Player>,
         clock: u64,
         now: f64,
@@ -253,7 +348,7 @@ mod native {
         }
 
         fn frame_jobs(&self) -> usize {
-            let posters = self.posters.values().filter(|p| matches!(p, Poster::Making(_))).count();
+            let posters = self.posters.values().filter(|p| matches!(p.state, Poster::Making { .. })).count();
             posters.saturating_add(self.players.values().filter(|p| p.job.is_some()).count())
         }
 
@@ -261,195 +356,246 @@ mod native {
         pub fn poll(&mut self, ctx: &egui::Context) {
             self.clock = self.clock.wrapping_add(1);
             self.now = ctx.input(|i| i.time);
-            let mut waiting = false;
+            let mut wake = Wake::default();
             if let Service::Opening(opening) = &mut self.service {
-                match opening.try_result() {
-                    Ok(Some(service)) => self.service = Service::Ready(service),
-                    Ok(None) => waiting = true,
-                    Err(VideoError::Unavailable | VideoError::Unsupported | VideoError::Process) => {
-                        self.service = Service::Failed("The ffmpeg or ffprobe in [media] settings can't play videos")
+                let failed = match opening.try_result() {
+                    Ok(Some(service)) => {
+                        self.service = Service::Ready(service);
+                        None
                     }
-                    Err(error) => self.service = Service::Failed(message(error)),
+                    Ok(None) => {
+                        wake.soon = true;
+                        None
+                    }
+                    Err(VideoError::Unavailable | VideoError::Unsupported | VideoError::Process) => {
+                        Some("The ffmpeg or ffprobe in [media] settings can't play videos")
+                    }
+                    Err(error) => Some(message(error)),
+                };
+                if let Some(why) = failed {
+                    // Nothing can be imported now: let the read videos go.
+                    self.service = Service::Failed(why);
+                    self.sources.clear();
                 }
             }
-            waiting |= self.poll_sources();
-            waiting |= self.poll_posters(ctx);
-            waiting |= self.poll_players(ctx);
-            if waiting {
+            self.poll_sources(&mut wake);
+            self.poll_posters(ctx, &mut wake);
+            self.poll_players(ctx, &mut wake);
+            if wake.soon {
                 ctx.request_repaint_after(POLL);
+            } else if wake.later {
+                ctx.request_repaint_after(LATER);
             }
         }
 
-        fn poll_sources(&mut self) -> bool {
-            let mut waiting = false;
+        fn poll_sources(&mut self, wake: &mut Wake) {
+            let now = self.now;
             let mut refused = None;
-            let mut imports = self.sources.values().filter(|s| matches!(s.state, Source::Importing(_))).count();
+            let mut imports = self.sources.values().filter(|s| matches!(s.state, Source::Importing { .. })).count();
             for (hash, entry) in &mut self.sources {
                 let next = match &mut entry.state {
-                    Source::Reading { done, .. } => match done.try_recv() {
-                        Ok(Ok(bytes)) => Some(Source::Read(bytes)),
-                        Ok(Err(why)) => Some(Source::Failed(why)),
-                        Err(TryRecvError::Empty) => None,
-                        Err(TryRecvError::Disconnected) => Some(Source::Failed("This video can't be read")),
-                    },
-                    Source::Read(bytes) if imports < MAX_IMPORTS => {
+                    Source::Reading { done, .. } => {
+                        wake.soon = true;
+                        match done.try_recv() {
+                            Ok(Ok(bytes)) => Some(Source::Read { bytes, retry: None }),
+                            Ok(Err(why)) => Some(Source::Failed(why)),
+                            Err(TryRecvError::Empty) => None,
+                            Err(TryRecvError::Disconnected) => Some(Source::Failed("This video can't be read")),
+                        }
+                    }
+                    Source::Read { retry: Some(retry), .. } if !retry.due(now) => {
+                        wake.later = true;
+                        None
+                    }
+                    Source::Read { bytes, .. } if bytes.len() > MAX_INPUT => Some(Source::Failed(message(VideoError::Limit))),
+                    Source::Read { bytes, retry } => {
+                        wake.soon = true;
                         let Service::Ready(service) = &self.service else {
-                            waiting = true;
                             continue;
                         };
+                        if imports >= MAX_IMPORTS {
+                            continue;
+                        }
                         match service.import(Arc::clone(bytes), ColorPolicy::default()) {
                             Ok(job) => {
                                 imports = imports.saturating_add(1);
-                                Some(Source::Importing(job))
+                                Some(Source::Importing { job, bytes: Arc::clone(bytes), retry: *retry })
                             }
                             // Kept read; tried again on a later frame.
                             Err((VideoError::Busy, _)) => None,
-                            Err((VideoError::Limit, _)) => {
-                                refused = Some(*hash);
-                                None
+                            Err((error, _)) => {
+                                if error == VideoError::Limit {
+                                    refused = Some(*hash);
+                                }
+                                Some(match Retry::after(*retry, error, now) {
+                                    Some(retry) => Source::Read { bytes: Arc::clone(bytes), retry: Some(retry) },
+                                    None => Source::Failed(message(error)),
+                                })
                             }
-                            Err((error, _)) => Some(Source::Failed(message(error))),
                         }
                     }
-                    Source::Importing(job) => match job.try_result() {
+                    Source::Importing { job, bytes, retry } => match job.try_result() {
                         Ok(Some(asset)) => {
                             imports = imports.saturating_sub(1);
                             Some(Source::Ready(asset))
                         }
-                        Ok(None) => None,
+                        Ok(None) => {
+                            wake.soon = true;
+                            None
+                        }
                         Err(error) => {
                             imports = imports.saturating_sub(1);
-                            Some(Source::Failed(message(error)))
+                            if error == VideoError::Limit {
+                                refused = Some(*hash);
+                            }
+                            Some(match Retry::after(*retry, error, now) {
+                                Some(retry) => Source::Read { bytes: Arc::clone(bytes), retry: Some(retry) },
+                                None => Source::Failed(message(error)),
+                            })
                         }
                     },
-                    Source::Read(_) | Source::Ready(_) | Source::Failed(_) => None,
+                    Source::Ready(_) | Source::Failed(_) => None,
                 };
-                waiting |= matches!(entry.state, Source::Reading { .. } | Source::Read(_) | Source::Importing(_));
                 if let Some(next) = next {
                     entry.state = next;
                 }
             }
-            // The service is full: let the least recently shown imported video go, or give up on
-            // this one if nothing else can.
-            if let Some(hash) = refused
-                && !self.evict_source(Some(hash))
-                && let Some(entry) = self.sources.get_mut(&hash)
-            {
-                entry.state = Source::Failed(message(VideoError::Limit));
+            // The service is full: make room by letting the least recently shown imported video
+            // go, if there's one that isn't on screen.
+            if let Some(hash) = refused {
+                self.evict_source(Some(hash));
             }
-            waiting
+            // A video that failed is read again once it's back on screen after a while.
+            let clock = self.clock;
+            self.sources.retain(|_, entry| !matches!(entry.state, Source::Failed(_)) || clock.wrapping_sub(entry.used) <= OFFSCREEN_FRAMES);
         }
 
-        /// Drops the least recently shown imported video other than `keep` and not shown this
-        /// frame; `false` when there's none.
+        /// Drops the least recently shown imported video other than `keep` and not on screen;
+        /// `false` when there's none.
         fn evict_source(&mut self, keep: Option<Blake3>) -> bool {
+            let clock = self.clock;
             let oldest = self
                 .sources
                 .iter()
-                .filter(|(hash, entry)| Some(**hash) != keep && entry.used != self.clock && matches!(entry.state, Source::Ready(_) | Source::Failed(_)))
+                .filter(|(hash, entry)| Some(**hash) != keep && stale(entry.used, clock) && matches!(entry.state, Source::Ready(_) | Source::Failed(_)))
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(hash, _)| *hash);
             oldest.is_some_and(|hash| self.sources.remove(&hash).is_some())
         }
 
-        fn poll_posters(&mut self, ctx: &egui::Context) -> bool {
-            let mut waiting = false;
-            for ((hash, edge), poster) in &mut self.posters {
-                let Poster::Making(job) = poster else {
-                    continue;
-                };
-                match job.try_result() {
-                    Ok(Some(frame)) => {
-                        *poster = match texture_image(&frame) {
-                            Some(image) => {
-                                let texture = ctx.load_texture(format!("video-poster-{hash:?}-{edge}"), image, TextureOptions::LINEAR);
-                                Poster::Ready { texture, size: [frame.width, frame.height], used: self.clock }
+        fn poll_posters(&mut self, ctx: &egui::Context, wake: &mut Wake) {
+            let now = self.now;
+            for ((hash, edge), entry) in &mut self.posters {
+                match &mut entry.state {
+                    Poster::Making { job, retry } => match job.try_result() {
+                        Ok(Some(frame)) => {
+                            entry.state = match texture_image(&frame) {
+                                Some(image) => {
+                                    let texture = ctx.load_texture(format!("video-poster-{hash:?}-{edge}"), image, TextureOptions::LINEAR);
+                                    Poster::Ready { texture, size: [frame.width, frame.height] }
+                                }
+                                None => Poster::Failed,
                             }
-                            None => Poster::Failed,
                         }
-                    }
-                    Ok(None) => waiting = true,
-                    Err(_) => *poster = Poster::Failed,
+                        Ok(None) => wake.soon = true,
+                        Err(error) => entry.state = Retry::after(*retry, error, now).map_or(Poster::Failed, Poster::Waiting),
+                    },
+                    Poster::Waiting(_) => wake.later = true,
+                    Poster::Ready { .. } | Poster::Failed => {}
                 }
             }
+            let clock = self.clock;
             while self.posters.len() > MAX_POSTERS {
                 let oldest = self
                     .posters
                     .iter()
-                    .filter_map(|(key, poster)| match poster {
-                        Poster::Ready { used, .. } if *used != self.clock => Some((*used, *key)),
-                        _ => None,
-                    })
-                    .min();
-                let Some((_, key)) = oldest else {
+                    .filter(|(_, entry)| stale(entry.used, clock) && !matches!(entry.state, Poster::Making { .. }))
+                    .min_by_key(|(_, entry)| entry.used)
+                    .map(|(key, _)| *key);
+                let Some(key) = oldest else {
                     break;
                 };
                 self.posters.remove(&key);
             }
-            waiting
         }
 
-        fn poll_players(&mut self, ctx: &egui::Context) -> bool {
-            let mut waiting = false;
+        fn poll_players(&mut self, ctx: &egui::Context, wake: &mut Wake) {
             let mut jobs = self.frame_jobs();
             let now = self.now;
-            let seen = self.clock.wrapping_sub(1);
+            let clock = self.clock;
+            let seen = clock.wrapping_sub(1);
             for (id, player) in &mut self.players {
                 let asset = match self.sources.get(&player.hash).map(|entry| &entry.state) {
                     Some(Source::Ready(asset)) => Some(asset),
                     _ => None,
                 };
                 let duration = asset.map_or(0, |asset| asset.metadata().duration_us);
+                let step = asset.map_or(DEFAULT_STEP_US, step_us);
+                let on_screen = player.seen == seen;
                 if player.playing {
                     let elapsed = (now - player.anchor.0).max(0.0) * 1_000_000.0;
                     let elapsed = if elapsed.is_finite() { elapsed.min(u64::MAX as f64) as u64 } else { 0 };
                     player.position_us = player.anchor.1.saturating_add(elapsed).min(duration);
-                    waiting = true;
+                    // Off screen it plays on by the clock, with nothing to draw until it's back.
+                    wake.soon |= on_screen;
                 }
                 if let Some((time, job)) = &mut player.job {
-                    match job.try_result() {
+                    let time = *time;
+                    let done = match job.try_result() {
                         Ok(Some(frame)) => {
-                            if let Some(image) = texture_image(&frame) {
-                                let size = [frame.width, frame.height];
-                                match &mut player.shown {
-                                    Some(shown) => {
-                                        shown.texture.set(image, TextureOptions::LINEAR);
-                                        shown.size = size;
-                                        shown.time_us = *time;
+                            match texture_image(&frame) {
+                                Some(image) => {
+                                    let size = [frame.width, frame.height];
+                                    match &mut player.shown {
+                                        Some(shown) => {
+                                            shown.texture.set(image, TextureOptions::LINEAR);
+                                            shown.size = size;
+                                            shown.time_us = time;
+                                        }
+                                        None => {
+                                            let texture = ctx.load_texture(format!("video-player-{id:?}"), image, TextureOptions::LINEAR);
+                                            player.shown = Some(Shown { texture, size, time_us: time });
+                                        }
                                     }
-                                    None => {
-                                        let texture = ctx.load_texture(format!("video-player-{id:?}"), image, TextureOptions::LINEAR);
-                                        player.shown = Some(Shown { texture, size, time_us: *time });
-                                    }
+                                    player.retry = None;
                                 }
+                                None => player.error = Some(message(VideoError::Invalid)),
                             }
-                            player.job = None;
-                            jobs = jobs.saturating_sub(1);
+                            true
                         }
-                        Ok(None) => waiting = true,
-                        // Past the last frame: playback ends there.
+                        Ok(None) => {
+                            wake.soon = true;
+                            false
+                        }
+                        // No frame there, though the video's length says there should be (its
+                        // video ends before its audio, say): its frames end there. After a few
+                        // misses, at the last frame shown, rather than looking further back.
                         Err(VideoError::NoFrame) => {
-                            if player.playing {
-                                player.playing = false;
-                                player.position_us = duration;
-                            }
-                            player.job = None;
-                            jobs = jobs.saturating_sub(1);
-                        }
-                        Err(VideoError::Busy | VideoError::Cancelled) => {
-                            player.job = None;
-                            jobs = jobs.saturating_sub(1);
+                            player.misses = player.misses.saturating_add(1);
+                            let end =
+                                if player.misses >= MAX_MISSES { player.shown.as_ref().map_or(0, |s| s.time_us.saturating_add(step)).min(time) } else { time };
+                            player.end = Some(player.end.map_or(end, |known| known.min(end)));
+                            true
                         }
                         Err(error) => {
-                            player.error = Some(message(error));
-                            player.playing = false;
-                            player.job = None;
-                            jobs = jobs.saturating_sub(1);
+                            player.retry = Retry::after(player.retry, error, now);
+                            if player.retry.is_none() {
+                                player.error = Some(message(error));
+                                player.playing = false;
+                            }
+                            true
                         }
+                    };
+                    if done {
+                        player.job = None;
+                        jobs = jobs.saturating_sub(1);
                     }
                 }
                 if player.playing && player.position_us >= duration {
                     player.playing = false;
+                }
+                if player.job.is_none() && clock.wrapping_sub(player.seen) > OFFSCREEN_FRAMES {
+                    player.shown = None;
                 }
                 // Only cards on screen ask for frames.
                 let (Some(asset), Some(service)) = (
@@ -461,13 +607,18 @@ mod native {
                 ) else {
                     continue;
                 };
-                if player.job.is_some() || player.seen != seen || player.error.is_some() || jobs >= MAX_FRAME_JOBS {
+                if player.job.is_some() || !on_screen || player.error.is_some() || jobs >= MAX_FRAME_JOBS {
                     continue;
                 }
-                let step = step_us(asset);
-                // The last frame starts a step before the end; a request at the end has none.
-                let last = duration.saturating_sub(step);
-                let wanted = (player.position_us.min(last) / step).saturating_mul(step);
+                if let Some(retry) = player.retry
+                    && !retry.due(now)
+                {
+                    wake.later = true;
+                    continue;
+                }
+                let Some(wanted) = wanted_us(player.position_us, duration, step, player.end) else {
+                    continue;
+                };
                 let shown = player.shown.as_ref().map(|s| s.time_us);
                 // Paused at the start with nothing of its own yet: the poster will do.
                 if shown == Some(wanted) || (shown.is_none() && wanted == 0 && !player.playing) {
@@ -478,13 +629,18 @@ mod native {
                     Ok(job) => {
                         player.job = Some((wanted, job));
                         jobs = jobs.saturating_add(1);
-                        waiting = true;
+                        wake.soon = true;
                     }
-                    Err(VideoError::Busy) => waiting = true,
-                    Err(error) => player.error = Some(message(error)),
+                    Err(VideoError::Busy) => wake.soon = true,
+                    Err(error) => {
+                        player.retry = Retry::after(player.retry, error, now);
+                        if player.retry.is_none() {
+                            player.error = Some(message(error));
+                        }
+                        wake.later = true;
+                    }
                 }
             }
-            waiting
         }
 
         /// What node `id`'s card shows for `asset`, at about `edge` pixels. `read` captures the
@@ -515,20 +671,10 @@ mod native {
             let hash = asset.hash;
             let edge = crate::preview::bucket(edge);
             let clock = self.clock;
-            let player = self.players.entry(id).or_insert_with(|| Player {
-                hash,
-                playing: false,
-                position_us: 0,
-                anchor: (0.0, 0),
-                job: None,
-                shown: None,
-                edge,
-                seen: clock,
-                error: None,
-            });
+            let player = self.players.entry(id).or_insert_with(|| Player::new(hash, edge, clock));
             if player.hash != hash {
                 // The card shows another video now (a new result): start again.
-                *player = Player { hash, playing: false, position_us: 0, anchor: (0.0, 0), job: None, shown: None, edge, seen: clock, error: None };
+                *player = Player::new(hash, edge, clock);
             }
             player.seen = clock;
             player.edge = edge;
@@ -546,7 +692,7 @@ mod native {
             let poster = self.poster(hash, edge);
             match shown.or(poster) {
                 Some((texture, size)) => VideoView::Frame { texture, size, position_us, duration_us, playing },
-                None if matches!(self.posters.get(&(hash, edge)), Some(Poster::Failed)) => VideoView::Unavailable("Can't play this video"),
+                None if matches!(self.posters.get(&(hash, edge)).map(|p| &p.state), Some(Poster::Failed)) => VideoView::Unavailable("Can't play this video"),
                 None => VideoView::Pending,
             }
         }
@@ -588,29 +734,35 @@ mod native {
 
         /// The first frame of video `hash` at `edge`, starting it when there's room.
         fn poster(&mut self, hash: Blake3, edge: u32) -> Option<(egui::TextureId, [u32; 2])> {
-            let clock = self.clock;
-            if let Some(Poster::Ready { texture, size, used }) = self.posters.get_mut(&(hash, edge)) {
-                *used = clock;
-                return Some((texture.id(), *size));
+            let (clock, now) = (self.clock, self.now);
+            if let Some(entry) = self.posters.get_mut(&(hash, edge)) {
+                entry.used = clock;
+                if let Poster::Ready { texture, size } = &entry.state {
+                    return Some((texture.id(), *size));
+                }
             }
-            if !self.posters.contains_key(&(hash, edge))
+            let start = match self.posters.get(&(hash, edge)).map(|p| &p.state) {
+                None => Some(None),
+                Some(Poster::Waiting(retry)) if retry.due(now) => Some(Some(*retry)),
+                _ => None,
+            };
+            if let Some(retry) = start
                 && self.frame_jobs() < MAX_FRAME_JOBS
                 && let (Some(service), Some(SourceEntry { state: Source::Ready(asset), .. })) = (self.service(), self.sources.get(&hash))
             {
-                match FrameRequest::new(0, edge, edge).and_then(|request| service.frame(asset, request)) {
-                    Ok(job) => {
-                        self.posters.insert((hash, edge), Poster::Making(job));
-                    }
-                    Err(VideoError::Busy) => {}
-                    Err(_) => {
-                        self.posters.insert((hash, edge), Poster::Failed);
-                    }
+                let state = match FrameRequest::new(0, edge, edge).and_then(|request| service.frame(asset, request)) {
+                    Ok(job) => Some(Poster::Making { job, retry }),
+                    Err(VideoError::Busy) => None,
+                    Err(error) => Some(Retry::after(retry, error, now).map_or(Poster::Failed, Poster::Waiting)),
+                };
+                if let Some(state) = state {
+                    self.posters.insert((hash, edge), PosterEntry { state, used: clock });
                 }
             }
             // While a sharper one is made, any other size of the same video will do.
-            self.posters.iter_mut().find_map(|((h, _), poster)| match poster {
-                Poster::Ready { texture, size, used } if *h == hash => {
-                    *used = clock;
+            self.posters.iter_mut().find_map(|((h, _), entry)| match &entry.state {
+                Poster::Ready { texture, size } if *h == hash => {
+                    entry.used = clock;
                     Some((texture.id(), *size))
                 }
                 _ => None,

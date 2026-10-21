@@ -65,6 +65,11 @@ fn tools_that_arent_there_say_so_without_panicking() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(said.is_some(), "the card says the tools can't run");
+    // Nothing is kept for tools that can't run, and nothing is left polling.
+    for _ in 0..3 {
+        h.step();
+    }
+    assert_eq!(h.state().videos.test_counts().0, 0, "the read video was let go");
 }
 
 /// Plays a real clip through installed tools: opt-in, like `media`'s own real-tool tests.

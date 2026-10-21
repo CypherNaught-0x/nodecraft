@@ -66,3 +66,62 @@ fn unset_tools_say_how_to_set_them_and_start_nothing() {
     assert_eq!(view, VideoView::Unavailable(UNCONFIGURED));
     assert_eq!(videos.test_counts(), (0, 0, 0));
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native_rules {
+    use super::super::native::{Retry, stale, transient, wanted_us};
+    use nodecraft_media::video::VideoError;
+
+    const STEP: u64 = 40_000;
+
+    #[test]
+    fn frames_are_asked_for_at_their_start_and_never_past_the_last() {
+        assert_eq!(wanted_us(0, 2_000_000, STEP, None), Some(0));
+        assert_eq!(wanted_us(1_039_999, 2_000_000, STEP, None), Some(1_000_000));
+        // At or past the end: the last frame, a step before it.
+        assert_eq!(wanted_us(2_000_000, 2_000_000, STEP, None), Some(1_960_000));
+        assert_eq!(wanted_us(u64::MAX, 2_000_000, STEP, None), Some(1_960_000));
+        // A clip shorter than a frame has one, at the start.
+        assert_eq!(wanted_us(500, 10, STEP, None), Some(0));
+        assert_eq!(wanted_us(500, 0, 0, None), Some(0));
+    }
+
+    #[test]
+    fn a_missing_frame_moves_the_end_so_it_isnt_asked_for_again() {
+        // No frame at 1.96 s: the next ask is a frame earlier, never 1.96 s again.
+        let end = Some(1_960_000);
+        assert_eq!(wanted_us(2_000_000, 2_000_000, STEP, end), Some(1_920_000));
+        assert!(wanted_us(u64::MAX, 2_000_000, STEP, end).is_some_and(|t| t < 1_960_000));
+        // Earlier positions are untouched.
+        assert_eq!(wanted_us(1_000_000, 2_000_000, STEP, end), Some(1_000_000));
+        // Settled on the last frame shown (end = shown + a step): it is what's wanted, so
+        // nothing new is asked for.
+        assert_eq!(wanted_us(2_000_000, 2_000_000, STEP, Some(1_000_000 + STEP)), Some(1_000_000));
+        // No frame at all: nothing to ask for.
+        assert_eq!(wanted_us(0, 2_000_000, STEP, Some(0)), None);
+    }
+
+    #[test]
+    fn work_that_failed_for_now_is_retried_a_few_times_then_given_up() {
+        assert!(transient(VideoError::Limit) && transient(VideoError::Timeout) && transient(VideoError::Io));
+        assert!(!transient(VideoError::Unsupported) && !transient(VideoError::InvalidMetadata) && !transient(VideoError::NoFrame));
+        assert_eq!(Retry::after(None, VideoError::Unsupported, 0.0), None, "a format that isn't supported never will be");
+        let mut retry = None;
+        let mut tries = 0;
+        while let Some(next) = Retry::after(retry, VideoError::Limit, 10.0) {
+            assert!(!next.due(10.0) && next.due(100.0), "waits before trying again");
+            retry = Some(next);
+            tries += 1;
+            assert!(tries < 100);
+        }
+        assert_eq!(tries, 4, "gives up after five tries");
+    }
+
+    #[test]
+    fn only_what_was_off_screen_last_frame_is_evicted() {
+        assert!(!stale(10, 10), "shown this frame");
+        assert!(!stale(9, 10), "shown last frame, before this frame's cards are drawn");
+        assert!(stale(8, 10));
+        assert!(!stale(u64::MAX, 0), "the clock wrapping doesn't evict what's on screen");
+    }
+}
