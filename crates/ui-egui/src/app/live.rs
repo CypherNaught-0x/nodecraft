@@ -9,10 +9,18 @@ use nodecraft_types::{CanvasId, Error, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+
+/// Longest the app waits, when it closes, for a recompute still running (#594).
+#[cfg(not(target_arch = "wasm32"))]
+const CLOSE_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub(super) struct Live {
     running: Option<Receiver<Result<LiveOutcome, Error>>>,
+    /// The worker computing `running`, waited for when the app closes (#594).
+    worker: Option<std::thread::JoinHandle<()>>,
     /// The canvas and revision last looked at.
     checked: Option<(CanvasId, u64)>,
     /// Nodes that failed, with the input hash they failed with: not retried (or reported
@@ -84,7 +92,10 @@ impl NodeCraftApp {
             repaint.request_repaint();
         });
         match started {
-            Ok(_) => self.live.running = Some(receive),
+            Ok(worker) => {
+                self.live.running = Some(receive);
+                self.live.worker = Some(worker);
+            }
             Err(_) => log::warn!("live recompute: no worker thread"),
         }
     }
@@ -97,6 +108,25 @@ impl NodeCraftApp {
             if self.live.failed.insert(*node, *hash) != Some(*hash) {
                 self.notice = Some(reason.clone());
             }
+        }
+    }
+}
+
+/// A worker left running when the process exits can be inside a GPU driver (a 3D capture or a
+/// shader), and a driver torn down under it crashes the process (#594). Closing waits for it,
+/// for at most [`CLOSE_WAIT`]. (The browser has no worker threads.)
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Live {
+    fn drop(&mut self) {
+        let Some(worker) = self.worker.take() else { return };
+        let deadline = Instant::now() + CLOSE_WAIT;
+        while !worker.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if worker.is_finished() {
+            let _ = worker.join();
+        } else {
+            log::warn!("live recompute still running at close");
         }
     }
 }
