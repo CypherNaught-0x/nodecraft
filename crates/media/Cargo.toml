@@ -24,6 +24,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
-craft-pdf = { workspace = true, optional = true }
+# `write-pdf` copies a page into a new PDF (#590).
+craft-pdf = { workspace = true, optional = true, features = ["write-pdf"] }
 # Geometry types in the PDF reader's device interface (the version hayro-interpret uses).
 kurbo = { version = "0.13", optional = true }

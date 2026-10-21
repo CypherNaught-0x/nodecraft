@@ -53,7 +53,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   The viewer's Photo and Views buttons add a 3D photo or a
   4/8/16-view sheet card that draws the model from the current view as an image (#112). PDFs become PDF cards showing the
   first page and page count; PDF to images draws a page range as images and PDF to text reads
-  the text the pages draw (#113).
+  the text the pages draw (#113). A PDF reader pages through a PDF, sets a node's page range, and extracts a page or
+  its text into new nodes (#590).
   Improve prompt on the generation toolbar puts a text card, which rewrites the card's typed
   prompt, in front of it and wires the rewrite in; it runs, and is priced, like any other card (#582).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;

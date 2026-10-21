@@ -59,7 +59,7 @@ fn a_smaller_ready_preview_stands_in_while_the_wanted_one_is_pending() {
     let ctx = egui::Context::default();
     let hash = Blake3::from_bytes([5; 32]);
     let mut previews = Previews::inline(&ctx, hash, 128, &png(300, 300));
-    previews.entries.insert((hash, 512), Entry::Pending);
+    previews.entries.insert((hash, 512, 0), Entry::Pending);
     assert!(matches!(previews.request(&ctx, hash, 400.0, || None), Preview::Ready { size: [128, 128], .. }));
 }
 
@@ -68,7 +68,7 @@ fn a_smaller_ready_preview_stands_in_while_the_wanted_one_is_pending() {
 fn a_dead_worker_releases_its_pending_previews_and_a_fresh_one_starts() {
     let mut previews = Previews::default();
     let hash = Blake3::from_bytes([6; 32]);
-    previews.entries.insert((hash, 256), Entry::Pending);
+    previews.entries.insert((hash, 256, 0), Entry::Pending);
     previews.in_flight = MAX_IN_FLIGHT;
     previews.worker_died();
     assert_eq!(previews.in_flight, 0, "the in-flight cap doesn't stay full");
@@ -79,7 +79,7 @@ fn a_dead_worker_releases_its_pending_previews_and_a_fresh_one_starts() {
     }
     assert!(previews.worker_failed, "but not forever");
     // A panic inside a decode is a failure, not a dead worker.
-    assert!(decode(&[], 128).is_err());
+    assert!(decode(&[], 128, 0).is_err());
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn the_worker_contains_an_injected_attempt_panic_and_accepts_the_next_job() {
     let (entered, ready) = std::sync::mpsc::sync_channel(1);
     let (go, proceed) = std::sync::mpsc::sync_channel(1);
     let hash = Blake3::from_bytes([60; 32]);
-    let _ = previews.request_input(&ctx, hash, 128.0, || Ok(Input::Panic { entered, proceed }));
+    let _ = previews.request_input(&ctx, (hash, 128, 0), &BUCKETS, || Ok(Input::Panic { entered, proceed }));
     ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     go.send(()).unwrap();
     for _ in 0..200 {
@@ -180,7 +180,7 @@ fn cancellation_drops_queued_native_capabilities_without_decoding_or_leaking_pin
     let mut previews = Previews::default();
     let (entered, ready) = std::sync::mpsc::sync_channel(1);
     let (go, proceed) = std::sync::mpsc::sync_channel(1);
-    let _ = previews.request_input(&ctx, Blake3::from_bytes([62; 32]), 128.0, || Ok(Input::Panic { entered, proceed }));
+    let _ = previews.request_input(&ctx, (Blake3::from_bytes([62; 32]), 128, 0), &BUCKETS, || Ok(Input::Panic { entered, proceed }));
     ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     for width in 9..12 {
         let hash = store.insert(&png(width, 6)).unwrap();
@@ -228,7 +228,7 @@ fn smaller_pending_fallback_retains_source_dimensions_without_another_read() {
     let ctx = egui::Context::default();
     let hash = Blake3::from_bytes([92; 32]);
     let mut previews = Previews::inline(&ctx, hash, 128, &png(1024, 768));
-    previews.entries.insert((hash, 512), Entry::Pending);
+    previews.entries.insert((hash, 512, 0), Entry::Pending);
     let mut reads = 0;
     let shown = previews.request(&ctx, hash, 512.0, || {
         reads += 1;
@@ -262,7 +262,7 @@ fn native_worker_keeps_decoded_source_dimensions_in_ready_and_fallback() {
     assert_eq!(previews.in_flight, 0);
     let ready = previews.request_asset(&ctx, hash, 128.0, || panic!("Ready must not capture or reread"));
     assert!(matches!(ready, Preview::Ready { size: [128, 96], source_size: [1024, 768], .. }));
-    previews.entries.insert((hash, 512), Entry::Pending);
+    previews.entries.insert((hash, 512, 0), Entry::Pending);
     let fallback = previews.request_asset(&ctx, hash, 512.0, || panic!("Pending fallback must not reread"));
     assert!(matches!(fallback, Preview::Ready { size: [128, 96], source_size: [1024, 768], .. }));
     drop((previews, store));

@@ -345,6 +345,7 @@ mod order;
 mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod queue_panel;
+mod reader;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
 #[cfg(not(target_arch = "wasm32"))]
@@ -446,6 +447,8 @@ pub struct NodeCraftApp {
     run_confirm: Option<generate::RunConfirm>,
     /// The node whose image the toolbar's Expand shows.
     viewer: Option<NodeId>,
+    /// The PDF reader, when open (#590).
+    reader: Option<reader::Reader>,
     /// The mask editor (#102), while open.
     mask_editor: Option<mask_editor::MaskEditor>,
     layer_editor: Option<layer_editor::LayerEditor>,
@@ -819,6 +822,7 @@ impl NodeCraftApp {
             model_choice: None,
             run_confirm: None,
             viewer: None,
+            reader: None,
             mask_editor: None,
             layer_editor: None,
             app_mode: None,
@@ -1209,6 +1213,7 @@ impl NodeCraftApp {
         let mut split_request = None;
         let mut mask_request = None;
         let mut layers_request = None;
+        let mut reader_request = None;
         let mut element_request = false;
         let mut technique_request = None;
         let mut wire_command = None;
@@ -1219,6 +1224,7 @@ impl NodeCraftApp {
         let mut split_after = None;
         let mut mask_after = None;
         let mut layers_after = None;
+        let mut reader_after = None;
         let mut element_after = false;
         let mut technique_after = None;
         let mut tag_action = None;
@@ -1475,6 +1481,19 @@ impl NodeCraftApp {
                                     }
                                 });
                             }
+                            if node.kind == nodecraft_nodes::document::SOURCE && ui.button("Read PDF…").clicked() {
+                                reader_request = Some(node.id);
+                                ui.close();
+                            }
+                            if reader::reads_pages(node)
+                                && ui
+                                    .add_enabled(reader::source_of(canvas, node.id).is_some(), egui::Button::new("Choose pages…"))
+                                    .on_disabled_hover_text("Connect a PDF first")
+                                    .clicked()
+                            {
+                                reader_request = Some(node.id);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::layers::ID && ui.button("Edit layers…").clicked() {
                                 layers_request = Some(node.id);
                                 ui.close();
@@ -1665,6 +1684,7 @@ impl NodeCraftApp {
             split_after = split_request;
             mask_after = mask_request;
             layers_after = layers_request;
+            reader_after = reader_request;
             element_after = element_request;
             technique_after = technique_request;
             if let Some(marquee) = &mut self.marquee
@@ -1696,6 +1716,7 @@ impl NodeCraftApp {
         let toolbar_live = !overlay_blocks && !file_owns_input && !file_menu_owns_input && !recovery_owns_input;
         intents.extend(self.generation_toolbar(ui, viewport, toolbar_live));
         self.image_viewer(ui.ctx());
+        self.pdf_reader(ui.ctx());
         if let Some(action) = tag_action {
             if let Err(error) = self.apply_tag_action(action) {
                 self.notice = Some(error.message);
@@ -1711,6 +1732,9 @@ impl NodeCraftApp {
         }
         if let Some((node, rows, columns)) = split_after {
             self.split_grid(node, rows, columns, t);
+        }
+        if let Some(node) = reader_after {
+            self.open_reader(node);
         }
         if let Some(node) = layers_after {
             self.open_layer_editor(node);
@@ -2563,6 +2587,8 @@ mod perf;
 mod plugin_tests;
 #[cfg(test)]
 mod preview_tests;
+#[cfg(test)]
+mod reader_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod runs_tests;

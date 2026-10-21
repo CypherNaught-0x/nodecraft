@@ -53,9 +53,13 @@ pub struct PageImage {
     pub rgba: Vec<u8>,
 }
 
+/// A region of a page, as fractions of its width and height from the top-left corner:
+/// `[left, top, right, bottom]`, each in `0..=1`.
+pub type PageRegion = [f64; 4];
+
 /// An opened PDF.
 pub struct Document {
-    pdf: Pdf,
+    pdf: Arc<Pdf>,
     limits: DocumentLimits,
 }
 
@@ -106,7 +110,7 @@ impl Document {
         }
         let options = craft_pdf::OpenOptions { max_input_bytes: limits.max_input_bytes, ..Default::default() };
         let pdf = craft_pdf::open_slice_with_options(bytes, None, &options).map_err(open_error)?;
-        Ok(Self { pdf, limits })
+        Ok(Self { pdf: Arc::new(pdf), limits })
     }
 
     pub fn page_count(&self) -> u32 {
@@ -129,6 +133,25 @@ impl Document {
     /// The text page `index` (from 0) draws; see [`Reader::text`].
     pub fn text(&self, index: u32) -> Result<String, MediaError> {
         self.reader().text(index)
+    }
+
+    /// Page `index` (from 0) as a PDF of its own: the page copied with the fonts, images and
+    /// other resources it uses, so it reads and draws as it did in this document.
+    pub fn extract_page(&self, index: u32) -> Result<Vec<u8>, MediaError> {
+        use craft_pdf::write::backend::{Document as Out, SerializeSettings, configure::PdfVersion, pdf::PdfDocument};
+        self.page(index)?;
+        let page = usize::try_from(index).map_err(|_| MediaError::InvalidParameter("page"))?;
+        let source = PdfDocument::new(self.pdf.clone());
+        let write = |version: PdfVersion| {
+            craft_pdf::write::guard(|| {
+                let configuration = craft_pdf::write::configuration(version, None)?;
+                let mut out = Out::new_with(SerializeSettings { configuration, ..SerializeSettings::default() });
+                out.embed_pdf_pages(&source, &[page]);
+                out.finish().map_err(|error| craft_pdf::write::WriteError::Serialization(Box::new(error)))
+            })
+        };
+        // A PDF 2.0 source can only be copied into a PDF 2.0 file; older ones stay at 1.7.
+        write(PdfVersion::Pdf17).or_else(|_| write(PdfVersion::Pdf20)).map_err(|e| MediaError::UnsupportedFeature(format!("the page can't be copied: {e}")))
     }
 
     /// A reader for several pages: fonts, images and objects the pages share are decoded once
@@ -179,6 +202,15 @@ impl Reader<'_> {
     /// character boundary). Empty for a page that draws no text, such as a scan. Reading stops
     /// once the page's text is full.
     pub fn text(&self, index: u32) -> Result<String, MediaError> {
+        self.text_in(index, None)
+    }
+
+    /// The text page `index` (from 0) draws inside `region` (a glyph counts when its baseline
+    /// starts there), or on the whole page for `None`; bounded as [`Reader::text`].
+    pub fn text_in(&self, index: u32, region: Option<PageRegion>) -> Result<String, MediaError> {
+        if region.is_some_and(|r| r.iter().any(|v| !v.is_finite())) {
+            return Err(MediaError::InvalidParameter("region"));
+        }
         let page = self.document.page(index)?;
         let (width, height) = page.render_dimensions();
         let bbox = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), f64::from(height.max(1.0)));
@@ -186,6 +218,10 @@ impl Reader<'_> {
         let settings = InterpreterSettings { cancelled: Some(full.clone()), ..InterpreterSettings::default() };
         let mut context = Context::new(page.initial_transform(true).to_kurbo(), bbox, &self.text, page.xref(), settings);
         let mut device = TextDevice::new(self.document.limits.max_page_text_bytes, full);
+        device.region = region.map(|[left, top, right, bottom]| {
+            let (w, h) = (bbox.width(), bbox.height());
+            Rect::new(left.clamp(0.0, 1.0) * w, top.clamp(0.0, 1.0) * h, right.clamp(0.0, 1.0) * w, bottom.clamp(0.0, 1.0) * h).abs()
+        });
         craft_pdf::interpret_page(page, &mut context, &mut device).map_err(|_| MediaError::Decode("the PDF reader failed on this page".into()))?;
         Ok(device.finish())
     }
@@ -212,11 +248,13 @@ struct TextDevice {
     /// Set once the text is full; it also stops the interpreter, as nothing more can be kept.
     full: Arc<AtomicBool>,
     pen: Option<Pen>,
+    /// Only glyphs starting here (device space) are kept.
+    region: Option<Rect>,
 }
 
 impl TextDevice {
     fn new(max_bytes: usize, full: Arc<AtomicBool>) -> Self {
-        Self { text: String::new(), max_bytes, full, pen: None }
+        Self { text: String::new(), max_bytes, full, pen: None, region: None }
     }
 
     fn push(&mut self, s: &str) {
@@ -265,6 +303,9 @@ impl<'a> Device<'a> for TextDevice {
         let [_, _, c, d, _, _] = full.as_coeffs();
         let em = c.hypot(d) * 1000.0;
         if !(origin.x.is_finite() && origin.y.is_finite() && em.is_finite() && em > 0.0) {
+            return;
+        }
+        if self.region.is_some_and(|region| !region.contains(origin)) {
             return;
         }
         let right = match glyph {
