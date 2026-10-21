@@ -414,4 +414,24 @@ mod techniques {
         settle_all(&mut s);
         assert_eq!(output(&s, PLACED), None);
     }
+
+    #[test]
+    fn a_technique_node_with_a_paid_step_never_takes_a_cached_result_live() {
+        let mut s = placed_with_model();
+        // PLACED has a model's result, as after a run; a copy fed the same must still wait.
+        let hash = nodecraft_exec::staleness::input_hash(s.document().canvases().get(&CANVAS).unwrap(), s.kinds(), PLACED).unwrap();
+        let generation = json!({"id": nodecraft_types::GenerationId::from_bytes([60; 16]), "outputs": [{"type": "text", "value": "paid"}], "input_hash": hash});
+        s.dispatch("run.record", &json!({"canvas": CANVAS, "results": [{"node": PLACED, "generation": generation}]})).unwrap();
+        let copy = NodeId::from_bytes([61; 16]);
+        s.dispatch("technique.place", &json!({"canvas": CANVAS, "version": VERSION, "id": copy, "pos": {"x": 600.0, "y": 900.0}})).unwrap();
+        wire(&mut s, 62, FEED, copy, "brief");
+        assert_eq!(
+            nodecraft_exec::staleness::input_hash(s.document().canvases().get(&CANVAS).unwrap(), s.kinds(), copy).unwrap(),
+            hash,
+            "a cache hit if it were asked"
+        );
+        assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none(), "nothing to do live");
+        settle_all(&mut s);
+        assert_eq!(output(&s, copy), None);
+    }
 }

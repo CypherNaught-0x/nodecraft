@@ -4,9 +4,11 @@
 //!
 //! Only local work is ever run live: a plan with any non-local job (a model call, which costs
 //! money) is left for an explicit run. Technique nodes are planned with their versions inlined
-//! (#532), so one made only of local work refreshes like an action node; only it records results. The three steps are separate so the host can move the
-//! middle one to a worker: [`pending`] (UI thread, cheap), [`compute`] (anywhere: it borrows
-//! nothing from the session) and [`apply`] (UI thread).
+//! (#532), so one made only of local work refreshes like an action node; only it records
+//! results, and one with a model call inside is never refreshed, not even from the cache. The
+//! three steps are separate so the host can move the middle one to a worker: [`pending`] (UI
+//! thread, cheap), [`compute`] (anywhere: it borrows nothing from the session) and [`apply`]
+//! (UI thread).
 use crate::Session;
 use crate::action_exec::LocalActions;
 use nodecraft_exec::planner::{Planned, RunMode, RunPlan, Step, plan_expanded, ready_alone_expanded};
@@ -29,7 +31,7 @@ pub struct LiveJob {
     plan: Option<RunPlan>,
     /// Cached results to apply instead of computing (#91): a round either reuses or computes.
     hits: Vec<crate::cache::Hit>,
-    /// The canvas with its technique nodes inlined, which the plan was made on.
+    /// The canvas the plan was made on, with its technique nodes inlined.
     live: Canvas,
     assets: AssetStore,
 }
@@ -62,6 +64,18 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     let skip: BTreeSet<NodeId> =
         failed.iter().filter(|(id, hash)| nodecraft_exec::staleness::input_hash(live, kinds, **id).is_ok_and(|now| now == **hash)).map(|(id, _)| *id).collect();
     let stale = nodecraft_exec::staleness::stale(live, kinds)?;
+    // A technique node runs its version's nodes, inlined. One whose version can't be inlined, or
+    // holds a model call, never refreshes live: not even from the cache, where its result would
+    // be a model's.
+    let expanded = nodecraft_exec::technique::expand(session.document().canvases(), live, kinds).ok();
+    let local_technique = |id: &NodeId| {
+        expanded.as_ref().is_some_and(|expanded| {
+            !expanded.blockers.iter().any(|b| b.node == *id)
+                && expanded.inner.iter().filter(|(_, owner)| *owner == id).all(|(inner, _)| {
+                    expanded.canvas.nodes().get(inner).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category != Category::Generation)
+                })
+        })
+    };
     // Stale action and technique nodes, and ones with no result yet. A Timeline renders a video,
     // which takes too long to redo on every edit: it runs when asked.
     let wanted: BTreeSet<NodeId> = live
@@ -69,6 +83,7 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
         .iter()
         .filter(|(_, node)| node.kind != nodecraft_nodes::timeline::ID)
         .filter(|(id, node)| refreshes(&node.kind, kinds) && !skip.contains(id) && (node.active.is_none() || stale.contains(id)))
+        .filter(|(id, node)| node.kind != technique::ID || local_technique(id))
         .map(|(id, _)| *id)
         .collect();
     if wanted.is_empty() {
@@ -80,10 +95,8 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     if !hits.is_empty() {
         return Ok(Some(LiveJob { canvas, base: session.revision(), id: [0; 16], plan: None, hits, live: live.clone(), assets: AssetStore::default() }));
     }
-    // A technique node runs its version's nodes, inlined: a paid one among them keeps it out. A
-    // canvas that can't be inlined leaves its technique nodes waiting, not the actions.
-    let expanded =
-        nodecraft_exec::technique::expand(session.document().canvases(), live, kinds).unwrap_or_else(|_| nodecraft_exec::technique::Expanded::plain(live));
+    // A canvas that can't be inlined has no technique node wanted, and plans as it is.
+    let expanded = expanded.unwrap_or_else(|| nodecraft_exec::technique::Expanded::plain(live));
     let planned: &Canvas = &expanded.canvas;
     // Each wanted node on its own terms: one that can't run yet (nothing connected, or a model
     // upstream with no result) mustn't hold the others back. One walk decides for all (#549).
