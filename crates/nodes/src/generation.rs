@@ -10,7 +10,7 @@ use crate::{
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
     AudioOverrun, AudioUse, ConnectedText, Contract, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema, ParamSpec, ParamValues,
-    PortType, ResolvedParams, TextPrecedence, Value, compose_text,
+    PortType, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
 };
 use std::{
     borrow::Cow,
@@ -65,6 +65,8 @@ pub struct GenerationMode {
     pub params: Option<Vec<String>>,
     /// How the mode treats its audio input, when it has one.
     pub audio: Option<AudioUse>,
+    /// The source video edit it makes, when it edits one (#179).
+    pub edit: Option<VideoEdit>,
 }
 impl GenerationMode {
     /// Whether this mode sends the model setting `name`.
@@ -252,6 +254,13 @@ impl GenerationKind {
                         || audio.max_ms.is_some_and(|ms| ms == 0 || ms > nodecraft_types::MAX_AUDIO_MS)
                 }) {
                     return Err(bad(output, "a {noun} mode describes audio it doesn't take"));
+                }
+                if mode.edit.as_ref().is_some_and(|edit| {
+                    output != Modality::Video
+                        || !mode.inputs.iter().any(|role| role.role == edit.role && role.modality == Modality::Video && role.min == 1 && role.max == 1)
+                        || edit.validate().is_err()
+                }) {
+                    return Err(bad(output, "a {noun} mode edits a source it doesn't take"));
                 }
             }
             for (role, modality) in &roles {
@@ -538,8 +547,11 @@ impl NodeKind for GenerationKind {
         if let Some(audio) = &mode.audio {
             audio_fits(audio, &media)?;
         }
+        if let Some(edit) = &mode.edit {
+            edit_fits(edit, &media)?;
+        }
         let prompt = match mode.inputs.iter().find(|r| r.role == PROMPT && r.modality == Modality::Text) {
-            Some(role) => Some(self.prompt(role, ctx, &inputs, &mentioned)?),
+            Some(role) => Some(self.prompt(role, ctx, &inputs, &mentioned)?).filter(|prompt| !prompt.is_empty()),
             // A mode without a prompt (image to 3D) takes its media alone; its declared counts
             // already refuse wired prompts, and a mode with no inputs at all has nothing to send.
             None if media.is_empty() => return Err(Error::new(ErrorKind::Unsupported, "model has no supported prompt role")),
@@ -605,6 +617,10 @@ impl GenerationKind {
         let local = local.as_ref();
         let prompt = compose_text(TextPrecedence::ConnectedReplaces, prompt_role.inline.then_some(local), &texts, "\n")?;
         if prompt.trim().is_empty() {
+            // An optional prompt (a source video edit's, #179) is simply not sent.
+            if prompt_role.min == 0 {
+                return Ok(String::new());
+            }
             return Err(bad(self.output, "{noun} generation needs a prompt"));
         }
         Ok(prompt)
@@ -659,6 +675,18 @@ fn audio_fits(audio: &AudioUse, media: &[GenerateInput]) -> Result<(), Error> {
                     nodecraft_types::seconds(max)
                 ),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a source video the edit won't take (too short, frames too small), before anything is
+/// sent or charged (#179).
+fn edit_fits(edit: &VideoEdit, media: &[GenerateInput]) -> Result<(), Error> {
+    for input in media.iter().filter(|input| input.role == edit.role) {
+        if let Value::Media(asset) = &input.value {
+            let size = asset.meta.width.zip(asset.meta.height);
+            edit.fits(asset.mime.essence(), asset.meta.duration_ms, size)?;
         }
     }
     Ok(())

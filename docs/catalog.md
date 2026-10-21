@@ -50,6 +50,16 @@ default = { type = "unsigned", value = "1" }
 
   The picker shows this per mode. A track's length is only checked when it's known; unknown
   lengths go to the provider.
+- **Source video edits (#179).** `edit = { operation = "object_swap", role = "source",
+  min_ms = 4000, uses_ms = 30000, min_pixels = 409600, formats = ["video/mp4"],
+  sound = "unknown" }` says a mode edits
+  its wired video. `operation` is `motion_transfer`, `object_swap` or `restyle`, the same for
+  every provider that does that edit. `role` must be the mode's one required video input, and
+  the mode must make a video. `min_ms` is the shortest source it takes, `uses_ms` how much of a
+  longer one the provider uses from the start, `min_pixels` the smallest frame (width × height),
+  `formats` the file types the source may be (any video when left out), and `sound` is
+  `source`, `silent` or `unknown`. A source of another type, or one too short or too small,
+  stops the run before anything is sent, when its length or size is known.
 - **Trained styles (#167).** A mode whose output is `style` trains one from its wired images;
   a role whose modality is `style` takes one. Such a model names `style_family = "flux-1"`, the
   base-model family a trainer trains for or an inference model takes, and only such models may
@@ -58,7 +68,7 @@ default = { type = "unsigned", value = "1" }
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.
-- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`) or `per_unit` (`unit` = `image`, `second`,
+- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second` or `per_unit` (`unit` = `image`, `second`,
   `megapixel`, `thousand_tokens`, `thousand_characters` or `thousand_steps`; `price`; a `count`
   parameter and/or a `default_count` ≥ 1). The count is the parameter's value *after* schema
   defaults, so the quote matches what runs; `count` must be a numeric control (`unsigned`,
@@ -68,6 +78,12 @@ default = { type = "unsigned", value = "1" }
   units; trainers use `thousand_steps`, counted from their steps setting. Prices are decimal strings with a currency,
   at most six decimals, and quotes round up. Token- and character-priced models without a
   `count` are quoted at run time.
+  `per_source_second` (`param`, `prices`) prices a source video edit by each started second of
+  the source the provider uses (after `uses_ms`). `param` is a `choice` setting with a default,
+  and `prices` maps each of its options, and only those, to a price in one currency:
+  `pricing = { type = "per_source_second", param = "resolution", prices = { "480p" = "0.318 USD",
+  "720p" = "0.681 USD" } }`. Every mode must declare the same `edit` role and `uses_ms`, and send
+  `param`. A source whose length isn't known yet leaves the step unpriced, never free.
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
   returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
   make the incomplete price explicit. Token counters are not an exact monetary invoice.

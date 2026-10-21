@@ -2,6 +2,7 @@
 //! exact micros, so a quote never rounds through floating point.
 use nodecraft_types::{Currency, Error, ErrorKind, Money, ParamValues, Rounding, Value};
 use serde::{Deserialize, Deserializer};
+use std::collections::BTreeMap;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -89,6 +90,10 @@ pub enum Pricing {
         #[serde(default)]
         default_count: Option<u64>,
     },
+    /// A price per started second of the source video a mode edits (#179), counted after the
+    /// provider's cut (the mode's [`nodecraft_types::VideoEdit::uses_ms`]). The price is the one
+    /// listed in `prices` for the value of the choice setting `param` (a resolution, say).
+    PerSourceSecond { param: String, prices: BTreeMap<String, Price> },
 }
 
 impl Pricing {
@@ -97,6 +102,7 @@ impl Pricing {
             Self::Free => None,
             Self::ByUsage { currency } => Some(*currency),
             Self::PerCall { price } | Self::PerUnit { price, .. } => Some(price.0.currency),
+            Self::PerSourceSecond { prices, .. } => prices.values().next().map(|price| price.0.currency),
         }
     }
 
@@ -110,7 +116,23 @@ impl Pricing {
     /// Price already validated, effective visible values without owning a parameter map.
     /// The caller must apply schema defaults/visibility and descriptor validation first.
     pub fn quote_lookup<'a>(&self, get: impl Fn(&str) -> Option<&'a Value>, fallback: Currency) -> Result<Option<Money>, Error> {
+        self.quote_source(get, None, fallback)
+    }
+
+    /// [`Self::quote_lookup`] for a job whose source video is `source_ms` long once the provider
+    /// has cut it (#179). A price per source second without that length is `None`: it isn't
+    /// known until the source is.
+    pub fn quote_source<'a>(&self, get: impl Fn(&str) -> Option<&'a Value>, source_ms: Option<u64>, fallback: Currency) -> Result<Option<Money>, Error> {
         match self {
+            Self::PerSourceSecond { param, prices } => {
+                let Some(ms) = source_ms else { return Ok(None) };
+                let price = match get(param) {
+                    Some(Value::Text(choice)) => prices.get(choice.as_str()).ok_or_else(|| invalid("this setting has no listed price"))?,
+                    _ => return Err(invalid("the price depends on a setting that has no value")),
+                };
+                // Started seconds, and never less than one.
+                price.0.checked_mul_ratio(ms.div_ceil(1000).max(1), 1, Rounding::Up).map(Some)
+            }
             Self::Free => Ok(Some(Money::zero(fallback))),
             Self::ByUsage { .. } => Ok(None),
             Self::PerCall { price } => Ok(Some(price.0)),

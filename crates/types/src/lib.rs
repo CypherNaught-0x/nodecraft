@@ -15,6 +15,7 @@ mod scalar;
 mod schema;
 mod units;
 mod value;
+mod video_edit;
 
 pub use asset::{AssetRef, Blake3, ColorSpace, MediaMeta, Mime};
 pub use audio_use::{AudioDuration, AudioOverrun, AudioSound, AudioUse, MAX_AUDIO_MS, seconds};
@@ -31,3 +32,4 @@ pub use scalar::{Integer, Number, Unsigned};
 pub use schema::{BorrowedResolvedParams, Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, ValidatedParamSchema, VisibleIf};
 pub use units::BillableUnits;
 pub use value::{Modality, PortType, STYLE_MIME, Value, style_family};
+pub use video_edit::{EditOperation, EditSound, MAX_EDIT_MS, VideoEdit};

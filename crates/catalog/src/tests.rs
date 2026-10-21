@@ -97,6 +97,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
+        } else if model.id.starts_with("higgsfield.genjutsu-") {
+            // Priced per source second (#179): no quote until the source's length is known.
+            assert!(matches!(&model.pricing, Pricing::PerSourceSecond { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
         } else {
             assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
@@ -162,6 +166,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
+            ("higgsfield.genjutsu-motion-transfer", false),
+            ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
@@ -654,4 +660,72 @@ fn trainers_quote_their_steps_and_name_the_family_they_train() {
     );
     assert!(Catalog::from_toml(&styled).is_err(), "takes a style but names no family");
     assert!(Catalog::from_toml(&styled.replace("quality = 5", "quality = 5\nstyle_family = \"wan-2\"")).is_ok());
+}
+
+#[test]
+fn source_edits_quote_the_used_seconds_of_their_source_at_the_chosen_resolution() {
+    let catalog = Catalog::builtin().unwrap();
+    let swap = catalog.get("higgsfield.genjutsu-object-swap").unwrap();
+    let edit = swap.edit().unwrap();
+    assert_eq!((edit.role.as_str(), edit.min_ms, edit.uses_ms, edit.min_pixels), ("source", Some(4000), Some(30_000), Some(409_600)));
+    let usd = |micros| Some(Money::new(Currency::USD, micros));
+    // 720p by default; a started second counts in full.
+    assert_eq!(swap.quote_source(&ParamValues::new(), Some(4_200)).unwrap(), usd(5 * 681_000));
+    let mut fine = ParamValues::new();
+    fine.insert("resolution".into(), Value::Text("1080p".into()));
+    assert_eq!(swap.quote_source(&fine, Some(10_000)).unwrap(), usd(10 * 1_632_000));
+    // Only the first 30 s is used, so only it is charged.
+    assert_eq!(swap.quote_source(&fine, Some(95_000)).unwrap(), usd(30 * 1_632_000));
+    // Without the source's length there is no price yet, and a plain quote has none either.
+    assert_eq!(swap.quote_source(&fine, None).unwrap(), None);
+    assert_eq!(swap.quote(&ParamValues::new()).unwrap(), None);
+    let mut bad = ParamValues::new();
+    bad.insert("resolution".into(), Value::Text("4K".into()));
+    assert!(swap.quote_source(&bad, Some(5_000)).is_err());
+    // Other pricing ignores the source.
+    let kling = catalog.get("higgsfield.kling-2.5-turbo-i2v").unwrap();
+    assert_eq!(kling.quote_source(&ParamValues::new(), Some(5_000)).unwrap(), kling.quote_selected(&ParamValues::new()).unwrap());
+}
+
+#[test]
+fn per_source_second_pricing_is_checked() {
+    const EDIT: &str = r#"
+[[model]]
+id = "test.edit"
+provider = "test"
+provider_model = "edit-v1"
+label = "Edit"
+description = "Edits a source."
+latency_s = 90
+quality = 3
+pricing = PRICING
+
+[[model.modes]]
+id = "edit"
+output = "video"
+inputs = [{ role = "source", modality = "video", min = 1, max = 1 }]
+EDIT_LINE
+
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "480p", label = "480p" }, { value = "720p", label = "720p" }] }
+default = { type = "text", value = "720p" }
+"#;
+    let edit = r#"edit = { operation = "restyle", role = "source", min_ms = 4000, sound = "source" }"#;
+    let good = r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0.1 USD", "720p" = "0.2 USD" } }"#;
+    let parse = |pricing: &str, edit: &str| Catalog::from_toml(&EDIT.replace("PRICING", pricing).replace("EDIT_LINE", edit));
+    parse(good, edit).unwrap();
+    for (pricing, edit, why) in [
+        (good, "", "every mode to edit the same source"),
+        (r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0.1 USD" } }"#, edit, "each `resolution` choice"),
+        (r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0.1 USD", "720p" = "0.2 EUR" } }"#, edit, "one currency"),
+        (r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0 USD", "720p" = "0.2 USD" } }"#, edit, "above zero"),
+        (r#"{ type = "per_source_second", param = "seed", prices = { "480p" = "0.1 USD", "720p" = "0.2 USD" } }"#, edit, "choice setting with a default"),
+        (good, r#"edit = { operation = "restyle", role = "prompt", sound = "source" }"#, "one required video input"),
+        (good, r#"edit = { operation = "restyle", role = "source", min_ms = 0, sound = "source" }"#, "source lengths"),
+    ] {
+        let error = parse(pricing, edit).unwrap_err();
+        assert!(error.message.contains(why), "{why}: {}", error.message);
+    }
 }

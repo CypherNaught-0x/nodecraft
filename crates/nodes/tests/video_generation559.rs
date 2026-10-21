@@ -18,7 +18,7 @@ fn role(role: &str, modality: Modality, min: u16, max: u16) -> GenerationRole {
     GenerationRole { role: role.into(), modality, min, max, inline: role == "prompt" }
 }
 fn mode(id: &str, inputs: Vec<GenerationRole>, params: Option<&[&str]>, audio: Option<AudioUse>) -> GenerationMode {
-    GenerationMode { id: ModeId::new(id).unwrap(), inputs, params: params.map(|names| names.iter().map(|n| (*n).to_owned()).collect()), audio }
+    GenerationMode { id: ModeId::new(id).unwrap(), inputs, params: params.map(|names| names.iter().map(|n| (*n).to_owned()).collect()), audio, edit: None }
 }
 fn speech(longer: AudioOverrun) -> AudioUse {
     AudioUse { role: "speech".into(), duration: AudioDuration::FollowsAudio, max_ms: Some(30_000), longer, sound: AudioSound::Input }

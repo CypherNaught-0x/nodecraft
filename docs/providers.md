@@ -21,7 +21,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
-| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images; Kling 2.5 Turbo Pro image → video | Credits priced by plan, so catalog prices are unknown; the adapter can ask Higgsfield for an estimate. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
 ## Image facts on inputs and outputs
@@ -625,12 +625,14 @@ NODECRAFT_LIVE_MESHY=1 NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1 MESHY_API_KEY=…
 
 The optional `higgsfield` adapter (#177) drives the
 [Higgsfield platform API](https://docs.higgsfield.ai/docs) at the fixed base
-`https://api.higgsfield.ai`. Two catalog models share it:
+`https://api.higgsfield.ai`. Four catalog models share it:
 
 | Catalog model | Endpoint | Inputs | Settings |
 |---|---|---|---|
 | `higgsfield.soul-2` | `higgsfield-ai/soul/v2/standard` | a prompt | aspect ratio (seven), 720p or 1080p, 1 or 4 images, prompt enhancement, an optional seed (1–1,000,000) |
 | `higgsfield.kling-2.5-turbo-i2v` | `kling-video/v2.5-turbo/pro/image-to-video` | a prompt, an optional negative prompt, one image | 5 or 10 seconds, prompt adherence 0–1 |
+| `higgsfield.genjutsu-motion-transfer` | `higgsfield/genjutsu/motion-transfer/v1.0` | an optional prompt, one MP4 source, 1–8 ordered reference images | 480p, 720p or 1080p |
+| `higgsfield.genjutsu-object-swap` | `higgsfield/genjutsu/object-swap/v1.0` | an optional prompt, one MP4 source, 1–8 ordered reference images | 480p, 720p or 1080p |
 
 Every setting is sent explicitly, defaults included, so a request means the same thing if
 Higgsfield's defaults change. Higgsfield's key is two parts; store them in the keychain as one
@@ -643,11 +645,28 @@ prices these models as unknown before execution rather than baking in a plan's r
 send (credits and USD, rounded up to the micro). The run engine doesn't call it yet: quoting runs
 with it and checking budgets against it is a follow-up.
 
+**Genjutsu edits (#179).** Each mode declares its source video edit in the catalog (`edit`: the
+operation, the source role, the shortest source, how much of a longer one is used, the smallest
+frame and what happens to the sound). Both take sources of at least 4 s and use only the first
+30 s; object swap also needs frames of at least 409,600 pixels. A wired source whose length or
+frame size is known (imported MP4 and QuickTime files have theirs read from the headers) is
+checked before anything is sent. Higgsfield doesn't document what happens to the source's sound,
+so the picker says so. The price is Higgsfield's list price per started second of the part of the
+source that is used: 0.318 USD at 480p, 0.681 USD at 720p and 1.632 USD at 1080p (checked
+2026-10-21). An account's credits can make it cheaper, so the quote is the most a run can cost. A
+source made earlier in the same run, or whose length couldn't be read, leaves the step unpriced
+until it is known. Restyle, whose style presets are a live list, is the next part of #179.
+
 **Inputs.** Kling's image (PNG, JPEG or WebP whose bytes match their type, at most 20 MiB) is
 staged through Higgsfield's upload grant: the adapter asks for an upload link with the key, then
 PUTs the bytes to the storage host **without** the key, with only the grant's content type and
 storage headers (`x-amz-*`, `x-goog-*`). Both links must be public `https`, and the grant must
-name the type asked for. The request names the public link.
+name the type asked for. The request names the public link. A Genjutsu source is staged the same way, first and as
+`video/mp4` (Higgsfield's uploads take no other video type, so convert a QuickTime or WebM clip
+first; planning refuses any other type before anything is sent). Higgsfield takes sources of up to
+200 MiB, but NodeCraft reads at most 64 MiB of media for one job, the source and its images
+together, so keep the source under that. Its reference images follow in order, at most 20 MiB
+each. Uploads may take two minutes plus 8 ms per KiB, enough for a 1 Mbit/s uplink.
 
 **Idempotency and replay.** Each submit carries the run's idempotency key (hashed if Higgsfield
 wouldn't accept it as is). The staged body is kept per key and job, so a retry after a lost reply
@@ -665,7 +684,7 @@ keeps it as possibly billed.
 
 **Status and results.** Polling is every five seconds while queued and three while running. The
 status reply must name the request it was asked about. Status and cancel links in replies are
-ignored: the key only goes to links the adapter builds from the checked request id. Completed SOUL requests return one to four images and Kling one
+ignored: the key only goes to links the adapter builds from the checked request id. Completed SOUL requests return one to four images and the video models one
 MP4; each is downloaded without the key from a public `https` host, checked against the expected
 media type and capped (256 MiB each, 512 MiB together), and saved into the project. Higgsfield keeps
 results for at least seven days, so a failed download is retried on the next poll. Failed,
@@ -674,8 +693,7 @@ moderated (`nsfw`) and cancelled requests report as such.
 **Cancel** works only while a request is queued; once it has started, Higgsfield's 400 with its
 reason is reported as "runs on and is billed". Any other 400 is an ordinary error.
 
-Higgsfield is native only, like the other storage-backed adapters. Genjutsu video editing waits for
-a catalog model that takes a video input; identity training is #180.
+Higgsfield is native only, like the other storage-backed adapters. Identity training is #180.
 
 **Not verified live yet:** the request shapes come from Higgsfield's public docs; whether the
 account can use each model, and the exact upload header set, are untested here.

@@ -209,14 +209,14 @@ pub(super) fn estimate(body: &[u8]) -> Result<Estimate, ProviderError> {
     let micros = v.get("usd").and_then(Value::as_str).and_then(usd).ok_or_else(|| malformed("Higgsfield estimate has no price"))?;
     Ok(Estimate { credits: credits.to_owned(), usd: nodecraft_types::Money::new(nodecraft_types::Currency::USD, micros) })
 }
-/// The downloaded result's type, from its bytes: an image from SOUL, an MP4 from Kling.
+/// The downloaded result's type, from its bytes: an image from SOUL, an MP4 from the video models.
 pub(super) fn media(bytes: &[u8], model: &str) -> Result<&'static str, ProviderError> {
     let sniffed = nodecraft_media::sniff(bytes).map(|s| s.mime);
     let found = match (model, sniffed) {
         (SOUL, Some("image/png")) => "image/png",
         (SOUL, Some("image/jpeg")) => "image/jpeg",
         (SOUL, Some("image/webp")) => "image/webp",
-        (KLING_I2V, Some("video/mp4")) => "video/mp4",
+        (KLING_I2V | MOTION_TRANSFER | OBJECT_SWAP, Some("video/mp4")) => "video/mp4",
         _ => return Err(malformed("Higgsfield returned a different kind of media than the model makes")),
     };
     Ok(found)

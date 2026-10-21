@@ -19,6 +19,7 @@ fn non_inline_required_prompt_must_not_run_from_local_text_only() {
                 inputs: vec![GenerationRole { role: "prompt".into(), modality: Modality::Text, min: 1, max: 1, inline: false }],
                 params: None,
                 audio: None,
+                edit: None,
             }],
         }],
         [1; 32],

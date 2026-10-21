@@ -104,6 +104,7 @@ impl GenerationCatalog {
                 // Validated above: each listed setting is a distinct model setting.
                 let listed = mode.params.iter().flatten().try_fold(0usize, |n, name| add(n, add(name.len(), 64)?))?;
                 let audio = mode.audio.as_ref().map_or(0, |audio| audio.role.len().saturating_add(256));
+                let audio = audio.saturating_add(mode.edit.as_ref().map_or(0, |edit| edit.role.len().saturating_add(256)));
                 *charge = add(*charge, add(listed, audio)?)?;
             }
             if *charge > LIMIT {
@@ -132,6 +133,7 @@ impl GenerationCatalog {
                             .collect(),
                         params: mode.params.clone(),
                         audio: mode.audio.clone(),
+                        edit: mode.edit.clone(),
                     })
                 })
                 .collect::<Result<_, Error>>()?;

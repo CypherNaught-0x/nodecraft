@@ -1,7 +1,7 @@
 //! Model descriptors: what a model makes, from which inputs, with which parameters, at what
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
 use crate::pricing::{Pricing, TokenRates, Unit};
-use nodecraft_types::{AudioDuration, AudioUse, Currency, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues};
+use nodecraft_types::{AudioDuration, AudioUse, Currency, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, VideoEdit};
 use serde::Deserialize;
 
 pub const MAX_MODES: usize = 32;
@@ -53,6 +53,9 @@ pub struct ModeSpec {
     /// How the mode treats its audio input, when it has one.
     #[serde(default)]
     pub audio: Option<AudioUse>,
+    /// The source video edit it makes, when it edits one (#179).
+    #[serde(default)]
+    pub edit: Option<VideoEdit>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -145,6 +148,17 @@ impl ModelDescriptor {
                     return Err(invalid(id, &format!("mode `{}`: `max_ms` is 1 to {MAX_AUDIO_MS}", mode.id)));
                 }
             }
+            if let Some(edit) = &mode.edit {
+                if mode.output != Modality::Video
+                    || !mode.inputs.iter().any(|role| role.role == edit.role && role.modality == Modality::Video && role.min == 1 && role.max == 1)
+                {
+                    return Err(invalid(
+                        id,
+                        &format!("mode `{}` edits `{}`, which isn't its one required video input, or doesn't make a video", mode.id, edit.role),
+                    ));
+                }
+                edit.validate().map_err(|why| invalid(id, &format!("mode `{}`: {why}", mode.id)))?;
+            }
         }
         let styled = self.modes.iter().any(|mode| mode.output == Modality::Style || mode.inputs.iter().any(|role| role.modality == Modality::Style));
         match &self.style_family {
@@ -174,6 +188,27 @@ impl ModelDescriptor {
             }
             if rates.long.as_ref().is_some_and(|long| long.above == 0) {
                 return Err(invalid(id, "`usage.long.above` must be at least 1 prompt token"));
+            }
+        }
+        if let Pricing::PerSourceSecond { param, prices } = &self.pricing {
+            // Every mode edits the same source the same way, so one length prices any of them.
+            let first = self.modes.first().and_then(|mode| mode.edit.as_ref());
+            if first.is_none() || self.modes.iter().any(|mode| mode.edit.as_ref().map(|e| (&e.role, e.uses_ms)) != first.map(|e| (&e.role, e.uses_ms))) {
+                return Err(invalid(id, "pricing per source second needs every mode to edit the same source"));
+            }
+            let options = match self.params.params.iter().find(|spec| spec.name == *param).map(|spec| (&spec.control, &spec.default)) {
+                Some((ParamControl::Choice { options }, Some(_))) => options,
+                _ => return Err(invalid(id, &format!("pricing per source second reads `{param}`, which must be a choice setting with a default"))),
+            };
+            if options.len() != prices.len() || options.iter().any(|option| !prices.contains_key(&option.value)) {
+                return Err(invalid(id, &format!("pricing lists a price for each `{param}` choice, and only those")));
+            }
+            let currency = self.pricing.currency();
+            if prices.values().any(|price| Some(price.0.currency) != currency || price.0.micros == 0) {
+                return Err(invalid(id, "per-second prices are above zero and in one currency"));
+            }
+            if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.contains(param))) {
+                return Err(invalid(id, &format!("mode `{}` doesn't send `{param}`, which pricing reads", mode.id)));
             }
         }
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
@@ -271,6 +306,28 @@ impl ModelDescriptor {
         let resolved = self.params.resolve_view(params, false, true)?;
         let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
         self.pricing.quote_lookup(get, self.pricing.currency().unwrap_or(Currency::USD))
+    }
+
+    /// [`Self::quote_selected`] for a job whose source video is `source_ms` long (#179): a model
+    /// priced per source second counts the part of it the provider uses.
+    pub fn quote_source(&self, params: &ParamValues, source_ms: Option<u64>) -> Result<Option<Money>, Error> {
+        let Pricing::PerSourceSecond { .. } = &self.pricing else { return self.quote_selected(params) };
+        self.validate()?;
+        let used = source_ms.zip(self.edit()).map(|(ms, edit)| edit.used_ms(ms));
+        let currency = self.pricing.currency().unwrap_or(Currency::USD);
+        if let Some(contract) = &self.parameter_contract {
+            let values = contract.resolve_selected(params, false)?.submission()?;
+            return self.pricing.quote_source(|name| values.get(name), used, currency);
+        }
+        let resolved = self.params.resolve_view(params, false, true)?;
+        let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
+        self.pricing.quote_source(get, used, currency)
+    }
+
+    /// The source video edit its modes make (#179); every mode of a model priced per source
+    /// second makes the same one.
+    pub fn edit(&self) -> Option<&VideoEdit> {
+        self.modes.iter().find_map(|mode| mode.edit.as_ref())
     }
 
     pub fn mode(&self, id: &str) -> Option<&ModeSpec> {

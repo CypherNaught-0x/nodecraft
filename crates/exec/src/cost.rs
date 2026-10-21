@@ -38,6 +38,9 @@ pub enum Unpriced {
     UnknownModel(String),
     /// The model is priced by usage (tokens, characters) measured during the run.
     ByUsage(String),
+    /// The model is priced per second of the source video it edits (#179), and that length isn't
+    /// known yet: the source is made earlier in the run, or its length wasn't read.
+    AwaitsSource(String),
     /// The node, its kind, the model or its parameters couldn't be priced.
     Invalid(String),
 }

@@ -34,7 +34,7 @@ fn catalog(count: u64) -> Catalog {
         provider_model: "remote".into(),
         label: "Fixture".into(),
         description: "Fixture".into(),
-        modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![], params: None, audio: None }],
+        modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![], params: None, audio: None, edit: None }],
         params: schema(count),
         pricing: Pricing::PerUnit { unit: Unit::Image, price: Price(Money::new(Currency::USD, 10)), count: Some("count".into()), default_count: None },
         usage: None,
@@ -245,7 +245,7 @@ pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
         provider_model: remote.into(),
         label: "Fixture".into(),
         description: "Fixture".into(),
-        modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![], params: None, audio: None }],
+        modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![], params: None, audio: None, edit: None }],
         params: ParamSchema::default(),
         pricing: Pricing::Free,
         usage: None,
@@ -602,4 +602,33 @@ fn a_narrower_submission_admits_only_jobs_planned_for_its_mode() {
     // Inputs that fit no mode, or a role a mode lacks, fall back to the full submission.
     assert_eq!(selected.mode_of(&[input("speech")]), None);
     assert_eq!(selected.mode_of(&[input("prompt"), input("reference")]), None);
+}
+
+use crate::planner::{InputSource, PlannedInput};
+fn clip(ms: Option<u64>) -> Value {
+    let meta = nodecraft_types::MediaMeta { duration_ms: ms, ..Default::default() };
+    Value::Media(nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([7; 32]), mime: "video/mp4".parse().unwrap(), meta })
+}
+fn source_input(from: InputSource) -> Vec<PlannedInput> {
+    vec![PlannedInput { port: "source".into(), port_type: PortType { modality: Modality::Video, many: false }, from: vec![from], origins: vec![id(2)] }]
+}
+
+#[test]
+fn a_source_edit_is_quoted_at_its_longest_known_source() {
+    let mut step = plan(None).steps.remove(0);
+    step.inputs = source_input(InputSource::Value(clip(Some(5_000))));
+    assert_eq!(source_ms(&step, "source"), Some(5_000));
+    assert_eq!(source_ms(&step, "other"), None);
+    // A one-item list is that item.
+    step.inputs = source_input(InputSource::Value(Value::List(vec![clip(Some(4_200))])));
+    assert_eq!(source_ms(&step, "source"), Some(4_200));
+    // A source made earlier in the run isn't known yet.
+    step.inputs = source_input(InputSource::Step { node: id(2), port: "out".into(), list: false });
+    assert_eq!(source_ms(&step, "source"), None);
+    // A fanned step is quoted at its longest item, and one unknown item leaves it unknown.
+    let cells = |lengths: &[Option<u64>]| lengths.iter().map(|ms| source_input(InputSource::Value(clip(*ms)))).collect();
+    step.fanout = Some(crate::planner::Fanout { items: vec![], cells: cells(&[Some(4_000), Some(31_000), Some(9_000)]), jobs: vec![], resume: None });
+    assert_eq!(source_ms(&step, "source"), Some(31_000));
+    step.fanout = Some(crate::planner::Fanout { items: vec![], cells: cells(&[Some(4_000), None]), jobs: vec![], resume: None });
+    assert_eq!(source_ms(&step, "source"), None);
 }

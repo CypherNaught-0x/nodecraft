@@ -5,6 +5,10 @@ use serde_json::{Map, Value, json};
 
 pub(super) const ASPECTS: [&str; 7] = ["9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2"];
 pub(super) const RESOLUTIONS: [&str; 2] = ["720p", "1080p"];
+/// Genjutsu output resolutions; its price per source second depends on it.
+pub(super) const EDIT_RESOLUTIONS: [&str; 3] = ["480p", "720p", "1080p"];
+/// Reference images a Genjutsu edit takes, in order.
+pub(super) const EDIT_IMAGES: usize = 8;
 pub(super) const SEEDS: std::ops::RangeInclusive<u64> = 1..=1_000_000;
 
 pub(super) struct Image<'a> {
@@ -17,6 +21,8 @@ pub(super) struct Prepared<'a> {
     pub count: u64,
     /// Everything but staged inputs, which [`Prepared::body`] adds.
     fields: Map<String, Value>,
+    /// A Genjutsu source video, staged first.
+    pub video: Option<Image<'a>>,
     pub images: Vec<Image<'a>>,
 }
 fn mime(m: &str) -> Option<&'static str> {
@@ -82,20 +88,45 @@ fn kling(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), Provi
     fields.entry("negative_prompt").or_insert_with(|| json!(""));
     Ok(())
 }
+fn genjutsu(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(), ProviderError> {
+    // Sent explicitly: the price depends on it.
+    let mut resolution = "720p";
+    for (name, value) in &job.params {
+        match name.as_str() {
+            "resolution" => resolution = text(value, "resolution", &EDIT_RESOLUTIONS)?,
+            _ => return Err(invalid("unknown Higgsfield Genjutsu option")),
+        }
+    }
+    fields.insert("resolution".into(), json!(resolution));
+    Ok(())
+}
+fn edits(model: &str) -> bool {
+    model == MOTION_TRANSFER || model == OBJECT_SWAP
+}
 pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, ProviderError> {
     let model = match job.model.as_str() {
         SOUL => SOUL,
         KLING_I2V => KLING_I2V,
-        _ => return Err(invalid("choose Higgsfield SOUL 2 or Kling 2.5 Turbo Pro image to video")),
+        MOTION_TRANSFER => MOTION_TRANSFER,
+        OBJECT_SWAP => OBJECT_SWAP,
+        _ => return Err(invalid("choose a Higgsfield model this version supports")),
     };
-    if job.inputs.len() > 3 || job.params.len() > 8 {
-        return Err(invalid("Higgsfield takes a prompt and at most one image"));
+    let most = if edits(model) { EDIT_IMAGES + 2 } else { 3 };
+    if job.inputs.len() > most || job.params.len() > 8 {
+        return Err(invalid(if edits(model) {
+            "a Higgsfield Genjutsu edit takes a prompt, one source video and at most 8 images"
+        } else {
+            "Higgsfield takes a prompt and at most one image"
+        }));
     }
     let mut fields = Map::new();
+    let mut video = None;
     let mut images = Vec::new();
-    images.try_reserve_exact(1).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
+    images.try_reserve_exact(if edits(model) { EDIT_IMAGES } else { 1 }).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
     for input in &job.inputs {
         match input {
+            // A Genjutsu prompt is optional; an empty one is left out.
+            JobInput::Text { role, text } if role == "prompt" && edits(model) && text.trim().is_empty() => {}
             JobInput::Text { role, text } if (role == "prompt" || (role == "negative_prompt" && model == KLING_I2V)) && !fields.contains_key(role.as_str()) => {
                 if (role == "prompt" && text.trim().is_empty()) || !chars(text, l.prompt_chars) {
                     let what = if role == "prompt" { "a Higgsfield prompt has 1" } else { "a Higgsfield negative prompt has 0" };
@@ -103,7 +134,19 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
                 }
                 fields.insert(role.clone(), json!(text));
             }
-            JobInput::Media { role, mime: m, bytes } if role == "image" && model == KLING_I2V && images.is_empty() => {
+            JobInput::Media { role, mime: m, bytes } if role == "source" && edits(model) && video.is_none() => {
+                // Higgsfield's uploads take MP4 only.
+                if m != "video/mp4" || nodecraft_media::sniff(bytes).map(|s| s.mime) != Some("video/mp4") {
+                    return Err(invalid("Higgsfield takes the source video as an MP4; convert it first"));
+                }
+                if bytes.len() > l.video_bytes {
+                    return Err(invalid(format!("a Higgsfield source video must be under {} MiB", l.video_bytes.div_ceil(MIB))));
+                }
+                video = Some(Image { mime: "video/mp4", bytes });
+            }
+            JobInput::Media { role, mime: m, bytes }
+                if role == "image" && ((model == KLING_I2V && images.is_empty()) || (edits(model) && images.len() < EDIT_IMAGES)) =>
+            {
                 let mime = mime(m).ok_or_else(|| invalid("Higgsfield takes PNG, JPEG or WebP images"))?;
                 if bytes.is_empty() || bytes.len() > l.input_bytes {
                     return Err(invalid(format!("a Higgsfield image must be under {} MiB", l.input_bytes.div_ceil(MIB))));
@@ -116,10 +159,16 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
             _ => return Err(invalid("this Higgsfield model doesn't take that input")),
         }
     }
-    if !fields.contains_key("prompt") {
+    if !fields.contains_key("prompt") && !edits(model) {
         return Err(invalid("a Higgsfield model needs a prompt"));
     }
-    let count = if model == SOUL {
+    let count = if edits(model) {
+        if video.is_none() || images.is_empty() {
+            return Err(invalid("a Higgsfield Genjutsu edit needs a source video and at least one image"));
+        }
+        genjutsu(job, &mut fields)?;
+        1
+    } else if model == SOUL {
         soul(job, &mut fields)?
     } else {
         if images.len() != 1 {
@@ -128,16 +177,21 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         kling(job, &mut fields)?;
         1
     };
-    Ok(Prepared { model, count, fields, images })
+    Ok(Prepared { model, count, fields, video, images })
 }
 impl Prepared<'_> {
-    /// The request body, given each image's staged public URL (in `images` order).
-    pub fn body(&self, urls: &[String]) -> Result<Value, ProviderError> {
-        if urls.len() != self.images.len() {
+    /// The request body, given the staged source video's public URL and each image's (in
+    /// `images` order).
+    pub fn body(&self, video: Option<&str>, urls: &[String]) -> Result<Value, ProviderError> {
+        if urls.len() != self.images.len() || video.is_some() != self.video.is_some() {
             return Err(malformed("Higgsfield upload count disagrees with the job"));
         }
         let mut body = self.fields.clone();
-        if let Some(url) = urls.first() {
+        if let Some(video) = video {
+            // Genjutsu: the images are ordered references.
+            body.insert("video_url".into(), json!(video));
+            body.insert("image_urls".into(), json!(urls));
+        } else if let Some(url) = urls.first() {
             body.insert("image_url".into(), json!(url));
         }
         Ok(Value::Object(body))
