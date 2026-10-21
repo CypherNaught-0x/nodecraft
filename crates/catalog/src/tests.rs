@@ -94,6 +94,29 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             let mut short = ParamValues::new();
             short.insert("max_tokens".into(), Value::Unsigned(Unsigned(1000)));
             assert_eq!(model.quote(&short).unwrap(), Some(Money::new(Currency::USD, per_thousand)), "{}", model.id);
+        } else if model.provider == "elevenlabs" {
+            // ElevenLabs pricing page, checked 2026-10-21.
+            match model.id.as_str() {
+                // Speech per 1000 characters, known only once the text is: no quote before the run.
+                "elevenlabs.v3" | "elevenlabs.multilingual-v2" | "elevenlabs.flash-v2-5" => {
+                    let Pricing::PerUnit { unit: Unit::ThousandCharacters, price, count: None, default_count: None } = &model.pricing else {
+                        panic!("{}: {:?}", model.id, model.pricing)
+                    };
+                    let micros = if model.id == "elevenlabs.flash-v2-5" { 40_000 } else { 80_000 };
+                    assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
+                    assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+                }
+                "elevenlabs.sound-effects" => assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 120_000))),
+                // 0.15 USD a minute, 30 seconds by default.
+                "elevenlabs.music" => {
+                    assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 75_000)));
+                    let mut long = ParamValues::new();
+                    long.insert("duration".into(), Value::Unsigned(Unsigned(600)));
+                    assert_eq!(model.quote(&long).unwrap(), Some(Money::new(Currency::USD, 1_500_000)));
+                }
+                "elevenlabs.voice-changer" => assert_eq!(model.quote(&ParamValues::new()).unwrap(), None),
+                other => panic!("{other}: no verified price in this test"),
+            }
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -162,6 +185,12 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-opus-5-5", false),
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
+            ("elevenlabs.v3", false),
+            ("elevenlabs.multilingual-v2", false),
+            ("elevenlabs.music", false),
+            ("elevenlabs.sound-effects", false),
+            ("elevenlabs.voice-changer", false),
+            ("elevenlabs.flash-v2-5", false),
             ("fal.flux-lora", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),

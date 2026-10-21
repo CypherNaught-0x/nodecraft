@@ -21,6 +21,8 @@ pub mod comfy_cloud;
 #[cfg(feature = "comfyui")]
 pub mod comfyui;
 mod delivery;
+#[cfg(feature = "elevenlabs")]
+pub mod elevenlabs;
 mod error;
 #[cfg(feature = "fal")]
 pub mod fal;
