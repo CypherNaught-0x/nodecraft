@@ -128,6 +128,8 @@ pub struct Tokens {
     pub toolbar_height: f32,
     pub toolbar_gap: f32,
     pub viewer_width: f32,
+    /// The PDF reader's thumbnail column width (#590).
+    pub reader_thumb_width: f32,
     /// The sheet table (#163): its narrow checkbox and number columns, every other column but
     /// the prompt, the canvas list's height in the Sheets panel, and its title field's width.
     pub sheet_index_width: f32,
@@ -237,6 +239,7 @@ pub const DARK: Tokens = Tokens {
     toolbar_height: 32.0,
     toolbar_gap: 10.0,
     viewer_width: 720.0,
+    reader_thumb_width: 112.0,
     sheet_index_width: 32.0,
     sheet_column_width: 120.0,
     sheet_list_height: 320.0,

@@ -83,6 +83,8 @@ hayro = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e63
 hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
 hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
 hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+# craft-pdf's writer (page extraction, #590) requires its unwind-safe Krilla patch.
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", version = "=0.8.2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

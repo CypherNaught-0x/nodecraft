@@ -72,3 +72,30 @@ fn hostile_inputs_are_errors() {
     let encrypted = String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", "/Root 1 0 R /Encrypt << /Filter /Standard /V 9 /R 9 >> /ID [<00> <00>]");
     assert!(Document::open(encrypted.as_bytes(), &limits).is_err());
 }
+
+#[test]
+fn a_page_extracts_into_a_pdf_of_its_own_that_reads_the_same() {
+    let bytes = pdf(&["BT /F1 12 Tf 20 150 Td (First) Tj ET", "BT /F1 12 Tf 20 150 Td (Second page) Tj ET 0 0 1 rg 0 0 50 50 re f"]);
+    let doc = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    let page = doc.extract_page(1).unwrap();
+    let copy = Document::open(&page, &DocumentLimits::default()).unwrap();
+    assert_eq!(copy.page_count(), 1);
+    assert_eq!(copy.text(0).unwrap(), "Second page");
+    assert_eq!(copy.render(0, 300, [255; 4]).unwrap(), doc.render(1, 300, [255; 4]).unwrap(), "the copy draws as the original page");
+    assert!(doc.extract_page(2).is_err(), "page 3 doesn't exist");
+    assert!(doc.extract_page(u32::MAX).is_err());
+}
+
+#[test]
+fn text_in_a_region_keeps_only_the_glyphs_starting_there() {
+    // The page is 300 x 200 points; y grows up in PDF space, down in a region.
+    let bytes = pdf(&["BT /F1 12 Tf 20 150 Td (Top left) Tj ET BT /F1 12 Tf 200 30 Td (Bottom right) Tj ET"]);
+    let reader_doc = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    let reader = reader_doc.reader();
+    assert_eq!(reader.text_in(0, None).unwrap(), "Top left\nBottom right");
+    assert_eq!(reader.text_in(0, Some([0.0, 0.0, 0.5, 0.5])).unwrap(), "Top left");
+    assert_eq!(reader.text_in(0, Some([1.0, 1.0, 0.5, 0.5])).unwrap(), "Bottom right", "corners in either order");
+    assert_eq!(reader.text_in(0, Some([0.4, 0.4, 0.45, 0.45])).unwrap(), "");
+    assert_eq!(reader.text_in(0, Some([-5.0, -5.0, 9.0, 9.0])).unwrap(), "Top left\nBottom right", "clamped to the page");
+    assert!(reader.text_in(0, Some([f64::NAN, 0.0, 1.0, 1.0])).is_err());
+}

@@ -37,7 +37,11 @@ pub fn bucket(edge: f32) -> u32 {
     BUCKETS.into_iter().find(|b| *b as f32 >= edge).or(BUCKETS.last().copied()).unwrap_or(512)
 }
 
-type Key = (Blake3, u32);
+/// Edge lengths, in pixels, a PDF reader's pages are drawn at: thumbnails, then the page.
+pub const PAGE_BUCKETS: [u32; 3] = [256, 1024, 2048];
+
+/// An asset, the edge it is drawn at and its page (from 0; always 0 for an image).
+type Key = (Blake3, u32, u32);
 
 enum Input {
     Resident(std::sync::Arc<[u8]>),
@@ -69,13 +73,13 @@ fn read_message(reason: nodecraft_format::PreviewReadError) -> &'static str {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn consume(input: Input, edge: u32, cancel: &nodecraft_format::asset_source::TransferCancel) -> Completion {
+fn consume(input: Input, edge: u32, page: u32, cancel: &nodecraft_format::asset_source::TransferCancel) -> Completion {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &input {
-        Input::Resident(bytes) => Completion::Finished(decode(bytes, edge)),
+        Input::Resident(bytes) => Completion::Finished(decode(bytes, edge, page)),
         #[cfg(test)]
         Input::Panic { entered, proceed } => tests::panic_attempt(entered, proceed),
         Input::Asset(source) => match source.read_verified(cancel, &Default::default()) {
-            Ok(bytes) => Completion::Finished(decode(&bytes, edge)),
+            Ok(bytes) => Completion::Finished(decode(&bytes, edge, page)),
             Err(nodecraft_format::PreviewReadError::Busy) => Completion::Busy,
             Err(why) => Completion::Finished(Err(read_message(why))),
         },
@@ -83,7 +87,7 @@ fn consume(input: Input, edge: u32, cancel: &nodecraft_format::asset_source::Tra
     .unwrap_or(Completion::Finished(Err("Can't preview this image")))
     // Input and any bounded encoded buffer are dropped before the result is enqueued.
 }
-fn inline_input(input: Input, edge: u32) -> Result<DecodedPreview, &'static str> {
+fn inline_input(input: Input, edge: u32, page: u32) -> Result<DecodedPreview, &'static str> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let bytes = match &input {
             Input::Resident(bytes) => bytes.as_ref(),
@@ -101,7 +105,7 @@ fn inline_input(input: Input, edge: u32) -> Result<DecodedPreview, &'static str>
         if decoded.is_ok_and(|n| n > MAX_INLINE_PIXEL_BYTES) {
             return Err("Preview not available here");
         }
-        decode(bytes, edge)
+        decode(bytes, edge, page)
     }))
     .unwrap_or(Err("Can't preview this image"))
 }
@@ -125,19 +129,24 @@ struct DecodedPreview {
     source_size: [u32; 2],
 }
 
-/// A thumbnail decoded from `bytes` at most `edge` pixels on its longer side. A panic inside the
-/// image decoder is caught and reported as a failure, so one bad file can't stop previews.
-fn decode(bytes: &[u8], edge: u32) -> Result<DecodedPreview, &'static str> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_unguarded(bytes, edge))).unwrap_or(Err("Can't preview this image"))
+/// A thumbnail decoded from `bytes` at most `edge` pixels on its longer side (a PDF's page `page`,
+/// from 0). A panic inside the decoder is caught and reported as a failure, so one bad file can't
+/// stop previews.
+fn decode(bytes: &[u8], edge: u32, page: u32) -> Result<DecodedPreview, &'static str> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_unguarded(bytes, edge, page))).unwrap_or(Err("Can't preview this image"))
 }
 
-fn decode_unguarded(bytes: &[u8], edge: u32) -> Result<DecodedPreview, &'static str> {
-    // A PDF's preview is its first page (#113), drawn over white at the thumbnail's size.
+fn decode_unguarded(bytes: &[u8], edge: u32, page: u32) -> Result<DecodedPreview, &'static str> {
+    // A PDF's card preview is its first page (#113), the reader's any page (#590), drawn over
+    // white at the thumbnail's size.
     if bytes.starts_with(b"%PDF-") {
         let document = nodecraft_media::Document::open(bytes, &Default::default()).map_err(|_| "Can't preview this PDF")?;
-        let page = document.render(0, edge, [255, 255, 255, 255]).map_err(|_| "Can't preview this PDF")?;
+        let page = document.render(page, edge, [255, 255, 255, 255]).map_err(|_| "Can't preview this PDF")?;
         let size = [usize::try_from(page.width).map_err(|_| "Can't preview this PDF")?, usize::try_from(page.height).map_err(|_| "Can't preview this PDF")?];
         return Ok(DecodedPreview { image: ColorImage::from_rgba_unmultiplied(size, &page.rgba), source_size: [page.width, page.height] });
+    }
+    if page != 0 {
+        return Err("Can't preview this image");
     }
     let (meta, image) = decode_image(bytes, &limits()).map_err(|_| "Can't preview this image")?;
     let thumb = thumbnail(&image, edge).map_err(|_| "Can't preview this image")?;
@@ -184,7 +193,7 @@ mod worker {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
-                        let result = consume(input, edge, &active_cancel);
+                        let result = consume(input, edge, key.2, &active_cancel);
                         let wake = !matches!(result, Completion::Busy);
                         if send.send((key, result)).is_err() {
                             break;
@@ -309,7 +318,7 @@ impl Previews {
             Ok(DecodedPreview { image, source_size }) => {
                 let size = [u32::try_from(image.size[0]).unwrap_or(u32::MAX), u32::try_from(image.size[1]).unwrap_or(u32::MAX)];
                 let bytes = image.size[0].saturating_mul(image.size[1]).saturating_mul(4);
-                let texture = ctx.load_texture(format!("preview-{:?}-{}", key.0, key.1), image, TextureOptions::LINEAR);
+                let texture = ctx.load_texture(format!("preview-{:?}-{}-{}", key.0, key.1, key.2), image, TextureOptions::LINEAR);
                 self.bytes = self.bytes.saturating_add(bytes);
                 Entry::Ready { texture, size, source_size, bytes, used: self.clock }
             }
@@ -344,7 +353,7 @@ impl Previews {
     /// The preview for asset `hash` at about `edge` pixels. `bytes` reads the asset, and is only
     /// called when a decode is about to start.
     pub fn request(&mut self, ctx: &egui::Context, hash: Blake3, edge: f32, bytes: impl FnOnce() -> Option<Vec<u8>>) -> Preview {
-        self.request_input(ctx, hash, edge, || {
+        self.request_input(ctx, (hash, bucket(edge), 0), &BUCKETS, || {
             let data = bytes().ok_or(CaptureError::Missing)?;
             if data.len() as u64 > limits().max_input_bytes {
                 return Err(CaptureError::Failed("Preview not available here"));
@@ -361,15 +370,34 @@ impl Previews {
         edge: f32,
         source: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
     ) -> Preview {
-        self.request_input(ctx, hash, edge, || match source() {
+        self.request_input(ctx, (hash, bucket(edge), 0), &BUCKETS, || match source() {
             Ok(input) if input.hash() == hash => Ok(Input::Asset(input)),
             Ok(_) => Err(CaptureError::Failed("Can't preview this image")),
             Err(nodecraft_format::PreviewReadError::Missing) => Err(CaptureError::Missing),
             Err(why) => Err(CaptureError::Failed(read_message(why))),
         })
     }
-    fn request_input(&mut self, ctx: &egui::Context, hash: Blake3, edge: f32, source: impl FnOnce() -> Result<Input, CaptureError>) -> Preview {
-        let wanted = (hash, bucket(edge));
+    /// Page `page` (from 0) of the PDF asset `hash`, drawn at about `edge` pixels on its longer
+    /// side (one of [`PAGE_BUCKETS`]), for the PDF reader (#590).
+    pub fn request_page(
+        &mut self,
+        ctx: &egui::Context,
+        hash: Blake3,
+        page: u32,
+        edge: f32,
+        source: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
+    ) -> Preview {
+        let edge = if edge.is_finite() { edge.max(0.0) } else { 0.0 };
+        let size = PAGE_BUCKETS.into_iter().find(|b| *b as f32 >= edge).unwrap_or(2048);
+        self.request_input(ctx, (hash, size, page), &PAGE_BUCKETS, || match source() {
+            Ok(input) if input.hash() == hash => Ok(Input::Asset(input)),
+            Ok(_) => Err(CaptureError::Failed("Can't preview this PDF")),
+            Err(nodecraft_format::PreviewReadError::Missing) => Err(CaptureError::Missing),
+            Err(why) => Err(CaptureError::Failed(read_message(why))),
+        })
+    }
+    fn request_input(&mut self, ctx: &egui::Context, wanted: Key, sizes: &[u32], source: impl FnOnce() -> Result<Input, CaptureError>) -> Preview {
+        let (hash, _, page) = wanted;
         let busy = self.busy_this_frame.contains(&Some(wanted));
         let clock = self.clock;
         let mut show = None;
@@ -385,8 +413,8 @@ impl Previews {
             None => missing = self.start(ctx, wanted, source),
         }
         // While a sharper one decodes, any other size of the same image will do.
-        for bucket in BUCKETS.into_iter().rev() {
-            if let Some(Entry::Ready { texture, size, source_size, used, .. }) = self.entries.get_mut(&(hash, bucket)) {
+        for bucket in sizes.iter().rev() {
+            if let Some(Entry::Ready { texture, size, source_size, used, .. }) = self.entries.get_mut(&(hash, *bucket, page)) {
                 *used = clock;
                 show = Some(Preview::Ready { texture: texture.id(), size: *size, source_size: *source_size });
                 break;
@@ -436,7 +464,7 @@ impl Previews {
         }
         // No worker: only immutable resident bytes may decode inline. Lazy content
         // is unsupported here, regardless of how small its descriptor is.
-        self.finish(ctx, key, inline_input(input, key.1));
+        self.finish(ctx, key, inline_input(input, key.1, key.2));
         false
     }
 
@@ -453,7 +481,7 @@ impl Previews {
         {
             previews.worker_failed = true;
         }
-        previews.finish(ctx, (hash, edge), decode(bytes, edge));
+        previews.finish(ctx, (hash, edge, 0), decode(bytes, edge, 0));
         previews
     }
 }

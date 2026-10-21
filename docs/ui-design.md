@@ -328,3 +328,10 @@ Pastes over the minimap or its toolbar use the unobscured canvas center; ordinar
 retain their target. No finite unobscured region means refusal. Both node groups and plain Text
 use actual admitted instance body geometry, including renderer placeholder refusal. Duplicate
 uses the `duplicate_offset` theme token in world coordinates.
+
+## PDF reader
+
+The PDF reader (#590) is a window over one PDF: thumbnails `reader_thumb_width` (112 screen points)
+wide on the left, the page on the right, zoomed from 50% to 400%. Pages have a 1-point `card_stroke` edge so a white
+page shows on a light window; the current thumbnail is outlined in the accent colour. Dragging over the page selects a rectangle drawn with `marquee_fill` and
+`marquee_stroke`, the canvas's box-select tokens; "New Text node from selection" reads the text inside it.
