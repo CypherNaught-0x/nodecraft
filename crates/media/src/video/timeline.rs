@@ -653,7 +653,8 @@ fn picture(g: &mut String, k: usize, media: Media<'_>, span: &Span, frame: Frame
     write!(g, "[{out}];").map_err(|_| VideoError::Limit)
 }
 /// The filters that give a BT.709 `yuv444p` picture its look, each followed by a comma; none for
-/// [`Look::NONE`]. All work on YUV, so no conversion to RGB guesses at a colour matrix.
+/// [`Look::NONE`]. Brightness goes through RGB
+/// (`lutrgb`, converted with the BT.709 matrix the picture is tagged with); the rest work on YUV.
 fn look(look: &Look) -> String {
     let mut chain = String::new();
     if look.brightness != 0 {

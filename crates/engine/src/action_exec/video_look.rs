@@ -160,6 +160,7 @@ fn job(action: &str, params: &ParamValues, inputs: usize) -> Result<Job, String>
 /// Where a `size` picture's top-left corner goes in a `frame` so that it sits at column (or
 /// row) `spot` of 0 to 2, `margin` pixels in from the edge it is near, on an even pixel within
 /// the frame.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn corner(spot: u8, size: u32, frame: u32, margin: u32) -> u32 {
     let room = frame.saturating_sub(size);
     let at = match spot {
@@ -292,7 +293,8 @@ mod native {
                             let style = draw::CaptionStyle {
                                 text: &text,
                                 font: nodecraft_actions::layers::BUILTIN_FONT,
-                                size: (f64::from(size.1) * f64::from(tall) / 1000.0).max(nodecraft_actions::layers::MIN_TEXT_SIZE),
+                                size: (f64::from(size.1) * f64::from(tall) / 1000.0)
+                                    .clamp(nodecraft_actions::layers::MIN_TEXT_SIZE, nodecraft_actions::layers::MAX_TEXT_SIZE),
                                 align: [Align::Left, Align::Center, Align::Right].get(usize::from(spot.0)).copied().unwrap_or(Align::Center),
                                 vertical: draw::Vertical::Middle,
                                 color: [r, g, b, alpha],
