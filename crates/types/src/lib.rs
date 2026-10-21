@@ -5,6 +5,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 mod asset;
+mod audio_use;
 mod contract;
 mod error;
 mod ids;
@@ -16,6 +17,7 @@ mod units;
 mod value;
 
 pub use asset::{AssetRef, Blake3, MediaMeta, Mime};
+pub use audio_use::{AudioDuration, AudioOverrun, AudioSound, AudioUse, MAX_AUDIO_MS, seconds};
 pub use contract::{
     Affects, Check, Comparison, Condition, ConnectedText, Contract, ContractVersion, DefaultPolicy, DropReason, Dropped, Effective, HiddenPolicy, Issue,
     IssueCode, MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, Migration, NoOptions, OptionKey, OptionLists, OptionLookup, OptionSource, ParamOptions,

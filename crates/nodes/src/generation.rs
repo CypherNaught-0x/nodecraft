@@ -1,5 +1,6 @@
 //! Catalog-neutral production generation: image (`generation.image`), text (`generation.text`,
-//! #84) and 3D (`generation.mesh`, #22) cards over the same contract. Engine compiles the
+//! #84), 3D (`generation.mesh`, #22) and video (`generation.video`, #559) cards over the same
+//! contract. Engine compiles the
 //! validated catalog into these immutable definitions; this L2 module never depends on catalog
 //! or a provider.
 use crate::{
@@ -8,8 +9,8 @@ use crate::{
 };
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
-    ConnectedText, Contract, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema, ParamSpec, ParamValues, PortType, ResolvedParams,
-    TextPrecedence, Value, compose_text,
+    AudioOverrun, AudioUse, ConnectedText, Contract, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema, ParamSpec, ParamValues,
+    PortType, ResolvedParams, TextPrecedence, Value, compose_text,
 };
 use std::{
     borrow::Cow,
@@ -21,6 +22,8 @@ pub const KIND: &str = "generation.image";
 pub const TEXT_KIND: &str = "generation.text";
 /// A 3D generation card: a prompt or images in, one 3D model out (#22).
 pub const MESH_KIND: &str = "generation.mesh";
+/// A video generation card: a prompt, frames or audio in, one clip out (#559).
+pub const VIDEO_KIND: &str = "generation.video";
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
 /// Longest typed prompt a generation card holds, in bytes.
@@ -29,7 +32,7 @@ const MAX_PROMPTS: usize = 1024;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
 pub fn is_generation(kind: &str) -> bool {
-    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND
+    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND || kind == VIDEO_KIND
 }
 /// The generation kind whose cards make `output`, if there is one.
 pub fn kind_for(output: Modality) -> Option<&'static str> {
@@ -37,6 +40,7 @@ pub fn kind_for(output: Modality) -> Option<&'static str> {
         Modality::Image => Some(KIND),
         Modality::Text => Some(TEXT_KIND),
         Modality::Mesh => Some(MESH_KIND),
+        Modality::Video => Some(VIDEO_KIND),
         _ => None,
     }
 }
@@ -54,6 +58,16 @@ pub struct GenerationRole {
 pub struct GenerationMode {
     pub id: ModeId,
     pub inputs: Vec<GenerationRole>,
+    /// The model settings this mode sends; `None` sends them all (#559).
+    pub params: Option<Vec<String>>,
+    /// How the mode treats its audio input, when it has one.
+    pub audio: Option<AudioUse>,
+}
+impl GenerationMode {
+    /// Whether this mode sends the model setting `name`.
+    pub fn sends(&self, name: &str) -> bool {
+        self.params.as_ref().is_none_or(|names| names.iter().any(|n| n == name))
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GenerationModel {
@@ -106,6 +120,7 @@ fn base(id: &'static str, output: Modality) -> NodeDescriptor {
         label: match output {
             Modality::Text => "Generate text",
             Modality::Mesh => "Generate 3D",
+            Modality::Video => "Generate video",
             _ => "Generate image",
         }
         .into(),
@@ -122,6 +137,7 @@ fn noun(output: Modality) -> &'static str {
     match output {
         Modality::Text => "text",
         Modality::Mesh => "3D",
+        Modality::Video => "video",
         _ => "image",
     }
 }
@@ -144,6 +160,10 @@ impl GenerationKind {
     /// 3D generation: each model's modes here all make one 3D model.
     pub fn mesh(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
         Self::making(Modality::Mesh, models, snapshot)
+    }
+    /// Video generation: each model's modes here all make one clip.
+    pub fn video(models: Vec<GenerationModel>, snapshot: [u8; 32]) -> Result<Self, Error> {
+        Self::making(Modality::Video, models, snapshot)
     }
     /// What this kind's cards make.
     pub fn output(&self) -> Modality {
@@ -196,6 +216,18 @@ impl GenerationKind {
                         return Err(invalid("one input role has different modalities"));
                     }
                 }
+                if mode.params.as_ref().is_some_and(|names| {
+                    names.len() > model.parameters.schema.params.len()
+                        || names.iter().any(|name| !model.parameters.schema.params.iter().any(|spec| spec.name == *name))
+                }) {
+                    return Err(bad(output, "a {noun} mode lists a setting its model doesn't have"));
+                }
+                if mode.audio.as_ref().is_some_and(|audio| {
+                    !mode.inputs.iter().any(|role| role.role == audio.role && role.modality == Modality::Audio)
+                        || audio.max_ms.is_some_and(|ms| ms == 0 || ms > nodecraft_types::MAX_AUDIO_MS)
+                }) {
+                    return Err(bad(output, "a {noun} mode describes audio it doesn't take"));
+                }
             }
             for (role, modality) in &roles {
                 if role != PROMPT {
@@ -232,6 +264,7 @@ impl GenerationKind {
                             PortCount { port: port.name.clone(), min, max: Some(max) }
                         })
                         .collect(),
+                    params: mode.params.clone(),
                 })
                 .collect();
             descriptor.validate()?;
@@ -393,6 +426,7 @@ impl NodeKind for GenerationKind {
         let mode = match self.output {
             Modality::Text => "text-to-text",
             Modality::Mesh => "text-to-mesh",
+            Modality::Video => "text-to-video",
             _ => "text-to-image",
         };
         inputs.iter().all(|p| p.modality == Modality::Text).then(|| ModeId::new(mode).ok()).flatten()
@@ -461,6 +495,9 @@ impl NodeKind for GenerationKind {
             return Err(said(ErrorKind::Unsupported, self.output, "this {noun} model requires unsupported input roles"));
         }
         let media = self.media(mode, &inputs)?;
+        if let Some(audio) = &mode.audio {
+            audio_fits(audio, &media)?;
+        }
         let prompt = match mode.inputs.iter().find(|r| r.role == PROMPT && r.modality == Modality::Text) {
             Some(role) => Some(self.prompt(role, ctx, &inputs, &mentioned)?),
             // A mode without a prompt (image to 3D) takes its media alone; its declared counts
@@ -473,7 +510,10 @@ impl NodeKind for GenerationKind {
             .targets
             .get(ctx.node.id, &definition.model.provider)
             .ok_or_else(|| said(ErrorKind::Unsupported, self.output, "{noun} provider route is not configured"))?;
-        let params = definition.model.parameters.resolve_selected(&ctx.node.params, true)?.submission()?;
+        // A mode that doesn't take a setting (an audio-driven clip has no duration) never sends
+        // it, whatever the card holds; the card keeps it for the modes that do.
+        let mut params = definition.model.parameters.resolve_selected(&ctx.node.params, true)?.submission()?;
+        params.retain(|name, _| mode.sends(name));
         Ok(vec![JobSpec::Generate {
             node: ctx.node.id,
             outputs: vec![GenerateOutput { port: "out".into(), modality: self.output }],
@@ -525,6 +565,29 @@ impl GenerationKind {
         }
         Ok(prompt)
     }
+}
+
+/// Refuses audio longer than the mode takes when the model can't trim it, before anything is
+/// sent or charged. Audio whose length is unknown goes through; the provider still checks it.
+fn audio_fits(audio: &AudioUse, media: &[GenerateInput]) -> Result<(), Error> {
+    let Some(max) = audio.max_ms.filter(|_| audio.longer == AudioOverrun::Refuse) else { return Ok(()) };
+    for input in media.iter().filter(|input| input.role == audio.role) {
+        if let Value::Media(asset) = &input.value
+            && let Some(ms) = asset.meta.duration_ms.filter(|ms| *ms > max)
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "the {} audio is {} long and this mode takes at most {}; trim it first",
+                    audio.role,
+                    // Rounded up, so a track just over the limit never reads as the limit.
+                    nodecraft_types::seconds(ms.div_ceil(100).saturating_mul(100)),
+                    nodecraft_types::seconds(max)
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The text each @mentioned card brings, by card.

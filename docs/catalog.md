@@ -34,6 +34,22 @@ default = { type = "unsigned", value = "1" }
   field when nothing is wired (a wired text input replaces it). The picker enables a model when
   one of its modes takes what is wired into the node; otherwise it shows why (e.g. "Takes at
   most 1 image input"), naming the closest mode's mildest problem.
+- **What a mode sends, and its audio (#559).** `params = ["seed"]` on a mode lists the only
+  model settings that mode sends. A lip-sync mode whose clip follows its speech has no
+  `duration`, for example. While that mode is the wired one, the card hides the other settings
+  but keeps their values, and run admission accepts the narrower submission exactly. Without
+  `params` a mode sends every setting. Every listed name must be one of the model's
+  parameters, and a mode with a list must include any parameter that pricing counts.
+  `audio = { role = "speech", duration = "follows_audio", max_ms = 30000, longer = "refuse",
+  sound = "input" }` describes how a mode treats one of its audio inputs:
+  - `duration`: `follows_audio` or `fixed`.
+  - `max_ms`: the longest track it takes, 1 ms to 1 hour.
+  - `longer`: what happens to a longer track. `refuse` (the default) stops the run before
+    anything is sent and asks the user to trim it; `provider_trims` lets the provider cut it.
+  - `sound`: the result's soundtrack, `input`, `generated` or `silent`.
+
+  The picker shows this per mode. A track's length is only checked when it's known; unknown
+  lengths go to the provider.
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.

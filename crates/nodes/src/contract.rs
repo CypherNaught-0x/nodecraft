@@ -64,6 +64,17 @@ pub struct PortCount {
 pub struct ModeContract {
     pub mode: ModeId,
     pub inputs: Vec<PortCount>,
+    /// The settings this mode sends, when it sends only some (#559); `None` sends them all.
+    /// Surfaces hide the others while this mode is the wired one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Vec<String>>,
+}
+
+impl ModeContract {
+    /// Whether this mode sends the setting `name`.
+    pub fn sends(&self, name: &str) -> bool {
+        self.params.as_ref().is_none_or(|names| names.iter().any(|n| n == name))
+    }
 }
 
 /// Everything a surface needs to describe, check and edit one node kind.
@@ -169,6 +180,16 @@ impl NodeContract {
                     || input.max.is_some_and(|limit| count.min > limit)
                 {
                     return Err(invalid("a mode needs a wire count its input cannot hold"));
+                }
+            }
+            if let Some(names) = &mode.params {
+                let mut seen = BTreeSet::new();
+                for name in names {
+                    if !seen.insert(name.as_str())
+                        || !std::iter::once(&self.params).chain(&self.owned_groups).any(|group| group.schema.params.iter().any(|param| param.name == *name))
+                    {
+                        return Err(invalid("a mode lists a setting the node does not have, or lists one twice"));
+                    }
                 }
             }
         }

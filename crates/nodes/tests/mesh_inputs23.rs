@@ -19,7 +19,7 @@ fn model(id: &str, inputs: Vec<GenerationRole>) -> GenerationModel {
         provider: "meshy".into(),
         remote: id.into(),
         parameters: Contract::from_schema(id, ParamOwner::Model, ParamSchema::default()),
-        modes: vec![GenerationMode { id: ModeId::new(id).unwrap(), inputs }],
+        modes: vec![GenerationMode { id: ModeId::new(id).unwrap(), inputs, params: None, audio: None }],
     }
 }
 fn kind() -> GenerationKind {

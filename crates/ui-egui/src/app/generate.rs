@@ -578,14 +578,7 @@ fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Option<Mode> {
     if contract.modes.len() < 2 {
         return None;
     }
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for edge in canvas.edges().values().filter(|edge| edge.to.node == node.id) {
-        if contract.inputs.iter().any(|input| input.port == edge.to.port) {
-            let items = canvas.nodes().get(&edge.from.node).and_then(|from| held(from, &edge.from.port)).unwrap_or(1);
-            let count = counts.entry(edge.to.port.as_str()).or_default();
-            *count = count.saturating_add(items);
-        }
-    }
+    let counts = admission::wire_counts(canvas, &contract, node);
     let media = |port: &str| node.inputs.iter().any(|input| input.name == port && input.port_type.modality != nodecraft_types::Modality::Text);
     let references = contract.modes.iter().any(|mode| mode.inputs.iter().any(|input| media(&input.port)));
     match contract.resolve_mode(&counts, false) {
@@ -598,20 +591,6 @@ fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Option<Mode> {
         Ok(None) => None,
         Err(error) => Some(Mode::NoFit(error.message)),
     }
-}
-
-/// How many items `node`'s output `port` holds in its shown result, lists flattened.
-fn held(node: &Node, port: &str) -> Option<usize> {
-    fn items(value: &Value, depth: usize) -> usize {
-        match value {
-            Value::List(values) if depth < 4 => values.iter().fold(0usize, |total, value| total.saturating_add(items(value, depth.saturating_add(1)))),
-            Value::List(_) => 0,
-            _ => 1,
-        }
-    }
-    let at = node.outputs.iter().position(|output| output.name == port)?;
-    let shown = node.history.iter().find(|generation| Some(generation.id) == node.active)?;
-    shown.outputs.get(at).map(|value| items(value, 0))
 }
 
 /// A strength slider in the toolbar. A drag is one edit, made when it ends: the value being

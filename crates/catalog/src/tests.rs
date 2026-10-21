@@ -516,3 +516,56 @@ fn token_rates_must_match_a_paid_price_and_name_a_real_threshold() {
     assert!(Catalog::from_toml(&with(&format!("{pricing}\nusage = {{ input = \"0.002 USD\" }}"))).is_err(), "both rates");
     assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0 USD" }"#)).is_err(), "a paid reply costs something");
 }
+
+/// PRICED with a speech mode appended, and `extra` spliced into that mode.
+fn with_speech_mode(extra: &str) -> Result<Catalog, nodecraft_types::Error> {
+    let speech = format!(
+        r#"
+[[model.modes]]
+id = "speech-to-video"
+output = "video"
+inputs = [{{ role = "prompt", modality = "text", min = 0, max = 1 }}, {{ role = "portrait", modality = "image", min = 1, max = 1 }}, {{ role = "speech", modality = "audio", min = 1, max = 1 }}]
+{extra}
+"#
+    );
+    // The mode goes before the params so TOML keeps it in the same model.
+    let at = PRICED.find("[[model.params.params]]").unwrap();
+    Catalog::from_toml(&format!("{}{speech}{}", &PRICED[..at], &PRICED[at..]))
+}
+
+#[test]
+fn a_mode_may_send_only_some_settings_and_describe_its_audio() {
+    let catalog = with_speech_mode(
+        r#"params = ["duration", "seed"]
+audio = { role = "speech", duration = "fixed", max_ms = 30000, sound = "input" }"#,
+    )
+    .unwrap();
+    let model = catalog.get("test.video").unwrap();
+    let mode = model.modes.iter().find(|mode| mode.id == "speech-to-video").unwrap();
+    assert_eq!(mode.params.as_deref(), Some(&["duration".to_owned(), "seed".to_owned()][..]));
+    let audio = mode.audio.as_ref().unwrap();
+    assert_eq!((audio.max_ms, audio.longer), (Some(30_000), nodecraft_types::AudioOverrun::Refuse), "refusing is the default");
+    assert!(model.modes.iter().filter(|mode| mode.id != "speech-to-video").all(|mode| mode.params.is_none() && mode.audio.is_none()));
+}
+
+#[test]
+fn bad_mode_settings_and_audio_are_rejected_with_a_reason() {
+    let speech = r#"audio = { role = "speech", duration = "fixed", sound = "input" }"#;
+    for (extra, reason) in [
+        (r#"params = ["duration", "fps"]"#, "doesn't have"),
+        (r#"params = ["duration", "duration"]"#, "twice"),
+        // Pricing counts `duration`: a mode that never sends it can't be quoted.
+        (r#"params = ["seed"]"#, "which pricing counts"),
+        (r#"audio = { role = "portrait", duration = "fixed", sound = "silent" }"#, "audio inputs"),
+        (r#"audio = { role = "speech", duration = "fixed", max_ms = 0, sound = "input" }"#, "max_ms"),
+        (r#"audio = { role = "speech", duration = "fixed", max_ms = 3600001, sound = "input" }"#, "max_ms"),
+        (r#"audio = { role = "speech", duration = "sometimes", sound = "input" }"#, ""),
+        // Priced per second of `duration`, but the clip runs as long as the speech.
+        (r#"audio = { role = "speech", duration = "follows_audio", sound = "input" }"#, "follows its audio"),
+        (r#"audio = { role = "speech", duration = "fixed", sound = "input", loud = true }"#, ""),
+    ] {
+        let error = with_speech_mode(extra).unwrap_err();
+        assert!(error.message.contains(reason), "{extra}: {}", error.message);
+    }
+    assert!(with_speech_mode(speech).is_ok());
+}

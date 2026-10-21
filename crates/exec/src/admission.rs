@@ -63,12 +63,59 @@ struct Selected {
     remote: String,
     schema: ParamSchema,
     semantic: bool,
+    /// Each mode's input roles as `(role, min, max)`, in catalog order, to tell which mode a
+    /// job was planned for (#559).
+    modes: Vec<Vec<(String, u8, u8)>>,
 }
+impl Selected {
+    /// The one mode `inputs` fit, as the planner chose it; none when no mode or several fit.
+    fn mode_of(&self, inputs: &[nodecraft_nodes::GenerateInput]) -> Option<usize> {
+        let count = |role: &str| inputs.iter().filter(|i| i.role == role).count();
+        let mut fitting = self.modes.iter().enumerate().filter(|(_, roles)| {
+            inputs.iter().all(|i| roles.iter().any(|(role, _, _)| *role == i.role))
+                && roles.iter().all(|(role, min, max)| (usize::from(*min)..=usize::from(*max)).contains(&count(role)))
+        });
+        match (fitting.next(), fitting.next()) {
+            (Some((index, _)), None) => Some(index),
+            _ => None,
+        }
+    }
+}
+/// Seed parameters a submission draws, with each one's upper bound (#162).
+type Seeds = Vec<(String, Option<nodecraft_types::Unsigned>)>;
 struct Allowed {
     id: String,
     expected: ParamValues,
     /// Seeds the run draws for this submission, with each one's upper bound (#162).
-    seeds: Vec<(String, Option<nodecraft_types::Unsigned>)>,
+    seeds: Seeds,
+    /// The narrower submissions of modes that send only some settings (#559), by mode index,
+    /// each with its seeds. A job planned for that mode matches it exactly; defaults are never
+    /// filled back in.
+    narrowed: Vec<(usize, ParamValues, Seeds)>,
+}
+impl Allowed {
+    fn new(model: &ModelDescriptor, expected: ParamValues, seeds: Seeds) -> Self {
+        let mut narrowed = Vec::new();
+        for (index, names) in model.modes.iter().enumerate().filter_map(|(i, mode)| Some((i, mode.params.as_ref()?))) {
+            let sends = |name: &String| names.contains(name);
+            let params: ParamValues = expected.iter().filter(|(k, _)| sends(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+            let drawn: Vec<_> = seeds.iter().filter(|(k, _)| sends(k)).cloned().collect();
+            if params != expected || drawn != seeds {
+                narrowed.push((index, params, drawn));
+            }
+        }
+        Self { id: model.id.clone(), expected, seeds, narrowed }
+    }
+    /// The admitted submission a job with `inputs` is meant to send: the narrower one of the
+    /// mode it was planned for, else the full one. Another mode's narrower settings never
+    /// admit it.
+    fn submission(&self, model: &Selected, inputs: &[nodecraft_nodes::GenerateInput]) -> (&ParamValues, &[(String, Option<nodecraft_types::Unsigned>)], bool) {
+        let mode = model.mode_of(inputs);
+        match self.narrowed.iter().find(|(index, _, _)| Some(*index) == mode) {
+            Some((_, narrow, seeds)) => (narrow, seeds, true),
+            None => (&self.expected, &self.seeds, false),
+        }
+    }
 }
 pub(crate) struct Witness {
     models: BTreeMap<String, Selected>,
@@ -132,7 +179,7 @@ impl Witness {
         Ok(())
     }
     fn candidate<'a>(&'a self, node: NodeId, job: &'a JobSpec) -> Result<Option<nodecraft_types::BorrowedResolvedParams<'a>>, Error> {
-        let JobSpec::Generate { provider, instance, model, params, .. } = job else { return Ok(None) };
+        let JobSpec::Generate { provider, instance, model, params, inputs, .. } = job else { return Ok(None) };
         if self.targets.get(node, provider).is_none_or(|target| target.instance() != *instance) {
             return Err(invalid());
         }
@@ -145,11 +192,12 @@ impl Witness {
             if measure::scratch(&s.schema)? > self.scratch {
                 return Err(cap());
             }
-            let v = if s.semantic {
+            let (expected, _, narrowed) = a.submission(s, inputs);
+            let v = if s.semantic || narrowed {
                 // The source's shared Contract was resolved before admission. A generated
                 // job must match that EXACT submission; applying defaults here would revive
                 // disabled/hidden settings. Equality only traverses admitted scalar values.
-                if params.len() != a.expected.len() || params.iter().any(|(k, v)| a.expected.get(k) != Some(v)) {
+                if params.len() != expected.len() || params.iter().any(|(k, v)| expected.get(k) != Some(v)) {
                     continue;
                 }
                 nodecraft_types::BorrowedResolvedParams {
@@ -160,8 +208,8 @@ impl Witness {
                 let Ok(v) = s.schema.resolve_view(params, true, false) else { continue };
                 v
             };
-            let same = v.values.iter().filter(|(k, _)| v.visible.contains(**k)).count() == a.expected.len()
-                && v.values.iter().filter(|(k, _)| v.visible.contains(**k)).all(|(k, v)| a.expected.get(*k) == Some(*v));
+            let same = v.values.iter().filter(|(k, _)| v.visible.contains(**k)).count() == expected.len()
+                && v.values.iter().filter(|(k, _)| v.visible.contains(**k)).all(|(k, v)| expected.get(*k) == Some(*v));
             if !same {
                 continue;
             }
@@ -179,16 +227,17 @@ impl Witness {
     /// The seeds to draw for a normalized `job` of `node`: those of the admitted submission it
     /// is, which every matching submission must agree on.
     pub(crate) fn seeds(&self, node: NodeId, job: &JobSpec) -> Result<&[(String, Option<nodecraft_types::Unsigned>)], Error> {
-        let JobSpec::Generate { provider, model, params, .. } = job else { return Ok(&[]) };
+        let JobSpec::Generate { provider, model, params, inputs, .. } = job else { return Ok(&[]) };
         let mut chosen: Option<&[(String, Option<nodecraft_types::Unsigned>)]> = None;
         for a in self.steps.get(&node).into_iter().flatten() {
             let s = self.models.get(&a.id).ok_or_else(invalid)?;
-            if !s.semantic || s.provider != *provider || s.remote != *model || a.expected != *params {
+            let (expected, seeds, _) = a.submission(s, inputs);
+            if !s.semantic || s.provider != *provider || s.remote != *model || expected != params {
                 continue;
             }
             match chosen {
-                Some(prior) if prior != a.seeds.as_slice() => return Err(invalid()),
-                _ => chosen = Some(&a.seeds),
+                Some(prior) if prior != seeds => return Err(invalid()),
+                _ => chosen = Some(seeds),
             }
         }
         Ok(chosen.unwrap_or(&[]))
@@ -487,7 +536,9 @@ pub fn admit_run_with_targets(
             let expected = model.params.resolve_view(&s.source.params, true, true).map_err(|_| blocked(s.node, BlockerReason::CatalogMismatch))?;
             measure::resolved(&expected)?
         };
-        witness_size = add(witness_size, add(size_of::<Allowed>(), add(model.id.len(), expected_charge)?)?)?;
+        // Each mode that sends only some settings may keep one narrower copy as well.
+        let copies = add(1, model.modes.iter().filter(|mode| mode.params.is_some()).count())?;
+        witness_size = add(witness_size, add(size_of::<Allowed>(), add(model.id.len(), mul(copies, expected_charge)?)?)?)?;
     }
     witness_size = add(witness_size, mul(plan.steps.len(), size_of::<(NodeId, Vec<Allowed>)>() + measure::LINK)?)?;
     let limit = limits.witness_bytes.min(MAX_WITNESS_BYTES);
@@ -527,10 +578,11 @@ pub fn admit_run_with_targets(
             remote: model.provider_model.clone(),
             schema: model.params.clone(),
             semantic: model.parameter_contract.is_some(),
+            modes: model.modes.iter().map(|mode| mode.inputs.iter().map(|i| (i.role.clone(), if i.inline { 0 } else { i.min }, i.max)).collect()).collect(),
         });
         let expected = model.effective_params(&s.source.params, true).map_err(safe_error)?;
         let seeds = model.random_seeds(&s.source.params, true).map_err(safe_error)?;
-        witness.steps.entry(s.node).or_default().push(Allowed { id: model.id.clone(), expected, seeds });
+        witness.steps.entry(s.node).or_default().push(Allowed::new(model, expected, seeds));
     }
     for step in &plan.steps {
         usage.reserve(step.node, add(measure::step(step)?, size_of::<(NodeId, usize)>() + measure::LINK)?)?;
