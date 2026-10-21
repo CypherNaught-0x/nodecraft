@@ -1,4 +1,4 @@
-//! Bounded fal queue adapter for seven explicitly selected live model aliases.
+//! Bounded fal queue adapter for nine explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 mod json;
 mod limits;
@@ -7,6 +7,8 @@ mod media;
 mod native_tests;
 mod request;
 mod response;
+#[cfg(test)]
+mod style_tests;
 #[cfg(test)]
 mod tests;
 use crate::secrets::Secret;
@@ -27,6 +29,12 @@ pub const WAN_S2V: &str = "fal-ai/wan/v2.2-14b/speech-to-video";
 pub const KOKORO: &str = "fal-ai/kokoro/american-english";
 pub const TRELLIS: &str = "fal-ai/trellis-2";
 pub const ESRGAN: &str = "fal-ai/esrgan";
+/// FLUX.1 [dev] LoRA training from a few images (#167); its result is a style descriptor.
+pub const FLUX_LORA_TRAINER: &str = "fal-ai/flux-lora-fast-training";
+/// FLUX.1 [dev] with a trained style (#167).
+pub const FLUX_LORA: &str = "fal-ai/flux-lora";
+/// The base-model family both train for and take, as their catalog entries name it.
+pub const STYLE_FAMILY: &str = "flux-1";
 const ORIGIN: &str = "https://queue.fal.run";
 fn invalid(s: &'static str) -> ProviderError {
     ProviderError::new(ErrorKind::UnsupportedInput, s)
@@ -94,6 +102,10 @@ enum Model {
     Audio,
     Mesh,
     Upscale,
+    /// Trains a style from images; the weights stay with fal.
+    Train,
+    /// Text to image with a style fal trained.
+    Styled,
 }
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
@@ -105,7 +117,9 @@ impl Model {
             KOKORO => Ok(Self::Audio),
             TRELLIS => Ok(Self::Mesh),
             ESRGAN => Ok(Self::Upscale),
-            _ => Err(invalid("choose one of the seven supported fal models")),
+            FLUX_LORA_TRAINER => Ok(Self::Train),
+            FLUX_LORA => Ok(Self::Styled),
+            _ => Err(invalid("choose one of the nine supported fal models")),
         }
     }
     fn wire(self) -> &'static str {
@@ -117,6 +131,8 @@ impl Model {
             Self::Audio => KOKORO,
             Self::Mesh => TRELLIS,
             Self::Upscale => ESRGAN,
+            Self::Train => FLUX_LORA_TRAINER,
+            Self::Styled => FLUX_LORA,
         }
     }
     /// Whether the model makes one MP4 clip.
@@ -130,7 +146,13 @@ impl Model {
             Self::Audio => "fal-ai/kokoro",
             Self::Mesh => TRELLIS,
             Self::Upscale => ESRGAN,
+            Self::Train => FLUX_LORA_TRAINER,
+            Self::Styled => FLUX_LORA,
         }
+    }
+    /// Whether the model makes FLUX images, which fal lists under `images`.
+    fn images(self) -> bool {
+        matches!(self, Self::Image | Self::Styled)
     }
 }
 #[derive(Clone, Copy)]
@@ -173,15 +195,21 @@ fn routes(model: Model, id: &str, r: &Routes<'_>, key: &Secret) -> Result<(), Pr
     Ok(())
 }
 impl Record {
-    fn handle(self, id: &str, r: &Routes<'_>) -> JobHandle {
-        JobHandle {
-            remote_id: id.into(),
-            data: serde_json::json!({"v":1,"model":self.model.wire(),"requested":self.requested,"width":self.width,"height":self.height,"status_url":r.status,"response_url":r.result,"cancel_url":r.cancel}),
+    /// A training's handle also keeps its trigger word, which fal's result doesn't repeat but its
+    /// style descriptor needs.
+    fn handle(self, id: &str, r: &Routes<'_>, trigger: &str) -> JobHandle {
+        let mut data = serde_json::json!({"v":1,"model":self.model.wire(),"requested":self.requested,"width":self.width,"height":self.height,"status_url":r.status,"response_url":r.result,"cancel_url":r.cancel});
+        if self.model == Model::Train
+            && let Some(o) = data.as_object_mut()
+        {
+            o.insert("trigger".into(), trigger.into());
         }
+        JobHandle { remote_id: id.into(), data }
     }
-    fn read<'a>(h: &'a JobHandle, key: &Secret) -> Result<(Self, Routes<'a>), ProviderError> {
+    fn read<'a>(h: &'a JobHandle, key: &Secret) -> Result<(Self, Routes<'a>, &'a str), ProviderError> {
         id(&h.remote_id, key)?;
-        let o = h.data.as_object().filter(|o| o.len() == 8).ok_or_else(|| invalid("fal invalid handle record"))?;
+        let train = h.data.get("model").and_then(|v| v.as_str()) == Some(FLUX_LORA_TRAINER);
+        let o = h.data.as_object().filter(|o| o.len() == 8 + usize::from(train)).ok_or_else(|| invalid("fal invalid handle record"))?;
         let text = |k: &str| o.get(k).and_then(|v| v.as_str()).ok_or_else(|| invalid("fal invalid handle field"));
         if o.get("v").and_then(|v| v.as_u64()) != Some(1) {
             return Err(invalid("fal unsupported handle version"));
@@ -194,7 +222,7 @@ impl Record {
             width: num("width")?,
             height: num("height")?,
         };
-        if !(1..=if model == Model::Image { 4 } else { 1 }).contains(&record.requested)
+        if !(1..=if model.images() { 4 } else { 1 }).contains(&record.requested)
             || (model == Model::Upscale
                 && (record.width == 0
                     || record.height == 0
@@ -208,7 +236,11 @@ impl Record {
         }
         let r = Routes { status: text("status_url")?.into(), result: text("response_url")?.into(), cancel: text("cancel_url")?.into() };
         routes(model, &h.remote_id, &r, key)?;
-        Ok((record, r))
+        let trigger = if train { text("trigger")? } else { "" };
+        if !request::trigger_word(trigger) {
+            return Err(invalid("fal invalid handle trigger"));
+        }
+        Ok((record, r, trigger))
     }
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -268,6 +300,7 @@ impl Fal {
     }
     async fn create(&self, j: &ProviderJob, context: Option<&crate::SubmitContext>) -> Result<Submission, ProviderError> {
         let (record, body) = request::prepare(j, self.limits)?;
+        let trigger = request::trigger(j)?;
         let request = self.auth(HttpRequest {
             method: HttpMethod::Post,
             body,
@@ -310,7 +343,7 @@ impl Fal {
             Ok(urls)
         });
         match (receipt, admitted) {
-            (Ok(i), Ok(urls)) => Ok(Submission::Queued(record.handle(&i, &urls))),
+            (Ok(i), Ok(urls)) => Ok(Submission::Queued(record.handle(&i, &urls, trigger))),
             (Ok(i), Err(mut e)) => {
                 let cancel = format!("{ORIGIN}/{}/requests/{i}/cancel", record.model.root());
                 let outcome = match self.cancel_route(&cancel).await {
@@ -330,7 +363,7 @@ impl Fal {
         }
     }
     async fn progress(&self, h: &JobHandle) -> Result<JobProgress, ProviderError> {
-        let (record, urls) = Record::read(h, &self.key)?;
+        let (record, urls, trigger) = Record::read(h, &self.key)?;
         let r = self
             .http
             .send_no_redirect(self.auth(HttpRequest::get(urls.status.as_ref()).max_response_bytes(self.limits.response_bytes)))
@@ -360,17 +393,32 @@ impl Fal {
                 }
                 drop(o);
                 drop(r);
-                self.download(record, &urls.result).await.map(JobProgress::Done)
+                self.download(record, &urls.result, trigger).await.map(JobProgress::Done)
             }
             _ => Err(malformed("fal unknown queue status")),
         }
     }
-    async fn download(&self, record: Record, url: &str) -> Result<Completed, ProviderError> {
+    async fn download(&self, record: Record, url: &str, trigger: &str) -> Result<Completed, ProviderError> {
         let r = self.http.send_no_redirect(self.auth(HttpRequest::get(url).max_response_bytes(self.limits.response_bytes))).await.map_err(transport)?;
         status(&r, self.limits.response_bytes)?;
         let files = response::outputs(&r.body, record, self.limits, &self.key)?;
         let billable_units = response::billable_units(&r);
         drop(r);
+        if record.model == Model::Train {
+            // The weights stay with fal: the result is the descriptor naming them, never the file.
+            let weights = files.into_iter().next().ok_or_else(|| malformed("fal trained weights missing"))?;
+            let style = nodecraft_media::style::Style {
+                provider: "fal".into(),
+                trainer: FLUX_LORA_TRAINER.into(),
+                family: STYLE_FAMILY.into(),
+                trigger: trigger.into(),
+                weights: weights.url,
+            };
+            let bytes = nodecraft_media::style::encode(&style).map_err(|_| malformed("fal trained weights link refused"))?;
+            let mut done = Completed::new(vec![Output::Bytes { mime: nodecraft_media::style::MIME.into(), bytes: Arc::from(bytes) }]);
+            done.usage.billable_units = billable_units;
+            return Ok(done);
+        }
         let mut outputs = Vec::new();
         reserve(&mut outputs, files.len())?;
         let mut remaining = self.limits.total_output_bytes;
@@ -395,7 +443,7 @@ impl Fal {
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if matches!(record.model, Model::Image | Model::Upscale) && (f.width.is_some() || f.height.is_some()) {
+            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale) && (f.width.is_some() || f.height.is_some()) {
                 let meta =
                     nodecraft_media::probe_image(&reply.body, &self.limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
@@ -430,7 +478,7 @@ impl Provider for Fal {
     }
     fn cancel<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
-            let (_, r) = Record::read(h, &self.key)?;
+            let (_, r, _) = Record::read(h, &self.key)?;
             self.cancel_route(&r.cancel).await.map(|_| ())
         })
     }
