@@ -1,8 +1,8 @@
 //! Captures (#112): a model drawn offscreen, the way the viewer draws it, and read back as RGBA
 //! pixels for a photo or a view sheet. Blocking, for the worker thread that computes actions.
 //! Every GPU call runs inside error scopes, an error none of them caught marks the capturer
-//! broken, and a capture that outlasts [`TIMEOUT`] leaves it unusable, so the next capture
-//! starts on a fresh one.
+//! broken, and a view that outlasts its time leaves it unusable, so the next capture starts on a
+//! fresh one.
 use super::{GpuMesh, MeshData, MeshRenderer, MeshUploadError, Target, View};
 use crate::scoped;
 use futures::FutureExt;
@@ -10,8 +10,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Longest one view may take to draw and read back.
-pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longest a whole capture (every view of a sheet) may take to draw and read back; callers share
+/// it between their views.
+pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// Why a capture failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub enum CaptureError {
     Model(MeshUploadError),
     /// The GPU refused the work or was lost.
     Device,
-    /// The GPU took longer than [`TIMEOUT`].
+    /// The GPU took longer than the capture's time.
     Busy,
     /// The image couldn't be read back.
     Mapping,
@@ -108,9 +109,10 @@ impl MeshCapture {
         self.renderer.target(&self.device, size).ok_or(CaptureError::Device)
     }
 
-    /// Draws `mesh` into `target` as `view` shows it and reads the image back: `target`'s size,
-    /// RGBA8 rows top to bottom, sRGB, straight (not premultiplied) alpha.
-    pub fn render(&self, mesh: &GpuMesh, target: &Target, view: &View) -> Result<Vec<u8>, CaptureError> {
+    /// Draws `mesh` into `target` as `view` shows it and reads the image back within `timeout`:
+    /// `target`'s size, RGBA8 rows top to bottom, sRGB, straight (not premultiplied) alpha.
+    /// `view`'s background and line colours must be premultiplied by their alpha.
+    pub fn render(&self, mesh: &GpuMesh, target: &Target, view: &View, timeout: std::time::Duration) -> Result<Vec<u8>, CaptureError> {
         if self.is_lost() {
             return Err(CaptureError::Device);
         }
@@ -148,7 +150,7 @@ impl MeshCapture {
             self.lost.store(true, Ordering::Release);
             return Err(CaptureError::Device);
         }
-        if self.device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: Some(TIMEOUT) }).is_err() {
+        if self.device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: Some(timeout) }).is_err() {
             self.lost.store(true, Ordering::Release);
             return Err(CaptureError::Busy);
         }
@@ -170,9 +172,9 @@ impl MeshCapture {
     }
 }
 
-/// Undoes the premultiplication a multisample resolve leaves at a model's edges over a
-/// transparent background: the resolve averages linear colour with transparent black, so an
-/// edge pixel's colour is scaled by its coverage. Opaque and empty pixels are unchanged.
+/// Turns premultiplied pixels straight: the multisample resolve averages linear colour, so a
+/// model's edge over a (premultiplied) translucent background comes out scaled by its alpha.
+/// Opaque and empty pixels are unchanged.
 pub fn unpremultiply(pixels: &mut [u8]) {
     let decode = |v: u8| {
         let v = f32::from(v) / 255.0;

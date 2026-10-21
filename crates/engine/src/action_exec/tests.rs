@@ -438,3 +438,42 @@ fn a_view_sheet_lays_its_views_out_in_a_grid_and_turns_either_way() {
     params.insert("count".into(), Value::Text("5".into()));
     assert!(actions.execute(nodecraft_nodes::mesh::VIEWS, &params, std::slice::from_ref(&model)).unwrap_err().contains("4, 8 or 16"));
 }
+
+#[test]
+fn each_tile_of_a_view_sheet_is_the_photo_from_its_angle_in_reading_order() {
+    // A right triangle looks different from every quarter turn.
+    let triangle = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 2 3\nf 1 3 4\n";
+    let mut assets = AssetStore::default();
+    let model = Value::Media(AssetRef { hash: assets.insert(triangle).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets);
+    let kinds = Registry::builtins().unwrap();
+    let side = 48u32;
+    let rgba = |asset: &AssetRef| {
+        let bytes = actions.staged().get(&asset.hash).unwrap().to_vec();
+        nodecraft_media::decode_image(&bytes, &nodecraft_media::Limits::default()).unwrap().1.to_rgba8().into_raw()
+    };
+    for (direction, turn) in [("ccw", 1.0), ("cw", -1.0)] {
+        let mut sheet = defaults(&kinds, nodecraft_nodes::mesh::VIEWS);
+        sheet.insert("count".into(), Value::Text("4".into()));
+        sheet.insert("start".into(), Value::Number(nodecraft_types::Number::new(30.0).unwrap()));
+        sheet.insert("direction".into(), Value::Text(direction.into()));
+        sheet.insert("size".into(), Value::Unsigned(nodecraft_types::Unsigned(u64::from(side))));
+        let Some(sheet) = capture(&actions, nodecraft_nodes::mesh::VIEWS, &sheet, &model) else { return };
+        let sheet = rgba(&sheet);
+        let row = side as usize * 4;
+        for index in 0..4usize {
+            let mut photo = defaults(&kinds, nodecraft_nodes::mesh::PHOTO);
+            let yaw = 30.0 + turn * 90.0 * index as f64;
+            photo.insert("yaw".into(), Value::Number(nodecraft_types::Number::new(yaw).unwrap()));
+            photo.insert("width".into(), Value::Unsigned(nodecraft_types::Unsigned(u64::from(side))));
+            photo.insert("height".into(), Value::Unsigned(nodecraft_types::Unsigned(u64::from(side))));
+            let photo = rgba(&capture(&actions, nodecraft_nodes::mesh::PHOTO, &photo, &model).unwrap());
+            // Tile `index` of a 2 × 2 sheet: left to right, then top to bottom.
+            let (x, y) = (index % 2, index / 2);
+            let tile: Vec<u8> = (0..side as usize).flat_map(|line| sheet[(y * side as usize + line) * row * 2 + x * row..][..row].iter().copied()).collect();
+            // Angles reach the GPU by slightly different float paths; allow a few edge pixels.
+            let differing = tile.iter().zip(&photo).filter(|(a, b)| a.abs_diff(**b) > 8).count();
+            assert!(differing * 100 < tile.len(), "{direction} tile {index}: {differing} bytes differ");
+        }
+    }
+}
