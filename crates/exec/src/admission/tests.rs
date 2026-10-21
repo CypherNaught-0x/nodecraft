@@ -566,3 +566,30 @@ fn each_job_of_a_step_draws_its_own_seed() {
         sent.iter().map(|work| if let JobSpec::Generate { params, .. } = work { params.get("seed").cloned().unwrap() } else { panic!() }).collect();
     assert_ne!(seeds[0], seeds[1]);
 }
+
+/// A job takes a mode's narrower settings only when its inputs fit that mode (#559): a
+/// text-to-video job that leaves out `duration` doesn't pass as the speech mode's submission.
+#[test]
+fn a_narrower_submission_admits_only_jobs_planned_for_its_mode() {
+    use nodecraft_nodes::GenerateInput;
+    let selected = Selected {
+        provider: "mock".into(),
+        remote: "remote".into(),
+        schema: ParamSchema::default(),
+        semantic: false,
+        // text-to-video: an inline prompt; speech-to-video: prompt, portrait and speech.
+        modes: vec![vec![("prompt".into(), 0, 1)], vec![("prompt".into(), 0, 1), ("portrait".into(), 1, 1), ("speech".into(), 1, 1)]],
+    };
+    let full: ParamValues = [("duration".into(), Value::Unsigned(Unsigned(5))), ("seed".into(), Value::Unsigned(Unsigned(7)))].into();
+    let narrow: ParamValues = [("seed".into(), Value::Unsigned(Unsigned(7)))].into();
+    let allowed = Allowed { id: "m".into(), expected: full.clone(), seeds: vec![], narrowed: vec![(1, narrow.clone(), vec![])] };
+    let input = |role: &str| GenerateInput { role: role.into(), value: Value::Text(String::new()) };
+
+    let (expected, _, narrowed) = allowed.submission(&selected, &[input("prompt")]);
+    assert_eq!((expected, narrowed), (&full, false), "text to video is admitted with every setting");
+    let (expected, _, narrowed) = allowed.submission(&selected, &[input("prompt"), input("portrait"), input("speech")]);
+    assert_eq!((expected, narrowed), (&narrow, true), "the speech mode's job sends only its settings");
+    // Inputs that fit no mode, or a role a mode lacks, fall back to the full submission.
+    assert_eq!(selected.mode_of(&[input("speech")]), None);
+    assert_eq!(selected.mode_of(&[input("prompt"), input("reference")]), None);
+}

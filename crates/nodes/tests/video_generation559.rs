@@ -149,6 +149,8 @@ fn speech_longer_than_the_model_takes_is_refused_before_sending() {
     assert_eq!(error.kind, ErrorKind::InvalidInput);
     assert_eq!(error.message, "the speech audio is 42.5 s long and this mode takes at most 30 s; trim it first");
     assert!(plan(&[picture("portrait", 5), voice(Some(30_000))]).is_ok(), "exactly the limit fits");
+    let error = plan(&[picture("portrait", 5), voice(Some(30_001))]).unwrap_err();
+    assert_eq!(error.message, "the speech audio is 30.1 s long and this mode takes at most 30 s; trim it first", "just over reads as over");
     // An unknown length goes through: the provider checks it.
     assert!(plan(&[picture("portrait", 5), voice(None)]).is_ok());
     // A model that trims long audio itself takes it.

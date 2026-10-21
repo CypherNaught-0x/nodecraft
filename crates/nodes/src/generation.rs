@@ -580,7 +580,8 @@ fn audio_fits(audio: &AudioUse, media: &[GenerateInput]) -> Result<(), Error> {
                 format!(
                     "the {} audio is {} long and this mode takes at most {}; trim it first",
                     audio.role,
-                    nodecraft_types::seconds(ms),
+                    // Rounded up, so a track just over the limit never reads as the limit.
+                    nodecraft_types::seconds(ms.div_ceil(100).saturating_mul(100)),
                     nodecraft_types::seconds(max)
                 ),
             ));

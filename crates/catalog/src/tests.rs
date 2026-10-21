@@ -537,7 +537,7 @@ inputs = [{{ role = "prompt", modality = "text", min = 0, max = 1 }}, {{ role = 
 fn a_mode_may_send_only_some_settings_and_describe_its_audio() {
     let catalog = with_speech_mode(
         r#"params = ["duration", "seed"]
-audio = { role = "speech", duration = "follows_audio", max_ms = 30000, sound = "input" }"#,
+audio = { role = "speech", duration = "fixed", max_ms = 30000, sound = "input" }"#,
     )
     .unwrap();
     let model = catalog.get("test.video").unwrap();
@@ -550,16 +550,18 @@ audio = { role = "speech", duration = "follows_audio", max_ms = 30000, sound = "
 
 #[test]
 fn bad_mode_settings_and_audio_are_rejected_with_a_reason() {
-    let speech = r#"audio = { role = "speech", duration = "follows_audio", sound = "input" }"#;
+    let speech = r#"audio = { role = "speech", duration = "fixed", sound = "input" }"#;
     for (extra, reason) in [
         (r#"params = ["duration", "fps"]"#, "doesn't have"),
         (r#"params = ["duration", "duration"]"#, "twice"),
         // Pricing counts `duration`: a mode that never sends it can't be quoted.
         (r#"params = ["seed"]"#, "which pricing counts"),
         (r#"audio = { role = "portrait", duration = "fixed", sound = "silent" }"#, "audio inputs"),
-        (r#"audio = { role = "speech", duration = "follows_audio", max_ms = 0, sound = "input" }"#, "max_ms"),
-        (r#"audio = { role = "speech", duration = "follows_audio", max_ms = 3600001, sound = "input" }"#, "max_ms"),
+        (r#"audio = { role = "speech", duration = "fixed", max_ms = 0, sound = "input" }"#, "max_ms"),
+        (r#"audio = { role = "speech", duration = "fixed", max_ms = 3600001, sound = "input" }"#, "max_ms"),
         (r#"audio = { role = "speech", duration = "sometimes", sound = "input" }"#, ""),
+        // Priced per second of `duration`, but the clip runs as long as the speech.
+        (r#"audio = { role = "speech", duration = "follows_audio", sound = "input" }"#, "follows its audio"),
         (r#"audio = { role = "speech", duration = "fixed", sound = "input", loud = true }"#, ""),
     ] {
         let error = with_speech_mode(extra).unwrap_err();

@@ -1,7 +1,7 @@
 //! Model descriptors: what a model makes, from which inputs, with which parameters, at what
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
-use crate::pricing::{Pricing, TokenRates};
-use nodecraft_types::{AudioUse, Currency, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues};
+use crate::pricing::{Pricing, TokenRates, Unit};
+use nodecraft_types::{AudioDuration, AudioUse, Currency, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues};
 use serde::Deserialize;
 
 pub const MAX_MODES: usize = 32;
@@ -193,6 +193,15 @@ impl ModelDescriptor {
                     // A quote counted from a setting a mode never sends would price a run wrongly.
                     if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.contains(count))) {
                         return Err(invalid(id, &format!("mode `{}` doesn't send `{count}`, which pricing counts", mode.id)));
+                    }
+                    // A clip as long as its audio isn't as long as a seconds setting says, so a
+                    // quote counted from one would be wrong; such a model is priced per call or by
+                    // usage until a track's length can be counted (#608).
+                    if *unit == Unit::Second
+                        && let Some(mode) =
+                            self.modes.iter().find(|mode| mode.audio.as_ref().is_some_and(|audio| audio.duration == AudioDuration::FollowsAudio))
+                    {
+                        return Err(invalid(id, &format!("mode `{}` follows its audio's length, so pricing can't count seconds from `{count}`", mode.id)));
                     }
                 }
             }
