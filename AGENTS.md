@@ -241,5 +241,6 @@ that drive real pointer and key events through the canvas.
 | Status | `ROADMAP.md` (update it when a milestone task lands) |
 | MCP server and its tools | `docs/mcp.md` |
 | Control channel (`nodecraft --control`) | `docs/control.md` |
+| HTTP serve mode (`nodecraft-cli serve`) | `docs/serve.md` |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |
 | Issue difficulty rubric | `docs/issue-labels.md` |

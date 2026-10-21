@@ -22,7 +22,7 @@ an agent can actually do today.
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), video generation (#559), Timeline (#109) | 4/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
-| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114) | 2/6 |
+| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114), HTTP serve (#117, polling) | 2/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/26 |
 
