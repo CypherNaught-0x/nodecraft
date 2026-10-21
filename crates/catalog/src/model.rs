@@ -1,6 +1,6 @@
 //! Model descriptors: what a model makes, from which inputs, with which parameters, at what
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
-use crate::pricing::Pricing;
+use crate::pricing::{Pricing, TokenRates};
 use nodecraft_types::{Currency, Error, ErrorKind, Modality, Money, ParamControl, ParamSchema, ParamValues};
 use serde::Deserialize;
 
@@ -67,6 +67,10 @@ pub struct ModelDescriptor {
     #[serde(default)]
     pub parameter_contract: Option<nodecraft_types::Contract>,
     pub pricing: Pricing,
+    /// What a run is charged once its reply reports the tokens it used (chat models); without
+    /// it a run is charged its quote, or what the provider says it cost.
+    #[serde(default)]
+    pub usage: Option<TokenRates>,
     /// Typical seconds from submit to result.
     pub latency_s: u32,
     /// 1 (draft) to 5 (best available).
@@ -119,6 +123,16 @@ impl ModelDescriptor {
             contract.validate()?;
             if contract.owner != nodecraft_types::ParamOwner::Model || contract.namespace != self.id || contract.schema != self.params {
                 return Err(invalid(id, "parameter contract must own this exact model id and schema"));
+            }
+        }
+        if let Some(rates) = &self.usage {
+            // A charge settles in the currency it was reserved in.
+            let currency = self.pricing.currency();
+            if currency.is_none() || rates.prices().any(|price| Some(price.0.currency) != currency) {
+                return Err(invalid(id, "`usage` rates must be in the currency of the model's paid `pricing`"));
+            }
+            if rates.long.as_ref().is_some_and(|long| long.above == 0) {
+                return Err(invalid(id, "`usage.long.above` must be at least 1 prompt token"));
             }
         }
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {

@@ -37,6 +37,7 @@ fn catalog(count: u64) -> Catalog {
         modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![] }],
         params: schema(count),
         pricing: Pricing::PerUnit { unit: Unit::Image, price: Price(Money::new(Currency::USD, 10)), count: Some("count".into()), default_count: None },
+        usage: None,
         latency_s: 0,
         quality: 1,
     };
@@ -238,6 +239,7 @@ pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
         modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![] }],
         params: ParamSchema::default(),
         pricing: Pricing::Free,
+        usage: None,
         latency_s: 0,
         quality: 1,
     }])

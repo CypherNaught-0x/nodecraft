@@ -500,3 +500,18 @@ fn fal_catalog_covers_all_five_modalities_without_false_free_quotes() {
         assert_eq!(m.quote(&ParamValues::new()).unwrap(), if id == "fal.trellis2" { Some(Money::new(Currency::USD, 250_000)) } else { None });
     }
 }
+
+#[test]
+fn token_rates_must_match_a_paid_price_and_name_a_real_threshold() {
+    let pricing = r#"pricing = { type = "per_unit", unit = "second", price = "0.05 USD", count = "duration", default_count = 5 }"#;
+    let with = |line: &str| PRICED.replace(pricing, line);
+    let rated = |usage: &str| with(&format!("{pricing}\nusage = {usage}"));
+    let ok =
+        Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0.01 USD", long = { above = 1, input = "0.003 USD", output = "0.015 USD" } }"#)).unwrap();
+    assert_eq!(ok.get("test.video").and_then(|m| m.usage.as_ref()).map(|r| r.input.0), Some(Money::new(Currency::USD, 2_000)));
+    assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 EUR", output = "0.01 EUR" }"#)).is_err(), "another currency");
+    assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0.01 USD", long = { above = 0, input = "1 USD", output = "1 USD" } }"#)).is_err());
+    let free = with("pricing = { type = \"free\" }\nusage = { input = \"0.002 USD\", output = \"0.01 USD\" }");
+    assert!(Catalog::from_toml(&free).is_err(), "a free model has nothing to settle");
+    assert!(Catalog::from_toml(&with(&format!("{pricing}\nusage = {{ input = \"0.002 USD\" }}"))).is_err(), "both rates");
+}

@@ -524,7 +524,18 @@ pub(crate) fn authorize(
     accept_quote(c, &prepared.quote, &prepared.accept)?;
     let ceiling = crate::run_ceiling::RunCeiling::new(accepted_limits(&prepared.accept)?, prepared.accept.unpriced_jobs.unwrap_or(0));
     let (run, progress) = nodecraft_exec::run::Run::start_admitted(prepared.admitted, c.kinds, options)?;
-    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote, ceiling }, progress))
+    // Measured usage is charged at a model's token rates only when the step runs that one model:
+    // a combined price has no single set of rates to apply.
+    let rates = prepared
+        .quote
+        .steps
+        .iter()
+        .filter_map(|step| match step.models.as_slice() {
+            [model] => catalog.catalog().get(model).and_then(|m| m.usage.clone()).map(|rates| (step.node, rates)),
+            _ => None,
+        })
+        .collect();
+    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote, ceiling, rates }, progress))
 }
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.phase == crate::commands::Phase::Preview {
@@ -800,6 +811,8 @@ pub struct AuthorizedRun {
     ceiling: crate::run_ceiling::RunCeiling,
     run: nodecraft_exec::run::Run,
     bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
+    /// Per-token rates of each step that runs one model with them (#595).
+    rates: BTreeMap<NodeId, nodecraft_catalog::TokenRates>,
 }
 impl std::ops::Deref for AuthorizedRun {
     type Target = nodecraft_exec::run::Run;
@@ -862,7 +875,13 @@ impl AuthorizedRun {
                     }
                     model.push_str(name);
                 }
-                Some(crate::jobs::JobPrice { node: *node, model, estimate: amount.as_ref().ok().copied().flatten(), ceiling: Some(self.ceiling.clone()) })
+                Some(crate::jobs::JobPrice {
+                    node: *node,
+                    model,
+                    estimate: amount.as_ref().ok().copied().flatten(),
+                    ceiling: Some(self.ceiling.clone()),
+                    rates: self.rates.get(node).cloned(),
+                })
             }
         };
         let (_, job) = match media {

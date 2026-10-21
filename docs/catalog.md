@@ -51,6 +51,13 @@ default = { type = "unsigned", value = "1" }
   make the incomplete price explicit. Token counters are not an exact monetary invoice.
   Check prices against the provider's pricing page when adding or updating a model, and say in
   the PR where they came from.
+- **Token rates** (`usage`, optional) charge a finished job what it measured: `usage = { input =
+  "0.002 USD", output = "0.01 USD" }` per 1000 input and output tokens, with an optional
+  `long = { above = 200000, input = "…", output = "…" }` used for the whole request when its
+  input tokens exceed `above`. Each part rounds up. The quote still comes from `pricing`, which
+  must be paid in the same currency; when the provider reports tokens but no cost, the job is
+  charged its tokens at these rates instead of the estimate (a reported cost still wins). A step
+  that combines several models has no single set of rates and is charged its estimate.
 - **Swapping production generation models** uses the source and destination's model-owned
   parameter contracts. A shared name alone does not establish shared meaning: control types,
   units, meaning tags, target options/ranges and conditional reset rules participate. The

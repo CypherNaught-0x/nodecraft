@@ -43,12 +43,14 @@ pub struct MockModel {
     pub polls: u32,
     /// The cost it reports, if any.
     pub cost: Option<Money>,
+    /// The input and output tokens it reports, if any.
+    pub tokens: Option<(u64, u64)>,
     pub fail: Option<MockFailure>,
 }
 
 impl MockModel {
     pub fn new(output: MockOutput) -> Self {
-        Self { output, polls: 0, cost: None, fail: None }
+        Self { output, polls: 0, cost: None, tokens: None, fail: None }
     }
 }
 
@@ -186,6 +188,8 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
     };
     let mut done = Completed::new(vec![output]);
     done.usage.cost = model.cost;
+    done.usage.input_tokens = model.tokens.map(|(input, _)| input);
+    done.usage.output_tokens = model.tokens.map(|(_, output)| output);
     done
 }
 
