@@ -26,6 +26,7 @@ pub mod export_cmds;
 pub mod file_cmds;
 pub mod generate;
 pub mod graph_cmds;
+pub mod held_cmds;
 pub mod history_cmds;
 pub mod import;
 pub mod jobs;

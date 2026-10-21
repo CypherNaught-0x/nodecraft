@@ -343,6 +343,10 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "usage.reconcile_ownership",
         "usage.resolve_charge",
         "usage.unsettled",
+        "run.held",
+        "run.held_retry",
+        "run.held_place",
+        "run.held_discard",
         "element.create",
         "element.sheet",
         "element.list",
@@ -357,8 +361,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        134,
-        "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, 2 usage ownership, 2 charge resolution, 7 history, 4 perf, 10 plugin, 2 cache commands, node.shader_set, 4 mask, 7 layer, 3 element, 2 app mode, mesh.capture and document.use_pages"
+        138,
+        "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, 2 usage ownership, 2 charge resolution, 4 held results, 7 history, 4 perf, 10 plugin, 2 cache commands, node.shader_set, 4 mask, 7 layer, 3 element, 2 app mode, mesh.capture and document.use_pages"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }

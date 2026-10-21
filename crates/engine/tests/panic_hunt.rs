@@ -477,6 +477,8 @@ fn template(id: &str) -> (Session, Value) {
         "plugins.rollback" => json!({"package_id":"io.example.palette","digest":plugin_old.unwrap()}),
         "plugins.result" | "plugins.forget" => json!({"pending":pending.unwrap()}),
         "run.reuse" => json!({"canvas":canvas()}),
+        "run.held" => json!({}),
+        "run.held_retry" | "run.held_place" | "run.held_discard" => json!({"id":1}),
         "node.shader_set" => json!({"canvas":canvas(),"id":node_id(1),"source":"fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }"}),
         "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
         "node.mask_set" => json!({"canvas":canvas(),"id":node_id(1),"strokes":[{"size":0.1,"hardness":0.5,"points":[[0.5,0.5]]}]}),

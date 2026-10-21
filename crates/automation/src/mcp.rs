@@ -117,6 +117,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "keys.status",
     "run.quote",
     "run.start",
+    "run.held",
+    "run.held_retry",
+    "run.held_place",
     "usage.export_csv",
     "perf.start",
     "perf.stop",
@@ -187,6 +190,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",
+    // Letting a paid result go can't be undone (#369).
+    "run.held_discard",
     "canvas.auto_format",
     "comment.compose",
     "comment.open",

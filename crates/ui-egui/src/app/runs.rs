@@ -16,7 +16,7 @@ use nodecraft_engine::{
     jobs::JobBudget,
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
-    run_host::{RunHost, RunNotice},
+    run_host::{HeldView, RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
     run_journal::FileJournal,
     secrets::KeyringStore,
@@ -150,6 +150,8 @@ pub(super) struct Runs {
     running: BTreeSet<(CanvasId, NodeId)>,
     /// Every job the host is running or recently ran, for the queue panel.
     jobs: Vec<JobView>,
+    /// Paid results the host couldn't keep, waiting for a decision (#369).
+    held: Vec<HeldView>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     tokio: Option<tokio::runtime::Runtime>,
     /// Why the run journal couldn't be opened, told on the first frame.
@@ -206,6 +208,7 @@ impl Runs {
             failed: BTreeMap::new(),
             running: BTreeSet::new(),
             jobs: Vec::new(),
+            held: Vec::new(),
             tokio: Some(tokio),
             journal_problem: None,
         })
@@ -393,6 +396,10 @@ impl Runs {
                     notices.push(format!("A run failed: {reason}"));
                     self.failed.insert((canvas, node), reason);
                 }
+                RunNotice::Placed { canvas, node } => {
+                    notices.push("The held result is on the canvas.".into());
+                    self.failed.remove(&(canvas, node));
+                }
                 RunNotice::Refused { reason } => notices.push(format!("The run didn't start: {reason}")),
                 RunNotice::Unsaved { reason } => notices.push(format!("Runs can't be kept for a restart: {reason}")),
                 RunNotice::Finished { .. } => {}
@@ -405,12 +412,23 @@ impl Runs {
         });
         self.running = self.host.running();
         self.jobs = self.host.jobs();
+        self.held = self.host.held_results();
         tick
     }
 
     /// The queue panel's jobs: recently ended ones first, then those queued or running.
     pub(super) fn jobs(&self) -> &[JobView] {
         &self.jobs
+    }
+
+    /// The paid results waiting for a decision, oldest first.
+    pub(super) fn held(&self) -> &[HeldView] {
+        &self.held
+    }
+
+    /// Reads the held results again, after a decision about one.
+    pub(super) fn refresh_held(&mut self) {
+        self.held = self.host.held_results();
     }
 
     /// Asks one job to stop; its end shows on the next frames.

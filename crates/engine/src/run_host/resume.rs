@@ -2,7 +2,8 @@
 //! handle, never sent again: its runner registration is resume-only. When it ends its charge
 //! settles like any other job's, and a finished one's result is recorded on its card when it can
 //! be (see [`super::RunHost::resume`]).
-use super::{RunNotice, lock};
+use super::held::{Held, HeldResult};
+use super::{HELD_NOTE, RunNotice, lock};
 use crate::Session;
 use crate::generate;
 use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, JobPrice, ProviderRunner, QueuedJob, Sent};
@@ -10,8 +11,11 @@ use crate::provider_routing::RegisteredProvider;
 use crate::run_jobs::{JobKey, JobState, JobView, Reports, RunJobs};
 use crate::run_journal::Submitted;
 use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime};
+use nodecraft_exec::run::ResumeRecipe;
 use nodecraft_exec::scheduler::{JobId, Lane, Outcome, Start};
-use nodecraft_providers::{ProviderJob, RunUpdate};
+use nodecraft_nodes::GenerateOutput;
+use nodecraft_providers::{Completed, ProviderJob, RunUpdate};
+use nodecraft_types::{CanvasId, NodeId};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -158,7 +162,7 @@ impl Resumes {
 
     /// Absorbs what the restored jobs reported: records finished ones, settles every one that
     /// ended. Returns how each ended.
-    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, notices: &mut Vec<RunNotice>) -> Vec<Ended> {
+    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> Vec<Ended> {
         let (outcomes, mut reports) = {
             let mut mailbox = lock(&self.mailbox);
             (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports))
@@ -186,7 +190,7 @@ impl Resumes {
                 }
                 (Outcome::Done, Some(delivery)) => {
                     forget();
-                    let notice = record(session, &entry, &delivery);
+                    let notice = record(session, &entry, &delivery, held);
                     self.jobs.end(id, if matches!(notice, RunNotice::Recorded { .. }) { JobState::Done } else { failed(&notice) });
                     notices.push(notice);
                     ended.push(Ended::Settled);
@@ -203,7 +207,7 @@ impl Resumes {
                         }
                     }
                     forget();
-                    let notice = record(session, &entry, &delivery);
+                    let notice = record(session, &entry, &delivery, held);
                     self.jobs.end(id, if matches!(notice, RunNotice::Recorded { .. }) { JobState::Done } else { failed(&notice) });
                     notices.push(notice);
                     ended.push(Ended::Settled);
@@ -249,34 +253,55 @@ fn failed(notice: &RunNotice) -> JobState {
 }
 
 /// Records a restored job's result on its card, when its step can be assembled from it alone and
-/// the card is still there.
-fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDelivery) -> RunNotice {
+/// the card is still there. A result that can't be recorded, its project's included when that
+/// isn't open, is held (#369); a held result is retried or placed only once its project is open.
+fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDelivery, held: &Mutex<Held>) -> RunNotice {
     let (canvas, node) = (entry.canvas, entry.node);
-    let fail = |reason: String| RunNotice::Failed { canvas, node, reason };
-    let Some(recipe) = &entry.recipe else {
-        return fail("it finished after a restart, but its step needs other jobs' results too, so it wasn't recorded".into());
+    let outcome = match &entry.recipe {
+        _ if session.document().id() != entry.project => Err("it finished after a restart, but its project isn't open, so it wasn't recorded".into()),
+        Some(recipe) => record_alone(session, canvas, node, &entry.routes, recipe, &delivery.completed),
+        None => Err("it finished after a restart, but its step needs other jobs' results too, so it wasn't recorded".into()),
     };
-    if session.document().id() != entry.project {
-        return fail("it finished after a restart, but its project isn't open, so it wasn't recorded".into());
+    match outcome {
+        Ok(()) => RunNotice::Recorded { canvas, node },
+        Err(reason) => {
+            let result = HeldResult {
+                project: entry.project,
+                canvas,
+                node,
+                provider: entry.target.adapter().to_owned(),
+                model: entry.model.clone(),
+                reason: reason.clone(),
+                completed: delivery.completed.clone(),
+                routes: entry.routes.clone(),
+                recipe: entry.recipe.clone(),
+            };
+            lock(held).hold(result);
+            RunNotice::Failed { canvas, node, reason: format!("{reason}; {HELD_NOTE}") }
+        }
     }
-    let produced = match generate::produced(&entry.routes, &delivery.completed) {
-        Ok(produced) => produced,
-        Err(error) => return fail(error.message),
-    };
+}
+
+/// Records `completed` as the whole result of the single-job step `recipe` describes, on
+/// `node` on `canvas`: converted by `routes`, its assets imported, assembled and recorded with
+/// `run.record`.
+pub(super) fn record_alone(
+    session: &mut Session,
+    canvas: CanvasId,
+    node: NodeId,
+    routes: &[GenerateOutput],
+    recipe: &ResumeRecipe,
+    completed: &Completed,
+) -> Result<(), String> {
+    let produced = generate::produced(routes, completed).map_err(|e| e.message)?;
     for (hash, bytes) in produced.assets {
         match session.import_asset(&bytes) {
             Ok(imported) if imported == hash => {}
-            Ok(_) => return fail("a generated asset changed while it was imported".into()),
-            Err(error) => return fail(error.message),
+            Ok(_) => return Err("a generated asset changed while it was imported".into()),
+            Err(error) => return Err(error.message),
         }
     }
-    let generation = match recipe.assemble(produced.outputs, delivery.completed.usage.billable_units) {
-        Ok(generation) => generation,
-        Err(reason) => return fail(reason),
-    };
+    let generation = recipe.assemble(produced.outputs, completed.usage.billable_units)?;
     let params = json!({"canvas": canvas, "results": [{"node": node, "generation": generation}]});
-    match session.dispatch("run.record", &params) {
-        Ok(_) => RunNotice::Recorded { canvas, node },
-        Err(error) => fail(format!("the result could not be saved: {}", error.message)),
-    }
+    session.dispatch("run.record", &params).map(|_| ()).map_err(|error| format!("the result could not be saved: {}", error.message))
 }
