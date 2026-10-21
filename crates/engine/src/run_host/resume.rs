@@ -270,7 +270,7 @@ fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDeliver
             Err(error) => return fail(error.message),
         }
     }
-    let generation = match recipe.assemble(produced.outputs) {
+    let generation = match recipe.assemble(produced.outputs, delivery.completed.usage.billable_units) {
         Ok(generation) => generation,
         Err(reason) => return fail(reason),
     };

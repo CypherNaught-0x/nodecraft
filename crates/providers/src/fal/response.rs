@@ -107,3 +107,17 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
     }
     Ok(out)
 }
+/// The units fal says it billed the request (#437), from the `X-Fal-Billable-Units` header of the
+/// authenticated result fetch; only fal's API answers it, never the media CDN. The header is
+/// optional evidence: absent, repeated, oversized or not a plain decimal, it is left out and the
+/// result is kept. https://fal.ai/docs/documentation/model-apis/common-parameters#response-headers
+pub(super) fn billable_units(r: &HttpResponse) -> Option<BillableUnits> {
+    let mut values = r.headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-fal-billable-units")).map(|(_, value)| value);
+    let (Some(value), None) = (values.next(), values.next()) else { return None };
+    // HTTP allows spaces and tabs around a field value.
+    let value = value.trim_matches([' ', '\t']);
+    if value.len() > 32 {
+        return None;
+    }
+    BillableUnits::parse(value).ok()
+}

@@ -7,7 +7,7 @@
 use super::{JobId, JobState, Run, StepState, recordable};
 use nodecraft_graph::{Generation, JobInput, JobSettings};
 use nodecraft_nodes::{JobSpec, Registry};
-use nodecraft_types::{Blake3, GenerationId, NodeId, Value};
+use nodecraft_types::{BillableUnits, Blake3, GenerationId, NodeId, Value};
 use serde::{Deserialize, Serialize};
 
 /// Everything but the outputs of the generation a single-job step records.
@@ -50,6 +50,7 @@ impl Run {
             params: params.clone(),
             inputs: inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect(),
             item: None,
+            billable_units: None,
         };
         match self.steps.get(&node) {
             Some(StepState { jobs, step, .. }) if jobs.as_slice() == [job] && step.fanout.is_none() => {}
@@ -64,8 +65,8 @@ impl Run {
 
 impl ResumeRecipe {
     /// The generation to record from the job's `outputs` (`(output port, value)`), like the run
-    /// assembles a single-job step.
-    pub fn assemble(&self, outputs: Vec<(String, Value)>) -> Result<Generation, String> {
+    /// assembles a single-job step, with the units its provider said it billed (#437).
+    pub fn assemble(&self, outputs: Vec<(String, Value)>, billable_units: Option<BillableUnits>) -> Result<Generation, String> {
         let mut per_port: Vec<Vec<Value>> = vec![Vec::new(); self.ports.len()];
         for (port, value) in outputs {
             let index = self.ports.iter().position(|p| p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
@@ -93,7 +94,7 @@ impl ResumeRecipe {
             outputs: assembled,
             input_hash: self.input_hash,
             items: Vec::new(),
-            settings: self.settings.iter().cloned().collect(),
+            settings: self.settings.iter().cloned().map(|settings| JobSettings { billable_units, ..settings }).collect(),
             incomplete: None,
         };
         recordable(generation)

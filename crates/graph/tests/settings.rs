@@ -22,6 +22,7 @@ fn job(item: Option<u32>) -> JobSettings {
         params: [("seed".into(), Value::Unsigned(Unsigned(42)))].into(),
         inputs: vec![JobInput { role: "prompt".into(), value: Value::Text("a cat".into()) }],
         item,
+        billable_units: None,
     }
 }
 

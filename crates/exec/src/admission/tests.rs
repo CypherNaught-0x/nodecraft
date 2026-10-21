@@ -139,7 +139,15 @@ fn a_result_records_the_settings_its_job_was_submitted_with() {
     let inputs = inputs.into_iter().map(|input| nodecraft_graph::JobInput { role: input.role, value: input.value }).collect();
     assert_eq!(
         settings,
-        &vec![nodecraft_graph::JobSettings { provider: "mock".into(), instance: None, model: "remote".into(), params: params.clone(), inputs, item: None }]
+        &vec![nodecraft_graph::JobSettings {
+            provider: "mock".into(),
+            instance: None,
+            model: "remote".into(),
+            params: params.clone(),
+            inputs,
+            item: None,
+            billable_units: None
+        }]
     );
     assert_eq!(params.get("count"), Some(&Value::Unsigned(Unsigned(2))));
     assert!(!params.contains_key("hidden"));

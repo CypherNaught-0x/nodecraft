@@ -325,6 +325,7 @@ mod tests {
             params: Default::default(),
             inputs: Vec::new(),
             item: None,
+            billable_units: None,
         });
         set.history.push(job);
         nodes.push(set);

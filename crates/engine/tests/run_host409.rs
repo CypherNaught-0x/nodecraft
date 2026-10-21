@@ -193,6 +193,29 @@ fn a_started_run_is_driven_recorded_and_charged_once() {
     assert_eq!(source(&f.session), 0);
 }
 
+/// #437: the units a provider says it billed are kept with the job's settings on the result, and
+/// are never taken for money: the call is charged its quote.
+#[test]
+fn billed_units_are_recorded_with_the_jobs_settings() {
+    let units = nodecraft_types::BillableUnits::parse("2.5").unwrap();
+    let mut billing = MockModel::new(MockOutput::Text);
+    billing.billable_units = Some(units);
+    let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), billing)]));
+    start(&mut f);
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+    let history = history(&f.session);
+    let settings = &history[0].settings;
+    assert_eq!(settings.len(), 1, "{history:?}");
+    assert_eq!((settings[0].provider.as_str(), settings[0].model.as_str(), settings[0].billable_units), ("mock", "mock-text", Some(units)));
+    let charged: Vec<u64> = f.budget.log.lock().unwrap().entries().map(|e| e.cost.micros).collect();
+    assert_eq!(charged, [10_000], "charged the quote, not the units");
+    // It survives saving the project, and a result recorded without it reads back as before.
+    let saved = serde_json::to_value(&history[0]).unwrap();
+    assert_eq!(saved["settings"][0]["billable_units"], "2.5");
+    assert_eq!(serde_json::from_value::<nodecraft_graph::Generation>(saved).unwrap(), history[0]);
+}
+
 #[test]
 fn a_provider_failure_lands_on_its_card_and_frees_the_host() {
     let mut failing = MockModel::new(MockOutput::Text);

@@ -16,6 +16,7 @@ use crate::{
 };
 pub use limits::Limits;
 use limits::reserve;
+use nodecraft_types::BillableUnits;
 use std::sync::Arc;
 pub const FLUX: &str = "fal-ai/flux/schnell";
 pub const WAN: &str = "fal-ai/wan/v2.2-a14b/text-to-video";
@@ -352,6 +353,7 @@ impl Fal {
         let r = self.http.send_no_redirect(self.auth(HttpRequest::get(url).max_response_bytes(self.limits.response_bytes))).await.map_err(transport)?;
         status(&r, self.limits.response_bytes)?;
         let files = response::outputs(&r.body, record, self.limits, &self.key)?;
+        let billable_units = response::billable_units(&r);
         drop(r);
         let mut outputs = Vec::new();
         reserve(&mut outputs, files.len())?;
@@ -387,7 +389,9 @@ impl Fal {
             remaining = remaining.checked_sub(reply.body.len()).ok_or_else(|| malformed("fal output byte overflow"))?;
             outputs.push(Output::Bytes { mime: mime.into(), bytes: Arc::from(reply.body) });
         }
-        Ok(Completed::new(outputs))
+        let mut done = Completed::new(outputs);
+        done.usage.billable_units = billable_units;
+        Ok(done)
     }
 }
 impl Provider for Fal {

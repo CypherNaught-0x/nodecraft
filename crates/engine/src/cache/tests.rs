@@ -197,3 +197,37 @@ fn a_copied_fanned_result_keeps_its_item_tags() {
     .unwrap();
     assert!(matches!(found.as_slice(), [super::Hit::Copy { node, generation }] if *node == TWIN && generation.items == items), "{found:?}");
 }
+
+#[test]
+fn a_copied_result_was_billed_nothing() {
+    // Review of #437: a cache copy is not a provider call, so it carries no billing evidence.
+    let kinds = Registry::builtins().unwrap();
+    let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "P").unwrap();
+    nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
+    for id in [BLUR, TWIN] {
+        let node = kinds.get("image.blur").unwrap().descriptor().instantiate(id, &BTreeMap::new()).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: CANVAS, node }.apply(&mut project).unwrap();
+    }
+    let hash = nodecraft_exec::staleness::input_hash(project.canvases().get(&CANVAS).unwrap(), &kinds, BLUR).unwrap();
+    let settings = nodecraft_graph::JobSettings {
+        provider: "fal".into(),
+        instance: None,
+        model: "fal-ai/model".into(),
+        params: BTreeMap::new(),
+        inputs: Vec::new(),
+        item: None,
+        billable_units: Some(nodecraft_types::BillableUnits::parse("1.5").unwrap()),
+    };
+    let generation = nodecraft_graph::Generation {
+        id: nodecraft_types::GenerationId::from_bytes([40; 16]),
+        outputs: vec![Value::Text("a".into())],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: vec![settings.clone()],
+        incomplete: None,
+    };
+    nodecraft_graph::Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();
+    let found = super::hits(&project, CANVAS, &kinds, [TWIN], || Ok(nodecraft_types::GenerationId::from_bytes([51; 16]))).unwrap();
+    let [super::Hit::Copy { generation, .. }] = found.as_slice() else { panic!("{found:?}") };
+    assert_eq!(generation.settings, vec![nodecraft_graph::JobSettings { billable_units: None, ..settings }], "the rest of the settings are kept");
+}

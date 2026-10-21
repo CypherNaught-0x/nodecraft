@@ -158,6 +158,7 @@ fn launch(mock: &MockProvider, journal: &MemoryJournal, project_from: Option<Pro
 fn slow_mock() -> MockProvider {
     let mut slow = MockModel::new(MockOutput::Text);
     slow.polls = POLLS;
+    slow.billable_units = Some(nodecraft_types::BillableUnits::parse("3").unwrap());
     MockProvider::new("mock", [("mock-text".to_owned(), slow)])
 }
 
@@ -226,6 +227,8 @@ fn a_job_cut_off_by_a_kill_is_followed_after_restart_charged_once_and_recorded()
     let history = history(&second.session);
     assert_eq!(history.len(), 1);
     assert!(matches!(&history[0].outputs[0], Value::Text(t) if t.starts_with("mock-text: Describe the sea #")), "{history:?}");
+    let billed: Vec<_> = history[0].settings.iter().map(|s| s.billable_units.map(|u| u.to_string())).collect();
+    assert_eq!(billed, [Some("3".to_owned())], "a result recorded after a restart keeps its billed units (#437)");
     let log = second.budget.log.lock().unwrap().clone();
     let rows: Vec<(u64, Charge)> = log.entries().map(|e| (e.cost.micros, e.status)).collect();
     assert_eq!(rows, [(10_000, Charge::Actual)], "charged once, at the estimate the mock didn't replace");

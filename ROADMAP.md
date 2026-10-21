@@ -60,6 +60,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   The builtin catalog lists chat models on the OpenAI and Anthropic endpoints (GPT-6.1 Sol,
   GPT-6 Luna, GPT-4.1 mini; Claude Opus, Sonnet and Haiku 5.5), quoted up to their max output
   tokens, so a Generate text card has models to pick (#503).
+  A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
+  project as evidence of what was billed; it is never turned into money (#437).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; 66 registered commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

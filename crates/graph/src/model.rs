@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use nodecraft_types::{
-    Blake3, CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, ItemId, NodeId, ParamValues, PortType, ProjectId, ProviderInstanceId, TagId, Value,
+    BillableUnits, Blake3, CanvasId, CommentId, EdgeId, Error, FieldId, GenerationId, ItemId, NodeId, ParamValues, PortType, ProjectId, ProviderInstanceId,
+    TagId, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -115,6 +116,11 @@ pub struct JobSettings {
     /// For a fanned result, the index into its `items` of the item this job was for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<u32>,
+    /// Unlike the fields above, what the provider reported after the job ran (#437): how many of
+    /// its own units it billed, when it says. A unit's price depends on the provider's pricing
+    /// for `model`, so this is never read as money.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billable_units: Option<BillableUnits>,
 }
 
 /// One input a provider job was given, in a role such as `prompt` or `image`.

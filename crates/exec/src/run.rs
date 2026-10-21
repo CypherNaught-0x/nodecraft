@@ -19,7 +19,7 @@ use crate::scheduler::{self, JobId, Lane, Outcome, RetryPolicy, Start};
 use crate::staleness::{InputHasher, MAX_QUERY_BYTES};
 use nodecraft_graph::{Canvas, Change, Generation, Incomplete, JobInput, JobSettings, MAX_HISTORY, MAX_NODE_BYTES, Missing, MissingItem, Node};
 use nodecraft_nodes::{InputValue, JobSpec, PlanCtx, Registry};
-use nodecraft_types::{CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
+use nodecraft_types::{BillableUnits, CanvasId, Error, ErrorKind, GenerationId, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -130,6 +130,8 @@ struct JobState {
     done: bool,
     /// Its outputs, `(port, value)`, until the step assembles them.
     outputs: Vec<(String, Value)>,
+    /// The units its provider said it billed (#437), recorded with its settings.
+    billable_units: Option<BillableUnits>,
 }
 
 /// One run of a plan. See the module docs.
@@ -394,6 +396,14 @@ impl Run {
         self.canvas.nodes().get(&node).map_or_else(|| node.to_string(), |n| if n.title.is_empty() { n.kind.clone() } else { n.title.clone() })
     }
 
+    /// The units `job`'s provider said it billed (#437), for its step to record with the job's
+    /// settings. Call before [`Run::job_done`]; a finished job's report changes nothing.
+    pub fn job_billed(&mut self, job: JobId, units: BillableUnits) {
+        if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done) {
+            state.billable_units = Some(units);
+        }
+    }
+
     /// A job finished with `outputs` (`(output port, value)`, in order). Late or repeated reports
     /// change nothing.
     pub fn job_done(&mut self, kinds: &Registry, job: JobId, outputs: Vec<(String, Value)>) -> Progress {
@@ -617,7 +627,7 @@ impl Run {
             let Some(next) = self.next_job.checked_add(1) else { return (self.fail(node, "the run ran out of job ids".into()), Vec::new()) };
             self.next_job = next;
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane, retry: self.retry, idempotency_key: self.key(id) });
-            self.jobs.insert(id, JobState { step: node, work, done: false, outputs: Vec::new() });
+            self.jobs.insert(id, JobState { step: node, work, done: false, outputs: Vec::new(), billable_units: None });
             ids.push(id);
         }
         let left = ids.len();
@@ -962,11 +972,19 @@ impl Run {
         for (n, job) in job_ids.into_iter().enumerate() {
             let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
             let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
-            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, .. }) = self.jobs.get(&job) {
+            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, billable_units, .. }) = self.jobs.get(&job) {
                 let item = if items.is_some() { Some(u32::try_from(cell).map_err(|_| "a job's item is out of range")?) } else { None };
                 let inputs = inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect();
                 let cell_settings = settings.get_mut(cell).ok_or("a job's item is out of range")?;
-                cell_settings.push(JobSettings { provider: provider.clone(), instance: *instance, model: model.clone(), params: params.clone(), inputs, item });
+                cell_settings.push(JobSettings {
+                    provider: provider.clone(),
+                    instance: *instance,
+                    model: model.clone(),
+                    params: params.clone(),
+                    inputs,
+                    item,
+                    billable_units: *billable_units,
+                });
             }
             let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
             for (port, value) in outputs {

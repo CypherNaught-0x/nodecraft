@@ -70,6 +70,7 @@ fn describes_the_settings_the_active_result_was_made_with() {
         params: [("seed".into(), nodecraft_types::Value::Unsigned(nodecraft_types::Unsigned(7)))].into(),
         inputs: Vec::new(),
         item: None,
+        billable_units: None,
     };
     let result = |n: u8, model: &str| nodecraft_graph::Generation {
         settings: vec![job(model)],
