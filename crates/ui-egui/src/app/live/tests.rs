@@ -143,3 +143,18 @@ fn render_live_review_evidence() {
     h.run();
     h.render().unwrap().save(folder.join("live.png")).unwrap();
 }
+
+#[test]
+fn closing_waits_for_a_recompute_still_running() {
+    // #594: a worker left running at exit can be inside a GPU driver as it is torn down.
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&done);
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mut live = Live::default();
+    live.worker = Some(worker);
+    drop(live);
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst), "the app closed before its worker finished");
+}
