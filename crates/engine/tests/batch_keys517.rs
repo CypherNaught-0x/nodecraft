@@ -14,6 +14,7 @@ use nodecraft_engine::{
     provider_routing::ProviderRouting,
     run_cmds::RunCatalog,
     run_host::{RunHost, RunNotice},
+    run_jobs::JobState,
 };
 use nodecraft_exec::{
     cost::{Budgets, UsageLog},
@@ -367,13 +368,13 @@ fn a_cancelled_item_runs_under_a_fresh_key() {
     f.keeper.set("an owl", Mode::Hang);
     start(&mut f);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while f.keeper.sent().len() < 2 {
+    // The fox is answered at once; wait until its job is done, so only the owl's is cancelled.
+    while f.keeper.sent().len() < 2 || !f.host.jobs().iter().any(|job| job.state == JobState::Done) {
         f.host.pump(&mut f.session);
-        assert!(Instant::now() < deadline, "the prompts were never sent");
+        assert!(Instant::now() < deadline, "the fox was never answered");
         std::thread::sleep(Duration::from_millis(1));
     }
-    // The fox is answered at once; the owl is the job still running.
-    for job in f.host.jobs() {
+    for job in f.host.jobs().into_iter().filter(|job| !job.state.is_final()) {
         let _ = f.host.cancel(job.key);
     }
     drive(&mut f);
