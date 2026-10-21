@@ -333,6 +333,7 @@ mod library_view;
 mod live;
 mod mask_editor;
 mod mentions;
+mod mesh_capture;
 mod metrics;
 mod models;
 mod navigation;
@@ -1231,6 +1232,8 @@ impl NodeCraftApp {
             && self.reordering.is_none()
             && self.wiring.is_none()
             && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
+        // Cards the viewers' capture buttons asked for last frame.
+        self.take_mesh_captures();
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));

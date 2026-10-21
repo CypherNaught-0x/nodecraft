@@ -120,7 +120,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, mesh: &GpuMesh, style: Sty
         mapped_at_creation: false,
     });
     encoder.copy_texture_to_buffer(
-        renderer.image(&target).texture().as_image_copy(),
+        target.image.as_image_copy(),
         wgpu::TexelCopyBufferInfo { buffer: &readback, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: Some(64) } },
         wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
     );

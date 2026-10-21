@@ -20,7 +20,7 @@ fn number(value: f64) -> Option<Value> {
     Number::new(value).ok().map(Value::Number)
 }
 
-fn slider(name: &str, label: &str, min: f64, max: f64, step: f64, default: f64) -> Result<ParamSpec, Error> {
+pub(crate) fn slider(name: &str, label: &str, min: f64, max: f64, step: f64, default: f64) -> Result<ParamSpec, Error> {
     Ok(ParamSpec {
         name: name.into(),
         label: label.into(),
@@ -68,7 +68,7 @@ fn text(name: &str, label: &str, default: &str) -> ParamSpec {
     }
 }
 
-fn color(name: &str, label: &str, default: &str) -> ParamSpec {
+pub(crate) fn color(name: &str, label: &str, default: &str) -> ParamSpec {
     ParamSpec {
         name: name.into(),
         label: label.into(),
@@ -80,7 +80,7 @@ fn color(name: &str, label: &str, default: &str) -> ParamSpec {
     }
 }
 
-fn count(name: &str, label: &str, min: u64, max: u64, default: u64) -> ParamSpec {
+pub(crate) fn count(name: &str, label: &str, min: u64, max: u64, default: u64) -> ParamSpec {
     ParamSpec {
         name: name.into(),
         label: label.into(),
@@ -92,7 +92,7 @@ fn count(name: &str, label: &str, min: u64, max: u64, default: u64) -> ParamSpec
     }
 }
 
-fn when(mut spec: ParamSpec, parameter: &str, equals: &str) -> ParamSpec {
+pub(crate) fn when(mut spec: ParamSpec, parameter: &str, equals: &str) -> ParamSpec {
     spec.visible_if = Some(VisibleIf { parameter: parameter.into(), equals: Value::Text(equals.into()) });
     spec
 }

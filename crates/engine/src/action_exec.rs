@@ -287,8 +287,10 @@ impl LocalActions {
     }
 }
 
+mod capture_state;
 pub(crate) mod layers;
 mod mesh;
+mod mesh_capture;
 mod shader_state;
 
 impl LocalActions {
@@ -344,6 +346,9 @@ impl ActionExecutor for LocalActions {
         }
         if action == nodecraft_nodes::mesh::CONVERT {
             return self.convert_mesh(params, inputs);
+        }
+        if action == nodecraft_nodes::mesh::PHOTO || action == nodecraft_nodes::mesh::VIEWS {
+            return self.capture_mesh(action, params, inputs);
         }
         if action == nodecraft_nodes::layers::ID {
             return self.layers(params, inputs);

@@ -8,7 +8,7 @@ use std::sync::PoisonError;
 impl LocalActions {
     /// The bytes of the model `value` names: one of the project's, or one an earlier action in
     /// this run made.
-    fn model_bytes(&self, value: Option<&Value>) -> Result<Vec<u8>, String> {
+    pub(super) fn model_bytes(&self, value: Option<&Value>) -> Result<Vec<u8>, String> {
         let Some(Value::Media(source)) = value else { return Err("connect a 3D model first".into()) };
         if let Some(staged) = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash) {
             return Ok(staged.to_vec());

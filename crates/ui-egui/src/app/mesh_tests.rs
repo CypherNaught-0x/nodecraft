@@ -113,3 +113,38 @@ fn mesh111_visual() {
         }
     }
 }
+
+#[test]
+fn the_capture_buttons_add_a_wired_photo_or_view_sheet_from_the_cards_view_as_one_undo_step() {
+    let mut h = harness();
+    let id = add_cube(&mut h);
+    assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
+    h.get_by_label("Shaded").click();
+    assert!(wait_for(&mut h, "3D model, 12 triangles, unlit view"));
+    let turned = nodecraft_gpu::mesh::Orbit { yaw: 1.0, pitch: 0.5, zoom: 2.0 };
+    h.state_mut().mesh_views.entry(id).or_default().orbit = turned;
+    let count = |h: &Harness<'static, NodeCraftApp>| h.state().session.document().canvases().get(&h.state().canvas).map(|c| (c.nodes().len(), c.edges().len()));
+    let before = count(&h);
+
+    h.get_by_label("Photo").click();
+    h.run_steps(3);
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap().clone();
+    let photo = canvas.nodes().values().find(|n| n.kind == nodecraft_nodes::mesh::PHOTO).expect("a 3D photo card");
+    let number = |name: &str| match photo.params.get(name) {
+        Some(nodecraft_types::Value::Number(n)) => n.get(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!((number("yaw"), number("pitch"), number("zoom")), (57.0, 29.0, 2.0), "the card's view, in degrees");
+    assert_eq!(photo.params.get("style"), Some(&nodecraft_types::Value::Text("unlit".into())));
+    assert!(canvas.edges().values().any(|e| e.from.node == id && e.to.node == photo.id && e.to.port == "model"));
+    assert!(h.state().selection.contains(photo.id), "the new card is selected");
+    assert!(h.state().mesh_views.get(&id).is_some_and(|v| v.capture.is_none()), "the request is taken once");
+
+    h.state_mut().session.dispatch("edit.undo", &serde_json::json!({})).unwrap();
+    assert_eq!(count(&h), before, "one undo step removes the card and its connection");
+
+    h.get_by_label("Views").click();
+    h.run_steps(3);
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    assert!(canvas.nodes().values().any(|n| n.kind == nodecraft_nodes::mesh::VIEWS));
+}

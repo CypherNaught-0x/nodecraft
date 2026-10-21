@@ -150,6 +150,17 @@ impl Failure {
 pub struct MeshView {
     pub orbit: Orbit,
     pub style: Style,
+    /// A capture asked for from the card, taken by the app after the frame's cards (#112).
+    pub capture: Option<Capture>,
+}
+
+/// What the card's capture buttons ask for: a node that draws the model as the viewer shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capture {
+    /// One image from this angle.
+    Photo,
+    /// A sheet of views round the model, the first from this angle.
+    Views,
 }
 
 type Done = (Blake3, Result<Model, Failure>);
@@ -438,7 +449,8 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label.clone()));
 }
 
-/// The style toggle and reset, over the preview's bottom-left corner.
+/// The style toggle and reset over the preview's bottom-left corner, the capture buttons over
+/// its bottom-right.
 fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
     let style = match view.style {
         Style::Shaded => "Shaded",
@@ -462,6 +474,20 @@ fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
     }
     if ui.put(reset_rect, egui::Button::new(font("Reset")).small()).on_hover_text("Back to the starting view").clicked() {
         view.orbit = Orbit::default();
+    }
+    let capture_width = width * 0.8;
+    let views_rect =
+        Rect::from_min_size(area.right_bottom() + Vec2::new(-t.control_gap - capture_width, -t.control_gap - height), Vec2::new(capture_width, height));
+    let photo_rect = views_rect.translate(Vec2::new(-capture_width - t.control_gap, 0.0));
+    let buttons = [
+        (photo_rect, "Photo", "Add a 3D photo card that draws the model from this view", Capture::Photo),
+        (views_rect, "Views", "Add a 3D view sheet card: views round the model, starting from this one", Capture::Views),
+    ];
+    for (rect, label, hover, capture) in buttons {
+        if ui.put(rect, egui::Button::new(font(label)).small()).on_hover_text(hover).clicked() {
+            view.capture = Some(capture);
+            ui.ctx().request_repaint();
+        }
     }
 }
 
