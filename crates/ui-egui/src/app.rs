@@ -346,6 +346,8 @@ mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod perf_run;
+#[cfg(not(target_arch = "wasm32"))]
 mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
@@ -443,6 +445,12 @@ pub struct NodeCraftApp {
     mesh_render: Option<eframe::egui_wgpu::RenderState>,
     /// When the last timed frame started, for the frame interval (#151).
     last_frame: Option<u64>,
+    /// Whether every frame asks for the next at once, to time presented frames (#526).
+    frame_pump: bool,
+    /// Whether the last frame asked for the next at once, so its interval was presented.
+    pumped: bool,
+    /// When the last timed first pass started: a discarded pass isn't a presented frame.
+    last_presented: Option<u64>,
     frame_workload: Option<nodecraft_engine::perf::Workload>,
     /// The rows × columns last chosen for "Split into grid".
     split_size: (u32, u32),
@@ -862,6 +870,9 @@ impl NodeCraftApp {
             mesh_gpu: false,
             mesh_render: None,
             last_frame: None,
+            frame_pump: false,
+            pumped: false,
+            last_presented: None,
             frame_workload: None,
             split_size: (2, 2),
             split_seen: None,
@@ -930,9 +941,13 @@ impl NodeCraftApp {
     }
     /// One frame of the canvas, timed for performance capture when it's running (#151).
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        let started = self.frame_started();
+        let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
         self.frame_finished(started);
+        self.pumped = self.frame_pump && self.session.perf().enabled();
+        if self.pumped {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {

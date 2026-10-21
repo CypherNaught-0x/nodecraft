@@ -133,8 +133,9 @@ pub fn stats(raw: &[u64]) -> Value {
     let deviations: Vec<_> = raw.iter().map(|n| n.abs_diff(p50.unwrap_or(0))).collect();
     json!({"samples":raw.len(),"min":raw.iter().min(),"max":raw.iter().max(),"p25":percentile(raw,25),"p50":p50,"p75":percentile(raw,75),"iqr":percentile(raw,75).unwrap_or(0).saturating_sub(percentile(raw,25).unwrap_or(0)),"p95":percentile(raw,95),"p99":percentile(raw,99),"mad":percentile(&deviations,50),"tail_qualification":if raw.len()<100{"insufficient_for_p99_comparison"}else{"descriptive_nearest_rank; not a confidence interval"}})
 }
-fn validate_perf2(v: &Value, n: u64, frames: usize) -> Result<(), String> {
-    if text(v, "schema")? != "nodecraft.perf/2" || v.get("clock") != Some(&json!(true)) {
+fn validate_perf3(v: &Value, n: u64, frames: usize) -> Result<(), String> {
+    // Headless records have no presentation source (#526): presentation stays unsupported.
+    if text(v, "schema")? != "nodecraft.perf/3" || v.get("clock") != Some(&json!(true)) || v.get("presentation_source") != Some(&Value::Null) {
         return Err(err());
     }
     let metrics = v.get("metrics").and_then(Value::as_array).filter(|a| a.len() == 10).ok_or_else(err)?;
@@ -293,7 +294,8 @@ pub fn validate(v: &Value) -> Result<(), String> {
                     return Err(err());
                 }
             }
-            validate_perf2(record.get("perf2").ok_or_else(err)?, n, frames)?;
+            // The key predates perf/3; renaming it would orphan existing records.
+            validate_perf3(record.get("perf2").ok_or_else(err)?, n, frames)?;
         } else {
             if !["chain", "fan_in", "fan_out", "disconnected"].contains(&shape)
                 || number(record, "edges")? != if shape == "disconnected" { 0 } else { n - 1 }

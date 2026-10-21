@@ -13,93 +13,11 @@
 //! interactions are not benchmark workloads; their correctness tests do not measure frame time.
 use super::*;
 use egui_kittest::Harness;
-use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
-use nodecraft_types::{Choice, Modality, Number, ParamControl, ParamSchema, ParamSpec, PortType};
 use std::time::{Duration, Instant};
 
-struct Relay(NodeDescriptor);
-impl NodeKind for Relay {
-    fn descriptor(&self) -> &NodeDescriptor {
-        &self.0
-    }
-    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
-        None
-    }
-    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
-        Ok(vec![])
-    }
-}
-
-/// A relay with the controls a generator card shows: a toggle, a slider, a choice and a note.
-fn relay_kind() -> NodeDescriptor {
-    let text = PortType { modality: Modality::Text, many: false };
-    let port = |name: &str| nodecraft_graph::Port { name: name.into(), port_type: text };
-    let spec = |name: &str, control: ParamControl, default: Value| ParamSpec {
-        name: name.into(),
-        label: name.into(),
-        description: None,
-        control,
-        required: false,
-        default: Some(default),
-        visible_if: None,
-    };
-    let options = vec![Choice { value: "draft".into(), label: "Draft".into() }, Choice { value: "best".into(), label: "Best".into() }];
-    NodeDescriptor {
-        id: "perf.relay".into(),
-        label: "Relay".into(),
-        category: Category::Action,
-        inputs: vec![port("in")],
-        outputs: vec![port("out")],
-        params: ParamSchema {
-            params: vec![
-                spec("enabled", ParamControl::Toggle, Value::Bool(true)),
-                spec(
-                    "strength",
-                    ParamControl::Slider { min: Number::new(0.0).ok(), max: Number::new(1.0).ok(), step: Number::new(0.05).unwrap() },
-                    Value::Number(Number::new(0.5).unwrap()),
-                ),
-                spec("quality", ParamControl::Choice { options }, Value::Text("best".into())),
-                spec("note", ParamControl::Text { multiline: true, max_bytes: 4096 }, Value::Text("Keep the palette warm and the light low.".into())),
-            ],
-        },
-        quick_add: None,
-    }
-}
-
-/// `count` nodes in a square grid: each row starts with a Text node holding a short prompt and
-/// continues with relays, each wired to the one before.
+/// The run's grid of `count` nodes (`perf_run::grid_session`) in a kittest window.
 fn graph(count: usize, ppp: f32) -> Harness<'static, NodeCraftApp> {
-    let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
-    kinds.register(Box::new(Relay(relay_kind()))).unwrap();
-    let canvas = CanvasId::from_bytes([1; 16]);
-    let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Perf").unwrap();
-    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document).unwrap();
-    let id = |n: usize| NodeId::from_bytes(u128::try_from(n + 1).unwrap().to_be_bytes());
-    let mut changes = Vec::new();
-    let cols = (1..).find(|c: &usize| c * c >= count).unwrap_or(1);
-    for n in 0..count {
-        let (row, col) = (n / cols, n % cols);
-        let mut node = if col == 0 {
-            let mut values = BTreeMap::new();
-            values.insert("text".to_owned(), Value::Text(format!("Prompt {n}: a quiet forest at dawn, soft light through the trees.")));
-            kinds.get("source.text").unwrap().descriptor().instantiate(id(n), &values).unwrap()
-        } else {
-            kinds.get("perf.relay").unwrap().descriptor().instantiate(id(n), &BTreeMap::new()).unwrap()
-        };
-        node.pos = nodecraft_graph::Position { x: col as f32 * 400.0, y: row as f32 * 420.0 };
-        changes.push(Change::AddNode { canvas, node });
-        if col > 0 {
-            let edge = nodecraft_graph::Edge {
-                id: nodecraft_types::EdgeId::from_bytes(u128::try_from(n + 1).unwrap().to_be_bytes()),
-                from: nodecraft_graph::Endpoint { node: id(n - 1), port: "out".into() },
-                to: nodecraft_graph::Endpoint { node: id(n), port: "in".into() },
-                order: 0,
-            };
-            changes.push(Change::Connect { canvas, edge });
-        }
-    }
-    nodecraft_graph::Changeset::new(changes).apply(&mut document).unwrap();
-    let session = Session::with_registries(document, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap();
+    let (session, canvas) = super::perf_run::grid_session(count).unwrap();
     Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .with_pixels_per_point(ppp)

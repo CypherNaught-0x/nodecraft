@@ -98,7 +98,7 @@ labels, never document contents or paths.
    clipboard. Stop with **Stop performance capture**. The headless CLI session (`control`, `mcp`)
    records too.
 
-The report (`schema: "nodecraft.perf/2"`) gives, per metric, p50/p95/p99/max in microseconds,
+The report (`schema: "nodecraft.perf/3"`) gives, per metric, p50/p95/p99/max in microseconds,
 the samples kept (the latest 4,096), recorded/invalid counts and an explicit availability reason.
 Metrics:
 
@@ -109,8 +109,12 @@ Metrics:
   respectively, including draft cloning, applying changes, validation, inverse construction and
   the inverse-certification probe;
 - `undo`, `redo`, `load` and `save`: overlapping classifications of successful dispatch;
-- `presentation`: unsupported until a host supplies real presentation timestamps. It always has
-  zero samples, null percentiles and `presentation_timestamps_not_available`, even with a CPU clock.
+- `presentation`: presented-frame intervals, only from a host that names a
+  `presentation_source`. The desktop's `--perf-run` names `vsync_frame_pump`: every frame asks
+  for the next at once and presenting waits for vsync, so the time between two pumped frames is
+  a presented interval. Its `dropped_frames` sums whole 60 Hz frames missed past 25 ms and
+  `longest_drop` is the longest such run. Otherwise (normal use, the CLI, wasm) it has zero
+  samples, null percentiles and `presentation_timestamps_not_available`.
 
 Stage samples exclude handler work, subsequent actual-redo and replay/history/asset admission, durable append and final
 publication. Successful staging followed by a later refusal still counts as executed staging;
@@ -119,7 +123,19 @@ stage or dispatch latencies. These are overlapping boundaries, not additive phas
 
 The frame metrics count samples over 16,667 µs preparation and 1.5 times that between starts.
 The app redraws on input: intervals over 250 ms are filtered as idle. These are interval-gap
-heuristics, not observed dropped/presented frames. CPU preparation cannot prove 60 fps.
+heuristics, not observed dropped/presented frames. CPU preparation cannot prove 60 fps; the
+pumped `presentation` metric can.
+
+To time presented frames in a real window, run the desktop app in release mode:
+
+```sh
+cargo run -p nodecraft --release -- --perf-run perf-run.json
+```
+
+It opens generated 200- and 1,000-node graphs, settles each for 30 frames, then times 600 pumped
+frames of steady panning (zoom 0.2) and of a zoom sweep (0.1 to about 1.0 and back), writes one
+report per workload (`schema: "nodecraft.perf-run/1"`) and quits. Leave the window on screen and
+uncovered: a hidden window may not be presented at all.
 
 `workload` is the paint snapshot's visible/total nodes and edges, before later frame intents.
 `visible_edges` uses the submitted cubic's adaptive flattening tolerance, actual painter clip,

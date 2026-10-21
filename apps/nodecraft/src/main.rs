@@ -15,7 +15,7 @@ mod shell;
 /// file name (packaging/linux) so the desktop finds the icon; also the macOS bundle id.
 const APP_ID: &str = "io.github.cyphernaught0x.nodecraft";
 
-/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <exe>] [project]`.
+/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <exe>] [--perf-run <out.json>] [project]`.
 #[derive(Debug, Default, PartialEq)]
 struct Args {
     /// `--control`: accept local automation clients (see `control.rs`).
@@ -25,6 +25,9 @@ struct Args {
     wait_for: Option<String>,
     /// `--finish-update <msi> <exe>`: install the update and start `exe` again (Windows).
     finish_update: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// `--perf-run <out.json>`: time presented frames over generated graphs, write the reports
+    /// and quit (#526).
+    perf_run: Option<std::path::PathBuf>,
     /// The first other argument that isn't a flag: a project to open (#406). OS paths are kept as
     /// they are; relative ones are made absolute here, while the working directory is the
     /// launcher's.
@@ -40,6 +43,7 @@ impl Args {
                 Some("--control") => parsed.control = true,
                 Some("--version" | "-V") => parsed.version = true,
                 Some("--wait-for") => parsed.wait_for = args.next().map(|pid| pid.to_string_lossy().into_owned()),
+                Some("--perf-run") => parsed.perf_run = args.next().map(Into::into),
                 Some("--finish-update") => parsed.finish_update = args.next().zip(args.next()).map(|(msi, exe)| (msi.into(), exe.into())),
                 _ if arg.to_string_lossy().starts_with('-') => {}
                 _ if parsed.project.is_none() => {
@@ -66,6 +70,9 @@ fn main() -> ExitCode {
     }
     if let Some(pid) = &args.wait_for {
         nodecraft_ui_egui::wait_for_exit(pid);
+    }
+    if let Some(out) = args.perf_run {
+        return perf_run(out);
     }
     let (control, project) = (args.control, args.project);
     let options = eframe::NativeOptions {
@@ -124,6 +131,56 @@ fn main() -> ExitCode {
     }
 }
 
+/// Times presented frames in a real window (#526); see `nodecraft_ui_egui::app::perf_run`.
+fn perf_run(out: std::path::PathBuf) -> ExitCode {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_app_id(APP_ID).with_title("NodeCraft performance run").with_inner_size([1600.0, 1000.0]),
+        centered: true,
+        // The run's window is always 1600×1000 and never touches the app's saved window state.
+        persist_window: false,
+        ..Default::default()
+    };
+    // Presenting waits for vsync only in these modes; otherwise frame intervals aren't presented ones.
+    let vsync = matches!(options.wgpu_options.surface.present_mode, eframe::wgpu::PresentMode::AutoVsync | eframe::wgpu::PresentMode::Fifo);
+    let source = vsync.then_some(nodecraft_engine::perf::PresentationSource::VsyncFramePump);
+    let outcome = nodecraft_ui_egui::app::perf_run::Outcome::default();
+    let shared = outcome.clone();
+    // Its own app name: eframe keeps egui memory per app name, apart from the user's.
+    let result = eframe::run_native(
+        "NodeCraft performance run",
+        options,
+        Box::new(move |cc| {
+            let renderer = cc.wgpu_render_state.as_ref().map(|render| {
+                let info = render.adapter.get_info();
+                format!("{} ({:?})", info.name, info.backend)
+            });
+            Ok(Box::new(nodecraft_ui_egui::app::perf_run::PerfRun::new(out, source, renderer, shared)))
+        }),
+    );
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    let written = match outcome.lock() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    match written {
+        Some(Ok(path)) => {
+            println!("performance run written to {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Some(Err(e)) => {
+            eprintln!("error: performance run not written to {e}");
+            ExitCode::FAILURE
+        }
+        None => {
+            eprintln!("error: the performance run ended without writing results");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Args;
@@ -144,6 +201,8 @@ mod tests {
         assert_eq!(args.project, None);
         // A flag missing its value is ignored, not taken from a missing argument.
         assert_eq!(parse(&["--wait-for"]), Args::default());
+        assert_eq!(parse(&["--perf-run", "run.json"]).perf_run, Some("run.json".into()));
+        assert_eq!(parse(&["--perf-run"]), Args::default());
         assert!(parse(&["-V"]).version);
     }
 }

@@ -15,7 +15,7 @@ use std::{
 };
 
 /// The report's format; bump it when a field changes meaning.
-pub const REPORT_SCHEMA: &str = "nodecraft.perf/2";
+pub const REPORT_SCHEMA: &str = "nodecraft.perf/3";
 /// Samples kept per metric.
 pub const MAX_SAMPLES: usize = 4096;
 /// One frame at 60 Hz, in microseconds.
@@ -29,6 +29,27 @@ pub const IDLE_GAP_US: u64 = 250_000;
 /// Frame-start interval over-budget threshold (one and a half frame budgets).
 /// This allows scheduling jitter; it does not count observed missed presentations.
 pub const INTERVAL_BUDGET_US: u64 = FRAME_BUDGET_US * 3 / 2;
+
+/// Where presented-frame intervals come from (#526). A host names one only when its intervals are
+/// paced by presentation; without one, [`Metric::Presentation`] stays unsupported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PresentationSource {
+    /// The interval between consecutive frames the host pumps back to back into a FIFO (vsync)
+    /// swapchain: each frame waits for the display to free a buffer, so frames can't start faster
+    /// than they are presented. Not a compositor scan-out timestamp.
+    VsyncFramePump,
+}
+
+/// 60 Hz frames a presented-frame interval dropped: none up to [`INTERVAL_BUDGET_US`], else the
+/// interval rounded to whole frames, less the one that was shown (at least one).
+pub fn missed_frames(interval_us: u64) -> u64 {
+    if interval_us <= INTERVAL_BUDGET_US {
+        return 0;
+    }
+    // Rounded to the nearest whole frame.
+    (interval_us.saturating_add(FRAME_BUDGET_US / 2) / FRAME_BUDGET_US).saturating_sub(1).max(1)
+}
 
 /// A monotonic microsecond clock from the platform, where it has one (not in the browser yet).
 pub fn native_clock() -> Option<Clock> {
@@ -58,7 +79,8 @@ pub enum Metric {
     GraphStage,
     /// The same boundary when Changeset::stage_certified returns an error; never mixed with successes.
     GraphStageRefused,
-    /// Real presentation timestamps are not available from the current hosts.
+    /// Presented-frame intervals, only from a host with a [`PresentationSource`] and only for
+    /// frames it pumps back to back; otherwise unsupported.
     Presentation,
     Undo,
     Redo,
@@ -86,7 +108,7 @@ impl Metric {
     fn budget(self) -> Option<u64> {
         match self {
             Metric::FramePrepare => Some(FRAME_BUDGET_US),
-            Metric::FrameInterval => Some(INTERVAL_BUDGET_US),
+            Metric::FrameInterval | Metric::Presentation => Some(INTERVAL_BUDGET_US),
             _ => None,
         }
     }
@@ -133,6 +155,8 @@ pub struct Recorder {
     workload: Option<Workload>,
     /// The renderer the host draws with (GPU adapter and backend), if it said.
     renderer: Option<String>,
+    /// Where presented-frame intervals come from, if the host has a source.
+    presentation: Option<PresentationSource>,
 }
 
 impl Recorder {
@@ -156,6 +180,17 @@ impl Recorder {
         self.invalid.clear();
         self.idle.clear();
         self.workload = None;
+    }
+    /// Names where presented-frame intervals come from; `None` keeps presentation unsupported.
+    pub fn set_presentation_source(&mut self, source: Option<PresentationSource>) {
+        self.presentation = source;
+    }
+    pub fn presentation_source(&self) -> Option<PresentationSource> {
+        self.presentation
+    }
+    /// Whether `metric` may take samples: presentation only from a host with a source.
+    fn accepts(&self, metric: Metric) -> bool {
+        self.enabled && (metric != Metric::Presentation || self.presentation.is_some())
     }
     /// What the host draws with, for the report (e.g. "Apple M2 (Metal)"); at most 128 chars.
     pub fn set_renderer(&mut self, renderer: Option<String>) {
@@ -187,7 +222,7 @@ impl Recorder {
     /// The time since `start` (from [`Self::now`]) recorded as one sample of `metric`.
     pub fn record_since(&mut self, metric: Metric, start: u64) {
         // Reject unsupported presentation before invoking a host clock callback.
-        if metric == Metric::Presentation {
+        if !self.accepts(metric) {
             return;
         }
         if let Some(end) = self.now() {
@@ -195,7 +230,7 @@ impl Recorder {
         }
     }
     pub(crate) fn record_between(&mut self, metric: Metric, start: u64, end: u64) {
-        if !self.enabled || metric == Metric::Presentation {
+        if !self.accepts(metric) {
             return;
         }
         match end.checked_sub(start) {
@@ -204,9 +239,9 @@ impl Recorder {
         }
     }
     /// One sample of `metric`, in microseconds; ignored while not recording.
-    /// Presentation is always unsupported and cannot accept injected samples.
+    /// Presentation takes samples only once the host has named a [`PresentationSource`].
     pub fn record(&mut self, metric: Metric, micros: u64) {
-        if !self.enabled || metric == Metric::Presentation {
+        if !self.accepts(metric) {
             return;
         }
         if micros > MAX_SAMPLE_US {
@@ -246,11 +281,13 @@ impl Recorder {
                 let mut sorted: Vec<u64> = samples.map(|s| s.iter().copied().collect()).unwrap_or_default();
                 sorted.sort_unstable();
                 let at = |p: u64| percentile(&sorted, p);
+                let presented = metric == Metric::Presentation && self.presentation.is_some();
+                let missed = presented.then(|| sorted.iter().map(|us| missed_frames(*us)));
                 MetricReport {
                     metric,
                     unit: "us",
-                    supported: metric != Metric::Presentation && self.has_clock(),
-                    unavailable_reason: if metric == Metric::Presentation {
+                    supported: (metric != Metric::Presentation || presented) && self.has_clock(),
+                    unavailable_reason: if metric == Metric::Presentation && !presented {
                         Some("presentation_timestamps_not_available")
                     } else if !self.has_clock() {
                         Some("clock_not_available")
@@ -266,6 +303,8 @@ impl Recorder {
                     p99: at(99),
                     max: sorted.last().copied(),
                     over_frame_budget: metric.budget().map(|budget| sorted.iter().filter(|us| **us > budget).count()),
+                    dropped_frames: missed.clone().map(|m| m.fold(0u64, u64::saturating_add)),
+                    longest_drop: missed.map(|m| m.max().unwrap_or(0)),
                 }
             })
             .collect();
@@ -278,7 +317,8 @@ impl Recorder {
             interval_budget_us: INTERVAL_BUDGET_US,
             idle_gap_us: IDLE_GAP_US,
             warm_up: "none: every sample since the last clear is kept; clear after warming up",
-            note: "frame_prepare is shell CPU preparation, not GPU/presentation; frame_interval over-budget counts are interval-gap heuristics, not observed dropped frames",
+            note: "frame_prepare is shell CPU preparation, not GPU/presentation; frame_interval over-budget counts are interval-gap heuristics, not observed dropped frames; presentation is only the host's pumped vsync frame intervals, where it names a source",
+            presentation_source: self.presentation,
             edge_visibility: "adaptive open-curve stroke envelope against painter clip; conservative at joins/AA/corners; no pixel or occlusion guarantee",
             metrics,
             workload: self.workload,
@@ -327,6 +367,8 @@ pub struct Report {
     pub warm_up: &'static str,
     pub note: &'static str,
     pub edge_visibility: &'static str,
+    /// Where presented-frame intervals come from; `null` when presentation is unsupported.
+    pub presentation_source: Option<PresentationSource>,
     pub metrics: Vec<MetricReport>,
     pub workload: Option<Workload>,
     pub environment: Environment,
@@ -353,6 +395,11 @@ pub struct MetricReport {
     /// Frames over budget ([`FRAME_BUDGET_US`] to prepare, [`INTERVAL_BUDGET_US`] between
     /// frames); only for frame metrics.
     pub over_frame_budget: Option<usize>,
+    /// 60 Hz frames not shown, summed over the kept presented intervals ([`missed_frames`]);
+    /// only for supported presentation.
+    pub dropped_frames: Option<u64>,
+    /// The most 60 Hz frames missed in a row (one interval); only for supported presentation.
+    pub longest_drop: Option<u64>,
 }
 
 /// Build and platform labels: nothing about the person or their files.

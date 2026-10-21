@@ -100,7 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: schema,
-            params_doc: "{} -> the versioned report (schema nodecraft.perf/2): per metric p50/p95/p99/max in microseconds, sample counts, frames over the 60 Hz budget, the last frame's workload and build/platform labels. Unmeasured values are null. Read-only.",
+            params_doc: "{} -> the versioned report (schema nodecraft.perf/3): per metric p50/p95/p99/max in microseconds, sample counts, frames over the 60 Hz budget, dropped frames for presented intervals, the last frame's workload and build/platform labels. Unmeasured values are null. Read-only.",
             enabled: enabled_any,
             run: report,
         },

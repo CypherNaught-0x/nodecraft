@@ -96,10 +96,41 @@ same command builder while retaining its original 401-step Undo and reopen asser
 
 There are **72 required records**. Missing/duplicate combinations, lost visibility observations,
 unsupported required clocks or invalid data are incomplete evidence, never an attractive speedup.
-Each canvas record consumes `nodecraft.perf/2`; Presentation remains explicitly unsupported.
-GPU timing, presentation timing and wasm runtime measurements are listed as unavailable.
+Each canvas record consumes `nodecraft.perf/3` from a headless kittest window, which has no
+presentation source, so Presentation stays explicitly unsupported there (the 60 fps criterion
+above is the pumped desktop run). GPU timing, presentation timing and wasm runtime measurements are
+listed as unavailable.
 Actual desktop `perf.report` exports remain separately labeled host CPU diagnostics and cannot
 be compared directly with headless tessellation spans or substituted for presentation timestamps.
+
+## The 60 fps criterion
+
+M1's "a 200-node graph at 60 fps" (plan §7, #65) is tested with presented frames, not CPU
+preparation (#526). Run the desktop app's pumped run in release mode, with its window on screen:
+
+```sh
+cargo run -p nodecraft --release -- --perf-run perf-run.json
+```
+
+Each workload times 600 presented frames (10 s at 60 Hz) after 30 settle frames; see
+`docs/development.md` for what `presentation`, `dropped_frames` and `longest_drop` include. The
+criterion holds on a machine when, for the 200-node graph:
+
+1. **P1 (pan):** steady panning at zoom 0.2 drops at most 6 frames (`dropped_frames ≤ 6`, 1% of
+   600) and has a p99 presented interval ≤ 25 ms.
+2. **P2 (zoom):** the zoom sweep from 0.1 to about 1.0 and back meets the same two bounds.
+3. **P3 (hitches):** in both, no hitch drops more than 2 consecutive 60 Hz frames
+   (`longest_drop ≤ 2`).
+
+The bounds are on drops, not on a 16.7 ms percentile: a smooth 60 Hz display shows frame-start
+intervals scattered a fraction of a millisecond either side of 16.7 ms, so about half of them
+are "over" with nothing dropped. An interval counts as a drop past 25 ms, 1.5 frames.
+
+The 1,000-node graph is reported alongside it but isn't part of the criterion. The run counts
+drops against 60 Hz on any display. A faster display shows shorter intervals, not a higher bar.
+A report without a `presentation_source` (a host that couldn't promise vsync) proves nothing
+either way. The headless `cargo xtask perf` canvas records below remain CPU regression evidence
+and can't stand in for this run.
 
 ## Compare and establish a baseline
 

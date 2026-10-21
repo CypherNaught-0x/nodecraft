@@ -111,3 +111,55 @@ fn painted_frame_snapshot_is_not_recomputed_from_later_document_state() {
     assert_eq!(h.state().session.perf().report().workload.unwrap(), snapshot);
     assert_eq!(h.state().session.document().canvases()[&canvas].nodes().len(), snapshot.total_nodes + 1);
 }
+
+#[test]
+fn a_frame_pump_times_presented_frames_and_stopping_it_keeps_them_unsupported() {
+    use nodecraft_engine::perf::PresentationSource;
+    let mut h = harness();
+    h.state_mut().session.dispatch("perf.start", &json!({})).unwrap();
+    for _ in 0..3 {
+        h.step();
+    }
+    let report = h.state_mut().session.dispatch("perf.report", &json!({})).unwrap();
+    assert_eq!(metric(&report, "presentation")["supported"], false, "no pump, no presented frames");
+    h.state_mut().set_frame_pump(Some(PresentationSource::VsyncFramePump));
+    for _ in 0..5 {
+        h.step();
+    }
+    assert!(h.ctx.has_requested_repaint(), "every pumped frame asks for the next");
+    let report = h.state_mut().session.dispatch("perf.report", &json!({})).unwrap();
+    let presented = metric(&report, "presentation");
+    assert_eq!(presented["supported"], true, "{presented}");
+    assert_eq!(report["presentation_source"], "vsync_frame_pump");
+    // The first pumped frame follows an unpumped one, so its interval isn't counted.
+    assert_eq!(presented["samples"], 4, "{presented}");
+    assert!(presented["dropped_frames"].is_u64());
+    h.state_mut().set_frame_pump(None);
+    h.step();
+    let report = h.state_mut().session.dispatch("perf.report", &json!({})).unwrap();
+    assert_eq!(metric(&report, "presentation")["supported"], false);
+    assert_eq!(report["presentation_source"], Value::Null);
+}
+
+#[test]
+fn a_discarded_pass_shares_its_frames_present() {
+    use nodecraft_engine::perf::PresentationSource;
+    let mut h = egui_kittest::Harness::builder().build_ui_state(
+        |ui, app: &mut super::super::NodeCraftApp| {
+            if ui.ctx().current_pass_index() == 0 {
+                ui.ctx().request_discard("test: a second pass");
+            }
+            app.show(ui)
+        },
+        harness().into_state(),
+    );
+    h.ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(2).unwrap());
+    h.state_mut().session.dispatch("perf.start", &json!({})).unwrap();
+    h.state_mut().set_frame_pump(Some(PresentationSource::VsyncFramePump));
+    for _ in 0..5 {
+        h.step();
+    }
+    let report = h.state_mut().session.dispatch("perf.report", &json!({})).unwrap();
+    assert_eq!(metric(&report, "presentation")["samples"], 4, "one interval per frame, not per pass");
+    assert!(metric(&report, "frame_prepare")["samples"].as_u64().unwrap() >= 10, "both passes ran");
+}
