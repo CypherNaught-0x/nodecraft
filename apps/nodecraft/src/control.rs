@@ -198,6 +198,15 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
             self.app.session.dispatch(id, params)
         }
     }
+    fn impact(&mut self, id: &str, params: &serde_json::Value) -> Result<nodecraft_engine::impact::Impact, nodecraft_types::Error> {
+        // Navigation and search change only the view, which is not the document.
+        if NodeCraftApp::is_navigation_command(id) || NodeCraftApp::is_search_command(id) {
+            self.enabled(id, params)?;
+            Ok(nodecraft_engine::impact::Impact::Read)
+        } else {
+            self.app.session.impact(id, params)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -85,8 +85,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Actions are partly live.** The 13 image and 4 text operations are node kinds (#410) and
   recompute on a worker after each edit, joining that edit's undo step (#433). Reduced-resolution
   previews while a slider drags, and recompute in the browser build, are still open (#88).
-- **The in-canvas agent is a 5-line stub.** `crates/agent` has no code; the MCP server and control
-  channel are what external agents use today.
+- **The in-canvas agent has its loop but no sidebar yet.** `crates/agent` runs a model's tool calls
+  over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
+  change or run, auto mode runs edits and runs within a budget (#114). The app does not wire it to
+  an endpoint or show it yet; the MCP server and control channel are what external agents use.
 - **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99), but no browser host provides project storage,
   keys or runs yet, and dropping files in a browser is an explicit *unsupported*.

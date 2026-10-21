@@ -28,6 +28,7 @@ pub mod generate;
 pub mod graph_cmds;
 pub mod held_cmds;
 pub mod history_cmds;
+pub mod impact;
 pub mod import;
 pub mod jobs;
 pub mod keys_cmds;

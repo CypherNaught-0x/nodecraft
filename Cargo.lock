@@ -3066,6 +3066,9 @@ name = "nodecraft-agent"
 version = "0.2.0-rc.1"
 dependencies = [
  "nodecraft-engine",
+ "nodecraft-providers",
+ "nodecraft-types",
+ "serde_json",
 ]
 
 [[package]]
