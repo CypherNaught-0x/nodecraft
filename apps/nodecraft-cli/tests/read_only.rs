@@ -131,3 +131,21 @@ fn bad_input_is_an_error_not_a_panic() {
         assert!(stderr.starts_with("error: ") && !stderr.contains("panicked"), "{args:?}: {stderr}");
     }
 }
+
+#[test]
+fn run_leaves_the_project_file_as_it_was() {
+    let (dir, path) = project("fox.ncraft");
+    let before = std::fs::read(&path).unwrap();
+    // The fixture's card is of a kind this build doesn't install, so the quote blocks the run.
+    let out = cli(&["run", path.to_str().unwrap(), "--out", dir.path().to_str().unwrap(), "--yes"]);
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("the run isn't allowed") && error.contains("not installed"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the project is not written");
+    assert_eq!(names(dir.path()), vec!["fox.ncraft".to_owned()], "nothing is written beside it");
+
+    let missing = cli(&["run", "nowhere.ncraft"]);
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("no project file"));
+    let twice = cli(&["run", path.to_str().unwrap(), "--out", "a", "--out", "b"]);
+    assert!(String::from_utf8_lossy(&twice.stderr).contains("`--out` is given twice"));
+}

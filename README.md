@@ -46,7 +46,8 @@
 - **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
   you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
   dispatching the same 66 commands the UI uses. `nodecraft-cli inspect`, `quote` and `providers`
-  read a project's canvases, price a run as the canvas would, and say which providers can run.
+  read a project's canvases, price a run as the canvas would, and say which providers can run;
+  `nodecraft-cli run` runs it (a paid run needs `--yes`) and exports the results to a folder.
 
 ## The canvas, frame by frame
 
