@@ -514,4 +514,5 @@ fn token_rates_must_match_a_paid_price_and_name_a_real_threshold() {
     let free = with("pricing = { type = \"free\" }\nusage = { input = \"0.002 USD\", output = \"0.01 USD\" }");
     assert!(Catalog::from_toml(&free).is_err(), "a free model has nothing to settle");
     assert!(Catalog::from_toml(&with(&format!("{pricing}\nusage = {{ input = \"0.002 USD\" }}"))).is_err(), "both rates");
+    assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0 USD" }"#)).is_err(), "a paid reply costs something");
 }

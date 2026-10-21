@@ -131,6 +131,10 @@ impl ModelDescriptor {
             if currency.is_none() || rates.prices().any(|price| Some(price.0.currency) != currency) {
                 return Err(invalid(id, "`usage` rates must be in the currency of the model's paid `pricing`"));
             }
+            // A zero reply rate would settle every run of a paid model at nothing: a typo, not a price.
+            if rates.output.0.micros == 0 || rates.long.as_ref().is_some_and(|long| long.output.0.micros == 0) {
+                return Err(invalid(id, "`usage` output rates must be above zero for a paid model"));
+            }
             if rates.long.as_ref().is_some_and(|long| long.above == 0) {
                 return Err(invalid(id, "`usage.long.above` must be at least 1 prompt token"));
             }
