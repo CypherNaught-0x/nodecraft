@@ -3035,12 +3035,16 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "futures",
  "log",
+ "nodecraft-agent",
  "nodecraft-automation",
  "nodecraft-engine",
+ "nodecraft-providers",
  "nodecraft-types",
  "nodecraft-ui-egui",
  "serde_json",
+ "tokio",
  "winresource",
 ]
 

@@ -675,6 +675,26 @@ impl NodeCraftApp {
         Ok(app)
     }
 
+    /// The in-canvas agent's settings (#114), or the defaults without a settings file.
+    pub fn agent_settings(&self) -> nodecraft_engine::settings::AgentSettings {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &self.store {
+            return store.get().agent.clone();
+        }
+        nodecraft_engine::settings::AgentSettings::default()
+    }
+
+    /// Changes the agent's settings; they are saved with the others. Without a settings file the
+    /// change is dropped.
+    pub fn update_agent_settings(&mut self, change: impl FnOnce(&mut nodecraft_engine::settings::AgentSettings)) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            store.update(|settings| change(&mut settings.agent));
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = change;
+    }
+
     /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
     /// package may take an ID the app registers; no host implementation is bindable yet.
     #[cfg(not(target_arch = "wasm32"))]

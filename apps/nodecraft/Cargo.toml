@@ -16,12 +16,17 @@ workspace = true
 nodecraft-engine = { workspace = true }
 nodecraft-ui-egui = { workspace = true }
 nodecraft-automation = { workspace = true }
+nodecraft-agent = { workspace = true }
+nodecraft-providers = { workspace = true }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
 eframe = { workspace = true, features = ["wgpu", "accesskit", "wayland", "x11", "persistence"] }
 egui = { workspace = true }
 craft-quit = { workspace = true }
 log = { workspace = true }
+# The agent sidebar (#114) asks its model on a thread with a runtime of its own.
+tokio = { workspace = true, features = ["rt", "time"] }
+futures = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for nodecraft.exe; build.rs only uses it when targeting Windows.

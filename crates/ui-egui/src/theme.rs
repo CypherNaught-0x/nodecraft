@@ -68,6 +68,8 @@ pub struct Tokens {
     pub comment_marker_gap: f32,
     pub comment_marker_radius: u8,
     pub comments_button_width: f32,
+    /// The agent sidebar's width (#114).
+    pub agent_width: f32,
     pub navigation_width: f32,
     pub minimap_height: f32,
     pub navigation_toolbar_height: f32,
@@ -197,6 +199,7 @@ pub const DARK: Tokens = Tokens {
     comment_marker_gap: 12.0,
     comment_marker_radius: 6,
     comments_button_width: 110.0,
+    agent_width: 360.0,
     navigation_width: 320.0,
     minimap_height: 160.0,
     navigation_toolbar_height: 30.0,

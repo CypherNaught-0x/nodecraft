@@ -22,7 +22,7 @@ an agent can actually do today.
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), video generation (#559) | 3/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
-| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, no agent | 1/6 |
+| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114) | 2/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | ⬜ none started | 0/26 |
 
@@ -87,10 +87,12 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Actions are partly live.** The 13 image and 4 text operations are node kinds (#410) and
   recompute on a worker after each edit, joining that edit's undo step (#433). Reduced-resolution
   previews while a slider drags, and recompute in the browser build, are still open (#88).
-- **The in-canvas agent has its loop but no sidebar yet.** `crates/agent` runs a model's tool calls
-  over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
-  change or run, auto mode runs edits and runs within a budget (#114). The app does not wire it to
-  an endpoint or show it yet; the MCP server and control channel are what external agents use.
+- **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
+  words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
+  calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
+  change or run, auto mode runs edits and runs within the `[agent]` budget. The endpoint (Anthropic,
+  OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
+  is no settings screen for them yet, and the browser build has no agent.
 - **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99), but no browser host provides project storage,
   keys or runs yet, and dropping files in a browser is an explicit *unsupported*.
