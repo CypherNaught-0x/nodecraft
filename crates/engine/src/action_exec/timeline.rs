@@ -85,7 +85,8 @@ mod native {
     use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
-        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, ServiceConfig, Source, ToolPaths, VideoError, VideoJob, VideoLimits, VideoService,
+        ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, Placement, Quality, ServiceConfig, Source, ToolPaths, VideoError, VideoJob,
+        VideoLimits, VideoService,
     };
     use nodecraft_nodes::timeline::{Timeline, caption};
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
@@ -104,10 +105,28 @@ mod native {
     /// Bytes read back from the rendered file at once (the service's most).
     const CHUNK: u64 = 1024 * 1024;
 
+    /// The render quality a Timeline node's parameters ask for; a job planned before there was
+    /// a choice renders as it did then.
+    fn quality(params: &ParamValues) -> Result<Quality, String> {
+        match params.get("quality") {
+            None => Ok(Quality::Standard),
+            Some(Value::Text(q)) if q == "draft" => Ok(Quality::Draft),
+            Some(Value::Text(q)) if q == "standard" => Ok(Quality::Standard),
+            Some(Value::Text(q)) if q == "high" => Ok(Quality::High),
+            Some(_) => Err("the quality is draft, standard or high".into()),
+        }
+    }
+
+    /// Where `clip` sits in the frame, as the video service takes it.
+    fn placement(clip: &nodecraft_nodes::timeline::Clip) -> Placement {
+        let p = clip.placement();
+        Placement { pos_x: p.pos_x, pos_y: p.pos_y, scale: p.scale, crop: p.crop, rotation: p.rotation, opacity: p.opacity }
+    }
+
     fn message(error: VideoError) -> String {
         match error {
             VideoError::Unavailable => "can't run ffmpeg or ffprobe; check [media] in settings",
-            VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter), or a video's format isn't supported",
+            VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter, and rotate, lutyuv, color and atempo for placed or sped-up clips), or a video's format isn't supported",
             VideoError::InvalidMetadata => "a connected video's or sound's format isn't supported",
             VideoError::Limit => "the videos or the render are too large; make the timeline shorter or smaller",
             VideoError::Timeout => "the render took too long",
@@ -265,6 +284,7 @@ mod native {
 
         pub(in crate::action_exec) fn timeline(&self, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
             let frame = frame(params)?;
+            let quality = quality(params)?;
             let wires = wires(params, inputs.len());
             let timeline = clips(params)?;
             if timeline.unplaced_sound(&wires) {
@@ -321,6 +341,13 @@ mod native {
                 }
                 .map_err(|_| format!("clip {number} is longer than an hour"))?;
                 let made = made
+                    .with_speed(clip.speed)
+                    .and_then(|c| c.with_placement(placement(clip)))
+                    .map_err(|_| format!("clip {number}'s speed or place in the frame can't be used"))?;
+                if !made.fits(frame.width, frame.height) {
+                    return Err(format!("clip {number} is placed too large for the frame: make it smaller"));
+                }
+                let made = made
                     .with_fades(clip.fade_in_us, clip.fade_out_us)
                     .and_then(|c| c.with_volume(clip.volume, clip.muted))
                     .and_then(|c| c.with_transition(clip.transition_us))
@@ -337,7 +364,8 @@ mod native {
                     _ => "a transition is longer than the clips on either side of it allow".to_owned(),
                 })?
                 .with_layers(layers)
-                .map_err(|_| "the timeline is longer than an hour".to_owned())?;
+                .map_err(|_| "the timeline is longer than an hour".to_owned())?
+                .with_quality(quality);
             let duration_us = spec.duration_us();
             let captions = self.captions(&service, &timeline, frame, duration_us, cancelled)?;
             let spec = spec.with_captions(captions).map_err(|_| "the captions can't be drawn over the picture".to_owned())?;

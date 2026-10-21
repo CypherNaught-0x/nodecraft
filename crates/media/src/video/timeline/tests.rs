@@ -17,7 +17,7 @@ fn meta(width: u32, height: u32, rotation: u16, audio: bool) -> VideoMetadata {
     }
 }
 fn span(in_us: u64, out_us: u64) -> Span {
-    Span { in_us, out_us, fade_in_us: 0, fade_out_us: 0, volume: 1000, muted: false, transition_us: 0 }
+    Span { in_us, out_us, fade_in_us: 0, fade_out_us: 0, volume: 1000, muted: false, transition_us: 0, speed: 1000, placement: Placement::IDENTITY }
 }
 const FRAME: Frame = Frame { width: 1280, height: 720, fps: (30, 1), background: [0, 0, 0] };
 
@@ -187,4 +187,71 @@ fn captions_go_over_everything_at_their_frames() {
     let g = graph(FRAME, &[(Media::Video(&m), &s)], &[(still, &span(0, 1_000_000), 0)], &captions[..1]).unwrap();
     assert!(g.contains("setpts=PTS-STARTPTS[cv0];") && g.contains("[2:0]scale=out_color_matrix") && g.contains("[cv0][t0]overlay=x=100:y=600"), "{g}");
     assert!(g.contains("[vout]") && !g.contains("[vout];[2:0]"), "{g}");
+}
+
+#[test]
+fn speed_shortens_the_output_and_tempo_stays_within_atempo_range() {
+    let m = meta(1280, 720, 0, true);
+    let s = Span { speed: 2000, ..span(0, 4_000_000) };
+    assert_eq!((s.length_us(), s.media_us()), (2_000_000, 4_000_000));
+    assert_eq!(Span { speed: 3000, ..span(0, 1) }.length_us(), 1, "a played clip lasts at least a microsecond");
+    let g = graph(FRAME, &[(Media::Video(&m), &s)], &[], &[]).unwrap();
+    assert!(g.contains("[0:0]setpts=(PTS-STARTPTS)*1000/2000,colorspace"), "{g}");
+    assert!(g.contains("asetpts=PTS-STARTPTS,atempo=2.000,apad,atrim=duration=2.000000"), "{g}");
+    assert!(g.contains("trim=end_frame=60"), "{g}");
+    assert_eq!(tempo(1000), "");
+    assert_eq!(tempo(250), ",atempo=0.5,atempo=0.500");
+    assert_eq!(tempo(750), ",atempo=0.750");
+    assert_eq!(tempo(3001), ",atempo=2.0,atempo=1.5005");
+    assert_eq!(tempo(4000), ",atempo=2.0,atempo=2.0000");
+}
+
+#[test]
+fn a_placed_picture_is_cropped_sized_turned_and_drawn_where_it_goes() {
+    let m = meta(1280, 720, 0, false);
+    let placement = Placement { pos_x: 250, pos_y: 750, scale: 500, crop: [100, 0, 100, 0], rotation: 90, opacity: 500 };
+    let s = Span { placement, ..span(0, 1_000_000) };
+    let g = graph(FRAME, &[(Media::Video(&m), &s)], &[], &[]).unwrap();
+    // 80% of the width, fitted to 1280x720 at 1024x720, then halved.
+    assert!(g.contains("crop=w=max(1\\,iw*800/1000):h=max(1\\,ih*1000/1000):x=iw*100/1000:y=ih*0/1000,scale=512:360:"), "{g}");
+    assert!(g.contains("format=yuva444p,rotate=a=90*PI/180:ow=360:oh=512:c=black@0,lutyuv=a=val*500/1000,setsar=1[p0];"), "{g}");
+    // Centre at (320, 540) less half the turned box (180, 256).
+    assert!(g.contains("color=c=0x000000:s=1280x720:r=30/1:d=1.000000,format=yuv420p[q0];[q0][p0]overlay=x=140:y=284:eof_action=repeat:format=yuv420,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,fps="), "{g}");
+    assert!(!g.contains(",pad="), "{g}");
+    // Off the top-left corner, on a layer: transparent around it.
+    let off = Placement { pos_x: -100, pos_y: 0, ..Placement::IDENTITY };
+    let still = Media::Still { width: 64, height: 64 };
+    let l = Span { placement: off, ..span(0, 1_000_000) };
+    let g = graph(FRAME, &[(Media::Video(&m), &span(0, 1_000_000))], &[(still, &l, 0)], &[]).unwrap();
+    assert!(g.contains("color=c=black@0:s=1280x720:r=30/1:d=1.000000,format=yuva420p[q1];[q1][p1]overlay=x=-488:y=-360:"), "{g}");
+    // A still on the main track needs no box of its own: the frame behind it shows through.
+    let g = graph(FRAME, &[(still, &l)], &[], &[]).unwrap();
+    assert!(!g.contains("format=rgba[p0]") && g.contains("[q0][p0]overlay=x=-488"), "{g}");
+}
+
+#[test]
+fn placements_stay_bounded() {
+    assert_eq!(turned(100, 50, 0), (100, 50));
+    assert_eq!(turned(100, 50, 90), (50, 100));
+    assert_eq!(turned(100, 50, -180), (100, 50));
+    assert_eq!(turned(100, 100, 45), (142, 142));
+    let big = Placement { scale: 4000, ..Placement::IDENTITY };
+    let frame = Frame { width: 4096, height: 4096, fps: (30, 1), background: [0, 0, 0] };
+    assert_eq!(placed_size((1, 1), big, frame), Err(VideoError::Limit));
+    let tiny = Placement { scale: 10, ..Placement::IDENTITY };
+    assert_eq!(placed_size((1280, 720), tiny, FRAME), Ok((12, 6)));
+    let tinier = Placement { scale: 10, crop: [0, 0, 0, 0], ..Placement::IDENTITY };
+    assert_eq!(placed_size((16, 16), tinier, Frame { width: 16, height: 16, ..FRAME }), Ok((2, 2)));
+    assert!(!Placement { crop: [450, 0, 450, 0], ..Placement::IDENTITY }.valid());
+    assert!(!Placement { rotation: 181, ..Placement::IDENTITY }.valid());
+    assert!(!Placement { opacity: 1001, ..Placement::IDENTITY }.valid());
+    assert!(!Placement { pos_x: 2001, ..Placement::IDENTITY }.valid());
+    assert!(Placement { pos_x: -1000, pos_y: 2000, crop: [449, 0, 450, 899], ..Placement::IDENTITY }.valid());
+}
+
+#[test]
+fn qualities_pick_their_own_vp9_settings() {
+    assert_eq!(Quality::default(), Quality::Standard);
+    assert_eq!(Quality::Standard.vp9(), ("32", "4000000"), "standard is the encoding used before qualities");
+    assert_ne!(Quality::Draft.vp9(), Quality::High.vp9());
 }

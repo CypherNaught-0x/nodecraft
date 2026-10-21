@@ -59,6 +59,20 @@ pub const MAX_ID_BYTES: usize = 64;
 pub const MAX_TRACKS: usize = 8;
 /// How long a still shows until its length is set.
 pub const DEFAULT_STILL_US: u64 = 3_000_000;
+/// The identity placement, in thousandths: centred, at the size that fits the frame, opaque.
+pub const CENTRE: i32 = 500;
+pub const UNIT: u16 = 1000;
+/// Where a clip's centre may go, in thousandths of the frame (a clip may sit partly outside it).
+pub const MIN_POS: i32 = -1000;
+pub const MAX_POS: i32 = 2000;
+/// A clip's size range, in thousandths of the size that fits the frame.
+pub const MIN_SCALE: u16 = 10;
+pub const MAX_SCALE: u16 = 4000;
+/// A clip's playback rate range, in thousandths (500 is half speed).
+pub const MIN_SPEED: u16 = 250;
+pub const MAX_SPEED: u16 = 4000;
+/// The render qualities offered, worst first.
+pub const QUALITIES: [&str; 3] = ["draft", "standard", "high"];
 
 /// Which port a clip's media is wired into.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -175,6 +189,47 @@ pub struct Clip {
     /// A disabled clip stays on the timeline but isn't rendered.
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Where the clip's centre is in the frame, in thousandths of its width and height.
+    #[serde(default = "centre", skip_serializing_if = "is_centre")]
+    pub pos_x: i32,
+    #[serde(default = "centre", skip_serializing_if = "is_centre")]
+    pub pos_y: i32,
+    /// Its size, in thousandths of the size at which its (cropped) picture fits the frame.
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub scale: u16,
+    /// How much of the picture is cut from each edge, in thousandths of its width or height.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub crop_left: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub crop_top: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub crop_right: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub crop_bottom: u16,
+    /// Clockwise turn about its centre, in degrees from -180 to 180.
+    #[serde(default, skip_serializing_if = "is_zero_i16")]
+    pub rotation: i16,
+    /// Thousandths: 1000 is opaque.
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub opacity: u16,
+    /// Playback rate, in thousandths: 2000 plays twice as fast, so the clip lasts half as long.
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub speed: u16,
+}
+
+/// Where a clip sits in the output frame (see the fields of [`Clip`] with the same names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub pos_x: i32,
+    pub pos_y: i32,
+    pub scale: u16,
+    pub crop: [u16; 4],
+    pub rotation: i16,
+    pub opacity: u16,
+}
+impl Placement {
+    /// Centred, fitted, uncropped, upright and opaque.
+    pub const IDENTITY: Self = Self { pos_x: CENTRE, pos_y: CENTRE, scale: UNIT, crop: [0; 4], rotation: 0, opacity: UNIT };
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -185,8 +240,28 @@ fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
+fn is_zero_i16(v: &i16) -> bool {
+    *v == 0
+}
+
 fn unity() -> u16 {
-    1000
+    UNIT
+}
+
+fn is_unity(v: &u16) -> bool {
+    *v == UNIT
+}
+
+fn centre() -> i32 {
+    CENTRE
+}
+
+fn is_centre(v: &i32) -> bool {
+    *v == CENTRE
 }
 
 fn yes() -> bool {
@@ -211,6 +286,16 @@ impl Clip {
             muted: false,
             transition_us: 0,
             enabled: true,
+            pos_x: CENTRE,
+            pos_y: CENTRE,
+            scale: UNIT,
+            crop_left: 0,
+            crop_top: 0,
+            crop_right: 0,
+            crop_bottom: 0,
+            rotation: 0,
+            opacity: UNIT,
+            speed: UNIT,
         }
     }
 
@@ -220,9 +305,31 @@ impl Clip {
         Self { input, track, out_us, ..Self::whole(id, origin, nth) }
     }
 
-    /// The clip's length, when its end is set.
+    /// The length of media the clip plays, when its end is set.
     pub fn length_us(&self) -> Option<u64> {
         self.out_us.map(|out| out.saturating_sub(self.in_us))
+    }
+
+    /// How long the clip lasts on the timeline, at its speed: `media_us` of its media.
+    pub fn played(&self, media_us: u64) -> u64 {
+        played_us(media_us, self.speed)
+    }
+
+    /// How long it lasts on the timeline, when its end is set.
+    pub fn played_us(&self) -> Option<u64> {
+        self.length_us().map(|length| self.played(length))
+    }
+
+    /// Where it sits in the frame.
+    pub fn placement(&self) -> Placement {
+        Placement {
+            pos_x: self.pos_x,
+            pos_y: self.pos_y,
+            scale: self.scale,
+            crop: [self.crop_left, self.crop_top, self.crop_right, self.crop_bottom],
+            rotation: self.rotation,
+            opacity: self.opacity,
+        }
     }
 
     pub fn check(&self) -> Result<(), Error> {
@@ -239,7 +346,13 @@ impl Clip {
         if self.out_us.is_some_and(|out| out <= self.in_us) {
             return Err(bad("a clip ends after it starts"));
         }
-        if self.length_us().is_some_and(|length| self.fade_in_us.saturating_add(self.fade_out_us) > length) {
+        if !(MIN_SPEED..=MAX_SPEED).contains(&self.speed) {
+            return Err(bad("a clip's speed is 250 to 4000 thousandths"));
+        }
+        if self.input == Input::Stills && self.speed != UNIT {
+            return Err(bad("a still has no speed: set its length instead"));
+        }
+        if self.played_us().is_some_and(|length| self.fade_in_us.saturating_add(self.fade_out_us) > length) {
             return Err(bad("a clip's fades are no longer than the clip"));
         }
         if self.transition_us != 0 && self.transition_us < MIN_TRANSITION_US {
@@ -257,8 +370,44 @@ impl Clip {
         if self.track != 0 && self.transition_us != 0 {
             return Err(bad("only clips on the main track cross into the next"));
         }
+        self.check_placement()
+    }
+
+    fn check_placement(&self) -> Result<(), Error> {
+        let placed = self.placement();
+        if placed == Placement::IDENTITY {
+            return Ok(());
+        }
+        if !self.input.visual() {
+            return Err(bad("a sound has no place in the frame"));
+        }
+        if ![placed.pos_x, placed.pos_y].iter().all(|p| (MIN_POS..=MAX_POS).contains(p)) {
+            return Err(bad("a clip's position is -1000 to 2000 thousandths of the frame"));
+        }
+        if !(MIN_SCALE..=MAX_SCALE).contains(&placed.scale) {
+            return Err(bad("a clip's scale is 10 to 4000 thousandths"));
+        }
+        let [left, top, right, bottom] = placed.crop.map(u32::from);
+        if left + right >= 900 || top + bottom >= 900 {
+            return Err(bad("a clip's crop leaves at least a tenth of its width and height"));
+        }
+        if !(-180..=180).contains(&placed.rotation) {
+            return Err(bad("a clip's rotation is -180 to 180 degrees"));
+        }
+        if placed.opacity > UNIT {
+            return Err(bad("a clip's opacity is 0 to 1000 thousandths"));
+        }
         Ok(())
     }
+}
+
+/// How long `media_us` of media lasts played at `speed` thousandths (rounded down, at least 1 µs).
+pub fn played_us(media_us: u64, speed: u16) -> u64 {
+    if speed == UNIT || media_us == 0 {
+        return media_us;
+    }
+    let played = u128::from(media_us) * u128::from(UNIT) / u128::from(speed.max(1));
+    u64::try_from(played).unwrap_or(u64::MAX).max(1)
 }
 
 fn bad(message: &'static str) -> Error {
@@ -457,6 +606,11 @@ fn edge(name: &str, label: &str, default: u64) -> ParamSpec {
     }
 }
 
+fn capitalised(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
 pub struct TimelineKind {
     descriptor: NodeDescriptor,
 }
@@ -484,6 +638,15 @@ pub fn kind() -> TimelineKind {
                         control: ParamControl::Choice { options: RATES.iter().map(|r| Choice { value: (*r).into(), label: (*r).into() }).collect() },
                         required: true,
                         default: Some(Value::Text("30".into())),
+                        visible_if: None,
+                    },
+                    ParamSpec {
+                        name: "quality".into(),
+                        label: "Quality".into(),
+                        description: Some("Draft makes the smallest file, with the least detail; high keeps more detail in a larger file.".into()),
+                        control: ParamControl::Choice { options: QUALITIES.iter().map(|q| Choice { value: (*q).into(), label: capitalised(q) }).collect() },
+                        required: true,
+                        default: Some(Value::Text("standard".into())),
                         visible_if: None,
                     },
                     ParamSpec {

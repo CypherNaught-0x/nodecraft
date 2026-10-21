@@ -17,7 +17,10 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod probe;
 mod timeline;
-pub use timeline::{ComposeCaption, ComposeClip, ComposeSpec, MAX_CAPTIONS, MAX_CLIPS, MAX_DURATION_US, MAX_VOLUME, MIN_TRANSITION_US, Source};
+pub use timeline::{
+    ComposeCaption, ComposeClip, ComposeSpec, MAX_CAPTIONS, MAX_CLIPS, MAX_DURATION_US, MAX_PLACED_SIDE, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MIN_TRANSITION_US,
+    Placement, Quality, Source,
+};
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
 mod quota;

@@ -234,3 +234,12 @@ fn captions_are_stored_with_the_clips_and_checked() {
     let taken = [Caption::new("caption-1".into(), "x".into(), 0, 1)];
     assert_eq!(Caption::fresh_id(&taken), "caption-2");
 }
+
+#[test]
+fn a_clip_stored_before_speed_and_placement_reads_and_stores_as_it_did() {
+    let old = r#"{"clips":[{"id":"c","origin":"n","nth":0,"in_us":250000,"out_us":2000000,"fade_in_us":100000,"fade_out_us":0,"volume":800,"muted":true,"transition_us":0,"enabled":true}]}"#;
+    let parsed = Timeline::parse(old).unwrap();
+    let clip = parsed.clips.first().unwrap();
+    assert_eq!((clip.speed, clip.placement()), (1000, Placement::IDENTITY));
+    assert_eq!(parsed.encode().unwrap(), old);
+}

@@ -158,6 +158,22 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             fields.insert("input".into(), json!(clip.input));
             fields.insert("track".into(), json!(clip.track));
             fields.insert("at_us".into(), json!(clip.at_us));
+            let placed = clip.placement();
+            let [left, top, right, bottom] = placed.crop;
+            for (name, value) in [
+                ("pos_x", json!(placed.pos_x)),
+                ("pos_y", json!(placed.pos_y)),
+                ("scale", json!(placed.scale)),
+                ("crop_left", json!(left)),
+                ("crop_top", json!(top)),
+                ("crop_right", json!(right)),
+                ("crop_bottom", json!(bottom)),
+                ("rotation", json!(placed.rotation)),
+                ("opacity", json!(placed.opacity)),
+                ("speed", json!(clip.speed)),
+            ] {
+                fields.insert(name.into(), value);
+            }
             fields.insert("wired".into(), Json::Bool(Timeline::is_wired(clip, &wires)));
             fields.insert("media_us".into(), media_length(&inputs, clip).map_or(Json::Null, Json::from));
         }
@@ -373,8 +389,8 @@ fn split(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         return Err(invalid("split a clip between its start and its end"));
     }
     // The cut is a plain cut: the first part keeps the fade in, the second the fade out and the
-    // transition into what follows, each no longer than its part.
-    let (before, after) = (p.at_us.saturating_sub(first.in_us), end.saturating_sub(p.at_us));
+    // transition into what follows, each no longer than its part as it plays (at the clip's speed).
+    let (before, after) = (first.played(p.at_us.saturating_sub(first.in_us)), first.played(end.saturating_sub(p.at_us)));
     let second = Clip {
         id: fresh_id(&timeline, &first.id),
         // On a track beyond the main one the second part starts where the first now ends.
@@ -405,6 +421,8 @@ fn clip_id() -> Json {
 
 fn clip_fields() -> Map<String, Json> {
     let time = json!({"type": "integer", "minimum": 0, "maximum": timeline::MAX_US});
+    let position = json!({"type": "integer", "minimum": timeline::MIN_POS, "maximum": timeline::MAX_POS, "description": "Where the picture's centre is, in thousandths of the frame (500 is the middle)."});
+    let crop = json!({"type": "integer", "minimum": 0, "maximum": 899, "description": "Thousandths of the picture cut from this edge; opposite edges leave at least a tenth."});
     props(json!({
         "in_us": time, "fade_in_us": time, "fade_out_us": time, "transition_us": time,
         "out_us": {"type": ["integer", "null"], "minimum": 1, "maximum": timeline::MAX_US, "description": "Where the clip ends in its video; absent or null plays to the video's end."},
@@ -412,6 +430,12 @@ fn clip_fields() -> Map<String, Json> {
         "muted": {"type": "boolean"}, "enabled": {"type": "boolean"},
         "track": {"type": "integer", "minimum": 0, "maximum": MAX_TRACKS, "description": "0 is the main track; 1 the first of the timeline's other tracks."},
         "at_us": {"type": "integer", "minimum": 0, "maximum": timeline::MAX_US, "description": "Where the clip starts on a track beyond the main one, from the start of the output."},
+        "pos_x": position, "pos_y": position,
+        "scale": {"type": "integer", "minimum": timeline::MIN_SCALE, "maximum": timeline::MAX_SCALE, "description": "Thousandths of the size at which the cropped picture fits the frame."},
+        "crop_left": crop, "crop_top": crop, "crop_right": crop, "crop_bottom": crop,
+        "rotation": {"type": "integer", "minimum": -180, "maximum": 180, "description": "Clockwise degrees about the picture's centre."},
+        "opacity": {"type": "integer", "minimum": 0, "maximum": timeline::UNIT, "description": "Thousandths: 1000 is opaque."},
+        "speed": {"type": "integer", "minimum": timeline::MIN_SPEED, "maximum": timeline::MAX_SPEED, "description": "Playback rate in thousandths: 2000 plays twice as fast. Not for stills."},
     }))
 }
 
@@ -492,7 +516,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas, id: Timeline NodeId} -> {clips, tracks, inputs, captions}; every clip: the stored ones and a whole clip for each wired video, sound or picture no stored clip names. A clip is {id, origin, input, nth, track, at_us, in_us, out_us?, fade_in_us, fade_out_us, volume, muted, transition_us, enabled, wired, media_us}: input the port its media is wired into (clips, audio or stills), track 0 the main track (its clips play in list order) or another track (its clips start at at_us), times in microseconds into its media, out_us absent to play to the end (a still's length), volume in thousandths, transition_us the cross-fade into the next main-track clip (0 cuts), wired whether its media is connected now and media_us the video's or sound's length when known. tracks lists every track as {kind: video|audio}, the main track first: video tracks draw over the ones before them, audio tracks mix in. inputs lists each wired item in input order as {origin, input, media}: the node it comes from, its port and the asset it shows now (null until that node has a result). captions lists the text drawn over the picture, in drawing order (see timeline.caption_add), every field included.",
+            params_doc: "{canvas, id: Timeline NodeId} -> {clips, tracks, inputs, captions}; every clip: the stored ones and a whole clip for each wired video, sound or picture no stored clip names. A clip is {id, origin, input, nth, track, at_us, in_us, out_us?, fade_in_us, fade_out_us, volume, muted, transition_us, enabled, pos_x, pos_y, scale, crop_left, crop_top, crop_right, crop_bottom, rotation, opacity, speed, wired, media_us}: input the port its media is wired into (clips, audio or stills), track 0 the main track (its clips play in list order) or another track (its clips start at at_us), times in microseconds into its media, out_us absent to play to the end (a still's length), volume in thousandths, transition_us the cross-fade into the next main-track clip (0 cuts), pos_x/pos_y the picture's centre in thousandths of the frame (500 the middle), scale thousandths of the size that fits the frame, crop_* thousandths cut from each edge, rotation clockwise degrees, opacity thousandths, speed the playback rate in thousandths (fades and transitions are in played time, in_us and out_us in the media's), wired whether its media is connected now and media_us the video's or sound's length when known. tracks lists every track as {kind: video|audio}, the main track first: video tracks draw over the ones before them, audio tracks mix in. inputs lists each wired item in input order as {origin, input, media}: the node it comes from, its port and the asset it shows now (null until that node has a result). captions lists the text drawn over the picture, in drawing order (see timeline.caption_add), every field included.",
             enabled: always,
             run: list,
         },
@@ -502,7 +526,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: set_schema,
-            params_doc: "{canvas, id, clips: [clip, …], tracks?: [{kind}, …], captions?: [caption, …]} -> {changed}; replaces a Timeline node's clips (main-track ones in playing order), its tracks beyond the main one and, when given, its captions (see timeline.caption_add), as one undo step. A clip is {id, origin, input?, nth?, track?, at_us?, in_us?, out_us?, fade_in_us?, fade_out_us?, volume?, muted?, transition_us?, enabled?} (see timeline.list). Wired media no clip names is added when the node runs: videos and pictures after the main track's clips, sounds on the first audio track.",
+            params_doc: "{canvas, id, clips: [clip, …], tracks?: [{kind}, …], captions?: [caption, …]} -> {changed}; replaces a Timeline node's clips (main-track ones in playing order), its tracks beyond the main one and, when given, its captions (see timeline.caption_add), as one undo step. A clip is {id, origin, input?, nth?, track?, at_us?, in_us?, out_us?, fade_in_us?, fade_out_us?, volume?, muted?, transition_us?, enabled?, pos_x?, pos_y?, scale?, crop_left?, crop_top?, crop_right?, crop_bottom?, rotation?, opacity?, speed?} (see timeline.list). Wired media no clip names is added when the node runs: videos and pictures after the main track's clips, sounds on the first audio track.",
             enabled: always,
             run: set,
         },
@@ -512,7 +536,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: update_schema,
-            params_doc: "{canvas, id, clip: clip id, set: {fields}} -> {changed}; changes some of a clip's fields (in_us, out_us (null plays to the end), fade_in_us, fade_out_us, volume, muted, transition_us, enabled, track, at_us), as one undo step. A clip moved onto the main track starts in its order (at_us 0), one moved off it loses its transition, unless set says otherwise. A clip's id and media don't change.",
+            params_doc: "{canvas, id, clip: clip id, set: {fields}} -> {changed}; changes some of a clip's fields (in_us, out_us (null plays to the end), fade_in_us, fade_out_us, volume, muted, transition_us, enabled, track, at_us, and where its picture sits: pos_x, pos_y, scale, crop_left, crop_top, crop_right, crop_bottom, rotation, opacity; and its speed), as one undo step. A clip moved onto the main track starts in its order (at_us 0), one moved off it loses its transition, unless set says otherwise. A clip's id and media don't change.",
             enabled: always,
             run: update,
         },

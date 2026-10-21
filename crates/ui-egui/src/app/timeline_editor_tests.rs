@@ -216,6 +216,48 @@ fn fields_change_the_selected_clip_and_the_output_frame() {
     assert!(h.query_by_label(&format!("Trim start of {two}")).is_none());
 }
 
+/// Types `text` into the number field labelled `label` and lets it apply.
+fn set_number(h: &mut Harness<'static, NodeCraftApp>, label: &str, text: &str) {
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, label).click();
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, label).type_text(text);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+}
+
+#[test]
+fn a_clip_is_sped_up_placed_and_turned_and_the_render_quality_picked() {
+    let mut h = opened();
+    h.get_by_label(&clip_label(&h, TWO)).click();
+    h.run_steps(2);
+    for (label, text) in [("Speed (%)", "200"), ("Size (%)", "50"), ("Across (%)", "25"), ("Turn (°)", "90")] {
+        set_number(&mut h, label, text);
+    }
+    let two = list(&mut h)[1].clone();
+    let got = (two["speed"].clone(), two["scale"].clone(), two["pos_x"].clone(), two["rotation"].clone());
+    assert_eq!(got, (json!(2000), json!(500), json!(250), json!(90)), "{:?}", h.state().notice);
+    // Each field is one undo step; Fit to the frame puts it back in one.
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!((list(&mut h)[1]["rotation"].clone(), list(&mut h)[1]["scale"].clone()), (json!(0), json!(500)));
+    h.get_by_label("Fit to the frame").click();
+    h.run_steps(3);
+    let two = list(&mut h)[1].clone();
+    assert_eq!((two["scale"].clone(), two["pos_x"].clone(), two["speed"].clone()), (json!(1000), json!(500), json!(2000)));
+
+    // With nothing selected, the output's quality.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.query_by_label("Output frame").is_some());
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Render quality").click();
+    h.run_steps(2);
+    h.get_by_label("Draft (smallest file)").click();
+    h.run_steps(3);
+    let canvas = h.state().canvas;
+    let node = h.state().session.document().canvases().get(&canvas).and_then(|c| c.nodes().get(&EDITOR)).cloned().unwrap();
+    assert_eq!(node.params.get("quality"), Some(&Value::Text("draft".into())), "{:?}", h.state().notice);
+}
+
 #[test]
 fn tracks_are_added_hold_clips_dragged_onto_them_and_remove_once_empty() {
     let mut h = opened();
@@ -326,6 +368,14 @@ fn measured_videos_show_their_lengths_and_trim_to_their_ends() {
         }
         let image = h.render().unwrap();
         image.save(std::path::Path::new(&dir).join("timeline-editor.png")).unwrap();
+        // The first clip at double speed, shrunk, moved left and turned: its outline over the picture.
+        let set = json!({"speed": 2000, "scale": 600, "pos_x": 350, "pos_y": 450, "rotation": 12, "opacity": 800, "crop_right": 100});
+        dispatch(&mut h, "timeline.update", json!({"clip": auto(ONE), "set": set}));
+        h.state_mut().timeline_editor.as_mut().unwrap().selected = Some(auto(ONE));
+        h.run_steps(4);
+        h.render().unwrap().save(std::path::Path::new(&dir).join("timeline-placement.png")).unwrap();
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        h.run_steps(2);
         // A caption over the picture, picked so its fields show.
         dispatch(
             &mut h,

@@ -75,6 +75,20 @@ impl Context {
                 Source::Still(_) => need("demuxer=rawvideo".to_owned(), "pixel_format".to_owned()),
             }
         }
+        let spans = || spec.inputs().map(|c| c.span);
+        if spans().any(|s| s.placement != timeline::Placement::IDENTITY) {
+            need("filter=overlay".to_owned(), "eof_action".to_owned());
+            need("filter=color".to_owned(), "Filter color".to_owned());
+        }
+        if spans().any(|s| s.placement.rotation != 0) {
+            need("filter=rotate".to_owned(), "fillcolor".to_owned());
+        }
+        if spans().any(|s| s.placement.opacity < 1000) {
+            need("filter=lutyuv".to_owned(), "Filter lutyuv".to_owned());
+        }
+        if spans().any(|s| s.speed != 1000) {
+            need("filter=atempo".to_owned(), "tempo".to_owned());
+        }
         if !captions.is_empty() {
             need("filter=overlay".to_owned(), "eof_action".to_owned());
             need("demuxer=rawvideo".to_owned(), "pixel_format".to_owned());
@@ -103,7 +117,8 @@ impl Context {
         ]);
         let rate = format!("{}/{}", spec.frame.fps.0, spec.frame.fps.1);
         for clip in spec.inputs() {
-            let length = timeline::seconds(clip.length_us());
+            // The media read, which lasts longer or shorter in the output at the clip's speed.
+            let length = timeline::seconds(clip.media_us());
             match &clip.source {
                 Source::Video(asset) => {
                     args.extend(process::args(&["-noautorotate"]));
@@ -125,7 +140,7 @@ impl Context {
             args.push(self.pin_path(&caption.still.pin)?.into_os_string());
         }
         args.extend(process::args(&["-filter_complex", &graph, "-map", "[vout]", "-map", "[aout]", "-sn", "-dn"]));
-        args.extend(process::args(VP9));
+        args.extend(process::args(&encoding(spec.quality)));
         args.extend(process::args(&["-fps_mode", "passthrough", "-c:a", "libopus", "-b:a", "128000", "-ar", "48000", "-ac", "2"]));
         args.extend(process::args(TAGS));
         args.extend(process::args(&["-fs", &quota.to_string()]));
@@ -155,6 +170,23 @@ impl Context {
         let asset = self.seal(pin, &path, metadata, size, cancel, deadline)?;
         Ok(RenderedVideo { asset, frames, bytes: size })
     }
+}
+
+/// The VP9 encoding every output uses, at `quality`.
+fn encoding(quality: timeline::Quality) -> Vec<&'static str> {
+    let (crf, bits) = quality.vp9();
+    let mut name = "";
+    VP9.iter()
+        .map(|arg| {
+            let value = match name {
+                "-crf" => crf,
+                "-b:v" => bits,
+                _ => *arg,
+            };
+            name = arg;
+            value
+        })
+        .collect()
 }
 
 /// The arguments before `-i` that read a staged still: one raw RGBA frame at the output's rate.

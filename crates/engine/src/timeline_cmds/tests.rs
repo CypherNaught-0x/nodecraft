@@ -245,3 +245,60 @@ fn a_card_made_before_sound_and_picture_inputs_runs_and_takes_them_when_wired() 
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(node(&s).inputs, legacy.inputs);
 }
+
+#[test]
+fn a_clip_is_placed_and_sped_up_in_one_undo_step() {
+    let mut s = session();
+    let a = timeline::auto_id(Input::Clips, &A.to_string(), 0);
+    let first = list(&mut s).remove(0);
+    let defaults = ["pos_x", "pos_y", "scale", "crop_left", "crop_top", "crop_right", "crop_bottom", "rotation", "opacity", "speed"].map(|f| first[f].clone());
+    assert_eq!(defaults, [500, 500, 1000, 0, 0, 0, 0, 0, 1000, 1000].map(|v| json!(v)), "every field is listed, defaults included");
+    let place = json!({"pos_x": 250, "pos_y": -100, "scale": 500, "crop_left": 100, "crop_bottom": 200, "rotation": -45, "opacity": 700, "speed": 2000, "out_us": 4_000_000});
+    s.dispatch("timeline.update", &with(on(&a), json!({"set": place}))).unwrap();
+    let placed = stored(&node(&s)).unwrap().get(&a).cloned().unwrap();
+    assert_eq!((placed.pos_x, placed.pos_y, placed.scale, placed.rotation, placed.opacity, placed.speed), (250, -100, 500, -45, 700, 2000));
+    assert_eq!(placed.placement().crop, [100, 0, 0, 200]);
+    assert_eq!(placed.played_us(), Some(2_000_000), "four seconds of video play in two");
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(list(&mut s).remove(0)["speed"], json!(1000), "one undo step takes it all back");
+    s.dispatch("edit.redo", &json!({})).unwrap();
+
+    // Fades and transitions are in played time: two seconds now, so 1.5 s each is too long.
+    assert!(s.dispatch("timeline.update", &with(on(&a), json!({"set": {"fade_in_us": 1_500_000, "fade_out_us": 1_500_000}}))).is_err());
+    for bad in [
+        json!({"speed": 249}),
+        json!({"speed": 4001}),
+        json!({"scale": 9}),
+        json!({"pos_x": 2001}),
+        json!({"rotation": 181}),
+        json!({"opacity": 1001}),
+        json!({"crop_left": 450, "crop_right": 450}),
+        json!({"crop_top": 900}),
+    ] {
+        assert!(s.dispatch("timeline.update", &with(on(&a), json!({"set": bad}))).is_err(), "{bad}");
+    }
+
+    // A split keeps the place and speed, and cuts in media time: the second part starts on its
+    // track where the first, played twice as fast, ends.
+    s.dispatch("timeline.track_add", &json!({"canvas": CANVAS, "id": EDITOR, "kind": "video"})).unwrap();
+    s.dispatch("timeline.update", &with(on(&a), json!({"set": {"track": 1, "at_us": 1_000_000, "fade_out_us": 2_000_000}}))).unwrap();
+    let tail = s.dispatch("timeline.split", &with(on(&a), json!({"at_us": 3_000_000}))).unwrap()["clip"].as_str().unwrap().to_owned();
+    let tail = stored(&node(&s)).unwrap().get(&tail).cloned().unwrap();
+    assert_eq!((tail.at_us, tail.in_us, tail.speed, tail.rotation), (2_500_000, 3_000_000, 2000, -45));
+    assert_eq!(tail.fade_out_us, 500_000, "the fade is cut to the half second the second part plays");
+}
+
+#[test]
+fn sounds_take_no_place_and_stills_no_speed() {
+    let mut s = session();
+    for (n, id, kind, port) in [(3u8, SOUND, "source.audio", timeline::AUDIO_INPUT), (4, PICTURE, "source.image", timeline::STILLS_INPUT)] {
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": id, "kind": kind, "pos": {"x": 0, "y": 200}})).unwrap();
+        let edge = json!({"id": EdgeId::from_bytes([n; 16]), "from": {"node": id, "port": "out"}, "to": {"node": EDITOR, "port": port}, "order": 0});
+        s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    }
+    let (sound, still) = (timeline::auto_id(Input::Audio, &SOUND.to_string(), 0), timeline::auto_id(Input::Stills, &PICTURE.to_string(), 0));
+    assert!(s.dispatch("timeline.update", &with(on(&sound), json!({"set": {"pos_x": 100}}))).is_err(), "a sound has no picture");
+    s.dispatch("timeline.update", &with(on(&sound), json!({"set": {"speed": 500}}))).unwrap();
+    assert!(s.dispatch("timeline.update", &with(on(&still), json!({"set": {"speed": 500}}))).is_err(), "a still has a length, not a speed");
+    s.dispatch("timeline.update", &with(on(&still), json!({"set": {"rotation": 90, "opacity": 0}}))).unwrap();
+}

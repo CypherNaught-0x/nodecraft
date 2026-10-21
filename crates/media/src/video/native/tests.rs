@@ -907,3 +907,41 @@ fn actual_layers_align_sound_to_picture() {
     drop(video);
     assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
 }
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_compose_places_turns_and_speeds_up_clips() {
+    let service = service();
+    let mut job = service.import(Arc::from(generated("fast", "64x48", "2", true, false)), ColorPolicy::default()).ok().unwrap();
+    let card = wait(&mut job).unwrap();
+    let mut job = service.stage_still(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).ok().unwrap();
+    let white = wait(&mut job).unwrap();
+    // Two seconds of the card at twice the speed, shrunk into the left half; a white square,
+    // turned and half see-through, in the right half.
+    let small = Placement { pos_x: 250, scale: 500, ..Placement::IDENTITY };
+    let main = ComposeClip::new(card, 0, 2_000_000).unwrap().with_speed(2000).unwrap().with_placement(small).unwrap();
+    assert_eq!(main.length_us(), 1_000_000);
+    let square = Placement { pos_x: 750, pos_y: 500, scale: 250, rotation: 45, opacity: 500, ..Placement::IDENTITY };
+    let layer = ComposeClip::still(white, 1_000_000).unwrap().with_placement(square).unwrap();
+    let spec = ComposeSpec::new(64, 48, (10, 1), [0, 0, 0], vec![main]).unwrap().with_layers(vec![(layer, 0)]).unwrap().with_quality(Quality::Draft);
+    assert_eq!(spec.duration_us(), 1_000_000);
+    let mut job = service.compose(spec).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let video = loop {
+        if let Some(video) = job.try_result().unwrap() {
+            break video;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(video.frames().abs_diff(10) <= 1, "{} frames", video.frames());
+    assert!(video.asset().metadata().has_audio());
+    let mut job = service.frame(video.asset(), FrameRequest::new(500_000, 64, 48).unwrap()).unwrap();
+    let frame = wait(&mut job).unwrap();
+    let at = |x: usize, y: usize| frame.pixels().get((y * 64 + x) * 4..(y * 64 + x) * 4 + 3).unwrap().iter().map(|v| u32::from(*v)).sum::<u32>();
+    assert!(at(2, 4) < 40 && at(61, 2) < 40 && at(16, 44) < 40, "around the card and the square is background");
+    assert!(at(16, 24) > 60, "the card shows in the left half: {}", at(16, 24));
+    assert!(at(48, 24) > 250 && at(48, 24) < 600, "the square is half see-through: {}", at(48, 24));
+    drop(job);
+    drop(video);
+    assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
+}
