@@ -223,6 +223,40 @@ pub fn settings_dir() -> Option<std::path::PathBuf> {
     craft_settings::paths::resolve(NodeCraftSettings::APP_ID, &portable, &Location::Auto, &craft_settings::Probe::default()).dir
 }
 
+/// The largest `config.toml` [`peek`] reads; a bigger one is ignored (defaults are used).
+#[cfg(not(target_arch = "wasm32"))]
+const PEEK_LIMIT: u64 = 4 << 20;
+
+/// The app's settings as saved, read without opening a store: nothing is created, locked,
+/// migrated on disk or moved aside, so other tools (the CLI) can read them while the app runs.
+/// Defaults when settings are in memory only, or the file is missing, too big or unreadable; a bad
+/// section falls back to its defaults, as it does in the app.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn peek() -> NodeCraftSettings {
+    settings_dir().map_or_else(NodeCraftSettings::default, |dir| peek_at(&dir))
+}
+
+/// [`peek`] in `dir`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn peek_at(dir: &std::path::Path) -> NodeCraftSettings {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(dir.join(craft_settings::store::CONFIG_FILE)) else {
+        return NodeCraftSettings::default();
+    };
+    let mut text = String::new();
+    if file.take(PEEK_LIMIT.saturating_add(1)).read_to_string(&mut text).is_err() || u64::try_from(text.len()).map_or(true, |n| n > PEEK_LIMIT) {
+        return NodeCraftSettings::default();
+    }
+    let Ok(mut doc) = craft_settings::document::parse(&text) else {
+        return NodeCraftSettings::default();
+    };
+    // Upgraded in memory only; a failed step leaves a half-upgraded document, so use defaults.
+    if craft_settings::migrate::upgrade::<NodeCraftSettings>(&mut doc).is_err() {
+        return NodeCraftSettings::default();
+    }
+    craft_settings::document::deserialize_sections::<NodeCraftSettings>(&doc).0
+}
+
 /// Makes the install salt if `store` has none, saving it at once: ComfyUI prompt ids must stay
 /// the same across restarts, so a salt is never made unless it is saved. On a read-only store
 /// none is made (and ComfyUI reports itself not set up).
@@ -280,6 +314,24 @@ mod tests {
 
     fn write_config(dir: &Path, text: &str) {
         std::fs::write(dir.join("config.toml"), text).unwrap();
+    }
+
+    #[test]
+    fn peek_reads_without_touching_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        assert_eq!(peek_at(&missing), NodeCraftSettings::default());
+        assert!(!missing.exists(), "peeking must not create the folder");
+        write_config(dir.path(), "[providers]\ncomfyui_url = \"http://127.0.0.1:8188\"\n[canvas]\nzoom = \"not a table\"\n");
+        let before = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let peeked = peek_at(dir.path());
+        assert_eq!(peeked.providers.comfyui_url.as_deref(), Some("http://127.0.0.1:8188"));
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("config.toml")], "nothing is moved aside, backed up or locked");
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), before);
+        write_config(dir.path(), "this is [not toml");
+        assert_eq!(peek_at(dir.path()), NodeCraftSettings::default());
+        assert!(dir.path().join("config.toml").exists(), "a damaged file stays where it is");
     }
 
     #[test]
