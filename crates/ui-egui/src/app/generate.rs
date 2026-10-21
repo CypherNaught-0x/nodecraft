@@ -75,6 +75,8 @@ pub(super) struct Quote {
     unpriced_jobs: u64,
     /// Every step is listed, so the count above covers the run.
     listed: bool,
+    /// Some batch is priced for every item but may run only those its partial result lacks.
+    resumable: bool,
 }
 
 fn line(text: &str) -> String {
@@ -106,7 +108,8 @@ impl Quote {
             // A step whose job count is unknown counts as one job, as it does for its price.
             unpriced_jobs = unpriced_jobs.checked_add(step.get("jobs").and_then(Json::as_u64).unwrap_or(1))?;
         }
-        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed })
+        let resumable = value.get("resumable").and_then(Json::as_array).is_some_and(|nodes| !nodes.is_empty());
+        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable })
     }
 
     /// Whether the quote can be accepted as shown, given the consent collected so far.
@@ -245,6 +248,9 @@ impl NodeCraftApp {
                     }
                     ui.label("Part of the price is unknown or estimated. The run stops at the amount shown above.");
                     ui.checkbox(&mut confirm.partial, "Accept the unknown part of the price");
+                }
+                if quote.resumable {
+                    ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");
                 }
                 if !quote.listed {
                     ui.label("This run has more steps than can be reviewed here. Run it from the CLI or select fewer nodes.");
@@ -659,6 +665,10 @@ mod tests {
         assert!(!partial.acceptable(false), "unknown cost needs its own consent");
         assert!(partial.acceptable(true));
         assert_eq!(partial.price(), "$0.08 so far");
+        assert!(!partial.resumable);
+        let mut v = quote(json!([]), false);
+        v["resumable"] = json!(["00000000-0000-0000-0000-000000000003"]);
+        assert!(Quote::read(&v).unwrap().resumable, "a batch that may keep finished items is said so");
     }
 
     #[test]

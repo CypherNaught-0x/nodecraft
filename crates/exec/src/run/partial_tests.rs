@@ -210,3 +210,86 @@ fn a_resumed_item_that_fails_again_keeps_the_finished_ones() {
     assert_eq!((&again.outputs, &again.items, &again.incomplete), (&first.outputs, &first.items, &first.incomplete), "the fox is kept as it was");
     assert_eq!(again.settings, first.settings);
 }
+
+/// Like [`drive`], but `end` sees each job's node and text and may also change what it emits.
+fn drive_by_node(
+    run: &mut Run,
+    kinds: &Registry,
+    first: Progress,
+    end: impl Fn(NodeId, &str) -> Result<Value, ()>,
+) -> (Vec<StepResult>, Vec<StepFailure>, Vec<(NodeId, String)>) {
+    let (mut finished, mut failed, mut ran) = (first.finished, first.failed, Vec::new());
+    let mut queue = first.jobs;
+    while let Some(job) = queue.pop() {
+        let Some(JobSpec::Source { node, output, value: Value::Text(text), .. }) = run.work(job.id).cloned() else { panic!("text source jobs only") };
+        ran.push((node, text.clone()));
+        let progress = match end(node, &text) {
+            Ok(value) => run.job_done(kinds, job.id, vec![(output, value)]),
+            Err(()) => run.job_failed(kinds, job.id, "provider said no"),
+        };
+        queue.extend(progress.jobs);
+        finished.extend(progress.finished);
+        failed.extend(progress.failed);
+    }
+    (finished, failed, ran)
+}
+
+/// Batch → 2 → 3, run once with node 3's OWL item failing: node 3 keeps a partial result.
+fn partial_after_its_upstream() -> (Project, Registry, StepResult) {
+    let mut p = batched();
+    let kinds = kinds();
+    let plan = plan_of(&p, &[2, 3]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let (finished, _, _) = drive_by_node(&mut run, &kinds, first, |node, t| if node == id(3) && t == "OWL" { Err(()) } else { Ok(text(t)) });
+    record(&mut p, &finished);
+    let partial = finished.into_iter().find(|r| r.node == id(3)).unwrap();
+    assert!(partial.generation.incomplete.is_some());
+    (p, kinds, partial)
+}
+
+#[test]
+fn a_partial_step_whose_upstream_reruns_unchanged_runs_only_its_missing_items() {
+    let (mut p, kinds, partial) = partial_after_its_upstream();
+    // Running both again: node 2 runs first, so node 3's jobs are planned from what it makes.
+    let plan = plan_of(&p, &[2, 3]);
+    let step = plan.steps.iter().find(|s| s.node == id(3)).unwrap();
+    assert!(step.jobs.is_none(), "planned from this run's outputs");
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts([0xcd; 16], 1, RunLimits::default())).unwrap();
+    let (finished, failed, ran) = drive_by_node(&mut run, &kinds, first, |_, t| Ok(text(t)));
+    assert!(failed.is_empty(), "{failed:?}");
+    let third: Vec<&str> = ran.iter().filter(|(node, _)| *node == id(3)).map(|(_, t)| t.as_str()).collect();
+    assert_eq!(third, ["OWL"], "the kept item isn't submitted again");
+    let result = finished.iter().find(|r| r.node == id(3)).unwrap().generation.clone();
+    assert_eq!(result.outputs, vec![Value::List(vec![text("FOX"), text("OWL")])]);
+    assert!(result.incomplete.is_none(), "completed");
+    assert_eq!(result.items, partial.generation.items);
+    assert_eq!(result.settings, partial.generation.settings, "the kept item keeps what it was made with");
+    record(&mut p, &finished);
+    assert!(crate::staleness::stale(p.canvases().get(&C).unwrap(), &kinds).unwrap().is_empty());
+}
+
+#[test]
+fn a_partial_step_whose_upstream_reruns_changed_runs_in_full() {
+    let (p, kinds, _) = partial_after_its_upstream();
+    let plan = plan_of(&p, &[2, 3]);
+    let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts([0xcd; 16], 1, RunLimits::default())).unwrap();
+    // Node 2 makes something else this time.
+    let (finished, failed, ran) = drive_by_node(&mut run, &kinds, first, |node, t| Ok(text(&if node == id(2) { format!("{t}!") } else { t.to_owned() })));
+    assert!(failed.is_empty(), "{failed:?}");
+    let mut third: Vec<&str> = ran.iter().filter(|(node, _)| *node == id(3)).map(|(_, t)| t.as_str()).collect();
+    third.sort_unstable();
+    assert_eq!(third, ["FOX!", "OWL!"], "every item runs");
+    let result = finished.iter().find(|r| r.node == id(3)).unwrap().generation.clone();
+    assert_eq!(result.outputs, vec![Value::List(vec![text("FOX!"), text("OWL!")])]);
+}
+
+#[test]
+fn a_plan_names_the_partial_steps_it_may_complete_during_the_run() {
+    let (p, _, _) = partial_after_its_upstream();
+    let canvas = p.canvases().get(&C).unwrap();
+    // Planned on their own, node 3's jobs are known and its quote already counts only OWL.
+    assert_eq!(plan_of(&p, &[3]).resumable(canvas).count(), 0);
+    // Behind node 2, its jobs are made during the run: priced for every item, it may run fewer.
+    assert_eq!(plan_of(&p, &[2, 3]).resumable(canvas).collect::<Vec<_>>(), [id(3)]);
+    assert_eq!(plan_of(&batched(), &[2, 3]).resumable(batched().canvases().get(&C).unwrap()).count(), 0, "no partial result");
+}

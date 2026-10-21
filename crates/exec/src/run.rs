@@ -662,7 +662,10 @@ impl Run {
         let planned = match self.steps.get_mut(&node) {
             Some(state) => match state.step.jobs.take() {
                 Some(jobs) => Ok((jobs, state.step.fanout.as_ref().map(|f| f.jobs.clone()).unwrap_or_default())),
-                None => self.materialise(kinds, node),
+                None => {
+                    self.resume_deferred(kinds, node);
+                    self.materialise(kinds, node)
+                }
             },
             None => return (Progress::default(), Vec::new()),
         };
@@ -737,6 +740,24 @@ impl Run {
             return (progress, ready);
         }
         (progress, Vec::new())
+    }
+
+    /// A deferred fanned step whose node shows a partial result made from the inputs this run
+    /// has just made for it (#518) completes that result: only its missing items are planned,
+    /// and the others are copied from it ([`crate::partial`]). Steps inlined from a technique,
+    /// and technique nodes, keep what the planner decided.
+    fn resume_deferred(&mut self, kinds: &Registry, node: NodeId) {
+        if self.inner.contains_key(&node) || self.inner.values().any(|owner| *owner == node) {
+            return;
+        }
+        let Some(fanout) = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref()).filter(|f| f.resume.is_none()) else { return };
+        if crate::partial::completable(&self.canvas, node, &fanout.items).is_none() {
+            return;
+        }
+        let Ok(Some(now)) = self.hasher.hash(&self.canvas, kinds, node, &self.produced) else { return };
+        let Some(state) = self.steps.get_mut(&node) else { return };
+        let Some(fanout) = state.step.fanout.as_mut() else { return };
+        fanout.resume = crate::partial::completing(&self.canvas, node, &fanout.items, now);
     }
 
     /// Plans a deferred step from this run's outputs, within [`RunLimits`] (#210): its jobs and,
