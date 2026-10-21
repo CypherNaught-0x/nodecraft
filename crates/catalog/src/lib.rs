@@ -233,6 +233,7 @@ fn word(modality: Modality) -> &'static str {
         Modality::Audio => "audio",
         Modality::Mesh => "3D",
         Modality::Document => "document",
+        Modality::Style => "style",
     }
 }
 

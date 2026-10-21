@@ -15,6 +15,7 @@ fn role(role: &str, modality: Modality, min: u16, max: u16, inline: bool) -> Gen
 }
 fn model(id: &str, mode: &str, inputs: Vec<GenerationRole>) -> GenerationModel {
     GenerationModel {
+        style_family: None,
         id: id.into(),
         provider: "tripo".into(),
         remote: id.into(),
@@ -99,6 +100,7 @@ fn a_text_mode_sends_its_prompt_and_image_modes_send_only_images() {
 fn the_image_card_plans_an_image_only_mode_too() {
     // An upscaler (fal's ESRGAN) has no prompt role: the image card plans it with just its image.
     let upscale = GenerationModel {
+        style_family: None,
         modes: vec![GenerationMode {
             id: ModeId::new("upscale").unwrap(),
             inputs: vec![role("image", Modality::Image, 1, 1, false)],

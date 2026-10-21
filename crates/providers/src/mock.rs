@@ -15,6 +15,9 @@ pub enum MockOutput {
     Image,
     Video,
     Audio,
+    /// A trained style's descriptor (#167), for the family in the job's `family` setting
+    /// (`mock-family` without one).
+    Style,
 }
 
 /// Where a mock model fails, if it does. A model that finishes at submit (`polls: 0`) has no
@@ -96,8 +99,14 @@ impl MockProvider {
     pub fn standard() -> Self {
         Self::new(
             "mock",
-            [("mock-text", MockOutput::Text), ("mock-image", MockOutput::Image), ("mock-video", MockOutput::Video), ("mock-audio", MockOutput::Audio)]
-                .map(|(id, output)| (id.to_owned(), MockModel::new(output))),
+            [
+                ("mock-text", MockOutput::Text),
+                ("mock-image", MockOutput::Image),
+                ("mock-video", MockOutput::Video),
+                ("mock-audio", MockOutput::Audio),
+                ("mock-style", MockOutput::Style),
+            ]
+            .map(|(id, output)| (id.to_owned(), MockModel::new(output))),
         )
     }
 
@@ -173,6 +182,20 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
         MockOutput::Text => {
             let prompt: Vec<&str> = job.inputs.iter().filter_map(|i| if let JobInput::Text { text, .. } = i { Some(text.as_str()) } else { None }).collect();
             Output::Text(format!("{}: {} #{short}", job.model, prompt.join(" / ")))
+        }
+        MockOutput::Style => {
+            let family = job.params.get("family").and_then(|v| v.as_str()).unwrap_or("mock-family");
+            let style = nodecraft_media::style::Style {
+                provider: "mock".into(),
+                trainer: job.model.clone(),
+                family: family.into(),
+                trigger: format!("style {short}"),
+                weights: format!("https://mock.invalid/styles/{}.safetensors", digest.to_hex()),
+            };
+            match nodecraft_media::style::encode(&style) {
+                Ok(bytes) => Output::Bytes { mime: nodecraft_media::style::MIME.to_owned(), bytes: Arc::from(bytes) },
+                Err(error) => Output::Text(format!("mock style refused: {error}")),
+            }
         }
         media => {
             // A real format signature (PNG, WAV, MP4) followed by the digest, so hosts sniff and

@@ -9,6 +9,7 @@ fn text_and_media_generations_fan_out_over_their_prompt() {
     let role = |role: &str, modality, min, max| GenerationRole { role: role.into(), modality, min, max, inline: false };
     let model = || {
         vec![GenerationModel {
+            style_family: None,
             id: "fixture/model".into(),
             provider: "fal".into(),
             remote: "remote".into(),

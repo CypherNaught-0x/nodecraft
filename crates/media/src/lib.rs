@@ -13,6 +13,7 @@ mod hash;
 mod image_io;
 mod mesh;
 mod sniff;
+pub mod style;
 mod thumb;
 
 pub use error::MediaError;

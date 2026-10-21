@@ -15,6 +15,7 @@ fn role(role: &str, modality: Modality, min: u16, inline: bool) -> GenerationRol
 }
 fn model(id: &str, inputs: Vec<GenerationRole>) -> GenerationModel {
     GenerationModel {
+        style_family: None,
         id: id.into(),
         provider: "meshy".into(),
         remote: id.into(),

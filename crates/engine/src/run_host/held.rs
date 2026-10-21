@@ -364,7 +364,7 @@ pub(super) fn register(held: &Arc<Mutex<Held>>, services: &mut crate::commands::
 
 /// One route per modality, so any output converts, each to the port named for its modality.
 fn every_modality() -> Vec<GenerateOutput> {
-    [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document]
+    [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document, Modality::Style]
         .into_iter()
         .map(|modality| GenerateOutput { port: modality_port(modality).to_owned(), modality })
         .collect()
@@ -378,6 +378,7 @@ fn modality_port(modality: Modality) -> &'static str {
         Modality::Audio => "audio",
         Modality::Mesh => "mesh",
         Modality::Document => "document",
+        Modality::Style => "style",
     }
 }
 

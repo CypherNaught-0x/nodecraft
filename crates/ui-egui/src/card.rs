@@ -681,6 +681,7 @@ pub(crate) fn control_with_mode(
                         nodecraft_types::Modality::Audio => "audio",
                         nodecraft_types::Modality::Mesh => "3D asset",
                         nodecraft_types::Modality::Document => "document",
+                        nodecraft_types::Modality::Style => "style",
                     }
                 ),
             });

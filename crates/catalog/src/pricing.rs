@@ -51,18 +51,21 @@ pub enum Unit {
     /// the run.
     ThousandTokens,
     ThousandCharacters,
+    /// Priced per 1000 training steps (#167), counted from the trainer's steps setting; known
+    /// before the run, so not usage-based.
+    ThousandSteps,
 }
 
 impl Unit {
     /// How many counted units one priced unit covers.
     fn per(self) -> u64 {
         match self {
-            Self::ThousandTokens | Self::ThousandCharacters => 1000,
+            Self::ThousandTokens | Self::ThousandCharacters | Self::ThousandSteps => 1000,
             Self::Image | Self::Second | Self::Megapixel => 1,
         }
     }
     pub fn usage_based(self) -> bool {
-        self.per() > 1
+        matches!(self, Self::ThousandTokens | Self::ThousandCharacters)
     }
 }
 

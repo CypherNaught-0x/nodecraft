@@ -111,6 +111,7 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
         MediaKind::Audio => "source.audio",
         MediaKind::Model3d => "source.mesh",
         MediaKind::Document => "source.document",
+        MediaKind::Style => return Err("a style stays on the card that trained it; wire that card instead".into()),
     };
     if file.bytes.len() > MAX_ASSET_BYTES {
         return Err(format!("media over {} MiB can't be added to a project yet", MAX_ASSET_BYTES / (1024 * 1024)));

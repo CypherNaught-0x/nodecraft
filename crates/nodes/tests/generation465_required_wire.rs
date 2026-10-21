@@ -9,6 +9,7 @@ fn non_inline_required_prompt_must_not_run_from_local_text_only() {
     let id = NodeId::from_bytes([46; 16]);
     let kind = GenerationKind::new(
         vec![GenerationModel {
+            style_family: None,
             id: "fixture/model".into(),
             provider: "fal".into(),
             remote: "remote".into(),

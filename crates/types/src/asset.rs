@@ -78,6 +78,14 @@ impl Mime {
     pub fn essence(&self) -> &str {
         self.0.split(';').next().unwrap_or_default().trim_end()
     }
+
+    /// The value of parameter `name` (matched without regard to case), unquoted.
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.0.split(';').skip(1).find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            key.trim().eq_ignore_ascii_case(name).then(|| value.trim().trim_matches('"'))
+        })
+    }
 }
 
 impl std::str::FromStr for Mime {
@@ -238,6 +246,8 @@ mod tests {
         for value in ["TEXT/PLAIN", "text/plain;charset=utf-8", "text/plain; charset=\"utf-8\"", "text/plain; charset=UTF-8"] {
             assert_eq!(value.parse::<Mime>().unwrap().essence(), "text/plain");
         }
+        let style: Mime = "application/vnd.nodecraft.style+json; Family=\"flux-1\"; x=y".parse().unwrap();
+        assert_eq!((style.param("family"), style.param("x"), style.param("charset")), (Some("flux-1"), Some("y"), None));
         assert_eq!(serde_json::to_string(&MediaMeta::default()).unwrap(), "{}");
         assert!(!MediaMeta::default().claims_image_header());
         let hash = Blake3::from_bytes([0xab; 32]);

@@ -126,7 +126,7 @@ fn descriptor(modality: Modality) -> NodeDescriptor {
 
 /// The modality a batch carries (the router's config key and names).
 pub fn modality(node: &Node) -> Result<Modality, Error> {
-    crate::router::modality(node).map_err(|_| invalid("a batch's modality must be text, image, video, audio, mesh or document"))
+    crate::router::modality(node).map_err(|_| invalid("a batch's modality must be text, image, video, audio, mesh, document or style"))
 }
 
 /// The `config` that makes a batch carry `modality`.

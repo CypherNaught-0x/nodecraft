@@ -593,3 +593,55 @@ fn fal_wan_frames_and_speech_take_what_their_adapter_maps() {
         assert_eq!(m.quote(&ParamValues::new()).unwrap(), None, "fal bills by usage");
     }
 }
+
+const TRAINER: &str = r#"
+[[model]]
+id = "test.trainer"
+provider = "test"
+provider_model = "trainer-v1"
+label = "Test Trainer"
+description = "Trains a style from images."
+latency_s = 600
+quality = 3
+style_family = "flux-1"
+pricing = { type = "per_unit", unit = "thousand_steps", price = "2 USD", count = "steps" }
+
+[[model.modes]]
+id = "images-to-style"
+output = "style"
+inputs = [{ role = "images", modality = "image", min = 4, max = 50 }]
+
+[[model.params.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "10000" }
+default = { type = "unsigned", value = "1000" }
+"#;
+
+#[test]
+fn trainers_quote_their_steps_and_name_the_family_they_train() {
+    let catalog = Catalog::from_toml(TRAINER).unwrap();
+    let trainer = catalog.get("test.trainer").unwrap();
+    assert_eq!(trainer.style_family.as_deref(), Some("flux-1"));
+    let mut params = ParamValues::new();
+    assert_eq!(trainer.quote(&params).unwrap(), Some(Money::new(Currency::USD, 2_000_000)));
+    params.insert("steps".into(), Value::Unsigned(Unsigned(2500)));
+    assert_eq!(trainer.quote(&params).unwrap(), Some(Money::new(Currency::USD, 5_000_000)));
+    assert!(Wiring::new(Modality::Style).with(Modality::Image, 10).fit(trainer).is_ok());
+    assert!(Wiring::new(Modality::Style).with(Modality::Image, 2).fit(trainer).is_err(), "too few images");
+
+    let unnamed = TRAINER.replace("style_family = \"flux-1\"\n", "");
+    assert!(Catalog::from_toml(&unnamed).unwrap_err().message.contains("style_family"));
+    assert!(Catalog::from_toml(&TRAINER.replace("\"flux-1\"", "\"Flux 1\"")).is_err());
+    // Steps are known before the run: a count from zero would quote a paid run as free.
+    assert!(Catalog::from_toml(&TRAINER.replace("min = \"1\"", "min = \"0\"")).is_err());
+    // Only a model that trains or takes styles names a family.
+    let video = PRICED.replace("quality = 5", "quality = 5\nstyle_family = \"flux-1\"");
+    assert!(Catalog::from_toml(&video).unwrap_err().message.contains("style_family"));
+    let styled = PRICED.replace(
+        "{ role = \"last_frame\", modality = \"image\", min = 0, max = 1 },",
+        "{ role = \"last_frame\", modality = \"image\", min = 0, max = 1 },\n  { role = \"style\", modality = \"style\", min = 0, max = 1 },",
+    );
+    assert!(Catalog::from_toml(&styled).is_err(), "takes a style but names no family");
+    assert!(Catalog::from_toml(&styled.replace("quality = 5", "quality = 5\nstyle_family = \"wan-2\"")).is_ok());
+}

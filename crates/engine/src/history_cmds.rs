@@ -181,6 +181,7 @@ pub(crate) fn source_kind(modality: Modality) -> Result<(&'static str, &'static 
         Modality::Audio => Ok(("source.audio", "asset")),
         Modality::Mesh => Ok(("source.mesh", "asset")),
         Modality::Document => Ok(("source.document", "asset")),
+        Modality::Style => Err(Error::new(ErrorKind::Unsupported, "a style stays on the card that trained it; wire that card instead")),
     }
 }
 

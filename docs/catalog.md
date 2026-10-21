@@ -50,16 +50,22 @@ default = { type = "unsigned", value = "1" }
 
   The picker shows this per mode. A track's length is only checked when it's known; unknown
   lengths go to the provider.
+- **Trained styles (#167).** A mode whose output is `style` trains one from its wired images;
+  a role whose modality is `style` takes one. Such a model names `style_family = "flux-1"`, the
+  base-model family a trainer trains for or an inference model takes, and only such models may
+  set it. A style trained for one family is refused, before anything is sent, by a model of
+  another (`docs/decisions/2026-10-21-trained-styles.md`).
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.
 - **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`) or `per_unit` (`unit` = `image`, `second`,
-  `megapixel`, `thousand_tokens` or `thousand_characters`; `price`; a `count` parameter and/or a
-  `default_count` ≥ 1). The count is the parameter's value *after* schema defaults, so the quote
-  matches what runs; `count` must be a numeric control (`unsigned`, `integer` or `slider`, not a
-  `choice`, so a priced duration is numeric) whose `min` is at least 1 (0 for `thousand_*`), with
-  a default or a `default_count`, and it must be the only parameter that scales the cost.
-  `thousand_*` prices are per 1000 counted units. Prices are decimal strings with a currency,
+  `megapixel`, `thousand_tokens`, `thousand_characters` or `thousand_steps`; `price`; a `count`
+  parameter and/or a `default_count` ≥ 1). The count is the parameter's value *after* schema
+  defaults, so the quote matches what runs; `count` must be a numeric control (`unsigned`,
+  `integer` or `slider`, not a `choice`, so a priced duration is numeric) whose `min` is at least
+  1 (0 for `thousand_tokens` and `thousand_characters`), with a default or a `default_count`, and
+  it must be the only parameter that scales the cost. `thousand_*` prices are per 1000 counted
+  units; trainers use `thousand_steps`, counted from their steps setting. Prices are decimal strings with a currency,
   at most six decimals, and quotes round up. Token- and character-priced models without a
   `count` are quoted at run time.
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always

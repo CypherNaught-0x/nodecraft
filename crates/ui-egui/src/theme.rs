@@ -51,6 +51,7 @@ pub struct Tokens {
     pub wire_audio: Color32,
     pub wire_mesh: Color32,
     pub wire_document: Color32,
+    pub wire_style: Color32,
 
     pub tag_colors: [Color32; 8],
     pub tag_marker_width: f32,
@@ -179,6 +180,7 @@ pub const DARK: Tokens = Tokens {
     wire_audio: Color32::from_rgb(0xe0, 0x7a, 0x5a),
     wire_mesh: Color32::from_rgb(0x8f, 0xc3, 0x5a),
     wire_document: Color32::from_rgb(0xa0, 0xa0, 0xa8),
+    wire_style: Color32::from_rgb(0xe0, 0x6f, 0xa8),
     tag_colors: [
         Color32::from_rgb(238, 112, 122),
         Color32::from_rgb(235, 162, 94),
@@ -289,6 +291,7 @@ pub const LIGHT: Tokens = Tokens {
     wire_audio: Color32::from_rgb(0xb0, 0x48, 0x2a),
     wire_mesh: Color32::from_rgb(0x4f, 0x8a, 0x1f),
     wire_document: Color32::from_rgb(0x6b, 0x6b, 0x74),
+    wire_style: Color32::from_rgb(0xa8, 0x2f, 0x6c),
     tag_colors: [
         Color32::from_rgb(163, 45, 59),
         Color32::from_rgb(151, 79, 20),
@@ -314,6 +317,7 @@ impl Tokens {
             Modality::Audio => self.wire_audio,
             Modality::Mesh => self.wire_mesh,
             Modality::Document => self.wire_document,
+            Modality::Style => self.wire_style,
         }
     }
 }
@@ -436,7 +440,7 @@ mod tests {
     #[test]
     fn noodles_stand_out_and_modalities_differ() {
         use nodecraft_types::Modality;
-        let all = [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document];
+        let all = [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document, Modality::Style];
         for kind in [ThemeKind::Dark, ThemeKind::Light] {
             let t = kind.tokens();
             for (i, a) in all.iter().enumerate() {

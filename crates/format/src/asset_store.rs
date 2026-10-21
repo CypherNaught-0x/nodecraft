@@ -366,7 +366,9 @@ impl AssetStore {
         if let Some(sniffed) = data.sniffed {
             let actual = sniffed.mime.split(';').next().unwrap_or_default();
             let expected = asset.mime.essence();
-            let generic_text = actual == "text/plain"
+            // A style descriptor is text too (#167), so a text asset saved before styles were
+            // sniffed apart still opens.
+            let generic_text = (actual == "text/plain" || actual == nodecraft_media::style::MIME)
                 && (expected.starts_with("text/") || expected == "application/json" || expected.ends_with("+json") || expected.ends_with("+xml"));
             if actual != expected && !generic_text {
                 return Err(invalid("asset MIME does not match its stored bytes"));

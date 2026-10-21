@@ -570,3 +570,21 @@ fn hdr394_provider_outputs_refuse_before_converting_any_paid_prefix() {
         }
     }
 }
+
+#[test]
+fn a_style_is_sent_only_when_its_bytes_match_the_family_its_card_records() {
+    let style = nodecraft_media::style::Style {
+        provider: "mock".into(),
+        trainer: "mock-style".into(),
+        family: "flux-1".into(),
+        trigger: String::new(),
+        weights: "https://mock.invalid/styles/a.safetensors".into(),
+    };
+    let bytes = nodecraft_media::style::encode(&style).unwrap();
+    let asset = |mime: &str| AssetRef { hash: Blake3::from_bytes([2; 32]), mime: mime.parse().unwrap(), meta: Default::default() };
+    assert!(style_matches(&asset(&style_mime("flux-1")), &bytes).is_ok());
+    let relabelled = style_matches(&asset(&style_mime("sdxl-1")), &bytes).unwrap_err();
+    assert!(relabelled.message.contains("doesn't match the family"), "{relabelled:?}");
+    assert!(style_matches(&asset(nodecraft_types::STYLE_MIME), &bytes).is_err(), "a style with no family is never sent");
+    assert!(style_matches(&asset(&style_mime("flux-1")), b"not a style").unwrap_err().message.contains("damaged"));
+}
