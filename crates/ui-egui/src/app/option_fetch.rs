@@ -180,6 +180,8 @@ impl super::NodeCraftApp {
         };
         let store = &self.store;
         if let Some(notice) = fetcher.tick(&mut self.session, || store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default()) {
+            // Cards drawing a list resolve against the new lists (#676).
+            self.schemas.forget_listed();
             self.notice = Some(notice);
         }
         if fetcher.is_waiting() {

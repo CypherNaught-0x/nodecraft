@@ -290,6 +290,11 @@ impl Session {
     pub fn generation_catalog_stamp(&self) -> Result<crate::generation_catalog::GenerationCatalogStamp, Error> {
         Ok(self.generation_catalog()?.stamp())
     }
+    /// The run-time option lists the host has fetched (#529), so a view can offer a parameter's
+    /// list as a picker (#676). `None` until a fetch installs some.
+    pub fn option_lists(&self) -> Option<&nodecraft_types::OptionLists> {
+        self.resources.get::<nodecraft_types::OptionLists>()
+    }
 
     /// Replace a host-owned capability without discarding other injected resources.
     /// A host may scope a live view snapshot to one enabled/dispatch call and restore it after.

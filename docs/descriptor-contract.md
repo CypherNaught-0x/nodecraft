@@ -301,6 +301,13 @@ admitted by the rules it already had, and a blocked run names the code rather th
 `node.options {canvas, id, param}` returns a stored node's list for one parameter, as
 `{source, scope, known, options: [{value, label}] | null}`.
 
+**On the card (#676).** A desktop card draws an enabled parameter whose list the host has
+fetched as a combo box. Each choice shows its label, and picking one stores its value through
+`node.param_set`. A stored value that isn't on the list is shown as it is, marked
+"(not an option)", and kept until another is picked. Before the list is fetched the field stays
+a text box, with a hint to run **Refresh option lists**. The picker comes from the contract rule
+and the session's `OptionLists`, so no model needs code of its own.
+
 **Fetching (#529).** `options.refresh {}` asks the host's `options.fetch` service for every
 unscoped list the catalog's contracts name; the handler does no I/O and the host answers
 `{pending: id}`. The desktop app fetches the ComfyUI server's `/object_info` and Higgsfield's preset list off

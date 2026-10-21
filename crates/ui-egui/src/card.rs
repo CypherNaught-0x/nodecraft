@@ -16,8 +16,10 @@ use std::{
 
 mod chips;
 pub(crate) mod generate;
+pub(crate) mod listed;
 pub(crate) mod mention;
 pub use generate::Roles;
+pub use listed::Listed;
 
 pub const BODY_MIN_ZOOM: f32 = 0.55;
 pub const MIN_TEXT_PX: f32 = 5.0;
@@ -139,6 +141,10 @@ pub struct CardView<'a> {
     pub grid: Option<(u32, u32, Option<[u32; 2]>)>,
     /// The parameters a generation card's composer draws itself (#83).
     pub roles: Option<&'a Roles>,
+    /// The enabled parameters drawn from a run-time option list (#676), and the lists the
+    /// host has fetched.
+    pub listed: Option<&'a BTreeMap<String, Listed>>,
+    pub lists: Option<&'a nodecraft_types::OptionLists>,
     /// A wire feeds the card's prompt port (#84).
     pub prompt_wired: bool,
     /// How many Elements go by each lowercased name, for the prompt's mention hint (#104).
@@ -177,8 +183,24 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, enabled, preview_pos, images, grid, roles, prompt_wired, elements, mentions, mention_blocked, partial, video, mesh } =
-        card;
+    let CardView {
+        descriptor,
+        visible,
+        enabled,
+        preview_pos,
+        images,
+        grid,
+        roles,
+        listed: listed_params,
+        lists,
+        prompt_wired,
+        elements,
+        mentions,
+        mention_blocked,
+        partial,
+        video,
+        mesh,
+    } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
@@ -381,11 +403,16 @@ pub fn show(
                                     intents.push(Intent::Model);
                                 }
                             } else {
-                                let changed = if editable {
-                                    control(ui, &spec.control, value, &spec.name, editor, label.id, t)
-                                } else {
-                                    ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner
+                                let list = listed_params.and_then(|listed| listed.get(&spec.name));
+                                let choices = list.and_then(|list| list.choices(lists));
+                                let changed = match choices {
+                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, label.id, t)).inner,
+                                    None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
+                                    None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
                                 };
+                                if list.is_some() && choices.is_none() {
+                                    ui.label(egui::RichText::new(listed::UNFETCHED_HINT).color(t.text_muted).small());
+                                }
                                 if editable && let Some(value) = changed {
                                     intents.push(Intent::Parameter { name: spec.name.clone(), value });
                                 }

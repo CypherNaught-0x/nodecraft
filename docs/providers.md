@@ -661,9 +661,8 @@ until it is known.
 **Restyle presets.** Restyle needs one of Higgsfield's style presets, which its API lists
 (`GET /models/higgsfield/genjutsu/restyle/v1.0/presets`, free). **Refresh option lists** fetches
 them as the `higgsfield.restyle_presets` list: each preset's value is its id, which the card
-stores and the request sends, and its label is the preset's name. `node.options` lists them with
-their names; until the card draws option lists as a picker (#676), the desktop Preset field takes
-the id. Entries whose id isn't a UUID, or whose name is blank, over 256 bytes, has
+stores and the request sends, and its label is the preset's name. Once fetched, the card's
+Preset field is a picker showing the names (#676), and `node.options` lists them too. Entries whose id isn't a UUID, or whose name is blank, over 256 bytes, has
 control characters or echoes the key, are left out and counted; a list over 1,024 presets is
 refused whole. A restyle without a preset, or with one that isn't a UUID, is refused before
 anything is uploaded or paid, and a preset the latest list doesn't have is reported on the card.
