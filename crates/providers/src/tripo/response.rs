@@ -75,23 +75,6 @@ pub(super) enum Status {
     /// Finished: the link to download.
     Done(String),
 }
-/// The result link: Tripo's own HTTPS storage, nothing that could point back inside a network.
-fn link(url: &str) -> Result<String, ProviderError> {
-    let parsed = url::Url::parse(url).map_err(|_| malformed("Tripo result link isn't a URL"))?;
-    if url.len() > 8192 || parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
-        return Err(malformed("Tripo result link refused"));
-    }
-    // A public DNS name only: no IP literals, single labels or names that resolve inside a network.
-    let Some(url::Host::Domain(host)) = parsed.host() else {
-        return Err(malformed("Tripo result link refused"));
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let internal = [".internal", ".local", ".localhost", ".localdomain", ".lan", ".home", ".corp", ".intranet"];
-    if !host.contains('.') || host.starts_with("localhost") || internal.iter().any(|suffix| host.ends_with(suffix)) {
-        return Err(malformed("Tripo result link refused"));
-    }
-    Ok(url.to_owned())
-}
 pub(super) fn status(body: &[u8], id: &str, key: &Secret) -> Result<Status, ProviderError> {
     let data = data(body)?;
     if data.get("task_id").and_then(Value::as_str) != Some(id) {
@@ -117,7 +100,7 @@ pub(super) fn status(body: &[u8], id: &str, key: &Secret) -> Result<Status, Prov
             if url.contains(key.expose()) {
                 return Err(malformed("Tripo result link refused"));
             }
-            Ok(Status::Done(link(url)?))
+            Ok(Status::Done(crate::model_file::public_link(url, "Tripo")?))
         }
         "banned" => failed(ErrorKind::BlockedContent, "Tripo refused the input under its content policy"),
         "cancelled" => failed(ErrorKind::Cancelled, "the Tripo task was cancelled"),
@@ -126,12 +109,6 @@ pub(super) fn status(body: &[u8], id: &str, key: &Secret) -> Result<Status, Prov
         _ => Err(malformed("Tripo reported an unknown status")),
     }
 }
-/// A whole binary glTF container: magic, version 2 and a length that matches the bytes.
 pub(super) fn glb(bytes: &[u8]) -> Result<(), ProviderError> {
-    let word = |at: usize| bytes.get(at..at.saturating_add(4)).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_le_bytes);
-    let whole = word(8).and_then(|n| usize::try_from(n).ok()) == Some(bytes.len());
-    if bytes.get(..4) != Some(b"glTF") || word(4) != Some(2) || !whole {
-        return Err(malformed("Tripo returned something other than a GLB model"));
-    }
-    Ok(())
+    crate::model_file::glb(bytes, "Tripo")
 }

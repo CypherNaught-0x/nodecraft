@@ -61,6 +61,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "gemini-images" => Some("gemini"),
         "fal" => Some("fal"),
         "tripo" => Some("tripo"),
+        "meshy" => Some("meshy"),
         _ => None,
     }
 }
@@ -132,6 +133,7 @@ pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readi
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
         "tripo" => Arc::new(nodecraft_providers::tripo::Tripo::new(needs_key(env.keys, "tripo")?, env.http.clone())),
+        "meshy" => Arc::new(nodecraft_providers::meshy::Meshy::new(needs_key(env.keys, "meshy")?, env.http.clone())),
         "comfyui" => Arc::new(comfyui(env)?),
         _ => return Err(Readiness::NotSetUp("NodeCraft can't run this provider's models yet".into())),
     };

@@ -27,9 +27,13 @@ pub mod gemini_images;
 pub mod http;
 #[cfg(feature = "llm")]
 pub mod llm;
+#[cfg(feature = "meshy")]
+pub mod meshy;
 /// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
 #[cfg(any(test, feature = "testkit"))]
 pub mod mock;
+#[cfg(any(feature = "tripo", feature = "meshy"))]
+mod model_file;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
 mod provider;
