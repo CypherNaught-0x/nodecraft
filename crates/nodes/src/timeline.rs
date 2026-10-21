@@ -643,7 +643,7 @@ pub fn kind() -> TimelineKind {
                     ParamSpec {
                         name: "quality".into(),
                         label: "Quality".into(),
-                        description: Some("Draft renders fast and small; high keeps more detail in a larger file.".into()),
+                        description: Some("Draft makes the smallest file, with the least detail; high keeps more detail in a larger file.".into()),
                         control: ParamControl::Choice { options: QUALITIES.iter().map(|q| Choice { value: (*q).into(), label: capitalised(q) }).collect() },
                         required: true,
                         default: Some(Value::Text("standard".into())),

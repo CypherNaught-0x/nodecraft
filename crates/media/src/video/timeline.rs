@@ -162,6 +162,17 @@ impl ComposeClip {
         }
         Ok(self)
     }
+    /// Whether its placed picture stays within the sizes the renderer draws, in a
+    /// `width`×`height` output: a large scale on a large frame may not. A sound always fits.
+    pub fn fits(&self, width: u32, height: u32) -> bool {
+        let frame = Frame { width, height, fps: (30, 1), background: [0; 3] };
+        let display = match self.source.media() {
+            Media::Video(m) => display(m),
+            Media::Still { width, height } => (u64::from(width), u64::from(height)),
+            Media::Audio(_) => return true,
+        };
+        placed_size(display, self.span.placement, frame).is_ok()
+    }
     /// Put the picture somewhere other than centred and fitted. A sound has no picture to place.
     pub fn with_placement(mut self, placement: Placement) -> Result<Self> {
         if !placement.valid() || (placement != Placement::IDENTITY && matches!(self.source, Source::Audio(_))) {
@@ -561,7 +572,7 @@ fn place(g: &mut String, k: usize, size: (u32, u32), placement: Placement, frame
         (w, h)
     } else {
         let (bw, bh) = turned(w, h, placement.rotation);
-        write!(g, "rotate=a={}*PI/180:ow={bw}:oh={bh}:c=none,", placement.rotation).map_err(|_| VideoError::Limit)?;
+        write!(g, "rotate=a={}*PI/180:ow={bw}:oh={bh}:c=black@0,", placement.rotation).map_err(|_| VideoError::Limit)?;
         (bw, bh)
     };
     if placement.opacity < 1000 {
@@ -624,7 +635,11 @@ fn crop(placement: Placement) -> String {
     if placement.crop == [0; 4] {
         return String::new();
     }
-    format!("crop=w=iw*{w}/1000:h=ih*{h}/1000:x=iw*{l}/1000:y=ih*{t}/1000,", w = 1000 - u32::from(l) - u32::from(r), h = 1000 - u32::from(t) - u32::from(b))
+    format!(
+        "crop=w=max(1\\,iw*{w}/1000):h=max(1\\,ih*{h}/1000):x=iw*{l}/1000:y=ih*{t}/1000,",
+        w = 1000 - u32::from(l) - u32::from(r),
+        h = 1000 - u32::from(t) - u32::from(b)
+    )
 }
 /// A video's timestamps from 0, slowed or sped up to `speed` thousandths.
 fn timestamps(speed: u16) -> String {

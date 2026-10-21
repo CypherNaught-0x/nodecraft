@@ -20,7 +20,8 @@ and [its captions](2026-10-21-timeline-captions.md); their storage, rendering an
   output time. A still has no speed.
 - **Quality is a parameter of the card.** `quality` is `draft`, `standard` (the default) or
   `high`, chosen in the inspector or the editor's output frame panel; it picks the VP9 constant
-  quality and bit-rate cap, and nothing else about the output.
-- **The editor shows it as it renders.** Drags and trims move through the media at the clip's
+  quality and bit-rate cap, and nothing else about the output: draft is smaller, not faster.
+- **The editor shows where it renders.** Drags and trims move through the media at the clip's
   speed and catch on other clips' edges, the playhead and the output's start (Alt lets go),
-  else on a whole frame; the selected picture's place is outlined over the preview.
+  else on a whole frame; the selected picture's place is outlined over the preview (the preview itself stays the
+  unplaced poster).

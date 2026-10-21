@@ -255,8 +255,8 @@ struct Snap {
     /// Output times to catch on.
     points: Vec<u64>,
     reach_us: u64,
-    /// One frame of output.
-    frame_us: u64,
+    /// The output's frames a second; 0 snaps to no frame.
+    fps: u64,
 }
 
 impl Snap {
@@ -272,10 +272,16 @@ impl Snap {
         if let Some(off) = caught {
             return dt + off;
         }
-        let frame = i128::from(self.frame_us.max(1));
+        // The nearest frame's own time, rounded, so whole frames don't drift at 24 fps; no
+        // rate (a test's) catches nowhere.
+        let fps = i128::from(self.fps);
+        if fps == 0 {
+            return dt;
+        }
         edges.first().map_or(dt, |e| {
             let to = i128::from(*e) + dt;
-            (to + frame / 2).div_euclid(frame) * frame - i128::from(*e)
+            let n = (to * fps + 500_000).div_euclid(1_000_000);
+            (n * 1_000_000 + fps / 2).div_euclid(fps) - i128::from(*e)
         })
     }
 }
@@ -796,7 +802,21 @@ fn properties(
             let (low, high) = (f64::from(timeline::MIN_SPEED) / 10.0, f64::from(timeline::MAX_SPEED) / 10.0);
             if let Some(v) = number(ui, &mut editor.draft, &key("speed"), "Speed (%)", f64::from(clip.speed) / 10.0, low..=high, 1.0, 0) {
                 let speed = (v * 10.0).round().clamp(f64::from(timeline::MIN_SPEED), f64::from(timeline::MAX_SPEED)) as u16;
-                commands.push(update(editor, &clip.id, json!({"speed": speed})));
+                // Faster is shorter: fades and the crossing shrink to fit in the same change.
+                let mut change = json!({"speed": speed});
+                if let Some(e) = end {
+                    let length = timeline::played_us(e.saturating_sub(clip.in_us), speed);
+                    let (mut fade_in, mut fade_out) = (clip.fade_in_us, clip.fade_out_us);
+                    if fade_in.saturating_add(fade_out) > length {
+                        fade_in = fade_in.min(length / 2);
+                        fade_out = fade_out.min(length.saturating_sub(fade_in));
+                    }
+                    let transition = clip.transition_us.min(length);
+                    if (fade_in, fade_out, transition) != (clip.fade_in_us, clip.fade_out_us, clip.transition_us) {
+                        change = json!({"speed": speed, "fade_in_us": fade_in, "fade_out_us": fade_out, "transition_us": transition});
+                    }
+                }
+                commands.push(update(editor, &clip.id, change));
             }
             ui.end_row();
         }
@@ -939,16 +959,20 @@ fn frame_properties(ui: &mut egui::Ui, editor: &mut TimelineEditor, node: &nodec
     if let Some(Some(v)) = colour_field(ui, &mut editor.draft, "frame.background", "Background", Some(&colour), t) {
         commands.push(param("background", Value::Text(v)));
     }
-    ui.label(egui::RichText::new("Pixels, 16 to 4096. Each clip is fitted inside the frame; the background fills the rest.").color(t.text_muted).small());
+    ui.label(
+        egui::RichText::new("Pixels, 16 to 4096. A clip is fitted inside the frame unless it is placed; the background fills the rest.")
+            .color(t.text_muted)
+            .small(),
+    );
 }
 
 /// One frame of output at the card's frame rate.
-fn frame_us(node: &nodecraft_graph::Node) -> u64 {
+fn fps(node: &nodecraft_graph::Node) -> u64 {
     let rate = match node.params.get("fps") {
         Some(Value::Text(text)) => text.parse::<u64>().unwrap_or(30),
         _ => 30,
     };
-    1_000_000 / rate.max(1)
+    rate.clamp(1, 1000)
 }
 
 /// The output frame of `size` pixels as shown fitted inside `area`.
@@ -1001,7 +1025,7 @@ fn track(
     t: &Tokens,
     commands: &mut Commands,
 ) {
-    let frame_us = frame_us(node);
+    let fps = fps(node);
     let area = ui.available_rect_before_wrap();
     // Lanes share at most two thirds of the height, each no taller than the main track's.
     let count = tracks.len().max(1) as f32;
@@ -1166,7 +1190,7 @@ fn track(
             let over = (0..tracks.len()).filter_map(|k| u8::try_from(k).ok()).find(|k| lane_of(*k).y_range().contains(p.y));
             let onto = over.filter(|k| drag.grip == Grip::Move && fits(tracks, *k, drag.before.input)).unwrap_or(drag.before.track);
             // Catch on what else is on the timeline, unless Alt is held.
-            let mut snap = Snap { points: Vec::new(), reach_us: micros(f64::from(grip / editor.scale.max(0.01))), frame_us };
+            let mut snap = Snap { points: Vec::new(), reach_us: micros(f64::from(grip / editor.scale.max(0.01))), fps };
             if !ui.input(|i| i.modifiers.alt) {
                 let main = drag.before.track == 0;
                 // A main-track clip's followers move with its trim, so they aren't caught on.
@@ -1372,7 +1396,7 @@ mod tests {
 
     #[test]
     fn dragged_edges_catch_on_nearby_edges_and_the_playhead_else_whole_frames() {
-        let snap = Snap { points: vec![0, 2_000_000, 3_000_000], reach_us: 90_000, frame_us: 40_000 };
+        let snap = Snap { points: vec![0, 2_000_000, 3_000_000], reach_us: 90_000, fps: 25 };
         // The nearer catch of either edge wins.
         assert_eq!(snap.travel(950_000, &[1_000_000, 1_900_000]), 1_000_000, "the start catches at 2 s");
         assert_eq!(snap.travel(1_060_000, &[1_000_000, 1_900_000]), 1_100_000, "the end is nearer 3 s");
@@ -1407,7 +1431,7 @@ mod tests {
             n.params.insert("fps".into(), Value::Text(fps.into()));
             n
         };
-        assert_eq!((frame_us(&node("25")), frame_us(&node("x"))), (40_000, 33_333));
+        assert_eq!((fps(&node("25")), fps(&node("x"))), (25, 30));
     }
 
     #[test]

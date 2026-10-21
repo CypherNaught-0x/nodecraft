@@ -126,7 +126,7 @@ mod native {
     fn message(error: VideoError) -> String {
         match error {
             VideoError::Unavailable => "can't run ffmpeg or ffprobe; check [media] in settings",
-            VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter), or a video's format isn't supported",
+            VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter, and rotate, lutyuv, color and atempo for placed or sped-up clips), or a video's format isn't supported",
             VideoError::InvalidMetadata => "a connected video's or sound's format isn't supported",
             VideoError::Limit => "the videos or the render are too large; make the timeline shorter or smaller",
             VideoError::Timeout => "the render took too long",
@@ -344,6 +344,9 @@ mod native {
                     .with_speed(clip.speed)
                     .and_then(|c| c.with_placement(placement(clip)))
                     .map_err(|_| format!("clip {number}'s speed or place in the frame can't be used"))?;
+                if !made.fits(frame.width, frame.height) {
+                    return Err(format!("clip {number} is placed too large for the frame: make it smaller"));
+                }
                 let made = made
                     .with_fades(clip.fade_in_us, clip.fade_out_us)
                     .and_then(|c| c.with_volume(clip.volume, clip.muted))

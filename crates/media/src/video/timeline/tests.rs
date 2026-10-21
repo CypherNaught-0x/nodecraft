@@ -213,8 +213,8 @@ fn a_placed_picture_is_cropped_sized_turned_and_drawn_where_it_goes() {
     let s = Span { placement, ..span(0, 1_000_000) };
     let g = graph(FRAME, &[(Media::Video(&m), &s)], &[], &[]).unwrap();
     // 80% of the width, fitted to 1280x720 at 1024x720, then halved.
-    assert!(g.contains("crop=w=iw*800/1000:h=ih*1000/1000:x=iw*100/1000:y=ih*0/1000,scale=512:360:"), "{g}");
-    assert!(g.contains("format=yuva444p,rotate=a=90*PI/180:ow=360:oh=512:c=none,lutyuv=a=val*500/1000,setsar=1[p0];"), "{g}");
+    assert!(g.contains("crop=w=max(1\\,iw*800/1000):h=max(1\\,ih*1000/1000):x=iw*100/1000:y=ih*0/1000,scale=512:360:"), "{g}");
+    assert!(g.contains("format=yuva444p,rotate=a=90*PI/180:ow=360:oh=512:c=black@0,lutyuv=a=val*500/1000,setsar=1[p0];"), "{g}");
     // Centre at (320, 540) less half the turned box (180, 256).
     assert!(g.contains("color=c=0x000000:s=1280x720:r=30/1:d=1.000000,format=yuv420p[q0];[q0][p0]overlay=x=140:y=284:eof_action=repeat:format=yuv420,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,setsar=1,fps="), "{g}");
     assert!(!g.contains(",pad="), "{g}");
