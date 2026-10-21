@@ -342,18 +342,34 @@ pub fn ready_alone(
     stale: &BTreeSet<NodeId>,
     accept: &dyn Fn(&Step) -> bool,
 ) -> Result<BTreeSet<NodeId>, Error> {
-    let expanded = Expanded::plain(canvas);
+    ready_alone_expanded(&Expanded::plain(canvas), kinds, requested, stale, accept)
+}
+
+/// [`ready_alone`] on a canvas with its technique nodes inlined (#532): a technique node passes
+/// when its inlined nodes, which it comes after, pass too. One that couldn't be inlined never
+/// passes. `requested` and `stale` hold nodes of the real canvas.
+pub fn ready_alone_expanded(
+    expanded: &Expanded<'_>,
+    kinds: &Registry,
+    requested: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    accept: &dyn Fn(&Step) -> bool,
+) -> Result<BTreeSet<NodeId>, Error> {
     let canvas: &Canvas = &expanded.canvas;
     let graph = Graph::new(canvas, kinds, &nodecraft_types::EMPTY_TARGET_SELECTION, &expanded.collects, &expanded.inner, &nodecraft_types::NoOptions)?;
-    let requested: BTreeSet<NodeId> = requested.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
-    let run: BTreeSet<NodeId> =
-        graph.with_upstream(&requested, stale).into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id)).collect();
+    let requested: BTreeSet<NodeId> = requested.iter().copied().filter(|id| canvas.nodes().contains_key(id) && !expanded.inner.contains_key(id)).collect();
+    let run = graph.with_inlined(graph.with_upstream(&requested, stale), stale, &expanded.inner);
+    let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id)).collect();
+    let not_inlined: BTreeSet<NodeId> = expanded.blockers.iter().map(|b| b.node).collect();
     let mut state = State::default();
     let mut passed = BTreeSet::new();
     // Dependency order: a step's `after` has been decided by the time it is reached.
     for id in graph.order(&run)? {
         if state.plan_bytes > MAX_PLAN_INPUT_BYTES {
             break;
+        }
+        if not_inlined.contains(&id) {
+            continue;
         }
         let Ok(step) = graph.step(id, &run, &mut state) else { continue };
         if let Some(fanout) = &step.fanout {

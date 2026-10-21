@@ -281,3 +281,137 @@ fn an_action_behind_a_batch_follows_its_stale_source_a_round_later() {
     assert!(rounds >= 1);
     assert_ne!(outputs(&s), Some(first), "the replace followed the new text");
 }
+
+mod techniques {
+    //! Technique nodes refresh live when their version is local work only (#532).
+    use super::*;
+
+    const BRIEF: NodeId = NodeId::from_bytes([40; 16]);
+    const INNER: NodeId = NodeId::from_bytes([41; 16]);
+    const VERSION: CanvasId = CanvasId::from_bytes([42; 16]);
+    const PLACED: NodeId = NodeId::from_bytes([43; 16]);
+    const FEED: NodeId = NodeId::from_bytes([44; 16]);
+
+    fn create(s: &mut Session, id: NodeId, kind: &str, x: f32) {
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": id, "kind": kind, "pos": {"x": x, "y": 600}})).unwrap();
+    }
+
+    fn text(s: &mut Session, id: NodeId, value: &str) {
+        s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": id, "name": "text", "value": Value::Text(value.into())})).unwrap();
+    }
+
+    fn wire(s: &mut Session, n: u8, from: NodeId, to: NodeId, port: &str) {
+        let edge =
+            json!({"id": nodecraft_types::EdgeId::from_bytes([n; 16]), "from": {"node": from, "port": "out"}, "to": {"node": to, "port": port}, "order": 0});
+        s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    }
+
+    /// Brief → `kind` (reading `port`, with `params`) published as a technique and placed.
+    /// Brief → a text model, as a version put straight into a project that knows the builtin
+    /// catalog's models (publishing would want a provider route), placed and fed.
+    fn placed_with_model() -> Session {
+        use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Technique, TechniquePort};
+        let catalog = crate::generation_catalog::GenerationCatalog::builtin().unwrap();
+        let kinds = catalog.registry().unwrap();
+        let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "P").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
+        let brief =
+            kinds.get("source.text").unwrap().instantiate_instance(BRIEF, Default::default(), &[("text".into(), Value::Text("a cat".into()))].into()).unwrap();
+        let model = [("model".into(), Value::Text("anthropic.claude-opus-5-5".into()))].into();
+        let writer = kinds.get(nodecraft_nodes::generation::TEXT_KIND).unwrap().instantiate_instance(INNER, Default::default(), &model).unwrap();
+        let port = |node: &nodecraft_graph::Node| node.outputs.first().map(|p| (p.name.clone(), p.port_type)).unwrap();
+        let ((brief_out, brief_type), (writer_out, writer_type)) = (port(&brief), port(&writer));
+        let edge = Edge {
+            id: nodecraft_types::EdgeId::from_bytes([45; 16]),
+            from: Endpoint { node: BRIEF, port: brief_out.clone() },
+            to: Endpoint { node: INNER, port: "prompt".into() },
+            order: 0,
+        };
+        let technique = Technique {
+            id: nodecraft_types::TechniqueId::from_bytes([47; 16]),
+            version: 1,
+            name: "Write".into(),
+            description: String::new(),
+            category: String::new(),
+            tags: Vec::new(),
+            inputs: vec![TechniquePort { name: "Brief".into(), description: String::new(), node: BRIEF, port: brief_out, port_type: brief_type }],
+            outputs: vec![TechniquePort { name: "Answer".into(), description: String::new(), node: INNER, port: writer_out, port_type: writer_type }],
+            params: Vec::new(),
+            source: None,
+            retired: false,
+        };
+        let version = Canvas::technique(VERSION, "Write v1", technique, vec![brief, writer], vec![edge]).unwrap();
+        Change::AddCanvas { canvas: version }.apply(&mut project).unwrap();
+        let mut resources = crate::commands::Resources::default();
+        resources.insert(catalog.clone());
+        resources.insert(catalog.run_catalog());
+        let mut s = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources);
+        place(&mut s);
+        s
+    }
+
+    /// Places [`VERSION`] as [`PLACED`], fed by its own text.
+    fn place(s: &mut Session) {
+        s.dispatch("technique.place", &json!({"canvas": CANVAS, "version": VERSION, "id": PLACED, "pos": {"x": 600.0, "y": 600.0}})).unwrap();
+        create(s, FEED, "source.text", 0.0);
+        text(s, FEED, "a dog");
+        wire(s, 48, FEED, PLACED, "brief");
+    }
+
+    fn placed(kind: &str, port: &str, params: &[(&str, Value)]) -> Session {
+        let mut s = session();
+        create(&mut s, BRIEF, "source.text", 0.0);
+        text(&mut s, BRIEF, "a cat");
+        create(&mut s, INNER, kind, 300.0);
+        for (name, value) in params {
+            s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": INNER, "name": name, "value": value})).unwrap();
+        }
+        wire(&mut s, 45, BRIEF, INNER, port);
+        let publish = json!({"canvas": CANVAS, "published": VERSION, "seed": NodeId::from_bytes([46; 16]), "technique": nodecraft_types::TechniqueId::from_bytes([47; 16]),
+            "name": "Swap", "inputs": [{"node": BRIEF, "name": "Brief"}], "outputs": [{"node": INNER, "name": "Swapped"}]});
+        s.dispatch("technique.publish", &publish).unwrap();
+        place(&mut s);
+        s
+    }
+
+    fn settle_all(s: &mut Session) {
+        for _ in 0..8 {
+            if !settle(s) {
+                return;
+            }
+        }
+        panic!("live recompute never settled");
+    }
+
+    fn output(s: &Session, id: NodeId) -> Option<Value> {
+        let node = s.document().canvases().get(&CANVAS)?.nodes().get(&id)?;
+        node.history.iter().find(|g| Some(g.id) == node.active)?.outputs.first().cloned()
+    }
+
+    #[test]
+    fn an_action_only_technique_node_updates_live() {
+        let mut s = placed("text.replace", "text", &[("find", Value::Text("a ".into())), ("replacement", Value::Text("one ".into()))]);
+        settle_all(&mut s);
+        assert_eq!(output(&s, PLACED), Some(Value::Text("one dog".into())));
+        // Feeding it something else refreshes it, with no run.
+        text(&mut s, FEED, "a cow");
+        settle_all(&mut s);
+        assert_eq!(output(&s, PLACED), Some(Value::Text("one cow".into())));
+        let placed = s.document().canvases().get(&CANVAS).unwrap().nodes().get(&PLACED).unwrap();
+        assert_eq!(placed.history.len(), 2, "one result per refresh");
+        // Only the instance records: the version's nodes keep no results.
+        let version = s.document().canvases().get(&VERSION).unwrap();
+        assert!(version.nodes().values().all(|n| n.history.is_empty()), "inlined nodes record nothing");
+        assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none(), "settled");
+    }
+
+    #[test]
+    fn a_technique_node_with_a_paid_step_stays_out_of_live_updates() {
+        let mut s = placed_with_model();
+        settle_all(&mut s);
+        assert_eq!(output(&s, PLACED), None, "a model call waits for an explicit run");
+        text(&mut s, FEED, "a cow");
+        settle_all(&mut s);
+        assert_eq!(output(&s, PLACED), None);
+    }
+}

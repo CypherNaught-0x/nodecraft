@@ -3,17 +3,18 @@
 //! results into the edit's own undo step ([`Session::record_derived`]).
 //!
 //! Only local work is ever run live: a plan with any non-local job (a model call, which costs
-//! money) is left for an explicit run. The three steps are separate so the host can move the
+//! money) is left for an explicit run. Technique nodes are planned with their versions inlined
+//! (#532), so one made only of local work refreshes like an action node; only it records results. The three steps are separate so the host can move the
 //! middle one to a worker: [`pending`] (UI thread, cheap), [`compute`] (anywhere: it borrows
 //! nothing from the session) and [`apply`] (UI thread).
 use crate::Session;
 use crate::action_exec::LocalActions;
-use nodecraft_exec::planner::{Planned, RunMode, RunPlan, Step, plan, ready_alone};
+use nodecraft_exec::planner::{Planned, RunMode, RunPlan, Step, plan_expanded, ready_alone_expanded};
 use nodecraft_exec::run::{Run, RunOptions};
 use nodecraft_exec::scheduler::RetryPolicy;
 use nodecraft_format::AssetStore;
 use nodecraft_graph::{Canvas, Generation};
-use nodecraft_nodes::{Category, JobSpec, Registry};
+use nodecraft_nodes::{Category, JobSpec, Registry, technique};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -28,6 +29,7 @@ pub struct LiveJob {
     plan: Option<RunPlan>,
     /// Cached results to apply instead of computing (#91): a round either reuses or computes.
     hits: Vec<crate::cache::Hit>,
+    /// The canvas with its technique nodes inlined, which the plan was made on.
     live: Canvas,
     assets: AssetStore,
 }
@@ -53,22 +55,20 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     }
     let kinds = session.kinds();
     let live = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let is_action = |kind: &str| kinds.get(kind).is_ok_and(|k| k.descriptor().category == Category::Action);
     // Cheap first: most canvases have no action node, and checking staleness walks them all.
-    if !live.nodes().values().any(|n| is_action(&n.kind)) {
+    if !live.nodes().values().any(|n| refreshes(&n.kind, kinds)) {
         return Ok(None);
     }
     let skip: BTreeSet<NodeId> =
         failed.iter().filter(|(id, hash)| nodecraft_exec::staleness::input_hash(live, kinds, **id).is_ok_and(|now| now == **hash)).map(|(id, _)| *id).collect();
     let stale = nodecraft_exec::staleness::stale(live, kinds)?;
-    let category = |id: &NodeId| live.nodes().get(id).and_then(|n| kinds.get(&n.kind).ok()).map(|k| k.descriptor().category);
-    // Stale action nodes, and ones with no result yet. A Timeline renders a video, which takes
-    // too long to redo on every edit: it runs when asked.
+    // Stale action and technique nodes, and ones with no result yet. A Timeline renders a video,
+    // which takes too long to redo on every edit: it runs when asked.
     let wanted: BTreeSet<NodeId> = live
         .nodes()
         .iter()
         .filter(|(_, node)| node.kind != nodecraft_nodes::timeline::ID)
-        .filter(|(id, node)| category(id) == Some(Category::Action) && !skip.contains(id) && (node.active.is_none() || stale.contains(id)))
+        .filter(|(id, node)| refreshes(&node.kind, kinds) && !skip.contains(id) && (node.active.is_none() || stale.contains(id)))
         .map(|(id, _)| *id)
         .collect();
     if wanted.is_empty() {
@@ -80,21 +80,30 @@ pub fn pending(session: &Session, canvas: CanvasId, failed: &BTreeMap<NodeId, no
     if !hits.is_empty() {
         return Ok(Some(LiveJob { canvas, base: session.revision(), id: [0; 16], plan: None, hits, live: live.clone(), assets: AssetStore::default() }));
     }
+    // A technique node runs its version's nodes, inlined: a paid one among them keeps it out. A
+    // canvas that can't be inlined leaves its technique nodes waiting, not the actions.
+    let expanded =
+        nodecraft_exec::technique::expand(session.document().canvases(), live, kinds).unwrap_or_else(|_| nodecraft_exec::technique::Expanded::plain(live));
+    let planned: &Canvas = &expanded.canvas;
     // Each wanted node on its own terms: one that can't run yet (nothing connected, or a model
     // upstream with no result) mustn't hold the others back. One walk decides for all (#549).
-    let runnable = ready_alone(live, kinds, &wanted, &stale, &|step| local_step(step, live, kinds)).unwrap_or_default();
+    let runnable = ready_alone_expanded(&expanded, kinds, &wanted, &stale, &|step| local_step(step, planned, kinds)).unwrap_or_default();
     if runnable.is_empty() {
         return Ok(None);
     }
     // One round records at most one step's worth; the rest follow in the next round.
     let runnable: BTreeSet<NodeId> = runnable.into_iter().take(crate::run_cmds::MAX_RESULTS).collect();
-    let Planned::Ready(plan) = plan(live, kinds, &RunMode::WithUpstream, &runnable, &stale)? else { return Ok(None) };
-    if !local_only(&plan, live, kinds) {
+    let targets = &nodecraft_types::EMPTY_TARGET_SELECTION;
+    let Planned::Ready(plan) = plan_expanded(&expanded, kinds, &RunMode::WithUpstream, &runnable, &stale, targets, &nodecraft_types::NoOptions)? else {
+        return Ok(None);
+    };
+    if !local_only(&plan, planned, kinds) {
         return Ok(None);
     }
     let mut id = [0u8; 16];
     id.copy_from_slice(crate::execution_identity::nonce()?.get(..16).unwrap_or(&[0; 16]));
-    Ok(Some(LiveJob { canvas, base: session.revision(), id, plan: Some(plan), hits: Vec::new(), live: live.clone(), assets: session.assets().clone() }))
+    let live = expanded.canvas.into_owned();
+    Ok(Some(LiveJob { canvas, base: session.revision(), id, plan: Some(plan), hits: Vec::new(), live, assets: session.assets().clone() }))
 }
 
 /// A canvas [`pending`] found nothing to do on. Until it changes in more than layout (moving a
@@ -122,6 +131,11 @@ impl Settled {
             && !session.file_status().read_only
             && session.document().canvases().get(&canvas).is_some_and(|live| live.same_but_layout(&self.live))
     }
+}
+
+/// Whether nodes of `kind` refresh live: actions, and technique nodes made only of local work.
+fn refreshes(kind: &str, kinds: &Registry) -> bool {
+    kind == technique::ID || kinds.get(kind).is_ok_and(|k| k.descriptor().category == Category::Action)
 }
 
 /// Whether every step is a source, an action or structure: nothing that calls a model.
@@ -167,10 +181,10 @@ pub fn compute(job: LiveJob, kinds: &Registry) -> Result<LiveOutcome, Error> {
         finished.extend(progress.finished.into_iter().map(|r| (r.node, r.generation)));
         failed.extend(progress.failed.into_iter().map(|f| (f.node, f.reason)));
     }
-    // Sources re-emit their values: record only the action nodes' results.
-    let actions_only =
-        |id: &NodeId| job.live.nodes().get(id).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category == Category::Action);
-    let results = finished.into_iter().filter(|(id, _)| actions_only(id)).collect();
+    // Sources re-emit their values: record only the action and technique nodes' results (the run
+    // keeps inlined nodes' results to itself).
+    let refreshed = |id: &NodeId| job.live.nodes().get(id).is_some_and(|n| refreshes(&n.kind, kinds));
+    let results = finished.into_iter().filter(|(id, _)| refreshed(id)).collect();
     let failed = failed.into_iter().map(|(id, reason)| (id, reason, hash(&id))).collect();
     Ok(LiveOutcome { canvas: job.canvas, base: job.base, results, failed, hits: Vec::new(), staged: actions.take_staged() })
 }
