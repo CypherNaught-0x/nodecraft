@@ -76,7 +76,10 @@ boundaries, see [performance regression measurements](performance.md). `cargo xt
 prints the tooling entry points. The older manual workloads below remain available.
 
 - `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`: canvas frame time over
-  200- and 1,000-node graphs (see `docs/ui-design.md`, "Level of detail and performance").
+  200- and 1,000-node graphs (see `docs/ui-design.md`, "Level of detail and performance"). The
+  ignored `app::tests::perf281_visual_current` render capture is opt-in: with
+  `NODECRAFT_PERF281_RENDER_ROOT` unset it prints why it skipped and the run still passes, and with
+  it set to a directory it cannot capture into the run fails loudly.
 
 ## Performance capture
 

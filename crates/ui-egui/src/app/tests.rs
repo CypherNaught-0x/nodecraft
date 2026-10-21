@@ -3687,12 +3687,72 @@ fn bulk71_real_owned_model_conditional_fields_refuse_then_edit_all_atomically() 
     assert!(!h.state().session.can_undo());
 }
 
+/// The #281 render capture is opt-in (#530). The decision is a pure function of the raw variable
+/// so both branches are testable without mutating the process environment, which would race every
+/// other test in this binary. `Ok(None)` means it was never asked for: the caller prints why it
+/// skipped and returns. `Err` means it was asked for and cannot run, which stays a real failure.
+fn perf281_render_root(raw: Option<String>) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Err("NODECRAFT_PERF281_RENDER_ROOT is set but empty; name a writable directory to capture into".into());
+    }
+    let root = std::path::PathBuf::from(&raw);
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        return Err(format!("cannot create NODECRAFT_PERF281_RENDER_ROOT {}: {error}", root.display()));
+    }
+    match std::fs::metadata(&root) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err(format!("NODECRAFT_PERF281_RENDER_ROOT {} is not a directory", root.display())),
+        Err(error) => return Err(format!("cannot inspect NODECRAFT_PERF281_RENDER_ROOT {}: {error}", root.display())),
+    }
+    // A write probe is the only honest writability check: read-only bits lie about root, ACLs and Windows.
+    let probe = root.join("perf281-write-probe");
+    if let Err(error) = std::fs::write(&probe, b"") {
+        return Err(format!("NODECRAFT_PERF281_RENDER_ROOT {} is not writable: {error}", root.display()));
+    }
+    if let Err(error) = std::fs::remove_file(&probe) {
+        return Err(format!("cannot remove the write probe inside NODECRAFT_PERF281_RENDER_ROOT {}: {error}", root.display()));
+    }
+    Ok(Some(root))
+}
+
 #[test]
-#[ignore = "manual public-scene capture; requires NODECRAFT_PERF281_RENDER_ROOT"]
+#[ignore = "manual public-scene capture; set NODECRAFT_PERF281_RENDER_ROOT to a writable directory to run it"]
 fn perf281_visual_current() {
-    let root = std::path::PathBuf::from(std::env::var("NODECRAFT_PERF281_RENDER_ROOT").unwrap());
-    first_frame_hover_captured(false, Some(&root));
-    first_frame_hover_captured(true, Some(&root));
+    match perf281_render_root(std::env::var("NODECRAFT_PERF281_RENDER_ROOT").ok()) {
+        Ok(None) => println!("skipping perf281_visual_current: NODECRAFT_PERF281_RENDER_ROOT is unset, so no render capture was asked for"),
+        Err(reason) => panic!("{reason}"),
+        Ok(Some(root)) => {
+            first_frame_hover_captured(false, Some(&root));
+            first_frame_hover_captured(true, Some(&root));
+        }
+    }
+}
+
+#[test]
+fn perf281_render_root_skips_when_unset() {
+    match perf281_render_root(None) {
+        Ok(None) => {}
+        other => panic!("an unset NODECRAFT_PERF281_RENDER_ROOT must skip the capture, got {other:?}"),
+    }
+}
+
+#[test]
+fn perf281_render_root_fails_loudly_on_an_unusable_root() {
+    // Three roots no platform can use: nothing named, a path whose parent is an existing regular
+    // file, and an existing regular file as the root. None of them can be created, so a failing
+    // decision must leave nothing behind in the checkout.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let would_be = manifest.join("renders").display().to_string();
+    for raw in ["", &would_be, &manifest.display().to_string()] {
+        match perf281_render_root(Some(raw.to_string())) {
+            Err(reason) => assert!(!reason.is_empty(), "the failure for {raw:?} must say why it cannot capture"),
+            Ok(outcome) => panic!("an unusable NODECRAFT_PERF281_RENDER_ROOT {raw:?} must fail, got {outcome:?}"),
+        }
+    }
+    assert!(!manifest.join("renders").exists(), "a root that cannot be used must not be created");
 }
 
 #[test]
