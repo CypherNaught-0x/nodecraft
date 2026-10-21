@@ -11,6 +11,29 @@ impl VideoAsset {
     }
 }
 #[derive(Clone)]
+pub enum AudioAsset {}
+impl AudioAsset {
+    pub fn metadata(&self) -> &AudioMetadata {
+        match *self {}
+    }
+    pub fn hash(&self) -> crate::ContentHash {
+        match *self {}
+    }
+}
+#[derive(Clone)]
+pub enum StillAsset {}
+impl StillAsset {
+    pub fn width(&self) -> u32 {
+        match *self {}
+    }
+    pub fn height(&self) -> u32 {
+        match *self {}
+    }
+    pub fn hash(&self) -> crate::ContentHash {
+        match *self {}
+    }
+}
+#[derive(Clone)]
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
@@ -61,6 +84,12 @@ impl VideoService {
     }
     pub fn import(&self, source: Arc<[u8]>, _: ColorPolicy) -> std::result::Result<VideoJob<VideoAsset>, (VideoError, Arc<[u8]>)> {
         Err((VideoError::Unsupported, source))
+    }
+    pub fn import_audio(&self, source: Arc<[u8]>) -> std::result::Result<VideoJob<AudioAsset>, (VideoError, Arc<[u8]>)> {
+        Err((VideoError::Unsupported, source))
+    }
+    pub fn stage_still(&self, rgba: Arc<[u8]>, _: u32, _: u32) -> std::result::Result<VideoJob<StillAsset>, (VideoError, Arc<[u8]>)> {
+        Err((VideoError::Unsupported, rgba))
     }
     pub fn frame(&self, _: &VideoAsset, _: FrameRequest) -> Result<VideoJob<VideoFrame>> {
         Err(VideoError::Unsupported)

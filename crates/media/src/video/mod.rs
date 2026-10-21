@@ -17,7 +17,7 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod probe;
 mod timeline;
-pub use timeline::{ComposeClip, ComposeSpec, MAX_CLIPS, MAX_DURATION_US, MAX_VOLUME, MIN_TRANSITION_US};
+pub use timeline::{ComposeClip, ComposeSpec, MAX_CLIPS, MAX_DURATION_US, MAX_VOLUME, MIN_TRANSITION_US, Source};
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
 mod quota;
@@ -197,6 +197,16 @@ impl VideoMetadata {
         self.audio.is_some()
     }
 }
+/// A sound-only file's first decodable audio stream.
+#[derive(Clone, Debug)]
+pub struct AudioMetadata {
+    pub duration_us: u64,
+    pub(crate) stream: u32,
+    /// FFmpeg decoder name.
+    pub(crate) codec: &'static str,
+    pub(crate) format_start: i128,
+    pub(crate) stream_start: i128,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameRequest {
     pub(crate) time_us: u64,
@@ -287,8 +297,8 @@ impl<T> Drop for VideoJob<T> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
-    FramePacket, FrameSender, RenderedVideo, ScrubSession, ShutdownReport, ShutdownTicket, ShutdownWaitError, TrySendFrameError, VideoAsset, VideoChunk,
-    VideoFrame, VideoOpening, VideoService,
+    AudioAsset, FramePacket, FrameSender, RenderedVideo, ScrubSession, ShutdownReport, ShutdownTicket, ShutdownWaitError, StillAsset, TrySendFrameError,
+    VideoAsset, VideoChunk, VideoFrame, VideoOpening, VideoService,
 };
 #[cfg(target_arch = "wasm32")]
 mod unsupported;

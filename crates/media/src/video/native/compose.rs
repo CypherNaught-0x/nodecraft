@@ -10,13 +10,15 @@ const NEEDS: &[(&str, &str)] = &[
     ("filter=anullsrc", "channel_layout"),
     ("encoder=libopus", "Encoder libopus"),
 ];
+/// What layers need on top: stacking pictures, delaying and mixing sound.
+const LAYER_NEEDS: &[(&str, &str)] = &[("filter=overlay", "eof_action"), ("filter=adelay", "all"), ("filter=amix", "normalize")];
 
 impl VideoService {
     /// Stitch the clips of `spec` into one WebM: VP9 picture, Opus stereo sound.
     /// Shares the one render slot with [`VideoService::render`].
     pub fn compose(&self, spec: ComposeSpec) -> Result<VideoJob<RenderedVideo>> {
-        for clip in &spec.clips {
-            self.check(&clip.asset)?;
+        for clip in spec.inputs() {
+            self.check_pin(clip.source.pin())?;
         }
         // Generous for a slow machine; an hour of output may take a few hours to encode.
         let budget = 120u64.saturating_add(spec.duration_us().div_ceil(1_000_000).saturating_mul(6));
@@ -42,14 +44,31 @@ impl VideoService {
 impl Context {
     fn compose(&mut self, spec: &ComposeSpec, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<RenderedVideo> {
         let mut needs: Vec<(String, String)> = NEEDS.iter().map(|(topic, required)| ((*topic).to_owned(), (*required).to_owned())).collect();
-        for clip in &spec.clips {
-            if let Some((_, codec)) = clip.asset.metadata.audio
-                && !clip.span.muted
-            {
-                let need = (format!("decoder={codec}"), format!("Decoder {codec}"));
-                if !needs.contains(&need) {
-                    needs.push(need);
+        if !spec.layers.is_empty() {
+            needs.extend(LAYER_NEEDS.iter().map(|(topic, required)| ((*topic).to_owned(), (*required).to_owned())));
+        }
+        let mut need = |topic: String, required: String| {
+            if !needs.iter().any(|(t, _)| *t == topic) {
+                needs.push((topic, required));
+            }
+        };
+        for clip in spec.inputs() {
+            match &clip.source {
+                Source::Video(asset) => {
+                    if let Some((_, codec)) = asset.metadata.audio
+                        && !clip.span.muted
+                    {
+                        need(format!("decoder={codec}"), format!("Decoder {codec}"));
+                    }
                 }
+                Source::Audio(asset) => {
+                    need(format!("demuxer={}", asset.demuxer), format!("Demuxer {}", asset.demuxer));
+                    if !clip.span.muted {
+                        let codec = asset.metadata.codec;
+                        need(format!("decoder={codec}"), format!("Decoder {codec}"));
+                    }
+                }
+                Source::Still(_) => need("demuxer=rawvideo".to_owned(), "pixel_format".to_owned()),
             }
         }
         let tool = self.config.tools.ffmpeg.clone();
@@ -59,8 +78,7 @@ impl Context {
                 return Err(VideoError::Unsupported);
             }
         }
-        let parts = spec.parts();
-        let graph = timeline::graph(spec.frame, &parts)?;
+        let graph = timeline::graph(spec.frame, &spec.parts(), &spec.layer_parts())?;
         let quota = self.config.limits.output;
         let mut args = process::args(&[
             "-hide_banner",
@@ -75,11 +93,35 @@ impl Context {
             "-filter_complex_threads",
             "2",
         ]);
-        for (clip, (metadata, span)) in spec.clips.iter().zip(&parts) {
-            args.extend(process::args(&["-noautorotate"]));
-            args.extend(probe::input_args(clip.asset.mov));
-            args.extend(process::args(&["-ss", &timeline::seek(metadata, span), "-t", &timeline::seconds(clip.length_us()), "-i"]));
-            args.push(self.path(&clip.asset)?.into_os_string());
+        let rate = format!("{}/{}", spec.frame.fps.0, spec.frame.fps.1);
+        for clip in spec.inputs() {
+            let length = timeline::seconds(clip.length_us());
+            match &clip.source {
+                Source::Video(asset) => {
+                    args.extend(process::args(&["-noautorotate"]));
+                    args.extend(probe::input_args(asset.mov));
+                    args.extend(process::args(&["-ss", &timeline::seek(asset.metadata(), &clip.span), "-t", &length, "-i"]));
+                }
+                Source::Audio(asset) => {
+                    args.extend(probe::audio_input_args(asset.demuxer));
+                    args.extend(process::args(&["-ss", &timeline::seek_audio(asset.metadata(), &clip.span), "-t", &length, "-i"]));
+                }
+                // One raw frame: nothing to probe, and the graph holds it for the clip's length.
+                Source::Still(still) => args.extend(process::args(&[
+                    "-protocol_whitelist",
+                    "file",
+                    "-f",
+                    "rawvideo",
+                    "-pixel_format",
+                    "rgba",
+                    "-video_size",
+                    &format!("{}x{}", still.width, still.height),
+                    "-framerate",
+                    &rate,
+                    "-i",
+                ])),
+            }
+            args.push(self.pin_path(clip.source.pin())?.into_os_string());
         }
         args.extend(process::args(&["-filter_complex", &graph, "-map", "[vout]", "-map", "[aout]", "-sn", "-dn"]));
         args.extend(process::args(VP9));

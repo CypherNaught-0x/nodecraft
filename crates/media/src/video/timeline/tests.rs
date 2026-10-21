@@ -62,7 +62,7 @@ fn clips_show_whole_frames() {
     assert_eq!((frames(1_020_000, (30, 1)), shown_us(1_020_000, (30, 1))), (31, 1_033_333));
     assert_eq!((frames(2_041_667, (30000, 1001)), shown_us(2_041_667, (30000, 1001))), (61, 2_035_367));
     assert_eq!(frames(1, (30, 1)), 1, "never no frames");
-    let g = graph(FRAME, &[(&meta(64, 48, 0, true), &span(0, 1_001_000))]).unwrap();
+    let g = graph(FRAME, &[(Media::Video(&meta(64, 48, 0, true)), &span(0, 1_001_000))], &[]).unwrap();
     assert!(g.contains("trim=end_frame=30,") && g.contains("atrim=duration=1.000000,"), "{g}");
 }
 #[test]
@@ -83,7 +83,7 @@ fn seek_starts_at_the_video_stream() {
 fn one_clip_maps_straight_to_the_outputs() {
     let m = meta(1280, 720, 0, false);
     let s = span(0, 1_000_000);
-    let g = graph(FRAME, &[(&m, &s)]).unwrap();
+    let g = graph(FRAME, &[(Media::Video(&m), &s)], &[]).unwrap();
     assert!(g.contains("[0:0]setpts=PTS-STARTPTS,colorspace="), "{g}");
     assert!(g.ends_with("[aout]"), "{g}");
     assert!(g.contains("[vout];anullsrc=r=48000"), "silence stands in for a clip with no audio: {g}");
@@ -100,7 +100,8 @@ fn cuts_concat_and_transitions_cross_at_the_running_length() {
     (c.fade_out_us, c.transition_us) = (400_000, 1_000_000);
     let mut d = span(0, 3_000_000);
     d.muted = true;
-    let g = graph(FRAME, &[(&m, &a), (&sound, &b), (&m, &c), (&sound, &d)]).unwrap();
+    let (vm, vs) = (Media::Video(&m), Media::Video(&sound));
+    let g = graph(FRAME, &[(vm, &a), (vs, &b), (vm, &c), (vs, &d)], &[]).unwrap();
     assert!(g.contains("[v0][a0][v1][a1]concat=n=2:v=1:a=1[c1][y1];[c1]settb=1/30[x1]"), "{g}");
     // a and b run 5 s; the cross into c starts half a second before that.
     assert!(g.contains("[x1][v2]xfade=transition=fade:duration=0.500000:offset=4.500000[x2]"), "{g}");
@@ -114,4 +115,41 @@ fn cuts_concat_and_transitions_cross_at_the_running_length() {
     assert!(g.contains("fade=t=out:st=1.600000:d=0.400000:color=0x000000"), "{g}");
     assert!(g.contains("volume=1.250,afade=t=in:st=0:d=0.250000[a1]"), "{g}");
     assert!(!g.ends_with(';'));
+}
+#[test]
+fn without_layers_the_graph_is_unchanged_and_with_them_tracks_stack_and_mix() {
+    let m = meta(1280, 720, 0, true);
+    let s = span(0, 2_000_000);
+    let plain = graph(FRAME, &[(Media::Video(&m), &s)], &[]).unwrap();
+    assert!(!plain.contains("overlay") && !plain.contains("amix") && plain.contains("[vout]"), "{plain}");
+    let music = AudioMetadata { duration_us: 9_000_000, stream: 0, codec: "flac", format_start: 0, stream_start: 0 };
+    let mut tune = span(1_000_000, 4_000_000);
+    tune.fade_out_us = 500_000;
+    let mut logo = span(0, 1_000_000);
+    logo.fade_in_us = 200_000;
+    let still = Media::Still { width: 64, height: 64 };
+    let layers = [(Media::Audio(&music), &tune, 15u64), (still, &logo, 45u64), (Media::Video(&m), &s, 0u64)];
+    let g = graph(FRAME, &[(Media::Video(&m), &s)], &layers).unwrap();
+    assert!(g.contains("[0:0]") && g.contains("[ma];"), "the main track ends in its own labels: {g}");
+    // The tune runs 0.5 s to 3.5 s; the logo 1.5 s to 2.5 s; the main track only 2 s.
+    assert!(g.contains("[mv]tpad=stop_mode=add:stop_duration=3.500000:color=0x000000[b0];"), "{g}");
+    assert!(g.contains("[2:0]setpts=PTS-STARTPTS,scale=720:720:flags=bicubic"), "the still is read raw: {g}");
+    assert!(g.contains("format=yuva420p") && g.contains("color=black@0"), "a layer letterboxes to transparent: {g}");
+    assert!(g.contains("fade=t=in:st=0:d=0.200000:color=0x000000:alpha=1,setpts=PTS+45[l1];"), "{g}");
+    assert!(g.contains("[b0][l1]overlay=eof_action=pass:repeatlast=0:format=yuv420[b1];[3:0]"), "{g}");
+    assert!(g.contains("[b1][l2]overlay"), "the video layer goes on top: {g}");
+    assert!(g.contains("[b2]trim=end_frame=105,setpts=PTS-STARTPTS[vout]"), "{g}");
+    assert!(g.contains("[1:0]aresample=48000") && g.contains(",adelay=delays=24000S:all=1[s0];"), "half a second at 48 kHz: {g}");
+    assert!(g.contains("[3:1]aresample") && g.contains("[s2];"), "a video layer's own sound joins the mix: {g}");
+    assert!(g.ends_with("[ma][s0][s2]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=3.500000[aout]"), "{g}");
+}
+#[test]
+fn layers_stay_bounded() {
+    let card = Frame { width: 64, height: 48, fps: (30, 1), background: [0, 0, 0] };
+    assert_eq!(frames_at(1_016_000, card.fps), 30, "positions round to the nearest frame");
+    assert_eq!(frame_us(45, (30, 1)), 1_500_000);
+    assert_eq!(
+        graph(card, &[(Media::Audio(&AudioMetadata { duration_us: 1, stream: 0, codec: "mp3", format_start: 0, stream_start: 0 }), &span(0, 1))], &[]),
+        Err(VideoError::Invalid)
+    );
 }
