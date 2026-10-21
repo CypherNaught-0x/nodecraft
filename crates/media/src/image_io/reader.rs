@@ -1,5 +1,5 @@
 //! Header-only reader probes. Complete content integrity and pixel decoding are separate.
-use super::{ImageMeta, Limits, decodable_format, meta_of, png_color_chunks};
+use super::{ImageMeta, Limits, color, decodable_format, meta_of};
 use crate::{MediaError, MediaKind, sniff};
 use image::{ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
 use std::{
@@ -118,8 +118,8 @@ pub fn probe_image_reader<R: Read + Seek>(reader: R, length: u64, limits: &Limit
         checked(&state)?;
         return result;
     }
-    // The colour chunks are walked first, reading only their 8-byte headers.
-    let png = (format == ImageFormat::Png).then(|| png_color_chunks(&mut input));
+    // The colour signals are walked first, reading only chunk headers.
+    let color_tag = color::color_tag(format, &mut input);
     input.seek(SeekFrom::Start(0)).map_err(|_| MediaError::Decode("cannot seek image header".into()))?;
     let mut reader = ImageReader::new(BufReader::with_capacity(8192, input));
     reader.set_format(format);
@@ -138,7 +138,7 @@ pub fn probe_image_reader<R: Read + Seek>(reader: R, length: u64, limits: &Limit
         if orientation != Orientation::NoTransforms {
             decoded_budget.reserve(decoder.total_bytes())?;
         }
-        let mut meta = meta_of(sniffed.mime, &mut decoder, png);
+        let mut meta = meta_of(sniffed.mime, &decoder, color_tag);
         if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
             std::mem::swap(&mut meta.width, &mut meta.height);
         }

@@ -12,19 +12,23 @@ is still open, and the sRGB assumption in the
   NodeCraft builds ignore them.
 - **Absent means unknown, never a default.** A missing field is never read as 8-bit, opaque or
   sRGB. Every project written before #393 has none of them, and nothing infers them on open.
-- **A tag is only claimed when every common signal is read.** For PNG, a bounded walk over the
-  chunk headers before `IDAT` (8 bytes read per chunk, at most 4,096 chunks) finds `cICP`, `iCCP`,
-  `sRGB`, `gAMA`, `cHRM` and `eXIf`. For JPEG and WebP the decoder reports an embedded ICC
-  profile. EXIF can name a colour space and isn't parsed, so a file with EXIF and no stronger
-  signal gets no tag. BMP (v4/v5 colour spaces), GIF and TIFF (whose ICC tag the decoder can
-  miss) get no tag either. A profile that can't be read still counts as `icc_profile`: calling it
+- **A tag is only claimed when every common signal is read.** Bounded header walks read chunk
+  and marker headers and seek over their bodies, never reading a profile (at most 16 KiB read and
+  4,096 steps; a walk that hits a bound gives no tag). For PNG the walk runs to `IEND`, so it
+  finds `cICP`, `iCCP`, `sRGB`, `gAMA`, `cHRM` and `eXIf` even after the image data, and
+  `Raw profile type icc`/`exif` text chunks. For JPEG it reads the APP markers up to the first
+  scan (`ICC_PROFILE` in APP2, `Exif` in APP1); for WebP the RIFF chunks and the `VP8X` flags.
+  EXIF can name a colour space and isn't parsed, so a file with EXIF and no stronger signal gets
+  no tag. BMP (v4/v5 colour spaces), GIF and TIFF (whose ICC tag the decoder can miss) get no
+  tag either. A profile that is present but damaged still counts as `icc_profile`: calling it
   `untagged` would claim more than the file proves.
 - **Recorded at import, verified at write.** Import fills every fact the header proves, through
   one mapping (`nodecraft_format::image_header_meta`). The format crate's two verification paths
   (in-memory and streamed) compare each claimed fact with a fresh header probe through the same
   mapping, and refuse a contradiction, on save and on open, as they already refused wrong
-  dimensions. An unclaimed fact is not checked. Both probes (bytes and bounded reader) read the
-  same signals, so they never disagree.
+  dimensions. An unclaimed fact is not checked. Both probes (bytes and bounded reader) run the
+  same walks over the same bytes, so they agree whenever both succeed; the reader probe can still
+  refuse a header larger than its 512 KiB budget, as it did before.
 - **Who fills them.** Only import, for now. Action, split, timeline and provider outputs record
   only their size, as before, so their facts are unknown. Filling them is additive and needs no
   format change.

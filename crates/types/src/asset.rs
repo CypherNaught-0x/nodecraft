@@ -149,7 +149,8 @@ pub struct MediaMeta {
     /// A 3D model's triangle count, after its faces are split into triangles.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triangles: Option<u32>,
-    /// An image's stored layout has an alpha channel (it may still be fully opaque).
+    /// An image decodes with an alpha channel, including transparency such as a PNG `tRNS` chunk
+    /// or a GIF transparent colour (it may still be fully opaque).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_alpha: Option<bool>,
     /// An image's stored bits per channel (1, 2, 4, 8, 16 or 32), before any decoding.

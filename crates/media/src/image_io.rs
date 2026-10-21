@@ -1,5 +1,6 @@
 //! Image metadata and decoding behind size caps.
 
+mod color;
 mod reader;
 pub use reader::{MAX_IMAGE_PROBE_BYTES, probe_image_reader};
 
@@ -98,44 +99,6 @@ pub enum ColorTag {
     Other,
 }
 
-/// The PNG chunks before the image data that say something about colour.
-#[derive(Debug, Default, Clone, Copy)]
-struct PngColorChunks {
-    iccp: bool,
-    srgb: bool,
-    cicp: bool,
-    gamma_or_chromaticities: bool,
-    exif: bool,
-}
-
-/// At most this many chunks are walked before the image data; a header with more says nothing.
-const MAX_PNG_HEADER_CHUNKS: usize = 4096;
-
-/// Walks a PNG's chunk headers up to the first `IDAT`, reading 8 bytes a chunk and seeking over
-/// its body. `None` when the walk can't reach the image data.
-fn png_color_chunks(input: &mut (impl std::io::Read + std::io::Seek)) -> Option<PngColorChunks> {
-    use std::io::SeekFrom;
-    input.seek(SeekFrom::Start(8)).ok()?;
-    let mut found = PngColorChunks::default();
-    for _ in 0..MAX_PNG_HEADER_CHUNKS {
-        let mut head = [0u8; 8];
-        input.read_exact(&mut head).ok()?;
-        let [l0, l1, l2, l3, t0, t1, t2, t3] = head;
-        match &[t0, t1, t2, t3] {
-            b"IDAT" => return Some(found),
-            b"iCCP" => found.iccp = true,
-            b"sRGB" => found.srgb = true,
-            b"cICP" => found.cicp = true,
-            b"gAMA" | b"cHRM" => found.gamma_or_chromaticities = true,
-            b"eXIf" => found.exif = true,
-            _ => {}
-        }
-        // The body and its CRC.
-        input.seek(SeekFrom::Current(i64::from(u32::from_be_bytes([l0, l1, l2, l3])).saturating_add(4))).ok()?;
-    }
-    None
-}
-
 /// Reads an image's format, size and colour layout from its header, without decoding the pixels.
 ///
 /// Fails with [`MediaError::LimitExceeded`] for an image [`decode_image`] would refuse.
@@ -178,8 +141,8 @@ fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(ImageMeta, Orientation,
     if orientation != Orientation::NoTransforms {
         budget.reserve(decoder.total_bytes())?;
     }
-    let png = (format == ImageFormat::Png).then(|| png_color_chunks(&mut Cursor::new(bytes)));
-    let mut meta = meta_of(sniffed.mime, &mut decoder, png);
+    let color_tag = color::color_tag(format, &mut Cursor::new(bytes));
+    let mut meta = meta_of(sniffed.mime, &decoder, color_tag);
     if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
         std::mem::swap(&mut meta.width, &mut meta.height);
     }
@@ -207,8 +170,7 @@ pub fn is_undecoded_image(mime: &str) -> bool {
     matches!(mime, "image/x-exr" | "image/vnd.radiance")
 }
 
-/// `png` is the PNG chunk walk: `None` for another format, `Some(None)` when the walk failed.
-fn meta_of(mime: &'static str, decoder: &mut impl ImageDecoder, png: Option<Option<PngColorChunks>>) -> ImageMeta {
+fn meta_of(mime: &'static str, decoder: &impl ImageDecoder, color_tag: Option<ColorTag>) -> ImageMeta {
     let (width, height) = decoder.dimensions();
     let stored = decoder.original_color_type();
     let decoded = decoder.color_type();
@@ -229,44 +191,7 @@ fn meta_of(mime: &'static str, decoder: &mut impl ImageDecoder, png: Option<Opti
             u8::try_from(per).unwrap_or(8)
         }
     };
-    ImageMeta { mime, width, height, color, bits_per_channel, has_alpha: decoded.has_alpha(), color_tag: color_tag(mime, decoder, png) }
-}
-
-/// Only formats whose every common colour signal this build reads get a tag. EXIF can name a
-/// colour space too and isn't read, so a file with EXIF and no stronger signal is unknown, never
-/// "untagged". BMP (v4/v5 colour spaces), GIF and TIFF (whose ICC tag the decoder can miss) are
-/// unknown.
-fn color_tag(mime: &str, decoder: &mut impl ImageDecoder, png: Option<Option<PngColorChunks>>) -> Option<ColorTag> {
-    match (mime, png) {
-        ("image/png", Some(chunks)) => {
-            let chunks = chunks?;
-            Some(if chunks.cicp {
-                ColorTag::Other
-            } else if chunks.iccp {
-                ColorTag::IccProfile
-            } else if chunks.srgb {
-                ColorTag::Srgb
-            } else if chunks.gamma_or_chromaticities {
-                ColorTag::Other
-            } else if chunks.exif {
-                return None;
-            } else {
-                ColorTag::Untagged
-            })
-        }
-        ("image/jpeg" | "image/webp", None) => {
-            // A profile that can't be read still counts: "untagged" would claim more than the
-            // file proves.
-            if decoder.icc_profile().map_or(true, |profile| profile.is_some()) {
-                Some(ColorTag::IccProfile)
-            } else if decoder.exif_metadata().map_or(true, |exif| exif.is_some()) {
-                None
-            } else {
-                Some(ColorTag::Untagged)
-            }
-        }
-        _ => None,
-    }
+    ImageMeta { mime, width, height, color, bits_per_channel, has_alpha: decoded.has_alpha(), color_tag }
 }
 
 #[cfg(test)]
@@ -431,14 +356,23 @@ pub(crate) mod tests {
     /// colour chunk leaves the tag unknown; so do the formats whose colour signals aren't read.
     #[test]
     fn png_colour_chunks_decide_the_tag_and_unread_formats_stay_unknown() {
-        let with_chunk = |kind: &[u8; 4], data: &[u8]| {
-            let png = png_rgba(3, 2);
+        let chunk = |kind: &[u8; 4], data: &[u8]| {
             let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
             chunk.extend_from_slice(kind);
             chunk.extend_from_slice(data);
             chunk.extend_from_slice(&crc32(&chunk[4..]).to_be_bytes());
+            chunk
+        };
+        let with_chunk = |kind: &[u8; 4], data: &[u8]| {
+            let png = png_rgba(3, 2);
             // After the signature and the 25-byte IHDR chunk.
-            [&png[..33], &chunk[..], &png[33..]].concat()
+            [&png[..33], &chunk(kind, data)[..], &png[33..]].concat()
+        };
+        let after_image_data = |kind: &[u8; 4], data: &[u8]| {
+            let png = png_rgba(3, 2);
+            // Before the 12-byte IEND chunk.
+            let at = png.len() - 12;
+            [&png[..at], &chunk(kind, data)[..], &png[at..]].concat()
         };
         let cases = [
             (png_rgba(3, 2), Some(ColorTag::Untagged)),
@@ -447,6 +381,17 @@ pub(crate) mod tests {
             (with_chunk(b"cICP", &[9, 16, 0, 1]), Some(ColorTag::Other)),
             (with_chunk(b"eXIf", b"MM\0*\0\0\0\x08\0\0"), None),
             (with_chunk(b"tEXt", b"Comment\0hello"), Some(ColorTag::Untagged)),
+            // EXIF may follow the image data, and profiles may hide in text chunks.
+            (after_image_data(b"eXIf", b"MM\0*\0\0\0\x08\0\0"), None),
+            (with_chunk(b"zTXt", b"Raw profile type icc\0\0x"), Some(ColorTag::IccProfile)),
+            (with_chunk(b"tEXt", b"Raw profile type exif\0\nexif\n"), None),
+            (with_chunk(b"tEXt", b"Raw"), Some(ColorTag::Untagged)),
+            // sRGB with its gAMA/cHRM fallbacks is still sRGB.
+            (
+                [&with_chunk(b"gAMA", &45_455u32.to_be_bytes())[..33], &chunk(b"sRGB", &[0])[..], &with_chunk(b"gAMA", &45_455u32.to_be_bytes())[33..]]
+                    .concat(),
+                Some(ColorTag::Srgb),
+            ),
         ];
         for (bytes, tag) in cases {
             let meta = probe_image(&bytes, &Limits::default()).unwrap();
@@ -461,6 +406,33 @@ pub(crate) mod tests {
         }
         for format in [ImageFormat::Jpeg, ImageFormat::WebP] {
             assert_eq!(probe_image(&encode(rgb.clone(), format), &Limits::default()).unwrap().color_tag, Some(ColorTag::Untagged), "{format:?}");
+        }
+    }
+
+    /// A JPEG's APP markers decide its tag: a damaged profile still counts as a profile, and EXIF
+    /// leaves the tag unknown (#393).
+    #[test]
+    fn jpeg_markers_decide_the_tag_even_when_the_profile_is_damaged() {
+        let rgb = DynamicImage::ImageRgb8(ImageBuffer::from_fn(8, 8, |x, y| Rgb([x as u8, y as u8, 0])));
+        let plain = encode(rgb, ImageFormat::Jpeg);
+        let with_segment = |code: u8, body: &[u8]| {
+            let mut segment = vec![0xff, code];
+            segment.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+            segment.extend_from_slice(body);
+            [&plain[..2], &segment[..], &plain[2..]].concat()
+        };
+        let cases = [
+            // Sequence number 0 of 0 chunks: the decoder can't assemble it.
+            (with_segment(0xe2, b"ICC_PROFILE\0\0\0junk"), Some(ColorTag::IccProfile)),
+            (with_segment(0xe1, b"Exif\0\0MM\0*\0\0\0\x08\0\0"), None),
+            (with_segment(0xe1, b"http://ns.adobe.com/xap/1.0/\0<x/>"), Some(ColorTag::Untagged)),
+            (with_segment(0xe2, b"ICC"), Some(ColorTag::Untagged)),
+        ];
+        for (bytes, tag) in cases {
+            let meta = probe_image(&bytes, &Limits::default()).unwrap();
+            assert_eq!(meta.color_tag, tag);
+            let read = super::probe_image_reader(Cursor::new(bytes.clone()), bytes.len() as u64, &Limits::default()).unwrap();
+            assert_eq!(read, meta);
         }
     }
 

@@ -31,18 +31,18 @@ fn manifest(archive: &[u8]) -> String {
     std::io::read_to_string(zip.by_name("project.json").unwrap()).unwrap()
 }
 
+/// The manifest as written before #393, by hand rather than by today's encoder, so a change to
+/// the encoder can't make this test agree with itself.
+const OLD_MANIFEST: &str = r#"{"version":3,"epoch":1,"project":{"id":"01010101-0101-0101-0101-010101010101","title":"Image facts","canvases":{"02020202-0202-0202-0202-020202020202":{"id":"02020202-0202-0202-0202-020202020202","title":"Canvas","nodes":{"03030303-0303-0303-0303-030303030303":{"id":"03030303-0303-0303-0303-030303030303","kind":"source.image","title":"","pos":{"x":0.0,"y":0.0},"params":{},"config":{"asset":{"type":"media","value":{"hash":"e02160bd72d87e140e8e7fabdcd0b86d34d27329979ed3048af6e1679aaa7124","mime":"image/png","meta":{"width":3,"height":2}}}},"inputs":[],"outputs":[],"history":[],"active":null,"tag":null,"field":null}},"edges":{},"fields":{},"comments":{},"tags":{}}}}}"#;
+
 #[test]
 fn a_reference_written_before_the_new_facts_opens_and_saves_unchanged() {
     let old = snapshot(|_| MediaMeta { width: Some(3), height: Some(2), ..Default::default() });
-    let bytes = encode(&old).unwrap();
+    let bytes = rewrite_manifest(&encode(&old).unwrap(), OLD_MANIFEST);
     let opened = decode(&bytes).unwrap();
     let meta = reference(&opened).meta;
     assert_eq!((meta.width, meta.height, meta.has_alpha, meta.bits_per_channel, meta.color_space), (Some(3), Some(2), None, None, None));
-    let saved = manifest(&encode(&opened).unwrap());
-    assert_eq!(saved, manifest(&bytes));
-    for key in ["has_alpha", "bits_per_channel", "color_space"] {
-        assert!(!saved.contains(key), "{key}");
-    }
+    assert_eq!(manifest(&encode(&opened).unwrap()), OLD_MANIFEST);
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn the_facts_round_trip_and_a_contradicted_claim_is_refused_on_save_and_open() {
     let tampered = manifest(&bytes).replace("\"bits_per_channel\":8", "\"bits_per_channel\":16");
     assert!(tampered.contains("\"bits_per_channel\":16"));
     let archive = rewrite_manifest(&bytes, &tampered);
-    assert!(decode(&archive).is_err());
+    assert!(decode(&archive).unwrap_err().message.contains("image format does not match"));
 }
 
 /// The archive with its manifest replaced and every other entry copied as is.

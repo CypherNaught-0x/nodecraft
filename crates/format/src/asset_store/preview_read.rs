@@ -104,7 +104,8 @@ impl PreviewAssetRead {
         // The range clone pins its old backing after these guards are released.
     }
 
-    /// Checks the same image reference facts as open_verified, without publishing cache proof.
+    /// Checks the image's size like open_verified, without publishing cache proof. Its other
+    /// header facts (#393) were checked when the store was opened or the reference saved.
     /// Other media (video, #105) are checked for their type only.
     /// Call under the consumer's panic guard, including in the resident inline fallback.
     pub fn validate_image(&self, bytes: &[u8]) -> Result<(), PreviewReadError> {
