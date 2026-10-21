@@ -36,7 +36,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
     }
     let name = match r.model {
         Model::Image => "images",
-        Model::Video => "video",
+        Model::Video | Model::Frames | Model::Speech => "video",
         Model::Audio => "audio",
         Model::Mesh => "model_glb",
         Model::Upscale => "image",
@@ -66,7 +66,9 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         let f = json::object(raw.get())?;
         let url = f.text("url")?;
         delivery(&url, key)?;
-        let mime = f.optional_text("content_type")?;
+        // A clip's generic `application/octet-stream` declares nothing; its bytes are still
+        // checked as MP4 after download.
+        let mime = f.optional_text("content_type")?.filter(|m| !(r.model.video() && m == "application/octet-stream"));
         if mime.as_ref().is_some_and(|s| s.len() > 128) {
             return Err(malformed("fal MIME too long"));
         }
@@ -96,7 +98,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         let expected = match r.model {
             Model::Image | Model::Upscale => "image/png",
-            Model::Video => "video/mp4",
+            Model::Video | Model::Frames | Model::Speech => "video/mp4",
             Model::Audio => "audio/wav",
             Model::Mesh => "model/gltf-binary",
         };

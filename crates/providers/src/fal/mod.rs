@@ -1,4 +1,4 @@
-//! Bounded fal queue adapter for five explicitly selected live model aliases.
+//! Bounded fal queue adapter for seven explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 mod json;
 mod limits;
@@ -20,6 +20,10 @@ use nodecraft_types::BillableUnits;
 use std::sync::Arc;
 pub const FLUX: &str = "fal-ai/flux/schnell";
 pub const WAN: &str = "fal-ai/wan/v2.2-a14b/text-to-video";
+/// Wan 2.2 from a first frame, with an optional last frame (#607).
+pub const WAN_I2V: &str = "fal-ai/wan/v2.2-a14b/image-to-video";
+/// Wan 2.2 from a portrait and speech (#607).
+pub const WAN_S2V: &str = "fal-ai/wan/v2.2-14b/speech-to-video";
 pub const KOKORO: &str = "fal-ai/kokoro/american-english";
 pub const TRELLIS: &str = "fal-ai/trellis-2";
 pub const ESRGAN: &str = "fal-ai/esrgan";
@@ -83,6 +87,10 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 enum Model {
     Image,
     Video,
+    /// Image to video: a first frame and an optional last frame.
+    Frames,
+    /// Speech to video: a portrait and a speech track.
+    Speech,
     Audio,
     Mesh,
     Upscale,
@@ -92,25 +100,33 @@ impl Model {
         match s {
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
+            WAN_I2V => Ok(Self::Frames),
+            WAN_S2V => Ok(Self::Speech),
             KOKORO => Ok(Self::Audio),
             TRELLIS => Ok(Self::Mesh),
             ESRGAN => Ok(Self::Upscale),
-            _ => Err(invalid("choose one of the five supported fal models")),
+            _ => Err(invalid("choose one of the seven supported fal models")),
         }
     }
     fn wire(self) -> &'static str {
         match self {
             Self::Image => FLUX,
             Self::Video => WAN,
+            Self::Frames => WAN_I2V,
+            Self::Speech => WAN_S2V,
             Self::Audio => KOKORO,
             Self::Mesh => TRELLIS,
             Self::Upscale => ESRGAN,
         }
     }
+    /// Whether the model makes one MP4 clip.
+    fn video(self) -> bool {
+        matches!(self, Self::Video | Self::Frames | Self::Speech)
+    }
     fn root(self) -> &'static str {
         match self {
             Self::Image => "fal-ai/flux",
-            Self::Video => "fal-ai/wan",
+            Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
             Self::Mesh => TRELLIS,
             Self::Upscale => ESRGAN,

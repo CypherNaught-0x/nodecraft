@@ -92,7 +92,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them
   (#411). There is no audio playback (#106), no video actions (#108) and no Timeline (#109).
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
-  model, but no provider adapter maps them yet.
+  model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
+  maps reference-to-video yet.
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
   batch, Techniques, app mode, library, Layer/Timeline editors, Elements, PDF,
   collaboration, and 33 of the 41 tracked provider adapters (ComfyUI, fal.ai and

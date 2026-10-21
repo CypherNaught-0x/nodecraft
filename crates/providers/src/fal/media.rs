@@ -269,7 +269,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             drop(decoded);
             Ok("image/png")
         }
-        Model::Video => {
+        Model::Video | Model::Frames | Model::Speech => {
             mp4(b)?;
             Ok("video/mp4")
         }

@@ -151,6 +151,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.kokoro", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),
+            ("fal.wan22-i2v", false),
+            ("fal.wan22-s2v", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
             ("meshy.remesh", false),
@@ -568,4 +570,26 @@ fn bad_mode_settings_and_audio_are_rejected_with_a_reason() {
         assert!(error.message.contains(reason), "{extra}: {}", error.message);
     }
     assert!(with_speech_mode(speech).is_ok());
+}
+
+#[test]
+fn fal_wan_frames_and_speech_take_what_their_adapter_maps() {
+    let c = Catalog::builtin().unwrap();
+    let frames = c.get("fal.wan22-i2v").unwrap();
+    let one = Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1);
+    assert_eq!(one.fit(frames).map(|m| m.id.as_str()), Ok("image-to-video"));
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 2).fit(frames).is_ok());
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 3).fit(frames).is_err());
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().fit(frames).is_err(), "a first frame is required");
+    let speech = c.get("fal.wan22-s2v").unwrap();
+    let both = Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1).with(Modality::Audio, 1);
+    let mode = both.fit(speech).unwrap();
+    assert_eq!(mode.id, "speech-to-video");
+    let audio = mode.audio.as_ref().unwrap();
+    assert_eq!((audio.role.as_str(), audio.duration, audio.sound), ("speech", nodecraft_types::AudioDuration::Fixed, nodecraft_types::AudioSound::Input));
+    assert_eq!(audio.max_ms, Some(7_500), "the longest clip: 120 frames at 16 fps");
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1).fit(speech).is_err(), "speech is required");
+    for m in [frames, speech] {
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), None, "fal bills by usage");
+    }
 }
