@@ -76,31 +76,13 @@ fn gated(advance: u64) -> (TestService, Arc<GateBackend>, Receiver<()>, Release)
     let service = Service::spawn(backend.clone(), clock).unwrap();
     (TestService { service }, backend, ready, Release(permit))
 }
-/// Retry a first admission, counting ONE admission: `Service::start` reads every handle it
-/// admits before the mailbox handoff, so a `Busy` there costs a whole pass a retry would count
-/// twice (#474). `restart` runs before every attempt; `still_busy` keeps a busy service a bug.
-fn admit<T>(mut attempt: impl FnMut() -> Result<T, Failure>, restart: impl Fn(), still_busy: impl Fn() -> bool) -> T {
-    let end = Instant::now() + Duration::from_secs(10);
-    loop {
-        restart();
-        match attempt() {
-            Ok(admitted) => return admitted,
-            Err(Failure::Busy) if !still_busy() && Instant::now() < end => {
-                // The worker holds the mailbox at its own startup and at the tail of a finished
-                // job, both after this attempt had already read every admitted path.
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            Err(e) => panic!("initial fixture admission: {e:?}"),
-        }
-    }
-}
-/// A first admission with nothing to count. A fixture that counts what admission reads, counts
-/// the attempts too, so it takes `start_counting` instead.
+/// A first admission. The product never refuses one at the mailbox handoff (#483), so a `Busy`
+/// here fails the test rather than being retried away.
 fn start(service: &Service, files: &[egui::DroppedFileHandle]) -> Ticket {
-    start_counting(service, files, || {})
-}
-fn start_counting(service: &Service, files: &[egui::DroppedFileHandle], restart: impl Fn()) -> Ticket {
-    admit(|| service.start(files), restart, || service.0.busy.load(Ordering::Acquire))
+    match service.start(files) {
+        Ok(ticket) => ticket,
+        Err(e) => panic!("a first admission was refused: {e:?}"),
+    }
 }
 fn wait(ticket: &mut Ticket) -> Poll {
     let end = Instant::now() + Duration::from_secs(10);
@@ -356,10 +338,8 @@ fn intake_reads_only_first_thirty_two_paths_without_retaining_original_handles()
     owners.store(0, Ordering::SeqCst);
     let backend = Arc::new(Generate { len: 1, opens: AtomicUsize::new(0), calls: Arc::default() });
     let worker = TestService { service: Service::spawn(backend, Arc::new(Monotonic)).unwrap() };
-    // #474: a retried admission reads every admitted handle again, so `calls` is restarted per
-    // attempt. `owners` is never restarted: it is a maximum a retry cannot inflate, and it is
-    // the one assertion that proves the service kept no original handle of its own.
-    let mut ticket = start_counting(&worker.service, &files, || calls.store(0, Ordering::SeqCst));
+    // One admission, never retried (#483), so `calls` counts exactly one pass.
+    let mut ticket = start(&worker.service, &files);
     assert_eq!(calls.load(Ordering::SeqCst), 32, "one path per admitted file");
     assert_eq!(owners.load(Ordering::SeqCst), 2, "the caller's vec plus this call, never the service");
     let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
@@ -369,27 +349,25 @@ fn intake_reads_only_first_thirty_two_paths_without_retaining_original_handles()
     drop(ticket);
     idle(&worker.service);
 }
-/// Holds the service mailbox lock until it is dropped, so a `start` the test makes is rejected at
-/// the handoff for a reason the test controls instead of one it has to race for. Another thread
-/// owns the lock, because `Mutex::try_lock` is unspecified on a mutex the calling thread already
-/// holds and this gate has to behave the same on every CI leg.
+/// Holds the service mailbox lock for `hold` (dropping it early releases it), the way the worker holds it
+/// at its startup and at the tail of a finished job. Another thread owns the lock, so a `start`
+/// the test makes meets a held mailbox for a reason the test controls instead of one it races for.
 struct MailboxGate {
     release: SyncSender<()>,
     holder: Option<std::thread::JoinHandle<()>>,
 }
 impl MailboxGate {
     /// Takes the mailbox and returns only once it is held.
-    fn hold(service: &Service) -> Self {
+    fn hold(service: &Service, hold: Duration) -> Self {
         let (held, is_held) = sync_channel(1);
         let (release, wait_release) = sync_channel(1);
         let shared = Arc::clone(&service.0);
         let holder = std::thread::Builder::new()
-            .name("nodecraft-drop485-gate".into())
+            .name("nodecraft-drop483-gate".into())
             .spawn(move || {
                 let slot = shared.mailbox.lock().unwrap_or_else(PoisonError::into_inner);
-                // Held until the release arrives, so nothing can be admitted meanwhile.
                 held.try_send(()).ok();
-                let _ = wait_release.recv_timeout(Duration::from_secs(10));
+                let _ = wait_release.recv_timeout(hold);
                 drop(slot);
             })
             .unwrap();
@@ -408,14 +386,11 @@ impl Drop for MailboxGate {
     }
 }
 #[test]
-fn a_busy_handoff_still_reads_every_admitted_path_and_the_retry_counts_one_pass() {
-    // #485: the macOS flake counted 64 `path()` reads where the intake test expects 32. Pinned
-    // here without a race, as the #474 root cause and nothing else: `Service::start` reads every
-    // handle it admits BEFORE the mailbox handoff, so the attempt a `Busy` rejects has already
-    // cost a whole pass. The pass a retry reports is 32 only because the fixture restarts its
-    // counter per attempt; delete that restart and the retried admission reads 64 again. The
-    // rejected-attempt half pins that ordering as it stands: a change that hands the job over
-    // before reading would move that expectation, never the 32-rather-than-64 one.
+fn a_held_mailbox_delays_a_dropped_batch_and_never_loses_it() {
+    // #483: the handoff used `try_lock`, so a drop landing while the worker held the mailbox at
+    // the tail of the previous job was refused as `Busy` after its paths had been admitted, and
+    // the batch was lost. The handoff waits now: the hold delays admission, one pass reads every
+    // admitted path, and the batch arrives.
     struct CountedPath {
         path: PathBuf,
         calls: Arc<AtomicUsize>,
@@ -439,22 +414,36 @@ fn a_busy_handoff_still_reads_every_admitted_path_and_the_retry_counts_one_pass(
         (0..1000).map(|_| Arc::new(CountedPath { path: "somewhere".into(), calls: calls.clone() }) as egui::DroppedFileHandle).collect();
     let backend = Arc::new(Generate { len: 1, opens: AtomicUsize::new(0), calls: Arc::default() });
     let worker = TestService { service: Service::spawn(backend.clone(), Arc::new(Monotonic)).unwrap() };
-    let gate = MailboxGate::hold(&worker.service);
-    // The rejected attempt, forced: the worker is alive and the occupied lease is free, so this
-    // `Busy` can only have come from the mailbox `try_lock`, which sits after the admitted paths.
-    assert!(matches!(worker.service.start(&files), Err(Failure::Busy)), "a busy mailbox refuses admission");
-    assert_eq!(calls.load(Ordering::SeqCst), MAX_FILES, "a rejected admission has already cost a full pass over the admitted handles");
-    assert_eq!(backend.opens.load(Ordering::SeqCst), 0, "the rejected pass opens nothing; the job never reached the worker");
+    let hold = Duration::from_millis(100);
+    let began = Instant::now();
+    let gate = MailboxGate::hold(&worker.service, hold);
+    // The pin is this `start` succeeding: the old `try_lock` refused it as `Busy`.
+    let mut ticket = worker.service.start(&files).unwrap_or_else(|e| panic!("#483: a held mailbox refused the batch: {e:?}"));
+    assert!(began.elapsed() >= hold, "admission waited out the hold");
     drop(gate);
-    // The retry, with the gate gone. Exactly one pass, never the 64 #485 reported.
-    let mut ticket = start_counting(&worker.service, &files, || calls.store(0, Ordering::SeqCst));
-    assert_eq!(calls.load(Ordering::SeqCst), MAX_FILES, "#485: a retried admission reports its own pass, not the rejected one too");
+    assert_eq!(calls.load(Ordering::SeqCst), MAX_FILES, "one pass over the admitted handles");
     let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
     assert_eq!(batch.files.len(), MAX_FILES);
     assert_eq!(batch.skipped.count, files.len() - MAX_FILES);
+    assert_eq!(backend.opens.load(Ordering::SeqCst), MAX_FILES);
     drop(batch);
     drop(ticket);
     idle(&worker.service);
+}
+#[test]
+fn back_to_back_drops_are_each_admitted_once_the_last_is_released() {
+    // The product half of #483's pin: after a batch is handed back and released, the next drop
+    // is admitted on its first attempt, every time, however the worker's tail interleaves.
+    let backend = Arc::new(Generate { len: 1, opens: AtomicUsize::new(0), calls: Arc::default() });
+    let worker = TestService { service: Service::spawn(backend, Arc::new(Monotonic)).unwrap() };
+    let files = handles(&["one", "two"]);
+    for round in 0..200 {
+        let mut ticket = worker.service.start(&files).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
+        let Poll::Ready(batch) = wait(&mut ticket) else { panic!("round {round}: ready") };
+        drop(ticket);
+        drop(batch);
+        idle(&worker.service);
+    }
 }
 #[test]
 fn oversized_and_non_utf8_native_names_are_bounded_without_truncating_the_path() {
@@ -1144,25 +1133,4 @@ fn model_picker_yields_to_drop_control_through_release_but_not_ordinary_pending_
         drop(release);
         idle(&worker.service);
     }
-}
-
-#[test]
-fn fixture_retry_counts_the_successful_admission_only() {
-    // The counting contract of the intake fixture, pinned without the race: one `Busy` costs a
-    // whole pass over the admitted handles, because `Service::start` reads them before it hands
-    // the job over (#474). It says nothing about whether the product can return `Busy` - only
-    // the retry and the counters are under test here.
-    let calls = AtomicUsize::new(0);
-    let mut attempts = 0;
-    let admitted = admit(
-        || {
-            attempts += 1;
-            calls.fetch_add(1, Ordering::SeqCst);
-            if attempts < 3 { Err(Failure::Busy) } else { Ok(attempts) }
-        },
-        || calls.store(0, Ordering::SeqCst),
-        || false,
-    );
-    assert_eq!(admitted, 3, "Busy retried until it admitted");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "counters describe the successful attempt only");
 }

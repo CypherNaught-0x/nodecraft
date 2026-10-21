@@ -305,7 +305,10 @@ impl Service {
         }
         let control = Arc::new(Control { state, lease, result: Mutex::new(None) });
         let job = Job { files, extra: dropped.len().saturating_sub(MAX_FILES), control: Arc::clone(&control) };
-        let mut slot = self.0.mailbox.try_lock().map_err(|_| Failure::Busy)?;
+        // Waits for the mailbox rather than refusing a batch already admitted (#483): the worker
+        // holds it only to check or take the slot, and nothing that holds it does I/O, so the
+        // wait is bounded. The occupied lease above is what refuses a second batch.
+        let mut slot = self.0.mailbox.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.is_some() || !self.0.alive.load(Ordering::Acquire) {
             drop(slot);
             drop(job);
