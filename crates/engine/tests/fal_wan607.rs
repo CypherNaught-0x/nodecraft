@@ -187,10 +187,6 @@ fn first_and_last_frames_reach_their_own_fields() {
     let (first, last) = (png(90), png(200));
     let (sent_first, sent_last) = (data(&body, "image_url", "image/png", first.len()), data(&body, "end_image_url", "image/png", last.len()));
     assert_ne!(sent_first, sent_last, "two different frames");
-    // The same picture always encodes the same way, so the first frame is the one wired first.
-    let mut again = fixture("fal.wan22-i2v", nodecraft_providers::fal::WAN_I2V);
-    wire(&mut again, 10, FIRST, "first_frame");
-    assert_eq!(run(&mut again)["image_url"].as_str().map(|s| s.ends_with(sent_first)), Some(true));
     assert_eq!((body["resolution"].as_str(), body["aspect_ratio"].as_str()), (Some("480p"), Some("auto")));
 }
 

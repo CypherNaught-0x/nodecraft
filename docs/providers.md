@@ -338,18 +338,19 @@ and optional u32 seed. Wan selects 480p/16fps, 17–81 frames and three aspect r
 turning interpolation off. Wan image to video takes a `first_frame` (`image_url`) and an
 optional `last_frame` (`end_image_url`), 17–161 frames, 480p/580p/720p and an aspect ratio that
 defaults to following the frame, again without interpolation. Wan speech to video takes a
-`portrait` (`image_url`) and `speech` (`audio_url`, sniffed as WAV, MP3, Ogg or M4A matching its
-declared type), 40–120 frames in multiples of 4 and the same resolutions; whether its MP4 carries
+`portrait` (`image_url`) and up to 7.5 s of `speech` (`audio_url`; its header must sniff as one
+of NodeCraft's accepted WAV, MP3, Ogg or M4A and match its declared type), 40–120 frames in multiples of 4 and the same resolutions; whether its MP4 carries
 the speech track is not yet verified by a live run. Inputs are 1 MiB and 1024 px each; a request
-is at most 4 MiB after base64. A clip declared `application/octet-stream` counts as undeclared and
-is still sniffed as MP4 (#607). Kokoro selects af_heart/am_adam and speed 0.5–2.0, returning WAV.
+is at most 4 MiB after base64. A clip from any Wan model declared `application/octet-stream`
+counts as undeclared and is still sniffed as MP4 (#607). Kokoro selects af_heart/am_adam and speed 0.5–2.0, returning WAV.
 Trellis selects resolution 512 and one inline image, returning GLB2. ESRGAN selects scale2,
 RealESRGAN_x4plus, face=false and PNG. Advanced/unknown parameters and extra roles refuse
 before HTTP. Image-to-3D/upscale input contracts are direct-adapter capabilities; their engine
 fixtures use an explicitly test-only immutable asset resolver. No shipping resolver is implied.
 
-The catalog uses ByUsage USD for FLUX/all three Wan models/Kokoro/ESRGAN: unknown is not zero/free. Every finite
-budget cap refuses an unknown paid quote before invocation; an uncapped host still needs actual
+The catalog uses ByUsage USD for FLUX, the Wan models, Kokoro and ESRGAN: unknown is not
+zero/free. Every finite budget cap refuses an unknown paid quote before invocation; an uncapped
+host still needs actual
 run.quote/run.start partial-price consent. Trellis512 has a dated 0.25 USD per-call estimate,
 verified from the [official endpoint](https://fal.ai/models/fal-ai/trellis-2/api?platform=http).
 Absent monetary usage never becomes a provider-observed invoice: existing runner estimate

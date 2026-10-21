@@ -266,8 +266,17 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         .try_fold(count.n, usize::checked_add)
         .filter(|n| *n <= l.request_bytes)
         .ok_or_else(|| invalid("fal encoded request exceeds limit"))?;
+    // The speech header is cheap, so it is checked before any image codec runs. Only the header:
+    // the track itself isn't decoded.
+    if let Some((mime, bytes)) = audio {
+        let sniffed = nodecraft_media::sniff(bytes).filter(|m| m.kind == nodecraft_media::MediaKind::Audio);
+        if !sniffed.is_some_and(|m| matches!(m.mime, "audio/wav" | "audio/mpeg" | "audio/ogg" | "audio/mp4") && m.mime == mime) {
+            return Err(invalid("fal speech audio must be WAV, MP3, Ogg or M4A matching its declared type"));
+        }
+    }
     for (mime, bytes) in [image, end].into_iter().flatten() {
-        let m = nodecraft_media::probe_image(bytes, &l.image(true)).map_err(|_| invalid("fal input image probe refused"))?;
+        let m = nodecraft_media::probe_image(bytes, &l.image(true))
+            .map_err(|_| invalid("fal input images must be PNG, JPEG or WebP, at most 1 MiB and 1024×1024 px"))?;
         if !matches!(m.mime, "image/png" | "image/jpeg" | "image/webp") || m.mime != mime {
             return Err(invalid("fal input MIME mismatch"));
         }
@@ -282,12 +291,6 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         observe(0);
         let decoded = nodecraft_media::decode_image(bytes, &l.image(true)).map_err(|_| invalid("fal input image codec refused"))?;
         drop(decoded);
-    }
-    if let Some((mime, bytes)) = audio {
-        let sniffed = nodecraft_media::sniff(bytes).filter(|m| m.kind == nodecraft_media::MediaKind::Audio);
-        if !sniffed.is_some_and(|m| matches!(m.mime, "audio/wav" | "audio/mpeg" | "audio/ogg" | "audio/mp4") && m.mime == mime) {
-            return Err(invalid("fal speech audio must be WAV, MP3, Ogg or M4A matching its declared type"));
-        }
     }
     let image_uri = image.zip(image_len).map(|((mime, b), n)| uri(mime, b, n)).transpose()?;
     let end_uri = end.zip(end_len).map(|((mime, b), n)| uri(mime, b, n)).transpose()?;

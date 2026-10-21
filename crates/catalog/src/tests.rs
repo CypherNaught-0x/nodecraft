@@ -587,6 +587,7 @@ fn fal_wan_frames_and_speech_take_what_their_adapter_maps() {
     assert_eq!(mode.id, "speech-to-video");
     let audio = mode.audio.as_ref().unwrap();
     assert_eq!((audio.role.as_str(), audio.duration, audio.sound), ("speech", nodecraft_types::AudioDuration::Fixed, nodecraft_types::AudioSound::Input));
+    assert_eq!(audio.max_ms, Some(7_500), "the longest clip: 120 frames at 16 fps");
     assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1).fit(speech).is_err(), "speech is required");
     for m in [frames, speech] {
         assert_eq!(m.quote(&ParamValues::new()).unwrap(), None, "fal bills by usage");

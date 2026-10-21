@@ -757,7 +757,7 @@ fn wan_frames_and_speech_refuse_before_any_encoding() {
         edit(&mut j);
         reset();
         assert!(request::prepare(&j, Limits::HARD).is_err(), "case {n}");
-        assert_eq!(stages()[1], 0, "case {n} encoded");
+        assert_eq!(stages(), [0, 0, 0], "case {n} reached a codec or encoding");
     }
 }
 #[test]

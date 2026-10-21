@@ -82,7 +82,7 @@ id="fal.wan22-i2v"
 provider="fal"
 provider_model="fal-ai/wan/v2.2-a14b/image-to-video"
 label="Wan 2.2 image to video (fal)"
-description="Animates a first frame, toward an optional last frame. Bounded queue adapter; live model alias. Usage price unknown before execution."
+description="Animates a first frame, toward an optional last frame; frames up to 1024 px and 1 MiB. Bounded queue adapter; live model alias. Usage price unknown before execution."
 latency_s=45
 quality=3
 pricing={type="by_usage",currency="USD"}
@@ -120,7 +120,7 @@ id="fal.wan22-s2v"
 provider="fal"
 provider_model="fal-ai/wan/v2.2-14b/speech-to-video"
 label="Wan 2.2 speech to video (fal)"
-description="Makes a portrait speak a wired speech track; whether the clip carries that track is not yet verified live. Bounded queue adapter; live model alias. Usage price unknown before execution."
+description="Makes a portrait speak a wired speech track of up to 7.5 s; whether the clip carries that track is not yet verified live. Portrait up to 1024 px, each input up to 1 MiB. Bounded queue adapter; live model alias. Usage price unknown before execution."
 latency_s=60
 quality=3
 pricing={type="by_usage",currency="USD"}
@@ -129,7 +129,7 @@ pricing={type="by_usage",currency="USD"}
 id="speech-to-video"
 output="video"
 inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="portrait",modality="image",min=1,max=1},{role="speech",modality="audio",min=1,max=1}]
-audio={role="speech",duration="fixed",sound="input"}
+audio={role="speech",duration="fixed",max_ms=7500,sound="input"}
 
 [[model.params.params]]
 name="num_frames"
