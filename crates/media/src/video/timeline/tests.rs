@@ -57,6 +57,15 @@ fn duration_subtracts_each_overlap() {
     assert_eq!(duration([a, span(1_000_000, 4_000_000)].iter()), 4_500_000);
 }
 #[test]
+fn clips_show_whole_frames() {
+    assert_eq!((frames(1_001_000, (30, 1)), shown_us(1_001_000, (30, 1))), (30, 1_000_000));
+    assert_eq!((frames(1_020_000, (30, 1)), shown_us(1_020_000, (30, 1))), (31, 1_033_333));
+    assert_eq!((frames(2_041_667, (30000, 1001)), shown_us(2_041_667, (30000, 1001))), (61, 2_035_367));
+    assert_eq!(frames(1, (30, 1)), 1, "never no frames");
+    let g = graph(FRAME, &[(&meta(64, 48, 0, true), &span(0, 1_001_000))]).unwrap();
+    assert!(g.contains("trim=end_frame=30,") && g.contains("atrim=duration=1.000000,"), "{g}");
+}
+#[test]
 fn letterboxing_keeps_display_aspect_and_even_sizes() {
     assert_eq!(fit(&meta(640, 480, 0, false), 1280, 720), (960, 720));
     assert_eq!(fit(&meta(1920, 1080, 90, false), 1280, 720), (404, 720));

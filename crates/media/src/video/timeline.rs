@@ -97,9 +97,10 @@ impl ComposeSpec {
         validate(frame, &spans)?;
         Ok(Self { frame, clips })
     }
-    /// Running time of the output: every clip, less the overlap of each transition.
+    /// Running time of the output: every clip (as whole frames), less the overlap of each transition.
     pub fn duration_us(&self) -> u64 {
-        duration(self.clips.iter().map(|c| &c.span))
+        let total = self.clips.iter().map(|c| shown_us(c.span.length_us(), self.frame.fps)).fold(0u64, u64::saturating_add);
+        total.saturating_sub(self.clips.iter().map(|c| c.span.transition_us).fold(0u64, u64::saturating_add))
     }
     pub fn clips(&self) -> &[ComposeClip] {
         &self.clips
@@ -143,6 +144,20 @@ pub(crate) fn validate(frame: Frame, spans: &[Span]) -> Result<()> {
     Ok(())
 }
 
+/// How many output frames a clip of `us` shows: its length rounded to whole frames, at least one.
+/// Every clip is cut to whole frames, so cuts add no stray frame each (the trim would keep one).
+fn frames(us: u64, fps: (u32, u32)) -> u64 {
+    let unit = u128::from(fps.1).saturating_mul(1_000_000).max(1);
+    let n = (u128::from(us).saturating_mul(u128::from(fps.0)).saturating_add(unit / 2)) / unit;
+    u64::try_from(n).unwrap_or(u64::MAX).max(1)
+}
+/// The microseconds `frames(us)` whole frames last, to the nearest microsecond.
+pub(crate) fn shown_us(us: u64, fps: (u32, u32)) -> u64 {
+    let rate = u128::from(fps.0).max(1);
+    let exact = u128::from(frames(us, fps)).saturating_mul(u128::from(fps.1)).saturating_mul(1_000_000);
+    u64::try_from(exact.saturating_add(rate / 2) / rate).unwrap_or(u64::MAX)
+}
+
 /// Seconds with microsecond precision, as FFmpeg reads durations.
 pub(super) fn seconds(us: u64) -> String {
     format!("{}.{:06}", us / 1_000_000, us % 1_000_000)
@@ -175,7 +190,9 @@ pub(super) fn graph(frame: Frame, parts: &[(&VideoMetadata, &Span)]) -> Result<S
     let rate = format!("{}/{}", frame.fps.0, frame.fps.1);
     let single = parts.len() == 1;
     for (k, (m, span)) in parts.iter().enumerate() {
-        let length = seconds(span.length_us());
+        let shown = shown_us(span.length_us(), frame.fps);
+        let length = seconds(shown);
+        let count = frames(span.length_us(), frame.fps);
         let (p, t) = match m.color.profile {
             ColorProfile::Bt709 => ("bt709", "bt709"),
             ColorProfile::Smpte170m => ("smpte170m", "smpte170m"),
@@ -201,7 +218,7 @@ pub(super) fn graph(frame: Frame, parts: &[(&VideoMetadata, &Span)]) -> Result<S
             g,
             "[{k}:{stream}]setpts=PTS-STARTPTS,colorspace=ispace={p}:iprimaries={p}:itrc={t}:irange={range}:all=bt709:range=tv:format=yuv444p:fast=0:dither=none,\
              {rotate}scale={w}:{h}:flags=bicubic:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv,format=yuv420p,setsar=1,\
-             pad={W}:{H}:{x}:{y}:color={color},fps={rate},tpad=stop_mode=clone:stop_duration={length},trim=duration={length},setpts=PTS-STARTPTS",
+             pad={W}:{H}:{x}:{y}:color={color},fps={rate},tpad=stop_mode=clone:stop_duration={length},trim=end_frame={count},setpts=PTS-STARTPTS",
             stream = m.stream,
             W = frame.width,
             H = frame.height,
@@ -211,7 +228,7 @@ pub(super) fn graph(frame: Frame, parts: &[(&VideoMetadata, &Span)]) -> Result<S
             write!(g, ",fade=t=in:st=0:d={}:color={color}", seconds(span.fade_in_us)).map_err(|_| VideoError::Limit)?;
         }
         if span.fade_out_us > 0 {
-            write!(g, ",fade=t=out:st={}:d={}:color={color}", seconds(span.length_us().saturating_sub(span.fade_out_us)), seconds(span.fade_out_us))
+            write!(g, ",fade=t=out:st={}:d={}:color={color}", seconds(shown.saturating_sub(span.fade_out_us)), seconds(span.fade_out_us))
                 .map_err(|_| VideoError::Limit)?;
         }
         write!(g, "[{v}];").map_err(|_| VideoError::Limit)?;
@@ -228,7 +245,7 @@ pub(super) fn graph(frame: Frame, parts: &[(&VideoMetadata, &Span)]) -> Result<S
                     write!(g, ",afade=t=in:st=0:d={}", seconds(span.fade_in_us)).map_err(|_| VideoError::Limit)?;
                 }
                 if span.fade_out_us > 0 {
-                    write!(g, ",afade=t=out:st={}:d={}", seconds(span.length_us().saturating_sub(span.fade_out_us)), seconds(span.fade_out_us))
+                    write!(g, ",afade=t=out:st={}:d={}", seconds(shown.saturating_sub(span.fade_out_us)), seconds(span.fade_out_us))
                         .map_err(|_| VideoError::Limit)?;
                 }
             }
@@ -240,7 +257,7 @@ pub(super) fn graph(frame: Frame, parts: &[(&VideoMetadata, &Span)]) -> Result<S
     let tb = format!("{}/{}", frame.fps.1, frame.fps.0);
     let mut picture = String::from("v0");
     let mut sound = String::from("a0");
-    let mut length = parts.first().map(|(_, s)| s.length_us()).ok_or(VideoError::Invalid)?;
+    let mut length = parts.first().map(|(_, s)| shown_us(s.length_us(), frame.fps)).ok_or(VideoError::Invalid)?;
     for (k, pair) in parts.windows(2).enumerate() {
         let [(_, previous), (_, span)] = pair else { return Err(VideoError::Invalid) };
         let k = k + 1;
@@ -258,7 +275,7 @@ pub(super) fn graph(frame: Frame, parts: &[(&VideoMetadata, &Span)]) -> Result<S
             // concat hands back a microsecond timebase; xfade needs the frame rate's on both sides.
             write!(g, "[{picture}][{sound}][v{k}][a{k}]concat=n=2:v=1:a=1[c{k}][{a}];[c{k}]settb={tb}[{v}];").map_err(|_| VideoError::Limit)?;
         }
-        length = length.saturating_add(span.length_us()).saturating_sub(cross);
+        length = length.saturating_add(shown_us(span.length_us(), frame.fps)).saturating_sub(cross);
         picture = v;
         sound = a;
     }

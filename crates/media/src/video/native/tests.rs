@@ -763,6 +763,27 @@ fn generated(name: &str, size: &str, seconds: &str, tone: bool, webm: bool) -> V
 }
 #[test]
 #[ignore = "explicit installed tools only"]
+fn actual_compose_cuts_clips_that_are_not_whole_frames() {
+    let service = service();
+    let mut job = service.import(Arc::from(generated("a", "64x48", "2", true, false)), ColorPolicy::default()).ok().unwrap();
+    let asset = wait(&mut job).unwrap();
+    // 1.001 s at 30 fps would keep 31 frames each if trimmed by time; four cuts, four stray frames.
+    let clips = (0..4).map(|_| ComposeClip::new(asset.clone(), 0, 1_001_000).unwrap()).collect();
+    let spec = ComposeSpec::new(64, 48, (30, 1), [0, 0, 0], clips).unwrap();
+    assert_eq!(spec.duration_us(), 4_000_000);
+    let mut job = service.compose(spec).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let video = loop {
+        if let Some(video) = job.try_result().unwrap() {
+            break video;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(video.frames().abs_diff(120) <= 1, "{} frames", video.frames());
+}
+#[test]
+#[ignore = "explicit installed tools only"]
 fn actual_compose_stitches_four_clips_with_fades_crosses_and_sound() {
     let service = service();
     let mut assets = Vec::new();

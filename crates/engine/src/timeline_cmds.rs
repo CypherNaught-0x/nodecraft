@@ -279,9 +279,17 @@ fn split(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         return Err(invalid("split a clip between its start and its end"));
     }
     // The cut is a plain cut: the first part keeps the fade in, the second the fade out and the
-    // transition into what follows.
-    let second = Clip { id: fresh_id(&timeline, &first.id), in_us: p.at_us, fade_in_us: 0, ..first.clone() };
-    let first = Clip { out_us: Some(p.at_us), fade_out_us: 0, transition_us: 0, ..first };
+    // transition into what follows, each no longer than its part.
+    let (before, after) = (p.at_us.saturating_sub(first.in_us), end.saturating_sub(p.at_us));
+    let second = Clip {
+        id: fresh_id(&timeline, &first.id),
+        in_us: p.at_us,
+        fade_in_us: 0,
+        fade_out_us: first.fade_out_us.min(after),
+        transition_us: first.transition_us.min(after),
+        ..first.clone()
+    };
+    let first = Clip { out_us: Some(p.at_us), fade_in_us: first.fade_in_us.min(before), fade_out_us: 0, transition_us: 0, ..first };
     let second_id = second.id.clone();
     if let Some(slot) = timeline.clips.get_mut(at) {
         *slot = first;
@@ -405,7 +413,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: split_schema,
-            params_doc: "{canvas, id, clip: clip id, at_us} -> {changed, clip}; cuts a clip in two at `at_us` into its video, as one undo step: the first part keeps the fade in, the new second part (its id returned) the fade out and transition. The clip's end must be known: set, or its video run.",
+            params_doc: "{canvas, id, clip: clip id, at_us} -> {changed, clip}; cuts a clip in two at `at_us` into its video, as one undo step: the first part keeps the fade in, the new second part (its id returned) the fade out and transition, each shortened to fit its part. A clip with no set end whose video hasn't run splits too; its second part plays to the video's end.",
             enabled: always,
             run: split,
         },

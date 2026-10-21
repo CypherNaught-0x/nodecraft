@@ -72,7 +72,7 @@ mod native {
     use super::{LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, sources};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
-        ColorPolicy, ComposeClip, ComposeSpec, ServiceConfig, ToolPaths, VideoAsset, VideoError, VideoJob, VideoLimits, VideoService,
+        ColorPolicy, ComposeClip, ComposeSpec, MAX_CLIPS, ServiceConfig, ToolPaths, VideoAsset, VideoError, VideoJob, VideoLimits, VideoService,
     };
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
     use std::path::PathBuf;
@@ -95,7 +95,7 @@ mod native {
             VideoError::Unavailable => "can't run ffmpeg or ffprobe; check [media] in settings",
             VideoError::Unsupported => "this ffmpeg can't render the timeline (it needs VP9, Opus and the xfade filter), or a video's format isn't supported",
             VideoError::InvalidMetadata => "a connected video's format isn't supported",
-            VideoError::Limit => "the videos are too large to render together",
+            VideoError::Limit => "the videos or the render are too large; make the timeline shorter or smaller",
             VideoError::Timeout => "the render took too long",
             VideoError::Cancelled => "the render was cancelled",
             VideoError::Busy => "another video is rendering; try again when it's done",
@@ -115,7 +115,8 @@ mod native {
         }
         *slot = None;
         let config = ToolPaths::new(tools.0.clone(), tools.1.clone())
-            .and_then(|paths| ServiceConfig::new(paths, std::env::temp_dir(), VideoLimits::default()))
+            .and_then(|paths| VideoLimits::default().lower_output(MAX_RENDER_BYTES).map(|limits| (paths, limits)))
+            .and_then(|(paths, limits)| ServiceConfig::new(paths, std::env::temp_dir(), limits))
             .map_err(message)?;
         let mut opening = VideoService::begin_open(config).map_err(message)?;
         let service = loop {
@@ -187,6 +188,10 @@ mod native {
             let resolved = timeline.resolve(&sources);
             if resolved.is_empty() {
                 return Err("the timeline has no clips to render: connect a video, or enable a clip".into());
+            }
+            // Before any video is imported: each can be hundreds of megabytes.
+            if resolved.len() > MAX_CLIPS {
+                return Err(format!("the timeline has {} enabled clips; it renders at most {MAX_CLIPS}: disable or remove some", resolved.len()));
             }
             let tools = self.video.as_ref().ok_or("set ffmpeg and ffprobe under [media] in settings to render timelines")?;
             let service = service(tools, cancelled)?;

@@ -109,6 +109,19 @@ fn a_split_plays_one_video_twice_and_a_wired_videos_last_clip_stays() {
     assert_eq!((&clips[1]["fade_out_us"], &clips[1]["transition_us"]), (&json!(200_000), &json!(300_000)));
     assert_eq!(clips.len(), 3);
 
+    // A cut inside a fade shortens it to the part it lands in.
+    s.dispatch("timeline.update", &with(on(&second), json!({"set": {"fade_out_us": 1_500_000, "transition_us": 0}}))).unwrap();
+    s.dispatch("timeline.update", &with(on(&a), json!({"set": {"fade_in_us": 900_000}}))).unwrap();
+    let inner = s.dispatch("timeline.split", &with(on(&a), json!({"at_us": 500_000}))).unwrap()["clip"].as_str().unwrap().to_owned();
+    let tail = s.dispatch("timeline.split", &with(on(&second), json!({"at_us": 2_500_000}))).unwrap()["clip"].as_str().unwrap().to_owned();
+    let clips = list(&mut s);
+    assert_eq!((&clips[0]["fade_in_us"], &clips[1]["id"], &clips[1]["fade_in_us"]), (&json!(500_000), &json!(inner), &json!(0)));
+    assert_eq!((&clips[3]["id"], &clips[3]["fade_out_us"]), (&json!(tail), &json!(500_000)));
+    for _ in 0..4 {
+        s.dispatch("edit.undo", &json!({})).unwrap();
+    }
+    assert_eq!(list(&mut s).len(), 3);
+
     // One of the two clips can go; the last of a wired video can't, but can be disabled.
     s.dispatch("timeline.remove", &on(&second)).unwrap();
     let kept = s.dispatch("timeline.remove", &on(&a)).unwrap_err();

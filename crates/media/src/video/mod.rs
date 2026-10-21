@@ -118,6 +118,14 @@ impl VideoLimits {
         self.input = bytes;
         Ok(self)
     }
+    /// Caps each rendered file, so an encode stops once it outgrows what the caller keeps.
+    pub fn lower_output(mut self, bytes: u64) -> Result<Self> {
+        if bytes == 0 || bytes > self.output {
+            return Err(VideoError::Invalid);
+        }
+        self.output = bytes;
+        Ok(self)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ToolPaths {
