@@ -151,3 +151,77 @@ fn reader590_visual() {
         h = Harness::builder().with_size(egui::Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
     }
 }
+
+/// Drags over the shown page from one fraction of it to another.
+fn drag_over(h: &mut Harness<'static, NodeCraftApp>, from: Vec2, to: Vec2) {
+    let area = h.state().reader.as_ref().and_then(|reader| reader.area).unwrap();
+    let (start, end) = (area.lerp_inside(from), area.lerp_inside(to));
+    h.hover_at(start);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    for step in 1..=4 {
+        h.event(egui::Event::PointerMoved(start.lerp(end, step as f32 / 4.0)));
+        h.run();
+    }
+    h.event(egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+}
+
+#[test]
+fn text_dragged_over_on_the_page_becomes_a_text_node() {
+    let mut h = with_pdf();
+    h.state_mut().open_reader(PDF);
+    h.run();
+    h.key_press(egui::Key::ArrowRight);
+    // The page decodes off the frame; a selection waits for its real proportions.
+    for _ in 0..500 {
+        h.run();
+        if h.state().reader.as_ref().is_some_and(|reader| reader.area.is_some()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let area = h.state().reader.as_ref().and_then(|reader| reader.area).expect("the page draws");
+    assert!((area.height() / area.width() - 200.0 / 300.0).abs() < 0.05, "drawn at the page's own proportions: {area:?}");
+    // The text sits a quarter down the page on the left: a drag over the top left takes it.
+    drag_over(&mut h, Vec2::new(0.02, 0.05), Vec2::new(0.6, 0.45));
+    assert!(h.state().reader.as_ref().unwrap().region.is_some());
+    let before = nodes(&h).len();
+    h.get_by_label("New Text node from selection").click();
+    h.run();
+    let all = nodes(&h);
+    assert_eq!(all.len(), before + 1, "{:?}", h.state().notice);
+    let [made] = h.state().selection.nodes().iter().copied().collect::<Vec<_>>()[..] else { panic!("one node selected") };
+    assert_eq!(all.iter().find(|node| node.id == made).unwrap().params.get("text"), Some(&Value::Text("Middle page".into())));
+    // A drag over the empty bottom right takes nothing.
+    drag_over(&mut h, Vec2::new(0.6, 0.6), Vec2::new(0.98, 0.98));
+    h.get_by_label("New Text node from selection").click();
+    h.run();
+    let after = nodes(&h);
+    let texts = |nodes: &[Node]| nodes.iter().filter(|node| node.kind == "source.text").count();
+    assert!(texts(&after) == texts(&all) || after.iter().any(|node| node.params.get("text") == Some(&Value::Text(String::new()))), "{:?}", h.state().notice);
+    assert!(!after.iter().any(|node| node.id != made && node.params.get("text") == Some(&Value::Text("Middle page".into()))));
+}
+
+#[test]
+fn a_hostile_page_count_in_the_project_file_is_capped_and_draws_only_rows_in_view() {
+    let mut h = with_pdf();
+    let canvas = h.state().canvas;
+    let node = nodes(&h).into_iter().find(|node| node.id == PDF).unwrap();
+    let Some(Value::Media(mut asset)) = node.params.get("asset").cloned() else { panic!("an asset") };
+    asset.meta.page_count = Some(u32::MAX);
+    let mut changed = node.clone();
+    changed.params.insert("asset".into(), Value::Media(asset));
+    let s = &mut h.state_mut().session;
+    s.dispatch("node.remove", &serde_json::json!({"canvas": canvas, "id": PDF})).unwrap();
+    s.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": changed})).unwrap();
+    h.state_mut().open_reader(PDF);
+    let started = std::time::Instant::now();
+    h.run();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "one frame must not walk every claimed page");
+    assert!(h.query_by_label_contains(&format!("of {}", nodecraft_nodes::document::MAX_PAGE)).is_some());
+    h.key_press(egui::Key::End);
+    h.run();
+    assert_eq!(page(&h), Some(u32::try_from(nodecraft_nodes::document::MAX_PAGE).unwrap() - 1));
+}

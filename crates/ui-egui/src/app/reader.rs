@@ -31,11 +31,15 @@ pub(super) struct Reader {
     drag: Option<Pos2>,
     /// Set when a key moved the page, so the thumbnail column scrolls to it.
     follow: bool,
+    /// The page pane's width last frame, so the shown page is asked for before the thumbnails.
+    width: f32,
+    /// Where the page was drawn last frame, once drawn at its real proportions.
+    pub(super) area: Option<Rect>,
 }
 
 impl Reader {
     pub(super) fn new(node: NodeId, target: Option<NodeId>, page: u32) -> Self {
-        Self { node, target, page, zoom: 1.0, region: None, drag: None, follow: true }
+        Self { node, target, page, zoom: 1.0, region: None, drag: None, follow: true, width: 0.0, area: None }
     }
 
     /// Moves to page `page` (clamped to the document), dropping the selection when it changes.
@@ -127,10 +131,11 @@ impl NodeCraftApp {
         let target = reader.target.and_then(|id| canvas.and_then(|canvas| canvas.nodes().get(&id))).filter(|node| reads_pages(node));
         let range = target.map(|node| (page_param(node, "first", 1), page_param(node, "last", 0)));
         let target_title = target.map(|node| node.title.clone());
-        let pages = asset.meta.page_count.unwrap_or(1).max(1);
+        // The count comes from the project file: capped, so a hostile one can't stall the window.
+        let pages = asset.meta.page_count.unwrap_or(1).clamp(1, u32::try_from(nodecraft_nodes::document::MAX_PAGE).unwrap_or(u32::MAX));
         reader.go(i64::from(reader.page), pages);
-        // Paging keys, unless someone is typing.
-        if !crate::canvas::text_input_focused(ctx) {
+        // Paging keys, unless another widget has the keyboard.
+        if ctx.memory(|m| m.focused()).is_none() {
             let page = i64::from(reader.page);
             let to = ctx.input_mut(|i| {
                 if i.consume_key(Modifiers::NONE, Key::ArrowLeft) || i.consume_key(Modifiers::NONE, Key::PageUp) {
@@ -168,7 +173,7 @@ impl NodeCraftApp {
             .pivot(egui::Align2::CENTER_TOP)
             .default_pos(ctx.content_rect().center_top() + Vec2::new(0.0, top))
             .default_width(t.viewer_width)
-            .default_height(t.viewer_width.min(ctx.content_rect().height() - top - t.navigation_margin * 4.0))
+            .default_height(t.viewer_width.min(ctx.content_rect().height() - top - t.navigation_margin * 4.0).max(t.reader_thumb_width))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let page = i64::from(reader.page);
@@ -205,16 +210,28 @@ impl NodeCraftApp {
                     });
                 }
                 ui.separator();
+                // The shown page first, so the thumbnails never hold up the page being read.
+                if reader.width > 0.0 {
+                    previews.request_page(ctx, asset.hash, reader.page, long_edge(reader.width) * ppp, || assets.preview_read(&asset));
+                }
                 ui.horizontal_top(|ui| {
                     let height = ui.available_height().max(t.reader_thumb_width);
-                    // A column of its own: the row's horizontal layout would put the pages side by side.
-                    egui::ScrollArea::vertical().id_salt("pdf_reader_thumbs").max_height(height).show(ui, |ui| {
+                    // Every thumbnail takes one slot, a portrait page tall plus its number, so only
+                    // the rows in view are drawn and asked for.
+                    let slot = Vec2::new(t.reader_thumb_width, long_edge(t.reader_thumb_width));
+                    let row = slot.y + ui.spacing().item_spacing.y * 2.0 + ui.text_style_height(&egui::TextStyle::Body);
+                    let mut thumbs = egui::ScrollArea::vertical().id_salt("pdf_reader_thumbs").max_height(height);
+                    if reader.follow {
+                        thumbs = thumbs.vertical_scroll_offset((row + ui.spacing().item_spacing.y) * reader.page as f32);
+                    }
+                    let rows = usize::try_from(pages).unwrap_or(1);
+                    thumbs.show_rows(ui, row, rows, |ui, shown| {
                         ui.vertical(|ui| {
                             ui.set_width(t.reader_thumb_width);
-                            for index in 0..pages {
-                                let preview = previews.request_page(ui.ctx(), asset.hash, index, t.reader_thumb_width * ppp, || assets.preview_read(&asset));
-                                let size = page_size(&preview, t.reader_thumb_width);
-                                let (area, response) = ui.allocate_exact_size(size, Sense::click());
+                            for index in shown.filter_map(|index| u32::try_from(index).ok()) {
+                                let preview = previews.request_page(ui.ctx(), asset.hash, index, slot.y * ppp, || assets.preview_read(&asset));
+                                let (cell, response) = ui.allocate_exact_size(slot, Sense::click());
+                                let area = Rect::from_center_size(cell.center(), fit(page_size(&preview, slot.x), slot));
                                 card::show_image(ui, area, &preview, None, &t);
                                 // An edge, so a white page shows on a light window.
                                 ui.painter().rect_stroke(area, 0.0, egui::Stroke::new(1.0, t.card_stroke), egui::StrokeKind::Outside);
@@ -231,9 +248,6 @@ impl NodeCraftApp {
                                 if response.clicked() {
                                     reader.go(i64::from(index), pages);
                                 }
-                                if current && reader.follow {
-                                    response.scroll_to_me(None);
-                                }
                                 ui.label(format!("{}", index.saturating_add(1)));
                             }
                             reader.follow = false;
@@ -241,9 +255,14 @@ impl NodeCraftApp {
                     });
                     egui::ScrollArea::both().id_salt("pdf_reader_page").max_height(height).show(ui, |ui| {
                         let width = (ui.available_width() * reader.zoom).max(1.0);
-                        let preview = previews.request_page(ui.ctx(), asset.hash, reader.page, width * ppp, || assets.preview_read(&asset));
+                        reader.width = width;
+                        let preview = previews.request_page(ui.ctx(), asset.hash, reader.page, long_edge(width) * ppp, || assets.preview_read(&asset));
                         let size = page_size(&preview, width);
-                        let (area, response) = ui.allocate_exact_size(size, Sense::drag());
+                        // A selection is a fraction of the drawn page, so it waits for the page's
+                        // real proportions.
+                        let ready = matches!(preview, Preview::Ready { .. });
+                        let (area, response) = ui.allocate_exact_size(size, if ready { Sense::drag() } else { Sense::hover() });
+                        reader.area = ready.then_some(area);
                         card::show_image(ui, area, &preview, None, &t);
                         ui.painter().rect_stroke(area, 0.0, egui::Stroke::new(1.0, t.card_stroke), egui::StrokeKind::Inside);
                         let fraction = |pos: Pos2| {
@@ -288,6 +307,8 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let at = Position { x: origin.x + t.card_width + t.card_padding * 4.0, y: origin.y };
         let result = match ask {
+            // The range it already reads: nothing to change, and no empty undo step.
+            Ask::Range(first, last) if range == Some((first, last)) => return,
             Ask::Range(first, last) => match target_id {
                 Some(target) => {
                     self.session.dispatch("document.use_pages", &json!({"canvas": self.canvas, "node": target, "first": first, "last": last})).map(|_| None)
@@ -317,6 +338,17 @@ impl NodeCraftApp {
             Err(error) => self.notice = Some(error.message),
         }
     }
+}
+
+/// The long edge of a portrait page `width` wide: previews are sized by their long edge.
+fn long_edge(width: f32) -> f32 {
+    width * 1.414
+}
+
+/// `size` scaled down, keeping its proportions, to fit inside `slot`.
+fn fit(size: Vec2, slot: Vec2) -> Vec2 {
+    let scale = (slot.x / size.x.max(1.0)).min(slot.y / size.y.max(1.0)).min(1.0);
+    size * scale
 }
 
 /// A page's size at `width` points wide, by the drawn page's proportions (portrait A4-ish while

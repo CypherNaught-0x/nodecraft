@@ -12,7 +12,7 @@
   adds it as a new PDF node; "New Text node from page/selection" puts the text the page (or the
   dragged rectangle) draws into a new Text node. Both store or read project media, which a command
   can't, so they follow `split_grid` and `import_files`: session functions, each one undo step.
-  Exposing them to the CLI and MCP is a follow-up.
+  Exposing them to the CLI and MCP is #606.
 - **The page is copied, not re-rendered.** Extraction embeds the page with Krilla's PDF embedding
   (via `craft-pdf`'s `write-pdf` feature), so text stays text and vectors stay vectors. Region
   text is the text whose glyphs fall inside the rectangle; a scan has no text and there is no OCR.
