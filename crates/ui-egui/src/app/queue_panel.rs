@@ -26,6 +26,7 @@ impl NodeCraftApp {
         Some(match (live, held) {
             (0, 0) => "Queue".into(),
             (live, 0) => format!("Queue ({live})"),
+            (0, held) => format!("Queue ({held} held)"),
             (live, held) => format!("Queue ({live}, {held} held)"),
         })
     }

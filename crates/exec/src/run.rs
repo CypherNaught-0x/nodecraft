@@ -405,7 +405,8 @@ impl Run {
     }
 
     /// Whether `outputs` fit `job`'s node by the rules its step is assembled with (#369): every
-    /// port is one of the node's, a list output takes at most [`MAX_LIST_ITEMS`] values, and a
+    /// port is one of the node's, a list output takes fewer than [`MAX_LIST_ITEMS`] values (the
+    /// graph counts the list itself as an item too), and a
     /// single output at most one, or exactly one when the job fills its step (or its item) alone.
     /// A host checks a model job's converted result with this while it still holds the result,
     /// so a result its step would refuse is kept rather than lost.
@@ -429,8 +430,8 @@ impl Run {
         }
         for (port, count) in target.outputs.iter().zip(counts) {
             if port.port_type.many {
-                if count > MAX_LIST_ITEMS {
-                    return Err(format!("its {} output has more than {MAX_LIST_ITEMS} items", port.name));
+                if count >= MAX_LIST_ITEMS {
+                    return Err(format!("its {} output has {MAX_LIST_ITEMS} or more items", port.name));
                 }
             } else if count > 1 {
                 return Err(format!("it produced several values on its single {} output", port.name));

@@ -6,8 +6,10 @@
   deleted while its job ran. The card's failure says the result is held. Before #369 these
   results were charged and then lost.
 - **Never part of a result.** The host checks the whole result against the node's ports
-  (`Run::admit_outputs`) before importing anything. A list port takes up to `MAX_LIST_ITEMS`
-  values, a scalar port one, and an unknown port none. So a result is recorded whole or held
+  (`Run::admit_outputs`) before importing anything. A list port takes fewer than
+  `MAX_LIST_ITEMS` values (the graph's item limit counts the list too), a scalar port one, and an
+  unknown port none. A step that still fails after admission (assembling or checking the value)
+  holds its result as well. So a result is recorded whole or held
   whole, never trimmed.
 - **Three ways out, none of which calls the provider again.**
   - `run.held_retry` records the result on its card as its step would have. It is offered only
@@ -24,8 +26,11 @@
   While that many wait, every new job is refused before it is sent, so nothing more is charged.
   Jobs already in flight may still add theirs, so the store can briefly exceed the bound, but
   only by the number of in-flight jobs.
-- **Memory only.** Held results are lost when NodeCraft quits; the queue panel says so. Writing
+- **Memory only.** A result a restarted job delivers while its project is closed is held too,
+  and is retried or placed once that project is open. Held results are lost when NodeCraft quits; the queue panel says so. Writing
   them to the run journal is a follow-up (#611).
+- **Placing hands the outputs to the document.** Once placed, a result is no longer held; undoing
+  the placement and then editing leaves its assets only in the asset store.
 - **Agents may retry and place, not discard.** Discarding a paid result can't be undone, so MCP
   lists `run.held_discard` as human-only.
 - **Follow-up (#611): multi-job steps.** A fanned or multi-job step whose record fails after every job

@@ -449,3 +449,36 @@ fn without_a_host_the_held_commands_are_unsupported() {
     assert!(session.dispatch("run.held", &json!({})).is_err());
     assert!(session.dispatch("run.held_place", &json!({"id": 1})).is_err());
 }
+
+/// A result too large to save on its card at any limit (admission, assembly, the graph or the
+/// command's own) is held whole, never charged and lost (review of #369).
+#[test]
+fn a_result_too_large_to_save_is_held_whole_at_every_limit() {
+    let most = nodecraft_graph::MAX_VALUE_ITEMS;
+    for count in [most - 1, most, most + 1] {
+        let mut f = fixture();
+        f.canned.answer(vec![image(); count]);
+        let notices = run(&mut f, PAINTER);
+        assert!(failed(&notices, PAINTER).is_some_and(|r| r.contains("the paid result is held")), "{count}: {notices:?}");
+        assert!(history(&f, PAINTER).is_empty());
+        assert_eq!(f.host.held_results().first().map(|h| h.outputs), Some(count));
+    }
+}
+
+#[test]
+fn a_held_result_waits_while_its_project_is_closed() {
+    let mut f = fixture();
+    f.canned.answer(vec![text("one"), text("two")]);
+    run(&mut f, WRITER);
+    let id = f.host.held_results()[0].id;
+    f.session.dispatch("run.held_place", &json!({"id": id})).unwrap();
+    // The host's next frame comes with another project open.
+    let mut other = Session::new(Project::new(ProjectId::from_bytes([72; 16]), "Other").unwrap()).unwrap();
+    let notices = f.host.pump(&mut other);
+    assert!(failed(&notices, WRITER).is_some_and(|r| r.contains("isn't open") && r.contains("still held")), "{notices:?}");
+    assert_eq!(f.host.held_results().len(), 1);
+    assert_eq!(f.host.held_results()[0].pending, None);
+    act(&mut f, "run.held_place", id);
+    assert!(f.host.held_results().is_empty());
+    assert_eq!(placed(&f).len(), 2);
+}

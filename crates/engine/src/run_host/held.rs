@@ -112,6 +112,10 @@ impl Held {
         self.entries.iter().map(view).collect()
     }
 
+    fn listing(&self) -> Value {
+        json!({"held": self.views().iter().map(view_json).collect::<Vec<_>>(), "max": MAX_HELD})
+    }
+
     /// The results waiting to be retried or placed, copied so they stay held until that works.
     pub(super) fn pending(&self) -> Vec<(u64, HeldAction, HeldResult)> {
         self.entries.iter().filter_map(|e| e.pending.map(|action| (e.id, action, e.result.clone()))).collect()
@@ -130,8 +134,7 @@ impl Held {
     pub(super) fn serve(&mut self, request: &Value) -> Result<Value, Error> {
         let request: Request = serde_json::from_value(request.clone()).map_err(|e| invalid(&format!("invalid held-results request: {e}")))?;
         if let Op::List = request.op {
-            let views = self.views();
-            return Ok(json!({"held": views.iter().map(view_json).collect::<Vec<_>>(), "max": MAX_HELD}));
+            return Ok(self.listing());
         }
         let id = request.id.ok_or_else(|| invalid("`id` names the held result"))?;
         let index = self.entries.iter().position(|e| e.id == id).ok_or_else(|| Error::new(ErrorKind::NotFound, format!("no held result {id}")))?;
@@ -151,10 +154,11 @@ impl Held {
                 entry.pending = Some(HeldAction::Place);
                 Ok(json!({"id": id, "pending": "place"}))
             }
-            _ => {
+            Op::Discard => {
                 self.entries.remove(index);
                 Ok(json!({"id": id, "discarded": true}))
             }
+            Op::List => Ok(self.listing()),
         }
     }
 }

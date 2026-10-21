@@ -783,11 +783,17 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
                 (notice, _) => notice,
             });
         }
+        // A step can still fail after its paid result was admitted (assembling or checking it):
+        // that result is held too.
         for failure in progress.failed {
-            notices.push(if failure.reason == CANCELLED {
-                RunNotice::Cancelled { canvas, node: failure.node }
-            } else {
-                RunNotice::Failed { canvas, node: failure.node, reason: failure.reason }
+            let awaiting = active.awaiting.remove(&failure.node);
+            notices.push(match awaiting {
+                Some(kept) => {
+                    lock(held).hold(held::HeldResult { reason: failure.reason.clone(), ..kept });
+                    RunNotice::Failed { canvas, node: failure.node, reason: format!("{}; {HELD_NOTE}", failure.reason) }
+                }
+                None if failure.reason == CANCELLED => RunNotice::Cancelled { canvas, node: failure.node },
+                None => RunNotice::Failed { canvas, node: failure.node, reason: failure.reason },
             });
         }
         if active.cancelled {

@@ -415,3 +415,35 @@ fn a_job_whose_project_never_comes_back_is_eventually_settled() {
     assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node: WRITER, .. })), "{notices:?}");
     assert!(journal.saved().unwrap().submitted.is_empty());
 }
+
+/// #369: a result a restarted job delivers to a card that is gone is held, not dropped, and is
+/// recorded once the card is back.
+#[test]
+fn a_resumed_result_whose_card_is_gone_is_held_until_it_can_be_recorded() {
+    let mock = slow_mock();
+    let journal = MemoryJournal::default();
+    let (mut first, _) = launch(&mock, &journal, None, 50);
+    start(&mut first);
+    pump_until(&mut first, "the job's handle was never saved", |_| journal.saved().is_some_and(|saved| !saved.submitted.is_empty()));
+    first.runtime.kill();
+    let project = first.session.document().clone();
+    drop(first);
+    let (mut second, opened) = launch(&mock, &journal, Some(project), 0);
+    opened.unwrap();
+    second.session.dispatch("node.remove", &json!({"canvas": C, "id": WRITER})).unwrap();
+    let binding = second.binding.clone();
+    second.host.resume(&second.session, &binding);
+    let notices = pump_until(&mut second, "the resumed job never ended", |f| !f.host.is_busy());
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node: WRITER, reason, .. } if reason.contains("the paid result is held"))), "{notices:?}");
+    let held = second.host.held_results();
+    assert!(matches!(held.as_slice(), [view] if view.node == WRITER && view.retry), "{held:?}");
+    let id = held[0].id;
+
+    second.session.dispatch("edit.undo", &json!({})).unwrap();
+    second.session.dispatch("run.held_retry", &json!({"id": id})).unwrap();
+    let notices = pump_until(&mut second, "the retry never settled", |f| f.host.held_results().is_empty());
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+    assert_eq!(history(&second.session).len(), 1);
+    assert_eq!(mock.requests().len(), 1, "never sent again");
+    assert_eq!(second.budget.log.lock().unwrap().entries().count(), 1, "charged once");
+}

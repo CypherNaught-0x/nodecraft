@@ -253,15 +253,12 @@ fn failed(notice: &RunNotice) -> JobState {
 }
 
 /// Records a restored job's result on its card, when its step can be assembled from it alone and
-/// the card is still there. A result that can't be recorded is held (#369) unless its project is
-/// closed (it is then followed again when the project is open).
+/// the card is still there. A result that can't be recorded, its project's included when that
+/// isn't open, is held (#369); a held result is retried or placed only once its project is open.
 fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDelivery, held: &Mutex<Held>) -> RunNotice {
     let (canvas, node) = (entry.canvas, entry.node);
-    if session.document().id() != entry.project {
-        let reason = "it finished after a restart, but its project isn't open, so it wasn't recorded".to_owned();
-        return RunNotice::Failed { canvas, node, reason };
-    }
     let outcome = match &entry.recipe {
+        _ if session.document().id() != entry.project => Err("it finished after a restart, but its project isn't open, so it wasn't recorded".into()),
         Some(recipe) => record_alone(session, canvas, node, &entry.routes, recipe, &delivery.completed),
         None => Err("it finished after a restart, but its step needs other jobs' results too, so it wasn't recorded".into()),
     };
