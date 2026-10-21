@@ -19,10 +19,13 @@ fn legacy() -> nodecraft_exec::cost::UsageLog {
     serde_json::from_str(include_str!("../../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap()
 }
 
-/// A run journal holding the legacy log, in a fresh directory the caller removes.
+/// A run journal holding the legacy log, in a fresh directory the caller removes. The clock
+/// alone doesn't make it fresh: tests run in parallel, and macOS reads time to the microsecond.
 fn journal() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!("nodecraft-ownership-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nodecraft-ownership-{}-{nanos}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("runs.json");
     std::fs::write(&path, Journal { version: JOURNAL_VERSION, usage: legacy(), submitted: Vec::new() }.to_bytes().unwrap()).unwrap();
