@@ -47,7 +47,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         Model::Video | Model::Frames | Model::Speech => "video",
         Model::Audio => "audio",
         Model::Mesh => "model_glb",
-        Model::Upscale => "image",
+        Model::Upscale | Model::RemoveBackground => "image",
     };
     // Multiple model envelopes or unexpected top-level media cannot be filtered away.
     for k in ["images", "video", "audio", "model_glb", "image", "diffusers_lora_file"] {
@@ -114,7 +114,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
                 .ok_or_else(|| malformed("fal declared aggregate geometry exceeds quota"))?;
         }
         let expected = match r.model {
-            Model::Image | Model::Styled | Model::Upscale => "image/png",
+            Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => "image/png",
             Model::Video | Model::Frames | Model::Speech => "video/mp4",
             Model::Audio => "audio/wav",
             Model::Mesh => "model/gltf-binary",

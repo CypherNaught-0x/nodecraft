@@ -1,4 +1,4 @@
-//! Bounded fal queue adapter for nine explicitly selected live model aliases.
+//! Bounded fal queue adapter for ten explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 mod json;
 mod limits;
@@ -29,6 +29,8 @@ pub const WAN_S2V: &str = "fal-ai/wan/v2.2-14b/speech-to-video";
 pub const KOKORO: &str = "fal-ai/kokoro/american-english";
 pub const TRELLIS: &str = "fal-ai/trellis-2";
 pub const ESRGAN: &str = "fal-ai/esrgan";
+/// Bria RMBG 2.0, image-only background removal (#749).
+pub const BRIA_REMOVE: &str = "fal-ai/bria/background/remove";
 /// FLUX.1 [dev] LoRA training from a few images (#167); its result is a style descriptor.
 pub const FLUX_LORA_TRAINER: &str = "fal-ai/flux-lora-fast-training";
 /// FLUX.1 [dev] with a trained style (#167).
@@ -102,6 +104,7 @@ enum Model {
     Audio,
     Mesh,
     Upscale,
+    RemoveBackground,
     /// Trains a style from images; the weights stay with fal.
     Train,
     /// Text to image with a style fal trained.
@@ -117,9 +120,10 @@ impl Model {
             KOKORO => Ok(Self::Audio),
             TRELLIS => Ok(Self::Mesh),
             ESRGAN => Ok(Self::Upscale),
+            BRIA_REMOVE => Ok(Self::RemoveBackground),
             FLUX_LORA_TRAINER => Ok(Self::Train),
             FLUX_LORA => Ok(Self::Styled),
-            _ => Err(invalid("choose one of the nine supported fal models")),
+            _ => Err(invalid("choose one of the ten supported fal models")),
         }
     }
     fn wire(self) -> &'static str {
@@ -131,6 +135,7 @@ impl Model {
             Self::Audio => KOKORO,
             Self::Mesh => TRELLIS,
             Self::Upscale => ESRGAN,
+            Self::RemoveBackground => BRIA_REMOVE,
             Self::Train => FLUX_LORA_TRAINER,
             Self::Styled => FLUX_LORA,
         }
@@ -146,6 +151,7 @@ impl Model {
             Self::Audio => "fal-ai/kokoro",
             Self::Mesh => TRELLIS,
             Self::Upscale => ESRGAN,
+            Self::RemoveBackground => "fal-ai/bria",
             Self::Train => FLUX_LORA_TRAINER,
             Self::Styled => FLUX_LORA,
         }
@@ -230,7 +236,8 @@ impl Record {
                     || record.height > 2048
                     || !record.width.is_multiple_of(2)
                     || !record.height.is_multiple_of(2)))
-            || (model != Model::Upscale && (record.width != 0 || record.height != 0))
+            || (model == Model::RemoveBackground && (record.width == 0 || record.height == 0 || record.width > 1024 || record.height > 1024))
+            || (!matches!(model, Model::Upscale | Model::RemoveBackground) && (record.width != 0 || record.height != 0))
         {
             return Err(invalid("fal handle output contract refused"));
         }
@@ -443,7 +450,7 @@ impl Fal {
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale) && (f.width.is_some() || f.height.is_some()) {
+            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground) && (f.width.is_some() || f.height.is_some()) {
                 let meta =
                     nodecraft_media::probe_image(&reply.body, &self.limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
