@@ -204,6 +204,10 @@ reader. Every constructor, including standalone `NativeAssetWorkspace::new`, coo
 a fresh exclusive lock on the permanent `.nodecraft-assets-v1.lock` parent file. Its bytes are
 irrelevant and it is never truncated, renamed or removed. Same-parent admission is nonblocking;
 different parents may proceed independently. No process-global registry or waiting loop is used.
+Final-owner teardown also tries this gate without waiting. If admission is busy, it leaves the
+valid marker for later orphan maintenance rather than promising immediate root removal. On
+platforms which inherit file descriptors before exec, even an unrelated concurrent process spawn
+can briefly keep a released admission lock alive.
 
 Startup maintenance visits at most 4,096 parent entries, tries at most 64 qualified inventories
 (including inventories later refused), and unlinks at most 256 generated payloads. Each orphan

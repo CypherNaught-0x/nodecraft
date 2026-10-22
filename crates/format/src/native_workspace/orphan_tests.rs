@@ -5,8 +5,15 @@ use nodecraft_graph::{Canvas, Change, Project};
 use nodecraft_types::{CanvasId, ProjectId};
 use std::{
     process::{Child, Command, Stdio},
+    sync::RwLock,
     time::{Duration, Instant},
 };
+
+// A spawned child can transiently inherit an unrelated admission lock before exec.
+// Immediate-retirement controls must not overlap that window; their read guards still
+// allow those controls to run together. Hold the write guard only until spawn returns,
+// never while waiting for a child's handshake or exit.
+static PROCESS_SPAWN: RwLock<()> = RwLock::new(());
 
 struct ChildOwner {
     child: Child,
@@ -36,6 +43,7 @@ impl ChildOwner {
         if let Some(name) = sweep {
             command.env("NODECRAFT_TEST_WORKSPACE363_SWEEP", name);
         }
+        let _spawn = PROCESS_SPAWN.write().unwrap();
         Self { child: command.spawn().unwrap(), reaped: false, stderr }
     }
     fn log(&self) -> String {
@@ -163,6 +171,7 @@ fn crashed_workspace_payloads_are_reclaimed_before_next_creation() {
 
 #[test]
 fn retained_capture_closes_payload_before_the_final_workspace_lifetime_guard() {
+    let _no_spawn = PROCESS_SPAWN.read().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let workspace = uncontended(|| NativeAssetWorkspace::new(parent.path(), DiskQuota::default())).unwrap();
     let root = workspace.0.root.clone();
@@ -182,6 +191,7 @@ fn retained_capture_closes_payload_before_the_final_workspace_lifetime_guard() {
 }
 #[test]
 fn retained_range_remains_readable_and_locked_after_workspace_handle_drop() {
+    let _no_spawn = PROCESS_SPAWN.read().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let workspace = uncontended(|| NativeAssetWorkspace::new(parent.path(), DiskQuota::default())).unwrap();
     let root = workspace.0.root.clone();
@@ -195,6 +205,35 @@ fn retained_range_remains_readable_and_locked_after_workspace_handle_drop() {
     assert_eq!(report.live, 1);
     assert_eq!(range.read_small(1024, &StreamMetrics::default()).unwrap(), b"public pinned bytes");
     drop(range);
+    assert!(!root.exists());
+}
+
+#[test]
+fn contended_final_capture_closes_payload_and_defers_only_marker_retirement() {
+    let _no_spawn = PROCESS_SPAWN.read().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let workspace = NativeAssetWorkspace::new(parent.path(), DiskQuota::default()).unwrap();
+    let root = workspace.0.root.clone();
+    let operation = workspace.quota().stage_operation().unwrap();
+    let mut capture = workspace.capture(&operation).unwrap();
+    capture.reserve_asset(3).unwrap();
+    capture.write_bytes(b"abc").unwrap();
+    drop(operation);
+    drop(workspace);
+
+    // Hold the real independently opened parent gate across the final Arc drop.
+    // Retirement is deliberately nonblocking, so this deterministically leaves an orphan.
+    let gate = OpenOptions::new().read(true).write(true).open(parent.path().join(".nodecraft-assets-v1.lock")).unwrap();
+    gate.try_lock().unwrap();
+    drop(capture);
+    let entries: Vec<_> = std::fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(entries, [std::ffi::OsString::from("workspace.v1.lock")], "the payload must close and unlink even when marker retirement is deferred");
+    let name = root.file_name().unwrap().to_str().unwrap();
+    assert!(matches!(crate::native_workspace::sweep_named_orphan(parent.path(), name, &TransferCancel::default()), Err(Error { kind: ErrorKind::Busy, .. })));
+    drop(gate);
+    let report = crate::native_workspace::sweep_named_orphan(parent.path(), name, &TransferCancel::default()).unwrap();
+    assert_eq!(report.removed_roots, 1, "the deferred marker must retain valid orphan authority");
+    assert_eq!(report.removed_files, 0);
     assert!(!root.exists());
 }
 
@@ -313,6 +352,7 @@ fn interrupted_after_marker_unlink_leaves_empty_unmarked_residue_without_adoptin
 
 #[test]
 fn live_cleanup_debt_keeps_its_charge_and_cannot_be_swept_by_another_workspace() {
+    let _no_spawn = PROCESS_SPAWN.read().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut workspace = uncontended(|| NativeAssetWorkspace::new(parent.path(), DiskQuota::default())).unwrap();
     workspace.test_cleanup_capacity(1).unwrap();
