@@ -5,7 +5,8 @@
 //! - `params.workflow`: the API-format workflow (the Workflow node's mapped graph);
 //! - `params.values`: `{"<node>.<input>": value}` overrides, checked against `/object_info`;
 //! - media inputs whose role is `<node>.<input>` (an upload input such as `LoadImage.image`):
-//!   uploaded under a content-hash name, then set to the stored name.
+//!   uploaded under a content-hash name with the extension the loader lists, then set to the
+//!   stored name. A file the loader can't read (a sound for an image loader) is refused first.
 //!
 //! **Submitting once.** The prompt id is derived from a per-install salt and the job's
 //! idempotency key, so different installs (and sessions using fresh run ids) never share ids. A
@@ -21,6 +22,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+pub(crate) mod upload;
+
 use serde_json::{Map, Value};
 
 use nodecraft_comfy::{self as comfy, ApiWorkflow, ComfyError, FileRef, HistoryEntry, InputKind, NodeCatalog, PromptRequest, QueueState, Server, UploadKind};
@@ -29,10 +32,12 @@ use crate::http::{Http, HttpMethod, HttpRequest, HttpResponse};
 use crate::provider::{BoxFuture, Completed, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission};
 use crate::{ErrorKind, ProviderError};
 
-/// Cap on one downloaded output file.
-pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+/// Cap on one downloaded output file. A run keeps at most 256 MiB of results in all (the
+/// engine's `MAX_INLINE_OUTPUT_BYTES`), so a longer video is refused before it is fetched,
+/// not after (#110).
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 /// Cap on all output files of one prompt together.
-pub const DEFAULT_MAX_TOTAL_OUTPUT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_TOTAL_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 /// Cap on output files of one prompt.
 pub const MAX_OUTPUT_FILES: usize = 512;
 /// How long a fetched `/object_info` is reused before fetching it again.
@@ -219,15 +224,22 @@ impl ComfyProvider {
                 .get(node)
                 .map(|n| n.class_type.clone())
                 .ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, format!("no node {node} in the workflow"))))?;
-            let is_upload = catalog.get(&class).and_then(|i| i.input(name)).is_some_and(|spec| matches!(spec.kind, InputKind::Combo { upload: Some(_), .. }));
-            if !is_upload {
+            let loader = catalog.get(&class).and_then(|i| i.input(name)).and_then(|spec| match spec.kind {
+                InputKind::Combo { upload, .. } => upload,
+                _ => None,
+            });
+            let Some(loader) = loader else {
                 return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, format!("{node}.{name} is not a file input"))));
-            }
-            uploads.push((node, name, bytes));
+            };
+            uploads.push((node, name, loader, bytes));
         }
         workflow.check(catalog).into_result().map_err(from_catalog)?;
-        for (node, name, bytes) in uploads {
+        // Every input is checked before any is uploaded: a refused run leaves nothing on the server.
+        let mut checked_uploads = Vec::with_capacity(uploads.len());
+        for (node, name, loader, bytes) in uploads {
             let checked = crate::check_media(bytes, None).map_err(plain)?;
+            upload::check_kind(&format!("{node}.{name}"), loader, bytes, checked.mime)
+                .map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e)))?;
             // Recognition isn't upload permission (#394): an HDR input is refused here exactly as it
             // was before those formats were recognised at all, instead of landing on the user's
             // server under a name no Comfy loader can read.
@@ -237,7 +249,10 @@ impl ComfyProvider {
                     format!("can't upload {node}.{name}: NodeCraft can't read {} files yet; convert the input to PNG or JPEG", checked.mime),
                 )));
             }
-            let ext = checked.mime.rsplit('/').next().unwrap_or("bin").split(['+', ';']).next().unwrap_or("bin");
+            checked_uploads.push((node, name, bytes, checked));
+        }
+        for (node, name, bytes, checked) in checked_uploads {
+            let ext = upload::extension(checked.mime);
             // Named by content: a name collision means identical bytes, so overwriting is harmless
             // and repeated uploads of the same input dedupe.
             let filename = format!("nodecraft-{}.{ext}", checked.hash.to_hex());
@@ -476,7 +491,11 @@ mod tests {
     const OBJECT_INFO: &str = r#"{
       "LoadImage": {"input": {"required": {"image": [["example.png"], {"image_upload": true}]}}, "output": ["IMAGE", "MASK"]},
       "CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}]}}, "output": ["CONDITIONING"]},
-      "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true}
+      "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+      "LoadAudio": {"input": {"required": {"audio": [["a.wav"], {"audio_upload": true}]}}, "output": ["AUDIO"]},
+      "LoadVideo": {"input": {"required": {"file": [["a.mp4"], {"video_upload": true}]}}, "output": ["VIDEO"]},
+      "SaveAudio": {"input": {"required": {"audio": ["AUDIO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+      "SaveVideo": {"input": {"required": {"video": ["VIDEO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true}
     }"#;
     const EMPTY_QUEUE: &str = r#"{"queue_running":[],"queue_pending":[]}"#;
     const SALT: &str = "install-salt";
@@ -491,6 +510,8 @@ mod tests {
         history: Mutex<VecDeque<String>>,
         queue: Mutex<VecDeque<String>>,
         view: Mutex<Vec<u8>>,
+        /// `/view` answers by file name, before `view`.
+        files: Mutex<Vec<(String, Vec<u8>)>>,
         object_info_calls: AtomicUsize,
     }
 
@@ -501,6 +522,7 @@ mod tests {
                 history: Mutex::new(VecDeque::new()),
                 queue: Mutex::new(VecDeque::new()),
                 view: Mutex::new(b"\x89PNG\r\n\x1a\nimage".to_vec()),
+                files: Mutex::new(vec![]),
                 object_info_calls: AtomicUsize::new(0),
             })
         }
@@ -531,7 +553,11 @@ mod tests {
                     let v: Value = serde_json::from_slice(&request.body).unwrap();
                     format!(r#"{{"prompt_id":"{}","number":1,"node_errors":{{}}}}"#, v["prompt_id"].as_str().unwrap()).into_bytes()
                 }
-                "/view" => self.view.lock().unwrap().clone(),
+                "/view" => {
+                    let files = self.files.lock().unwrap();
+                    let named = files.iter().find(|(name, _)| path.contains(&format!("filename={name}")));
+                    named.map_or_else(|| self.view.lock().unwrap().clone(), |(_, bytes)| bytes.clone())
+                }
                 p if p.starts_with("/history/") => Self::next(&self.history, "{}").into_bytes(),
                 _ => b"{}".to_vec(),
             };
@@ -685,6 +711,77 @@ mod tests {
         let JobProgress::Done(Completed { outputs, .. }) = block_on(p.poll(&handle_for("abc"))).unwrap() else { panic!("not done") };
         assert_eq!(outputs.len(), 1, "previews (temp) are not outputs");
         assert!(matches!(&outputs[0], Output::Bytes { mime, .. } if mime == "image/png"));
+    }
+
+    const WAV: &[u8] = include_bytes!("fal/fixtures/tone.wav");
+    const MP4: &[u8] = include_bytes!("fal/fixtures/blue.mp4");
+
+    /// Loads a sound and a video, saves both (#110).
+    fn av_job(sound_to: &str) -> ProviderJob {
+        let workflow = serde_json::json!({
+            "1": {"class_type": "LoadAudio", "inputs": {"audio": "a.wav"}},
+            "2": {"class_type": "LoadVideo", "inputs": {"file": "a.mp4"}},
+            "3": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+            "4": {"class_type": "SaveVideo", "inputs": {"video": ["2", 0], "filename_prefix": "NodeCraft"}},
+            "5": {"class_type": "SaveAudio", "inputs": {"audio": ["1", 0], "filename_prefix": "NodeCraft"}}
+        });
+        ProviderJob {
+            model: "comfyui:workflow".into(),
+            params: serde_json::json!({"workflow": workflow}).as_object().cloned().unwrap(),
+            inputs: vec![
+                // The video comes first, so a refused sound shows nothing at all was uploaded.
+                JobInput::Media { role: "2.file".into(), mime: "video/mp4".into(), bytes: Arc::from(MP4) },
+                JobInput::Media { role: sound_to.into(), mime: "audio/wav".into(), bytes: Arc::from(WAV) },
+            ],
+            idempotency_key: "nodecraft:run-uuid:av".into(),
+        }
+    }
+
+    #[test]
+    fn sounds_and_videos_upload_under_the_names_their_loaders_list() {
+        let server = FakeServer::new();
+        block_on(provider(server.clone()).submit(&av_job("1.audio"))).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let names: Vec<String> = seen
+            .iter()
+            .filter(|r| r.url.ends_with("/upload/image"))
+            .map(|r| String::from_utf8_lossy(&r.body).split("filename=\"").nth(1).unwrap_or_default().split('"').next().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[0].starts_with("nodecraft-") && names[0].ends_with(".mp4") && names[1].ends_with(".wav"), "{names:?}");
+        assert!(seen.iter().any(|r| r.url.ends_with("/prompt")));
+    }
+
+    #[test]
+    fn a_sound_sent_to_an_image_loader_is_refused_before_anything_is_uploaded() {
+        let server = FakeServer::new();
+        let e = block_on(provider(server.clone()).submit(&av_job("3.image"))).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::UnsupportedInput, "{e}");
+        assert_eq!(e.message, "3.image takes an image, not audio/wav");
+        let paths = server.paths();
+        assert!(!paths.iter().any(|p| p.starts_with("/upload") || p == "/prompt"), "{paths:?}");
+    }
+
+    #[test]
+    fn saved_videos_and_sounds_come_back_as_outputs() {
+        let server = FakeServer::new();
+        *server.files.lock().unwrap() = vec![("clip.mp4".into(), MP4.to_vec()), ("line.wav".into(), WAV.to_vec())];
+        // A video saver's files come under `gifs` or `images`, a sound saver's under `audio`.
+        FakeServer::set(
+            &server.history,
+            &[r#"{"av":{"outputs":{"4":{"gifs":[{"filename":"clip.mp4","subfolder":"video","type":"output","format":"video/h264-mp4"}]},
+                "5":{"audio":[{"filename":"line.wav","subfolder":"audio","type":"output"}]}},
+                "status":{"status_str":"success","completed":true,"messages":[]}}}"#],
+        );
+        let JobProgress::Done(Completed { outputs, .. }) = block_on(provider(server).poll(&handle_for("av"))).unwrap() else { panic!("not done") };
+        let mimes: Vec<&str> = outputs
+            .iter()
+            .map(|o| match o {
+                Output::Bytes { mime, .. } => mime.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(mimes, ["video/mp4", "audio/wav"]);
     }
 
     #[test]

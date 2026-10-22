@@ -53,7 +53,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    pub const HARD: Self = Self { input_bytes: 100 * MIB, response_bytes: 8 * MIB, output_bytes: 512 * MIB, total_output_bytes: 2048 * MIB, output_files: 256 };
+    pub const HARD: Self = Self { input_bytes: 100 * MIB, response_bytes: 8 * MIB, output_bytes: 256 * MIB, total_output_bytes: 256 * MIB, output_files: 256 };
 
     fn validate(self) -> Result<Self, ProviderError> {
         let h = Self::HARD;
