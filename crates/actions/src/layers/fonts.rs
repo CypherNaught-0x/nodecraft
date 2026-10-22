@@ -37,14 +37,24 @@ pub fn font_info(bytes: &[u8]) -> Result<FontInfo, ImageError> {
         Some(b"ttcf") => return Err(bad("font: a collection (.ttc); use one .ttf or .otf")),
         _ => return Err(bad("font: not a TrueType or OpenType file")),
     };
-    let font = FontRef::new(bytes).map_err(|_| bad("font: its tables can't be read"))?;
-    if font.outline_glyphs().format().is_none() {
-        return Err(bad("font: it has no outlines"));
-    }
-    if !font.charmap().has_map() {
-        return Err(bad("font: it maps no characters"));
-    }
-    Ok(FontInfo { name: name(&font).ok_or(bad("font: it has no name"))?, mime })
+    guarded(|| {
+        let font = FontRef::new(bytes).map_err(|_| bad("font: its tables can't be read"))?;
+        if font.outline_glyphs().format().is_none() {
+            return Err(bad("font: it has no outlines"));
+        }
+        if !font.charmap().has_map() {
+            return Err(bad("font: it maps no characters"));
+        }
+        Ok(FontInfo { name: name(&font).ok_or(bad("font: it has no name"))?, mime })
+    })
+}
+
+/// Runs `read`, which parses or draws an imported font, refusing the font as damaged if the
+/// font libraries panic on it (#705). They are meant to return errors, but a font is hostile
+/// input, and one bounds check they miss must not take the app down. Native builds only: in
+/// the browser a panic aborts, so a fix belongs upstream too.
+pub(super) fn guarded<T>(read: impl FnOnce() -> Result<T, ImageError>) -> Result<T, ImageError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|_| Err(bad("font: it is damaged and can't be drawn")))
 }
 
 /// The first string `ids` names that has text, English where there is one, without control
@@ -92,7 +102,7 @@ impl<'a> Fonts<'a> {
         if self.faces.len() >= MAX_FONTS {
             return Err(bad("font: at most 16 per Layer Editor"));
         }
-        let font = FontRef::new(bytes).map_err(|_| bad("font: its tables can't be read"))?;
+        let font = guarded(|| FontRef::new(bytes).map_err(|_| bad("font: its tables can't be read")))?;
         self.faces.retain(|(n, _)| !same_name(n, name));
         self.faces.push((name.to_owned(), font));
         Ok(())
