@@ -28,20 +28,10 @@ fn open_tools(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
         let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
         app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min + Vec2::splat(6.0)
     };
-    // The card's image loads in the background and can repaint it between the press and the
-    // release, so a click that didn't open the menu is tried again (#740 on a slow CI runner).
-    for _ in 0..5 {
-        h.hover_at(pos);
-        h.run();
-        for pressed in [true, false] {
-            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
-            h.run();
-        }
-        h.run();
-        if h.query_by_label_contains("Image tools").is_some() {
-            break;
-        }
-        h.key_press(egui::Key::Escape);
+    h.hover_at(pos);
+    h.run();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
         h.run();
     }
     h.get_by_label_contains("Image tools").hover();
@@ -141,10 +131,8 @@ fn generated(count: usize) -> (Harness<'static, NodeCraftApp>, NodeId) {
     let mut session = Session::new(project).unwrap();
     let image =
         Value::Media(nodecraft_types::AssetRef { hash: session.import_asset(&png).unwrap(), mime: "image/png".parse().unwrap(), meta: Default::default() });
-    let mut node = nodecraft_graph::Node::new(card, "generation.image");
+    let mut node = session.kinds().get("generation.image").unwrap().descriptor().instantiate(card, &BTreeMap::new()).unwrap();
     node.pos = nodecraft_graph::Position { x: 200.0, y: -110.0 };
-    node.outputs =
-        vec![nodecraft_graph::Port { name: "out".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Image, many: true } }];
     let made = nodecraft_types::GenerationId::from_bytes([45; 16]);
     node.history.push(nodecraft_graph::Generation::new(made, vec![Value::List(vec![image; count])]));
     node.active = Some(made);
@@ -159,6 +147,7 @@ fn generated(count: usize) -> (Harness<'static, NodeCraftApp>, NodeId) {
         .with_size(Vec2::new(1000.0, 700.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.run();
+    assert!(h.query_by_label_contains("Unknown node").is_none(), "the card draws as a generation card");
     (h, card)
 }
 
