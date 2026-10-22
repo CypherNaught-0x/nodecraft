@@ -202,6 +202,45 @@ fn the_overlay_shows_on_a_media_card_and_h_toggles_it_both_ways() {
 }
 
 #[test]
+fn h_shortcut_dispatches_a_command_instead_of_flipping_view_state_inline() {
+    let mut h = image();
+    // Session records successful dispatches independently of shell view changes. An inline
+    // flag flip still renders correctly, but does not produce this command observation.
+    h.state_mut().session.perf_mut().set_enabled(true);
+    h.state_mut().session.perf_mut().clear();
+    press_h(&mut h);
+    let dispatched = h
+        .state()
+        .session
+        .perf()
+        .report()
+        .metrics
+        .into_iter()
+        .find(|metric| metric.metric == nodecraft_engine::perf::Metric::Dispatch)
+        .map(|metric| metric.recorded);
+    assert_eq!(dispatched, Some(1), "H must successfully dispatch the navigation command");
+    assert_eq!(overlay(&h), [false, false, false]);
+}
+
+#[test]
+fn navigation_service_family_is_not_in_the_unscoped_palette() {
+    let mut h = image();
+    let entries = h.state().palette_entries();
+    for id in ["canvas.minimap_toggle", "canvas.prompt_overlays_toggle"] {
+        assert!(h.state().session.registry().get(id).is_ok(), "{id} is registered");
+        assert!(h.state().session.enabled(id, &json!({})).is_err(), "{id} lacks scoped navigation context");
+        assert!(
+            !entries.iter().any(|entry| matches!(&entry.target, palette::Target::Command(command) if *command == id)),
+            "{id} cannot be offered by the unscoped palette filter"
+        );
+        h.state_mut().dispatch_palette_command(id);
+        assert!(h.state().notice.is_some(), "raw palette dispatch also refuses {id}");
+    }
+    assert!(h.state().navigation.visible, "minimap stayed visible");
+    assert!(h.state().prompt_overlays, "overlays stayed visible");
+}
+
+#[test]
 fn scoped_command_toggles_the_actual_image_overlay_without_document_edits() {
     let mut h = image();
     let ctx = h.ctx.clone();
