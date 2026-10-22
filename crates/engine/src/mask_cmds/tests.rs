@@ -293,6 +293,11 @@ fn a_new_image_of_the_same_shape_marks_the_mask_stale_without_blocking_a_run() {
     assert_eq!(status(&mut s), json!({"masks": [{"id": MASK, "binding": "changed"}]}));
     let q = quote_mask(&mut s);
     assert_eq!(q["allowed"], true, "{q}");
+    // Fitting onto the same shape has nothing to move.
+    let kept = only_stroke(&s);
+    assert_eq!(s.dispatch("mask.refit", &json!({"canvas": CANVAS, "id": MASK, "fit": true})).unwrap(), json!({"changed": true}));
+    assert_eq!(only_stroke(&s), kept);
+    s.dispatch("edit.undo", &json!({})).unwrap();
     // Keeping the strokes binds them to the new image.
     assert_eq!(s.dispatch("mask.refit", &json!({"canvas": CANVAS, "id": MASK, "fit": false})).unwrap(), json!({"changed": true}));
     assert_eq!(status(&mut s), json!({"masks": []}));
@@ -331,6 +336,26 @@ fn a_reshaped_image_blocks_a_run_until_the_strokes_are_kept_or_fitted() {
     s.dispatch("mask.refit", &json!({"canvas": CANVAS, "id": MASK, "fit": false})).unwrap();
     assert_eq!(only_stroke(&s).points[0], [0.0, 0.0]);
     assert_eq!(quote_mask(&mut s)["allowed"], true);
+}
+
+#[test]
+fn a_mask_inside_a_technique_never_blocks_its_instance() {
+    // Published over a 100×50 picture, then fed a square one: the canvas can't refit the
+    // version's mask, so the instance runs with the strokes as published.
+    let mut s = painted();
+    let version = CanvasId::from_bytes([20; 16]);
+    let publish = json!({"canvas": CANVAS, "published": version, "seed": NodeId::from_bytes([21; 16]), "technique": nodecraft_types::TechniqueId::from_bytes([22; 16]),
+        "name": "Masked", "inputs": [{"node": PICTURE, "name": "Picture"}], "outputs": [{"node": MASK, "name": "Mask"}]});
+    s.dispatch("technique.publish", &publish).unwrap();
+    let placed = NodeId::from_bytes([23; 16]);
+    s.dispatch("technique.place", &json!({"canvas": CANVAS, "version": version, "id": placed, "pos": {"x": 0, "y": 900}})).unwrap();
+    let feed = NodeId::from_bytes([24; 16]);
+    import(&mut s, feed, 100, 100, [10, 20, 30, 255]);
+    let wire =
+        json!({"canvas": CANVAS, "edge": {"id": edge(25), "from": {"node": feed, "port": "out"}, "to": {"node": placed, "port": "picture"}, "order": 0}});
+    s.dispatch("edge.connect", &wire).unwrap();
+    let q = priced(&mut s, "run.quote", &json!({"canvas": CANVAS, "mode": "selected", "nodes": [placed]})).unwrap();
+    assert_eq!(q["allowed"], true, "{q}");
 }
 
 #[test]

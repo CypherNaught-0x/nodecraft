@@ -334,7 +334,7 @@ fn drift_banner(ui: &mut egui::Ui, target: &Target, canvas: CanvasId, id: NodeId
         Binding::Unbound | Binding::Current => return,
         Binding::Changed => ("The image changed since this mask was painted. Check the strokes still cover the right area.", t.stale, false),
         Binding::Reshaped => (
-            "The image changed shape since this mask was painted, so the strokes would stretch. Runs that use this mask wait until you keep or fit them.",
+            "The image changed shape since this mask was painted, so the strokes would stretch. Runs that use this mask wait until you keep or fit them; choose before painting more, since fitting moves every stroke.",
             t.danger,
             true,
         ),

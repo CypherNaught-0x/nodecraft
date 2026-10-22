@@ -356,7 +356,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     // A job that couldn't send its media would fail after the cost was accepted (#675); a mask
     // over an image that changed shape would stretch its strokes (#546): ask first.
     let oversized = media_size::oversized(&run_plan, c.assets);
-    let reshaped = crate::mask_cmds::binding::reshaped(canvas, run_plan.steps.iter().map(|s| s.node));
+    let reshaped = crate::mask_cmds::binding::reshaped(canvas, run_plan.steps.iter().map(|s| s.node), &expanded.inner);
     if !oversized.is_empty() || !reshaped.is_empty() {
         let reasons: Vec<String> = oversized
             .iter()
@@ -605,7 +605,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if let Some(oversized) = media_size::oversized(&plan, c.assets).first() {
         return Err(invalid(oversized.reason(expanded.owner(oversized.node))));
     }
-    if let Some(mask) = crate::mask_cmds::binding::reshaped(&expanded.canvas, plan.steps.iter().map(|s| s.node)).first() {
+    if let Some(mask) = crate::mask_cmds::binding::reshaped(&expanded.canvas, plan.steps.iter().map(|s| s.node), &expanded.inner).first() {
         return Err(invalid(crate::mask_cmds::binding::reason(expanded.owner(*mask))));
     }
     #[cfg(test)]

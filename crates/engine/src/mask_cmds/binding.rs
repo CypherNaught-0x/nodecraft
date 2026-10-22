@@ -10,6 +10,7 @@ use nodecraft_graph::{Canvas, Change, Changeset, Node};
 use nodecraft_types::{AssetRef, Blake3, CanvasId, Error, ErrorKind, NodeId};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, PoisonError};
 
 /// What a mask is painted over: the Expand canvas feeding it, if any, and the image under that
@@ -121,6 +122,8 @@ pub(super) fn transparent(c: &Context<'_>, asset: &AssetRef) -> bool {
         Some(_) => None,
         None => c.assets.preview_read(asset).ok().and_then(|input| input.read_verified(&Default::default(), &Default::default()).ok()),
     };
+    // Bytes not here yet may arrive later, so that isn't remembered; an image that won't decode
+    // is remembered as opaque, so a stroke doesn't retry it.
     let Some(bytes) = c.assets.get(&asset.hash).or(native.as_deref()) else { return false };
     let seen = nodecraft_media::decode_image(bytes, &crate::action_exec::decode_limits())
         .map(|(_, image)| image.color().has_alpha() && image.into_rgba8().pixels().any(|p| p.0[3] < 255))
@@ -158,6 +161,7 @@ fn refit(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let now = painted(image).ok_or_else(|| invalid("the image's size isn't known: run it again"))?;
     let moved = match (p.fit, &stored.over) {
         (false, _) => stored.strokes,
+        (true, Some(old)) if !old.reshaped(now.width, now.height) => stored.strokes,
         (true, Some(old)) => fit(&stored.strokes, (old.width, old.height), (now.width, now.height), under.expand.map(margins).unwrap_or_default()),
         (true, None) => return Err(invalid("this mask doesn't record the image it was painted on, so it can't be fitted; keep the strokes instead")),
     };
@@ -209,12 +213,18 @@ fn enabled_status(c: &Context<'_>, value: &Json) -> Result<(), Error> {
 }
 
 /// The masks a run of `nodes` on `canvas` would use while their image has changed shape: each
-/// mask among them, and each feeding one of them directly.
-pub fn reshaped(canvas: &Canvas, nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
-    let mut found = std::collections::BTreeSet::new();
+/// mask among them, and each feeding one of them directly. Masks in `inlined` (inside a
+/// technique's version, keyed by inlined id) are skipped: the canvas can't refit them, and the
+/// technique's author saw them over the image it was published with.
+pub fn reshaped(canvas: &Canvas, nodes: impl IntoIterator<Item = NodeId>, inlined: &BTreeMap<NodeId, NodeId>) -> Vec<NodeId> {
+    let mut seen = BTreeSet::new();
+    let mut found = BTreeSet::new();
     for node in nodes {
         let fed = canvas.edges().values().filter(|e| e.to.node == node).map(|e| e.from.node);
         for id in std::iter::once(node).chain(fed) {
+            if inlined.contains_key(&id) || !seen.insert(id) {
+                continue;
+            }
             if let Some(mask) = canvas.nodes().get(&id).filter(|n| n.kind == ID)
                 && binding(canvas, mask) == Binding::Reshaped
             {
