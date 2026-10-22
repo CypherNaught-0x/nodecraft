@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-testkit"
 version.workspace = true
 edition.workspace = true
@@ -25,3 +26,12 @@ futures = { workspace = true, features = ["executor"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real Driver/Reqwest companion: native entered reactor and bounded loopback fixture.
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "golden"
+path = "tests/golden.rs"

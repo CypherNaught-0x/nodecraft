@@ -700,7 +700,7 @@ fn unknown_reader_late_failure_and_stale_receipts_never_publish_candidate_assets
     assert_eq!(host.0.borrow().appends, appends);
     let batch = session.prepare_reader_imports(&mut [&mut io::Cursor::new(b"candidate")], &cancel, &metrics).unwrap();
     let foreign_dir = tempfile::tempdir().unwrap();
-    let foreign_host = crate::host(foreign_dir.path());
+    let foreign_host = self::host(foreign_dir.path());
     let mut foreign = Session::with_storage(snapshot_empty(), Box::new(foreign_host.clone())).unwrap();
     assert_eq!(foreign.dispatch_with_imports("node.move", &movement(1), batch).unwrap_err().kind, ErrorKind::Conflict);
     assert_eq!(foreign_host.0.borrow().appends, 0);

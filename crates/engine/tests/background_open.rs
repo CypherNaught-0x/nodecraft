@@ -1,7 +1,7 @@
 //! Background opens, cancellation and progress (#367): an open reads on the host's runner while
 //! reads keep working and edits are refused, and `file.cancel` stops a save or open before it
 //! publishes anything, or reports truthfully that it was too late.
-mod common;
+use crate::common;
 use nodecraft_engine::Session;
 use nodecraft_engine::file_cmds::{FileOperation, FileOperationKind, FilePhase};
 use nodecraft_engine::save_runner::{SaveJob, SaveRunner};

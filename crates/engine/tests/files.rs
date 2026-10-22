@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use nodecraft_engine::Session;
 use nodecraft_format::{AssetStore, MemoryStorage, ProjectStorage, Snapshot, StorageLocation, decode, journal};
 use nodecraft_types::{AssetRef, Error, ErrorKind, MediaMeta, Value};

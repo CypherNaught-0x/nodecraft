@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use nodecraft_engine::{Session, layout_cmds::LayoutContext};
 use nodecraft_graph::{Change, Position};
 use serde_json::json;

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-nodes"
 version.workspace = true
 edition.workspace = true
@@ -20,3 +21,8 @@ serde_json.workspace = true
 
 [dev-dependencies]
 nodecraft-provider-testkit = { workspace = true }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"

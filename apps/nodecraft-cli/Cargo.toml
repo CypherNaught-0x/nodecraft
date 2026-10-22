@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-cli"
 version.workspace = true
 edition.workspace = true
@@ -40,3 +41,14 @@ nodecraft-provider-testkit = { workspace = true }
 nodecraft-graph = { workspace = true }
 nodecraft-testkit = { workspace = true }
 tempfile = { workspace = true }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# Its own binary: every process it creates must take its spawn lock, which tests sharing the
+# binary would bypass.
+[[test]]
+name = "control_stdio"
+path = "tests/control_stdio.rs"

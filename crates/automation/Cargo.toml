@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-automation"
 version.workspace = true
 edition.workspace = true
@@ -26,3 +27,8 @@ getrandom = "=0.3.4"
 
 [dev-dependencies]
 nodecraft-format = { workspace = true }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"

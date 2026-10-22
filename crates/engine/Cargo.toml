@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-engine"
 version.workspace = true
 edition.workspace = true
@@ -62,3 +63,16 @@ zip = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "panic_hunt"
+path = "tests/panic_hunt.rs"
+
+[[test]]
+name = "physical_zip64147"
+path = "tests/physical_zip64147.rs"

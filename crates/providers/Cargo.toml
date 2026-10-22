@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-providers"
 version.workspace = true
 edition.workspace = true
@@ -97,3 +98,56 @@ futures = { workspace = true, features = ["executor"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "live_comfy_cloud"
+path = "tests/live_comfy_cloud.rs"
+
+[[test]]
+name = "live_comfyui"
+path = "tests/live_comfyui.rs"
+
+[[test]]
+name = "live_elevenlabs"
+path = "tests/live_elevenlabs.rs"
+
+[[test]]
+name = "live_gemini_video"
+path = "tests/live_gemini_video.rs"
+
+[[test]]
+name = "live_google_tts"
+path = "tests/live_google_tts.rs"
+
+[[test]]
+name = "live_google_veo"
+path = "tests/live_google_veo.rs"
+
+[[test]]
+name = "live_higgsfield"
+path = "tests/live_higgsfield.rs"
+
+[[test]]
+name = "live_kling"
+path = "tests/live_kling.rs"
+
+[[test]]
+name = "live_llm"
+path = "tests/live_llm.rs"
+
+[[test]]
+name = "live_meshy"
+path = "tests/live_meshy.rs"
+
+[[test]]
+name = "live_seedance"
+path = "tests/live_seedance.rs"
+
+[[test]]
+name = "live_tripo"
+path = "tests/live_tripo.rs"

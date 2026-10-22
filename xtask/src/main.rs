@@ -6,6 +6,7 @@
 mod decisions;
 mod layers;
 mod perf;
+mod test_layout;
 mod update_feed;
 mod version;
 mod workspace;
@@ -18,7 +19,8 @@ usage: cargo xtask <command>
 
 commands:
   perf            bounded release collect/compare tooling (cargo xtask perf help)
-  layers          enforce the crate dependency layering (docs/architecture.md)
+  layers          enforce the crate dependency layering (docs/architecture.md), and that every
+                  integration test file is built
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
   catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
   decisions       check docs/decisions/: one dated file per decision, none in decisions.md
@@ -131,7 +133,7 @@ fn cmd_layers(root: &Path) -> Result<(), String> {
     println!();
     if violations.is_empty() {
         println!("OK: {} crates, no layering violations.", crates.len());
-        Ok(())
+        test_layout::check(root)
     } else {
         println!("{} violation(s):", violations.len());
         for v in &violations {

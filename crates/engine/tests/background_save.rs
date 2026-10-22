@@ -1,6 +1,6 @@
 //! Background saves (#461): the file work runs on the host's save runner, and every later
 //! change waits for it, so the file holds exactly the state the save snapshotted.
-mod common;
+use crate::common;
 use nodecraft_engine::Session;
 use nodecraft_engine::save_runner::{SaveJob, SaveRunner};
 use nodecraft_format::{AssetStore, MemoryStorage, ProjectStorage, Snapshot, StorageLocation, decode};
