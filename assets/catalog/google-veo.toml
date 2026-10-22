@@ -1,0 +1,125 @@
+# Veo 3.1 on Google Cloud Vertex AI (#742), checked 2026-10-22:
+# https://cloud.google.com/vertex-ai/generative-ai/docs/models/veo/3-1-generate,
+# https://cloud.google.com/vertex-ai/generative-ai/docs/video/overview and
+# https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing
+# (Vertex AI's pricing page under its new name, section "Veo"; not the Gemini API's page).
+# Signed in with a service account's key file (keychain account "google-cloud"); runs in the
+# account's own project, region us-central1. Every clip is made with audio, which is how it is
+# priced: the pricing page lists a price per second ("/1 count") by resolution, with and without
+# audio, and NodeCraft always asks for audio. Clips are 4, 6 or 8 seconds; subject references need 8.
+# Lite's image input isn't documented on Vertex AI yet, so Lite is text only here.
+
+[[model]]
+id = "google-veo.veo-3.1"
+provider = "google-veo"
+provider_model = "veo-3.1-generate-001"
+label = "Veo 3.1"
+description = "Google's best video model on Vertex AI: a 4 to 8 second clip with sound from a prompt, a first frame (and optionally a last one) or up to three subject references. 0.40 USD a second (0.60 at 4K)."
+latency_s = 120
+quality = 5
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "720p" = "0.40 USD", "1080p" = "0.40 USD", "4k" = "0.60 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 3 }]
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }] }
+default = { type = "text", value = "16:9" }
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "720p", label = "720p" }, { value = "1080p", label = "1080p" }, { value = "4k", label = "4K" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "8", step = "2" }
+default = { type = "unsigned", value = "8" }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "4294967295", step = "1" }
+
+[[model]]
+id = "google-veo.veo-3.1-fast"
+provider = "google-veo"
+provider_model = "veo-3.1-fast-generate-001"
+label = "Veo 3.1 Fast"
+description = "A faster, cheaper Veo 3.1: a 4 to 8 second clip with sound from a prompt, frames or up to three subject references. 0.10 USD a second at 720p, 0.12 at 1080p."
+latency_s = 60
+quality = 4
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "720p" = "0.10 USD", "1080p" = "0.12 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 3 }]
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }] }
+default = { type = "text", value = "16:9" }
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "720p", label = "720p" }, { value = "1080p", label = "1080p" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "8", step = "2" }
+default = { type = "unsigned", value = "8" }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "4294967295", step = "1" }
+
+[[model]]
+id = "google-veo.veo-3.1-lite"
+provider = "google-veo"
+provider_model = "veo-3.1-lite-generate-001"
+label = "Veo 3.1 Lite"
+description = "The cheapest Veo 3.1: a 4 to 8 second clip with sound from a prompt. 0.05 USD a second at 720p, 0.08 at 1080p."
+latency_s = 60
+quality = 3
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "720p" = "0.05 USD", "1080p" = "0.08 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }] }
+default = { type = "text", value = "16:9" }
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "720p", label = "720p" }, { value = "1080p", label = "1080p" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "8", step = "2" }
+default = { type = "unsigned", value = "8" }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "4294967295", step = "1" }

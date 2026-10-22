@@ -119,7 +119,13 @@ enum KeyOp {
 fn parse(request: &Value) -> Result<(Account, KeyOp), Error> {
     let request: KeyRequest = serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "malformed key request"))?;
     Ok(match request {
-        KeyRequest::Set { account, key } => (Account::new(&account).map_err(to_error)?, KeyOp::Set(Secret::new(&key).map_err(to_error)?)),
+        KeyRequest::Set { account, key } => {
+            // A Google Cloud service-account key file is too large for a keychain entry; only
+            // what signing needs is kept (#742).
+            let secret =
+                if account == nodecraft_providers::google_cloud::ACCOUNT { nodecraft_providers::google_cloud::compact(&key) } else { Secret::new(&key) };
+            (Account::new(&account).map_err(to_error)?, KeyOp::Set(secret.map_err(to_error)?))
+        }
         KeyRequest::Remove { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Remove),
         KeyRequest::Status { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Status),
     })

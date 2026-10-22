@@ -62,6 +62,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "seedream" => Some("seedream"),
         "gemini-images" => Some("gemini"),
         "gemini-video" => Some("gemini"),
+        "google-veo" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
         "tripo" => Some("tripo"),
         "meshy" => Some("meshy"),
@@ -136,6 +137,12 @@ pub fn higgsfield(env: &HostEnv<'_>) -> Result<nodecraft_providers::higgsfield::
     Ok(nodecraft_providers::higgsfield::Higgsfield::new(needs_key(env.keys, "higgsfield")?, env.http.clone()))
 }
 
+/// Veo on Vertex AI (#742), signed in as the stored Google Cloud service account.
+fn google_veo(env: &HostEnv<'_>) -> Result<nodecraft_providers::google_cloud::veo::Veo, Readiness> {
+    let secret = needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?;
+    nodecraft_providers::google_cloud::veo::Veo::new(&secret, env.http.clone(), nodecraft_providers::google_cloud::system_clock()).map_err(adapter_error)
+}
+
 fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
     LlmClient::new(endpoint, env.http.clone())
 }
@@ -151,6 +158,7 @@ pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readi
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "gemini-video" => Arc::new(nodecraft_providers::gemini_video::GeminiVideo::new(needs_key(env.keys, "gemini")?, env.http.clone())),
+        "google-veo" => Arc::new(google_veo(env)?),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
         "tripo" => Arc::new(nodecraft_providers::tripo::Tripo::new(needs_key(env.keys, "tripo")?, env.http.clone())),
         "meshy" => Arc::new(nodecraft_providers::meshy::Meshy::new(needs_key(env.keys, "meshy")?, env.http.clone())),

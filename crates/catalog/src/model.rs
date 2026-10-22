@@ -196,62 +196,84 @@ impl ModelDescriptor {
             if first.is_none() || self.modes.iter().any(|mode| mode.edit.as_ref().map(|e| (&e.role, e.uses_ms)) != first.map(|e| (&e.role, e.uses_ms))) {
                 return Err(invalid(id, "pricing per source second needs every mode to edit the same source"));
             }
-            let options = match self.params.params.iter().find(|spec| spec.name == *param).map(|spec| (&spec.control, &spec.default)) {
-                Some((ParamControl::Choice { options }, Some(_))) => options,
-                _ => return Err(invalid(id, &format!("pricing per source second reads `{param}`, which must be a choice setting with a default"))),
-            };
-            if options.len() != prices.len() || options.iter().any(|option| !prices.contains_key(&option.value)) {
-                return Err(invalid(id, &format!("pricing lists a price for each `{param}` choice, and only those")));
-            }
-            let currency = self.pricing.currency();
-            if prices.values().any(|price| Some(price.0.currency) != currency || price.0.micros == 0) {
-                return Err(invalid(id, "per-second prices are above zero and in one currency"));
-            }
-            if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.contains(param))) {
-                return Err(invalid(id, &format!("mode `{}` doesn't send `{param}`, which pricing reads", mode.id)));
-            }
+            self.validate_choice_prices(param, prices)?;
         }
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
-            if *default_count == Some(0) {
-                return Err(invalid(id, "`default_count` must be at least 1"));
+            self.validate_count(*unit, count.as_deref(), *default_count)?;
+        }
+        if let Pricing::PerUnitByChoice { unit, count, param, prices } = &self.pricing {
+            if unit.usage_based() {
+                return Err(invalid(id, "pricing by a setting counts units known before the run"));
             }
-            match count {
-                None if default_count.is_none() && !unit.usage_based() => {
-                    return Err(invalid(id, "per-unit pricing needs a `count` parameter or an explicit `default_count`"));
+            self.validate_count(*unit, Some(count), None)?;
+            self.validate_choice_prices(param, prices)?;
+        }
+        Ok(())
+    }
+
+    /// A price for each option of choice setting `param`, which has a default and every mode
+    /// sends.
+    fn validate_choice_prices(&self, param: &str, prices: &std::collections::BTreeMap<String, crate::pricing::Price>) -> Result<(), Error> {
+        let id = &self.id;
+        let options = match self.params.params.iter().find(|spec| spec.name == param).map(|spec| (&spec.control, &spec.default)) {
+            Some((ParamControl::Choice { options }, Some(_))) => options,
+            _ => return Err(invalid(id, &format!("pricing reads `{param}`, which must be a choice setting with a default"))),
+        };
+        if options.len() != prices.len() || options.iter().any(|option| !prices.contains_key(&option.value)) {
+            return Err(invalid(id, &format!("pricing lists a price for each `{param}` choice, and only those")));
+        }
+        let currency = self.pricing.currency();
+        if prices.values().any(|price| Some(price.0.currency) != currency || price.0.micros == 0) {
+            return Err(invalid(id, "listed prices are above zero and in one currency"));
+        }
+        if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.iter().any(|name| name == param))) {
+            return Err(invalid(id, &format!("mode `{}` doesn't send `{param}`, which pricing reads", mode.id)));
+        }
+        Ok(())
+    }
+
+    /// A per-unit count a quote can trust: a positive number setting every mode sends, or an
+    /// explicit default.
+    fn validate_count(&self, unit: Unit, count: Option<&str>, default_count: Option<u64>) -> Result<(), Error> {
+        let id = &self.id;
+        if default_count == Some(0) {
+            return Err(invalid(id, "`default_count` must be at least 1"));
+        }
+        match count {
+            None if default_count.is_none() && !unit.usage_based() => {
+                return Err(invalid(id, "per-unit pricing needs a `count` parameter or an explicit `default_count`"));
+            }
+            None => {}
+            Some(count) => {
+                let spec = self.params.params.iter().find(|spec| spec.name == count);
+                let Some(spec) = spec else {
+                    return Err(invalid(id, &format!("pricing counts parameter `{count}`, which the model doesn't have")));
+                };
+                // Usage units may count from zero; anything else must count at least one, or a
+                // zero would quote a paid job as free.
+                let positive = match &spec.control {
+                    ParamControl::Unsigned { min, .. } => unit.usage_based() || min.is_some_and(|min| min.0 >= 1),
+                    ParamControl::Integer { min, .. } => min.is_some_and(|min| min.0 >= if unit.usage_based() { 0 } else { 1 }),
+                    ParamControl::Slider { min, .. } => min.is_some_and(|min| if unit.usage_based() { min.get() >= 0.0 } else { min.get() > 0.0 }),
+                    _ => false,
+                };
+                if !positive {
+                    return Err(invalid(id, &format!("pricing parameter `{count}` must be a number with a minimum of at least 1")));
                 }
-                None => {}
-                Some(count) => {
-                    let spec = self.params.params.iter().find(|spec| spec.name == *count);
-                    let Some(spec) = spec else {
-                        return Err(invalid(id, &format!("pricing counts parameter `{count}`, which the model doesn't have")));
-                    };
-                    // Usage units may count from zero; anything else must count at least one, or a
-                    // zero would quote a paid job as free.
-                    let positive = match &spec.control {
-                        ParamControl::Unsigned { min, .. } => unit.usage_based() || min.is_some_and(|min| min.0 >= 1),
-                        ParamControl::Integer { min, .. } => min.is_some_and(|min| min.0 >= if unit.usage_based() { 0 } else { 1 }),
-                        ParamControl::Slider { min, .. } => min.is_some_and(|min| if unit.usage_based() { min.get() >= 0.0 } else { min.get() > 0.0 }),
-                        _ => false,
-                    };
-                    if !positive {
-                        return Err(invalid(id, &format!("pricing parameter `{count}` must be a number with a minimum of at least 1")));
-                    }
-                    if spec.default.is_none() && default_count.is_none() && !unit.usage_based() {
-                        return Err(invalid(id, &format!("pricing parameter `{count}` needs a default (or set `default_count`)")));
-                    }
-                    // A quote counted from a setting a mode never sends would price a run wrongly.
-                    if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.contains(count))) {
-                        return Err(invalid(id, &format!("mode `{}` doesn't send `{count}`, which pricing counts", mode.id)));
-                    }
-                    // A clip as long as its audio isn't as long as a seconds setting says, so a
-                    // quote counted from one would be wrong; such a model is priced per call or by
-                    // usage until a track's length can be counted (#608).
-                    if *unit == Unit::Second
-                        && let Some(mode) =
-                            self.modes.iter().find(|mode| mode.audio.as_ref().is_some_and(|audio| audio.duration == AudioDuration::FollowsAudio))
-                    {
-                        return Err(invalid(id, &format!("mode `{}` follows its audio's length, so pricing can't count seconds from `{count}`", mode.id)));
-                    }
+                if spec.default.is_none() && default_count.is_none() && !unit.usage_based() {
+                    return Err(invalid(id, &format!("pricing parameter `{count}` needs a default (or set `default_count`)")));
+                }
+                // A quote counted from a setting a mode never sends would price a run wrongly.
+                if let Some(mode) = self.modes.iter().find(|mode| mode.params.as_ref().is_some_and(|names| !names.iter().any(|name| name == count))) {
+                    return Err(invalid(id, &format!("mode `{}` doesn't send `{count}`, which pricing counts", mode.id)));
+                }
+                // A clip as long as its audio isn't as long as a seconds setting says, so a
+                // quote counted from one would be wrong; such a model is priced per call or by
+                // usage until a track's length can be counted (#608).
+                if unit == Unit::Second
+                    && let Some(mode) = self.modes.iter().find(|mode| mode.audio.as_ref().is_some_and(|audio| audio.duration == AudioDuration::FollowsAudio))
+                {
+                    return Err(invalid(id, &format!("mode `{}` follows its audio's length, so pricing can't count seconds from `{count}`", mode.id)));
                 }
             }
         }

@@ -37,6 +37,10 @@ fn env<'a>(keys: &'a MemoryStore, http: &Arc<Wire>, settings: &'a ProviderSettin
 
 const NODE: NodeId = NodeId::from_bytes([9; 16]);
 
+/// A throwaway Google Cloud service account made for tests, in its compact keychain form (the
+/// providers crate's Google Cloud tests build the same key from its primes).
+const SERVICE_ACCOUNT: &str = "gsa1:fixture@nodecraft-test.iam.gserviceaccount.com:nodecraft-test:0123456789abcdef0123456789abcdef01234567:7eGpEZd-MjEQRmjRJKQk23e1n4UNmiEbwk1_ndJvOvoMVMEbMoujF0rau_cbfj3_tq2ZwDvMDwLJYE535QzffIhyKiXLcL97BCr1-aO2s7ycnuu-nYGmhSH8hWfsLP3DhdTt1f_khooZFdqpYsAc-d68dmkqNyEoeUVgwUYa46c:0Ld7HsEvX0LP4wAadYUD7Qd4JGr80ZVgc_deaETVGTaWYHYuWnA2JxFws7HSvR-znh29y10sAEu1aRf7Xe0-vJiR-GsOFhqpBA96xC6T4gin-aDi48TKnHh0NrnncJVNh-r3jd94Dq5IHqpaIse2oM-Le_TtoX8yaAGQpDXaIu0";
+
 #[test]
 fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_sent() {
     let catalog = Catalog::builtin().unwrap();
@@ -54,6 +58,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("seedream"), Some(&Readiness::NeedsKey { account: "seedream".into() }));
     assert_eq!(setup.readiness("gemini-images"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
     assert_eq!(setup.readiness("gemini-video"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
+    assert_eq!(setup.readiness("google-veo"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
     assert_eq!(setup.readiness("tripo"), Some(&Readiness::NeedsKey { account: "tripo".into() }));
     assert_eq!(setup.readiness("meshy"), Some(&Readiness::NeedsKey { account: "meshy".into() }));
@@ -73,6 +78,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     for account in ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "elevenlabs", "comfyui:gpu-box:8188"] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
+    keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
     let settings = ProviderSettings { comfyui_url: Some("http://gpu-box:8188".into()), install_salt: "salt".into() };
     let env = env(&keys, &http, &settings);
@@ -88,6 +94,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "seedream",
         "gemini-images",
         "gemini-video",
+        "google-veo",
         "fal",
         "tripo",
         "meshy",
@@ -208,4 +215,18 @@ fn the_test_path_binds_whatever_the_maker_gives_through_the_same_routing() {
         Ok(Arc::new(Named("replicate")) as Arc<dyn Provider>)
     });
     assert_eq!(built, 2);
+}
+
+#[test]
+fn a_damaged_google_cloud_key_fails_veo_without_quoting_it_or_sending_anything() {
+    let catalog = Catalog::builtin().unwrap();
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("google-cloud").unwrap(), &Secret::new("gsa1:not-a-service-account-zzz").unwrap()).unwrap();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    let env = env(&keys, &http, &settings);
+    let setup = build(&catalog, |adapter| make(adapter, &env));
+    let Some(Readiness::Failed(why)) = setup.readiness("google-veo") else { panic!("{:?}", setup.readiness("google-veo")) };
+    assert!(why.contains("paste the service-account key file again") && !why.contains("zzz"), "{why}");
+    assert_eq!(http.0.load(Ordering::SeqCst), 0);
 }
